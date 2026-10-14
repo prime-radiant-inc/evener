@@ -383,11 +383,13 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      submission that armed the retry: a successful re-read that would
      switch away from a composer
      draft, pending attachments, or a panel or picker the user is
-     interacting with, or replace an edited spawn form, retires the retry
+     interacting with, or replace an edited spawn form, or close an open
+     transcript viewer, retires the retry
      instead, restores the displayed session's subscription when one is
      displayed, and leaves the entry for the
      user to re-pick. Navigating away — entering
-     another session, opening another pane, leaving the hub surface, or
+     another session, opening another pane, opening the transcript
+     viewer, leaving the hub surface, or
      submitting the spawn form again — retires the pending retry and its
      status, and a late-landing retry
      for a departed intent enters nothing. Picks are fenced the same way
@@ -698,8 +700,12 @@ being repaired.
    tea.Tick), asserted as 500ms, 1s, 2s, 4s, 8s, 15s, 15s. The
    history-failed answer ends the retry and shows the error on the
    same line; an ordinary transient failure keeps the retry armed with
-   the status standing; a navigation away retires the pending retry,
-   and a late-landing retry for a departed intent enters nothing; the
+   the status standing; a navigation away retires the pending retry —
+   opening the raw transcript viewer included — and a late-landing
+   retry for a departed intent enters nothing; the automatic
+   completion holds for an open transcript viewer, leaving the viewer
+   standing; the
+   already-open deferral is pinned — an errored /details or clear
    already-open deferral is pinned — an errored /details or clear
    re-read of the displayed session, and the raw transcript viewer's
    past-session read, arm no retry and show no status.

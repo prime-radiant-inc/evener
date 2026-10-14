@@ -291,23 +291,35 @@ func (m hubModel) reestablishDisplayedSubscriptionRead(replace bool) (hubModel, 
 		return m, nil
 	}
 	if m.liveNavRecoveryInFlight {
-		// A recovery read is already in flight for this display: its landing
-		// is the restore this caller is owed, so the demand is recorded for
-		// that landing to settle with a follow-up: a superseded read's
-		// replacement can re-point the server-side subscription while this
-		// flight is still collecting its older pages, and the restore would
-		// otherwise be silently lost. A second concurrent read would race
-		// its server-side replacement — each fetch re-points the
-		// connection's subscriptions and culls the children, so the first's
-		// success re-arms children the second's fetch may cull after it,
-		// and the second's landing then skips re-subscribing them because
-		// watchedChildRefs still marks them watched.
-		m.liveNavNeedsReconcile = true
-		return m, nil
+		current := m.liveNavRecoveryRef == ref.String() && m.liveNavRecoverySeq == m.liveNavSeq
+		if current {
+			// A recovery read is already in flight for this display at this
+			// navigation generation: its landing is the restore this caller
+			// is owed, so the demand is recorded for that landing to settle
+			// with a follow-up: a superseded read's replacement can re-point
+			// the server-side subscription while this flight is still
+			// collecting its older pages, and the restore would otherwise
+			// be silently lost. A second concurrent read would race its
+			// server-side replacement — each fetch re-points the
+			// connection's subscriptions and culls the children, so the
+			// first's success re-arms children the second's fetch may cull
+			// after it, and the second's landing then skips re-subscribing
+			// them because watchedChildRefs still marks them watched.
+			m.liveNavNeedsReconcile = true
+			return m, nil
+		}
+		// The in-flight flight belongs to an abandoned display or generation:
+		// the user navigated while it was still collecting. Waiting for its
+		// landing would park the current display's restore behind a read
+		// with no deadline, so the current display replaces it — the new
+		// flight's id fences the superseded completion out, and its own
+		// landing drops as stale anyway.
 	}
 	m.liveNavRecoveryInFlight = true
 	m.liveNavRecoveryFlight++
 	flight := m.liveNavRecoveryFlight
+	m.liveNavRecoveryRef = ref.String()
+	m.liveNavRecoverySeq = m.liveNavSeq
 	seq := m.liveNavSeq
 	m.watchedChildRefs = nil // the recovery response's child re-arm re-fills it
 	m.liveNavRecoveryRetries = 0

@@ -381,6 +381,13 @@ type hubModel struct {
 	// connection's late response after a reconnect — must not unfence a
 	// newer flight.
 	liveNavRecoveryFlight uint64
+	// liveNavRecoveryRef and liveNavRecoverySeq record the display ref and
+	// navigation generation the in-flight recovery read was issued under, so
+	// a later caller can tell whether the flight is still this display's at
+	// this generation — or belongs to an abandoned navigation the current
+	// display must not wait behind (#4343 round-30 medium 1).
+	liveNavRecoveryRef string
+	liveNavRecoverySeq int
 	// liveNavRecoveryRetries counts consecutive failed recovery reads
 	// (reestablishDisplayedSubscription). A persistent RPC failure must not
 	// loop recovery forever: after hubLiveNavRecoveryMaxRetries the failure

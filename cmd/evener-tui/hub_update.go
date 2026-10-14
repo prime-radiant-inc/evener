@@ -96,8 +96,9 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// confirmed the switch since pressing it. The displayed
 			// session's unsent work and open overlays outrank the
 			// completion: the draft hold the cycling switch applies
-			// (switchToAdjacentLiveSession) and the focus trap's overlay
-			// surfaces both hold here. Retire the retry, restore the
+			// (switchToAdjacentLiveSession), the focus trap's overlay
+			// surfaces, and an open transcript viewer all hold here. Retire
+			// the retry, restore the
 			// displayed session's subscription (this read re-pointed it
 			// at the retry's target), and drop the success — the
 			// different-ref entry below would otherwise clear the draft,
@@ -107,7 +108,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// armed: the ordinary-transient contract below stands.
 			if msg.err == nil && m.mode == hubModeSession && m.detail.Ref != msg.ref &&
 				(m.session.input.Value() != "" || len(m.pendingAttachments) > 0 || m.forkDraft != nil ||
-					topmostOverlayName(m) != "") {
+					m.transcriptView != nil || topmostOverlayName(m) != "") {
 				m.entryRepairRetire()
 				return m.discardSupersededSessionRead()
 			}
@@ -1025,6 +1026,18 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.addSessionSystem("Could not read transcript: " + hubErrorReason(msg.err))
 			return m, nil
+		}
+		if m.transcriptView == nil {
+			// Selecting another transcript is a departure from a pending
+			// entry navigation, the same class as leaving the hub surface: a
+			// standing retry retires with its status, and the generation
+			// advances so its in-flight or paced re-read lands superseded
+			// instead of entering the abandoned navigation or clearing the
+			// viewer (#4343 round-30 medium 2). Only the open retires: an
+			// in-place refresh of an already-open viewer stays where it is.
+			m.entryRepairRetire()
+			m.liveNavSeq++
+			m.liveNavEntryPendingSeq = 0
 		}
 		m.transcriptView = &hubTranscriptViewState{
 			Ref:      msg.target.Ref,

@@ -1745,6 +1745,256 @@ func TestANonSessionRecoveryLandingStillConcludesItsFlight(t *testing.T) {
 	}
 }
 
+// Navigation away from a display whose recovery read has stalled must not
+// park the new display's restore behind the stalled flight: the fence
+// coalesces only onto a flight for the current ref at the current navigation
+// generation, and a flight for an abandoned display or generation is
+// replaced — its own late completion, tagged with the older flight's id,
+// cannot unfence the replacement.
+func TestNavigationReplacesAStalledRecoveryFlight(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session A is displayed.
+	entered, _ := m.Update(hubSessionMsg{
+		ref:    refA.String(),
+		detail: hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+	})
+	shown := entered.(hubModel)
+
+	// Three picks issue; the third targets A, supersedes the first two, and
+	// lands current.
+	pick1 := shown
+	pick1.issuePickedSessionRead(refB)
+	seq1 := pick1.liveNavSeq
+	pick2 := pick1
+	pick2.issuePickedSessionRead(refB)
+	seq2 := pick2.liveNavSeq
+	pick3 := pick2
+	pick3.issuePickedSessionRead(refA)
+	landed3, _ := pick3.Update(hubSessionMsg{
+		ref:          refA.String(),
+		detail:       hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		liveNavEntry: true,
+		liveNavSeq:   pick3.liveNavSeq,
+	})
+	settled := landed3.(hubModel)
+
+	// The first superseded pick lands: A's recovery read issues and stalls
+	// (its pages never arrive).
+	afterStale1, reconcile1 := settled.Update(hubSessionMsg{
+		ref:          refB.String(),
+		detail:       hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		liveNavEntry: true,
+		liveNavSeq:   seq1,
+	})
+	stalledFlight := afterStale1.(hubModel).liveNavRecoveryFlight
+	stalledSeq := afterStale1.(hubModel).liveNavSeq
+	if stalledFlight == 0 {
+		t.Fatal("setup: the first superseded pick issued no recovery flight")
+	}
+	_ = reconcile1
+
+	// The user navigates to B while A's recovery stalls, and B's pick lands.
+	pickB := afterStale1.(hubModel)
+	pickB.issuePickedSessionRead(refB)
+	landedB, _ := pickB.Update(hubSessionMsg{
+		ref:          refB.String(),
+		detail:       hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		liveNavEntry: true,
+		liveNavSeq:   pickB.liveNavSeq,
+	})
+	onB := landedB.(hubModel)
+
+	// A second superseded pick lands while A's flight is still stalled: B's
+	// restore must not wait behind it — the flight for the abandoned display
+	// is replaced, fenced against A's late completion by its own id.
+	afterStale2, reconcile2 := onB.Update(hubSessionMsg{
+		ref:          refB.String(),
+		detail:       hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		liveNavEntry: true,
+		liveNavSeq:   seq2,
+	})
+	var bFlight uint64
+	sawB := false
+	if reconcile2 != nil {
+		for _, c := range flattenBatch(t, reconcile2) {
+			if msg, ok := c().(hubSessionMsg); ok && msg.liveNavRecovery && msg.ref == refB.String() {
+				bFlight, sawB = msg.liveNavRecoveryFlight, true
+			}
+		}
+	}
+	if !sawB {
+		t.Fatal("the current display's restore coalesced onto a stalled flight for an abandoned display")
+	}
+	if bFlight == stalledFlight {
+		t.Fatal("the replacement reused the stalled flight's id, so its late completion could unfence it")
+	}
+
+	// The stalled flight's late completion lands anyway: it cannot unfence
+	// the replacement.
+	afterLate, _ := afterStale2.(hubModel).Update(hubSessionMsg{
+		ref:                   refA.String(),
+		detail:                hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		liveNavRecovery:       true,
+		liveNavRecoveryFlight: stalledFlight,
+		liveNavSeq:            stalledSeq,
+	})
+	if !afterLate.(hubModel).liveNavRecoveryInFlight {
+		t.Fatal("the stalled flight's late completion unfenced its replacement")
+	}
+}
+
+// Selecting another transcript from the session view is a departure from a
+// pending entry navigation: opening the viewer retires a standing retry with
+// its status and advances the generation, so the retry's late success can
+// neither enter the abandoned navigation nor clear the viewer.
+func TestOpeningATranscriptViewRetiresTheEntryRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session B is displayed when a pick of A answers rebuilding: the retry
+	// arms.
+	entered, _ := m.Update(hubSessionMsg{
+		ref:    refB.String(),
+		detail: hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+	})
+	shown := entered.(hubModel)
+	picked := shown
+	picked.issuePickedSessionRead(refA)
+	armedUpdate, _ := picked.Update(hubSessionMsg{
+		ref:          refA.String(),
+		err:          rebuildingEntryError(t),
+		liveNavEntry: true,
+		liveNavSeq:   picked.liveNavSeq,
+	})
+	armed := armedUpdate.(hubModel)
+	if armed.entryRepairRef != refA {
+		t.Fatalf("setup: the pick's rebuilding answer did not arm: ref = %v", armed.entryRepairRef)
+	}
+	armedSeq := armed.entryRepairSeq
+
+	// The user opens a child transcript while the retry is paced.
+	opened, _ := armed.Update(hubTranscriptMsg{
+		target: appwire.ThreadTranscriptTarget{Ref: "local:01CHILD", Title: "Child transcript"},
+	})
+	viewing := opened.(hubModel)
+	if viewing.transcriptView == nil {
+		t.Fatal("setup: the transcript read did not open the viewer")
+	}
+	if viewing.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("opening the viewer left the pending entry retry armed")
+	}
+	if viewing.liveNavSeq <= armed.liveNavSeq {
+		t.Fatal("opening the viewer did not advance the navigation generation")
+	}
+
+	// The retired retry's late success enters nothing: the viewer keeps
+	// standing.
+	held, _ := viewing.Update(hubSessionMsg{
+		ref:           refA.String(),
+		detail:        hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: armedSeq,
+	})
+	stillViewing := held.(hubModel)
+	if stillViewing.mode != hubModeSession || stillViewing.detail.Ref != refB.String() {
+		t.Fatalf("the retired retry's success moved the display: mode = %v detail = %v", stillViewing.mode, stillViewing.detail.Ref)
+	}
+	if stillViewing.transcriptView == nil {
+		t.Fatal("the retired retry's success cleared the open viewer")
+	}
+}
+
+// A viewer already open when a pick arms the retry is held by the automatic
+// completion exactly as the focus trap holds an overlay: the successful
+// re-read retires the retry and leaves the viewer standing instead of
+// switching sessions out from under it.
+func TestASuccessfulRetryReadHoldsForAnOpenTranscriptView(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session B is displayed and the user opens a child transcript.
+	entered, _ := m.Update(hubSessionMsg{
+		ref:    refB.String(),
+		detail: hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+	})
+	shown := entered.(hubModel)
+	opened, _ := shown.Update(hubTranscriptMsg{
+		target: appwire.ThreadTranscriptTarget{Ref: "local:01CHILD", Title: "Child transcript"},
+	})
+	viewing := opened.(hubModel)
+	if viewing.transcriptView == nil {
+		t.Fatal("setup: the transcript read did not open the viewer")
+	}
+
+	// A palette pick of A answers rebuilding: the retry arms with the viewer
+	// standing.
+	picked := viewing
+	picked.issuePickedSessionRead(refA)
+	armedUpdate, tick := picked.Update(hubSessionMsg{
+		ref:          refA.String(),
+		err:          rebuildingEntryError(t),
+		liveNavEntry: true,
+		liveNavSeq:   picked.liveNavSeq,
+	})
+	armed := armedUpdate.(hubModel)
+	if armed.entryRepairRef != refA {
+		t.Fatalf("setup: the pick's rebuilding answer did not arm: ref = %v", armed.entryRepairRef)
+	}
+	afterTick, reread := armed.Update(executeEntryRepairCmd(t, tick))
+	if reread == nil {
+		t.Fatal("setup: the retry died at its first tick")
+	}
+
+	// The re-read succeeds: the automatic completion holds for the open
+	// viewer — the retry retires, the success drops, the viewer stands.
+	held, _ := afterTick.(hubModel).Update(hubSessionMsg{
+		ref:           refA.String(),
+		detail:        hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		entryRetrySeq: afterTick.(hubModel).entryRepairSeq,
+	})
+	converged := held.(hubModel)
+	if converged.mode != hubModeSession || converged.detail.Ref != refB.String() {
+		t.Fatalf("the automatic completion switched sessions under the open viewer: mode = %v detail = %v", converged.mode, converged.detail.Ref)
+	}
+	if converged.transcriptView == nil {
+		t.Fatal("the automatic completion cleared the open viewer")
+	}
+	if converged.entryRepairRef != (appwire.Ref{}) {
+		t.Fatal("the held completion left the retry armed")
+	}
+}
+
 // A picked read supersedes an in-flight cycle: the obsolete pending target
 // retires at issuance, so a stale cycling response reconciles the displayed
 // session's subscription instead of deferring forever on it, and the next
