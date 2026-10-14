@@ -1585,6 +1585,72 @@ test.each(["success", "failure"] as const)(
   },
 );
 
+test("an annotation handoff during a stalled image encode refuses preparation and keeps the typed recovery edits", async () => {
+  const encoding = installControlledImageEncoding();
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const input = [{ type: "text" as const, text: "Recover this " }];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const source = createTestComposerSource("root");
+  const fake = await mountComposer("root", idleFocusThread("root"), source);
+  await settleActivityDiscovery("root");
+  expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+  const editor = screen.getByRole("textbox", { name: "Message" });
+
+  // The image is staged first, so its encode holds every later edit back from
+  // durable recovery persistence: mounted and detached persistence both wait
+  // for a settled encode, so the typed edit and the marker are unsaved.
+  const file = new File([new Uint8Array([1, 2, 3])], "source.png", { type: "image/png" });
+  selectImageFile(file);
+  replaceEditorText(editor, "Recover this typed edit [image 1]");
+  const liveText = source.getSnapshot().text;
+  expect(liveText).toBe("Recover this typed edit [image 1]");
+
+  // The handoff during the stall must refuse: preparing would otherwise
+  // restore the older durable recovery record over the typed edit and the
+  // image marker, erasing work the encode is still holding back.
+  let refused: Awaited<ReturnType<typeof source.prepareAnnotation>> | undefined;
+  await act(async () => {
+    refused = await source.prepareAnnotation();
+  });
+  expect(refused).toBeNull();
+  expect(source.getSnapshot().text).toBe(liveText);
+  expect(editor.textContent).toBe("Recover this typed edit [image 1]");
+
+  // Once the encode settles, persistence catches up on its own and a second
+  // handoff prepares from the now-current durable value: the typed edit and
+  // the marker survive it, and the attachment travels with the record.
+  await act(async () => encoding.resolve());
+  await flushPendingTurnsProjectionForTests();
+  await waitFor(() =>
+    expect(source.attachments.getState().items).toEqual([
+      { marker: 1, name: "source.png", mediaType: "image/png", pending: false, data: "AQID", width: 8, height: 4 },
+    ]),
+  );
+  await waitFor(async () => {
+    const recovered = await storage.getRecovery(original.clientMutationId);
+    expect(recovered?.payload.input).toEqual([
+      { type: "text", text: "Recover this typed edit [image 1]" },
+      { type: "image", mediaType: "image/png", data: "AQID", name: "source.png" },
+    ]);
+  });
+  let preparation: Awaited<ReturnType<typeof source.prepareAnnotation>> | undefined;
+  await act(async () => {
+    preparation = await source.prepareAnnotation();
+  });
+  expect(preparation).not.toBeNull();
+  expect(source.getSnapshot().text).toBe(liveText);
+  expect(editor.textContent).toBe("Recover this typed edit [image 1]");
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+});
+
 test.each(["pointer", "keyboard"] as const)(
   "ordinary %s Send returns focus to Message after successful submission",
   async (activation) => {
