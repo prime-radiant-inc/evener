@@ -163,6 +163,44 @@ function repository(cache: ReturnType<typeof createEntryCacheFixture>["cache"], 
   });
 }
 
+it("refuses a delayed replacement older than another repository's committed suffix", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const writer = repository(fixture.cache);
+  const delayed = repository(fixture.cache, 2);
+  const reader = writer.attachReader();
+  const delayedReader = delayed.attachReader();
+  try {
+    writer.acceptRead(read("baseline", 1), { lifetime: 1, readId: "baseline", boundary: "baseline" });
+    await writer.settled();
+    expect(writer.accept(historyUpdate("two", 2), { lifetime: 1 })).toBe(true);
+    expect(writer.accept(historyUpdate("three", 3), { lifetime: 1 })).toBe(true);
+    await writer.settled();
+    expect(writer.getSnapshot()?.history?.length).toBe(1);
+    const rows = await fixture.cache.getLatest(historyKey, 10);
+    const coverage = await fixture.cache.getCoverage(historyKey, "suffix:baseline");
+    expect(coverage?.representedSnapshot).toBe(3);
+    const commits = vi.spyOn(fixture.cache, "commitBatch");
+    expect(
+      delayed.acceptRead(
+        { ...read("delayed", 2), authoritative: true },
+        { lifetime: 2, readId: "delayed", boundary: "delayed" },
+      ),
+    ).toBe(true);
+    await delayed.settled();
+    expect(commits).toHaveBeenCalledTimes(1);
+    expect(await commits.mock.results[0]!.value).toEqual({ outcome: "refused", reason: "source-authority" });
+    expect(await fixture.cache.getLatest(historyKey, 10)).toEqual(rows);
+    expect(await fixture.cache.getCoverage(historyKey, "suffix:baseline")).toEqual(coverage);
+    expect((await fixture.cache.getSessionMetadata(historyKey))?.sourceAuthority?.representedSnapshot).toBe(3);
+  } finally {
+    reader.dispose();
+    delayedReader.dispose();
+    writer.dispose();
+    delayed.dispose();
+  }
+});
+
 function holdNextEntryPut(transcriptKey: string) {
   const put = IDBObjectStore.prototype.put;
   let transaction: IDBTransaction | undefined;

@@ -1967,7 +1967,9 @@ export class TranscriptRepository {
           bootGeneration: history.bootGeneration,
           epoch: history.epoch,
           incarnation: history.incarnation,
-          representedSnapshot: history.length,
+          // Recorded appends leave the reducer's read watermark unchanged.
+          // Their durable authority is the snapshot this suffix certifies.
+          representedSnapshot: batch.coverage?.kind === "suffix" ? batch.coverage.representedSnapshot : history.length,
         },
         sessionMetadata: {
           historyKey: this.#binding.historyKey,
