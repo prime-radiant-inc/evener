@@ -53,17 +53,22 @@
 # deliberate warn state. An unparseable file is a broken config, not an absent
 # one, so it fails in every mode naming the file and the parse error — otherwise
 # a stray comma would read as no baseline and silently disarm every ratio and
-# every perTestCeilingClasses ceiling (issue #4609). A `packages` value that is
-# present but not an object is the same broken config reached a different way: a
-# hand-edit `"packages": []` would otherwise read as no baseline and disarm the
-# whole ratchet with a green gate, and `"packages": "x"` would crash with a
-# traceback. It fails in every mode through the same path, naming the file
-# (issue #4614). The values INSIDE that map, and a `perTestCeilingClasses` that
-# is present but not an object, are the same broken config reached yet another
-# way (issue #4618): a string or null package budget crashes or reads as "no
-# entry", a bool IS an int so the ratio is computed against True, and a null
-# class map silently drops every class ceiling. Both fail in every mode too,
-# naming the entry or the field.
+# every perTestCeilingClasses ceiling (issue #4609). A budget whose TOP level is
+# not an object, a `packages` value that is present but not an object, the values
+# INSIDE that map, a `perTestCeilingSeconds` that is present but not a finite
+# number, and a `perTestCeilingClasses` that is present but not an object are the
+# same broken config reached different ways (issues #4614, #4618, #4622): a
+# hand-edit `"packages": []` would read as no baseline and disarm the whole
+# ratchet with a green gate; `"packages": "x"` and a string or null
+# `perTestCeilingSeconds` would crash with a traceback; a bool IS an int, so the
+# ratio is computed against True and `true` reads as a 1-second ceiling; an
+# Infinity package budget makes m/inf read 0 and a non-finite or huge-integer
+# ceiling never fires (silent disarms); and a null class map silently drops every
+# class ceiling. A non-object TOP level crashed with an AttributeError traceback —
+# #4609 left that shape alone because it already exited nonzero, but #4622's
+# contract is a failure that NAMES the file — so it takes this path too. All now
+# fail in every mode through the same path, naming the file, the entry or the
+# field.
 #
 # A broken measurement also fails in EVERY mode, --check or not: `go list` or
 # `go test` exiting nonzero, or a package go list reported that the go test
@@ -365,6 +370,22 @@ def fail_malformed(what):
 			+ " (" + budget_path + ")\n")
 	sys.exit(1)
 
+def seconds_error(value):
+	# Why `value` cannot serve as a number of seconds, or None if it can. bool is an
+	# int subclass in Python, so it is rejected explicitly (True would otherwise read
+	# as 1). A JSON float can be Infinity or NaN, and a JSON integer can be too large
+	# to convert to a float — a 400-digit literal, which would crash the ratio
+	# arithmetic below and is no more a usable seconds value than Infinity is. The
+	# package map and the flat perTestCeilingSeconds share this one definition.
+	if isinstance(value, bool) or not isinstance(value, (int, float)):
+		return "got " + type(value).__name__
+	try:
+		if math.isfinite(value):
+			return None
+	except OverflowError:
+		return "too large for a float"
+	return "got " + json.dumps(value)
+
 try:
 	with open(budget_path) as fh:
 		budget = json.load(fh)
@@ -373,31 +394,52 @@ except FileNotFoundError:
 except ValueError as exc:
 	fail_malformed("could not be parsed: " + str(exc))
 
+# A budget whose TOP level is not an object is a broken config, not an empty one:
+# budget.get below would crash a list, number, string, null or bool with an
+# AttributeError traceback. #4609 left this shape alone because it already exited
+# nonzero (through the traceback), but issue #4622 requires every malformed shape
+# to fail loudly NAMING the file, so it takes the same path as the rest
+# (#4609/#4614/#4618) instead of an unnamed crash.
+if not isinstance(budget, dict):
+	fail_malformed("must be a JSON object (got " + type(budget).__name__ + ")")
+
 # A `packages` value present but not an object is a broken config, not an empty
 # map: `packages or {}` swallowed the falsy mistakes ([], 0, false, "") into the
 # NO BASELINE warn state (exit 0, nothing enforced) and crashed on the truthy
 # ones (issue #4614). Test the KEY, not the value — `budget.get` cannot tell an
 # absent key from an explicit `null`, and `{"packages": null}` disarms the same
 # way — and route it through the malformed-config path above (#4609), which fails
-# in every mode naming the file. `isinstance(budget, dict)` keeps a non-object
-# TOP-level budget on its existing path (a traceback), which #4609 left alone.
-if isinstance(budget, dict) and "packages" in budget and not isinstance(budget["packages"], dict):
+# in every mode naming the file. `budget` is an object by the guard above.
+if "packages" in budget and not isinstance(budget["packages"], dict):
 	fail_malformed("packages must be an object mapping each package to its budget seconds (got "
 		+ type(budget["packages"]).__name__ + ")")
 packages = budget.get("packages", {})
 
-# Every package VALUE must be a number, not only the map's type (issue #4618).
-# A string crashes the ratio below with a TypeError traceback, a bool IS an int
-# in Python (True/False) so the ratio is computed against 1 or 0, and a null
-# reads as "no budget entry" — a WARN that leaves the package silently
-# unenforced. Route each through the malformed-config path above, which fails in
-# every mode naming the entry. The loop runs only for an object `packages`; a
-# non-object TOP-level budget never reaches here and keeps its traceback (#4609).
+# Every package VALUE must be a usable number, not only the map's type (issue
+# #4618). A string crashes the ratio below with a TypeError traceback, a bool IS
+# an int in Python (True/False) so the ratio is computed against 1 or 0, and a
+# null reads as "no budget entry" — a WARN that leaves the package silently
+# unenforced. A non-finite value is worse than either: m/inf reads 0, so the
+# package prints OK and the run exits 0 with the package silently disarmed, and a
+# 400-digit integer tracebacks the arithmetic (issue #4622). Route each through
+# the malformed-config path above, which fails in every mode naming the entry.
+# The loop runs only for an object `packages` (the top-level guard above).
 for pkg, budget_secs in packages.items():
-	if isinstance(budget_secs, bool) or not isinstance(budget_secs, (int, float)):
-		fail_malformed("packages[" + json.dumps(pkg) + "] must be a number of seconds (got "
-			+ type(budget_secs).__name__ + ")")
+	problem = seconds_error(budget_secs)
+	if problem:
+		fail_malformed("packages[" + json.dumps(pkg) + "] must be a number of seconds (" + problem + ")")
 
+# The flat ceiling is read with budget.get, so a present null cannot be told from
+# an absent key — test the KEY, as `packages` and the class map do. A string,
+# null, list or object crashes the `secs > ceiling` comparison with a TypeError
+# traceback; a bool IS an int so `true` silently becomes a 1-second ceiling; and a
+# non-finite value silently disarms the ceiling instead of bounding it. Each is a
+# broken config reached the same way as the package values above (issue #4622),
+# so each takes the malformed-config path and fails in every mode naming the field.
+if "perTestCeilingSeconds" in budget:
+	problem = seconds_error(budget["perTestCeilingSeconds"])
+	if problem:
+		fail_malformed("perTestCeilingSeconds must be a number of seconds (" + problem + ")")
 ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
 
 # The per-class ceilings (#4601, ruling 2026-10-13). A test whose name is listed
@@ -443,25 +485,38 @@ def raise_worst(level):
 	if order[level] > order[worst]:
 		worst = level
 
-# A class must be an object naming a numeric (non-bool) ceiling and a non-empty
-# list of string test names. A hand-edited map that gets any of that wrong would
-# otherwise mis-enforce — a None or bool ceiling, a non-object spec, or a
-# `tests` string that iterates as characters and matches nothing — instead of
-# saying what is wrong: it FAILs naming the class and drops the class, leaving
-# its tests on the flat warn-only default below rather than crashing the check.
-# (The map itself being a non-object is the harder error above, handled before
-# any class is read.)
+# A class must be an object naming a usable (non-bool) ceiling and a non-empty
+# list of string test names. The ceiling goes through the shared seconds_error
+# definition and the malformed-config path above — every mode, naming the class
+# and the field — like the package values and the flat perTestCeilingSeconds
+# (#4629). The remaining faults (a non-object spec, or a `tests` string that
+# iterates as characters and matches nothing) FAIL naming the class and drop the
+# class, leaving its members on the flat warn-only default below rather than
+# crashing the check. (The map itself being a non-object is the harder error
+# above, handled before any class is read.)
 valid_classes = {}
 for class_name, spec in ceiling_classes.items():
-	if (not isinstance(spec, dict)
-			or isinstance(spec.get("ceilingSeconds"), bool)
-			or not isinstance(spec.get("ceilingSeconds"), (int, float))
-			or not math.isfinite(spec.get("ceilingSeconds"))
-			or not isinstance(spec.get("tests"), list)
+	bad_spec = (f"FAIL  ceiling class '{class_name}' must be an object with a "
+		f"non-empty tests list of strings (testing-budget.json perTestCeilingClasses)")
+	if not isinstance(spec, dict):
+		lines.append(bad_spec)
+		raise_worst("fail")
+		continue
+	# seconds_error is the one definition of "cannot serve as seconds", and it is
+	# overflow-safe: a JSON integer too large to convert to a float used to reach
+	# math.isfinite first and raise OverflowError — a traceback in every mode, from
+	# a shape the strict-only FAIL line below would only have downgraded (#4629).
+	# Routing its problem through fail_malformed names the class and the field in
+	# every mode. A huge but FINITE ceiling stays accepted: a ceiling is an upper
+	# bound, so a very large finite value simply disables that class.
+	problem = seconds_error(spec.get("ceilingSeconds"))
+	if problem:
+		fail_malformed("perTestCeilingClasses[" + json.dumps(class_name)
+			+ "].ceilingSeconds must be a number of seconds (" + problem + ")")
+	if (not isinstance(spec.get("tests"), list)
 			or not spec.get("tests")
 			or not all(isinstance(t, str) for t in spec.get("tests"))):
-		lines.append(f"FAIL  ceiling class '{class_name}' needs a numeric ceilingSeconds and a "
-			f"non-empty tests list of strings (testing-budget.json perTestCeilingClasses)")
+		lines.append(bad_spec)
 		raise_worst("fail")
 		continue
 	valid_classes[class_name] = spec
