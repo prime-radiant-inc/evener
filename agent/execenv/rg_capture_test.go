@@ -158,7 +158,7 @@ func TestRgCaptureIsChunkBoundaryInvariant(t *testing.T) {
 // viewsEqual compares two capture views, whose tail makes them incomparable
 // with ==.
 func viewsEqual(a, b rgCaptureView) bool {
-	return a.head == b.head && a.omitted == b.omitted && slices.Equal(a.tail, b.tail)
+	return a.head == b.head && a.retained == b.retained && a.omitted == b.omitted && slices.Equal(a.tail, b.tail)
 }
 
 // TestRgCaptureHoldsAtMostItsBound is the capture's accounting ceiling: the
@@ -182,12 +182,9 @@ func TestRgCaptureHoldsAtMostItsBound(t *testing.T) {
 		t.Fatal("a stream far past the cap did not trip it")
 	}
 	view := c.view("/base", false)
-	retained := len(view.head)
-	for _, slot := range view.tail {
-		retained += len(slot)
-	}
-	if view.omitted != c.total-retained {
-		t.Fatalf("the omitted count %d does not account for the %d stream bytes less %d retained", view.omitted, c.total, retained)
+	if view.omitted != c.total-view.retained {
+		t.Fatalf("the omitted count %d does not account for the %d stream bytes less %d retained",
+			view.omitted, c.total, view.retained)
 	}
 	if view.omitted <= 0 {
 		t.Fatalf("a stream past the cap reported no omission: %+v", view)
@@ -299,6 +296,144 @@ func TestGrepRgCancellationIsAnErrorNotAnEmptySuccess(t *testing.T) {
 	}
 }
 
+// TestRgCaptureAccountsRetainedSourceBytes is MEDIUM 1: a capped slot carries
+// the synthetic omission text, whose bytes are not stream bytes. Counting it as
+// retained understates the omission, and with a tail record past the slot cap
+// the count goes NEGATIVE, which suppresses the disclosure entirely.
+func TestRgCaptureAccountsRetainedSourceBytes(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	short := func(name string) string { return dir + "/" + name + "\x001:n\n" }
+	// Each record is one byte past the tail slot cap, so its slot is a whole
+	// slot plus the omission text — more bytes than the record it stands for.
+	capped := func(name string) string {
+		head := dir + "/" + name + "\x001:needle"
+		return head + strings.Repeat("n", rgTailSlotBytes+1-len(head)-1) + "\n"
+	}
+	first := short("a.txt")
+	stream := []byte(first + short("b.txt"))
+	for i := 1; i <= rgTailRecords; i++ {
+		stream = append(stream, capped(fmt.Sprintf("c%d.txt", i))...)
+	}
+	// The cap holds exactly the first record, so the only stream bytes the view
+	// does not retain are the short record the window's own fragment takes with
+	// it: twenty-odd bytes, against five slots' worth of omission text.
+	c := newRgCapture(len(first))
+	if _, err := c.Write(stream); err != nil {
+		t.Fatal(err)
+	}
+	view := c.view(dir, false)
+	if view.omitted != c.total-view.retained {
+		t.Fatalf("the omitted count %d does not account for the %d stream bytes less %d retained",
+			view.omitted, c.total, view.retained)
+	}
+	if view.omitted <= 0 {
+		t.Fatalf("a stream that dropped records reported %d omitted bytes (%d slots retained of source records)",
+			view.omitted, len(view.tail))
+	}
+	if !strings.Contains(rgTailNote(view), "bytes omitted") {
+		t.Fatalf("the disclosure note states no omission: %q", rgTailNote(view))
+	}
+}
+
+// TestGrepRgDisclosesWhenTheTailRecordIsCapped is MEDIUM 1's user-visible half:
+// GrepSkipping discloses only when the omitted count is positive, so the
+// negative count above made a search that dropped records report itself as
+// complete — the exact defect class this PR exists to close.
+func TestGrepRgDisclosesWhenTheTailRecordIsCapped(t *testing.T) {
+	// Not parallel: shrinks the package-wide byte budget.
+	root := t.TempDir()
+	file := filepath.Join(root, "big.txt")
+	if err := os.WriteFile(file, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A single named file's records carry no path, so a record can be tiny. The
+	// cap holds two bytes of the first one, and what it really drops — six bytes
+	// of that record — is far less than the omission text the five capped slots
+	// of the tail add.
+	stubGrepRetainedBytes(t, 2)
+	record := "1:x\n"
+	huge := "1:" + strings.Repeat("n", rgTailSlotBytes-2) + "\n"
+	stream := record
+	for range rgTailRecords {
+		stream += huge
+	}
+	env := rgFakeRgEnv(t, root, rgStreamFixture(t, t.TempDir(), "rg", []byte(stream)))
+
+	got, err := env.Grep(context.Background(), "x", file, "", false, 100, "content")
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	if !strings.Contains(got, "retained-output cap") {
+		t.Fatalf("a truncated search disclosed nothing: %q", got)
+	}
+	if !strings.Contains(got, "the stream's last 5 records") {
+		t.Fatalf("the tail lost the capped records: %q", got)
+	}
+}
+
+// TestRgCaptureTailResynchronizesInFilesOnlyMode is MEDIUM 2's first case: the
+// window opens wherever the cap tripped, and a files-only record is a path plus
+// its NUL with no newline. Walking from the window's first byte finds no
+// delimiter at all, so every tail record the design promises was dropped.
+func TestRgCaptureTailResynchronizesInFilesOnlyMode(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	var stream bytes.Buffer
+	for i := 1; i <= 40; i++ {
+		fmt.Fprintf(&stream, "%s/f%02d.txt\x00", dir, i)
+	}
+	// The cap lands inside the second pathname, so the window opens mid-path.
+	c := newRgCapture(len(dir) + len("/f01.txt\x00") + 3)
+	if _, err := c.Write(stream.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	view := c.view(dir, true)
+	if len(view.tail) != rgTailRecords {
+		t.Fatalf("a files-only window kept %d tail records, want %d: %q", len(view.tail), rgTailRecords, view.tail)
+	}
+	for _, slot := range view.tail {
+		if !strings.HasPrefix(slot, dir+"/") || !strings.HasSuffix(slot, "\x00") {
+			t.Fatalf("a pathname fragment was presented as a complete record: %q", slot)
+		}
+	}
+	if last := view.tail[len(view.tail)-1]; last != dir+"/f40.txt\x00" {
+		t.Fatalf("the tail does not end at the stream's last record: %q", last)
+	}
+}
+
+// TestRgCaptureTailDropsANewlineBearingPathFragment is MEDIUM 2's second case: a
+// window that opens inside a pathname holding a newline, where the embedded
+// newline is not a record boundary. The fragment must not be presented as a
+// record, and the complete trailing records must survive.
+func TestRgCaptureTailDropsANewlineBearingPathFragment(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	var stream bytes.Buffer
+	stream.WriteString(dir + "/we\nird.txt\x002:second\n")
+	last := ""
+	for i := 1; i <= 3; i++ {
+		fmt.Fprintf(&stream, "%s/f%02d.txt\x001:first\n", dir, i)
+		last = fmt.Sprintf("%s/f%02d.txt\x001:first\n", dir, i)
+	}
+	// The cap lands inside the newline-bearing pathname, BEFORE its newline, so
+	// the window opens with bytes that do not start a path and the embedded
+	// newline is the first one the walk sees.
+	c := newRgCapture(len(dir) + len("/we"))
+	if _, err := c.Write(stream.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	view := c.view(dir, false)
+	for _, slot := range view.tail {
+		if !strings.HasPrefix(slot, dir+"/") {
+			t.Fatalf("a pathname fragment was presented as a complete record: %q", slot)
+		}
+	}
+	if len(view.tail) == 0 || view.tail[len(view.tail)-1] != last {
+		t.Fatalf("the complete trailing records did not survive: %q", view.tail)
+	}
+}
+
 // FuzzRgCapture drives the capture with arbitrary bytes: whatever the stream and
 // the cap, the object stays inside its bound, its view accounts for every byte
 // it did not keep, and chunking the writes cannot change the view.
@@ -318,12 +453,9 @@ func FuzzRgCapture(f *testing.F) {
 		if held := whole.heldBytes(); held > capBytes+rgTailWindowBytes {
 			t.Fatalf("capture held %d bytes, past its %d-byte bound", held, capBytes+rgTailWindowBytes)
 		}
-		retained := len(view.head)
-		for _, slot := range view.tail {
-			retained += len(slot)
-		}
-		if view.omitted != whole.total-retained {
-			t.Fatalf("omitted %d does not account for %d stream bytes less %d retained", view.omitted, whole.total, retained)
+		if view.omitted != whole.total-view.retained {
+			t.Fatalf("omitted %d does not account for %d stream bytes less %d retained",
+				view.omitted, whole.total, view.retained)
 		}
 		if view.omitted < 0 {
 			t.Fatalf("negative omission %d", view.omitted)

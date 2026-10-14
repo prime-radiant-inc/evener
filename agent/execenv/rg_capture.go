@@ -91,12 +91,13 @@ func (c *rgCapture) diagnostics() string {
 }
 
 // rgCaptureView is what a completed search reads from its capture: the head cut
-// back to its last complete record, the stream's last complete records, and how
-// many bytes neither of them holds.
+// back to its last complete record, the stream's last complete records, the
+// SOURCE bytes those two hold, and how many stream bytes neither holds.
 type rgCaptureView struct {
-	head    string
-	tail    []string
-	omitted int
+	head     string
+	tail     []string
+	retained int
+	omitted  int
 }
 
 // view cuts the capture into the bytes a search can present, using the record
@@ -109,12 +110,14 @@ func (c *rgCapture) view(dir string, filesOnly bool) rgCaptureView {
 	if c.over {
 		head = head[:lastRecordEnd(head, prefix, filesOnly)]
 	}
-	tail := tailRecords(c.window, prefix, filesOnly)
-	retained := len(head)
-	for _, slot := range tail {
-		retained += len(slot)
-	}
-	return rgCaptureView{head: string(head), tail: tail, omitted: c.total - retained}
+	tail, tailBytes := tailRecords(c.window, prefix, filesOnly)
+	// A capped slot carries synthetic omission text, which is not stream bytes:
+	// counting the slots instead of their records understates the omission, and
+	// once the slots' text outweighs what was really dropped the count goes
+	// NEGATIVE — which the caller reads as "nothing was left out" and suppresses
+	// the disclosure entirely.
+	retained := len(head) + tailBytes
+	return rgCaptureView{head: string(head), tail: tail, retained: retained, omitted: c.total - retained}
 }
 
 // rgRecordEnds is the end offset of every complete record in b, in the framing
@@ -164,25 +167,60 @@ func lastRecordEnd(b, prefix []byte, filesOnly bool) int {
 }
 
 // tailRecords is the last rgTailRecords complete records in b, in stream order,
-// each bounded by capTailSlot. The bytes before b's first end are a fragment of a
-// record that started before the window and are left out.
-func tailRecords(b, prefix []byte, filesOnly bool) []string {
+// each bounded by capTailSlot, with the SOURCE bytes those records occupy. b
+// opens wherever the cap tripped, inside a record, so it is resynchronized first:
+// the bytes before its first genuine record boundary are a fragment of a record
+// that started earlier and are left out.
+func tailRecords(b, prefix []byte, filesOnly bool) ([]string, int) {
+	b = b[resync(b, filesOnly):]
 	ends := rgRecordEnds(b, prefix, filesOnly)
 	if len(ends) == 0 {
-		return nil
+		return nil, 0
 	}
 	var recs [][]byte
-	for i := 1; i < len(ends); i++ {
-		recs = append(recs, b[ends[i-1]:ends[i]])
+	for i, end := range ends {
+		start := 0
+		if i > 0 {
+			start = ends[i-1]
+		}
+		recs = append(recs, b[start:end])
 	}
 	if len(recs) > rgTailRecords {
 		recs = recs[len(recs)-rgTailRecords:]
 	}
 	out := make([]string, 0, len(recs))
+	source := 0
 	for _, rec := range recs {
+		source += len(rec)
 		out = append(out, capTailSlot(rec))
 	}
-	return out
+	return out, source
+}
+
+// resync drops the bytes of a window that opens inside a record, returning the
+// offset of the first complete record for the framing. A window's start is
+// wherever the cap tripped, so its leading bytes are a record's tail: a NUL ends
+// the path they fell inside (and, when records carry a payload line, the newline
+// after that NUL ends that record), while a stream framing no paths at all ends a
+// pathless line at its newline. Walking from the window's first byte instead
+// reads a pathname's tail as a pathless line — dropping every tail record in
+// files_with_matches mode, whose records have no newline at all — and reads a
+// newline inside a pathname as a record boundary, presenting a pathname fragment
+// as a complete record.
+func resync(b []byte, filesOnly bool) int {
+	if nul := bytes.IndexByte(b, 0); nul >= 0 {
+		if filesOnly {
+			return nul + 1
+		}
+		if nl := bytes.IndexByte(b[nul+1:], '\n'); nl >= 0 {
+			return nul + nl + 2
+		}
+		return len(b) // no record ends inside the window
+	}
+	if nl := bytes.IndexByte(b, '\n'); nl >= 0 {
+		return nl + 1
+	}
+	return len(b)
 }
 
 // capTailSlot bounds one tail record: past the slot cap it keeps the record's
