@@ -129,11 +129,12 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	newWD := next.WorkingDirectory()
 	ei := s.snapshotEnvironmentInfo(next)
 	if !s.cfg.testOnly.skipGitSnapshot {
-		if inRepo, branch, mod, untracked, commits := snapshotGit(refreshCtx, next, newWD); inRepo {
+		if inRepo, branch, mod, untracked, commits, statusKnown := snapshotGit(refreshCtx, next, newWD); inRepo {
 			ei.IsGitRepo = true
 			ei.GitBranch = branch
 			ei.GitModifiedFiles = mod
 			ei.GitUntrackedFiles = untracked
+			ei.GitStatusUnknown = !statusKnown
 			ei.GitRecentCommitTitles = commits
 			ei.GitOriginURL = gitOriginURL(refreshCtx, next, newWD)
 		}

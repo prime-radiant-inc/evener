@@ -114,16 +114,16 @@ func snapshotGitBranch(env execenv.ExecutionEnvironment, cwd string) string {
 // failed or timed-out exec is reported as not-in-a-repo — indistinguishable
 // from a genuine non-repo — so a caller that must tell the two apart has to
 // probe structurally rather than read IsGitRepo (see #4138).
-func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string) {
+func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string, statusKnown bool) {
 	if env == nil {
-		return false, "", 0, 0, nil
+		return false, "", 0, 0, nil, false
 	}
 	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
 		cwd = env.WorkingDirectory()
 	}
 	if !hasGitMetadataAncestor(cwd) {
-		return false, "", 0, 0, nil
+		return false, "", 0, 0, nil, false
 	}
 
 	run := func(args ...string) (execenv.ExecResult, error) {
@@ -134,7 +134,7 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 
 	inside, err := run("rev-parse", "--is-inside-work-tree")
 	if err != nil || inside.ExitCode != 0 || strings.TrimSpace(inside.Stdout) != "true" {
-		return false, "", 0, 0, nil
+		return false, "", 0, 0, nil, false
 	}
 	inRepo = true
 
@@ -147,6 +147,7 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	// a failed exec above, a truncated one yields no counts rather than a wrong
 	// one (#4568 round 2).
 	if st, err := run("status", "--porcelain"); err == nil && st.ExitCode == 0 && st.Truncated() == nil {
+		statusKnown = true
 		for line := range strings.SplitSeq(strings.ReplaceAll(st.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -177,7 +178,7 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 		}
 	}
 
-	return inRepo, branch, modifiedFiles, untrackedFiles, recentCommitTitles
+	return inRepo, branch, modifiedFiles, untrackedFiles, recentCommitTitles, statusKnown
 }
 
 func hasGitMetadataAncestor(cwd string) bool {
