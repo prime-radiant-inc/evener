@@ -94,6 +94,66 @@ function row(historyKey: string, entry: number) {
   };
 }
 
+it.each([
+  ["count", "request"],
+  ["count", "completion"],
+  ["deleteHistory", "request"],
+  ["deleteHistory", "completion"],
+] as const)("bounds %s stalled %s and retires its connection", async (operation, event) => {
+  const { cache, factory } = newCache();
+  await cache.commitBatch({ historyKey: "seed", clearEpoch: 0, items: [row("seed", 1)] });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const closed = vi.spyOn(IDBDatabase.prototype, "close");
+  const aborted = vi.spyOn(IDBTransaction.prototype, "abort");
+  const opened = vi.spyOn(factory, "open");
+  let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
+  if (event === "completion") {
+    const transact = IDBDatabase.prototype.transaction;
+    vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (this: IDBDatabase, ...args) {
+      const transaction = transact.apply(this, args);
+      if (!hold) hold = holdIndexedDBEvent(transaction, "complete");
+      return transaction;
+    });
+  } else if (operation === "count") {
+    const getAll = IDBObjectStore.prototype.getAll;
+    vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
+      const request = getAll.apply(this, args);
+      if (!hold) hold = holdIndexedDBEvent(request, "success");
+      return request;
+    });
+  } else {
+    const get = IDBObjectStore.prototype.get;
+    vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (this: IDBObjectStore, ...args) {
+      const request = get.apply(this, args);
+      if (!hold) hold = holdIndexedDBEvent(request, "success");
+      return request;
+    });
+  }
+  let settled = false;
+  const pending = (operation === "count" ? cache.count() : cache.deleteHistory("seed")).then((value) => {
+    settled = true;
+    return value;
+  });
+  try {
+    await settleRealTasks(() => hold !== undefined);
+    expect(hold).toBeDefined();
+    await hold!.reached;
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toBe(true);
+    expect(await pending).toBe(operation === "count" ? undefined : false);
+    expect(aborted).toHaveBeenCalled();
+    expect(closed).toHaveBeenCalled();
+    hold!.release();
+    await cache.count();
+    expect(opened).toHaveBeenCalledTimes(1);
+  } finally {
+    hold?.release();
+    await pending;
+  }
+});
+
 it.each(["request", "completion"] as const)(
   "bounds a held write %s event, releases admission and fences late success",
   async (heldEvent) => {

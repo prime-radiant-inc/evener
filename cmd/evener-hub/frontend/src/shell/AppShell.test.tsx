@@ -2484,18 +2484,127 @@ test("a late boot connect result cannot overwrite automatic reconnect metadata",
   expect(connectionStore.getState().features).toEqual(reconnected.features);
 });
 
-test("closes the client it constructed itself on unmount", () => {
+test("closes the client it constructed itself on unmount", async () => {
+  // Supersession, Jesse 2026-10-14: the old same-tick close assertion pinned
+  // the defect. Require the disposal's final read to settle before one close.
+  resetThreadsStoreForTests();
+  const cache = new SessionEntryCache({
+    indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
+    databaseName: `appshell-owned-final-${crypto.randomUUID()}`,
+  });
+  setProductionEntryCacheForTests(cache);
+  await cache.getClearEpoch();
+  const finalRead = deferred<ReturnType<typeof currentThreadRead>>();
+  const issued = deferred<void>();
+  const transport = backgroundReadyClient();
+  await transport.connect();
+  expect(transport.initializeResult?.navigation?.generationId).toBe("generation_test");
+  let final = false;
+  transport.on("thread/read", (params) => {
+    if (!final) return currentThreadRead(params);
+    issued.resolve();
+    return finalRead.promise.then((response) => ({ ...response, requestGeneration: params.requestGeneration }));
+  });
+  // Only the transport is scripted. Discovery, leases, repository retirement,
+  // cache writes and background disposal are the production implementations.
+  const state = vi.spyOn(AppwireClient.prototype, "state", "get").mockReturnValue("ready");
+  const initialize = vi
+    .spyOn(AppwireClient.prototype, "initializeResult", "get")
+    .mockReturnValue(transport.initializeResult);
+  const ready = vi.spyOn(AppwireClient.prototype, "onReady").mockImplementation(transport.onReady.bind(transport));
+  const changes = vi
+    .spyOn(AppwireClient.prototype, "onStateChange")
+    .mockImplementation(transport.onStateChange.bind(transport));
+  const notifications = vi
+    .spyOn(AppwireClient.prototype, "onNotification")
+    .mockImplementation(transport.onNotification.bind(transport));
+  const request = vi.spyOn(AppwireClient.prototype, "request").mockImplementation(transport.request.bind(transport));
   const closeSpy = vi.spyOn(AppwireClient.prototype, "close");
-  // No client prop: AppShell constructs its own real AppwireClient (never
-  // connected under MODE==="test" - see AppShell.tsx) and must own tearing
-  // it down again on unmount, the same one-client-per-window invariant a
-  // real navigation away from the app would need.
+  const owners = trackBackgroundOwners();
   const { unmount } = render(<AppShell />);
+  const wired = connectionStore.getState().client;
+  try {
+    await act(async () => {
+      await transport.connect();
+    });
+    // Owned connect is deliberately disabled in test mode. Initialize the
+    // real navigation binding with the scripted transport's negotiated v3.
+    act(() => {
+      resetNavigationStoreForTests();
+      initNavigation(wired!, { version: 1, generationId: "generation_test", sequence: 0, readVersions: [3] });
+    });
+    await waitFor(() => expect(threadsModule.productionEntryTranscriptForTests("local:s1").baseline).toBeDefined());
+    await owners.records[0]!.owner.settled();
+    final = true;
+    const boundary = request.mock.calls.length;
+    unmount();
+    await act(async () => {
+      await issued.promise;
+    });
+    const finalIndex = request.mock.calls.findIndex(([method], index) => index >= boundary && method === "thread/read");
+    expect(finalIndex).toBeGreaterThanOrEqual(boundary);
+    expect(request.mock.contexts[finalIndex]).toBe(wired);
+    expect(request.mock.calls[finalIndex]?.[1]).toMatchObject({ ref: "local:s1", includeTurns: true });
+    expect(closeSpy).not.toHaveBeenCalled();
+    await act(async () => {
+      finalRead.resolve(currentThreadRead({ ref: "local:s1" }));
+      await owners.joinDisposals();
+    });
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(closeSpy.mock.contexts[0]).toBe(wired);
+  } finally {
+    finalRead.resolve(currentThreadRead({ ref: "local:s1" }));
+    unmount();
+    await owners.joinDisposals();
+    owners.restore();
+    request.mockRestore();
+    closeSpy.mockRestore();
+    initialize.mockRestore();
+    state.mockRestore();
+    ready.mockRestore();
+    changes.mockRestore();
+    notifications.mockRestore();
+    resetThreadsStoreForTests();
+    cache.close();
+  }
+});
 
-  unmount();
-
-  expect(closeSpy).toHaveBeenCalledTimes(1);
-  closeSpy.mockRestore();
+test.each([false, true])("bounds stuck disposal without closing injected client=%s", async (injected) => {
+  const stuck = deferred<void>();
+  const start = vi.spyOn(backgroundTranscriptsModule, "startBackgroundTranscripts").mockReturnValue({
+    settled: async () => {},
+    dispose: () => stuck.promise,
+  });
+  const close = vi.spyOn(AppwireClient.prototype, "close");
+  const client = new FakeClient("ready");
+  const injectedClose = vi.spyOn(client, "close");
+  const view = render(<AppShell client={injected ? client : undefined} />);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    view.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(29_999);
+    });
+    expect(close).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(close).toHaveBeenCalledTimes(injected ? 0 : 1);
+    expect(injectedClose).not.toHaveBeenCalled();
+    await act(async () => {
+      stuck.resolve();
+      await stuck.promise;
+    });
+    expect(close).toHaveBeenCalledTimes(injected ? 0 : 1);
+    expect(injectedClose).not.toHaveBeenCalled();
+  } finally {
+    stuck.resolve();
+    vi.useRealTimers();
+    start.mockRestore();
+    close.mockRestore();
+    injectedClose.mockRestore();
+  }
 });
 
 // --- routing -> workspace glue (this task) ---------------------------
