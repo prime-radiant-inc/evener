@@ -235,6 +235,42 @@ it("rejects an older replacement from another cache before deleting newer author
   });
 });
 
+it("fences delayed additive rows in replaced scopes but admits older pages outside them", async () => {
+  const fixture = createEntryCacheFixture();
+  caches.push(fixture.cache);
+  databases.push({ factory: fixture.indexedDB, name: fixture.name });
+  const sibling = new SessionEntryCache({
+    databaseName: fixture.name,
+    indexedDB: fixture.indexedDB,
+    keyRange: IDBKeyRange,
+  });
+  caches.push(sibling);
+  const authority = { bootGeneration: "1", epoch: 0, incarnation: "I", representedSnapshot: 10 };
+  const row = (key: string, entry: number) => ({
+    historyKey: "scope",
+    transcriptKey: key,
+    position: { entry, item: 0 },
+    version: 1,
+    item: { id: key, transcriptKey: key, type: "agentMessage", turnId: "turn", text: key },
+  });
+  const delayed = { historyKey: "scope", clearEpoch: 0, sourceAuthority: authority, items: [row("removed", 5)] };
+  expect((await sibling.commitBatch(delayed)).outcome).toBe("committed");
+  expect(
+    (
+      await fixture.cache.commitBatch({
+        ...delayed,
+        items: [],
+        replacement: { from: { entry: 4, item: 0 } },
+        sourceAuthority: { ...authority, representedSnapshot: 11 },
+      })
+    ).outcome,
+  ).toBe("committed");
+  expect(await sibling.commitBatch(delayed)).toEqual({ outcome: "refused", reason: "source-authority" });
+  expect(await fixture.cache.getLatest("scope", 40)).toEqual([]);
+  expect((await sibling.commitBatch({ ...delayed, items: [row("older-page", 2)] })).outcome).toBe("committed");
+  expect((await fixture.cache.getLatest("scope", 40)).map((item) => item.transcriptKey)).toEqual(["older-page"]);
+});
+
 it("commits repository-generated replacement after a daemon restart", async () => {
   const fixture = createEntryCacheFixture();
   caches.push(fixture.cache);

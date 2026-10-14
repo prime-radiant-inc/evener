@@ -471,9 +471,23 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // ever acts on `owned`, never the interface-typed `client`.
     return () => {
       // Stop and release this owner's claims before the shared client is torn
-      // down; dispose never closes the client itself.
-      void backgroundTranscripts.dispose();
-      owned?.close();
+      // down; dispose never closes the client itself. Match the repository's
+      // 30-second final-retirement bound even if a disposal stops settling.
+      const disposal = backgroundTranscripts.dispose();
+      if (!owned) {
+        void disposal.catch(() => {});
+        return;
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 30_000);
+      });
+      void Promise.race([disposal, deadline])
+        .catch(() => {})
+        .then(() => {
+          clearTimeout(timer);
+          owned.close();
+        });
     };
   }, [client, owned]);
 

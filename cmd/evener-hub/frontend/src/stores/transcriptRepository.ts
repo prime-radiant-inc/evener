@@ -11,6 +11,7 @@ import {
   hydrateThread,
   type ItemModel,
   invalidateHistory,
+  itemTextPresence,
   mergeOlderItemPage,
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
@@ -35,6 +36,39 @@ import {
 } from "./sessionCacheSchema";
 import type { EntryCoverageInput, SessionEntryCache } from "./sessionEntryCache";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
+
+// Local bodies can fill omissions at the same version, but cannot overwrite
+// explicit values (including empty ones). Keep normal version/identity rules;
+// only when the held item wins at equal version, use it as the authoritative
+// incoming payload over the cached fallback.
+function mergeLocalItem(held: ItemModel | undefined, incoming: ItemModel): ItemModel {
+  const merged = mergeTranscriptItemVersioned(held, held?.version, incoming, incoming.version ?? 0);
+  if (held && merged === held && held.version === incoming.version) {
+    const enriched = mergeTranscriptItemVersioned(incoming, undefined, held, held.version ?? 0);
+    // An omission-tolerant merge keeps the source's omission marker even when
+    // it carries fallback text. That body is still usable by a local reader.
+    return itemTextPresence(held) === "omitted" && held.text === "" && incoming.text !== ""
+      ? { ...enriched, text: incoming.text }
+      : enriched;
+  }
+  return merged;
+}
+
+function restoreReaderWindow(seed: ThreadModel, turns: TurnModel[]): ThreadModel {
+  if (!seed.history) return mergeTranscriptReaderWindow(seed, turns);
+  const local = new Map(turns.flatMap((turn) => turn.items).map((item) => [item.transcriptKey ?? item.id, item]));
+  const history = {
+    ...seed.history,
+    turns: seed.history.turns.map((turn) => ({
+      ...turn,
+      items: turn.items.map((held) => {
+        const incoming = local.get(held.transcriptKey ?? held.id);
+        return incoming ? mergeLocalItem(held, incoming) : held;
+      }),
+    })),
+  };
+  return mergeTranscriptReaderWindow({ ...seed, history }, turns);
+}
 
 /**
  * A nonce unique to this browser lifetime (this page's module evaluation). The
@@ -1201,7 +1235,12 @@ export class TranscriptRepository {
           const rowsByKey = new Map<string, TranscriptItemRow<unknown>>();
           for (const row of [...cut.cacheRows, ...cut.pendingRows]) {
             const held = rowsByKey.get(row.transcriptKey);
-            if (!held || held.version <= row.version) rowsByKey.set(row.transcriptKey, row);
+            const incomingItem = decodeTranscriptItem(row.item as CachedSessionItem);
+            const heldItem = held && decodeTranscriptItem(held.item as CachedSessionItem);
+            if (!incomingItem) continue;
+            const item = mergeLocalItem(heldItem, incomingItem);
+            const winner = held && held.version >= row.version ? held : row;
+            rowsByKey.set(row.transcriptKey, { ...winner, item: encodeTranscriptItem(item) });
           }
           const localRows = [...rowsByKey.values()].sort((left, right) =>
             comparePosition(left.position, right.position),
@@ -1888,7 +1927,7 @@ export class TranscriptRepository {
           .flatMap((turn) => turn.items)
           .find((candidate) => (candidate.transcriptKey ?? candidate.id) === key);
         const mergeBase = compact?.version === existing?.version ? compact : existing;
-        mergedItems.set(key, mergeTranscriptItemVersioned(mergeBase, mergeBase?.version, item, item.version ?? 0));
+        mergedItems.set(key, mergeLocalItem(mergeBase, item));
       }
       mergedTurn = {
         ...mergedTurn,
@@ -1901,11 +1940,11 @@ export class TranscriptRepository {
       const turn = turns.get(turnId);
       return turn ? [{ ...turn, items }] : [];
     });
-    return mergeTranscriptReaderWindow(restored, loadedTurns);
+    return restoreReaderWindow(restored, loadedTurns);
   }
 
   #mergeReaderModels(held: ThreadModel, incoming: ThreadModel): ThreadModel {
-    if (incoming.history) return mergeTranscriptReaderWindow(held, incoming.history.turns);
+    if (incoming.history) return restoreReaderWindow(held, incoming.history.turns);
     const turns = new Map(held.turns.map((turn) => [turn.id, turn]));
     for (const incomingTurn of incoming.turns) {
       const heldTurn = turns.get(incomingTurn.id);

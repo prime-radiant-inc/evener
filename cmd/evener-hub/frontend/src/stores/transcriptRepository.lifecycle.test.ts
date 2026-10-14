@@ -170,6 +170,38 @@ function repository(cache: SessionEntryCache, options: RepoOptions = {}) {
   });
 }
 
+test.each([undefined, ""])("opening during a held update preserves omitted payload, text=%j", async (text) => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  expect(repo.acceptRead(readOf([8]), { lifetime: 1, readId: "payload", boundary: "payload" })).toBe(true);
+  await repo.settled();
+  const held = holdNextEntryWrite(fixture.cache, "item-8");
+  const update = historyUpdate(8, 9, "", 9);
+  if (update.method !== "history/updated") throw new Error("wrong fixture");
+  update.params.items = [{ ...itemOf(8, 9), text }];
+  expect(repo.accept(update, { lifetime: 1 })).toBe(true);
+  await held.reached;
+  const reader = repo.attachReader();
+  try {
+    const opening = await reader.openLocal(40);
+    expect(
+      opening.model?.turns.flatMap((turn) => turn.items).find((item) => item.transcriptKey === "item-8"),
+    ).toMatchObject({ version: 9, text: text ?? "row-8" });
+    held.release();
+    await repo.settled();
+    const reopened = await reader.openLocal(40);
+    expect(
+      reopened.model?.turns.flatMap((turn) => turn.items).find((item) => item.transcriptKey === "item-8"),
+    ).toMatchObject({ version: 9, text: text ?? "row-8" });
+  } finally {
+    held.release();
+    await repo.settled();
+    reader.dispose();
+    repo.dispose();
+  }
+});
+
 test("suppression pauses previously queued background writes before cache dispatch", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);

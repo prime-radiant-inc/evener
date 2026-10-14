@@ -106,7 +106,22 @@ interface EntrySourceAuthority {
   representedSnapshot: number;
 }
 
-type EntryHistoryMeta = TranscriptHistoryMetaRow & { sourceAuthority?: EntrySourceAuthority };
+type EntryHistoryMeta = TranscriptHistoryMetaRow & {
+  sourceAuthority?: EntrySourceAuthority;
+  replacementScopes?: Array<{ from: ThreadItemPosition; authority: EntrySourceAuthority }>;
+};
+
+function advancesSourceAuthority(held: EntrySourceAuthority, incoming: EntrySourceAuthority | undefined): boolean {
+  if (!incoming) return false;
+  const bootAction = compareBootGeneration(held.bootGeneration, incoming.bootGeneration);
+  return (
+    incoming.incarnation !== held.incarnation ||
+    bootAction === "replace" ||
+    (bootAction === "apply" &&
+      (incoming.epoch > held.epoch ||
+        (incoming.epoch === held.epoch && incoming.representedSnapshot >= held.representedSnapshot)))
+  );
+}
 
 export interface EntryBatch {
   historyKey: string;
@@ -162,11 +177,13 @@ type SessionMetadataPayload = Pick<
   | "formatVersion"
   | "cachedHeader"
   | "sourceAuthority"
+  | "replacementScopes"
 >;
 
 function sessionMetadataPayload(row: EntryHistoryMeta | TranscriptSessionMetadata): SessionMetadataPayload | undefined {
   const { historyKey, requestedRefs, resolvedIdentity, savedAt, accessedAt, formatVersion, cachedHeader } = row;
   const sourceAuthority = (row as EntryHistoryMeta).sourceAuthority;
+  const replacementScopes = (row as EntryHistoryMeta).replacementScopes;
   if (
     requestedRefs === undefined &&
     resolvedIdentity === undefined &&
@@ -186,6 +203,7 @@ function sessionMetadataPayload(row: EntryHistoryMeta | TranscriptSessionMetadat
     formatVersion,
     cachedHeader,
     sourceAuthority,
+    replacementScopes,
   };
 }
 
@@ -631,12 +649,18 @@ export class SessionEntryCache {
   async count(): Promise<number | undefined> {
     try {
       const database = await this.#connection.open();
-      const transaction = database.transaction(ENTRY_META_STORE, "readonly");
-      const complete = transactionCompletion(transaction);
-      const entries = await requestResult(
-        transaction.objectStore(ENTRY_META_STORE).getAll() as IDBRequest<TranscriptHistoryMetaRow[]>,
+      const entries = await this.#runTransaction(
+        database,
+        [ENTRY_META_STORE],
+        "readonly",
+        async (transaction, complete) => {
+          const rows = await requestResult(
+            transaction.objectStore(ENTRY_META_STORE).getAll() as IDBRequest<TranscriptHistoryMetaRow[]>,
+          );
+          await complete;
+          return rows;
+        },
       );
-      await complete;
       const cutoff = this.#now() - this.#ttlMs;
       const sessions = new Set<string>();
       for (const entry of entries) {
@@ -716,23 +740,27 @@ export class SessionEntryCache {
         }
         const heldAuthority = historyMeta.sourceAuthority;
         const authority = batch.sourceAuthority;
-        const bootAction =
-          authority && heldAuthority
-            ? compareBootGeneration(heldAuthority.bootGeneration, authority.bootGeneration)
-            : undefined;
         const advancesAuthority =
-          authority !== undefined &&
-          (!heldAuthority ||
-            authority.incarnation !== heldAuthority.incarnation ||
-            bootAction === "replace" ||
-            (bootAction === "apply" &&
-              (authority.epoch > heldAuthority.epoch ||
-                (authority.epoch === heldAuthority.epoch &&
-                  authority.representedSnapshot >= heldAuthority.representedSnapshot))));
+          authority !== undefined && (!heldAuthority || advancesSourceAuthority(heldAuthority, authority));
         // Refuse only provably older sources. Restarts reset epochs, while
         // different incarnations and incomparable boot owners replace scope.
         // Missing authority still cannot displace an established fence.
         if (batch.replacement && heldAuthority && !advancesAuthority) {
+          transaction.abort();
+          await complete.catch(() => {});
+          return { outcome: "refused", reason: "source-authority" };
+        }
+        // Replacements remove absent keys too. A delayed additive batch cannot
+        // resurrect those keys, even after later additive writes raise the
+        // history-wide watermark. Preserve each surviving scope's own fence.
+        if (
+          !batch.replacement &&
+          historyMeta.replacementScopes?.some(
+            (scope) =>
+              !advancesSourceAuthority(scope.authority, authority) &&
+              batch.items.some((row) => comparePosition(row.position, scope.from) >= 0),
+          )
+        ) {
           transaction.abort();
           await complete.catch(() => {});
           return { outcome: "refused", reason: "source-authority" };
@@ -758,10 +786,21 @@ export class SessionEntryCache {
         // Additive predecessors may still merge rows, but must not lower the
         // high-water source boundary or its associated session metadata.
         const sessionMetadata = !heldAuthority || advancesAuthority ? batch.sessionMetadata : undefined;
+        const replacement = batch.replacement;
         const nextMeta = {
           ...historyMeta,
           ...sessionMetadata,
           ...(advancesAuthority ? { sourceAuthority: authority } : {}),
+          ...(replacement && authority
+            ? {
+                replacementScopes: [
+                  ...(historyMeta.replacementScopes ?? []).filter(
+                    (scope) => comparePosition(scope.from, replacement.from) < 0,
+                  ),
+                  { from: replacement.from, authority },
+                ],
+              }
+            : {}),
         };
         const previousPayload = sessionMetadataPayload(historyMeta);
         const nextPayload = sessionMetadataPayload(nextMeta);
@@ -859,7 +898,16 @@ export class SessionEntryCache {
     database: IDBDatabase,
     operation: (transaction: IDBTransaction, complete: Promise<void>) => Promise<EntryWriteOutcome>,
   ): Promise<EntryWriteOutcome> {
-    const transaction = database.transaction([...WRITE_STORES], "readwrite");
+    return this.#runTransaction(database, [...WRITE_STORES], "readwrite", operation);
+  }
+
+  async #runTransaction<T>(
+    database: IDBDatabase,
+    stores: string[],
+    mode: IDBTransactionMode,
+    operation: (transaction: IDBTransaction, complete: Promise<void>) => Promise<T>,
+  ): Promise<T> {
+    const transaction = database.transaction(stores, mode);
     const complete = transactionCompletion(transaction);
     void complete.catch(() => {});
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -867,7 +915,7 @@ export class SessionEntryCache {
       timer = setTimeout(() => {
         // Abort may be too late, and even a successful call may never deliver
         // its terminal event. Neither is proof of an observed rollback.
-        reject(new Error("session entry cache write timed out; durable outcome is unknown"));
+        reject(new Error("session entry cache transaction timed out; durable outcome is unknown"));
         tryAbortTransaction(transaction);
         this.#connection.retire(database);
       }, WRITE_WAIT_MS);
@@ -898,40 +946,31 @@ export class SessionEntryCache {
    * generation first. Returns true only when the transaction completed.
    */
   async deleteHistory(historyKey: string): Promise<boolean> {
-    let transaction: IDBTransaction | undefined;
-    let complete: Promise<void> | undefined;
     try {
       const database = await this.#connection.open();
-      transaction = database.transaction([...WRITE_STORES], "readwrite");
-      complete = transactionCompletion(transaction);
-      void complete.catch(() => {});
-      const metaStore = transaction.objectStore(ENTRY_META_STORE);
-      const historyMeta = await requestResult(
-        metaStore.get(historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
-      );
-      const aggregateMeta = await requestResult(
-        metaStore.get(AGGREGATE_META_KEY) as IDBRequest<TranscriptAggregateMetaRow | undefined>,
-      );
-      const removed = await this.#deleteHistoryRows(transaction, historyKey);
-      metaStore.put({
-        historyKey,
-        encodedBytes: 0,
-        itemCount: 0,
-        generation: (historyMeta?.generation ?? 0) + 1,
+      return await this.#runTransaction(database, [...WRITE_STORES], "readwrite", async (transaction, complete) => {
+        const metaStore = transaction.objectStore(ENTRY_META_STORE);
+        const historyMeta = await requestResult(
+          metaStore.get(historyKey) as IDBRequest<TranscriptHistoryMetaRow | undefined>,
+        );
+        const aggregateMeta = await requestResult(
+          metaStore.get(AGGREGATE_META_KEY) as IDBRequest<TranscriptAggregateMetaRow | undefined>,
+        );
+        const removed = await this.#deleteHistoryRows(transaction, historyKey);
+        metaStore.put({
+          historyKey,
+          encodedBytes: 0,
+          itemCount: 0,
+          generation: (historyMeta?.generation ?? 0) + 1,
+        });
+        metaStore.put({
+          historyKey: AGGREGATE_META_KEY,
+          encodedBytes: Math.max(0, (aggregateMeta?.encodedBytes ?? 0) - removed),
+        });
+        await complete;
+        return true;
       });
-      metaStore.put({
-        historyKey: AGGREGATE_META_KEY,
-        encodedBytes: Math.max(0, (aggregateMeta?.encodedBytes ?? 0) - removed),
-      });
-      await complete;
-      return true;
     } catch {
-      try {
-        transaction?.abort();
-      } catch {
-        // The transaction may already have finished.
-      }
-      await complete?.catch(() => {});
       return false;
     }
   }
@@ -1017,7 +1056,7 @@ export class SessionEntryCache {
           tryAbortTransaction(tx);
           this.#connection.retire(database);
           reject(new Error("session entry cache Clear transaction timed out"));
-        }, 10_000);
+        }, WRITE_WAIT_MS);
       });
       return await Promise.race([work, deadline]);
     } catch {

@@ -944,7 +944,9 @@ it.each([false, true])("authoritative durable replacement reopens without supers
   await complete;
   database.close();
   const metadata = await fixture.cache.getSessionMetadata(historyKey);
-  const bytes = [...raw.flat(), metadata].reduce(
+  // Account private durable fences as well as the public metadata projection.
+  // Keep the exact persisted-byte assertion, not a minimum or widened budget.
+  const bytes = [...raw.flat(), { ...metadata, replacementScopes: meta.replacementScopes }].reduce(
     (sum, value) => sum + new TextEncoder().encode(JSON.stringify(value)).byteLength,
     0,
   );
