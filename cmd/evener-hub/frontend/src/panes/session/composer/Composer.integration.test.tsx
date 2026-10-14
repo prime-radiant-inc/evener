@@ -2920,6 +2920,49 @@ test("a failed built-in invocation preserves the durable ordinary row", async ()
   });
 });
 
+test("a successful built-in command discards the durable recovery record it acted on", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const input = [{ type: "text" as const, text: "Recover this " }];
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_cmd_recovery",
+    method: "turn/start",
+    payload: { ref: "ref_cmd_recovery", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const source = createTestComposerSource("ref_cmd_recovery");
+  const fake = await mountComposer("ref_cmd_recovery", idleFocusThread("ref_cmd_recovery"), source);
+  await settleActivityDiscovery("ref_cmd_recovery");
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  let rpcCount = 0;
+  fake.on("thread/compact/start", async () => {
+    rpcCount += 1;
+    return {};
+  });
+
+  // The recovered message edited into the built-in, then executed.
+  replaceEditorText(editor, "/compact");
+  await act(async () => {
+    await source.whenSettled();
+  });
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(rpcCount).toBe(1));
+  // The durable recovery record must be consumed with the settlement: a
+  // built-in is not a resend, so nothing else discarded it, and a surviving
+  // record immediately restores itself into the cleared editor - resurfacing
+  // work the user just acted on for a later restoration or resend.
+  await waitFor(async () => {
+    expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
+  });
+  await waitFor(() => expect(editor.textContent).toBe(""));
+  expect(source.getSnapshot().activeRecoveryId).toBeNull();
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+});
+
 test("a built-in send whose RPC is held keeps a newer edit's durable value", async () => {
   await withBuiltinDurable(
     "ref_builtin_race",

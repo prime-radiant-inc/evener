@@ -154,7 +154,7 @@ export interface ComposerSourceState {
   recoveryWriteGuard(submitted: SubmittedDraft): RecoveryWriteGuard;
   acknowledgeRecoveryWrite(guard: RecoveryWriteGuard): RecoveryWriteGuard;
   reconcileMissingRecovery(submitted: SubmittedDraft, items: readonly PendingAttachment[]): Promise<boolean>;
-  settleDraft(submitted: SubmittedDraft): Promise<DraftSettlement>;
+  settleDraft(submitted: SubmittedDraft, opts?: { command?: boolean }): Promise<DraftSettlement>;
   dispose(): void;
 }
 
@@ -782,7 +782,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     operations.reset();
     return true;
   }
-  async function settleDraft(submitted: SubmittedDraft): Promise<DraftSettlement> {
+  async function settleDraft(submitted: SubmittedDraft, opts?: { command?: boolean }): Promise<DraftSettlement> {
     if (disposed) return { cleared: false, draftUnchanged: false, persistence: "committed" };
     const guard = submitted.settlementGuard;
     if (!guard) return { cleared: false, draftUnchanged: false, persistence: "committed" };
@@ -815,6 +815,32 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       const row = r && k ? await r.load(k) : null;
       if (capture && ownsSubmissionSnapshot(submitted, capture.items)) {
         if (row) draftToken = row.token;
+        if (opts?.command === true) {
+          // A built-in command's settlement is not a resend: nothing consumed
+          // the durable recovery record before this point, so clearing the
+          // editor while the record survived would resurface the just-acted-
+          // on work as a fresh restoration. Discard the record under this
+          // submission's own guard first: a refused discard (a competitor
+          // advanced the durable authority) keeps the record and its
+          // restoration path intact for its current owner.
+          await outbox
+            ?.discardRecovery(
+              guard.backing.recoveryId,
+              () => ownsOriginalLocalCapture(submitted) && submitted.stillOwnsEdit?.() === true,
+              recoveryWriteGuard(submitted),
+            )
+            .catch(() => undefined);
+          // The pristine-composer auto-restore reads the recovery projection,
+          // which still lists the discarded record until its next refresh -
+          // and this settlement's own clear is what opens that restore's
+          // gate. Refresh the projection first so the consumed record cannot
+          // resurrect itself into the editor this settlement clears, then
+          // re-verify the editor is still exactly the submitted one.
+          await refreshPendingTurnsProjection(ref).catch(() => undefined);
+          if (!ownsOriginalLocalCapture(submitted) || !sameSubmittedFullValue(submitted)) {
+            return { cleared: false, draftUnchanged: false, persistence: "committed" };
+          }
+        }
         activeRecoveryIdRef.current = null;
         state.setState({ activeRecoveryId: null });
         clearLocalEditor();

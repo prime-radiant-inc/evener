@@ -1331,7 +1331,10 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         // it); the draft stays exactly as typed and no settlement runs.
         if (!outcome.ok) return;
         try {
-          const settlement = await source.settleDraft(submitted);
+          // The command settlement is not a recovery resend: nothing consumed
+          // the durable recovery record on the way here, so the settlement
+          // itself must discard it under the submission's guard.
+          const settlement = await source.settleDraft(submitted, { command: true });
           // A resolved PENDING settlement is a storage failure the repository
           // converted into a fulfilled result (not a rejected promise). Report
           // it honestly; a committed veto (cleared:false, persistence:
