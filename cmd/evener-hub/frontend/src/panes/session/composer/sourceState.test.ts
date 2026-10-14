@@ -1180,7 +1180,15 @@ test.each(["turn", "note"] as const)(
       composerText: method === "turn" ? "rejected input" : "unsaved note",
     });
     const recovery = await fixture.outbox.transferToRecovery(sent.clientMutationId, "rejected", "refused");
-    expect(recovery).toEqual({ ...sent, recoveryKind: "rejected", recoveryReason: "refused" });
+    // The transfer's own session write advanced the migration-seeded durable
+    // row, and the record carries that completed token as its baseline — the
+    // revision a later preparation can prove carried no competing edit.
+    expect(recovery).toEqual({
+      ...sent,
+      recoveryKind: "rejected",
+      recoveryReason: "refused",
+      transferredSessionToken: (await requireRow(independent, fixture.key)).token,
+    });
     // This is the FIRST source. No fixture draft or helper pre-transfer hid the
     // background writer's migration boundary.
     const source = fixture.track(
@@ -2060,6 +2068,43 @@ function holdNextRead(repository: BrowserDraftRepository) {
       await gate;
     }
     return result;
+  });
+  let restored = false;
+  return {
+    reached,
+    release(): void {
+      releaseGate();
+      if (!restored) {
+        restored = true;
+        spy.mockRestore();
+      }
+    },
+  };
+}
+
+// The pre-read twin of holdNextRead: the next repository load call parks
+// BEFORE its real durable read issues, so a competing tab's commit can land
+// while the read is still in flight and the released read observes it. This
+// is the two-tab preparation window's exact shape — the other tab's write
+// happens between the first tab's capture and its preparation's read.
+function holdNextLoadBeforeRead(repository: BrowserDraftRepository) {
+  const real = repository.load.bind(repository);
+  let releaseGate: () => void = () => undefined;
+  let reachedGate: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  const reached = new Promise<void>((resolve) => {
+    reachedGate = resolve;
+  });
+  let armed = true;
+  const spy = vi.spyOn(repository, "load").mockImplementation(async (key) => {
+    if (armed) {
+      armed = false;
+      reachedGate();
+      await gate;
+    }
+    return real(key);
   });
   let restored = false;
   return {
@@ -3742,6 +3787,10 @@ test("a same-ref source's identical committed edit survives the first source's p
     // drain/preparation waits while B can still transact.
     first.acceptEdit(value);
     await hold.reached;
+    // A's own committed row is durable here — only its completion is held.
+    // Capture it before B's competing edit, as the token A's own lineage
+    // produced.
+    const committedA = await requireRow(fixture.repository, key);
 
     // A's submission preparation is invoked NOW, so its SYNCHRONOUS entry
     // capture (generation/backing/shared edit revision) happens BEFORE B edits.
@@ -3755,11 +3804,13 @@ test("a same-ref source's identical committed edit survives the first source's p
     expect(committedB.mentions).toEqual([]);
     const revisionB = committedB.token.sessionRevision;
 
-    // Release A: its drain resolves and its post-drain load captures B's token.
+    // Release A: its drain resolves, and its post-drain read REFUSES B's
+    // competing revision — the captured guard keeps A's own committed token.
     hold.release();
     const submitted = await submittedP;
     expect(submitted.text).toBe("shared value");
-    expect(submitted.settlementGuard?.token).toEqual(committedB.token);
+    expect(submitted.settlementGuard?.token).toEqual(committedA.token);
+    expect(committedA.token.sessionRevision).toBe(revisionB - 1);
 
     await first.settleDraft(submitted);
     await first.whenSettled();
@@ -3782,6 +3833,238 @@ test("a same-ref source's identical committed edit survives the first source's p
   } finally {
     hold.release();
   }
+});
+
+// Issue #4581: the submission preparation's durable read adopted ANY newer
+// row token — including a competing same-ref tab's just-committed identical
+// draft — so the settlement guard carried that tab's revision and the
+// post-send clear erased the newer row. Two sources over one shared
+// fake-IndexedDB database reproduce the two-tab window: source A captures its
+// submission payload, source B commits an identical draft while A's held
+// preparation read is in flight, and A's settlement must not clear B's row.
+// B's commit is delivered through the durable repository seam only: the other
+// tab is another PROCESS, whose runtime draft-revision advance this process's
+// revision map cannot see — the issue's own reason readDraftRevision cannot
+// fence this window.
+test("a competing tab's identical committed draft survives the first tab's preparation and settlement", async () => {
+  const fixture = sourceFixture("token-adoption-ordinary");
+  const value: SkillEditorValue = { text: "shared identical draft", skillNames: ["same"], mentions: [] };
+  await fixture.repository.seedDraft(fixture.key, value);
+  const first = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  const secondRepository = fixture.secondRepository();
+  const second = fixture.track(
+    createComposerSourceState("root", { repository: secondRepository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  await Promise.all([first.ready(), second.ready()]);
+  const baseline = await requireRow(fixture.repository, fixture.key);
+
+  // Park the first source's own post-drain preparation read BEFORE its real
+  // durable read issues, so the other tab's commit lands inside the
+  // preparation window and the released read observes it.
+  const hold = holdNextLoadBeforeRead(fixture.repository);
+  try {
+    const submittedP = trackOperation(first.submissionDraft(value));
+    await hold.reached;
+    const committed = await secondRepository.commitEdit(fixture.key, baseline.token, value, () => true);
+    if (committed.state !== "committed") throw new Error("expected the competing tab's draft to commit");
+    const competitorRow = committed.state === "committed" ? committed.draft : undefined;
+    if (!competitorRow) throw new Error("expected the competing tab's committed row");
+    hold.release();
+    const submitted = await submittedP;
+
+    // The settlement must refuse the destructive clear: the durable row moved
+    // past everything this source wrote or adopted.
+    expect(await first.settleDraft(submitted)).toMatchObject({ cleared: false, persistence: "committed" });
+    const after = await requireRow(fixture.repository, fixture.key);
+    expect(after).toMatchObject({ text: value.text, skillNames: value.skillNames });
+    expect(after.mentions).toEqual([]);
+    expect(after.token.sessionRevision).toBe(baseline.token.sessionRevision + 1);
+    // The captured guard keeps the first source's OWN lineage, not the
+    // competing tab's revision.
+    expect(submitted.settlementGuard?.token).toEqual(baseline.token);
+    expect(submitted.stillOwnsEdit?.()).toBe(true);
+  } finally {
+    hold.release();
+  }
+});
+
+// Issue #4581's recovery-resend variant: the strict resend preparation runs
+// the same unconditional adoption, so a resend can acquire authority over a
+// COMPETING tab's recovery edit — adopting its revision into the resend guard
+// lets the guarded resend consume the record the competitor just rewrote. The
+// unit interleave mirrors the ordinary one: source A holds a selected
+// recovery record and captures its resend payload; source B (the other tab)
+// commits a competing guarded recovery edit while A's held preparation read
+// is in flight; A's preparation completes and A's guarded resend must refuse,
+// leaving B's edit intact on the record and the row.
+test("a competing tab's recovery edit survives the first tab's resend preparation", async () => {
+  const fixture = sourceFixture("token-adoption-resend");
+  setMutationStorageForTests(fixture.outbox);
+  const seeded: SkillEditorValue = { text: "ordinary", skillNames: ["same"], commandNames: ["same"] };
+  await fixture.repository.seedDraft(fixture.key, seeded);
+  const originalMentions = [{ kind: "command" as const, name: "same", offset: 18 }];
+  const originalInput = [
+    { type: "text" as const, text: "recovery original /same", mentions: originalMentions },
+    { type: "command" as const, name: "same" },
+  ];
+  const original = await fixture.outbox.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: originalInput },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: originalInput },
+    composerText: "recovery original /same",
+    composerMentions: originalMentions,
+  });
+  await fixture.outbox.transferToRecovery(original.clientMutationId, "rejected");
+  const source = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  await source.ready();
+  source.setActiveRecoveryId(original.clientMutationId);
+  const editedMentions = [{ kind: "command" as const, name: "same", offset: 16 }];
+  await source.queueRecoveryPersistence(
+    original.clientMutationId,
+    "recovery edited /same",
+    [],
+    [],
+    ["same"],
+    editedMentions,
+  );
+  const ownRow = await requireRow(fixture.repository, fixture.key);
+
+  // Park the resend preparation's own post-drain durable read BEFORE its real
+  // durable read issues, so the other tab's competing recovery edit lands
+  // inside the preparation window and the released read observes it.
+  const hold = holdNextLoadBeforeRead(fixture.repository);
+  try {
+    const submittedP = trackOperation(source.submissionDraft());
+    await hold.reached;
+    const competitorMentions = [{ kind: "command" as const, name: "same", offset: 22 }];
+    const competitorInput = [
+      { type: "text" as const, text: "competitor edited /same", mentions: competitorMentions },
+      { type: "command" as const, name: "same" },
+    ];
+    const competitorGuard = Object.freeze({
+      key: Object.freeze({
+        namespace: Object.freeze({ ...fixture.key.namespace }),
+        sessionRef: fixture.key.sessionRef,
+      }),
+      token: Object.freeze({ ...ownRow.token }),
+      stillAuthorized: () => true,
+    });
+    const competitorUpdate = await fixture.outbox.updateRecoveryInput(
+      original.clientMutationId,
+      competitorInput,
+      [],
+      "competitor edited /same",
+      competitorMentions,
+      competitorGuard,
+    );
+    if (!competitorUpdate) throw new Error("expected the competing tab's recovery edit to commit");
+    hold.release();
+    const submitted = await submittedP;
+    const intent = {
+      targetRef: "root",
+      method: "turn/start",
+      payload: {
+        ref: "root",
+        input: [
+          { type: "text" as const, text: "recovery edited /same", mentions: editedMentions },
+          { type: "command" as const, name: "same" },
+        ],
+      },
+      attachments: [],
+      optimisticDisplay: {
+        method: "turn/start",
+        input: [
+          { type: "text" as const, text: "recovery edited /same", mentions: editedMentions },
+          { type: "command" as const, name: "same" },
+        ],
+      },
+      composerText: "recovery edited /same",
+      composerMentions: editedMentions,
+    };
+
+    // The guarded resend must refuse: the durable row moved past everything
+    // this source wrote or adopted, so the competitor's record edit survives.
+    const resent = await fixture.outbox.resendRecovery(
+      original.clientMutationId,
+      intent,
+      source.recoveryWriteGuard(submitted),
+    );
+    expect(resent).toBeUndefined();
+    expect(await fixture.outbox.getRecovery(original.clientMutationId)).toMatchObject({
+      composerText: "competitor edited /same",
+    });
+    const row = await requireRow(fixture.repository, fixture.key);
+    expect(row.token.sessionRevision).toBe(ownRow.token.sessionRevision + 1);
+    // The captured guard keeps the first source's OWN completed-write
+    // revision, not the competing tab's.
+    expect(submitted.settlementGuard?.token).toEqual(ownRow.token);
+  } finally {
+    hold.release();
+  }
+});
+
+// The one advance past a source's own lineage a preparation may still adopt:
+// this tab's own failed send, transferred to recovery by the dispatcher,
+// advanced the session row without the source writing it. The transfer
+// records the completed token on the record it created, so the activation
+// press's preparation can prove that revision carried no competing edit,
+// adopt it, and the first guarded recovery write plus its ordinary
+// consumption commit from that authority instead of being stranded on the
+// pre-transfer lineage.
+test("a recovery activation adopts its own failed send's recorded transfer baseline", async () => {
+  const fixture = sourceFixture("token-adoption-transfer");
+  setMutationStorageForTests(fixture.outbox);
+  const value: SkillEditorValue = { text: "draft that failed to send", skillNames: [], mentions: [] };
+  const source = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  await source.ready();
+  source.acceptEdit(value);
+  await source.whenSettled();
+  const lineage = await requireRow(fixture.repository, fixture.key);
+  expect(source.getDraftToken()).toEqual(lineage.token);
+
+  // The dispatcher transfers this tab's failed submission: the session row
+  // advances past the live source's lineage, and the record carries the
+  // completed token as its baseline.
+  const sent = await fixture.outbox.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: value.text, mentions: [] }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: value.text, mentions: [] }] },
+    composerText: value.text,
+  });
+  const recovery = await fixture.outbox.transferToRecovery(sent.clientMutationId, "rejected", "refused");
+  const transferred = await requireRow(fixture.repository, fixture.key);
+  expect(transferred.token.sessionRevision).toBe(lineage.token.sessionRevision + 1);
+  expect(recovery?.transferredSessionToken).toEqual(transferred.token);
+
+  // The activation press selects the record, and its preparation must
+  // classify the row's revision as the transfer's own baseline and adopt it.
+  source.setActiveRecoveryId(sent.clientMutationId);
+  const prepared = await source.submissionDraft(value);
+  const guard = prepared.settlementGuard;
+  if (!guard) throw new Error("expected a captured submission guard");
+  expect(guard.token).toEqual(transferred.token);
+
+  // The first guarded recovery write commits from that authority and its
+  // ordinary consumption clears the row whose value the takeover captured.
+  await source.queueRecoveryPersistence(sent.clientMutationId, value.text, [], value.skillNames, [], value.mentions, {
+    token: guard.token,
+    value,
+    stillOwnsValue: () => true,
+  });
+  expect(await fixture.outbox.getRecovery(sent.clientMutationId)).toMatchObject({ composerText: value.text });
+  const after = await requireRow(fixture.repository, fixture.key);
+  expect(after.token.sessionRevision).toBe(transferred.token.sessionRevision + 1);
+  expect(after).toMatchObject({ text: "", skillNames: [] });
 });
 
 // Issue #4366: Chrome exposes crypto.randomUUID only in secure contexts, and

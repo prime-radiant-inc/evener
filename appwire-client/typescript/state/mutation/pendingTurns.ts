@@ -21,6 +21,7 @@ import { type PendingMethod, type PendingTurnEntry, reconcilePendingEntries } fr
 import { type MutationPersistenceSnapshot, replaceTargetRecords } from "./projection";
 import type {
   ClientIdentity,
+  DraftSessionToken,
   MutationAttachmentRef,
   MutationOptimisticRecord,
   MutationOutboxRecord,
@@ -136,11 +137,6 @@ export interface PendingTurnsState<A extends MutationAttachmentRef = MutationAtt
   // the same durable-read scan. Written at the same `recordSubmittedHere`
   // site, never pruned.
   submittedHere: ReadonlyMap<string, number>;
-}
-
-export interface DraftSessionToken {
-  readonly namespaceIncarnation: string;
-  readonly sessionRevision: number;
 }
 
 export type DraftBackingIdentity =
