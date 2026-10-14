@@ -11911,6 +11911,7 @@ func buildRPCSessionWithWorkingDir(t *testing.T, stateDir, parentID, workingDir 
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
+	indexPastTranscriptForTest(t, stateDir, parentID)
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID:             parentID,
 		ProfileID:      "openai",
@@ -12571,6 +12572,16 @@ func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.
 		// failed whenever that file was malformed, had loose permissions or
 		// was rewritten by another test.
 		cfg.Registry = newTestRegistry(t, cfg.HubStateRoot, "", cfg.CredsStore, nil)
+	}
+	// The past index's sessions get their first transcript-index sidecar built
+	// here, once (see indexPastTranscriptForTest). Seeders own this for the
+	// sessions they write; this loop is the safety net for a test that seeds
+	// its transcript some other way, so its tests read a session's content
+	// rather than the first index of it.
+	if cfg.Past != nil {
+		for _, entry := range cfg.Past.All() {
+			indexPastTranscriptForTest(t, entry.StateDir, entry.Meta.ID)
+		}
 	}
 	return startHubRPCTestServer(t, cfg)
 }

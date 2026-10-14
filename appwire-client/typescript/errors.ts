@@ -121,6 +121,33 @@ export function isTranscriptHistoryFailedError(err: unknown): boolean {
   return err instanceof WireError && err.evenerErrorInfo === ErrorTranscriptHistoryFailed;
 }
 
+// ErrorTranscriptIndexRebuilding is the hub's discriminator for a history read
+// whose transcript index needs a rebuild the hub has taken ownership of in the
+// background (appwire.ErrorTranscriptIndexRebuilding, appwire/errors.go): one
+// repair runs off the read path, and the read that follows its commit
+// succeeds. A client that recognizes it keeps the history it holds and
+// retries; the data carries no snapshot identity, so nothing is adopted from
+// it. The binding test (errors.test.ts) reads the Go constant.
+export const ErrorTranscriptIndexRebuilding = "transcriptIndexRebuilding";
+
+export function isTranscriptIndexRebuildingError(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorTranscriptIndexRebuilding;
+}
+
+// ErrorTranscriptIndexLocked is the hub's discriminator for a history read
+// that met the transcript index's lock in ordinary contention — a writer
+// mid-extension or a foreign rebuild, with no hub repair in flight
+// (appwire.ErrorTranscriptIndexLocked, appwire/errors.go): retrying is the
+// right response, and the hub has registered nothing for it. The tracked
+// hydration retry converges it like any error; the code lets a client that
+// wants to distinguish a running repair from ordinary contention do so. The
+// binding test (errors.test.ts) reads the Go constant.
+export const ErrorTranscriptIndexLocked = "transcriptIndexLocked";
+
+export function isTranscriptIndexLockedError(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorTranscriptIndexLocked;
+}
+
 // ErrorUpgradeRequired is the hub's discriminator for initialize refusing a
 // client that announced an older AppWire protocol (appwire.ErrorUpgradeRequired,
 // appwire/errors.go). Retrying cannot help; the client itself must update. The

@@ -52,7 +52,7 @@ func registerNotesTools(reg *tool.Registry, deps *toolDeps) {
 				// The model never sees the State side-channel (only Output
 				// reaches it), yet urls_remove requires the entry id — so the
 				// id rides the human-readable output beside the URL/label.
-				Output: "URL added: " + formatNotesLinkLine(entry),
+				Output: notesURLAddedPrefix + formatNotesLinkLine(entry),
 				State:  entry,
 			}, nil
 		},

@@ -96,6 +96,13 @@ type MessageSearch struct {
 	// read reads a transcript's items for the index: readTranscriptItems,
 	// which a test wraps to count the reads.
 	read func(transcriptPath string, held *appwire.SnapshotIdentity) (transcriptItems, error)
+	// askRepair, when set, is asked to start the shared background repair
+	// for a transcript whose index refused a read (ErrRebuildRequired):
+	// the hub wires its repair registry's refresher lane here. The ask
+	// carries the refused build's own name for the repair's revalidation.
+	// Nil keeps the refresher skipping such sessions silently, the way one
+	// unwired (a test) still indexes through a healthy sidecar.
+	askRepair func(transcriptPath, refusedBuild string)
 	// writeMu keeps a Refresh and a Forget from interleaving their writes to
 	// one session.
 	writeMu sync.Mutex
@@ -147,19 +154,20 @@ type MessageHit struct {
 	Position      appwire.ThreadItemPosition
 }
 
-// transcriptStamp is the transcript file's state when the index last read it:
-// a transcript only grows, so an append moves its size, and a rewrite moves
-// its modification time.
-type transcriptStamp struct {
-	size      int64
-	modTimeNS int64
+// TranscriptStamp is the transcript file's state when something last read or
+// failed it: a transcript only grows, so an append moves its size, and a
+// rewrite moves its modification time. The hub's transcript-index repair
+// registry keys its failure budget by it.
+type TranscriptStamp struct {
+	Size      int64
+	ModTimeNS int64
 }
 
 // indexedTranscript is what the index holds for one session: the file state it
 // last read and the transcript-index snapshot its rows describe (no
 // incarnation when the transcript could not be read).
 type indexedTranscript struct {
-	stamp    transcriptStamp
+	stamp    TranscriptStamp
 	snapshot appwire.SnapshotIdentity
 }
 
@@ -274,7 +282,7 @@ func (x *MessageSearch) Refresh(ctx context.Context, sessions []MessageSearchSes
 			}
 			continue
 		}
-		stamp := transcriptStamp{size: info.Size(), modTimeNS: info.ModTime().UnixNano()}
+		stamp := TranscriptStamp{Size: info.Size(), ModTimeNS: info.ModTime().UnixNano()}
 		held, known := indexed[session.ID]
 		if known && held.stamp == stamp {
 			continue
@@ -302,6 +310,29 @@ func (x *MessageSearch) Refresh(ctx context.Context, sessions []MessageSearchSes
 				// file itself next changes, when readEveryItem's own promise
 				// is that the very next refresh reads the new incarnation
 				// whole: retry then instead.
+				continue
+			case errors.Is(err, transcriptindex.ErrRebuildRequired):
+				// The sidecar needs a rebuild this read refuses to run:
+				// skip the session for the cycle — no failure recorded, no
+				// inline rebuild, no lock-hold — and ask for the shared
+				// repair through the lane, which paces itself. The ask
+				// carries the refused build's own name, the identity the
+				// armed repair revalidates against: an ask that lands after
+				// another repair already committed must not rebuild the
+				// healthy sidecar again.
+				if x.askRepair != nil {
+					var refusal *transcriptindex.RebuildRequiredError
+					errors.As(err, &refusal)
+					refused := ""
+					if refusal != nil {
+						refused = refusal.Build
+					}
+					x.askRepair(session.TranscriptPath, refused)
+				}
+				continue
+			case errors.Is(err, transcriptindex.ErrLockBusy):
+				// Contention the refusing read must not wait on: skip
+				// silently, the same way the cursor-stale race does.
 				continue
 			default:
 				failures = append(failures, MessageSearchFailure{SessionID: session.ID, Err: err})
@@ -344,12 +375,20 @@ func (x *MessageSearch) indexedTranscripts(ctx context.Context) (map[string]inde
 	for rows.Next() {
 		var sessionID string
 		var held indexedTranscript
-		if err := rows.Scan(&sessionID, &held.stamp.size, &held.stamp.modTimeNS, &held.snapshot.Incarnation, &held.snapshot.Length); err != nil {
+		if err := rows.Scan(&sessionID, &held.stamp.Size, &held.stamp.ModTimeNS, &held.snapshot.Incarnation, &held.snapshot.Length); err != nil {
 			return nil, fmt.Errorf("read message search transcripts: %w", err)
 		}
 		indexed[sessionID] = held
 	}
 	return indexed, rows.Err()
+}
+
+// SetRepairAsker wires the repair ask the refresher consults when a
+// transcript's index refuses a read: the hub's repair registry, whose
+// refresher lane runs at most one such repair hub-wide. The ask carries the
+// refused build's own name for the repair's revalidation.
+func (x *MessageSearch) SetRepairAsker(ask func(transcriptPath, refusedBuild string)) {
+	x.askRepair = ask
 }
 
 // testHookAfterIncarnationCheck runs, if set, after readTranscriptItems
@@ -367,15 +406,22 @@ var testHookAfterIncarnationCheck = func() {}
 // reads every item.
 func readTranscriptItems(transcriptPath string, held *appwire.SnapshotIdentity) (transcriptItems, error) {
 	// A legacy transcript has no transcript index: checking its header first
-	// keeps Open from leaving an empty sidecar directory beside it.
-	if err := checkTranscriptHeader(transcriptPath); err != nil {
+	// keeps the open from leaving an empty sidecar directory beside it.
+	if err := CheckTranscriptHeader(transcriptPath); err != nil {
 		return transcriptItems{}, err
 	}
-	index, err := transcriptindex.Open(transcriptPath, transcriptindex.DirFor(transcriptPath))
+	// A refusing handle, so a refresh never runs or waits behind a full
+	// rebuild: a sidecar needing one is skipped for the cycle and its repair
+	// asked for instead. It opens without catching up; the explicit CatchUp
+	// extends incrementally when the sidecar is healthy.
+	index, err := transcriptindex.OpenRefusing(transcriptPath, transcriptindex.DirFor(transcriptPath))
 	if err != nil {
 		return transcriptItems{}, err
 	}
 	defer func() { _ = index.Close() }()
+	if err := index.CatchUp(); err != nil {
+		return transcriptItems{}, err
+	}
 	if held != nil {
 		incarnation, err := index.Incarnation()
 		if err != nil {
@@ -444,10 +490,12 @@ func candidateItems(candidates []appitempaging.TranscriptItemCandidate) []appwir
 	return items
 }
 
-// checkTranscriptHeader reads the transcript's leading header line (skipping
+// CheckTranscriptHeader reads the transcript's leading header line (skipping
 // blank lines) and returns transcript.ErrUnsupportedFormat (wrapped) unless it
-// is a format-2 header.
-func checkTranscriptHeader(transcriptPath string) error {
+// is a format-2 header. The hub's read path consults it on a refusal, to
+// answer a transcript that can never be indexed with the history-failed error
+// directly instead of a doomed repair.
+func CheckTranscriptHeader(transcriptPath string) error {
 	f, err := os.Open(transcriptPath)
 	if err != nil {
 		return err
@@ -489,7 +537,7 @@ func searchableMessage(item appwire.ThreadItem) bool {
 // read's snapshot. sinceGen is the session's forget generation captured before
 // the read; if a Forget landed since (the generation moved), the read is
 // stale and apply writes nothing, so a concurrent deletion is never undone.
-func (x *MessageSearch) apply(ctx context.Context, sessionID string, stamp transcriptStamp, read transcriptItems, sinceGen int64) error {
+func (x *MessageSearch) apply(ctx context.Context, sessionID string, stamp TranscriptStamp, read transcriptItems, sinceGen int64) error {
 	x.writeMu.Lock()
 	defer x.writeMu.Unlock()
 	if x.forgetGen[sessionID] != sinceGen {
@@ -532,7 +580,7 @@ func (x *MessageSearch) apply(ctx context.Context, sessionID string, stamp trans
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO transcripts(session_id, size, mod_time_ns, incarnation, length) VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(session_id) DO UPDATE SET size = excluded.size, mod_time_ns = excluded.mod_time_ns, incarnation = excluded.incarnation, length = excluded.length`,
-		sessionID, stamp.size, stamp.modTimeNS, read.snapshot.Incarnation, read.snapshot.Length); err != nil {
+		sessionID, stamp.Size, stamp.ModTimeNS, read.snapshot.Incarnation, read.snapshot.Length); err != nil {
 		return fmt.Errorf("index session %s: %w", sessionID, err)
 	}
 	return tx.Commit()

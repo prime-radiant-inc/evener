@@ -885,6 +885,226 @@ func (s *Session) resetNotesProjectionAfterCompaction() {
 	s.notesLastProjected = ""
 }
 
+// notesURLAddedPrefix opens the tool output of urls_add ahead of the rendered
+// Link: line. Shared between the tool handler and self-echo classification.
+const notesURLAddedPrefix = "URL added: "
+
+type parsedNotesContext struct {
+	human string
+	agent string
+	links map[string]string
+}
+
+func parseNotesField(lines []string, start int, prefix string) (string, int) {
+	field := []string{strings.TrimPrefix(lines[start], prefix)}
+	i := start + 1
+	for i < len(lines) && (lines[i] == "" || strings.HasPrefix(lines[i], "  ")) {
+		field = append(field, strings.TrimPrefix(lines[i], "  "))
+		i++
+	}
+	return strings.Join(field, "\n"), i
+}
+
+func parseNotesContextBlock(block string) (parsedNotesContext, bool) {
+	if block == notesClearedBlock {
+		return parsedNotesContext{}, true
+	}
+	inner, ok := strings.CutPrefix(block, notesBlockOpen)
+	if !ok {
+		return parsedNotesContext{}, false
+	}
+	body, ok := strings.CutSuffix(inner, notesBlockClose)
+	if !ok {
+		return parsedNotesContext{}, false
+	}
+	body = neutralizeNotesFraming(strings.TrimSuffix(body, "\n"))
+	if body == "" {
+		return parsedNotesContext{}, true
+	}
+	var out parsedNotesContext
+	lines := strings.Split(body, "\n")
+	for i := 0; i < len(lines); {
+		line := lines[i]
+		switch {
+		case strings.HasPrefix(line, "Human: "):
+			out.human, i = parseNotesField(lines, i, "Human: ")
+		case strings.HasPrefix(line, "Agent: "):
+			out.agent, i = parseNotesField(lines, i, "Agent: ")
+		case strings.HasPrefix(line, "Link: "):
+			id := extractNotesLinkID(line)
+			if id == "" {
+				id = line
+			}
+			if out.links == nil {
+				out.links = make(map[string]string)
+			}
+			out.links[id] = line
+			i++
+		default:
+			return parsedNotesContext{}, false
+		}
+	}
+	return out, true
+}
+
+func extractNotesLinkID(line string) string {
+	idx := strings.LastIndex(line, " [id: ")
+	if idx < 0 || !strings.HasSuffix(line, "]") {
+		return ""
+	}
+	return line[idx+len(" [id: ") : len(line)-1]
+}
+
+// isNotesSelfEchoTurn reports whether history[idx] is a TurnNotesContext turn
+// whose entire diff from the prior post-compaction projection was authored by
+// the immediately preceding tool round's notes_agent_set, urls_add, or
+// urls_remove calls, with no concurrent human note or URL mutation and no
+// intervening compaction fold boundary.
+func isNotesSelfEchoTurn(history []schema.Turn, idx int) bool {
+	if idx < 0 || idx >= len(history) || history[idx].Kind != schema.TurnNotesContext {
+		return false
+	}
+	curr, ok := parseNotesContextBlock(history[idx].Message.Text())
+	if !ok {
+		return false
+	}
+	compIdx := latestContextBoundaryIndex(history[:idx])
+	trIdx := -1
+scanRound:
+	for j := idx - 1; j > compIdx; j-- {
+		t := history[j]
+		if t.Kind.TranscriptOnly() {
+			continue
+		}
+		switch t.Kind {
+		case schema.TurnSteering:
+			if (steeringOrigin{kind: t.SteeringKind}).isHumanNoteSteer(t.Message.Text()) {
+				return false
+			}
+		case schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnEnvironment, schema.TurnMemoryContext:
+		case schema.TurnToolResults:
+			trIdx = j
+			break scanRound
+		default:
+			return false
+		}
+	}
+	if trIdx < 0 {
+		return false
+	}
+	if compIdx >= 0 {
+		comp := history[compIdx]
+		tr := history[trIdx]
+		notes := history[idx]
+		if tr.OriginalOrdinal != nil && notes.OriginalOrdinal == nil {
+			return false
+		}
+		if !comp.Timestamp.IsZero() && !tr.Timestamp.IsZero() && !notes.Timestamp.IsZero() &&
+			tr.Timestamp.Before(comp.Timestamp) && !notes.Timestamp.Before(comp.Timestamp) {
+			return false
+		}
+	}
+
+	hasAgentNoteSet := false
+	var addedLinks map[string]bool
+	var removedIDs map[string]bool
+	var removeCallIDs map[string]bool
+
+	for _, p := range history[trIdx].Message.Content {
+		if p.Kind != llm.ContentToolResult || p.ToolResult == nil || p.ToolResult.IsError {
+			continue
+		}
+		switch p.ToolResult.Name {
+		case "notes_agent_set":
+			hasAgentNoteSet = true
+		case "urls_add":
+			text, _ := p.ToolResult.Content.(string)
+			if line, ok := strings.CutPrefix(strings.TrimSpace(text), notesURLAddedPrefix); ok {
+				if addedLinks == nil {
+					addedLinks = make(map[string]bool)
+				}
+				addedLinks[neutralizeNotesFraming(line)] = true
+			}
+		case "urls_remove":
+			if removedIDs == nil {
+				removedIDs = make(map[string]bool)
+			}
+			if removeCallIDs == nil {
+				removeCallIDs = make(map[string]bool)
+			}
+			if p.ToolResult.ToolCallID != "" {
+				removeCallIDs[p.ToolResult.ToolCallID] = true
+			}
+			if len(p.ToolResult.ToolState) > 0 {
+				var st struct {
+					ID string `json:"id"`
+				}
+				if json.Unmarshal(p.ToolResult.ToolState, &st) == nil && st.ID != "" {
+					removedIDs[st.ID] = true
+				}
+			}
+		}
+	}
+
+	if len(removeCallIDs) > 0 {
+		for j := trIdx - 1; j > compIdx; j-- {
+			if history[j].Kind != schema.TurnAssistant {
+				continue
+			}
+			for _, p := range history[j].Message.Content {
+				if p.Kind != llm.ContentToolCall || p.ToolCall == nil || p.ToolCall.Name != "urls_remove" {
+					continue
+				}
+				if !removeCallIDs[p.ToolCall.ID] {
+					continue
+				}
+				var args struct {
+					ID string `json:"id"`
+				}
+				if json.Unmarshal(p.ToolCall.Arguments, &args) == nil && args.ID != "" {
+					removedIDs[args.ID] = true
+				}
+			}
+			break
+		}
+	}
+
+	if !hasAgentNoteSet && len(addedLinks) == 0 && len(removedIDs) == 0 {
+		return false
+	}
+
+	var prev parsedNotesContext
+	for j := trIdx - 1; j > compIdx; j-- {
+		if history[j].Kind != schema.TurnNotesContext {
+			continue
+		}
+		var prevOK bool
+		prev, prevOK = parseNotesContextBlock(history[j].Message.Text())
+		if !prevOK {
+			return false
+		}
+		break
+	}
+
+	if curr.human != prev.human {
+		return false
+	}
+	if curr.agent != prev.agent && !hasAgentNoteSet {
+		return false
+	}
+	for id, line := range curr.links {
+		if prev.links[id] != line && !addedLinks[line] {
+			return false
+		}
+	}
+	for id := range prev.links {
+		if _, stillPresent := curr.links[id]; !stillPresent && !removedIDs[id] {
+			return false
+		}
+	}
+	return true
+}
+
 // humanNoteSteerPrefix opens the steering text a shared-notes update carries.
 // It is the last-resort marker for a record that persisted neither a
 // SteeringKind nor a mutation method -- see steeringOrigin.isHumanNoteSteer.

@@ -92,15 +92,34 @@ func (m *hubModel) applyHubReconnect(msg hubReconnectMsg) tea.Cmd {
 	// instead of overwriting the fresh connection's resynchronized session
 	// (roborev PR #1044 round-8 medium 4). The pending target goes with it -
 	// the new connection has no cycling read in flight.
+	preReconnectSeq := m.liveNavSeq
 	m.liveNavSeq++
 	m.liveNavPendingRef = ""
+	m.liveNavEntryPendingSeq = 0    // the fresh connection carries no picked reads
 	m.liveNavNeedsReconcile = false // the reconnect's own tagged resub re-establishes
+	// The dead connection's recovery flight never lands here: without this
+	// clear its fence would coalesce the resubscribe below onto a read whose
+	// response may sit on the dead transport for a long time.
+	m.liveNavRecoveryInFlight = false
 	if m.pending != nil {
 		m.client.SetPendingCoordinator(m.pending)
 	}
 	m.clearNoticesByCategory(noticeCategoryConnection)
 
 	cmds := []tea.Cmd{waitHubNotification(m.frames), fetchHubTree(m.client)}
+	// A pending entry repair (#4343) is navigation intent, not connection
+	// state: the connection dying is not the user departing. Rebind an
+	// armed retry that was still current before the bump to the
+	// replacement connection's generation — the dead connection's
+	// in-flight response and pending tick then land as superseded — and
+	// issue a fresh tick on the new generation, so the paced read resumes
+	// on the replacement connection. A retry a newer navigation had
+	// already superseded does not rebind: reviving it would make
+	// abandoned navigation current again, and its next tick retires it.
+	if m.entryRepairRef != (appwire.Ref{}) && m.entryRepairSeq == preReconnectSeq {
+		m.entryRepairSeq = m.liveNavSeq
+		cmds = append(cmds, hubEntryRepairRetryCmd(m.entryRepairDelay, m.entryRepairRef, m.entryRepairSeq))
+	}
 	// A replacement connection carries no subscriptions: every one the dead
 	// connection held died with it. Re-read the viewed session through the
 	// tagged recovery path (round-13 medium 1): the read re-subscribes it

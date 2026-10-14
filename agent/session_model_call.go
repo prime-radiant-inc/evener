@@ -764,8 +764,9 @@ func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.
 		messages = append(messages, msg)
 	}
 	// Responses-continuation delta path (openai target): the Responses builder
-	// keeps its own reasoning guard, so expansion filters nothing here.
-	messages = append(messages, expandHistory(deltaTurns, replayScope{})...)
+	// keeps its own reasoning guard, and selectResponsesContinuationAnchorCandidate
+	// already filtered self-echo TurnNotesContext turns against the full history.
+	messages = append(messages, expandHistory(deltaTurns, replayScope{notesSelfEchoFiltered: true})...)
 	return messages
 }
 
@@ -1605,6 +1606,9 @@ type replayScope struct {
 	// canonicalModel canonicalizes a model id for the ResponseModel fallback
 	// comparison. Nil ⇒ raw (trimmed) string comparison.
 	canonicalModel func(string) string
+	// notesSelfEchoFiltered marks a delta slice whose self-echo TurnNotesContext
+	// turns were already filtered against the full history slice.
+	notesSelfEchoFiltered bool
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
@@ -1766,6 +1770,9 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 				history = append(history, t.Message)
 			}
 		case schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
+			if t.Kind == schema.TurnNotesContext && !scope.notesSelfEchoFiltered && isNotesSelfEchoTurn(historyTurns, i) {
+				continue
+			}
 			// Turn-boundary context only ever lands at a turn boundary, so no
 			// mid-tool-round deferral: pass the message straight through.
 			history = append(history, t.Message)

@@ -59,10 +59,12 @@ const (
 	TurnEnvironment TurnKind = "ENVIRONMENT"
 	// TurnNotesContext is a harness-injected shared-notes snapshot (human and
 	// agent whiteboards plus the session URL list). Like TurnEnvironment it IS
-	// model-bound: expandHistory passes its user-role message through, and it
-	// is only ever appended (never edited) so provider prompt caches survive.
-	// UIs render it as harness chrome, not user speech. The persisted note is
-	// the source of truth; each turn carries a fresh projection of it.
+	// model-bound (except for agent-only tool-round self-echoes, which
+	// expandHistory omits until compaction): expandHistory passes its user-role
+	// message through, and it is only ever appended (never edited) so provider
+	// prompt caches survive. UIs render it as harness chrome, not user speech.
+	// The persisted note is the source of truth; each turn carries a fresh
+	// projection of it.
 	TurnNotesContext TurnKind = "NOTES_CONTEXT"
 	// TurnMemoryContext carries one boundary's lower-trust memory news for
 	// every scope, as one system notification.

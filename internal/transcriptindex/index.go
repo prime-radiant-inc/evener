@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -63,12 +64,48 @@ func SetUpdateLogRecordsForTest(n int) (restore func()) {
 // rebuilds.
 var ErrUpdateLogTruncated = errors.New("transcript index update log no longer reaches that length")
 
-// testKillAfterRecordWrites, when set, runs right after an extension's or a
-// rebuild's scan has written its records and before the meta commit that
-// would make them readable: it stands for the process being killed at
-// exactly that point, leaving the records on disk uncounted. An error it
-// returns propagates as scan's own would, so writeMeta never runs. Test seam
-// only; nil in production.
+// ErrRebuildRequired reports that an operation needed a full rebuild and the
+// handle refuses to perform one (see OpenRefusing): the caller registers a
+// repair and answers a retryable state instead of waiting on one here.
+var ErrRebuildRequired = errors.New("transcript index needs a rebuild this handle refuses to run")
+
+// ErrLockBusy reports that the sidecar's lock is held by another writer and
+// the handle refuses to block on it (see OpenRefusing).
+var ErrLockBusy = errors.New("transcript index lock is held")
+
+// RebuildRequiredError is ErrRebuildRequired carrying the refused build's own
+// facts: the name of the live build the refusal stood on — the revalidation
+// key the repair's recipe re-reads the disk against, so a registration that
+// lands after another repair already committed a fresh build can adopt that
+// outcome instead of rebuilding the healthy sidecar again — and the ordinal
+// of the last entry that build had recorded, its committed entry count minus
+// one, the ordinal TranscriptHistoryFailed documents. An empty name is the
+// no-live-build refusal.
+type RebuildRequiredError struct {
+	LastEntry uint64
+	Build     string
+}
+
+func (e *RebuildRequiredError) Error() string {
+	return fmt.Sprintf("%v (last recorded entry %d)", ErrRebuildRequired, e.LastEntry)
+}
+
+func (e *RebuildRequiredError) Is(target error) bool { return target == ErrRebuildRequired }
+
+// errNoLiveBuild, errIdentityChanged and errAnotherFile name the refresh
+// failures a full rebuild fixes, so a refusing handle can refuse on them.
+var (
+	errNoLiveBuild     = errors.New("transcript index has no live build")
+	errIdentityChanged = errors.New("transcript index format, projection, or schema identity changed")
+	errAnotherFile     = errors.New("transcript index describes another file")
+)
+
+// testKillAfterRecordWrites, when set, runs after an extension's or a
+// rebuild's records are flushed to the files and before the update log is
+// cut and the meta commit that would count them: it stands for the process
+// being killed at exactly that point, leaving the records on disk
+// uncounted. An error it returns propagates as writeMeta's own would, so
+// the log cut and publish never run. Test seam only; nil in production.
 var testKillAfterRecordWrites func() error
 
 // testKillAfterItemUpdateLog, when set, runs in addContributor right after
@@ -78,6 +115,22 @@ var testKillAfterRecordWrites func() error
 // the item slot it names still unmodified. Test seam only; nil in
 // production.
 var testKillAfterItemUpdateLog func() error
+
+// testKillAtTurnUpdateLog, when set, runs in stampTurn in place of its
+// update-log row's write: it stands for that write faulting, so the row
+// never lands while the entry's earlier records — the item the same line
+// added — are already applied past the committed counts. An interrupted
+// scan then leaves no leftover row to name the half-applied line. Test seam
+// only; nil in production.
+var testKillAtTurnUpdateLog func() error
+
+// testKillBetweenFlushes, when set, runs in writeMeta between its string
+// flush and its record flushes: it stands for the process dying with exactly
+// one of the two groups durable, which a recovery must reconcile without
+// committing a record that names a string the files never held. An error it
+// returns propagates as writeMeta's own would, so the meta commit never runs.
+// Test seam only; nil in production.
+var testKillBetweenFlushes func() error
 
 // The sidecar directory holds a lock file, a pointer to the live build, and one
 // directory per build. A rebuild writes a new build and renames the pointer
@@ -238,12 +291,44 @@ type Index struct {
 	stale bool
 	// rebuilds counts full builds by this handle, for tests.
 	rebuilds int
+	// refusing marks a handle opened by OpenRefusing: it runs no full
+	// rebuild and never blocks on the sidecar's lock, in any operation.
+	refusing bool
 }
 
 // Open returns the index for the transcript at path, kept in dir. A missing,
 // stale or corrupt index is rebuilt from the transcript. Open catches up to
 // the last complete line.
 func Open(path, dir string) (*Index, error) {
+	x, err := openHandle(path, dir, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := x.CatchUp(); err != nil {
+		_ = x.Close()
+		return nil, err
+	}
+	return x, nil
+}
+
+// OpenRefusing opens a handle that performs no full rebuild and never blocks
+// on the sidecar's lock, in any operation: catch-up, extension, window reads
+// and repair-builder paths answer ErrRebuildRequired or ErrLockBusy instead
+// of running or waiting on one, and a fault on the lock itself answers an
+// ordinary error rather than masquerading as contention. It opens without
+// catching up; the caller runs CatchUp explicitly.
+func OpenRefusing(path, dir string) (*Index, error) {
+	return openHandle(path, dir, true)
+}
+
+// OpenWithoutCatchUp opens an ordinary handle that has not caught up,
+// leaving extending and rebuilding to the caller: the repair path's shape,
+// so its own Rebuild is the one rebuild that runs.
+func OpenWithoutCatchUp(path, dir string) (*Index, error) {
+	return openHandle(path, dir, false)
+}
+
+func openHandle(path, dir string, refusing bool) (*Index, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create transcript index dir: %w", err)
 	}
@@ -251,12 +336,7 @@ func Open(path, dir string) (*Index, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open transcript index lock: %w", err)
 	}
-	x := &Index{path: path, dir: dir, lock: lock}
-	if err := x.CatchUp(); err != nil {
-		_ = x.Close()
-		return nil, err
-	}
-	return x, nil
+	return &Index{path: path, dir: dir, lock: lock, refusing: refusing}, nil
 }
 
 // Close releases the index's files.
@@ -301,22 +381,91 @@ func (x *Index) Rebuild(length int64) error {
 	return x.locked(true, func() error { return x.rebuild(length, "") })
 }
 
+// RebuildIfStillRefused rebuilds the sidecar only while the live build is
+// still the one the caller's refusal named — the repair path's revalidation.
+// A registration can land after another repair already committed a fresh
+// build (a delayed refusal, or a refresher ask aged by its lane): rebuilding
+// then would re-pay the full cost against a healthy sidecar and rotate an
+// incarnation readers hold, so the check adopts that outcome instead. The
+// check runs under the exclusive lock in the same step as the rebuild, so
+// the build it saw is the build the rebuild replaces. An empty refused name
+// is the no-live-build refusal: any committed build answers it. A live
+// build that is gone again answers the name it had — the next read re-arms
+// with the empty name, and the repair after that one rebuilds. A CURRENT the
+// check cannot read is an ordinary error, so the registry counts the repair
+// against its budget instead of recording a guess.
+func (x *Index) RebuildIfStillRefused(length int64, refused string) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.locked(true, func() error {
+		live, err := liveBuildName(x.dir)
+		if err != nil {
+			return err
+		}
+		if live != refused {
+			return nil
+		}
+		return x.rebuild(length, "")
+	})
+}
+
 // locked runs fn holding the sidecar lock, shared or exclusive, after taking
 // up whatever other handles wrote.
 func (x *Index) locked(exclusive bool, fn func() error) error {
 	if x.lock == nil {
 		return errors.New("transcript index is closed")
 	}
-	if err := lockFile(x.lock, exclusive); err != nil {
+	if x.refusing {
+		if err := lockFileTry(x.lock, exclusive); err != nil {
+			// Only contention is busy: a fault on the lock itself — a dead
+			// fd, an exhausted lock table — must surface as itself, or the
+			// refresher skips it silently every cycle and the hub answers
+			// it as rebuilding-or-transient, and no diagnosis can name it.
+			if isLockContention(err) {
+				return ErrLockBusy
+			}
+			return fmt.Errorf("try lock transcript index: %w", err)
+		}
+	} else if err := lockFile(x.lock, exclusive); err != nil {
 		return fmt.Errorf("lock transcript index: %w", err)
 	}
 	defer func() { _ = unlockFile(x.lock) }()
-	if err := x.refresh(); err != nil && !exclusive {
+	if err := x.refresh(); err != nil && (!exclusive || x.refusing) {
 		// Only an extender may rebuild; a reader with no usable index has
-		// nothing to read.
+		// nothing to read. A refusing reader names the sidecar a rebuild
+		// would fix as a refusal, so its repair registers immediately — on
+		// the exclusive paths it takes as well, whose own step would only
+		// refuse anyway: classifying there keeps an access failure an
+		// ordinary error instead of a masquerading rebuild refusal.
+		if x.refusing && rebuildFixes(err) {
+			return x.refuseRebuild()
+		}
 		return err
 	}
+	// A refused fallback rebuild marked this handle's build stale: its
+	// memory holds a half-applied scan past the committed counts, and no
+	// read — window, changes, or another catch-up — may serve it under the
+	// old snapshot length. Refuse everything until refresh adopts the
+	// repair's build, the load that clears the mark.
+	if x.refusing && x.stale {
+		return x.refuseRebuild()
+	}
 	return fn()
+}
+
+// rebuildFixes reports whether a refresh failure describes a sidecar a full
+// rebuild can make readable again: no live build, an identity this binary
+// cannot adopt, another transcript's file identity, or corruption. I/O errors
+// stay ordinary failures.
+func rebuildFixes(err error) bool {
+	return errors.Is(err, errNoLiveBuild) || errors.Is(err, errIdentityChanged) ||
+		errors.Is(err, errAnotherFile) || errors.Is(err, errCorrupt)
+}
+
+// isNotExist keeps a vanished build classified as no-live-build through
+// whatever wrapping a load site added.
+func isNotExist(err error) bool {
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 // refresh takes up the sidecar as it is on disk: another build reopens,
@@ -325,20 +474,44 @@ func (x *Index) refresh() error {
 	current, err := os.ReadFile(filepath.Join(x.dir, currentFileName))
 	if err != nil {
 		_ = x.closeBuild()
-		return errors.New("transcript index has no live build")
+		// Only a CURRENT that is not there says no build exists. One that
+		// cannot be read is an access problem: keep it ordinary, so a
+		// refusing reader reports it as transient instead of a rebuild a
+		// permission change cannot fix.
+		if os.IsNotExist(err) {
+			return errNoLiveBuild
+		}
+		return fmt.Errorf("read current build: %w", err)
 	}
 	name := strings.TrimSpace(string(current))
 	if name != x.build {
 		_ = x.closeBuild()
 		if err := x.load(name); err != nil {
 			_ = x.closeBuild()
+			// A CURRENT naming a build whose files are gone is no live
+			// build either — a rebuild recreates them — while other load
+			// failures keep their own class.
+			if isNotExist(err) {
+				return errNoLiveBuild
+			}
 			return err
 		}
+		// Stale marks belong to the build they were set on, not to the handle:
+		// this build was committed by another handle — a repair or any foreign
+		// writer — so the marks naming the abandoned build go with it. The
+		// only other clear site is a successful rebuild on this handle, which
+		// a refusing handle never performs; without clearing here, a cached
+		// refusing handle keeps refusing after its repair commits, each read
+		// re-refusing and re-registering, and never converges.
+		x.stale = false
 		return nil
 	}
 	m, err := x.readMeta()
 	if err != nil {
 		_ = x.closeBuild()
+		if isNotExist(err) {
+			return errNoLiveBuild
+		}
 		return err
 	}
 	if !reflect.DeepEqual(m, x.meta) {
@@ -357,10 +530,10 @@ func (x *Index) readMeta() (meta, error) {
 		return m, err
 	}
 	if err := json.Unmarshal(data, &m); err != nil {
-		return m, err
+		return m, fmt.Errorf("%w: parse meta.json: %w", errCorrupt, err)
 	}
 	if m.Format != formatVersion || m.Projection != currentProjection() {
-		return m, errors.New("transcript index format, projection, or schema identity changed")
+		return m, errIdentityChanged
 	}
 	return m, nil
 }
@@ -423,6 +596,30 @@ func (x *Index) adopt(m meta) error {
 	}
 	x.meta, x.items.n, x.turns.n, x.updates.n, x.strings.n = m, m.Items, m.Turns, m.Updates, uint64(info.Size())
 	x.builderStale = true
+	// The adopting handle's buffered copies of the record files end where its
+	// own last build left them, below the counts just taken up from another
+	// handle's meta: reload them, or every read past that point would slice a
+	// buffer that ends short of the records it names. Nothing of this handle's
+	// own can be mid-flight here — adopt runs at lock time, before the scan
+	// whose writes it would drop.
+	if err := x.items.load(); err != nil {
+		return err
+	}
+	if err := x.turns.load(); err != nil {
+		return err
+	}
+	if err := x.strings.load(); err != nil {
+		return err
+	}
+	// A record table that loaded past the buffer limit writes through from
+	// here on, so the strings its records name must not sit in this handle's
+	// buffer. They are fresh from the load — everything the buffer holds is
+	// already on the file — so the blob drops straight into write-through.
+	if x.items.buf == nil || x.turns.buf == nil {
+		if err := x.stopBufferingStrings(); err != nil {
+			return err
+		}
+	}
 	return x.readHeader()
 }
 
@@ -441,7 +638,7 @@ func (x *Index) load(name string) error {
 		return err
 	}
 	if apptranscript.FileIdentity(info) != m.FileIdentity {
-		return errors.New("transcript index describes another file")
+		return errAnotherFile
 	}
 	return x.adopt(m)
 }
@@ -478,6 +675,21 @@ func (x *Index) extend(length int64) error {
 	unsafeOffsets, err := x.leftoverUpdatesToCommittedSlots()
 	if err != nil {
 		return x.fail(err)
+	}
+	// The leftover-rows rebuild trigger, refused before the truncation and
+	// rescan that would serve it: a refusal here writes nothing, where
+	// refusing after the scan would leave the tables already truncated. It
+	// can refuse where a completed scan would have healed; the repair
+	// converges either way.
+	if x.refusing && len(unsafeOffsets) > 0 {
+		// The same crash discipline as the refused fallback rebuild: the
+		// rows prove a writer died mid-update, and the loaded build's
+		// committed slots already carry whatever it flushed — a turn
+		// completion past the committed snapshot. No read — window,
+		// changes, or another catch-up — may serve that memory; refuse
+		// everything until refresh adopts the repair's committed build.
+		x.stale = true
+		return x.refuseRebuild()
 	}
 	// Whatever an extension that did not finish left past the counts goes
 	// before this one appends.
@@ -522,11 +734,6 @@ func (x *Index) extend(length int64) error {
 		// depth costs nothing here). The echo check pendingFlush relies on
 		// would be missing the true prior text otherwise.
 		return x.rebuild(length, x.meta.Incarnation)
-	}
-	if testKillAfterRecordWrites != nil {
-		if err := testKillAfterRecordWrites(); err != nil {
-			return err
-		}
 	}
 	return x.writeMeta()
 }
@@ -707,7 +914,12 @@ func (x *Index) readHeader() error {
 	}
 	header, err := transcript.DecodeHeader(bytes.TrimSpace(line))
 	if err != nil {
-		return err
+		// A header the stored offsets cannot decode is sidecar corruption —
+		// a rebuild recomputes them from the transcript — while the ReadAt
+		// above stays the transcript I/O it is. Without the classification a
+		// self-consistent but corrupt header_length fails every read as an
+		// ordinary error no rebuild trigger ever answers.
+		return fmt.Errorf("%w: decode stored header: %w", errCorrupt, err)
 	}
 	x.prelude = apptranscript.PreludeTurn(header)
 	return nil
@@ -718,12 +930,61 @@ func (x *Index) readHeader() error {
 // when the transcript still extends them; "" mints a new one. A build that
 // fails is removed, and the live build stays as it was.
 func (x *Index) rebuild(length int64, incarnation string) error {
+	if x.refusing {
+		// The caller may have partially applied state before falling back
+		// here — an append scan interrupted mid-entry leaves items past the
+		// committed meta with the in-memory counts advanced. The refusal
+		// answers this call, but that state must never be trusted by a
+		// later append: its truncate-to-count would keep the half-applied
+		// rows and replay the entry into duplicate positions. Mark the
+		// build stale so every later attempt takes this same refusing
+		// rebuild until the repair's build lands; refresh clears the mark
+		// with the load that replaces the abandoned one.
+		x.stale = true
+		return x.refuseRebuild()
+	}
 	err := x.buildNew(length, incarnation)
 	if err != nil && x.build != "" {
 		failed := filepath.Join(x.dir, x.build)
 		err = errors.Join(err, x.closeBuild(), os.RemoveAll(failed))
 	}
 	return err
+}
+
+// refuseRebuild answers a refusing handle's rebuild trigger: the
+// ErrRebuildRequired refusal carrying the refused build's name and the
+// ordinal of the last entry it had recorded. Read off the disk at refusal
+// time — the meta.json the atomic rename published, the only source left
+// after a failed adoption discarded the parsed copy — so the values are
+// tear-safe and hold the committed count even when a discarded mid-scan had
+// advanced the in-memory one. Zero entries and an empty name when there is
+// no live build.
+func (x *Index) refuseRebuild() error {
+	last := uint64(0)
+	build, err := liveBuildName(x.dir)
+	if err == nil && build != "" {
+		if data, err := os.ReadFile(filepath.Join(x.dir, build, metaFile)); err == nil {
+			var m meta
+			if json.Unmarshal(data, &m) == nil && m.Entries > 0 {
+				last = m.Entries - 1
+			}
+		}
+	}
+	return &RebuildRequiredError{LastEntry: last, Build: build}
+}
+
+// liveBuildName reads the sidecar's committed build name: empty when no
+// CURRENT exists — no live build — and the ordinary read error otherwise, so
+// callers can tell "nothing is committed" from "the pointer cannot be read".
+func liveBuildName(dir string) (string, error) {
+	current, err := os.ReadFile(filepath.Join(dir, currentFileName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read current build: %w", err)
+	}
+	return string(bytes.TrimSpace(current)), nil
 }
 
 func (x *Index) buildNew(length int64, incarnation string) error {
@@ -764,11 +1025,8 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	// by the open turn, and errRebuild covers the rest.
 	x.builder.global = nil
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
-	if testKillAfterRecordWrites != nil {
-		if err := testKillAfterRecordWrites(); err != nil {
-			return err
-		}
-	}
+	// The kill seam lives inside writeMeta, after the record flushes: killing
+	// here instead would exit before anything reached the files.
 	if err := x.writeMeta(); err != nil {
 		return err
 	}
@@ -796,7 +1054,7 @@ func (x *Index) removeOtherBuilds() {
 
 // scan covers complete lines from the covered end up to length.
 func (x *Index) scan(length int64) error {
-	reader := bufio.NewReaderSize(io.NewSectionReader(x.transcript, x.meta.Length, length-x.meta.Length), 64<<10)
+	reader := bufio.NewReaderSize(io.NewSectionReader(x.transcript, x.meta.Length, length-x.meta.Length), 1<<20)
 	offset := x.meta.Length
 	for {
 		line, complete, n, err := transcript.ReadLine(reader, maxLineBytes)
@@ -922,6 +1180,29 @@ func (x *Index) removeOtherUpdateLogs() {
 // cutting the update log first when it has grown past its bound. A meta that
 // fails to publish a cut leaves the index to rebuild.
 func (x *Index) writeMeta() error {
+	// The strings the buffered records reference flush before the records
+	// that name them, and the records before the meta that counts them — all
+	// after the update log's rows, which never buffer: a recovery replays an
+	// entry only while the record on disk is older than it, so a record must
+	// never reach the file naming a string the files cannot answer yet.
+	if err := x.strings.flush(); err != nil {
+		return err
+	}
+	if testKillBetweenFlushes != nil {
+		if err := testKillBetweenFlushes(); err != nil {
+			return err
+		}
+	}
+	for _, t := range []*table{&x.items, &x.turns} {
+		if err := t.flush(); err != nil {
+			return err
+		}
+	}
+	if testKillAfterRecordWrites != nil {
+		if err := testKillAfterRecordWrites(); err != nil {
+			return err
+		}
+	}
 	cut, err := x.cutUpdateLog()
 	if err != nil {
 		return err
@@ -935,6 +1216,19 @@ func (x *Index) writeMeta() error {
 	if cut != "" {
 		x.removeOtherUpdateLogs()
 	}
+	return nil
+}
+
+// stopBufferingStrings puts the strings blob into write-through, flushing
+// what it holds first: a record table in write-through can land a record
+// naming a string that is still only buffered, and once the record is out no
+// flush ordering can recover. Runs when a record table stops buffering, at
+// adopt or at its own limit flip.
+func (x *Index) stopBufferingStrings() error {
+	if err := x.strings.flush(); err != nil {
+		return err
+	}
+	x.strings.buf, x.strings.flushed = nil, 0
 	return nil
 }
 
@@ -996,8 +1290,12 @@ func (x *Index) openFiles(create bool) error {
 	if create {
 		flags |= os.O_CREATE | os.O_EXCL
 	}
-	open := func(name string) (*os.File, error) {
-		return os.OpenFile(filepath.Join(x.dir, x.build, name), flags, 0o600)
+	open := func(name string) (recordFile, error) {
+		f, err := os.OpenFile(filepath.Join(x.dir, x.build, name), flags, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		return f, nil
 	}
 	if x.items.file, err = open(itemsFile); err != nil {
 		return err
@@ -1007,6 +1305,11 @@ func (x *Index) openFiles(create bool) error {
 		return err
 	}
 	x.turns.size = turnRecordSize
+	// The strings the records name stop buffering the moment a record table
+	// does (see stopBufferingStrings), so a limit flip mid-extension cannot
+	// leave buffered strings behind write-through records.
+	x.items.onWriteThrough = x.stopBufferingStrings
+	x.turns.onWriteThrough = x.stopBufferingStrings
 	if create {
 		if x.updates.file, err = open(updatesFile); err != nil {
 			return err
@@ -1014,13 +1317,30 @@ func (x *Index) openFiles(create bool) error {
 		x.updates.size, x.updatesName = updateRecordSize, updatesFile
 	}
 	x.strings.file, err = open(stringsFile)
-	return err
+	if err != nil {
+		return err
+	}
+	// The record files buffer their content in memory (see table and blob):
+	// a build's appends and in-place rewrites become memcpys, flushed once
+	// before the meta that counts them publishes. The update log does not:
+	// its rows are the crash evidence a recovery must find on disk.
+	if err := x.items.load(); err != nil {
+		return err
+	}
+	if err := x.turns.load(); err != nil {
+		return err
+	}
+	return x.strings.load()
 }
 
 // closeBuild drops the open build and its view of the transcript.
 func (x *Index) closeBuild() error {
 	var errs []error
-	for _, f := range []**os.File{&x.transcript, &x.items.file, &x.turns.file, &x.updates.file, &x.strings.file} {
+	if x.transcript != nil {
+		errs = append(errs, x.transcript.Close())
+		x.transcript = nil
+	}
+	for _, f := range []*recordFile{&x.items.file, &x.turns.file, &x.updates.file, &x.strings.file} {
 		if *f != nil {
 			errs = append(errs, (*f).Close())
 			*f = nil
@@ -1031,7 +1351,24 @@ func (x *Index) closeBuild() error {
 	x.meta = meta{}
 	x.prelude = nil
 	x.items.n, x.turns.n, x.updates.n, x.strings.n = 0, 0, 0, 0
+	x.items.buf, x.turns.buf, x.strings.buf = nil, nil, nil
 	return errors.Join(errs...)
+}
+
+// releaseRecordBuffers drops the in-memory record buffers an open loaded:
+// they exist for active builds and extensions — appends and in-place
+// rewrites become memcpys — and a handle parked in a cache must not keep
+// whole record files resident, or browsing large histories changes the
+// cache's memory bound from handles and headers to complete sidecars (one
+// recordBufferLimit file per table, three tables, times the cache's
+// capacity). Reads fall back to the file, and a later extension writes
+// through — the pre-buffering behavior. Only call this where no other
+// operation can hold the index: the cache's Release at zero references,
+// whose lock excludes every Acquire while it runs.
+func (x *Index) releaseRecordBuffers() {
+	x.items.buf, x.items.flushed = nil, 0
+	x.turns.buf, x.turns.flushed = nil, 0
+	x.strings.buf, x.strings.flushed = nil, 0
 }
 
 func randomName() (string, error) {
@@ -1040,4 +1377,23 @@ func randomName() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(id[:]), nil
+}
+
+// HoldSidecarLockForTest takes the sidecar directory's exclusive lock and
+// holds it until the returned release runs, so a test can stand for the
+// writer or repair whose hold a refusing handle must answer without
+// blocking. Test seam only.
+func HoldSidecarLockForTest(dir string) (func(), error) {
+	lock, err := os.OpenFile(filepath.Join(dir, lockFileName), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockFile(lock, true); err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	return func() {
+		_ = unlockFile(lock)
+		_ = lock.Close()
+	}, nil
 }

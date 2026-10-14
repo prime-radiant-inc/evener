@@ -19,9 +19,11 @@ package agent
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -41,6 +43,43 @@ func tinyWindowResolver(ref string) (*provider.Profile, error) {
 		return NewOpenAIProfile(parts[1]), nil
 	case "tiny":
 		return WithContextWindow(NewOpenAIProfile(parts[1]), 100), nil
+	}
+	return nil, nil
+}
+
+// assumedWindowResolver maps "openai/<model>" to the catalog profile and
+// "gw/<model>" to an openai-compatible custom gateway whose model row declares
+// no context window — the unknown-window target a switch now budgets against
+// contextmgr.AssumedContextWindow (issue #4598).
+func assumedWindowResolver(ref string) (*provider.Profile, error) {
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) != 2 {
+		return nil, nil
+	}
+	switch parts[0] {
+	case "openai":
+		return NewOpenAIProfile(parts[1]), nil
+	case "gw":
+		return newOpenAICompatProfile("gw", parts[1], 0), nil
+	}
+	return nil, nil
+}
+
+// declaredWindowResolver maps "openai/<model>" to the catalog profile and
+// "win/<model>" to a profile whose context window is declared at 4096 — a known
+// window small enough that the base system prompt alone crosses its 0.80
+// compaction threshold, with a window figure (4096) the rendered percentage
+// cannot collide with.
+func declaredWindowResolver(ref string) (*provider.Profile, error) {
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) != 2 {
+		return nil, nil
+	}
+	switch parts[0] {
+	case "openai":
+		return NewOpenAIProfile(parts[1]), nil
+	case "win":
+		return WithContextWindow(NewOpenAIProfile(parts[1]), 4096), nil
 	}
 	return nil, nil
 }
@@ -199,6 +238,136 @@ func TestSetModel_MarkerWarnsOnContextWindowShrink(t *testing.T) {
 	}
 	if !strings.Contains(text, "compaction threshold") {
 		t.Fatalf("marker text = %q, want a context-window-shrink warning line", text)
+	}
+}
+
+// TestSetModel_MarkerIdentifiesAssumedWindow pins the fast-follow for #4598's
+// reviewed LOW: an unknown window budgets against the assumed 128K, so a switch
+// above roughly 102K tokens composes the context-warning line against an
+// assumption. Left undisclosed, the percentage reads as a fact about the new
+// model's real window; the marker must name the assumed window it was
+// calculated against.
+func TestSetModel_MarkerIdentifiesAssumedWindow(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeAdapter{name: "gw"}),
+		withConfig(SessionConfig{
+			ResolveProfile: assumedWindowResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+	target, err := assumedWindowResolver("gw/deepseek-4.1-flash")
+	if err != nil || target == nil {
+		t.Fatalf("resolve fixture target: %v", err)
+	}
+	if target.ContextWindowSize() != 0 {
+		t.Fatalf("fixture target window = %d, want 0 (unknown)", target.ContextWindowSize())
+	}
+	// ~150K tokens by the char/4 estimate ("token " counts ~1.5): past the
+	// assumed 128K window's 0.80 checkpoint threshold, so the switch warns.
+	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("token ", 100_000)))}
+
+	if err := sess.SetModel("gw/deepseek-4.1-flash"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+
+	marker := lastMarkerTurn(t, sess).Message.Text()
+	// A warning line fired, so the marker is more than the bare switch line.
+	if strings.Count(marker, "\n") < 1 {
+		t.Fatalf("marker = %q, want a context warning line", marker)
+	}
+	if !strings.Contains(marker, strconv.Itoa(contextmgr.AssumedContextWindow)) {
+		t.Fatalf("marker = %q, want the warning to identify the assumed %d-token window its percentage is against", marker, contextmgr.AssumedContextWindow)
+	}
+}
+
+// TestSetModel_KnownWindowMarkerStaysUnassumed replaces the known-window
+// full-copy golden (review of #4633): the old test compared the whole marker
+// against hardcoded prose, so a wording edit broke it with no behavior change.
+// A switch to a model with a declared window now drives the same marker path
+// behaviorally, and each claim is a structured fact around the marker, not its
+// prose:
+//   - the switch turn's structured identity names both models;
+//   - the context metrics the marker budgeted against report the declared
+//     4096-token window and Assumed == false, so the disclosure stays off;
+//   - estimated usage crossed the 0.80 checkpoint threshold, so the marker
+//     carries the warning line with the percentage derived from that estimate;
+//   - the marker does not print the assumed token figure the unknown-window
+//     branch adds — the one clause that must stay absent for a known window.
+//
+// The last claim is an absence, so it is mutation-checked: forcing the assumed
+// branch in SetModel makes this test fail. The figure is the window the metrics
+// report, not hardcoded copy, so a reworded warning still passes.
+func TestSetModel_KnownWindowMarkerStaysUnassumed(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeAdapter{name: "win"}),
+		withConfig(SessionConfig{
+			ResolveProfile: declaredWindowResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+
+	// The turn before the switch must survive it: the marker is appended, not a
+	// replacement for history.
+	prior := schema.NewTurn(schema.TurnUserInput, llm.User("before the switch"))
+	sess.history = []schema.Turn{prior}
+
+	if err := sess.SetModel("win/gpt-5.5"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+
+	marker := lastMarkerTurn(t, sess)
+	// The turn's machine identity, not its rendered line, names the models.
+	wantIdentity := schema.ModelSwitchInfo{
+		OldProvider: "openai", OldModel: "gpt-5.4",
+		NewProvider: "openai", NewModel: "gpt-5.5",
+	}
+	if marker.ModelSwitch == nil || *marker.ModelSwitch != wantIdentity {
+		t.Fatalf("marker identity = %v, want %+v", marker.ModelSwitch, wantIdentity)
+	}
+	sess.mu.Lock()
+	history := append([]schema.Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	if len(history) != 2 {
+		t.Fatalf("history after switch = %d turns, want 2 (the prior turn plus the marker): %+v", len(history), history)
+	}
+	if history[0].Kind != schema.TurnUserInput || history[0].Message.Text() != "before the switch" {
+		t.Fatalf("switch did not preserve the pre-switch turn: %+v", history[0])
+	}
+
+	// The window the marker budgeted against is the declared one, reported as
+	// NOT assumed — measured with the same history and prompt the marker saw
+	// (the marker turn itself is recorded after that estimate).
+	metrics := sess.contextMgr.EstimateUsage([]schema.Turn{prior}, len(sess.cachedSystemPrompt))
+	if metrics.Assumed {
+		t.Fatalf("context metrics = %+v, want a declared window, not the unknown-window assumption", metrics)
+	}
+	if metrics.Window != 4096 {
+		t.Fatalf("context metrics window = %d, want the declared 4096", metrics.Window)
+	}
+	// Estimated usage crossed the threshold, so a warning line fired, with the
+	// percentage the estimate produces.
+	pressure := float64(metrics.Used) / float64(metrics.Window)
+	if pressure < sess.contextMgr.CheckpointThreshold {
+		t.Fatalf("estimated pressure %.3f < threshold %.2f; no warning would fire", pressure, sess.contextMgr.CheckpointThreshold)
+	}
+	text := marker.Message.Text()
+	if strings.Count(text, "\n") < 1 {
+		t.Fatalf("marker = %q, want a warning line beyond the bare switch line", text)
+	}
+	if wantPct := strconv.Itoa(int(pressure*100 + 0.5)); !strings.Contains(text, wantPct) {
+		t.Fatalf("marker = %q, want the ~%s%% warning percentage the estimate produces", text, wantPct)
+	}
+	// A known window must not disclose an assumed token figure — the clause the
+	// forced-assumed mutation adds. The figure is the window the metrics report,
+	// so no prose is pinned.
+	if assumedFigure := strconv.Itoa(metrics.Window); strings.Contains(text, assumedFigure) {
+		t.Fatalf("marker = %q, want no assumed-window disclosure for a known window (found window figure %s)", text, assumedFigure)
 	}
 }
 

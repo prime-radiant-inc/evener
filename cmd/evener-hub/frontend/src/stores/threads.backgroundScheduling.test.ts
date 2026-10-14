@@ -338,7 +338,9 @@ describe("background thread claims", () => {
       replacement = acquireBackgroundThread("local:reacquire");
 
       await vi.waitFor(() => expect(backgroundTranscriptSnapshotForTests().networkHydrations).toBe(2));
-      expect(threadReadRequests(socket)).toHaveLength(1);
+      // Main's subscription change lets a fresh acquisition supersede the
+      // departed holder's pending membership without waiting for its response.
+      await vi.waitFor(() => expect(threadReadRequests(socket)).toHaveLength(2));
       const retiredRead = { ...currentRead(first.ref), requestGeneration: first.requestGeneration };
       retiredRead.overlay![0]!.item.text = "retired snapshot";
       socket.receive({ id: first.id, result: retiredRead });

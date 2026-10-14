@@ -161,8 +161,10 @@ func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResu
 // wireErrorInfo returns the appwire.ErrorInfo discriminator an error carries,
 // or "" when it is not a wire error or carries none. A wire error decoded by
 // the client holds its ErrorData as a map, while one built in-process holds the
-// typed struct, so both shapes are read - the same classification
-// isQueuedDrainPartial performs for its own discriminator.
+// typed struct - plain ErrorData, or HistoryReadErrorData once the read
+// boundary stamped a boot generation onto it - so every shape is read - the
+// same classification isQueuedDrainPartial performs for its own
+// discriminator.
 func wireErrorInfo(err error) appwire.ErrorInfo {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
@@ -171,9 +173,34 @@ func wireErrorInfo(err error) appwire.ErrorInfo {
 	switch data := wire.Data.(type) {
 	case appwire.ErrorData:
 		return data.EvenerErrorInfo
+	case appwire.HistoryReadErrorData:
+		return data.EvenerErrorInfo
 	case map[string]any:
 		if raw, ok := data["evenerErrorInfo"].(string); ok {
 			return appwire.ErrorInfo(raw)
+		}
+	}
+	return ""
+}
+
+// wireMutationOutcome returns the mutation outcome an error's data carries,
+// or "" when it carries none - the same three shapes wireErrorInfo reads: a
+// wire error decoded by the client holds its data as a map, while one built
+// in-process holds the typed struct, plain ErrorData or the read boundary's
+// HistoryReadErrorData stamp.
+func wireMutationOutcome(err error) appwire.MutationOutcome {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return ""
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		return data.MutationOutcome
+	case appwire.HistoryReadErrorData:
+		return data.MutationOutcome
+	case map[string]any:
+		if raw, ok := data["mutationOutcome"].(string); ok {
+			return appwire.MutationOutcome(raw)
 		}
 	}
 	return ""

@@ -41,10 +41,35 @@ type hubSessionMsg struct {
 	// semantics do not apply to it — its response refreshes the transcript
 	// and re-arms child subscriptions, then drops, never switching sessions
 	// (roborev PR #1044 round-12 medium 2).
-	liveNavRecovery       bool
+	liveNavRecovery bool
+	// liveNavRecoveryFlight is the id of the recovery flight the read was
+	// issued under: a completion only concludes the flight it belongs to,
+	// so a stale completion cannot unfence a newer flight (#4343
+	// round-29 medium 2).
+	liveNavRecoveryFlight uint64
 	liveNavRefresh        bool
+	// entryRetrySeq tags a read re-issued by a pending entry-repair retry
+	// (#4343): the armed retry's generation. Update discards a tagged read
+	// whose retry the model no longer holds — its success must not enter
+	// abandoned navigation, its error must not rearm it — re-establishing
+	// the displayed session's subscription when one is displayed, since
+	// the read's subscribe+replace re-pointed it at the departed ref.
+	entryRetrySeq         int
 	liveNavRefreshReplace bool
-	err                   error
+	// liveNavEntry marks a navigation read issued by a pick — the dashboard
+	// list, the command palette, a fork or spawn landing — as distinct from
+	// the cycling and recovery reads that also carry liveNavSeq: a pick may
+	// land on a dashboard (its success enters the picked session there), and
+	// a superseded pick is discarded whole rather than reconciled as a
+	// cycling read.
+	liveNavEntry bool
+	err          error
+	// subscriptionReplaced marks an errored fetch whose thread/read leg
+	// already succeeded under a replacing read: the hub-side subscription
+	// now follows this ref, and a failure landing after it — the older
+	// pages the fetch collects — must restore the displayed session's
+	// subscriptions, which no superseded landing exists to reconcile.
+	subscriptionReplaced bool
 	// beforeCut carries the frames the connection delivered ahead of this
 	// read's response, and capture holds the ones it delivered after. The
 	// response is an exact cut, so the two go on opposite sides of the
@@ -238,7 +263,10 @@ func fetchHubSessionRead(feed *hubFrameFeed, client *appwire.Client, ref appwire
 		thread, err := collectHubThreadPages(ctx, client, ref.String(), resp.Thread, resp.OlderCursor)
 		if err != nil {
 			capture.Abandon()
-			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err}
+			// The read leg already succeeded: a replacing read re-pointed
+			// the connection's server-side subscription at this ref before
+			// the pages failed, so the landing must say so.
+			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err, subscriptionReplaced: replaceSubscription}
 		}
 		return hubSessionMsg{detail: hubDetailFromThread(thread), messages: transcript.MessagesFromThread(thread), ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, beforeCut: capture.BeforeCut(), capture: capture}
 	}

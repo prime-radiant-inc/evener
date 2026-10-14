@@ -6517,7 +6517,7 @@ describe("pending shared membership acquisition", () => {
     threadsStore.getState().releaseWatchedThread("ref_a");
     threadsStore.getState().releaseWatchedThread("ref_a");
   });
-  test("release and reacquire waits for pending membership and fences the retired model", async () => {
+  test("release and reacquire supersedes the departed acquisition's pending membership and fences the retired model", async () => {
     const fake = connectFakeClient(),
       initial = deferred<ThreadReadResponse>(),
       replacement = deferred<ThreadReadResponse>();
@@ -6527,12 +6527,14 @@ describe("pending shared membership acquisition", () => {
     await flushUntil(() => reads === 1);
     threadsStore.getState().releaseThread("ref_a");
     const second = threadsStore.getState().ensureThread("ref_a");
-    await flushMicrotasks();
-    expect(reads).toBe(1);
+    // The reopened pane's own read issues now — it does not queue behind the
+    // departed holder's still-pending request, which may never settle.
+    await flushUntil(() => reads === 2);
+    expect(reads).toBe(2);
     initial.resolve(
       readResponse("ref_a", { turns: [{ id: "old", status: "completed", itemsView: "full", items: [] }] }),
     );
-    await flushUntil(() => reads === 2);
+    await flushMicrotasks();
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
     replacement.resolve(
       readResponse("ref_a", { turns: [{ id: "new", status: "completed", itemsView: "full", items: [] }] }),

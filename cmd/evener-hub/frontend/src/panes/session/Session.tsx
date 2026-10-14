@@ -77,6 +77,11 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // conversation body's claim.
   const model = useThreadsStore((state) => state.threads.get(ref));
   const deletedRef = useThreadsStore((state) => state.deletedRefs.has(ref));
+  // #4343: a ref whose latest read answered the hub's transcriptIndexRebuilding
+  // discriminant is being repaired in the background, not stalled: the
+  // loading face says so. Follows the ref's reads — cleared by the next read
+  // that does not fail with the code — so it never outlives the repair.
+  const repairingRef = useThreadsStore((state) => state.repairingRefs.has(ref));
   const navigation = useNavigationStore();
 
   // Same fallback chain, and same shared resolver, as DockHost's dockview
@@ -174,7 +179,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
               edgeFooter={edgeFooter}
             >
               <div className={styles.loading}>
-                <Loader label="Loading transcript" />
+                <Loader label={repairingRef ? "Repairing session history" : "Loading transcript"} />
                 {ref.startsWith("local:") && (
                   <>
                     <p className={styles.loadingHint}>
