@@ -390,7 +390,9 @@ type recordFile interface {
 // log never buffers: its rows are the crash evidence a recovery reads from
 // disk, so they must land as they are written, before any record they announce.
 // A table whose content outgrows recordBufferLimit stops buffering and writes
-// through, exactly as an unbuffered one.
+// through, exactly as an unbuffered one — taking the strings its records name
+// out of buffering with it (onWriteThrough), so no record can land naming a
+// string that is still only buffered.
 type table struct {
 	file recordFile
 	size int64 // record size
@@ -403,6 +405,11 @@ type table struct {
 	// its turn, at the table's end, still commits a tail rather than the
 	// whole file. Valid only while buf != nil.
 	flushed int64
+	// onWriteThrough runs when the table stops buffering, before its own
+	// buffered records flush: the strings those records name must stop
+	// buffering first (see Index.stopBufferingStrings). Nil on the update
+	// log, which never buffers.
+	onWriteThrough func() error
 }
 
 func (t *table) read(slot uint64, count int) ([]byte, error) {
@@ -447,13 +454,19 @@ func (t *table) write(slot uint64, record []byte) error {
 }
 
 // buffer makes buf cover the record at slot, growing it as appends need. A
-// table past recordBufferLimit flushes what buffered and stops buffering.
+// table past recordBufferLimit flushes what buffered and stops buffering,
+// taking the strings its records name with it first.
 func (t *table) buffer(slot uint64) error {
 	end := (int64(slot) + 1) * t.size
 	if end <= int64(len(t.buf)) {
 		return nil
 	}
 	if end > recordBufferLimit {
+		if t.onWriteThrough != nil {
+			if err := t.onWriteThrough(); err != nil {
+				return err
+			}
+		}
 		if err := t.flush(); err != nil {
 			return err
 		}

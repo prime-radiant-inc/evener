@@ -124,6 +124,14 @@ var testKillAfterItemUpdateLog func() error
 // only; nil in production.
 var testKillAtTurnUpdateLog func() error
 
+// testKillBetweenFlushes, when set, runs in writeMeta between its string
+// flush and its record flushes: it stands for the process dying with exactly
+// one of the two groups durable, which a recovery must reconcile without
+// committing a record that names a string the files never held. An error it
+// returns propagates as writeMeta's own would, so the meta commit never runs.
+// Test seam only; nil in production.
+var testKillBetweenFlushes func() error
+
 // The sidecar directory holds a lock file, a pointer to the live build, and one
 // directory per build. A rebuild writes a new build and renames the pointer
 // over, so a reader never sees a half-built index.
@@ -602,6 +610,15 @@ func (x *Index) adopt(m meta) error {
 	}
 	if err := x.strings.load(); err != nil {
 		return err
+	}
+	// A record table that loaded past the buffer limit writes through from
+	// here on, so the strings its records name must not sit in this handle's
+	// buffer. They are fresh from the load — everything the buffer holds is
+	// already on the file — so the blob drops straight into write-through.
+	if x.items.buf == nil || x.turns.buf == nil {
+		if err := x.stopBufferingStrings(); err != nil {
+			return err
+		}
 	}
 	return x.readHeader()
 }
@@ -1156,15 +1173,23 @@ func (x *Index) removeOtherUpdateLogs() {
 // cutting the update log first when it has grown past its bound. A meta that
 // fails to publish a cut leaves the index to rebuild.
 func (x *Index) writeMeta() error {
-	// The buffered records must be on the files before the meta that counts
-	// them publishes, and after the update log's rows, which never buffer.
+	// The strings the buffered records reference flush before the records
+	// that name them, and the records before the meta that counts them — all
+	// after the update log's rows, which never buffer: a recovery replays an
+	// entry only while the record on disk is older than it, so a record must
+	// never reach the file naming a string the files cannot answer yet.
+	if err := x.strings.flush(); err != nil {
+		return err
+	}
+	if testKillBetweenFlushes != nil {
+		if err := testKillBetweenFlushes(); err != nil {
+			return err
+		}
+	}
 	for _, t := range []*table{&x.items, &x.turns} {
 		if err := t.flush(); err != nil {
 			return err
 		}
-	}
-	if err := x.strings.flush(); err != nil {
-		return err
 	}
 	if testKillAfterRecordWrites != nil {
 		if err := testKillAfterRecordWrites(); err != nil {
@@ -1184,6 +1209,19 @@ func (x *Index) writeMeta() error {
 	if cut != "" {
 		x.removeOtherUpdateLogs()
 	}
+	return nil
+}
+
+// stopBufferingStrings puts the strings blob into write-through, flushing
+// what it holds first: a record table in write-through can land a record
+// naming a string that is still only buffered, and once the record is out no
+// flush ordering can recover. Runs when a record table stops buffering, at
+// adopt or at its own limit flip.
+func (x *Index) stopBufferingStrings() error {
+	if err := x.strings.flush(); err != nil {
+		return err
+	}
+	x.strings.buf, x.strings.flushed = nil, 0
 	return nil
 }
 
@@ -1260,6 +1298,11 @@ func (x *Index) openFiles(create bool) error {
 		return err
 	}
 	x.turns.size = turnRecordSize
+	// The strings the records name stop buffering the moment a record table
+	// does (see stopBufferingStrings), so a limit flip mid-extension cannot
+	// leave buffered strings behind write-through records.
+	x.items.onWriteThrough = x.stopBufferingStrings
+	x.turns.onWriteThrough = x.stopBufferingStrings
 	if create {
 		if x.updates.file, err = open(updatesFile); err != nil {
 			return err
