@@ -59,9 +59,11 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	// a model switch landing mid-compaction would otherwise bill one layer's
 	// numbers by another model's thinking rule and image family.
 	prof, _, _ := s.cm.profileSnapshot()
-	if cw := contextWindowOf(prof); cw <= 0 {
+	cw, _ := effectiveWindowOf(prof)
+	if cw <= 0 {
 		return nil
 	}
+	discloseAssumedWindow(s.cm, prof, emitFn)
 
 	// Each phase reads pressure and its before/after diagnostics from ONE
 	// snapshot (see pressureFromSnapshot), so a concurrent SetProfile cannot
@@ -69,6 +71,13 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	estimatePressure := func() (float64, *provider.Profile) { return s.cm.pressureWithProfile(history, sysPromptChars) }
 
 	p, prof := estimatePressure()
+	// Captured before any layer invalidates the measurement: the tripwire
+	// (issue #4564) forces the checkpoint layer below whatever the pressure
+	// estimate says. It carries the profile it was captured under and governs
+	// only while that profile is still the gate's assumption
+	// (assumptionStillGoverns).
+	tripwire := s.cm.unknownWindowTripwireFires(prof)
+	tripwireProf := prof
 	compacted := false
 
 	// Invalidate API token measurement before running any layer so that
@@ -113,7 +122,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	}
 
 	// Layer 3 (replaced): Session-log checkpoint.
-	if p >= s.cm.CheckpointThreshold {
+	if p >= s.cm.CheckpointThreshold || (tripwire && assumptionStillGoverns(tripwireProf, prof)) {
 		turnsBefore := len(*history)
 		before := s.cm.estimateTokensFor(prof, *history)
 		*history = s.sessionLogCheckpointWithMeta(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))

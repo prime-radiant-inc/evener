@@ -48,6 +48,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     contextUsed: 42_000,
     contextWindow: 100_000,
     contextPressure: 0.42,
+    contextAssumed: false,
     usage: { inputTokens: 100_000, outputTokens: 20_000 },
     cost: "~$1.00",
     workMillis: 4200,
@@ -105,6 +106,29 @@ test("the context row carries a meter at the session's pressure", async () => {
   const meter = screen.getByRole("meter", { name: /Context/ });
   expect(meter.getAttribute("aria-valuenow")).toBe("42000");
   expect(meter.getAttribute("aria-valuemax")).toBe("100000");
+});
+
+// An assumed window (#4596): the capacity figures - the window, and the
+// remaining headroom derived from it - carry the "~" estimate mark; the used
+// figure stays plain, because usage is measured and only the capacity is
+// assumed. Asserted structurally - figures, values, and the mark's
+// presence/absence - so wording tweaks don't break this while the estimate
+// indicator stays pinned, including its absence once a window something
+// vouches for arrives.
+test("an assumed context window marks only the capacity figures as estimates", async () => {
+  await openPanel(testModel({ contextAssumed: true }));
+  const row = screen.getByTestId("session-details-context");
+  const text = row.textContent ?? "";
+  expect(text).toContain("~100K");
+  expect(text).toContain("~58K");
+  expect(text).not.toContain("~42K");
+  const meter = screen.getByRole("meter", { name: /Context/ });
+  expect(meter.getAttribute("aria-valuenow")).toBe("42000");
+  expect(meter.getAttribute("aria-valuemax")).toBe("100000");
+  expect(meter.getAttribute("aria-label") ?? "").toContain("~100K");
+  cleanup();
+  await openPanel(testModel({ contextAssumed: false }));
+  expect(screen.getByTestId("session-details-context").textContent ?? "").not.toContain("~");
 });
 
 // The gauge's severity comes from the shared contextTone ladder (see

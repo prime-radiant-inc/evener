@@ -248,6 +248,11 @@ type Manager struct {
 	lastInputTokens     int // exact input token count from last API response
 	historyLenAtMeasure int // number of turns when lastInputTokens was recorded
 
+	// assumedWindowDisclosed records that this manager already emitted the
+	// unknown-window disclosure: the assumption is news once per session, not
+	// once per round.
+	assumedWindowDisclosed bool
+
 	// Thresholds are fractions (0.0–1.0) of the context window.
 	// ObservationMaskThreshold and ThinkingClearThreshold are not used by the
 	// default compaction path (MaybeCompact/ForceCompact) because in-place
@@ -374,6 +379,10 @@ func (cm *Manager) SetProfile(profile *provider.Profile) {
 	if !sameProfileTarget(cm.profile, profile) {
 		cm.lastInputTokens = 0
 		cm.historyLenAtMeasure = 0
+		// The unknown-window disclosure names the model it assumed for, so
+		// it belongs to the outgoing target: a different model — still
+		// unknown — discloses its own assumption on its first fold.
+		cm.assumedWindowDisclosed = false
 	}
 	cm.profile = profile
 }
@@ -442,7 +451,7 @@ func (cm *Manager) pressureWithProfile(history *[]schema.Turn, sysPromptChars in
 // before/after diagnostics from one snapshot apiece, so a concurrent SetProfile
 // cannot decide a layer by one model and describe it by another.
 func (cm *Manager) pressureFromSnapshot(prof *provider.Profile, lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) float64 {
-	cw := contextWindowOf(prof)
+	cw, _ := effectiveWindowOf(prof)
 	if cw <= 0 {
 		return 0
 	}
@@ -459,6 +468,40 @@ func contextWindowOf(prof *provider.Profile) int {
 	}
 	return prof.ContextWindowSize()
 }
+
+// effectiveWindowOf is the window the budget sites read: the profile's real
+// window when it has one, and AssumedContextWindow when the window is
+// unknown. A nil profile — a manager without a model, as test harnesses
+// build — has nothing to assume against and stays (0, false).
+func effectiveWindowOf(prof *provider.Profile) (window int, assumed bool) {
+	if cw := contextWindowOf(prof); cw > 0 {
+		return cw, false
+	}
+	if prof == nil {
+		return 0, false
+	}
+	return AssumedContextWindow, true
+}
+
+// AssumedContextWindow is the window the manager budgets against when the
+// model's real one is unknown — no user row declares it, the catalog has no
+// row, and no live listing supplied one (issue #4564). A zero window used to
+// mean "no limit": compaction and the usage warning went dead, and every
+// round resent the full accumulated history. Unknown instead assumes a
+// window small enough that compaction errs toward folding too early. 128K is
+// the floor of current frontier text models' advertised windows, so the
+// assumption undershoots only sub-128K models, whose oversized requests fail
+// at the API either way; the disclosure names the remedy — declare
+// context_window on the provider's model row.
+const AssumedContextWindow = 128_000
+
+// UnknownWindowInputTripwire is the exact input-token measurement at which an
+// unknown-window session folds regardless of the window math (issue #4564): a
+// few hundred K. The tripwire is independent of the assumed window and of the
+// configured thresholds, so growth stays bounded even if the assumption or
+// the thresholds are wrong. A known window governs on its own, so the
+// tripwire never fires for one.
+const UnknownWindowInputTripwire = 200_000
 
 // resolvedTargetOf returns the profile's resolved registry row, or the zero row
 // when there is no profile: the estimator then falls back to the names the turns
@@ -511,19 +554,20 @@ func (cm *Manager) EstimatePressure(history []schema.Turn, sysPromptChars int) f
 	return cm.estimatePressure(history, sysPromptChars)
 }
 
-// EstimateUsage returns the estimated used, total, and remaining context tokens.
-// Like estimatePressure, one profile snapshot covers the window, the
-// measurement, and the estimate.
+// EstimateUsage returns the estimated used, total, and remaining context
+// tokens, with Assumed marking a Window that is the unknown-window assumption
+// rather than a size anything vouches for. Like estimatePressure, one profile
+// snapshot covers the window, the measurement, and the estimate.
 func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) schema.ContextMetrics {
 	prof, lastTokens, measuredLen := cm.profileSnapshot()
-	cw := contextWindowOf(prof)
+	cw, assumed := effectiveWindowOf(prof)
 	if cw <= 0 {
 		return schema.ContextMetrics{}
 	}
 
 	used := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
 	remaining := max(cw-used, 0)
-	return schema.ContextMetrics{Used: used, Window: cw, Remaining: remaining}
+	return schema.ContextMetrics{Used: used, Window: cw, Remaining: remaining, Assumed: assumed}
 }
 
 // ApplyThresholdScale scales all compaction thresholds on cm by the given
@@ -614,7 +658,8 @@ func attentionTransparentRecentCutoff(history []schema.Turn, preserveRecent int)
 
 // MaybeCompact checks context pressure and applies compaction layers progressively.
 // It modifies history in place and emits events for each layer applied.
-// Called before each LLM request.
+// Called before each LLM request. A model whose window is unknown is managed
+// against AssumedContextWindow (issue #4564), disclosed once through emitFn.
 func (cm *Manager) MaybeCompact(
 	ctx context.Context,
 	history *[]schema.Turn,
@@ -625,9 +670,11 @@ func (cm *Manager) MaybeCompact(
 	// a model switch landing mid-compaction would otherwise bill one layer's
 	// numbers by another model's thinking rule and image family.
 	prof, _, _ := cm.profileSnapshot()
-	if cw := contextWindowOf(prof); cw <= 0 {
+	cw, _ := effectiveWindowOf(prof)
+	if cw <= 0 {
 		return
 	}
+	discloseAssumedWindow(cm, prof, emitFn)
 
 	// Each phase reads pressure and its before/after diagnostics from ONE
 	// snapshot (see pressureWithProfile), so a concurrent SetProfile cannot decide
@@ -635,6 +682,11 @@ func (cm *Manager) MaybeCompact(
 	pressure := func() (float64, *provider.Profile) { return cm.pressureWithProfile(history, sysPromptChars) }
 
 	p, prof := pressure()
+	// Window-independent tripwire (issue #4564): force at least checkpoint
+	// pressure when it fires; see unknownWindowTripwireFires.
+	if cm.unknownWindowTripwireFires(prof) && p < cm.CheckpointThreshold {
+		p = cm.CheckpointThreshold
+	}
 	compacted := false
 
 	// Invalidate API token measurement before running any layer so that
@@ -703,6 +755,83 @@ func (cm *Manager) MaybeCompact(
 		cm.historyLenAtMeasure = 0
 		cm.mu.Unlock()
 	}
+}
+
+// claimAssumedWindowDisclosure hands out the right to emit the unknown-window
+// disclosure exactly once per model target: the latch is unset AND the
+// caller's captured assumption still governs the manager's current profile —
+// same target, and still an unknown window — checked under the same lock that
+// latches. A SetProfile that swapped models, or a real window that arrived for
+// this one in between, refuses the stale caller without touching the latch;
+// the current model's own pass claims it instead.
+func (cm *Manager) claimAssumedWindowDisclosure(caller *provider.Profile) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.assumedWindowDisclosed || !assumptionStillGoverns(caller, cm.profile) {
+		return false
+	}
+	cm.assumedWindowDisclosed = true
+	return true
+}
+
+// assumedWindowWarning is the disclosure that the window this session's
+// compaction budgets against is an assumption (issue #4564): the model it
+// names, the window assumed in its place, and the configuration that would
+// replace the assumption with the fact.
+func assumedWindowWarning(prof *provider.Profile) events.WarningData {
+	return events.WarningData{
+		Message: fmt.Sprintf("context window unknown for %s/%s; compaction budgets against an assumed %d-token window; declare context_window in the provider's model row to use the real window", prof.ID(), prof.Model(), AssumedContextWindow),
+		Source:  string(diagnostic.SourceEvener),
+		Title:   "Context window unknown",
+		Hint:    "Compaction stays live against a conservative assumed window. Declare context_window on the model's row in providers.toml to budget against the real size.",
+		Code:    events.WarningCodeContextWindowAssumed,
+	}
+}
+
+// discloseAssumedWindow emits the unknown-window disclosure when prof budgets
+// against the assumed window and this manager has not disclosed it yet
+// (issue #4564): the window the caller's layers run against is an assumption,
+// not a fact, and the session hears that once per model.
+func discloseAssumedWindow(cm *Manager, prof *provider.Profile, emitFn func(events.EventKind, events.EventData)) {
+	if _, assumed := effectiveWindowOf(prof); assumed && cm.claimAssumedWindowDisclosure(prof) {
+		emitFn(events.EventWarning, assumedWindowWarning(prof))
+	}
+}
+
+// unknownWindowTripwireFires reports the window-unknown tripwire condition
+// (issue #4564): with the window unknown, an exact API measurement already
+// past a few hundred K input tokens must force a fold whatever the pressure
+// estimate says — the char/4 estimate can badly lag a tokenizer-dense
+// history, and threshold scaling can move the ordinary gates out of reach.
+// The verdict is one locked snapshot, not a profile check plus a separate
+// count read: RecordInputTokensFor installs a count only for the profile that
+// produced it, and SetProfile clears the count on a target change, so the
+// stored count belongs to the CURRENT profile or to no one. A pass whose
+// captured target was switched out has no measurement it may act on —
+// reading the count separately could catch the switched-to model's own
+// measurement instead — and a window that has since become known governs on
+// its own, so the unknown check reads the current profile too.
+func (cm *Manager) unknownWindowTripwireFires(captured *provider.Profile) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	_, unknown := effectiveWindowOf(cm.profile)
+	return unknown && sameProfileTarget(captured, cm.profile) && cm.lastInputTokens >= UnknownWindowInputTripwire
+}
+
+// assumptionStillGoverns reports whether an assumption-state captured under
+// captured — a tripwire verdict, or the right to disclose the assumed window —
+// still applies to current: the model is the same target, and current still
+// budgets against the assumed window. Every profile mutation that can
+// invalidate a captured assumption-state changes one of those two facts — a
+// switch to another model, or a real window arriving for this one (a live
+// listing enriching the same target, which sameProfileTarget alone cannot
+// see) — so deriving the verdict from the profiles themselves cannot
+// desynchronize the way cached state would. The fold gates re-snapshot
+// pressure after their mask layers, and the claim runs under its latch's
+// lock; both consult the current profile through this one predicate.
+func assumptionStillGoverns(captured, current *provider.Profile) bool {
+	_, assumed := effectiveWindowOf(current)
+	return assumed && sameProfileTarget(captured, current)
 }
 
 // ForceCompact runs all compaction layers unconditionally, regardless of context pressure.
@@ -1718,10 +1847,12 @@ const partnerBatchPrompt = `You are condensing messages from your human partner 
 // the window; a carry of at most a quarter leaves the rest for the system
 // prompt and tools, the model's own summary, the preserved recent turns and the
 // work until the next compaction, so the carry alone can never push a compacted
-// context back over the threshold. It is 0, no ceiling, when the model's window
-// is unknown (and compaction never runs).
+// context back over the threshold. It is 0, no ceiling, only when there is no
+// profile to read a window from; an unknown window is assumed like the rest of
+// the fold (issue #4564), so the assumption bounds the carry too.
 func partnerCarryCeiling(prof *provider.Profile) int {
-	return contextWindowOf(prof)
+	cw, _ := effectiveWindowOf(prof)
+	return cw
 }
 
 // partnerCarry renders the partner's messages a model-written compaction turn

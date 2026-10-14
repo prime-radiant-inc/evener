@@ -127,6 +127,7 @@ describe("usage", () => {
 				workMillis: 3 * 3_600_000 + 12 * 60_000,
 				contextUsed: 39_800,
 				contextWindow: 200_000,
+				contextAssumed: false,
 				failedToolCalls: 3,
 			}),
 		).toEqual({
@@ -147,13 +148,39 @@ describe("usage", () => {
 				workMillis: 0,
 				contextUsed: 0,
 				contextWindow: 0,
+				contextAssumed: false,
 				failedToolCalls: undefined,
 			}),
 		).toEqual({});
 		expect(
-			usageFacts({ usage: null, cost: undefined, workMillis: 0, contextUsed: 0, contextWindow: 0, failedToolCalls: 1 })
-				.failedToolCalls,
+			usageFacts({
+				usage: null,
+				cost: undefined,
+				workMillis: 0,
+				contextUsed: 0,
+				contextWindow: 0,
+				contextAssumed: false,
+				failedToolCalls: 1,
+			}).failedToolCalls,
 		).toBe("1 failed tool call");
+	});
+
+	it("marks an assumed window as an estimate, not a stated capacity", () => {
+		const facts = usageFacts({
+			usage: null,
+			cost: null,
+			workMillis: 0,
+			contextUsed: 25_600,
+			contextWindow: 128_000,
+			contextAssumed: true,
+			failedToolCalls: undefined,
+		});
+		// Numeric behavior and the marker's placement — not the prose around it:
+		// the used figure plain, the window figure marked, the fraction exact.
+		expect(facts.context?.fraction).toBe(0.2);
+		expect(facts.context?.text).toContain("25.6K");
+		expect(facts.context?.text).toContain("~128K");
+		expect(facts.context?.text).not.toContain("~25.6K");
 	});
 });
 

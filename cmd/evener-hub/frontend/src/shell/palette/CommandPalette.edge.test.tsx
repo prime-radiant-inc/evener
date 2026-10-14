@@ -78,6 +78,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     contextUsed: 0,
     contextWindow: 0,
     contextPressure: 0,
+    contextAssumed: false,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],

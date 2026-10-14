@@ -432,6 +432,12 @@ export interface ThreadModel {
   contextUsed: number;
   contextWindow: number;
   contextPressure: number;
+  // ContextAssumed is true while contextWindow above is the daemon's
+  // conservative ASSUMPTION for an unknown window (wire:
+  // EvenerThread.ContextAssumed, omitempty) rather than a size anything
+  // vouches for - the meters mark the capacity as an estimate ("~") when it
+  // is set. Absent means the window is real.
+  contextAssumed: boolean;
   // Usage is null (not a zero-valued object) when the daemon has no token
   // data at all (an old daemon or a source-backed thread that omits the field) -
   // EvenerThread.Usage uses nil to signal "no token data" rather than rendering
