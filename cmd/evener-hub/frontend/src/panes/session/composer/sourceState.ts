@@ -521,23 +521,17 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     return true;
   }
 
-  // Adopts a loaded row's token ONLY when the row's revision is one this
-  // source produced. Exactly two shapes qualify: a row at the revision of the
-  // source's own recorded lineage (same revision, whatever incarnation the row
-  // was re-tokened to by a namespace epoch change), and a row a recovery
-  // transfer durably recorded as its own baseline — a transfer's session
-  // write carries no edit, so a competing tab's draft or recovery edit can
-  // never leave the row exactly there, while every recovery edit, discard or
-  // resend moves it past. Any other revision past the lineage is a competing
-  // tab's write (#4581): adopting it would put that tab's authority into this
-  // submission's settlement guard, and its post-send clear would erase the
-  // competing tab's newer row.
-  async function adoptOwnDurableToken(row: StoredComposerDraft, tolerateFault: boolean): Promise<void> {
-    const lineage = draftToken;
-    if (lineage !== null && row.token.sessionRevision === lineage.sessionRevision) {
-      draftToken = { ...row.token };
-      return;
-    }
+  // Adopts a row's token when a recovery transfer durably recorded the row's
+  // revision as its own baseline: the one advance past a source's lineage
+  // that can PROVE it carried no edit, because a transfer's session write
+  // preserves the ordinary value. Every recovery edit, discard or resend moves
+  // the row past the baseline, so a competing tab's draft or recovery edit can
+  // never leave the row exactly there. Callers reach here only for a revision
+  // the source cannot classify as its own; one with no recorded baseline stays
+  // unadopted (#4581): adopting it would put a competing tab's authority into
+  // this submission's settlement guard, and its post-send clear would erase
+  // the competing tab's newer row.
+  async function adoptProvenTransferBaseline(row: StoredComposerDraft, tolerateFault: boolean): Promise<void> {
     const box = outbox;
     if (!box) return;
     const records = tolerateFault ? await box.listRecovery(ref).catch(() => []) : await box.listRecovery(ref);
@@ -677,7 +671,18 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       const row = tolerateFault
         ? await submissionRepository.load(submissionKey).catch(() => null)
         : await submissionRepository.load(submissionKey);
-      if (row) await adoptOwnDurableToken(row, tolerateFault);
+      if (row) {
+        // The row's token is adopted ONLY when its revision is one this source
+        // produced: its own recorded lineage (same revision, whatever
+        // incarnation the row was re-tokened to by a namespace epoch change),
+        // or a revision a recovery transfer durably recorded as its baseline.
+        const lineage = draftToken;
+        if (lineage !== null && row.token.sessionRevision === lineage.sessionRevision) {
+          draftToken = { ...row.token };
+        } else {
+          await adoptProvenTransferBaseline(row, tolerateFault);
+        }
+      }
     }
     const token = getDraftToken();
     const settlementGuard: DraftSettlementGuard = {
