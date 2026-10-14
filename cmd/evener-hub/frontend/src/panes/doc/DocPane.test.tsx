@@ -1425,6 +1425,57 @@ test("a real source change expires the old epoch's highlight and old-lease Send 
   expect(await payloadRowsFor(f, produced.operationId)).toEqual([produced]);
 });
 
+test("a revalidation read landing mid-gesture keeps the finished selection capturable", async () => {
+  const f = await fixture("reader-midgesture-revalidation");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  mountAnnotated(f, ports, client, "doc-midgesture-revalidation");
+  const work = documentReaderWork("doc-midgesture-revalidation", f.document, ports);
+  const firstMap = await waitForCurrentBoundMap(work, maps);
+
+  // Hold every later raw read at the fetch boundary so the revalidation can be
+  // landed inside the gesture deterministically.
+  let releaseHeldRead: (() => void) | undefined;
+  mockRead.mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        releaseHeldRead = () => resolve(docContent(SOURCE, "rev-A"));
+      }),
+  );
+  releaseOnCleanup(() => releaseHeldRead?.());
+  // A foreground visibility refresh schedules the revalidation read; it parks at
+  // the held fetch with a live beginRead ticket behind it.
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  fireEvent(document, new Event("visibilitychange"));
+  await waitFor(() => expect(releaseHeldRead).toBeDefined());
+
+  // Arm the gesture, then land the revalidation's acceptance - the render that
+  // rebinds the map - before the release. The gesture must survive the rebind:
+  // the finished selection captures through the current map and opens the box.
+  fireEvent.pointerDown(screen.getByText("First occurrence: same"), PRIMARY_POINTER);
+  const releaseRevalidation = releaseHeldRead;
+  if (!releaseRevalidation) throw new Error("held revalidation read not armed");
+  releaseRevalidation();
+  await waitFor(() => expect(maps.at(-1)?.identity.mappingId).not.toBe(firstMap.identity.mappingId));
+  const paragraph = screen.getByText("First occurrence: same");
+  const node = paragraph.firstChild;
+  if (!node || node.nodeType !== Node.TEXT_NODE) throw new Error("missing source text node");
+  const range = document.createRange();
+  range.setStart(node, 18);
+  range.setEnd(node, 22);
+  const selection = document.getSelection();
+  if (!selection) throw new Error("missing selection");
+  selection.removeAllRanges();
+  selection.addRange(range);
+  fireEvent.pointerUp(paragraph, PRIMARY_POINTER);
+
+  expect(work.comment.capture?.sourceRange).toEqual(FIRST);
+  expect(screen.getByRole("textbox")).toBeTruthy();
+});
+
 test("a peer fence and save keeps foreign offsets off the retained display, then the committed wake adopts the replacement epoch", async () => {
   const f = await fixture("reader-peer-fence-save");
   await settleBaseline(f);

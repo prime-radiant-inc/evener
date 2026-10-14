@@ -5,7 +5,7 @@
 // collection/setup failure until the source grant lands, and `tsc` reports the
 // missing module instead of this file hiding it behind a stub or an optional
 // call. The approved interfaces exercised here are `FinishedDocumentSelection`
-// and `observeFinishedDocumentSelections({ root, map, onFinish })`.
+// and `observeFinishedDocumentSelections({ root, getMap, onFinish })`.
 //
 // Every case drives a REAL bound document map and the real Selection/Range APIs
 // with native event dispatch; `onFinish` observes the production observer's
@@ -89,7 +89,7 @@ function observe(
   map: BoundDocumentMap,
   onFinish: (capture: FinishedDocumentSelection) => void,
 ): void {
-  onTeardown(observeFinishedDocumentSelections({ root, map, onFinish }));
+  onTeardown(observeFinishedDocumentSelections({ root, getMap: () => map, onFinish }));
 }
 
 function textNodes(root: Node): Text[] {
@@ -463,7 +463,11 @@ test("registers on the root's owning document and removes every listener on disp
   const add = vi.spyOn(owner, "addEventListener");
   const remove = vi.spyOn(owner, "removeEventListener");
   const onFinish = vi.fn();
-  const dispose = observeFinishedDocumentSelections({ root, map: holder.map as BoundDocumentMap, onFinish });
+  const dispose = observeFinishedDocumentSelections({
+    root,
+    getMap: () => holder.map as BoundDocumentMap,
+    onFinish,
+  });
   onTeardown(dispose);
 
   const registered = add.mock.calls.map(([type, listener]) => [type, listener] as const);
@@ -510,7 +514,7 @@ test("observes the root's owning document, not the global selection", () => {
   onTeardown(() => map.dispose());
 
   const onFinish = vi.fn();
-  const dispose = observeFinishedDocumentSelections({ root, map, onFinish });
+  const dispose = observeFinishedDocumentSelections({ root, getMap: () => map, onFinish });
   onTeardown(dispose);
 
   // The owning document selects FIRST; the global document selects elsewhere.

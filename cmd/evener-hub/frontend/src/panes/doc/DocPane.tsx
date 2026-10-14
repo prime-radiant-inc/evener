@@ -741,18 +741,34 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   );
 
   // Finished selections open the box and freeze the capture at the first edit.
+  // The subscription belongs to the rendered host NODE, not to a render: the
+  // host only exists once content is displayed and can swap across state
+  // transitions, so the effect follows the node - and within one node's
+  // lifetime it reads the display state and the accepted map at event time,
+  // so a revalidation read landing mid-gesture rebinds the map without
+  // cancelling the armed gesture. The finished selection captures through the
+  // current map; a display that is not the accepted snapshot captures nothing.
+  const selectionTargetRef = useRef<{ state: typeof state; map: typeof boundForLease } | null>(null);
+  useLayoutEffect(() => {
+    selectionTargetRef.current = { state, map: boundForLease };
+  });
   useEffect(() => {
-    const root = hostRef.current;
-    if (!root || !boundForLease || state.status !== "ok") return;
+    const root = contentElement;
+    if (!root) return;
     return observeFinishedDocumentSelections({
       root,
-      map: boundForLease,
+      getMap: () => {
+        const target = selectionTargetRef.current;
+        return target && target.state.status === "ok" ? target.map : null;
+      },
       onFinish: (selection) => {
-        work.comment = selectCommentPassage(work.comment, buildCapture(selection, state.content));
+        const target = selectionTargetRef.current;
+        if (target?.state.status !== "ok") return;
+        work.comment = selectCommentPassage(work.comment, buildCapture(selection, target.state.content));
         publishReader(work);
       },
     });
-  }, [boundForLease, state, work]);
+  }, [work, contentElement]);
 
   const status = commentStatus(work, epochViews);
   const boxVisible = work.attempted !== null || work.comment.capture !== undefined || work.comment.note.trim() !== "";
