@@ -325,6 +325,11 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 	}
 	m.err = nil
 	m.spawnSubmitting = true
+	// The submitted prompt, recorded so the entry read's automatic
+	// completion can tell a standing form from an edited one: the form
+	// stays up through the entry read (and its paced retry, #4343), and
+	// the user may keep typing into it. Cleared with the rest of the form.
+	m.spawnSubmittedPrompt = prompt
 	return m, sendHubSpawn(m.client, req)
 }
 
@@ -568,6 +573,7 @@ func (m *hubModel) closeSpawnForm() {
 
 func (m *hubModel) resetSpawnForm() {
 	m.spawnReturnMode = hubModeDashboard
+	m.spawnSubmittedPrompt = ""
 	m.setSpawnDir("")
 	m.spawnProject = ""
 	m.spawnHarness = "evener"

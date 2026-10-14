@@ -379,10 +379,13 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      entry must not strand on it. The
      automatic completion holds for the displayed session's unsent work
      and open overlays exactly as the cycling switch and focus trap
-     do: a successful re-read that would switch away from a composer
+     do — and for the standing spawn form's prompt, edited since the
+     submission that armed the retry: a successful re-read that would
+     switch away from a composer
      draft, pending attachments, or a panel or picker the user is
-     interacting with retires the retry instead, restores the
-     displayed session's subscription, and leaves the entry for the
+     interacting with, or replace an edited spawn form, retires the retry
+     instead, restores the displayed session's subscription when one is
+     displayed, and leaves the entry for the
      user to re-pick. Navigating away — entering
      another session, opening another pane, leaving the hub surface —
      retires the pending retry and its status, and a late-landing retry

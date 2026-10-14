@@ -251,6 +251,17 @@ func (m hubModel) replacedAwayFromDisplayed(msg hubSessionMsg) bool {
 	return msg.subscriptionReplaced && m.detail.Ref != "" && m.detail.Ref != msg.ref
 }
 
+// replacedDisplayedChildren reports whether this errored read's fetch
+// already replaced the connection's server-side subscription AT the
+// displayed session — the same replacement that re-points the main
+// subscription culls the children — so a same-ref failure is the last
+// flight that knows they are gone: watchedChildRefs still marks them
+// watched, so no later landing re-arms them either, and the rail's live
+// activity would stay silent until the user navigates away and back.
+func (m hubModel) replacedDisplayedChildren(msg hubSessionMsg) bool {
+	return msg.subscriptionReplaced && m.detail.Ref != "" && m.detail.Ref == msg.ref
+}
+
 // resubscribeDisplayedSessionAfterReconnect is the reconnect flavor: the
 // replacement connection carries no subscriptions (the dead connection's died
 // with it), so the read stays ADDITIVE — a replacing one has nothing to cull,
@@ -267,6 +278,18 @@ func (m hubModel) reestablishDisplayedSubscriptionRead(replace bool) (hubModel, 
 	if !ok || m.frames == nil {
 		return m, nil
 	}
+	if m.liveNavRecoveryInFlight {
+		// A recovery read is already in flight for this display: its landing
+		// is the restore this caller is owed. A second concurrent one would
+		// race its server-side replacement — each fetch re-points the
+		// connection's subscriptions and culls the children, so the first's
+		// success re-arms children the second's fetch may cull after it,
+		// and the second's landing then skips re-subscribing them because
+		// watchedChildRefs still marks them watched. Coalesce onto the
+		// in-flight read.
+		return m, nil
+	}
+	m.liveNavRecoveryInFlight = true
 	seq := m.liveNavSeq
 	m.watchedChildRefs = nil // the recovery response's child re-arm re-fills it
 	m.liveNavRecoveryRetries = 0

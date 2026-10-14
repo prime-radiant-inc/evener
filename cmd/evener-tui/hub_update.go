@@ -111,6 +111,18 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.entryRepairRetire()
 				return m.discardSupersededSessionRead()
 			}
+			// The spawn form stands through its entry read's retry window,
+			// and it is an editable surface: the submitted prompt is a draft
+			// the user may keep typing into. A success whose form has been
+			// edited since submission holds the same way the displayed
+			// session's composer does — entering would replace the form
+			// (input included) and silently discard the newer draft. Retire
+			// the retry and drop the success; the user enters when ready.
+			if msg.err == nil && m.mode == hubModeSpawn &&
+				strings.TrimSpace(m.session.input.Value()) != m.spawnSubmittedPrompt {
+				m.entryRepairRetire()
+				return m.discardSupersededSessionRead()
+			}
 		}
 		// A refresh read (the /details panel, a clear's re-read, the resync
 		// re-read — tagLiveNavRefresh) targets the session displayed at
@@ -222,6 +234,11 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// those guards would loop recovery forever (roborev PR #1044
 			// round-12 medium 2).
 			if msg.liveNavRecovery {
+				// This landing concludes the in-flight recovery flight, whatever
+				// it says: clear the fence before branching, so a stale drop or a
+				// failure retry can issue the next flight (its own issuance sets
+				// the fence again).
+				m.liveNavRecoveryInFlight = false
 				if msg.liveNavSeq != m.liveNavSeq || m.detail.Ref != msg.ref {
 					// A stale recovery response's ThreadRead still replaced
 					// the server-side subscription, and concurrent RPCs have
@@ -400,7 +417,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.entryRepairSeq = m.liveNavSeq
 					}
 					m.err = nil
-					if m.mode == hubModeSession && (((msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile) || m.replacedAwayFromDisplayed(msg)) {
+					if m.mode == hubModeSession && (((msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile) || m.replacedAwayFromDisplayed(msg) || m.replacedDisplayedChildren(msg)) {
 						// The failed flight carried the superseded read's
 						// deferred reconciliation, or its own read leg
 						// already re-pointed the subscription at this
@@ -413,7 +430,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, hubEntryRepairRetryCmd(m.entryRepairDelay, ref, m.entryRepairSeq)
 				case armedFor && !isHubTranscriptEntryTerminal(msg.err):
-					if m.mode == hubModeSession && (((msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile) || m.replacedAwayFromDisplayed(msg)) {
+					if m.mode == hubModeSession && (((msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile) || m.replacedAwayFromDisplayed(msg) || m.replacedDisplayedChildren(msg)) {
 						// Same settle, armed-failure flavor: the standing
 						// status rides after the reconcile.
 						retried, reconcile := m.settleDeferredReconcile(msg.err)
@@ -439,10 +456,12 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// theirs at the failed flight's own end — the armed flight
 				// they schedule may not land for minutes — so only the
 				// non-retryable conclusions reach this second settle point.
-				// A replaced read away from the displayed session settles
-				// here too, whatever its error class: the subscription
-				// follows the failed ref and nothing else will restore it.
-				if m.mode == hubModeSession && (((msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile) || m.replacedAwayFromDisplayed(msg)) {
+				// A replaced read settles here too, whatever its error
+				// class and whichever session it targeted: away from the
+				// display, the subscription follows the failed ref; at the
+				// display, the replacement still culled the children, and
+				// nothing else will restore either.
+				if m.mode == hubModeSession && (((msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile) || m.replacedAwayFromDisplayed(msg) || m.replacedDisplayedChildren(msg)) {
 					retried, reconcile := m.settleDeferredReconcile(msg.err)
 					return retried, reconcile
 				}

@@ -143,7 +143,12 @@ type hubModel struct {
 	spawnPluginPreviewParamsDigest string
 	spawnPluginPreviewLastSuccess  string
 	spawnSubmitting                bool
-	spawnFocus                     hubSpawnField
+	// spawnSubmittedPrompt holds the prompt as it was when the standing
+	// spawn form was submitted: the entry read's automatic completion holds
+	// when the form has been edited since, so entering does not silently
+	// discard the newer draft (#4343 round-28 high).
+	spawnSubmittedPrompt string
+	spawnFocus           hubSpawnField
 	// spawnRecentDirs holds the hub's most recently used project dirs (the
 	// Dir field's prepopulated dropdown options, issue #35), fetched with the
 	// spawn options. spawnRecentIdx tracks the tab-cycle position: the index
@@ -364,6 +369,12 @@ type hubModel struct {
 	// PR #1044 round-15 medium 1). Cleared when the reconcile issues, on
 	// reconnect (its own resub), and by any direct re-establish.
 	liveNavNeedsReconcile bool
+	// liveNavRecoveryInFlight, while set, marks a reestablishDisplayedSubscription
+	// read issued and not yet landed: a second concurrent recovery would race
+	// its server-side replacement, so further callers coalesce onto it. Set at
+	// the read's issuance; cleared at its landing (any outcome) and on
+	// reconnect (the dead connection's flight never lands there).
+	liveNavRecoveryInFlight bool
 	// liveNavRecoveryRetries counts consecutive failed recovery reads
 	// (reestablishDisplayedSubscription). A persistent RPC failure must not
 	// loop recovery forever: after hubLiveNavRecoveryMaxRetries the failure
