@@ -1930,6 +1930,12 @@ export class TranscriptRepository {
       // encode every body. Pages update the cursor in this scalar header too.
       batch = {
         ...batch,
+        sourceAuthority: {
+          bootGeneration: history.bootGeneration,
+          epoch: history.epoch,
+          incarnation: history.incarnation,
+          representedSnapshot: history.length,
+        },
         sessionMetadata: {
           historyKey: this.#binding.historyKey,
           requestedRefs: [{ clientId: this.#binding.identity.clientId, ref: this.#binding.ref }],
@@ -2153,6 +2159,24 @@ export class TranscriptRepository {
     this.#recoveryNeeded = true;
     this.#recordAbandonment("failed", [batch.coverage]);
     this.#scheduleReconcile();
+    if (this.#readerCount === 0 && this.#model?.history) {
+      // Refused rows have no admission charge. Remove only those versions,
+      // independently of unrelated admitted work whose display must survive.
+      // Reconciliation restores their content; active overlay stays owned here.
+      const refused = new Map(batch.items.map((row) => [row.transcriptKey, row.version]));
+      const retain = (item: ItemModel) =>
+        item.transcriptKey === undefined ||
+        !refused.has(item.transcriptKey) ||
+        refused.get(item.transcriptKey) !== item.version;
+      this.#model = {
+        ...this.#model,
+        history: {
+          ...this.#model.history,
+          turns: this.#model.history.turns.map((turn) => ({ ...turn, items: turn.items.filter(retain) })),
+        },
+        turns: this.#model.turns.map((turn) => ({ ...turn, items: turn.items.filter(retain) })),
+      };
+    }
     this.#reclaimBackgroundModel();
     return Promise.resolve();
   }

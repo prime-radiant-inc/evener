@@ -983,11 +983,13 @@ it("aborted durable replacement rolls back removed rows and coverage together", 
   const rows = await fixture.cache.getLatest(historyKey, 200);
   const coverage = await fixture.cache.getCoverage(historyKey, "read:old");
   const totals = await fixture.cache.getByteTotals(historyKey);
+  const sourceAuthority = (await fixture.cache.getSessionMetadata(historyKey))?.sourceAuthority;
   const deletes = vi.spyOn(IDBObjectStore.prototype, "delete");
   const gate = holdNextEntryPut("B");
   const batch = {
     historyKey,
     clearEpoch: 0,
+    sourceAuthority,
     replacement: { from: { entry: 2, item: 0 } },
     items: [{ ...rows[1]!, transcriptKey: "B" }],
   };
