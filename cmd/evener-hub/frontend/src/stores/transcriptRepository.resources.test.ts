@@ -1186,6 +1186,95 @@ it("reclaims background bodies while admitted writes are held and queued", async
   owner.dispose();
 });
 
+it("reclaims versionless refused bodies while admitted writes are held and queued", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const admission = new EntryWriteAdmission(3_000);
+  const owner = repository(fixture.cache, 1, undefined, undefined, admission);
+  owner.acceptRead(read("base"), { lifetime: 1, readId: "base", boundary: "base" });
+  await owner.settled();
+  owner.accept(
+    {
+      method: "overlay/upserted",
+      params: {
+        ref,
+        threadId,
+        item: {
+          key: "stream:live/1:agentMessage",
+          kind: "stream",
+          turnId: "turn_1",
+          roundId: "live",
+          streamId: "live/1",
+          item: {
+            type: "agentMessage",
+            id: "live",
+            turnId: "turn_1",
+            roundId: "live",
+            text: "active overlay",
+            status: "inProgress",
+          },
+        },
+      },
+    } as unknown as AnyNotification,
+    { lifetime: 1 },
+  );
+  const gate = deferred<void>();
+  const realCommit = fixture.cache.commitBatch.bind(fixture.cache);
+  const spy = vi.spyOn(fixture.cache, "commitBatch").mockImplementation(async (batch) => {
+    if (batch.items.some((row) => row.transcriptKey === "item-held")) await gate.promise;
+    return realCommit(batch);
+  });
+  const send = (label: string, entry: number) => {
+    const notification = historyNotification(label, entry, entry);
+    if (notification.method !== "history/updated") throw new Error("wrong fixture");
+    notification.params.items = [{ ...bigItem(label, entry, 1_000), version: undefined }];
+    expect(owner.accept(notification, { lifetime: 1 })).toBe(true);
+  };
+  send("held", 2);
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+  send("queued", 3);
+  expect(spy).toHaveBeenCalledTimes(1);
+  expect(admission.retainedBytes).toBeGreaterThan(2_000);
+  expect(
+    owner
+      .getSnapshot()
+      ?.history?.turns.flatMap((turn) => turn.items)
+      .map((entry) => entry.text),
+  ).toEqual(["", `held${"x".repeat(1_000)}`, `queued${"x".repeat(1_000)}`]);
+  expect(
+    owner
+      .getSnapshot()
+      ?.turns.flatMap((turn) => turn.items)
+      .map((entry) => entry.text),
+  ).toEqual(expect.arrayContaining([`held${"x".repeat(1_000)}`, `queued${"x".repeat(1_000)}`, "active overlay"]));
+  for (let entry = 4; entry < 10; entry++) send(`refused-${entry}`, entry);
+  expect(admission.retainedBytes).toBeLessThanOrEqual(3_000);
+  try {
+    const model = owner.getSnapshot();
+    for (const turns of [model?.history?.turns, model?.turns]) {
+      const bodies = turns?.flatMap((turn) => turn.items).map((entry) => entry.text);
+      expect(bodies).toEqual(expect.arrayContaining([`held${"x".repeat(1_000)}`, `queued${"x".repeat(1_000)}`]));
+      expect(bodies?.some((text) => text?.startsWith("refused-"))).toBe(false);
+    }
+    expect(model?.turns.flatMap((turn) => turn.items).map((entry) => entry.text)).toContain("active overlay");
+    expect(model?.overlay?.["stream:live/1:agentMessage"]?.item.text).toBe("active overlay");
+    expect(spy.mock.calls[0]?.[0].items[0]?.item).toMatchObject({ text: `held${"x".repeat(1_000)}` });
+  } finally {
+    gate.resolve();
+  }
+  await vi.waitFor(async () => expect(await keysInCache(fixture.cache)).toContain("item-queued"));
+  const rows = await fixture.cache.getLatest(historyKey, 40);
+  expect(rows.find((row) => row.transcriptKey === "item-held")?.item).toMatchObject({
+    text: `held${"x".repeat(1_000)}`,
+  });
+  expect(rows.find((row) => row.transcriptKey === "item-queued")?.item).toMatchObject({
+    text: `queued${"x".repeat(1_000)}`,
+  });
+  expect(rows.some((row) => row.transcriptKey.startsWith("item-refused"))).toBe(false);
+  spy.mockRestore();
+  owner.dispose();
+});
+
 // Task 3b R2 (round 2): retirement must keep an issued write's charge and real
 // body references until its actual terminal outcome, not free them early.
 it("keeps an issued write's charge and captured bodies across dispose until it settles", async () => {

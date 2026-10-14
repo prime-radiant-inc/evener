@@ -757,3 +757,178 @@ func TestTimingBudgetKeepsTheClassMapOnlyWarnState(t *testing.T) {
 		t.Fatalf("a class-map-only budget must keep exiting 0, not fail the run: %v\n%s", err, out)
 	}
 }
+
+// TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails pins the
+// 2026-10-14 ruling (issue #4615) against the checked-in testing-budget.json,
+// not a synthetic map: a member of a removed runner-bound class now warns on the
+// flat ceiling instead of failing, while a member of a kept class still fails
+// over its class ceiling. It reads the real budget file (the evener_test package
+// runs with the repo root as its working directory), so the removed half also
+// reds if a removed class creeps back in.
+func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name     string
+		pkg      string
+		test     string
+		seconds  string
+		wantFail bool
+	}{
+		{
+			name:    "removed runner-bound class member warns",
+			pkg:     "primeradiant.com/evener/cmd/evener-dev",
+			test:    "TestCrossCompileWindows",
+			seconds: "52.26",
+		},
+		{
+			name:     "kept class member still fails",
+			pkg:      "primeradiant.com/evener/internal/plugins",
+			test:     "TestGitCloneSurvivesAHookThatOrphansAPipeHolder",
+			seconds:  "20.00",
+			wantFail: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			measured := filepath.Join(dir, tc.test+".tsv")
+			writeAuditScriptFixture(t, measured, "TEST\t"+tc.pkg+"\t"+tc.test+"\t"+tc.seconds+"\n")
+			out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
+			if !tc.wantFail {
+				if err != nil {
+					t.Fatalf("a removed runner-bound class member must warn, not fail (#4615):\n%s", out)
+				}
+				if !strings.Contains(out, "WARN") || !strings.Contains(out, tc.test) {
+					t.Fatalf("the removed class member was not reported on the flat ceiling:\n%s", out)
+				}
+				if strings.Contains(out, "FAIL") {
+					t.Fatalf("the removed class member was still enforced as a failure:\n%s", out)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("a kept class member over its ceiling must still fail:\n%s", out)
+			}
+			if !strings.Contains(out, "FAIL") {
+				t.Fatalf("the kept class member was not enforced over its class ceiling:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestTimingBudgetFailsOnANonNumericPerTestCeiling pins issue #4622's
+// perTestCeilingSeconds rows. The flat ceiling is read with budget.get, so a
+// present null is indistinguishable from an absent key; a string, null, list or
+// object crashes the `secs > ceiling` comparison with a TypeError traceback, and
+// a bool IS an int in Python so `true` silently becomes a 1-second ceiling
+// instead of a config error. Each must exit 1 with no traceback, naming the
+// field. The measured fixture carries a TEST row so the pre-fix string/null
+// crash path is actually reached — with a SUM row alone the ceiling is never
+// compared and the run exits 0. A JSON integer too large to convert to a float
+// is the same unusable value: it reads as an enormous ceiling and silently
+// disarms the check, so it is rejected too. The field name is a data value, not
+// copy (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle").
+func TestTimingBudgetFailsOnANonNumericPerTestCeiling(t *testing.T) {
+	measured := "SUM\tpkg\t0.10\nTEST\tpkg\tTestX\t9.00\n"
+	cases := map[string]string{
+		"string":   `"x"`,
+		"null":     `null`,
+		"bool":     `true`,
+		"list":     `[]`,
+		"object":   `{}`,
+		"infinity": `1e309`,
+		"huge int": strings.Repeat("9", 400),
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			budget := `{"perTestCeilingSeconds":` + value + `,"packages":{"pkg":100}}`
+			out, err := runTimingBudgetCompare(t, measured, budget)
+			assertBrokenConfigFails(t, out, err)
+			if !strings.Contains(out, "perTestCeilingSeconds") {
+				t.Fatalf("the failure does not name the perTestCeilingSeconds field:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestTimingBudgetFailsOnANonNumericPerTestCeilingInEveryMode pins the every-mode
+// contract for perTestCeilingSeconds: a present non-number fails in every
+// posture, not only strict. A bool (`true`, which would silently read as a
+// 1-second ceiling) or a null (which budget.get cannot tell from an absent key)
+// must not survive a bare run, a warn-only --check --local, a CI-shaped --check,
+// or --bless. On --bless the file is left byte-for-byte untouched, because
+// failing before the bless write is the observable behavior that matters.
+func TestTimingBudgetFailsOnANonNumericPerTestCeilingInEveryMode(t *testing.T) {
+	const measured = "SUM\tpkg\t0.10\nTEST\tpkg\tTestX\t9.00\n"
+	for _, value := range []string{`true`, `null`} {
+		assertBudgetFailsInEveryMode(t, value, measured,
+			`{"perTestCeilingSeconds":`+value+`,"packages":{"pkg":100}}`)
+	}
+}
+
+// TestTimingBudgetFailsOnANonFinitePackageValue pins issue #4622's Infinity row
+// (and the huge-integer shape of the same value). A package budget of Infinity —
+// JSON's `1e309`, `Infinity`, or `NaN` — is not a usable number of seconds: it
+// makes the ratio m/inf read 0, so the package prints OK and the run exits 0, a
+// silent disarm rather than a comparison, while a JSON integer too large to
+// convert to a float tracebacks the ratio arithmetic. Each must exit 1 with no
+// traceback, naming the entry. The entry name is a data value, not copy
+// (docs/developing-evener/testing.md's "Copy Is Not a Test Oracle").
+func TestTimingBudgetFailsOnANonFinitePackageValue(t *testing.T) {
+	const measured = "SUM\tslowpkg\t1.00\n"
+	cases := map[string]string{
+		"infinity": "1e309",
+		"huge int": strings.Repeat("9", 400),
+	}
+	for name, value := range cases {
+		t.Run(name, func(t *testing.T) {
+			budget := `{"metric":"package-wall-seconds","packages":{"slowpkg":` + value + `}}`
+			out, err := runTimingBudgetCompare(t, measured, budget)
+			assertBrokenConfigFails(t, out, err)
+			if !strings.Contains(out, "slowpkg") {
+				t.Fatalf("the failure does not name the offending package entry slowpkg:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestTimingBudgetFailsOnANonFinitePackageValueInEveryMode pins the every-mode
+// contract for a non-finite package budget. `1e309` (Infinity) reads as OK and
+// exits 0 even under --strict; `NaN` reads as a false FAIL, nonzero under
+// --strict but zero on a bare or warn-only run, and a --bless would overwrite
+// the file with a rounded number. Each posture must exit 1 with the file
+// untouched on --bless.
+func TestTimingBudgetFailsOnANonFinitePackageValueInEveryMode(t *testing.T) {
+	const measured = "SUM\tpkg\t1.00\n"
+	for _, value := range []string{`1e309`, `NaN`} {
+		assertBudgetFailsInEveryMode(t, value, measured, `{"packages":{"pkg":`+value+`}}`)
+	}
+}
+
+// TestTimingBudgetFailsOnANonObjectTopLevelBudget pins issue #4622's top-level
+// row: a budget file whose top level is a list, number, string, null or bool is
+// a broken config reached before any field can be read — budget.get crashes with
+// an AttributeError traceback. #4609 deferred this because the base already
+// exited nonzero (via that traceback), but the issue's contract is a failure
+// that NAMES the file, not an unnamed crash, so it routes through the same
+// structured path as the rest (#4609/#4614/#4618). Each must exit 1 with no
+// traceback. The exit status and the absence of a traceback are the assertions,
+// never the diagnostic wording (docs/developing-evener/testing.md's "Copy Is Not
+// a Test Oracle").
+func TestTimingBudgetFailsOnANonObjectTopLevelBudget(t *testing.T) {
+	const measured = "SUM\tpkg\t100.00\n"
+	for _, value := range []string{`[]`, `5`, `"x"`, `null`, `true`} {
+		t.Run(value, func(t *testing.T) {
+			out, err := runTimingBudgetCompare(t, measured, value)
+			assertBrokenConfigFails(t, out, err)
+		})
+	}
+}
+
+// TestTimingBudgetFailsOnANonObjectTopLevelBudgetInEveryMode pins that a
+// non-object top level fails in every posture, --bless included, not only under
+// --strict: a bare run and a --bless must refuse it (and leave the file
+// untouched) rather than crash.
+func TestTimingBudgetFailsOnANonObjectTopLevelBudgetInEveryMode(t *testing.T) {
+	const measured = "SUM\tpkg\t100.00\n"
+	assertBudgetFailsInEveryMode(t, "list", measured, `[]`)
+	assertBudgetFailsInEveryMode(t, "number", measured, `5`)
+}

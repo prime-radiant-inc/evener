@@ -1,5 +1,6 @@
 import {
   type CachedSessionItem,
+  compareBootGeneration,
   decodeTranscriptItem,
   encodeTranscriptItem,
   type ItemModel,
@@ -715,16 +716,22 @@ export class SessionEntryCache {
         }
         const heldAuthority = historyMeta.sourceAuthority;
         const authority = batch.sourceAuthority;
+        const bootAction =
+          authority && heldAuthority
+            ? compareBootGeneration(heldAuthority.bootGeneration, authority.bootGeneration)
+            : undefined;
         const advancesAuthority =
           authority !== undefined &&
           (!heldAuthority ||
-            (authority.bootGeneration === heldAuthority.bootGeneration &&
-              authority.epoch === heldAuthority.epoch &&
-              authority.incarnation === heldAuthority.incarnation &&
-              authority.representedSnapshot >= heldAuthority.representedSnapshot));
-        // Source identities are equality tokens, not chronologically sortable.
-        // Once fenced, an absent/incomparable source cannot replace durable
-        // content. A Clear or history deletion is required to reset that fence.
+            authority.incarnation !== heldAuthority.incarnation ||
+            bootAction === "replace" ||
+            (bootAction === "apply" &&
+              (authority.epoch > heldAuthority.epoch ||
+                (authority.epoch === heldAuthority.epoch &&
+                  authority.representedSnapshot >= heldAuthority.representedSnapshot))));
+        // Refuse only provably older sources. Restarts reset epochs, while
+        // different incarnations and incomparable boot owners replace scope.
+        // Missing authority still cannot displace an established fence.
         if (batch.replacement && heldAuthority && !advancesAuthority) {
           transaction.abort();
           await complete.catch(() => {});

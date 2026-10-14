@@ -7639,7 +7639,10 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   // A held production route keeps displaying live input. Its captured old
   // epoch is unchanged, so all subsequent writes are durably refused until a
   // fresh explicit acquisition after the pre-Clear holders have released.
-  for (const route of entryRoutes) route.clearInert = false;
+  for (const route of entryRoutes) {
+    route.repository?.cancelPersistenceAfterClear();
+    route.clearInert = false;
+  }
   onCacheEpochObserved(result.epoch);
   residencyIfCreated?.clear(result.epoch);
   // Every open lease whose captured epoch predates the committed epoch: the
