@@ -557,6 +557,46 @@ describe("MutationDispatcher", () => {
     expect(await outbox.getOutbox(second.clientMutationId)).toBeUndefined();
   });
 
+  // #4342: the hub's high-water backpressure refusal answers a mutation in
+  // band with notAccepted plus retryDisposition "automatic" — a transient
+  // refusal, not a terminal one. The terminal branch would move the row to
+  // recovery as "rejected" and stop retrying, exactly wrong for backpressure:
+  // the row stays queued in the outbox FIFO with its pre-transport attempted
+  // marker rolled back (so each host's reconnect reconcile
+  // onlyAttempted-guarded park skips it), and the busy state surfaces through
+  // onTransientRefusal for the host to pace. One attempt only: the dispatcher
+  // never spins on a refusal; a later event starts the next attempt.
+  test("a backpressure refusal keeps the record queued, unmarks the attempt, and surfaces the transient", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "backpressure", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "held message"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+        evenerErrorInfo: "connectionBackpressure",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "automatic",
+        cause: "queueSaturated",
+      });
+    });
+    const transientRefusals: MutationOutboxRecord[] = [];
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => client,
+      onTransientRefusal: (refused) => transientRefusals.push(refused),
+    });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({
+      state: "submitting",
+      attempted: false,
+    });
+    expect(await outbox.getRecovery(record.clientMutationId)).toBeUndefined();
+    expect(transientRefusals.map((refused) => refused.clientMutationId)).toEqual([record.clientMutationId]);
+    expect(client.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  });
+
   // Kata 2f41. The daemon sends BOTH a category (evenerErrorInfo: "conflict") and
   // its own sentence ("turn is not active"). Showing the category tells the
   // user the class of failure instead of the failure, so the message wins.

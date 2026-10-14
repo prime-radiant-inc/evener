@@ -224,6 +224,26 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
       await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(false);
     });
 
+    // #4342: after the hub authoritatively refused an attempt in band (a
+    // connectionBackpressure refusal), the dispatcher rolls the row back to
+    // its never-attempted shape so each host's reconnect reconcile
+    // onlyAttempted-guarded blockedUnknown park skips the row and the
+    // ordinary flush rediscovers it. Authoritative outcomes own every other
+    // state, so only a submitting row may roll back.
+    test("unmarkAttempted returns an attempted submitting row to its never-attempted shape", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("refused in band"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: false,
+      });
+      await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(false);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
+      await expect(storage.unmarkAttempted("missing")).resolves.toBe(false);
+    });
+
     test("markUnknown's onlyAttempted guard refuses an un-attempted record", async () => {
       const record = await storage.enqueueIntent(conformanceTextIntent("unknown outcome"));
       await expect(

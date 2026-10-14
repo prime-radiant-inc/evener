@@ -438,7 +438,7 @@ transcriptStore.getState().refreshHubDefaults().then(() => {
   assert.equal(transcriptStore.getState().loaded, false);
 }).catch((error) => { console.error(error); process.exit(1); });
 `;
-  // The twelve storage-port methods neither outbox fixture exercises: the
+  // The thirteen storage-port methods neither outbox fixture exercises: the
   // type-use program and the smoke script embed this one definition and add the
   // two calls each of them actually makes (enqueueIntent, listTargetRefs).
   const inertOutboxStorageMethods = `  getOutbox: () => Promise.resolve(undefined),
@@ -448,6 +448,7 @@ transcriptStore.getState().refreshHubDefaults().then(() => {
   getRecovery: () => Promise.resolve(undefined),
   nextDispatchable: () => Promise.resolve(undefined),
   markAttempted: () => Promise.resolve(false),
+  unmarkAttempted: () => Promise.resolve(false),
   markUnknown: () => Promise.resolve(false),
   settleReceipt: () => Promise.resolve(false),
   settleApplied: () => Promise.resolve(false),

@@ -7,8 +7,9 @@
 // that answer it are the same on every host and are what this module carries:
 // serialized dispatch per target ref (a second submission for the same thread
 // waits rather than racing), a receipt reconciled into storage before the next
-// attempt, a refusal turned into a recovery record with the daemon's own
-// reason, and an outcome nobody can vouch for left blockedUnknown — never
+// attempt, a terminal refusal turned into a recovery record with the daemon's
+// own reason, a transient backpressure refusal kept queued for a later event
+// (#4342), and an outcome nobody can vouch for left blockedUnknown — never
 // retried until an authoritative read has settled it (#1116's standing
 // decision).
 //
@@ -40,6 +41,13 @@ export interface MutationDispatcherOptions<A extends MutationAttachmentRef = Mut
   getClient: MutationDispatchClientLookup;
   onStorageChange?: (targetRefs: string[]) => void;
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
+  // #4342: fired when the hub refused an attempt in band as transient
+  // backpressure (notAccepted plus an automatic retry disposition) — the
+  // record stays queued and this callback owns surfacing the busy state and
+  // pacing the next attempt. The error is the hub's own refusal, so a host
+  // can show its message; the dispatcher itself stops the loop rather than
+  // spinning on the refusal.
+  onTransientRefusal?: (record: MutationOutboxRecord<A>, error: WireError) => void;
   // May be async: the clear's model publication owns the response's side
   // effects (including any best-effort cleanup the host awaits before
   // publishing), and the attempt does not settle the clear's own record
@@ -56,6 +64,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   readonly #getClient: MutationDispatcherOptions<A>["getClient"];
   readonly #onStorageChange: NonNullable<MutationDispatcherOptions<A>["onStorageChange"]>;
   readonly #onBlockedMutation: NonNullable<MutationDispatcherOptions<A>["onBlockedMutation"]>;
+  readonly #onTransientRefusal: NonNullable<MutationDispatcherOptions<A>["onTransientRefusal"]>;
   readonly #onClearResponse: NonNullable<MutationDispatcherOptions<A>["onClearResponse"]>;
   readonly #prepareHumanNoteResponse: NonNullable<MutationDispatcherOptions<A>["prepareHumanNoteResponse"]>;
   readonly #onHumanNoteReconciled: NonNullable<MutationDispatcherOptions<A>["onHumanNoteReconciled"]>;
@@ -67,6 +76,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     this.#getClient = options.getClient;
     this.#onStorageChange = options.onStorageChange ?? (() => undefined);
     this.#onBlockedMutation = options.onBlockedMutation ?? (() => undefined);
+    this.#onTransientRefusal = options.onTransientRefusal ?? (() => undefined);
     this.#onClearResponse = options.onClearResponse ?? (() => undefined);
     this.#prepareHumanNoteResponse = options.prepareHumanNoteResponse ?? (() => () => undefined);
     this.#onHumanNoteReconciled = options.onHumanNoteReconciled ?? (() => undefined);
@@ -215,6 +225,20 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         }
         return "stop";
       }
+      if (data?.mutationOutcome === "notAccepted" && data.retryDisposition === "automatic") {
+        // #4342: the hub refused the attempt in band without queueing it —
+        // the row was never delivered, so it stays queued in the FIFO and the
+        // pre-transport attempt evidence rolls back: a reconnect reconcile's
+        // onlyAttempted-guarded park must skip this row, and the ordinary
+        // flush rediscovers it. The busy surface and the pacing are the
+        // host's, through onTransientRefusal; this loop stops rather than
+        // spinning on the refusal.
+        await this.#storage.unmarkAttempted(record.clientMutationId);
+        // mutationErrorData answers only WireErrors, so the data this branch
+        // matched on proves the error's shape.
+        this.#onTransientRefusal(record, error as WireError);
+        return "stop";
+      }
       if (data?.mutationOutcome === "notAccepted") {
         await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data));
         this.#onStorageChange([record.targetRef]);
@@ -244,7 +268,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   }
 }
 
-const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
+export const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
   "turn/start",
   "turn/steer",
   "turn/interrupt",

@@ -308,6 +308,23 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		);
 	}
 
+	// Rolls the pre-transport attempt evidence back after the hub
+	// authoritatively refused the attempt in band (#4342's
+	// connectionBackpressure): the row is what it was before the dispatch,
+	// so the reconnect reconcile's onlyAttempted-guarded blockedUnknown park
+	// skips it and the ordinary flush rediscovers it. Authoritative outcomes
+	// own every other state, so only a submitting row rolls back.
+	async unmarkAttempted(clientMutationId: string): Promise<boolean> {
+		return (
+			changedRows(
+				this.db.runSync(
+					`UPDATE ${TABLES.outbox} SET attempted = 0 WHERE client_mutation_id = ? AND state = 'submitting'`,
+					clientMutationId,
+				),
+			) > 0
+		);
+	}
+
 	async markUnknown(
 		clientMutationId: string,
 		// The literal type is the port's own contract (outbox.ts's

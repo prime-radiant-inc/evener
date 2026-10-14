@@ -17,6 +17,7 @@ import { createSecureUUID } from "./secureUUID";
 
 type MutationOutboxOperation =
   | "markAttempted"
+  | "unmarkAttempted"
   | "enqueueIntent"
   | "enqueueInterruptAndCancel"
   | "cancelUnattempted"
@@ -712,6 +713,22 @@ export class MutationOutboxIndexedDB {
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (record?.state !== "submitting") return false;
       await requestResult(store.put({ ...record, attempted: true }));
+      return true;
+    });
+  }
+
+  // Rolls the pre-transport attempt evidence back after the hub
+  // authoritatively refused the attempt in band (#4342's
+  // connectionBackpressure): the row is what it was before the dispatch, so
+  // the reconnect reconcile's onlyAttempted-guarded blockedUnknown park skips
+  // it and the ordinary flush rediscovers it. Authoritative outcomes own
+  // every other state, so only a submitting row rolls back.
+  async unmarkAttempted(clientMutationId: string): Promise<boolean> {
+    return this.#write(OUTBOX_STORE, "unmarkAttempted", async (transaction) => {
+      const store = transaction.objectStore(OUTBOX_STORE);
+      const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
+      if (record?.state !== "submitting") return false;
+      await requestResult(store.put({ ...record, attempted: false }));
       return true;
     });
   }
