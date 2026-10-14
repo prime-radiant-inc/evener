@@ -617,6 +617,14 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     value: SkillEditorValue,
   ): void {
     if (!ownsPreparation(preparation)) return;
+    // The append is an accepted edit through this source: it owns the ref's
+    // draft revision exactly as an ordinary accepted edit does. A retained
+    // same-ref source still holding pre-append text then fails ownsDraft(), so
+    // its delayed write (a submitted attachment cleanup after a late image
+    // decode) refuses instead of rebasing over the appended revision and
+    // erasing the reference while the operation stays marked applied.
+    markDraftEdited(ref);
+    ownedDraftRevisionRef.current = readDraftRevision(ref);
     publishValue(cloneValue(value));
     draftToken = { ...token };
   }

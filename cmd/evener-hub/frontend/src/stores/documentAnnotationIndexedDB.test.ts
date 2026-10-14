@@ -127,6 +127,44 @@ it("does not recreate missing recovery", async () => {
   expect(await f.drafts.load(f.key)).toEqual(ordinaryBefore);
 });
 
+it("an acknowledged append claims the shared edit revision against a retained same-ref source's late write", async () => {
+  const f = await fixture("append-retained-late-write");
+  // A second LIVE source on the same ref whose pane is already gone. Its
+  // delayed writes (a submitted attachment cleanup after a late image decode)
+  // reach the draft through the detached editor path, which runs only while
+  // the source still owns the draft.
+  const retained = createComposerSourceState("root", { repository: f.drafts, key: f.key, outbox: f.outbox });
+  cleanupAfterTest(async () => {
+    await retained.whenSettled();
+    retained.dispose();
+  });
+  await retained.ready();
+  // The retained source owns the draft with its own committed edit, older text
+  // than anything the append will add.
+  retained.acceptEdit({ text: "retained draft", skillNames: [], mentions: [] });
+  await retained.whenSettled();
+
+  // The handoff appends the reference through the fixture source and
+  // acknowledges the appended token and value.
+  const acknowledge = vi.spyOn(f.source, "acknowledgeAnnotation");
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+  expect(acknowledge).toHaveBeenCalledTimes(1);
+  const appended = await f.drafts.load(f.key);
+  if (!appended) throw new Error("appended row missing");
+  expect(appended.text).toContain(REFERENCE);
+
+  // The retained source's delayed cleanup persist still holds pre-append text.
+  // It may reach the durable draft only while the source still owns it, so the
+  // acknowledged append - an accepted edit through the annotating source -
+  // must claim the shared edit revision: the late write refuses and the
+  // appended reference stays durable while the operation remains applied.
+  retained.editor.write("retained draft cleanup", 23);
+  await retained.whenSettled();
+  const after = await f.drafts.load(f.key);
+  if (!after) throw new Error("row missing after late write");
+  expect(after.text).toContain(REFERENCE);
+});
+
 const mentionCases: Array<{ name: string; mentions: ComposerMention[] | undefined }> = [
   { name: "absent", mentions: undefined },
   { name: "empty", mentions: [] },
