@@ -100,11 +100,14 @@ func Read(ctx context.Context, params appwire.ThreadReadParams, read ReadFunc, l
 	if response.Changes != nil {
 		changes := *response.Changes
 		changes.Items = selection.Items(changes.Items)
+		changes.Turns = slices.Clone(changes.Turns)
 		// The producer excludes its own latest window from Changes. Items
 		// dropped by our smaller selected/byte-limited window still need to
 		// update a client's previously loaded older pages.
 		kept := make(map[string]bool)
+		keptTurns := make(map[string]bool)
 		for _, turn := range response.Thread.Turns {
+			keptTurns[turn.ID] = true
 			for _, item := range turn.Items {
 				kept[item.TranscriptKey] = true
 			}
@@ -112,7 +115,16 @@ func Read(ctx context.Context, params appwire.ThreadReadParams, read ReadFunc, l
 		for _, item := range changes.Items {
 			kept[item.TranscriptKey] = true
 		}
+		for _, turn := range changes.Turns {
+			keptTurns[turn.ID] = true
+		}
 		for _, turn := range sourceWindow {
+			if !keptTurns[turn.ID] {
+				scalars := turn
+				scalars.Items = nil
+				changes.Turns = append(changes.Turns, scalars)
+				keptTurns[turn.ID] = true
+			}
 			for _, item := range turn.Items {
 				if selected, keep := selection.Item(item); keep && !kept[item.TranscriptKey] {
 					changes.Items = append(changes.Items, selected)

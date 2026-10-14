@@ -9,13 +9,18 @@ import (
 
 type historyContentContextKey struct{}
 
+type historyContentRequest struct {
+	filter   *apphistory.Filter
+	preserve bool
+}
+
 // HandleThreadHistory applies the public selection at this server's client
 // boundary. The underlying handlers keep full producer snapshots and shared
 // relays; each downstream subscription owns its own projection.
 func HandleThreadHistory(router *Router, read apphistory.ReadFunc, list apphistory.ListFunc) {
 	HandleTyped(router, appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		filter := apphistory.NewFilter(params.Selection())
-		ctx = context.WithValue(ctx, historyContentContextKey{}, filter)
+		ctx = context.WithValue(ctx, historyContentContextKey{}, historyContentRequest{filter: filter, preserve: !params.IncludeTurns})
 		response, err := apphistory.Read(ctx, params, read, list)
 		if err == nil {
 			filter.Seed(response.Overlay)
@@ -28,8 +33,20 @@ func HandleThreadHistory(router *Router, read apphistory.ReadFunc, list apphisto
 }
 
 func historyContent(ctx context.Context) *apphistory.Filter {
-	filter, _ := ctx.Value(historyContentContextKey{}).(*apphistory.Filter)
-	return filter
+	request, _ := ctx.Value(historyContentContextKey{}).(historyContentRequest)
+	return request.filter
+}
+
+// Metadata reads and relay preparation do not replace a client's history view.
+// Resolve the old owner under the projection gate, before replacing its entry.
+func subscriptionHistoryContent(ctx context.Context, subs *Subscriptions, connID, threadID string) *apphistory.Filter {
+	request, explicit := ctx.Value(historyContentContextKey{}).(historyContentRequest)
+	if !explicit || request.preserve {
+		if previous, exists := subs.contentOwner(connID, threadID); exists {
+			return previous
+		}
+	}
+	return historyContent(ctx)
 }
 
 func (s *Subscriptions) setContent(connID, threadID string, generation uint64, filter *apphistory.Filter) {
@@ -41,12 +58,17 @@ func (s *Subscriptions) setContent(connID, threadID string, generation uint64, f
 }
 
 func (s *Subscriptions) content(connID, threadID string) *apphistory.Filter {
+	filter, _ := s.contentOwner(connID, threadID)
+	return filter
+}
+
+func (s *Subscriptions) contentOwner(connID, threadID string) (*apphistory.Filter, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if sub := s.byConn[connID][threadID]; sub != nil {
-		return sub.content
+		return sub.content, true
 	}
-	return nil
+	return nil, false
 }
 
 func (c *Connection) enqueueHistory(record SequencedNotification, filter *apphistory.Filter) bool {

@@ -78,6 +78,8 @@ limits, and to the read's downstream subscription. Shared upstream feeds stay
 complete. Cursors and opaque snapshot incarnations distinguish normalized
 selections; changing selection requires a fresh latest read. Status, capability,
 mutation and recovery metadata are always retained.
+Metadata-only reads and mutation relay setup preserve an existing subscription's
+history selection; an `includeTurns: true` read establishes or changes that view.
 
 See [the history content contract](product/history-content.md) for item mapping,
 intent representation, selected paging and reconnect behavior.

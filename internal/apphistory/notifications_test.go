@@ -2,10 +2,27 @@ package apphistory
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 )
+
+func TestContentFilterDoesNotRetainNoticeSlots(t *testing.T) {
+	t.Parallel()
+	no := false
+	f := NewFilter(appwire.ThreadContentParams{IncludeDiagnostics: &no}.Selection())
+	f.Seed([]appwire.OverlayItem{{Kind: appwire.OverlayNotice, Key: "seed", Item: appwire.ThreadItem{Type: "systemMessage"}}})
+	for i := range 200 {
+		_, keep, err := f.Notification(notification(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{Item: appwire.OverlayItem{Kind: appwire.OverlayNotice, Key: fmt.Sprint(i), Item: appwire.ThreadItem{Type: "systemMessage"}}}))
+		if err != nil || !keep {
+			t.Fatal("notice was not delivered", err)
+		}
+	}
+	if len(f.overlays) != 0 {
+		t.Fatalf("retained %d notice identities without delta streams", len(f.overlays))
+	}
+}
 
 func notification(method string, params any) appwire.Notification {
 	return *appwire.NotificationMessage(method, params).Notification

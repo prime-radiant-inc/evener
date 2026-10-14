@@ -266,6 +266,37 @@ func TestSelectedHistoryByteLimitPagesDroppedItemExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestSelectedHistoryPreservesTurnChangesOutsideSelectedWindow(t *testing.T) {
+	t.Parallel()
+	f := fixtureHistory()
+	for i := range f.candidates {
+		id := fmt.Sprintf("turn-%d", i/20)
+		f.candidates[i].TurnID = id
+		f.candidates[i].Turn = appwire.Turn{ID: id, Status: appwire.TurnStatusCompleted, Version: 206, Usage: &appwire.EvenerUsage{InputTokens: 42}}
+		f.candidates[i].Item.TurnID = id
+	}
+	read := func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		r, err := f.read(ctx, p)
+		r.Changes = &appwire.HistoryChanges{}
+		return r, err
+	}
+	r, err := Read(t.Context(), appwire.ThreadReadParams{ThreadContentParams: conversationParams(), Ref: "local:thread", IncludeTurns: true, ItemLimit: 1}, read, f.list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Thread.Turns) != 1 || r.Thread.Turns[0].ID != "turn-10" {
+		t.Fatal("latest selected turn changed")
+	}
+	if len(r.Changes.Turns) != 2 {
+		t.Fatalf("dropped turn scalar updates=%d want=2", len(r.Changes.Turns))
+	}
+	for i, turn := range r.Changes.Turns {
+		if turn.ID != fmt.Sprintf("turn-%d", i+8) || turn.Status != appwire.TurnStatusCompleted || turn.Version != 206 || turn.Usage == nil || turn.Usage.InputTokens != 42 || len(turn.Items) != 0 {
+			t.Fatalf("incorrect dropped turn scalar update: %+v", turn)
+		}
+	}
+}
+
 func TestSelectedHistoryRefusesChangedSourceIdentity(t *testing.T) {
 	t.Parallel()
 	f := fixtureHistory()

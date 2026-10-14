@@ -37,6 +37,14 @@ func (f *Filter) Seed(items []appwire.OverlayItem) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, overlay := range items {
+		f.remember(overlay)
+	}
+}
+
+func (f *Filter) remember(overlay appwire.OverlayItem) {
+	// Notices have no deltas or end events, and the producer evicts them
+	// silently. Only live streams need identity tracking here.
+	if overlay.Kind != appwire.OverlayNotice {
 		f.overlays[overlay.Key] = slot(overlay)
 	}
 }
@@ -73,7 +81,7 @@ func (f *Filter) Notification(n appwire.Notification) (appwire.Notification, boo
 			return n, false, nil
 		}
 		params.Item.Item = item
-		f.overlays[params.Item.Key] = slot(params.Item)
+		f.remember(params.Item)
 		return replaceFields(n, map[string]any{"item": params.Item})
 	case appwire.NotifyOverlayDelta:
 		var params appwire.OverlayDeltaParams

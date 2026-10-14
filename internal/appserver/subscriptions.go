@@ -1,8 +1,9 @@
 package appserver
 
 import (
-	"primeradiant.com/evener/internal/apphistory"
 	"sync"
+
+	"primeradiant.com/evener/internal/apphistory"
 )
 
 type subscription struct {

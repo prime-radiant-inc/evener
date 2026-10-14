@@ -1289,8 +1289,9 @@ func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool, 
 	if admission != nil {
 		owner = admission.threadID
 	}
+	content := subscriptionHistoryContent(ctx, server.subs, conn.id, threadID)
 	server.subs.subscribeOwned(conn.id, threadID, owner, replace)
-	server.subs.setContent(conn.id, threadID, 0, historyContent(ctx))
+	server.subs.setContent(conn.id, threadID, 0, content)
 	if admission != nil {
 		delete(conn.pendingAdmissions, admission)
 	}
@@ -1464,8 +1465,9 @@ func captureSubscription(
 	if admission != nil {
 		owner = admission.threadID
 	}
+	content := subscriptionHistoryContent(ctx, server.subs, conn.id, targetThreadID)
 	rollback := server.subs.beginBuffered(conn.id, targetThreadID, replace, generation, owner)
-	server.subs.setContent(conn.id, targetThreadID, generation, historyContent(ctx))
+	server.subs.setContent(conn.id, targetThreadID, generation, content)
 	if admission != nil {
 		delete(conn.pendingAdmissions, admission)
 	}

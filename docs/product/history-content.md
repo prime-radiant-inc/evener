@@ -25,6 +25,9 @@ For conversation-only reads, send `includeConversation: true` and set the other
 five flags to `false`. Send the same options on older-page requests and on
 refresh/reconnect reads. Metadata-only reads can use `includeTurns: false` with
 `includeDiagnostics: false` to avoid fetching detailed diagnostics before a send.
+Metadata-only reads and mutation relay setup preserve any existing subscription's
+history selection and live overlay identities. Use an `includeTurns: true` read
+to establish or change the history view.
 
 The public `itemLimit` counts selected items. The server fills a selected page
 across complete indexed source windows, skipping excluded content before applying
@@ -38,8 +41,9 @@ flag requires a fresh latest read; reusing another view's cursor returns
 `transcriptItemCursorStale`. Filtered snapshots have distinct opaque incarnation
 identities, so clients' ordinary history replacement rules also separate views.
 A held snapshot from another selection receives a replacement read, never an
-incremental change set. Changed older items remain in `changes` when a smaller
-selected window drops them from the source's latest window.
+incremental change set. Changed older items and turn status/version/usage remain
+in `changes` when a smaller selected window drops them from the source's latest
+window.
 
 Selection also applies to the subscription established by a read: history
 updates, overlay items and their deltas use the same view. Lifecycle, status,
