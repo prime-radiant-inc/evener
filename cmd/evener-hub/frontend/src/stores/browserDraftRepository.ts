@@ -48,6 +48,7 @@ import {
   LOCAL_COMPOSITION_DATABASE_VERSION,
   MUTATION_RECOVERY_STORE,
   registerLocalCompositionSchema,
+  sameHandoffDestination,
 } from "./localCompositionSchema";
 import type { MutationRecoveryRecord } from "./mutationOutbox";
 import { applyRecoveryInput } from "./mutationOutboxIndexedDB";
@@ -468,6 +469,10 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         if (!operation) return { state: "cancelled" };
         if (operation.state === "applied") return { state: "already-applied", draftRevision: operation.draftRevision };
         if (operation.state === "cancelled") return { state: "cancelled" };
+        // A handoff no composition owner can ever claim settles unclaimed at
+        // the annotation store, which preserves the saved annotation and its
+        // copyable reference. There is no append to replay here.
+        if (operation.state === "unclaimed") return { state: "cancelled" };
         const documentKey = annotationDocumentKey(input.document);
         const reads = Promise.all([
           readNamespaceRow(transaction, preparation.key.namespace),
@@ -511,13 +516,18 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         ) {
           return { state: "cancelled" };
         }
+        // Strict FIFO scoped to the captured recipient: only an earlier PENDING
+        // handoff to the SAME destination identity blocks this append, so a
+        // pending handoff captured for a different composer - or for an
+        // ownerless destination no composer can ever claim - never starves it.
         if (
           allOperations.some(
             (candidate) =>
               candidate.sessionKey === operation.sessionKey &&
               candidate.namespaceIncarnation === namespace.incarnation &&
               candidate.state === "pending" &&
-              candidate.sessionSequence < operation.sessionSequence,
+              candidate.sessionSequence < operation.sessionSequence &&
+              sameHandoffDestination(candidate.destination, operation.destination),
           )
         ) {
           return { state: "pending", reason: "dirty-draft" };

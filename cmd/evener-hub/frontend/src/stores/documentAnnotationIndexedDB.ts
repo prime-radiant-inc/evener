@@ -287,6 +287,17 @@ function contentChangedAgainst(observations: DocFileContent[], content: DocFileC
   );
 }
 
+// A destination no composition owner can ever claim. Only a browser-origin
+// destination names a recipient - its pane and composition owner - that
+// targetFor can resolve, and a closed pane can reopen with its retained
+// source. The ownerless kinds (a read-only view, an originless restored
+// opening, a native recipient) carry no owner identity at all, so a handoff
+// captured for one of them can never resolve; its handoff settles terminal
+// instead of answering the retryable pending outcome forever.
+function destinationNeverResolves(destination: PreparedAnnotation["destination"]): boolean {
+  return destination.kind !== "browser-origin";
+}
+
 class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotationRepository {
   readonly #connection: IDBConnection;
   readonly #options: DocumentAnnotationOptions;
@@ -1247,6 +1258,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     if (!receipt) return { state: "cancelled" };
     if (receipt.state === "applied") return { state: "already-applied", draftRevision: receipt.draftRevision };
     if (receipt.state === "cancelled") return { state: "cancelled" };
+    // An already-settled unclaimed handoff reports the permanent
+    // owner-unavailable outcome; the saved annotation stays listed with its
+    // copyable reference.
+    if (receipt.state === "unclaimed") return { state: "pending", reason: "owner-unavailable" };
     let payload: AnnotationPayloadRow | undefined;
     try {
       payload = await this.#readPayload(receipt.payloadKey);
@@ -1260,6 +1275,21 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const originalLease = structuredClone(payload.operation.lease);
     const documentStillEligible = () => !this.#suppressedEpochs.has(epochIdentity(originalLease));
     if (!documentStillEligible()) return { state: "cancelled" };
+    // A permanently unresolvable recipient settles its receipt terminal here
+    // instead of answering the retryable pending outcome forever: the saved
+    // annotation and its copyable reference stay listed exactly as before,
+    // while the settled receipt stops blocking later handoffs and stops
+    // feeding the retry outcome. The pending answer remains this handoff's
+    // honest permanent outcome - no owner is or ever will be available. A
+    // settle that cannot commit leaves the receipt pending for the next pass.
+    if (destinationNeverResolves(payload.operation.destination)) {
+      try {
+        await this.#settleUnclaimed(operationKey);
+      } catch {
+        // Durable settle work stays recoverable through the ordinary retry path.
+      }
+      return { state: "pending", reason: "owner-unavailable" };
+    }
     const source = this.#options.targetFor(payload.operation.destination, key);
     if (!source) return { state: "pending", reason: "owner-unavailable" };
     let preparation: ComposerPreparation | null;
@@ -1314,6 +1344,24 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         transaction.objectStore(ANNOTATION_PAYLOADS_STORE).get(payloadKey),
       ),
     );
+  }
+
+  // Flip one never-resolvable pending handoff to its terminal unclaimed
+  // receipt. The payload row is untouched (the saved annotation and its
+  // copyable reference stay listed); a receipt that already left pending wins
+  // and this settle no-ops. No wake is published: the settled row lists exactly
+  // as it did while pending, so no reader observation changes.
+  async #settleUnclaimed(operationKey: string): Promise<void> {
+    await this.#transaction([ANNOTATION_OPERATIONS_STORE], "readwrite", async (transaction) => {
+      const row = await requestResult<AnnotationOperationRow | undefined>(
+        transaction.objectStore(ANNOTATION_OPERATIONS_STORE).get(operationKey),
+      );
+      if (row?.state !== "pending") return;
+      const { destination: _destination, payloadKey: _payloadKey, ...terminal } = row;
+      await requestResult(
+        transaction.objectStore(ANNOTATION_OPERATIONS_STORE).put({ ...terminal, state: "unclaimed" }),
+      );
+    });
   }
 
   async #createNamespace(
