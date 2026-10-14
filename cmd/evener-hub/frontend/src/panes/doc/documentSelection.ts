@@ -3,9 +3,13 @@
 // Observes the root's OWNING document and window (never a global), so a
 // selection made inside a different browsing context (an iframe document) is
 // read from that context's own Selection. A finished gesture belongs to the
-// mapped root and to its recorded pointer: a press that begins outside the root
-// never arms, and only the arming pointer's release finishes or abandons the
-// interaction. A keyboard completion needs an actual selection change during
+// root's mount and to its recorded pointer: a press that begins outside the
+// root never arms, and only the arming pointer's release finishes or abandons
+// the interaction. The subscription lives for the mount, not for a render:
+// revalidation reads rebind the map without cancelling an armed gesture, and
+// the release reads the map current at that moment, so a selection over
+// content that changed underneath it maps to nothing and emits no capture. A
+// keyboard completion needs an actual selection change during
 // the interaction, so pressing Shift without extending the selection does not
 // reopen a retained passage. Nothing here calls preventDefault, so the browser's
 // own selection, Copy, focus and handles stay usable.
@@ -21,12 +25,15 @@ export interface FinishedDocumentSelection {
 
 export interface ObserveFinishedDocumentSelectionsInput {
   root: HTMLElement;
-  map: BoundDocumentMap;
+  // The map is read at EVENT time, not subscription time: revalidations and
+  // re-binds must not cancel an armed gesture. Null when no accepted map is
+  // installed for the current display, which captures nothing.
+  getMap(): BoundDocumentMap | null;
   onFinish(capture: FinishedDocumentSelection): void;
 }
 
 export function observeFinishedDocumentSelections(input: ObserveFinishedDocumentSelectionsInput): () => void {
-  const { root, map, onFinish } = input;
+  const { root, getMap, onFinish } = input;
   const doc = root.ownerDocument;
   const ownerWindow = doc.defaultView;
   let activePointer: number | null = null;
@@ -37,14 +44,17 @@ export function observeFinishedDocumentSelections(input: ObserveFinishedDocument
   // The current verified nonempty mapped range, or null for an unmapped,
   // collapsed or stale selection.
   const mappedRange = (): SourceRange | null => {
+    const map = getMap();
     const selection = doc.getSelection();
-    if (!selection) return null;
+    if (!map || !selection) return null;
     const capture = map.capture(selection);
     if (capture.state !== "mapped" || capture.sourceRange.end <= capture.sourceRange.start) return null;
     return capture.sourceRange;
   };
 
   const emit = (selection: Selection): void => {
+    const map = getMap();
+    if (!map) return;
     const capture = map.capture(selection);
     if (capture.state !== "mapped" || capture.sourceRange.end <= capture.sourceRange.start) return;
     onFinish({
