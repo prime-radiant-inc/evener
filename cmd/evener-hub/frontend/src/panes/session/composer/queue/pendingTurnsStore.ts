@@ -284,7 +284,7 @@ export function useComposerSubmitting(ref: string): boolean {
 
 // The action resolves at the local IndexedDB commit boundary. Durable state,
 // not a component timer or text echo, is the only optimistic lifecycle. The
-// begin/epoch-guard/settle-draft/end/refresh sequencing lives in the
+// begin/prepare/epoch-guard/settle-draft/end/refresh sequencing lives in the
 // package's submission lifecycle (state/mutation/submission.ts); this binds
 // it to the browser's projection tracker and fence, and turns what it
 // decided into this file's own composer-submission notification (the
@@ -294,96 +294,91 @@ export function submitWithPendingTracking(
   perform: (submitted: SubmittedDraft, stopBarrier?: Promise<number> | undefined) => Promise<unknown>,
 ): Promise<void> {
   const skillNames = [...(opts.skillNames ?? [])];
-  // The source captures the immutable payload BEFORE any wait; both `perform`
-  // and settlement are driven from that same submitted value.
-  const operation = (async () => {
-    // §4's barrier is the click's OWN storage observation, so request it in
-    // this synchronous prefix - before the preparation's first await. A
-    // recovery resend never enqueues a row (it rewrites the durable pending
-    // turn instead), so it requests no barrier: an unconsumed read could
-    // reject unhandled.
-    const stopBarrier = opts.recoveryId === undefined ? requestClickTimeStopBarrier(opts.ref) : undefined;
-    // The enqueue that consumes this capture attaches its await only after
-    // the preparation's turns, so a watchdog timeout rejecting the read
-    // inside that window would fire as an unhandled rejection first. Mark the
-    // optimistic read handled here; the enqueue's await still receives the
-    // rejection and takes the storage-failure fallback it already owns.
-    stopBarrier?.catch(() => undefined);
-    const source = opts.source;
-    let settlement: DraftSettlement = { cleared: false, draftUnchanged: false, persistence: "pending" };
-    let accepted = false;
-    // An ordinary send proceeds from its captured payload when the durable
-    // draft's own preparation fails (#4194) - the failing storage refuses the
-    // settlement, never the send. A recovery resend rewrites a durable pending
-    // turn, so it keeps strict preparation: its failures dispatch nothing.
-    let submitted: SubmittedDraft;
-    try {
-      submitted = await source.submissionDraft(
-        {
-          text: opts.text,
-          skillNames,
-          ...(opts.commandNames === undefined ? {} : { commandNames: [...opts.commandNames] }),
-          ...(opts.mentions === undefined ? {} : { mentions: opts.mentions.map((mention) => ({ ...mention })) }),
-        },
-        opts.recoveryId === undefined ? { tolerateStorageFault: true } : undefined,
-      );
-    } catch (error) {
-      // A rejected strict preparation must not vanish: report it through the
-      // same onFailure the dispatch path uses, so the press's failure
-      // feedback fires, then propagate the rejection. The durable draft is
-      // preserved (submissionDraft's own failure keeps it) and nothing
-      // dispatches - runSubmission never starts.
-      opts.onFailure(error);
-      throw error;
-    }
-    return runSubmission(
-      {
-        ...submitted,
-        ref: opts.ref,
-        onFailure: opts.onFailure,
-        settleDraft: async (
-          _ref: string,
-          captured: SubmittedDraft,
-        ): Promise<{ cleared: boolean; draftUnchanged: boolean }> => {
-          if (!accepted) return { cleared: false, draftUnchanged: false };
-          try {
-            settlement = await source.settleDraft(captured);
-          } catch {
-            // Retain pending cleanup; never relabel accepted input as failed.
-          }
-          return { cleared: settlement.cleared, draftUnchanged: settlement.draftUnchanged };
-        },
-      },
-      async () => {
-        accepted = (await perform(submitted, stopBarrier)) !== false;
-      },
-      ({ draftUnchanged }) => {
-        if (!accepted) return;
-        // Notify from the immutable submitted capture for every ordinary and
-        // recovery outcome, including ordinary pending cleanup. The sixth
-        // argument always carries a defined submitted draft.
-        for (const listener of submissionCommittedListeners) {
-          try {
-            listener(
-              opts.ref,
-              submitted.text,
-              submitted.skillNames,
-              opts.recoveryId
-                ? { clientMutationId: opts.recoveryId, draftUnchanged, attachments: opts.attachments ?? [] }
-                : undefined,
-              submitted.commandNames,
-              { submitted, settlement },
-            );
-          } catch (error) {
-            console.error("Composer submission listener failed", error);
-          }
+  // §4's barrier is the click's OWN storage observation, so request it in
+  // this synchronous prefix - before the preparation's first await. A
+  // recovery resend never enqueues a row (it rewrites the durable pending
+  // turn instead), so it requests no barrier: an unconsumed read could
+  // reject unhandled.
+  const stopBarrier = opts.recoveryId === undefined ? requestClickTimeStopBarrier(opts.ref) : undefined;
+  // The enqueue that consumes this capture attaches its await only after
+  // the preparation's turns, so a watchdog timeout rejecting the read
+  // inside that window would fire as an unhandled rejection first. Mark the
+  // optimistic read handled here; the enqueue's await still receives the
+  // rejection and takes the storage-failure fallback it already owns.
+  stopBarrier?.catch(() => undefined);
+  const source = opts.source;
+  let settlement: DraftSettlement = { cleared: false, draftUnchanged: false, persistence: "pending" };
+  let accepted = false;
+  // The durable draft capture runs INSIDE the runner's ownership window
+  // (#4605): the ref's guard is acquired synchronously at this call, before
+  // the capture's first await, so a same-ref press from a second composer
+  // while the capture is pending hears the guard's existing refusal instead
+  // of waiting the window out and double-sending once this submission
+  // releases. An ordinary send proceeds from its captured payload when the
+  // durable draft's own preparation fails (#4194) - the failing storage
+  // refuses the settlement, never the send. A recovery resend rewrites a
+  // durable pending turn, so it keeps strict preparation: its failures
+  // dispatch nothing, and the runner reports them through onFailure. The
+  // runner's track registers the whole guarded window - this function's own
+  // tracker, bound into it at module scope - so no separate registration
+  // wraps the call here.
+  return runSubmission(
+    {
+      ref: opts.ref,
+      onFailure: opts.onFailure,
+      prepare: () =>
+        source.submissionDraft(
+          {
+            text: opts.text,
+            skillNames,
+            ...(opts.commandNames === undefined ? {} : { commandNames: [...opts.commandNames] }),
+            ...(opts.mentions === undefined ? {} : { mentions: opts.mentions.map((mention) => ({ ...mention })) }),
+          },
+          opts.recoveryId === undefined ? { tolerateStorageFault: true } : undefined,
+        ),
+      settleDraft: async (
+        _ref: string,
+        captured: SubmittedDraft,
+      ): Promise<{ cleared: boolean; draftUnchanged: boolean }> => {
+        if (!accepted) return { cleared: false, draftUnchanged: false };
+        try {
+          settlement = await source.settleDraft(captured);
+        } catch {
+          // Retain pending cleanup; never relabel accepted input as failed.
         }
+        return { cleared: settlement.cleared, draftUnchanged: settlement.draftUnchanged };
       },
-    );
-  })();
-  // The source-bearing submission has preparation outside the runner and is
-  // tracked as a whole.
-  return trackProjectionWork(operation);
+    },
+    async (submitted) => {
+      accepted = (await perform(submitted, stopBarrier)) !== false;
+    },
+    (committed, submitted) => {
+      if (!accepted) return;
+      // Notify from the immutable submitted capture for every ordinary and
+      // recovery outcome, including ordinary pending cleanup. The sixth
+      // argument always carries a defined submitted draft.
+      for (const listener of submissionCommittedListeners) {
+        try {
+          listener(
+            opts.ref,
+            submitted.text,
+            submitted.skillNames,
+            opts.recoveryId
+              ? {
+                  clientMutationId: opts.recoveryId,
+                  draftUnchanged: committed.draftUnchanged,
+                  attachments: opts.attachments ?? [],
+                }
+              : undefined,
+            submitted.commandNames,
+            { submitted, settlement },
+          );
+        } catch (error) {
+          console.error("Composer submission listener failed", error);
+        }
+      }
+    },
+  );
 }
 
 const NO_ENTRIES: PendingTurnEntry[] = [];
