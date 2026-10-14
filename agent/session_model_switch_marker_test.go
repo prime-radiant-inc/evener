@@ -19,9 +19,11 @@ package agent
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -41,6 +43,24 @@ func tinyWindowResolver(ref string) (*provider.Profile, error) {
 		return NewOpenAIProfile(parts[1]), nil
 	case "tiny":
 		return WithContextWindow(NewOpenAIProfile(parts[1]), 100), nil
+	}
+	return nil, nil
+}
+
+// assumedWindowResolver maps "openai/<model>" to the catalog profile and
+// "gw/<model>" to an openai-compatible custom gateway whose model row declares
+// no context window — the unknown-window target a switch now budgets against
+// contextmgr.AssumedContextWindow (issue #4598).
+func assumedWindowResolver(ref string) (*provider.Profile, error) {
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) != 2 {
+		return nil, nil
+	}
+	switch parts[0] {
+	case "openai":
+		return NewOpenAIProfile(parts[1]), nil
+	case "gw":
+		return newOpenAICompatProfile("gw", parts[1], 0), nil
 	}
 	return nil, nil
 }
@@ -199,6 +219,65 @@ func TestSetModel_MarkerWarnsOnContextWindowShrink(t *testing.T) {
 	}
 	if !strings.Contains(text, "compaction threshold") {
 		t.Fatalf("marker text = %q, want a context-window-shrink warning line", text)
+	}
+}
+
+// TestSetModel_MarkerIdentifiesAssumedWindow pins the fast-follow for #4598's
+// reviewed LOW: an unknown window budgets against the assumed 128K, so a switch
+// above roughly 102K tokens composes the context-warning line against an
+// assumption. Left undisclosed, the percentage reads as a fact about the new
+// model's real window; the marker must name the assumed window it was
+// calculated against.
+func TestSetModel_MarkerIdentifiesAssumedWindow(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeAdapter{name: "gw"}),
+		withConfig(SessionConfig{
+			ResolveProfile: assumedWindowResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+	target, err := assumedWindowResolver("gw/deepseek-4.1-flash")
+	if err != nil || target == nil {
+		t.Fatalf("resolve fixture target: %v", err)
+	}
+	if target.ContextWindowSize() != 0 {
+		t.Fatalf("fixture target window = %d, want 0 (unknown)", target.ContextWindowSize())
+	}
+	// ~150K tokens by the char/4 estimate ("token " counts ~1.5): past the
+	// assumed 128K window's 0.80 checkpoint threshold, so the switch warns.
+	sess.history = []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("token ", 100_000)))}
+
+	if err := sess.SetModel("gw/deepseek-4.1-flash"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+
+	marker := lastMarkerTurn(t, sess).Message.Text()
+	// A warning line fired, so the marker is more than the bare switch line.
+	if strings.Count(marker, "\n") < 1 {
+		t.Fatalf("marker = %q, want a context warning line", marker)
+	}
+	if !strings.Contains(marker, strconv.Itoa(contextmgr.AssumedContextWindow)) {
+		t.Fatalf("marker = %q, want the warning to identify the assumed %d-token window its percentage is against", marker, contextmgr.AssumedContextWindow)
+	}
+}
+
+// TestModelSwitchMarker_KnownWindowUnchanged pins that a known window still
+// renders the marker byte-for-byte as before the unknown-window disclosure:
+// only a switch whose budget is the 128K assumption may change the line.
+func TestModelSwitchMarker_KnownWindowUnchanged(t *testing.T) {
+	t.Parallel()
+	got := buildModelSwitchMarkerText(modelSwitchMarkerParams{
+		oldProfile:        NewOpenAIProfile("gpt-5.4"),
+		nextProfile:       NewOpenAIProfile("gpt-5.5"),
+		contextWarning:    true,
+		contextWarningPct: 92,
+	})
+	const want = "Switched model: openai/gpt-5.4 → openai/gpt-5.5\nWarning: context usage is at ~92% of openai's context window, over the compaction threshold."
+	if got != want {
+		t.Fatalf("known-window marker text = %q, want %q", got, want)
 	}
 }
 
