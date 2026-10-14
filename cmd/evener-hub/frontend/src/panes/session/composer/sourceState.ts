@@ -33,7 +33,11 @@ import {
   type TextEditSource,
 } from "./attachments/useAttachments";
 import { clearRuntimeDraft, markDraftEdited, publishRuntimeDraft, readComposerDraft, readDraftRevision } from "./draft";
-import { refreshPendingTurnsProjection, subscribeComposerSubmissionCommitted } from "./queue/pendingTurnsStore";
+import {
+  recoveryProjectionListsRecord,
+  refreshPendingTurnsProjection,
+  subscribeComposerSubmissionCommitted,
+} from "./queue/pendingTurnsStore";
 import { parseSkillDocument, patchSelectionText, type SkillEditorValue, serializeSkillDocument } from "./skillDocument";
 
 type RevisionRef<T> = { current: T };
@@ -761,23 +765,35 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
           // the durable recovery record before this point, so clearing the
           // editor while the record survived would resurface the just-acted-
           // on work as a fresh restoration. Discard the record under this
-          // submission's own guard first: a refused discard (a competitor
-          // advanced the durable authority) keeps the record and its
-          // restoration path intact for its current owner.
-          await outbox
+          // submission's own guard first. A refused discard (a competitor
+          // advanced the durable authority) or a faulted one keeps the record
+          // and its restoration path intact - so the editor must keep its
+          // typed value too, and the cleanup is reported as still pending
+          // rather than committed.
+          const discarded = await outbox
             ?.discardRecovery(
               guard.backing.recoveryId,
               () => ownsOriginalLocalCapture(submitted) && submitted.stillOwnsEdit?.() === true,
               recoveryWriteGuard(submitted),
             )
-            .catch(() => undefined);
+            .catch(() => false);
+          if (discarded !== true) {
+            return { cleared: false, draftUnchanged: false, persistence: "pending" };
+          }
           // The pristine-composer auto-restore reads the recovery projection,
           // which still lists the discarded record until its next refresh -
           // and this settlement's own clear is what opens that restore's
-          // gate. Refresh the projection first so the consumed record cannot
-          // resurrect itself into the editor this settlement clears, then
-          // re-verify the editor is still exactly the submitted one.
-          await refreshPendingTurnsProjection(ref).catch(() => undefined);
+          // gate. The refresh must both succeed and leave the consumed
+          // record unpublished: a faulted read keeps the stale cached row
+          // able to restore the executed command, and a superseded refresh
+          // can resolve after a pre-discard snapshot that still lists it.
+          // Either way the editor is preserved and the cleanup stays
+          // pending, then re-verify the editor is still exactly the
+          // submitted one.
+          const refreshed = await refreshPendingTurnsProjection(ref).catch(() => false);
+          if (!refreshed || recoveryProjectionListsRecord(ref, guard.backing.recoveryId)) {
+            return { cleared: false, draftUnchanged: false, persistence: "pending" };
+          }
           if (!ownsOriginalLocalCapture(submitted) || !sameSubmittedFullValue(submitted)) {
             return { cleared: false, draftUnchanged: false, persistence: "committed" };
           }

@@ -2963,6 +2963,164 @@ test("a successful built-in command discards the durable recovery record it acte
   expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
 });
 
+test("a built-in command whose recovery discard faults keeps the editor and reports pending cleanup", async () => {
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit: (operation) => {
+      if (operation === "discardRecovery") throw new Error("discard recovery fault");
+    },
+  });
+  setMutationStorageForTests(storage);
+  const input = [{ type: "text" as const, text: "Recover this " }];
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_cmd_discard_fault",
+    method: "turn/start",
+    payload: { ref: "ref_cmd_discard_fault", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const source = createTestComposerSource("ref_cmd_discard_fault");
+  const fake = await mountComposer("ref_cmd_discard_fault", idleFocusThread("ref_cmd_discard_fault"), source);
+  await settleActivityDiscovery("ref_cmd_discard_fault");
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+  let rpcCount = 0;
+  fake.on("thread/compact/start", async () => {
+    rpcCount += 1;
+    return {};
+  });
+
+  replaceEditorText(editor, "/compact");
+  await act(async () => {
+    await source.whenSettled();
+  });
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(rpcCount).toBe(1));
+  await act(async () => {
+    await settleProjectionWorkForTests();
+  });
+  // The faulted discard left the durable record alive, so the settlement must
+  // not clear the editor: the surviving record restores the just-acted-on
+  // command into a cleared editor the moment the coast clears.
+  expect(await storage.getRecovery(original.clientMutationId)).toBeDefined();
+  expect(editor.textContent).toBe("/compact");
+  expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+  expect(getToasts().some((toast) => toast.kind === "error")).toBe(true);
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+});
+
+test("a built-in command whose projection refresh faults keeps the editor and reports pending cleanup", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const input = [{ type: "text" as const, text: "Recover this " }];
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_cmd_refresh_fault",
+    method: "turn/start",
+    payload: { ref: "ref_cmd_refresh_fault", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const realListRecovery = storage.listRecovery.bind(storage);
+  // The projection read starts faulting only once the command's RPC has
+  // entered: the settlement's own discard still runs against live storage,
+  // and only its follow-up refresh reads the fault.
+  let faultReads = false;
+  storage.listRecovery = async (targetRef?: string) => {
+    if (faultReads) throw new Error("projection read fault");
+    return realListRecovery(targetRef);
+  };
+  const source = createTestComposerSource("ref_cmd_refresh_fault");
+  const fake = await mountComposer("ref_cmd_refresh_fault", idleFocusThread("ref_cmd_refresh_fault"), source);
+  await settleActivityDiscovery("ref_cmd_refresh_fault");
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+  let rpcCount = 0;
+  fake.on("thread/compact/start", async () => {
+    rpcCount += 1;
+    faultReads = true;
+    return {};
+  });
+
+  replaceEditorText(editor, "/compact");
+  await act(async () => {
+    await source.whenSettled();
+  });
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(rpcCount).toBe(1));
+  await act(async () => {
+    await settleProjectionWorkForTests();
+  });
+  // The discard committed, but the faulted refresh leaves the stale cached
+  // projection listing the consumed record: clearing the editor would let
+  // that stale row restore the executed command. Keep the editor.
+  expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
+  expect(editor.textContent).toBe("/compact");
+  expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+  expect(getToasts().some((toast) => toast.kind === "error")).toBe(true);
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+});
+
+test("a built-in command refuses to clear while the published projection still lists the consumed record", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const input = [{ type: "text" as const, text: "Recover this " }];
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_cmd_stale_projection",
+    method: "turn/start",
+    payload: { ref: "ref_cmd_stale_projection", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const liveRecord = await storage.getRecovery(original.clientMutationId);
+  expect(liveRecord).toBeDefined();
+  const realListRecovery = storage.listRecovery.bind(storage);
+  // From the RPC onward, every projection read republishes the pre-discard
+  // snapshot - the state a superseded in-flight refresh leaves behind when
+  // it resolves after its own read and still owns the ref's generation.
+  let staleReads = false;
+  storage.listRecovery = async (targetRef?: string) => {
+    const rows = await realListRecovery(targetRef);
+    if (!staleReads) return rows;
+    return liveRecord && rows.every((row) => row.clientMutationId !== liveRecord.clientMutationId)
+      ? [liveRecord, ...rows]
+      : rows;
+  };
+  const source = createTestComposerSource("ref_cmd_stale_projection");
+  const fake = await mountComposer("ref_cmd_stale_projection", idleFocusThread("ref_cmd_stale_projection"), source);
+  await settleActivityDiscovery("ref_cmd_stale_projection");
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId));
+  let rpcCount = 0;
+  fake.on("thread/compact/start", async () => {
+    rpcCount += 1;
+    staleReads = true;
+    return {};
+  });
+
+  replaceEditorText(editor, "/compact");
+  await act(async () => {
+    await source.whenSettled();
+  });
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(rpcCount).toBe(1));
+  await act(async () => {
+    await settleProjectionWorkForTests();
+  });
+  // The discard committed and the refresh "succeeded", but the published
+  // projection still names the consumed record. The settlement must refuse
+  // the clear rather than let the stale row restore the executed command.
+  expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
+  expect(editor.textContent).toBe("/compact");
+  expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+  expect(getToasts().some((toast) => toast.kind === "error")).toBe(true);
+  expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/steer")).toEqual([]);
+});
+
 test("a built-in send whose RPC is held keeps a newer edit's durable value", async () => {
   await withBuiltinDurable(
     "ref_builtin_race",

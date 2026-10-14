@@ -125,6 +125,18 @@ export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
   return trackProjectionWork(readProjectionIntoStore(ref));
 }
 
+// The published recovery projection for one ref, read exactly as the
+// pristine-composer auto-restore reads it. The built-in command settlement
+// refuses to clear the editor while the projection still names the recovery
+// record it just consumed: a refresh superseded by a newer in-flight read can
+// resolve after a pre-discard snapshot that still lists it, and a restore from
+// that stale row would resurface the command the user already acted on.
+export function recoveryProjectionListsRecord(ref: string, clientMutationId: string): boolean {
+  return recoveryEntries(pendingTurnsStore.getState().recovery, ref).some(
+    (record) => record.clientMutationId === clientMutationId,
+  );
+}
+
 // Un-loads the readiness of every ref a refresh will cover, BEFORE its read
 // starts: while the read is in flight its rows are not published yet, so
 // trusting the previous projection through that window is exactly the stale
