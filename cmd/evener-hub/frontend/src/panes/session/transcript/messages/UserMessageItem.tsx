@@ -65,13 +65,13 @@ export interface ForkFromHereButtonProps {
   transcriptKey: string;
 }
 
-// A child the hub created but a local fault left unseeded must outlive the
-// row it was pressed from: transcript rows are virtualized, so scrolling a
-// message away and back remounts its button with fresh state, and a retry
+// A child the hub created must outlive the row it was pressed from before
+// its seeding settles: transcript rows are virtualized, so scrolling a
+// message away and back remounts its button with fresh state, and a press
 // that had lost the child would repeat the fork RPC and create a duplicate.
 // The retention lives here, keyed by the session and the message being forked
-// from, and survives until a press completes (or conflicts on) that child's
-// seeding.
+// from, written the moment the hub creates the child, and survives until a
+// press completes (or conflicts on) that child's seeding.
 const unseededForks = new Map<string, { ref: string; originalInput: string }>();
 
 export function resetForkRetentionForTests(): void {
@@ -95,6 +95,14 @@ function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonPro
           .forkFromTurn(sessionRef, { sourceItemKey: transcriptKey, deferInput: true });
         ref = resp.thread.evener.ref;
         originalInput = resp.originalInput ?? "";
+        // The child is retained the moment the hub creates it, before any
+        // seeding outcome settles: the row can unmount while the seed is
+        // still pending, and a remounted press with fresh state must
+        // complete THIS child, not repeat the fork RPC into a duplicate
+        // session. A concurrent second seed converges through the
+        // conflict-compare path below - the same shape the uncertain-seed
+        // retry takes.
+        unseededForks.set(retentionKey, { ref, originalInput });
       }
       const seeded = await getBrowserDraftRepository().seedDraft(browserDraftKey(ref), {
         text: originalInput,
@@ -123,11 +131,10 @@ function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonPro
         return;
       }
       if (seeded.state !== "committed") {
-        // The child exists on the hub; only its local seeding failed. Retain
-        // it so a later press finishes THIS child without a second fork RPC,
-        // and report what actually happened instead of claiming the fork
-        // failed.
-        unseededForks.set(retentionKey, { ref, originalInput });
+        // The child exists on the hub (retained since the moment the hub
+        // created it); only its local seeding failed. A later press finishes
+        // THIS child without a second fork RPC, and this press reports what
+        // actually happened instead of claiming the fork failed.
         toasts.push(
           "error",
           "Forked the session, but couldn't save its message locally. Press Fork from here again to retry.",
@@ -137,9 +144,8 @@ function ForkFromHereButton({ sessionRef, transcriptKey }: ForkFromHereButtonPro
       unseededForks.delete(retentionKey);
       workspaceStore.getState().openPane("session", { ref });
     } catch (err) {
-      // A child the RPC already created must not be discarded by a local
-      // fault: retain it for a seeding-only retry.
-      if (ref) unseededForks.set(retentionKey, { ref, originalInput });
+      // The child the RPC already created stays retained through a local
+      // fault: the next press retries only its seeding.
       toasts.push("error", sessionActionError("Couldn't fork from here", err));
     } finally {
       setBusy(false);
