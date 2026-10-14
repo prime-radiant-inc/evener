@@ -981,11 +981,40 @@ export class TranscriptRepository {
     const before = this.#oldestPosition(current);
     if (!before) return { kind: "server" };
     const revisionAtStart = this.#sourceRevision;
-    const window = await this.#cache.getOlderWindow(this.#binding.historyKey, before, limit, this.#baselineIdentity);
+    // Bound both payload reads with one cache budget. Keep the separately
+    // bounded durable-authority guard outside: uncertainty there must reconcile.
+    // The raced work only returns data, so late results can never publish.
+    let lookupActive = true;
+    const lookup = async () => {
+      const window = await this.#cache.getOlderWindow(this.#binding.historyKey, before, limit, this.#baselineIdentity);
+      if (!lookupActive || !this.#acceptsLifetime(lifetime) || this.#sourceRevision !== revisionAtStart) {
+        return undefined;
+      }
+      const turnIds = window.stale ? [] : this.#turnIDsForRows(window.rows, []);
+      const turnMetadata = await this.#readTurnMetadata(turnIds);
+      return { window, turnMetadata };
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let local: Awaited<ReturnType<typeof lookup>> | undefined;
+    try {
+      local = await Promise.race([
+        lookup(),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
+        }),
+      ]);
+    } catch {
+      return { kind: "server" };
+    } finally {
+      lookupActive = false;
+      if (timer !== undefined) clearTimeout(timer);
+    }
     if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
     // An authoritative reconciliation during the lookup retires this window's
     // authority; never publish it into the new baseline.
     if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
+    if (!local) return { kind: "server" };
+    const { window, turnMetadata } = local;
     // A committed Clear during the lookup retires this window's authority even
     // when the client and source identity are unchanged: never publish rows a
     // cleared epoch no longer owns.
@@ -1004,11 +1033,6 @@ export class TranscriptRepository {
       }
       return { kind: "server" };
     }
-    const turnIds = this.#turnIDsForRows(window.rows, []);
-    const turnMetadata = await this.#readTurnMetadata(turnIds);
-    if (!(await this.#durableAuthoritiesUnchanged())) return { kind: "reconcile" };
-    if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
-    if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
     // Merge into the newest model, not the one captured before the awaits, so a
     // recorded update delivered mid-lookup is never overwritten.
     const newest = this.#model ?? current;
