@@ -128,7 +128,11 @@ function blockText(token: Token): string {
 		.join("\n");
 }
 
-export function documentBlocks(markdown: string): DocumentBlock[] {
+export function documentBlocks(rawMarkdown: string): DocumentBlock[] {
+	// The decoder preserves a leading BOM so source coordinates stay byte-exact;
+	// Markdown lexing treats it as text, where it would turn a first heading
+	// into a paragraph. Strip it from the presentation derivation only.
+	const markdown = rawMarkdown.charCodeAt(0) === 0xfeff ? rawMarkdown.slice(1) : rawMarkdown;
 	const blocks: DocumentBlock[] = [];
 	const push = (
 		kind: BlockKind,
