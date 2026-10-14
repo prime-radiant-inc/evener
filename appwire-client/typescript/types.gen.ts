@@ -4176,6 +4176,31 @@ export interface ThreadQueueChangedParams {
 }
 
 export interface ThreadReadParams {
+  /**
+   * IncludeConversation includes user/assistant messages and human steering.
+   */
+  includeConversation?: boolean;
+  /**
+   * IncludeThinking includes reasoning items.
+   */
+  includeThinking?: boolean;
+  /**
+   * IncludeToolCalls includes tool arguments and results together.
+   */
+  includeToolCalls?: boolean;
+  /**
+   * IncludeToolCallIntents includes explicit tool descriptions. Without tool
+   * calls, only their identity, description and lifecycle metadata are sent.
+   */
+  includeToolCallIntents?: boolean;
+  /**
+   * IncludeSystemMessages includes system notices and non-human steering.
+   */
+  includeSystemMessages?: boolean;
+  /**
+   * IncludeDiagnostics includes detailed session diagnostics.
+   */
+  includeDiagnostics?: boolean;
   threadId?: string;
   ref?: string;
   includeTurns: boolean;
@@ -4415,6 +4440,31 @@ export interface ThreadTurnItemsListResponse {
 }
 
 export interface ThreadTurnsListParams {
+  /**
+   * IncludeConversation includes user/assistant messages and human steering.
+   */
+  includeConversation?: boolean;
+  /**
+   * IncludeThinking includes reasoning items.
+   */
+  includeThinking?: boolean;
+  /**
+   * IncludeToolCalls includes tool arguments and results together.
+   */
+  includeToolCalls?: boolean;
+  /**
+   * IncludeToolCallIntents includes explicit tool descriptions. Without tool
+   * calls, only their identity, description and lifecycle metadata are sent.
+   */
+  includeToolCallIntents?: boolean;
+  /**
+   * IncludeSystemMessages includes system notices and non-human steering.
+   */
+  includeSystemMessages?: boolean;
+  /**
+   * IncludeDiagnostics includes detailed session diagnostics.
+   */
+  includeDiagnostics?: boolean;
   threadId?: string;
   ref?: string;
   cursor?: string;

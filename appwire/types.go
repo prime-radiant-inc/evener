@@ -2154,6 +2154,7 @@ type ThreadListResponse struct {
 }
 
 type ThreadReadParams struct {
+	ThreadContentParams
 	ThreadID            string `json:"threadId,omitempty"`
 	Ref                 string `json:"ref,omitempty"`
 	IncludeTurns        bool   `json:"includeTurns"`
@@ -2337,6 +2338,7 @@ type ThreadUnsubscribeParams struct {
 }
 
 type ThreadTurnsListParams struct {
+	ThreadContentParams
 	ThreadID  string `json:"threadId,omitempty"`
 	Ref       string `json:"ref,omitempty"`
 	Cursor    string `json:"cursor,omitempty"`

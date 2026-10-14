@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apphistory"
 )
 
 type ServerConfig struct {
@@ -475,6 +476,7 @@ func (s *Server) Broadcast(threadID, method string, params any) {
 type notificationDelivery struct {
 	connection *Connection
 	record     SequencedNotification
+	content    *apphistory.Filter
 }
 
 // routeSequencedLocked runs under projectionMu, the same gate a capture holds
@@ -495,6 +497,7 @@ func (s *Server) routeSequencedLocked(record SequencedNotification) []notificati
 		deliveries = append(deliveries, notificationDelivery{
 			connection: conn,
 			record:     record,
+			content:    s.subs.content(connID, record.ThreadID),
 		})
 	}
 	return deliveries
@@ -506,8 +509,7 @@ func (s *Server) deliverNotifications(deliveries []notificationDelivery) []*Conn
 		if s.afterBroadcastConnectionLookup != nil {
 			s.afterBroadcastConnectionLookup(delivery.connection)
 		}
-		msg := appwire.Message{Notification: &delivery.record.Notification}
-		if !delivery.connection.enqueue(msg) {
+		if !delivery.connection.enqueueHistory(delivery.record, delivery.content) {
 			disconnected = append(disconnected, delivery.connection)
 		}
 	}
@@ -763,7 +765,7 @@ func (c *Connection) enqueueResponse(ctx context.Context, msg appwire.Message) e
 				if c.server.beforeHydrationCommit != nil {
 					c.server.beforeHydrationCommit()
 				}
-				finalizer.commit()
+				finalizer.commit(responseSucceeded)
 				c.hydrationMu.Unlock()
 				finalizer.commitAfterRelease()
 			} else {
@@ -1084,13 +1086,19 @@ type hydrationResponseFinalizer struct {
 	rollback               subscriptionCaptureRollback
 	handoff                CaptureSubscriptionHandoff
 	releaseOnErrorResponse bool
+	historyDone            chan struct{}
 }
 
-func (f *hydrationResponseFinalizer) commit() {
-	f.server.releaseHydration(f.conn, f.threadID, f.generation)
+func (f *hydrationResponseFinalizer) commit(responseSucceeded bool) {
+	var failedCapture *subscriptionCaptureRollback
+	if !responseSucceeded {
+		failedCapture = &f.rollback
+	}
+	f.server.releaseHydration(f.conn, f.threadID, f.generation, failedCapture)
 }
 
 func (f *hydrationResponseFinalizer) commitAfterRelease() {
+	defer f.finishHistory()
 	if f.handoff.Commit != nil {
 		f.handoff.Commit()
 	}
@@ -1101,8 +1109,15 @@ func (f *hydrationResponseFinalizer) abort() {
 }
 
 func (f *hydrationResponseFinalizer) abortAfterWithdrawal() {
+	defer f.finishHistory()
 	if f.handoff.Abort != nil {
 		f.handoff.Abort()
+	}
+}
+
+func (f *hydrationResponseFinalizer) finishHistory() {
+	if f.historyDone != nil {
+		close(f.historyDone)
 	}
 }
 
@@ -1251,6 +1266,8 @@ func UnsubscribeLifecycle(ctx context.Context, threadID string) {
 // SubscribeWithAdmission installs an immediate subscription and consumes the
 // request's admission at one boundary. Registration gates precede admissionMu,
 // matching capture; unsubscribe cannot pass eligibility before installation.
+// History reads retain a buffering capture until their response is enqueued,
+// including sources that do not supply an upstream read handoff.
 // An optional expectedLifecycle is the identity already resolved by the handler.
 // A mismatch rejects without consuming admission or changing subscriptions.
 func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool, expectedLifecycle ...string) error {
@@ -1262,6 +1279,19 @@ func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool, 
 		return context.Canceled
 	}
 	server := conn.server
+	if _, history := ctx.Value(historyContentContextKey{}).(historyContentRequest); history {
+		var resolve []func() SubscriptionTarget
+		if len(expectedLifecycle) != 0 {
+			resolve = append(resolve, func() SubscriptionTarget {
+				return SubscriptionTarget{ThreadID: threadID, LifecycleKey: expectedLifecycle[0]}
+			})
+		}
+		if !CaptureSubscriptionWithHandoff(ctx, replace, func() string { return threadID },
+			func() uint64 { return server.routedSeq }, func() bool { return true }, CaptureSubscriptionHandoff{}, resolve...) {
+			return appwire.SessionUnavailable("thread subscription is unavailable")
+		}
+		return nil
+	}
 	if server.beforeSubscriptionRegistration != nil {
 		server.beforeSubscriptionRegistration()
 	}
@@ -1287,7 +1317,12 @@ func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool, 
 	if admission != nil {
 		owner = admission.threadID
 	}
+	if conn.deferHistorySubscription(ctx, responseID, threadID, replace) {
+		return appwire.SessionUnavailable("history subscription is awaiting its response")
+	}
+	content := subscriptionHistoryContent(ctx, server.subs, conn.id, threadID)
 	server.subs.subscribeOwned(conn.id, threadID, owner, replace)
+	server.subs.setContent(conn.id, threadID, 0, content)
 	if admission != nil {
 		delete(conn.pendingAdmissions, admission)
 	}
@@ -1443,6 +1478,11 @@ func captureSubscription(
 		conn.admissionMu.Unlock()
 		return abortAfterUnlock()
 	}
+	contentRequest, history := ctx.Value(historyContentContextKey{}).(historyContentRequest)
+	if history && contentRequest.preserve && conn.deferHistorySubscription(ctx, responseID, targetThreadID, replace) {
+		conn.admissionMu.Unlock()
+		return abortAfterUnlock()
+	}
 	if conn.server.beforeSubscriptionBeginBuffered != nil {
 		conn.server.beforeSubscriptionBeginBuffered()
 	}
@@ -1461,7 +1501,9 @@ func captureSubscription(
 	if admission != nil {
 		owner = admission.threadID
 	}
+	content := subscriptionHistoryContent(ctx, server.subs, conn.id, targetThreadID)
 	rollback := server.subs.beginBuffered(conn.id, targetThreadID, replace, generation, owner)
+	server.subs.setContent(conn.id, targetThreadID, generation, content)
 	if admission != nil {
 		delete(conn.pendingAdmissions, admission)
 	}
@@ -1478,6 +1520,10 @@ func captureSubscription(
 		server.subs.withdrawBuffered(conn.id, targetThreadID, generation, rollback)
 		return abortAfterUnlock()
 	}
+	var historyDone chan struct{}
+	if history {
+		historyDone = make(chan struct{})
+	}
 	conn.addHydration(&hydrationResponseFinalizer{
 		server:                 server,
 		conn:                   conn,
@@ -1488,6 +1534,7 @@ func captureSubscription(
 		rollback:               rollback,
 		handoff:                handoff,
 		releaseOnErrorResponse: releaseOnErrorResponse,
+		historyDone:            historyDone,
 	})
 	server.deliveryMu.Unlock()
 	server.projectionMu.Unlock()
@@ -1498,16 +1545,19 @@ func captureSubscription(
 	return true
 }
 
-func (s *Server) releaseHydration(conn *Connection, threadID string, generation uint64) {
+func (s *Server) releaseHydration(conn *Connection, threadID string, generation uint64, failedCapture *subscriptionCaptureRollback) {
 	s.projectionMu.Lock()
+	if failedCapture != nil {
+		s.subs.restoreContent(conn.id, threadID, generation, *failedCapture)
+	}
+	content := s.subs.content(conn.id, threadID)
 	records, ok := s.subs.Release(conn.id, threadID, generation)
 	s.deliveryMu.Lock()
 	s.projectionMu.Unlock()
 	disconnected := false
 	if ok {
 		for _, record := range records {
-			msg := appwire.Message{Notification: &record.Notification}
-			if !conn.enqueue(msg) {
+			if !conn.enqueueHistory(record, content) {
 				disconnected = true
 				break
 			}

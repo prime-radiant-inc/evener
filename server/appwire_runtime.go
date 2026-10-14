@@ -1208,7 +1208,7 @@ func (s *Server) registerAppWireHandlers() {
 	router := s.appServer.Router()
 	s.registerSessionActivityHandlers()
 	appserver.HandleTyped(router, appwire.MethodThreadList, s.handleAppThreadList)
-	appserver.HandleTyped(router, appwire.MethodThreadRead, s.handleAppThreadRead)
+	appserver.HandleThreadHistory(router, s.handleAppThreadRead, s.handleAppThreadTurnsList)
 	appserver.HandleTyped(router, appwire.MethodThreadUnsubscribe, s.handleAppThreadUnsubscribe)
 	appserver.HandleTyped(router, appwire.MethodTurnStart, s.handleAppTurnStart)
 	appserver.HandleTyped(router, appwire.MethodTurnSteer, s.handleAppTurnSteer)
@@ -1237,7 +1237,6 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodEvenerJobsOutput, s.handleAppJobsOutput)
 	appserver.HandleTyped(router, appwire.MethodEvenerJobsGet, s.handleAppJobsGet)
 	appserver.HandleTyped(router, appwire.MethodModelList, s.handleAppModelList)
-	appserver.HandleTyped(router, appwire.MethodThreadTurnsList, s.handleAppThreadTurnsList)
 }
 
 func (s *Server) handleAppThreadList(_ context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
