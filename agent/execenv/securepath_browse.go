@@ -824,15 +824,15 @@ func readIgnoreFileBytes(f fs.File, limit int64) ([]byte, error) {
 	if cf, ok := f.(*grepCtxFile); ok {
 		ctx, deadline = cf.ctx, cf.File
 	}
-	data, over, err := readBounded(ctx, f, deadline, limit)
+	// Cap the reader at limit BEFORE readBounded: readBounded peeks one byte
+	// past its limit, so without this an ignore file supplying exactly limit
+	// bytes and then stalling would block that peek until the stall deadline,
+	// and readIgnoreFile would swallow the stall as unreadable rather than make
+	// its over-cap refusal (#4621 round 2, M5). The caller charges its budget
+	// from len(data), so it still sees the exactly-limit read and refuses.
+	data, _, err := readBounded(ctx, io.LimitReader(f, limit), deadline, limit)
 	if err != nil {
 		return nil, err
-	}
-	if over {
-		// readBounded's sentinel read peeks one byte past limit; the caller
-		// charges its budget from len(data), so keep the exact pre-consolidation
-		// bound.
-		data = data[:int(limit)]
 	}
 	return data, nil
 }
