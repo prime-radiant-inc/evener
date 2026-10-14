@@ -303,6 +303,12 @@ export function submitWithPendingTracking(
     // turn instead), so it requests no barrier: an unconsumed read could
     // reject unhandled.
     const stopBarrier = opts.recoveryId === undefined ? requestClickTimeStopBarrier(opts.ref) : undefined;
+    // The enqueue that consumes this capture attaches its await only after
+    // the preparation's turns, so a watchdog timeout rejecting the read
+    // inside that window would fire as an unhandled rejection first. Mark the
+    // optimistic read handled here; the enqueue's await still receives the
+    // rejection and takes the storage-failure fallback it already owns.
+    stopBarrier?.catch(() => undefined);
     const source = opts.source;
     let settlement: DraftSettlement = { cleared: false, draftUnchanged: false, persistence: "pending" };
     let accepted = false;
