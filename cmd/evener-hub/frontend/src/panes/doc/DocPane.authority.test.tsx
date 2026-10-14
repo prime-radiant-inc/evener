@@ -729,6 +729,170 @@ test("a faulted expiry deletion keeps the receipt and the next retry pass comple
   });
 });
 
+test("a faulted expiry deletion registers retry need so the pane's next read cycle completes the sweep", async () => {
+  let failDeletion = true;
+  let observeSuccess = false;
+  let runtime: ReturnType<typeof createDocumentAnnotationRuntime> | undefined;
+  const f = await fixture("reader-expiry-deletion-fault-retry", {
+    beforeCommit: (operation) => {
+      if (operation === "deleteExpiry" && failDeletion) throw new Error("delete fault");
+    },
+    // The production singleton wires the repository's storage-success boundary
+    // to its runtime (getDocumentAnnotationPorts). Gate the same wiring: with a
+    // deletion that keeps faulting, every recovery reread would otherwise start
+    // a pass that faults again, and the test wants exactly one pass - the one
+    // the pane's own next read cycle starts once the fault is repaired.
+    onStorageSuccess: () => {
+      if (observeSuccess) runtime?.storageSucceeded();
+    },
+  });
+  await settleBaseline(f);
+  runtime = createDocumentAnnotationRuntime(f.repo);
+  cleanupAfterTest(async () => {
+    runtime?.dispose();
+    await runtime?.whenIdle();
+  });
+  const ports: DocumentAnnotationPorts = { repository: f.repo, runtime };
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const { acceptances } = observeReadOwners(f.repo);
+  const listReads = observeListAnnotations(f.repo);
+  mountAnnotated(f, ports, client, "doc-expiry-deletion-fault-retry");
+  const work = documentReaderWork("doc-expiry-deletion-fault-retry", f.document, ports);
+  await waitForCurrentBoundMap(work, maps);
+
+  const headBefore = (await rowsForTests<AnnotationHeadRow>(f.factory, f.databaseName, ANNOTATION_HEADS_STORE))[0];
+  const oldEpoch = headBefore?.epoch;
+  const oldEvidenceKey = headBefore?.evidenceKey;
+  if (!oldEpoch || !oldEvidenceKey) throw new Error("baseline head row missing");
+
+  // A real changed source fences; the adoption acceptance attempts the
+  // deletion, which faults and leaves the receipt persisted unfinished.
+  const acceptBase = acceptances.length;
+  const mapBase = maps.length;
+  mockRead.mockResolvedValue(docContent(`${SOURCE}CHANGED`, "rev-B"));
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  await act(async () => {
+    fireEvent(document, new Event("visibilitychange"));
+    await ports.runtime.whenIdle();
+  });
+  await waitForFreshAcceptedMap(acceptances, maps, work, acceptBase, mapBase);
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+    const expiryRetained = await rowsForTests<AnnotationExpiryRow>(f.factory, f.databaseName, ANNOTATION_EXPIRY_STORE);
+    expect(expiryRetained.map((row) => row.receipt.phase)).toEqual(["fenced"]);
+  });
+  // The pane's own next read cycle - a foreground Reload press, no visibility
+  // event - is a real storage success. With the retry need registered at the
+  // fault, that success starts the completing pass, whose persisted sweep
+  // finishes the deletion; without it, the faulted deletion waits for an
+  // unrelated foreground return or composer-open event.
+  failDeletion = false;
+  observeSuccess = true;
+  const reloadBase = acceptances.length;
+  const reloadMapBase = maps.length;
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+    await ports.runtime.whenIdle();
+  });
+  await waitForFreshAcceptedMap(acceptances, maps, work, reloadBase, reloadMapBase);
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+    const expiryAfter = await rowsForTests<AnnotationExpiryRow>(f.factory, f.databaseName, ANNOTATION_EXPIRY_STORE);
+    expect(expiryAfter.map((row) => row.receipt.phase)).toEqual(["deleted"]);
+    const payloads = await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE);
+    expect(payloads.filter((row) => row.epoch === oldEpoch)).toEqual([]);
+    const evidence = await rowsForTests<AnnotationEvidenceRow>(f.factory, f.databaseName, ANNOTATION_EVIDENCE_STORE);
+    expect(evidence.filter((row) => row.evidenceKey === oldEvidenceKey)).toEqual([]);
+  });
+});
+
+test("reopening a document with a fresh runtime sweeps an unfinished persisted expiry on the first accepted map", async () => {
+  let failDeletion = true;
+  const f = await fixture("reader-expiry-reopen-sweep", {
+    beforeCommit: (operation) => {
+      if (operation === "deleteExpiry" && failDeletion) throw new Error("delete fault");
+    },
+  });
+  await settleBaseline(f);
+  const first = annotationPorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const { acceptances } = observeReadOwners(f.repo);
+  const listReads = observeListAnnotations(f.repo);
+  const host = mountAnnotated(f, first.ports, client, "doc-expiry-reopen-sweep");
+  const work = documentReaderWork("doc-expiry-reopen-sweep", f.document, first.ports);
+  await waitForCurrentBoundMap(work, maps);
+
+  const headBefore = (await rowsForTests<AnnotationHeadRow>(f.factory, f.databaseName, ANNOTATION_HEADS_STORE))[0];
+  const oldEpoch = headBefore?.epoch;
+  const oldEvidenceKey = headBefore?.evidenceKey;
+  if (!oldEpoch || !oldEvidenceKey) throw new Error("baseline head row missing");
+
+  // A real changed source fences; the adoption acceptance attempts the
+  // deletion, which faults and leaves the receipt persisted unfinished.
+  const acceptBase = acceptances.length;
+  const mapBase = maps.length;
+  mockRead.mockResolvedValue(docContent(`${SOURCE}CHANGED`, "rev-B"));
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  await act(async () => {
+    fireEvent(document, new Event("visibilitychange"));
+    await first.runtime.whenIdle();
+  });
+  await waitForFreshAcceptedMap(acceptances, maps, work, acceptBase, mapBase);
+  await act(async () => {
+    await first.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  const expiryRetained = await rowsForTests<AnnotationExpiryRow>(f.factory, f.databaseName, ANNOTATION_EXPIRY_STORE);
+  expect(expiryRetained.map((row) => row.receipt.phase)).toEqual(["fenced"]);
+
+  // A reload-shaped reopen: the pane unmounts, its runtime dies with it, and a
+  // FRESH adapter and runtime over the same database mount the same document
+  // with no registered retry need and no failed save of their own. The first
+  // accepted map's reader-open pass must sweep the persisted receipt on its
+  // own - no visibility event, no composer-open, no failed save.
+  failDeletion = false;
+  host.unmount();
+  disposeDocumentReaderWork("doc-expiry-reopen-sweep");
+  const secondRepo = createDocumentAnnotationRepository({
+    indexedDB: f.factory,
+    databaseName: f.databaseName,
+    drafts: f.drafts,
+    targetFor: () => null,
+  });
+  cleanupAfterTest(() => secondRepo.close());
+  const secondRuntime = createDocumentAnnotationRuntime(secondRepo);
+  cleanupAfterTest(async () => {
+    secondRuntime.dispose();
+    await secondRuntime.whenIdle();
+  });
+  const secondPorts: DocumentAnnotationPorts = { repository: secondRepo, runtime: secondRuntime };
+  mockRead.mockResolvedValue(docContent(`${SOURCE}CHANGED`, "rev-B"));
+  const listReadsSecond = observeListAnnotations(secondRepo);
+  mountAnnotated(f, secondPorts, client, "doc-expiry-reopen-sweep");
+  const reopenedWork = documentReaderWork("doc-expiry-reopen-sweep", f.document, secondPorts);
+  await waitForCurrentBoundMap(reopenedWork, maps);
+  await act(async () => {
+    await secondRuntime.whenIdle();
+    await settleReaderRefreshes(listReadsSecond);
+    const expiryAfter = await rowsForTests<AnnotationExpiryRow>(f.factory, f.databaseName, ANNOTATION_EXPIRY_STORE);
+    expect(expiryAfter.map((row) => row.receipt.phase)).toEqual(["deleted"]);
+    const payloads = await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE);
+    expect(payloads.filter((row) => row.epoch === oldEpoch)).toEqual([]);
+    const evidence = await rowsForTests<AnnotationEvidenceRow>(f.factory, f.databaseName, ANNOTATION_EVIDENCE_STORE);
+    expect(evidence.filter((row) => row.evidenceKey === oldEvidenceKey)).toEqual([]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Epoch-change capture retirement (roborev: acceptance invalidated retained
 // captures only when the incarnation changed, so another reader's fence left
