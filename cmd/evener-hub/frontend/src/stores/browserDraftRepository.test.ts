@@ -159,11 +159,11 @@ async function flushMicrotasks(): Promise<void> {
 // on an injected failure) rather than a beforeCommit entry.
 function observeTransfers(real: BrowserDraftRepository): {
   repository: BrowserDraftRepository;
-  settle: (index: number) => Promise<{ state: "committed" | "pending" }>;
+  settle: (index: number) => Promise<{ state: "committed" | "pending" | "unavailable" }>;
   attempts: () => number;
   drain: () => Promise<void>;
 } {
-  const transfers: Array<Promise<{ state: "committed" | "pending" }>> = [];
+  const transfers: Array<Promise<{ state: "committed" | "pending" | "unavailable" }>> = [];
   let waiters: Array<() => void> = [];
   const repository = new Proxy(real, {
     get(target, prop) {
@@ -1525,7 +1525,7 @@ function draftStorageStorageKeyForTest(ref: string): string {
   return `evener.composer.draft.v1.${ref}`;
 }
 
-test("transfer read faults stay pending and emit no console error", async () => {
+test("transfer read faults report unavailable and emit no console error", async () => {
   class FailingStorage extends MemoryStorage {
     override getItem(_key: string): string | null {
       throw new Error("read unavailable");
@@ -1541,7 +1541,7 @@ test("transfer read faults stay pending and emit no console error", async () => 
     storage,
   });
   closeAfterTest(() => repository.close());
-  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "pending" });
+  expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "unavailable" });
   expect(errorSpy).not.toHaveBeenCalled();
   expect(warnSpy).not.toHaveBeenCalled();
 });

@@ -84,7 +84,15 @@ export interface BrowserDraftRepository {
   ): Promise<DraftCommit>;
   clearSubmitted(key: BrowserDraftKey, submitted: SubmittedDraft): Promise<DraftSettlement>;
   appendAnnotation(input: AppendAnnotationInput): Promise<AppendAnnotationResult>;
-  transferSupportedDrafts(namespace: BrowserDraftKey["namespace"]): Promise<{ state: "committed" | "pending" }>;
+  // "committed": this transfer imported what it could and recorded its markers
+  // (or had nothing to inspect). "pending": the durable transfer write itself
+  // faulted; the caller retries. "unavailable": the legacy scan faulted - this
+  // session can read no legacy draft, so no caller can order against the legacy
+  // store, and proceeds exactly as with none.
+  transferSupportedDrafts(
+    namespace: BrowserDraftKey["namespace"],
+  ): Promise<{ state: "committed" | "pending" | "unavailable" }>;
+  carryDraft(from: BrowserDraftKey, to: BrowserDraftKey): Promise<void>;
   subscribe(listener: (key: BrowserDraftKey) => void): () => void;
   close(): void;
 }
@@ -589,12 +597,14 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     );
   }
 
-  async transferSupportedDrafts(namespace: BrowserDraftKey["namespace"]): Promise<{ state: "committed" | "pending" }> {
+  async transferSupportedDrafts(
+    namespace: BrowserDraftKey["namespace"],
+  ): Promise<{ state: "committed" | "pending" | "unavailable" }> {
     let inspected: InspectedDraft[];
     try {
       inspected = this.#inspectSupportedDrafts(namespace);
     } catch {
-      return { state: "pending" };
+      return { state: "unavailable" };
     }
     if (inspected.length === 0) return { state: "committed" };
     const changed: BrowserDraftKey[] = [];
