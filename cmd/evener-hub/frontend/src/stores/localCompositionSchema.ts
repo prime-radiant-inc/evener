@@ -72,6 +72,11 @@ export type AnnotationOperationRow = {
   | { state: "pending"; destination: DestinationProvenance; payloadKey: string }
   | { state: "applied"; draftRevision: number }
   | { state: "cancelled" }
+  // Terminal receipt of a handoff no composition owner can ever claim (an
+  // ownerless read-only, restored or native destination). The saved payload
+  // stays, so the annotation and its copyable reference remain listed; only
+  // the retry machinery stops treating the operation as pending work.
+  | { state: "unclaimed" }
 );
 
 export interface AnnotationExpiryRow {
@@ -97,6 +102,20 @@ export function annotationDocumentKey(key: DocumentKey): string {
 
 export function annotationExpiryKey(documentKey: string, epoch: string): string {
   return JSON.stringify([documentKey, epoch]);
+}
+
+// True when two captured destinations name the same handoff recipient: the
+// exact identity `targetFor` resolves. A browser-origin destination names one
+// composer by its pane and composition owner; the ownerless kinds carry no
+// recipient identity beyond their kind. Append order stays strict FIFO within
+// one recipient only, so a pending handoff captured for one recipient never
+// starves a handoff captured for another.
+export function sameHandoffDestination(left: DestinationProvenance, right: DestinationProvenance): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "browser-origin" && right.kind === "browser-origin") {
+    return left.paneId === right.paneId && left.compositionOwnerId === right.compositionOwnerId;
+  }
+  return true;
 }
 
 export function registerLocalCompositionSchema(database: IDBDatabase): void {
