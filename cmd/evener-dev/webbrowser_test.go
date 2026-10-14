@@ -244,7 +244,7 @@ func TestBrowserGuardIncludesMemoryGuard(t *testing.T) {
 		t.Fatalf("memoryguard missing from browserGuards: %q", browserGuards)
 	}
 	for i, guard := range browserGuards {
-		if guard == "memoryguard" && i >= len(browserGuards)-4 {
+		if guard == "memoryguard" && i >= len(browserGuards)-5 {
 			t.Fatalf("memoryguard must precede the never-signalled tail: %q", browserGuards)
 		}
 	}
@@ -404,7 +404,7 @@ func TestBrowserGateBuildFailureFailsOnlyTheProductionGuards(t *testing.T) {
 	launcher.buildStatus = 17
 	launcher.buildOutput = "vite build exploded\n"
 	tg := startTestGate(t, launcher, len(browserGuards), true)
-	for range len(browserGuards) - 4 {
+	for range len(browserGuards) - 5 {
 		launcher.awaitStart(t).exit <- 0
 	}
 	r := tg.await(t)
@@ -525,7 +525,7 @@ func TestBrowserGateFinishesWhenTheLastGuardNeverStarts(t *testing.T) {
 	launcher := newFakeLauncher()
 	launcher.buildStatus = 17
 	tg := startTestGate(t, launcher, 1, true)
-	for range len(browserGuards) - 4 {
+	for range len(browserGuards) - 5 {
 		launcher.awaitStart(t).exit <- 0
 	}
 	if r := tg.await(t); r.status != 17 {
