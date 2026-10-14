@@ -2286,9 +2286,13 @@ export class TranscriptRepository {
         }
         // Ordinary reads share a source revision but replace the read window.
         // A delayed plan must not commit the window an intervening read replaced.
+        // Pages have independent request IDs and belong to the page authority,
+        // not to the baseline read ID.
         if (
           issuedRevision !== this.#sourceRevision ||
-          (batch.coverage !== undefined && batch.coverage.readId !== this.#coverageReadId)
+          ((batch.coverage?.kind === "read" || batch.coverage?.kind === "suffix") &&
+            batch.coverage.readId !== this.#coverageReadId) ||
+          (batch.coverage?.kind === "page" && batch.coverage.authority !== this.#baselineIdentity)
         ) {
           for (const row of batch.items) {
             if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
