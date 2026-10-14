@@ -130,7 +130,7 @@ func TestRgCaptureIsChunkBoundaryInvariant(t *testing.T) {
 	dir := "/base"
 	var stream bytes.Buffer
 	for i := 1; i <= 40; i++ {
-		stream.WriteString(fmt.Sprintf("%s/f%02d.txt\x001:needle%s\n", dir, i, strings.Repeat("x", 30)))
+		fmt.Fprintf(&stream, "%s/f%02d.txt\x001:needle%s\n", dir, i, strings.Repeat("x", 30))
 	}
 	// A pathname holding a newline, so a boundary inside it is in play too.
 	stream.WriteString(dir + "/we\nird.txt\x002:needle\n")
@@ -170,7 +170,7 @@ func TestRgCaptureHoldsAtMostItsBound(t *testing.T) {
 	c := newRgCapture(capBytes)
 	bound := capBytes + rgTailWindowBytes
 	chunk := bytes.Repeat([]byte("/base/f.txt\x001:needle\n"), 64)
-	for i := 0; i < 4000; i++ {
+	for i := range 4000 {
 		if _, err := c.Write(chunk); err != nil {
 			t.Fatal(err)
 		}
