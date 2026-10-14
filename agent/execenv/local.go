@@ -2339,8 +2339,9 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	// retained set depends only on the corpus and the query, never on the
 	// parallel search's file-completion order (#4621 round 5). The byte budget
 	// remains a backstop for a pathological single record.
-	collector := newRgRecordCollector(dir, filesOnly, oneFile, rgCollectorKeep(outputMode, maxResults, ctxLines), grepRetainedBytes)
+	collector := newRgRecordCollector(dir, filesOnly, rgCollectorKeep(outputMode, maxResults, ctxLines), grepRetainedBytes)
 	res, err := e.execPreparedCommandStdout(ctx, e.commands().Argv(rg, args...), 10_000, e.RootDir, nil, collector)
+	collector.flush()
 	if err == nil {
 		// Keep the first maxResults lines. In content mode that counts context
 		// lines and "--" separators too, which is what the grep tool's
@@ -2402,7 +2403,9 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		}
 		return "", nil
 	}
-	return res.Stdout + res.Stderr, err
+	// The collector consumed rg's stdout, so a failed search's diagnostic shows
+	// the raw prefix the collector kept beside rg's stderr.
+	return collector.diagnostics() + res.Stderr, err
 }
 
 // grepRgOversizeCount reports how many candidate files ripgrep leaves out of

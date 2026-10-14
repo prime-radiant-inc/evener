@@ -22,18 +22,18 @@ import (
 // window rides with its path, so keeping maxResults+contextLines+1 blocks is
 // enough for the caller's maxResults-LINE cut to select the same lines the
 // unbounded path would. count and files_with_matches emit one line per block,
-// so keep is maxResults there.
+// so keep is maxResults+1 there. Each is one past the caller's cut, so the
+// caller still sees a line beyond maxResults and its own results-truncation note
+// fires; a block dropped for the count is that cut, not the byte budget.
 //
 // budget caps the total retained bytes as a backstop for a pathological single
-// record (one line as long as the whole budget). When a block or record cannot
-// be retained, truncation is disclosed with the same retained-output note the
-// native arm uses.
+// record (one line as long as the whole budget). A record the budget drops is
+// disclosed with the same retained-output note the native arm uses.
 type rgRecordCollector struct {
 	filesOnly bool
-	oneFile   bool
 	keep      int
 	budget    int
-	prefix    string // the searched directory's slash-terminated prefix
+	prefix    []byte // the searched directory's slash-terminated prefix
 
 	blocks        map[string][]byte // path -> raw record bytes, arrival order
 	retainedBytes int
@@ -43,29 +43,30 @@ type rgRecordCollector struct {
 	cur        string // the path of the last complete record, for "--" grouping
 	pendingSep bool
 
-	buf []byte
+	buf       []byte
+	rawPrefix []byte
 }
 
-func newRgRecordCollector(dir string, filesOnly, oneFile bool, keep, budget int) *rgRecordCollector {
+// rgCollectorDiagnosticBytes bounds the raw stream the collector keeps for a
+// FAILED search's diagnostic message: a failed rg's stdout is shown to the model
+// alongside its stderr, and that text is not parsed records. 64 KiB is far past
+// any real rg diagnostic; the parsed records are the search's answer.
+const rgCollectorDiagnosticBytes = 64 << 10
+
+func newRgRecordCollector(dir string, filesOnly bool, keep, budget int) *rgRecordCollector {
 	if keep < 1 {
 		keep = 1
 	}
 	return &rgRecordCollector{
 		filesOnly: filesOnly,
-		oneFile:   oneFile,
 		keep:      keep,
 		budget:    budget,
-		prefix:    strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator),
+		prefix:    []byte(strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator)),
 		blocks:    map[string][]byte{},
 	}
 }
 
-// rgCollectorKeep is the number of ripgrep record blocks the collector retains:
-// one output line per block in count and files_with_matches mode, and in content
-// mode enough blocks to cover the caller's maxResults-LINE cut plus the context
-// window a match's block can carry. Each is one past the cut, so the caller sees
-// a line beyond maxResults and its own results-truncation note fires — the
-// block-count drop is that cut, not the byte budget.
+// rgCollectorKeep is the number of ripgrep record blocks the collector retains.
 func rgCollectorKeep(outputMode string, maxResults, ctxLines int) int {
 	if outputMode == "count" || outputMode == "files_with_matches" {
 		return maxResults + 1
@@ -77,60 +78,49 @@ func rgCollectorKeep(outputMode string, maxResults, ctxLines int) int {
 // reports a full write: a full pipe would stall the child.
 func (c *rgRecordCollector) Write(p []byte) (int, error) {
 	c.buf = append(c.buf, p...)
+	if room := rgCollectorDiagnosticBytes - len(c.rawPrefix); room > 0 {
+		c.rawPrefix = append(c.rawPrefix, p[:min(len(p), room)]...)
+	}
 	c.drain()
 	return len(p), nil
 }
 
-// drain consumes every complete record in c.buf, leaving an incomplete trailing
-// record buffered for the next Write. A record's shape is ripgrep's --null one:
-// files_with_matches is `<path>\0`, content and count are `<path>\0<line>\n`,
-// and a bare `--` line separates context groups. A bare line that is not `--`
-// (a pathless continuation) belongs to the current block, as ripgrepOutputLines
-// attaches it.
+// drain consumes every complete unit in c.buf, leaving a trailing incomplete
+// record buffered for the next Write. It discriminates exactly as
+// ripgrepOutputLines does — cut at the first NUL, and a record's path is
+// everything before it (newlines included), admitted only when it starts with
+// the searched directory's prefix. Any other bytes are a pathless line: the
+// "--" group separator, a continuation of the current block, or — when a fake
+// rg frames none of the stream — the whole output as one block.
 func (c *rgRecordCollector) drain() {
 	for len(c.buf) > 0 {
-		if c.oneFile {
-			// A single named file's stream is plain newline-terminated lines.
-			nl := bytes.IndexByte(c.buf, '\n')
-			if nl < 0 {
-				return
-			}
-			c.appendRaw("", c.buf[:nl+1])
-			c.buf = c.buf[nl+1:]
-			continue
-		}
-		// ripgrepOutputLines cuts at the NUL first: a record's path is
-		// everything before it (newlines included), and only bytes whose first
-		// NUL follows a newline are a pathless line like the "--" separator.
 		nul := bytes.IndexByte(c.buf, 0)
-		if nul < 0 {
-			return
-		}
-		if path := c.buf[:nul]; !bytes.HasPrefix(path, []byte(c.prefix)) {
-			nl := bytes.IndexByte(c.buf, '\n')
+		if nul >= 0 && bytes.HasPrefix(c.buf[:nul], c.prefix) {
+			if c.filesOnly {
+				c.record(string(c.buf[:nul]), c.buf[:nul+1])
+				c.buf = c.buf[nul+1:]
+				continue
+			}
+			rest := c.buf[nul+1:]
+			nl := bytes.IndexByte(rest, '\n')
 			if nl < 0 {
 				return
 			}
-			if string(c.buf[:nl]) == "--" {
-				c.pendingSep = true
-			} else if c.cur != "" {
-				c.appendRaw(c.cur, c.buf[:nl+1])
-			}
-			c.buf = c.buf[nl+1:]
+			end := nul + 1 + nl + 1
+			c.record(string(c.buf[:nul]), c.buf[:end])
+			c.buf = c.buf[end:]
 			continue
 		}
-		if c.filesOnly {
-			c.record(string(c.buf[:nul]), c.buf[:nul+1])
-			c.buf = c.buf[nul+1:]
-			continue
-		}
-		nl2 := bytes.IndexByte(c.buf[nul+1:], '\n')
-		if nl2 < 0 {
+		nl := bytes.IndexByte(c.buf, '\n')
+		if nl < 0 {
 			return
 		}
-		end := nul + 1 + nl2 + 1
-		c.record(string(c.buf[:nul]), c.buf[:end])
-		c.buf = c.buf[end:]
+		if string(c.buf[:nl]) == "--" {
+			c.pendingSep = true
+		} else {
+			c.record(c.cur, c.buf[:nl+1])
+		}
+		c.buf = c.buf[nl+1:]
 	}
 }
 
@@ -154,18 +144,14 @@ func (c *rgRecordCollector) record(path string, raw []byte) {
 }
 
 // appendRaw adds raw to path's block, creating the block if room allows. A new
-// path beyond keep evicts the largest kept path when this one is smaller; a
-// record past the byte budget is dropped. Either drop discloses truncation.
+// path beyond keep evicts the largest kept path when this one is smaller — that
+// eviction is the caller's maxResults cut. A record past the byte budget is
+// dropped and discloses truncation.
 func (c *rgRecordCollector) appendRaw(path string, raw []byte) {
 	b, ok := c.blocks[path]
 	if !ok {
-		if len(c.blocks) >= c.keep {
-			if !c.makeRoom(path) {
-				// A block beyond keep is the caller's maxResults cut, not the
-				// byte budget: keep is one past the cut, so its own
-				// results-truncation note still fires.
-				return
-			}
+		if len(c.blocks) >= c.keep && !c.makeRoom(path) {
+			return
 		}
 		if c.retainedBytes+len(raw) > c.budget {
 			c.dropped = true
@@ -205,9 +191,6 @@ func (c *rgRecordCollector) makeRoom(path string) bool {
 // order, blocks joined by the group separator when the stream carried one, for
 // the existing line formatter to decode.
 func (c *rgRecordCollector) retained() string {
-	if c.oneFile {
-		return string(c.blocks[""])
-	}
 	paths := make([]string, 0, len(c.blocks))
 	for p := range c.blocks {
 		paths = append(paths, p)
@@ -223,9 +206,29 @@ func (c *rgRecordCollector) retained() string {
 	return string(out)
 }
 
-// truncated reports that some record was left out: the caller discloses it with
-// the retained-output note.
+// truncated reports that the byte budget left a record out: the caller
+// discloses it with the retained-output note.
 func (c *rgRecordCollector) truncated() bool { return c.dropped }
+
+// diagnostics is the raw stream prefix a FAILED search shows beside its stderr.
+func (c *rgRecordCollector) diagnostics() string { return string(c.rawPrefix) }
+
+// flush consumes the bytes a stream ended on. A well-formed rg stream ends on a
+// complete record, leaving nothing; a framed-less stream (a fake rg) ends on a
+// final line with no newline, which belongs to its block, and a stream cut
+// mid-record leaves a partial record this drops (disclosed as truncation).
+func (c *rgRecordCollector) flush() {
+	if len(c.buf) == 0 {
+		return
+	}
+	if nul := bytes.IndexByte(c.buf, 0); nul >= 0 && bytes.HasPrefix(c.buf[:nul], c.prefix) {
+		c.dropped = true
+		c.buf = nil
+		return
+	}
+	c.record(c.cur, c.buf)
+	c.buf = nil
+}
 
 // rgPathOrder orders two paths the way ripgrepOutputLines sorts its blocks: one
 // path segment at a time, so a directory's files come before a sibling file
