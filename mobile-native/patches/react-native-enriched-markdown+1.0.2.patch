@@ -4913,10 +4913,10 @@ index 0000000..1f3af53
 +NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
 new file mode 100644
-index 0000000..88b9a6b
+index 0000000..3274618
 --- /dev/null
 +++ b/node_modules/react-native-enriched-markdown/ios/parser/ENRMOriginalDocumentModel.m
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,284 @@
 +#import "ENRMOriginalDocumentModel.h"
 +#import "MarkdownSourceParser.h"
 +
@@ -5135,7 +5135,7 @@ index 0000000..88b9a6b
 +  return nil;
 +}
 +
-+- (NSUInteger)sourceBoundaryForFragment:(ENRMSourceFragment *)fragment offset:(NSUInteger)offset end:(BOOL)end
++- (NSUInteger)sourceBoundaryForFragment:(ENRMSourceFragment *)fragment offset:(NSUInteger)offset
 +{
 +  if (offset == 0) return fragment.sourceRange.location;
 +  if (offset == fragment.text.length) return NSMaxRange(fragment.sourceRange);
@@ -5144,8 +5144,12 @@ index 0000000..88b9a6b
 +    NSUInteger boundary = fragment.sourceRange.location + offset;
 +    return [self isBoundary:boundary] ? boundary : NSNotFound;
 +  }
-+  // Decoded entities, collapsed whitespace and expanded tabs are atomic spans.
-+  return end ? NSMaxRange(fragment.sourceRange) : fragment.sourceRange.location;
++  // Decoded entities, collapsed whitespace and expanded tabs render several
++  // characters from one atomic source span. A partial boundary of such a
++  // spelling cannot round-trip to exactly the selected rendered characters:
++  // saving it would reconstruct the WHOLE spelling and highlight beyond the
++  // selection. Refuse the boundary; a complete spelling still maps exactly.
++  return NSNotFound;
 +}
 +
 +- (NSRange)sourceRangeForRenderedRange:(NSRange)range inText:(NSAttributedString *)text
@@ -5161,8 +5165,8 @@ index 0000000..88b9a6b
 +    NSRange overlap = NSIntersectionRange(run, range);
 +    if (overlap.length && [fragment isKindOfClass:ENRMSourceFragment.class] &&
 +        !fragment.isGenerated && [_ownedFragments containsObject:fragment.originalFragment]) {
-+      NSUInteger a = [self sourceBoundaryForFragment:fragment offset:overlap.location - run.location end:NO];
-+      NSUInteger b = [self sourceBoundaryForFragment:fragment offset:NSMaxRange(overlap) - run.location end:YES];
++      NSUInteger a = [self sourceBoundaryForFragment:fragment offset:overlap.location - run.location];
++      NSUInteger b = [self sourceBoundaryForFragment:fragment offset:NSMaxRange(overlap) - run.location];
 +      if (a == NSNotFound || b == NSNotFound) return NSMakeRange(NSNotFound, 0);
 +      start = MIN(start, a);
 +      end = MAX(end, b);
