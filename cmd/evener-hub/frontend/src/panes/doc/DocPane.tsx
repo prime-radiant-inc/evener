@@ -305,22 +305,81 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   // reference-bound reader performs below. The pane's params.path remains the
   // document's identity for annotations and the pane record; it is only the
   // fetch target when no binding was ever recorded. The stores are read per
-  // render, never subscribed: the binding re-resolves on every render - a
-  // foreground reread and any later read fetch the rebound target - while the
-  // reader keeps rendering only for the state it already observes, so a
-  // closed pane's committed retirement can never be resurrected by an extra
-  // render of a reader waiting to unmount.
+  // render - the thread retention and cwd subscription effects below keep a
+  // cwd change reaching this reader as a render, so the binding re-resolves
+  // before any demand cycle can fetch the dead target - while the reader keeps
+  // rendering only for the state it already observes, so a closed pane's
+  // committed retirement can never be resurrected by an extra render of a
+  // reader waiting to unmount.
   const pane = workspaceStore.getState().panes.find((candidate) => candidate.id === paneId);
   const retained = pane ? documentPaneState(pane) : undefined;
   let readTarget = path;
+  let reboundReference: FileReference | undefined;
   if (retained) {
     const cwd = threadsStore.getState().threads.get(session)?.cwd;
-    const reference =
-      cwd && cwd !== retained.reference.cwd ? rebindFileReference(retained.reference, cwd) : retained.reference;
-    readTarget = reference.readTarget;
+    if (cwd && cwd !== retained.reference.cwd) {
+      reboundReference = rebindFileReference(retained.reference, cwd);
+      readTarget = reboundReference.readTarget;
+    } else readTarget = retained.reference.readTarget;
   }
   const work = documentReaderWork(paneId, key, ports);
   const destination: DestinationProvenance = origin ?? { kind: "browser-restored-session" };
+
+  // The document owns its resolved binding, not the ephemeral thread model:
+  // record the rebound reference on the pane exactly as the workspace's
+  // reference-bound reader records its own, so a later mount whose
+  // conversation is gone reads the last-known binding instead of the open-time
+  // one.
+  useLayoutEffect(() => {
+    if (!pane || !retained || !reboundReference) return;
+    recordDocumentPaneState(pane, {
+      reference: reboundReference,
+      origin: retained.origin,
+      reopen: retained.reopen ?? 0,
+    });
+  }, [pane, retained, reboundReference]);
+
+  // Retain the owning thread for this document's lifetime, exactly as the
+  // workspace's reference-bound reader does: closing the conversation pane
+  // must not drop the thread model while a document still resolves its
+  // relative binding through the session's cwd. Only a relative retained
+  // binding resolves through the cwd - an absolute provenance keeps its exact
+  // read target, and a record-less pane reads its raw path - so only that
+  // binding keeps the thread model (and its own hydration machinery) alive.
+  const retainsOwningThread = retained?.reference.provenance === "relative";
+  useEffect(() => {
+    if (!retainsOwningThread) return;
+    let started = false;
+    const tryStart = () => {
+      if (started || connectionStore.getState().state !== "ready") return;
+      started = true;
+      threadsStore
+        .getState()
+        .ensureThread(session)
+        .catch(() => {});
+    };
+    tryStart();
+    const unsubscribe = connectionStore.subscribe(tryStart);
+    return () => {
+      unsubscribe();
+      if (started) threadsStore.getState().releaseThread(session);
+    };
+  }, [session, retainsOwningThread]);
+
+  // Observe the owning thread's cwd: a change re-renders this pane, the render
+  // above re-resolves the rebind, the recording effect persists it and the
+  // read-identity effect refreshes the demand with the rebound target, so the
+  // reader never fetches the dead binding. The pane-record gate keeps a
+  // closing pane's committed retirement from being resurrected by this
+  // subscription's extra render.
+  useEffect(() => {
+    if (!retainsOwningThread) return;
+    return threadsStore.subscribe((state, previous) => {
+      if (state.threads.get(session)?.cwd === previous.threads.get(session)?.cwd) return;
+      if (!workspaceStore.getState().panes.some((candidate) => candidate.id === paneId)) return;
+      bump((value) => value + 1);
+    });
+  }, [session, paneId, retainsOwningThread]);
 
   useEffect(
     () =>

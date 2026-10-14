@@ -432,6 +432,117 @@ test.each(["plan.md", "/work/a/plan.md"])(
     expect(workspaceStore.getState().panes.filter((pane) => pane.type === "doc")).toHaveLength(1);
   },
 );
+
+// An annotated doc pane with a real recorded binding, opened through the
+// workspace's own openDocBeside path so documentPaneState carries the retained
+// reference the reader re-resolves per render.
+function renderAnnotatedRetainedDoc(ports: DocumentAnnotationPorts, path = "plan.md") {
+  const sourcePaneId = workspaceStore.getState().openPane("session", { ref });
+  const reference = bindFilePath(path, cwd);
+  if (!reference) throw new Error("expected reference");
+  openDocBeside({ session: ref, sourcePaneId, reference });
+  const pane = workspaceStore.getState().panes.find((candidate) => candidate.type === "doc");
+  if (!pane) throw new Error("expected real document pane");
+  const view = render(
+    <ClientProvider client={client}>
+      <PaneVisibilityContext value={true}>
+        <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} annotations={ports} />
+      </PaneVisibilityContext>
+    </ClientProvider>,
+  );
+  cleanupAfterTest(() => disposeDocumentReaderWork(pane.id));
+  return { ...view, pane, sourcePaneId };
+}
+
+test("the annotated reader rereads through the rebound target when the owning cwd changes", async () => {
+  const f = await fixture("annotated-cwd-reread");
+  const { ports } = annotationRuntimePorts(f);
+  let oldTargetGone = false;
+  mockRead.mockImplementation(async (_session, target) => {
+    if (target === "/work/b/plan.md") return docContent("B bytes", "rev-2");
+    // The old binding stops resolving once the session's cwd has moved: a
+    // pane that keeps fetching it stays stuck, whatever it paces at.
+    if (oldTargetGone) throw new Error("old binding gone");
+    return docContent("A bytes", "rev-1");
+  });
+  // Seed the owning thread model so the cwd publication has a tracked model to
+  // update; the document's own retention keeps it alive from here on.
+  await act(async () => {
+    await threadsStore.getState().ensureThread(ref);
+  });
+  const view = renderAnnotatedRetainedDoc(ports);
+  await screen.findByText("A bytes");
+  expect(mockRead.mock.calls.map((call) => call[1])).toContain("/work/a/plan.md");
+  oldTargetGone = true;
+  await publishCWD("/work/b");
+  await screen.findByText("B bytes");
+  // The changed cwd never sends a fetch to the dead binding: the subscription
+  // re-renders the reader before any demand cycle can run, so the open-time
+  // target is fetched exactly once, for the initial read.
+  expect(mockRead.mock.calls.filter(([, target]) => target === "/work/a/plan.md")).toHaveLength(1);
+  expect(mockRead.mock.calls.some(([, target]) => target === "/work/b/plan.md")).toBe(true);
+  expect(documentPaneState(view.pane)?.reference).toMatchObject({
+    cwd: "/work/b",
+    readTarget: "/work/b/plan.md",
+  });
+});
+
+test("closing the conversation cannot drop the owning cwd while the annotated document stays open", async () => {
+  const f = await fixture("annotated-cwd-retention");
+  const { ports } = annotationRuntimePorts(f);
+  mockRead.mockResolvedValue(docContent("A bytes", "rev-1"));
+  await act(async () => {
+    await threadsStore.getState().ensureThread(ref);
+  });
+  const view = renderAnnotatedRetainedDoc(ports);
+  await screen.findByText("A bytes");
+  // Release the test's own seeding reference: only the document's own thread
+  // retention can keep the model alive once the conversation pane's holder is
+  // gone, and the cwd it tracks must keep updating.
+  act(() => threadsStore.getState().releaseThread(ref));
+  expect(threadsStore.getState().threads.has(ref)).toBe(true);
+  await publishCWD("/work/b");
+  expect(threadsStore.getState().threads.get(ref)?.cwd).toBe("/work/b");
+  view.unmount();
+  await waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
+});
+
+test("a remount whose owning thread is gone reads the document's recorded binding", async () => {
+  const f = await fixture("annotated-cwd-remount");
+  const { ports } = annotationRuntimePorts(f);
+  let oldTargetGone = false;
+  mockRead.mockImplementation(async (_session, target) => {
+    if (target === "/work/b/plan.md") return docContent("B bytes", "rev-2");
+    if (oldTargetGone) throw new Error("old binding gone");
+    return docContent("A bytes", "rev-1");
+  });
+  await act(async () => {
+    await threadsStore.getState().ensureThread(ref);
+  });
+  const first = renderAnnotatedRetainedDoc(ports);
+  await screen.findByText("A bytes");
+  oldTargetGone = true;
+  await publishCWD("/work/b");
+  await screen.findByText("B bytes");
+  expect(documentPaneState(first.pane)?.reference.cwd).toBe("/work/b");
+  // Drop the model entirely - the test's seeding reference and the pane's
+  // retention both go away - then close the conversation for good: its thread
+  // read fails from here on.
+  act(() => threadsStore.getState().releaseThread(ref));
+  first.unmount();
+  await waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
+  client.on("thread/read", () => {
+    throw new Error("conversation closed");
+  });
+  const second = renderAnnotatedRetainedDoc(ports);
+  await screen.findByText("B bytes");
+  // The recorded binding, not the raw pane params, resolves the remount's
+  // fetch: the open-time target is never fetched again after the rebind.
+  const targets = mockRead.mock.calls.map((call) => call[1]);
+  expect(targets.filter((target) => target === "/work/a/plan.md")).toHaveLength(1);
+  expect(targets.at(-1)).toBe("/work/b/plan.md");
+  second.unmount();
+});
 test("actual Reload recovers a created missing file without remounting", async () => {
   const directory = await mkdtemp(join(tmpdir(), "evener-doc-created-"));
   const file = join(directory, "created.txt");
