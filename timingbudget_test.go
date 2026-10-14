@@ -757,3 +757,56 @@ func TestTimingBudgetKeepsTheClassMapOnlyWarnState(t *testing.T) {
 		t.Fatalf("a class-map-only budget must keep exiting 0, not fail the run: %v\n%s", err, out)
 	}
 }
+
+// TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails pins the
+// 2026-10-14 ruling (issue #4615) against the checked-in testing-budget.json,
+// not a synthetic map: a member of a removed runner-bound class now warns on the
+// flat ceiling instead of failing, while a member of a kept class still fails
+// over its class ceiling. It reads the real budget file (the evener_test package
+// runs with the repo root as its working directory), so the removed half also
+// reds if a removed class creeps back in.
+func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name     string
+		test     string
+		seconds  string
+		wantFail bool
+	}{
+		{
+			name:    "removed runner-bound class member warns",
+			test:    "TestCrossCompileWindows",
+			seconds: "52.26",
+		},
+		{
+			name:     "kept class member still fails",
+			test:     "TestGitCloneSurvivesAHookThatOrphansAPipeHolder",
+			seconds:  "20.00",
+			wantFail: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			measured := filepath.Join(dir, tc.test+".tsv")
+			writeAuditScriptFixture(t, measured, "TEST\tprimeradiant.com/evener\t"+tc.test+"\t"+tc.seconds+"\n")
+			out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
+			if !tc.wantFail {
+				if err != nil {
+					t.Fatalf("a removed runner-bound class member must warn, not fail (#4615):\n%s", out)
+				}
+				if !strings.Contains(out, "WARN") || !strings.Contains(out, tc.test) {
+					t.Fatalf("the removed class member was not reported on the flat ceiling:\n%s", out)
+				}
+				if strings.Contains(out, "FAIL") {
+					t.Fatalf("the removed class member was still enforced as a failure:\n%s", out)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("a kept class member over its ceiling must still fail:\n%s", out)
+			}
+			if !strings.Contains(out, "FAIL") {
+				t.Fatalf("the kept class member was not enforced over its class ceiling:\n%s", out)
+			}
+		})
+	}
+}
