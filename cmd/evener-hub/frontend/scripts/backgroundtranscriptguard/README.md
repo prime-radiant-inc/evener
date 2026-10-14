@@ -52,9 +52,25 @@ The journey, in order:
 The legacy client-side session-cache route and its stores were removed (6d-2b).
 The journey that drove that route (`TestBackgroundTranscriptsBrowser` and the
 legacy branch of `run.mjs`) was retired with it; the entry route is the only
-journey. The page-back, reopen, reconnect, narrow-viewport and sustained
-two-session batching assertions that the legacy journey carried are no longer
-covered by this browser guard.
+journey. The entry guard restored the legacy journey's page-back
+(`paged-back-sentinel`), reopen (`reopen-without-read`), reconnect
+(`reconnected-latest-window`) and narrow-viewport (`narrow-viewport`)
+assertions (`cmd/evener-hub/background_transcripts_browser_test.go`).
+`assertBackgroundEntryPagingAndReconnect` re-derives the paging, reopen and
+reconnect *transport* claims itself from the raw appwire trace (target
+`thread/read` and `thread/turns/list` frames at each milestone's own byte
+window), and correlates the gap turn with the daemon's durable producer
+transcript. It does not recompute every content claim: `paged-back-sentinel`
+still checks the driver's own `pages`, `noDuplicates`, `sentinelPresent` and
+`historyOrdered` values, and `reopen-without-read` takes the restored-content
+booleans `retainedItemsPresent` and `restoredHasSentinel` from the driver.
+`assertBackgroundEntryNarrowViewport` re-activates the pane at 420px through the
+mobile shell and compares the real before/after item bodies (text, tool output,
+arguments, status), not just item identity; it re-derives that comparison from
+the recorded payloads and confirms the produced gap content against them rather
+than trusting the driver's `contentPreserved`/`sentinelAfter` booleans. The only
+part of the legacy journey this guard does not cover is its sustained
+two-session batching apparatus.
 
 ## Auth and proxy prerequisites
 

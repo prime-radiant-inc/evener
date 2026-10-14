@@ -26,6 +26,7 @@ import {
   type ThreadTurnsListResponse,
   type TurnModel,
 } from "@evener/appwire-client";
+import nacl from "tweetnacl";
 import { type EntryRetainedBody, type EntryWriteAdmission, entryWriteAdmissionFor } from "./entryWriteAdmission";
 import {
   entryHistoryKey,
@@ -34,8 +35,21 @@ import {
   type TranscriptResolvedIdentity,
   type TranscriptSessionMetadata,
 } from "./sessionCacheSchema";
-import type { EntryCoverageInput, SessionEntryCache } from "./sessionEntryCache";
+import { type EntryCoverageInput, mayMatchCapacityIdentity, type SessionEntryCache } from "./sessionEntryCache";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
+
+// A changed offer is eligible for an actual write, not proof that its merged
+// persisted plan differs. Hash synchronously: no lookup may retain these bodies
+// outside admission. Keep only the fixed 128-character SHA-512 digest.
+function offeredContentFingerprint(batch: Parameters<SessionEntryCache["commitBatch"]>[0]): string {
+  const content = JSON.stringify([
+    batch.items.map((row) => ({ ...row, item: encodeTranscriptItem(row.item as ItemModel) })),
+    (batch.turns ?? []).map(({ items: _items, ...turn }) => turn),
+  ]);
+  return Array.from(nacl.hash(new TextEncoder().encode(content)), (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+}
 
 // Local bodies can fill omissions at the same version, but cannot overwrite
 // explicit values (including empty ones). Keep normal version/identity rules;
@@ -68,6 +82,21 @@ function restoreReaderWindow(seed: ThreadModel, turns: TurnModel[]): ThreadModel
     })),
   };
   return mergeTranscriptReaderWindow({ ...seed, history }, turns);
+}
+
+// Retained history identities prove eviction and local reachability, but are
+// not display content. Removing their display-only turns also puts the virtual
+// list's near-top origin at the oldest hydrated content. Explicit-empty bodies
+// and tools with omitted text but real payloads are not identity-only.
+function hydratedDisplay(model: ThreadModel): ThreadModel {
+  let changed = false;
+  const turns = model.turns.flatMap((turn) => {
+    const items = turn.items.filter((item) => !encodeTranscriptItem(item).identityOnly);
+    if (items.length === turn.items.length) return [turn];
+    changed = true;
+    return items.length === 0 ? [] : [{ ...turn, items }];
+  });
+  return changed ? { ...model, turns } : model;
 }
 
 /**
@@ -331,15 +360,23 @@ export class TranscriptRepository {
   readonly #binding: Omit<TranscriptRepositoryBinding, "seedModel">;
   readonly #listeners = new Set<() => void>();
   readonly #writes = new Set<Promise<void>>();
+  readonly #preflightWrites = new Map<Parameters<SessionEntryCache["commitBatch"]>[0], Promise<void>>();
   readonly #pending = new Map<string, TranscriptItemRow<CachedSessionItem>>();
   #model: ThreadModel | undefined;
   #boundary = 0;
   #sourceRevision = 0;
+  #localOlder: { before: ThreadItemPosition; floor: ThreadItemPosition; sourceRevision: number } | undefined;
   #replacementRevision = 0;
   #uncommittedReplacementFrom: ThreadItemPosition | undefined;
   #baselineIdentity = "";
   #readerCount = 0;
   #coverageBoundary: string | undefined;
+  // The boundary this suffix chain descends from (the read certificate's own
+  // boundary). Suffix boundary identity is derived from this bounded base plus
+  // the monotonic event counter, so it never accumulates the previous suffix
+  // identifier. `#coverageBoundary` still tracks the latest boundary for the
+  // cache's previousBoundary equality chain.
+  #suffixBoundaryBase: string | undefined;
   #coverageReadId: string | undefined;
   #localReadContinuation: string | undefined;
   #continuityId: string | undefined;
@@ -376,6 +413,13 @@ export class TranscriptRepository {
   #backgroundInFlight = false;
   #retryCancel: (() => void) | undefined;
   #retryAttempt = 0;
+  // The last intrinsically oversized recorded window in this repository's
+  // cache lifetime. Unrelated writes/evictions cannot make these bytes fit.
+  #capacityRefusal: string | undefined;
+  #capacityRefusedOffer: string | undefined;
+  // Ordinary capacity refusals settle without a failed-retry disposition, but
+  // their missing extent still prevents a narrower commit restoring continuity.
+  #capacityRefusedReach: AbandonedCoverage | undefined;
   // One paced reconciliation callback after an aggregate overflow. It is armed
   // once and re-arms only on a later overflow, so repeated opens or unchanged
   // live deltas cannot start a repair loop; changed eligible content is
@@ -395,7 +439,7 @@ export class TranscriptRepository {
     revision: number;
     bodies: EntryRetainedBody[];
   }> = [];
-  // The bodies of commits actually issued and not yet settled. They stay charged
+  // The bodies of commits or memo preflights issued and not yet settled. They stay charged
   // until their real terminal outcome, even across invalidate/dispose, so
   // retiring publication authority cannot free capacity a worker still holds.
   readonly #inFlight = new Map<Parameters<SessionEntryCache["commitBatch"]>[0], EntryRetainedBody[]>();
@@ -458,7 +502,7 @@ export class TranscriptRepository {
         history?.failed !== undefined;
       if (!this.#seedAuthorityInvalid && authority) this.#seedSnapshot = authority.snapshotLength;
       this.#recoveryNeeded = this.#seedAuthorityInvalid;
-      this.#model = this.#seedAuthorityInvalid ? invalidateHistory(seedModel) : seedModel;
+      this.#model = hydratedDisplay(this.#seedAuthorityInvalid ? invalidateHistory(seedModel) : seedModel);
     } else {
       this.#model = undefined;
     }
@@ -687,6 +731,7 @@ export class TranscriptRepository {
     }
     this.#boundary = Math.max(this.#boundary + 1, response.snapshot?.length ?? 0);
     this.#coverageBoundary = request.boundary;
+    this.#suffixBoundaryBase = request.boundary;
     this.#coverageReadId = request.readId;
     // This token identifies the source authority and baseline that can support
     // uninterrupted suffixes; Snapshot.length is a separate byte boundary.
@@ -1013,9 +1058,80 @@ export class TranscriptRepository {
     if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
     const current = this.#model;
     if (!current) return { kind: "server" };
+    const revisionAtStart = this.#sourceRevision;
+    // Restore omitted bodies only inside the interval the opening already
+    // represented. Read/suffix coverage is not page-baseline coverage, so these
+    // raw rows merge compatibly without certifying a range or changing cursors.
+    const local = this.localOlderPosition() ? this.#localOlder : undefined;
+    if (local) {
+      // As with certified paging below, only race payload work. The authority
+      // guard keeps its own deadline and must still reconcile uncertainty.
+      let lookupActive = true;
+      const lookup = async () => {
+        const stored = await this.#cache.getBefore(this.#binding.historyKey, local.before, limit);
+        if (!lookupActive || !this.#acceptsLifetime(lifetime) || this.#sourceRevision !== revisionAtStart) {
+          return undefined;
+        }
+        const rows = stored.filter((row) => comparePosition(row.position, local.floor) >= 0);
+        const turns = await this.#readTurnMetadata(this.#turnIDsForRows(rows, []));
+        return { rows, turns };
+      };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let payload: Awaited<ReturnType<typeof lookup>> | undefined;
+      try {
+        payload = await Promise.race([
+          lookup(),
+          new Promise<undefined>((resolve) => {
+            timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
+          }),
+        ]);
+      } catch {
+        // This known local continuation may have no server cursor. Ordinary
+        // server paging would then strand its omitted bodies.
+        return { kind: "reconcile" };
+      } finally {
+        lookupActive = false;
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
+      if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
+      if (!payload) return { kind: "reconcile" };
+      const { rows, turns } = payload;
+      if (!(await this.#durableAuthoritiesUnchanged())) return { kind: "reconcile" };
+      if (!this.#acceptsLifetime(lifetime)) return { kind: "server" };
+      if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
+      const oldest = rows[0]?.position;
+      const nextBefore =
+        oldest && rows.length === limit && comparePosition(oldest, local.floor) > 0 ? oldest : undefined;
+      const restoredRows = new Map(rows.map((row) => [row.transcriptKey, row]));
+      // Eviction does not change Clear/deletion generations. A short raw page
+      // therefore proves exhaustion only if it restores every held identity
+      // in the consumed interval, not merely every row still present on disk.
+      for (const turn of (this.#model ?? current).history?.turns ?? []) {
+        for (const item of turn.items) {
+          if (
+            !item.position ||
+            comparePosition(item.position, nextBefore ?? local.floor) < 0 ||
+            comparePosition(item.position, local.before) >= 0
+          )
+            continue;
+          const row = item.transcriptKey ? restoredRows.get(item.transcriptKey) : undefined;
+          if (!row || row.version < (item.version ?? 0) || comparePosition(row.position, item.position) !== 0) {
+            return { kind: "reconcile" };
+          }
+        }
+      }
+      const restored = this.#restoreWindow(this.#model ?? current, rows, turns, () => this.#acceptsLifetime(lifetime));
+      if (!restored) return { kind: "server" };
+      if (beforePublish && !beforePublish()) return { kind: "superseded" };
+      this.#localOlder = nextBefore ? { ...local, before: nextBefore } : undefined;
+      this.#model = restored;
+      this.#publish();
+      onPublished?.();
+      return { kind: "local", model: restored };
+    }
     const before = this.#oldestPosition(current);
     if (!before) return { kind: "server" };
-    const revisionAtStart = this.#sourceRevision;
     // Bound both payload reads with one cache budget. Keep the separately
     // bounded durable-authority guard outside: uncertainty there must reconcile.
     // The raced work only returns data, so late results can never publish.
@@ -1051,9 +1167,9 @@ export class TranscriptRepository {
       return { window, turnMetadata };
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let local: Awaited<ReturnType<typeof lookup>> | undefined;
+    let payload: Awaited<ReturnType<typeof lookup>> | undefined;
     try {
-      local = await Promise.race([
+      payload = await Promise.race([
         lookup(),
         new Promise<undefined>((resolve) => {
           timer = setTimeout(() => resolve(undefined), SESSION_CACHE_LOOKUP_DEADLINE_MS);
@@ -1069,8 +1185,8 @@ export class TranscriptRepository {
     // An authoritative reconciliation during the lookup retires this window's
     // authority; never publish it into the new baseline.
     if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
-    if (!local) return { kind: "server" };
-    const { window, turnMetadata } = local;
+    if (!payload) return { kind: "server" };
+    const { window, turnMetadata } = payload;
     // A committed Clear during the lookup retires this window's authority even
     // when the client and source identity are unchanged: never publish rows a
     // cleared epoch no longer owns.
@@ -1079,7 +1195,11 @@ export class TranscriptRepository {
     if (this.#sourceRevision !== revisionAtStart) return { kind: "reconcile" };
     // Only a connected-but-unverified chain is genuine uncertainty. Empty
     // coverage below the oldest row is an ordinary network continuation.
-    if (window.stale) return window.coverage.length > 0 ? { kind: "reconcile" } : { kind: "server" };
+    if (window.stale) {
+      if (window.coverage.length > 0) return { kind: "reconcile" };
+      const newest = this.#model ?? current;
+      return newest.olderCursor ? { kind: "server" } : { kind: "exhausted", model: newest };
+    }
     if (window.rows.length === 0) {
       // Certified local coverage below the oldest row ended. Only a frontier
       // with no server cursor is real history end; a cursor means more history
@@ -1105,6 +1225,12 @@ export class TranscriptRepository {
     this.#publish();
     onPublished?.();
     return { kind: "local", model };
+  }
+
+  /** Local content continuation, independent of the opaque server cursor. */
+  localOlderPosition(): ThreadItemPosition | undefined {
+    if (this.#disposed || this.#invalidated) return undefined;
+    return this.#localOlder?.sourceRevision === this.#sourceRevision ? this.#localOlder.before : undefined;
   }
 
   attachReader(): TranscriptReader {
@@ -1287,27 +1413,16 @@ export class TranscriptRepository {
             oldestReturned && certifiedStart && comparePosition(certifiedStart, oldestReturned) < 0
               ? oldestReturned
               : undefined;
-          if (localBefore && latest.history) {
-            // Only a certified continuation makes this prefix reachable again.
-            // Identity-only rows are not a loaded reader window: keeping them
-            // would put the next local page below bodies we never restored.
-            const trim = (turns: readonly TurnModel[]) =>
-              turns.flatMap((turn) => {
-                const items = turn.items.filter(
-                  (item) =>
-                    !item.position ||
-                    comparePosition(item.position, localBefore) >= 0 ||
-                    !encodeTranscriptItem(item).identityOnly,
-                );
-                return items.length === 0 && turn.items.length > 0 ? [] : [{ ...turn, items }];
-              });
-            latest = {
-              ...latest,
-              history: { ...latest.history, turns: trim(latest.history.turns) },
-              turns: trim(latest.turns),
-            };
-          }
+          // Keep the unrestored identities: raw paging uses them to detect
+          // eviction rather than mistaking a short page for exhaustion.
           this.#model = latest;
+          const heldStart = this.#oldestPosition(current);
+          const heldBefore =
+            oldestReturned && heldStart && comparePosition(heldStart, oldestReturned) < 0 ? oldestReturned : undefined;
+          this.#localOlder =
+            heldBefore && heldStart
+              ? { before: heldBefore, floor: heldStart, sourceRevision: sourceRevisionAtOpen }
+              : undefined;
           this.#publish();
           const certifiedSnapshot = window.coverage.at(-1)?.representedSnapshot;
           const seedCovered =
@@ -1316,6 +1431,21 @@ export class TranscriptRepository {
           const pendingCutCovered =
             !cut.hadPendingWrites ||
             (acceptedBoundaryAtOpen !== undefined && acceptedBoundaryAtOpen !== coverageBoundary);
+          // A healthy source read can prove there are no recorded bodies to
+          // restore before its empty certificate commits. This is not vacuous
+          // coverage: an accepted read named an empty window, the full retained
+          // history is empty, and no admission loss or recovery is outstanding.
+          // Keep durable currentness separate, so this case is only "stale".
+          const provenEmptySourceWindow =
+            this.#coverageReadId !== undefined &&
+            this.#coverageStart === null &&
+            this.#coverageEnd === null &&
+            latest?.history?.turns.every((turn) => turn.items.length === 0) === true &&
+            cut.authorityValid &&
+            durableAuthorities === "unchanged" &&
+            !this.#seedAuthorityInvalid &&
+            !this.#cacheContinuityLost &&
+            !this.#recoveryNeeded;
           const status =
             window.complete &&
             !window.stale &&
@@ -1328,13 +1458,16 @@ export class TranscriptRepository {
             !this.#cacheContinuityLost &&
             !this.#recoveryNeeded
               ? "current"
-              : "recovery-needed";
+              : provenEmptySourceWindow
+                ? "stale"
+                : "recovery-needed";
           if (localBefore) this.#localReadContinuation = this.#coverageReadId;
+          const before = heldBefore ?? localBefore;
           return {
             model: latest ?? current,
             status,
             boundary: this.#boundary,
-            ...(localBefore ? { before: localBefore } : {}),
+            ...(before ? { before } : {}),
             olderCursor: window.serverCursor ?? current.olderCursor,
           };
         } catch {
@@ -1393,6 +1526,8 @@ export class TranscriptRepository {
 
   invalidate(): void {
     this.#invalidated = true;
+    this.#capacityRefusal = undefined;
+    this.#capacityRefusedOffer = undefined;
     this.#pending.clear();
     this.#cancelRetry();
     this.#abandonBackgroundAccepts("cancelled");
@@ -1405,6 +1540,8 @@ export class TranscriptRepository {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#capacityRefusal = undefined;
+    this.#capacityRefusedOffer = undefined;
     this.#cancelRetirement?.();
     this.#endRetryCancel?.();
     this.#endRetryCancel = undefined;
@@ -1892,7 +2029,10 @@ export class TranscriptRepository {
       readId: this.#coverageReadId,
       continuityId: this.#continuityId,
       previousBoundary: this.#coverageBoundary,
-      boundary: `${this.#coverageBoundary}:suffix:${this.#boundary}`,
+      // Bounded identity: the chain's fixed base plus the monotonic event
+      // counter. Embedding the previous boundary here would retain every prior
+      // suffix identifier in one metadata value.
+      boundary: `${this.#suffixBoundaryBase ?? this.#coverageBoundary}:suffix:${this.#boundary}`,
       start: this.#coverageStart,
       end: end ?? null,
       representedSnapshot,
@@ -2031,6 +2171,19 @@ export class TranscriptRepository {
     );
   }
 
+  async #matchesCapacityRefusal(batch: Parameters<SessionEntryCache["commitBatch"]>[0]): Promise<boolean> {
+    try {
+      // Reuse the cache's actual merge/encoding plan, including held
+      // versions. Fresh provenance is irrelevant, changed richness is not.
+      const plan = await this.#cache.planCapacity(batch);
+      return plan.identity === this.#capacityRefusal;
+    } catch {
+      // A failed lookup cannot establish refusal. Let the ordinary write
+      // report its storage failure and use the existing recovery path.
+      return false;
+    }
+  }
+
   /**
    * `retryRevision`, when given, is the source revision the batch was issued
    * under. A retried batch whose revision no longer matches is superseded by a
@@ -2083,9 +2236,93 @@ export class TranscriptRepository {
       };
     }
     const issuedRevision = retryRevision ?? this.#sourceRevision;
+    // Capture only predecessors already accepted for this suffix's chain.
+    // Later preflights must not become dependencies of earlier ones.
+    const predecessors =
+      batch.coverage?.kind === "suffix"
+        ? [...this.#preflightWrites]
+            .filter(([prior]) => prior.coverage?.readId === batch.coverage?.readId)
+            .map(([, write]) => write)
+        : [];
+    if (retryRevision === undefined && this.#capacityRefusal !== undefined) {
+      // A lookup retains its candidate just like a write. Charge it to ordinary
+      // admission, never the sole oversize write exemption. If it cannot fit,
+      // decline caching without starting a lookup or requesting reconciliation:
+      // admission pressure cannot establish that the refused content changed.
+      const bodies = retainedBodies(batch);
+      if (!this.#admission.retain(bodies, this, "writing")) {
+        // No lookup may retain this candidate. A structurally impossible memo
+        // match needs no lookup, and still has ordinary write eligibility.
+        if (!mayMatchCapacityIdentity(batch, this.#capacityRefusal)) {
+          return this.#admitWrite(batch, issuedRevision, false, predecessors);
+        }
+        // Structural equality is not a confirmed memo hit. A changed offer
+        // deserves a real write even when it cannot fit a preflight lookup.
+        // The cache's actual merge still decides whether it fits disk.
+        if (offeredContentFingerprint(batch) !== this.#capacityRefusedOffer) {
+          return this.#admitWrite(batch, issuedRevision, false, predecessors);
+        }
+        // Suppressing reconciliation does not erase the dropped extent. A later
+        // narrower commit must not claim it repaired this unpersisted coverage.
+        this.#recordAbandonment("failed", [batch.coverage]);
+        return this.#declinePersistence(batch);
+      }
+      this.#inFlight.set(batch, bodies);
+      const check = async () => {
+        let memoized = false;
+        try {
+          memoized = await this.#matchesCapacityRefusal(batch);
+          await Promise.all(predecessors);
+        } finally {
+          this.#inFlight.delete(batch);
+          this.#admission.release(bodies, this);
+        }
+        if (issuedRevision !== this.#sourceRevision) {
+          for (const row of batch.items) {
+            if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
+          }
+          return;
+        }
+        if (memoized || this.#disposed || this.#invalidated) return this.#declinePersistence(batch);
+        return this.#admitWrite(batch, issuedRevision, false);
+      };
+      const checked = check();
+      this.#preflightWrites.set(batch, checked);
+      this.#writes.add(checked);
+      void checked.finally(() => {
+        this.#preflightWrites.delete(batch);
+        this.#writes.delete(checked);
+        this.#reclaimBackgroundModel();
+      });
+      return checked;
+    }
+    return this.#admitWrite(batch, issuedRevision, retryRevision !== undefined, predecessors);
+  }
+
+  #admitWrite(
+    batch: Parameters<SessionEntryCache["commitBatch"]>[0],
+    issuedRevision: number,
+    isRetry: boolean,
+    predecessors: Promise<void>[] = [],
+  ): Promise<void> {
+    if (this.#binding.mayPersist?.() === false) return this.#declinePersistence(batch);
     const bodies = retainedBodies(batch);
+    if (predecessors.length > 0) {
+      // Even candidates that bypass a capacity lookup must not overtake one.
+      // Waiting is ordinary retained work, never an unbounded exempt write.
+      if (!this.#admission.retain(bodies, this, "background")) return this.#dropForOverflow(batch);
+      const waiting = Promise.all(predecessors).then(() => {
+        this.#admission.release(bodies, this);
+        if (this.#disposed || this.#invalidated || issuedRevision !== this.#sourceRevision) {
+          return this.#declinePersistence(batch);
+        }
+        return this.#admitWrite(batch, issuedRevision, isRetry);
+      });
+      this.#writes.add(waiting);
+      void waiting.finally(() => this.#writes.delete(waiting));
+      return waiting;
+    }
     const bodyBytes = bodies.reduce((sum, body) => sum + body.bytes, 0);
-    const isRetry = retryRevision !== undefined;
     if (isRetry) {
       // The background drain already holds the slot and retained these bodies.
       return this.#issueCommit(batch, bodies, issuedRevision, true, false);
@@ -2109,7 +2346,13 @@ export class TranscriptRepository {
       // The sole immediate bounded batch. Only one may be in flight; a competing
       // response is refused for caching rather than starting a second unbounded
       // immediate write.
-      if (!this.#admission.retainExempt(bodies, this)) return this.#dropForOverflow(batch);
+      if (!this.#admission.retainExempt(bodies, this)) {
+        if (this.#capacityRefusal !== undefined) {
+          this.#recordAbandonment("failed", [batch.coverage]);
+          return this.#declinePersistence(batch);
+        }
+        return this.#dropForOverflow(batch);
+      }
       return this.#issueCommit(batch, bodies, issuedRevision, false, true);
     }
     if (this.#readerCount > 0) {
@@ -2150,13 +2393,37 @@ export class TranscriptRepository {
       return this.#declinePersistence(batch);
     }
     this.#inFlight.set(batch, bodies);
-    const write = this.#cache.commitBatch(batch).then((outcome) => {
+    let memoized = false;
+    const commit = async (): Promise<Awaited<ReturnType<SessionEntryCache["commitBatch"]>> | undefined> => {
+      const matches = isRetry && this.#capacityRefusal !== undefined && (await this.#matchesCapacityRefusal(batch));
+      // The capacity lookup yields to replacements and source changes. Retire
+      // stale work before issuing a transaction, not only in its bookkeeping.
+      if (
+        this.#disposed ||
+        this.#invalidated ||
+        issuedRevision < this.#replacementRevision ||
+        (isRetry && issuedRevision !== this.#sourceRevision)
+      ) {
+        return undefined;
+      }
+      if (matches) {
+        memoized = true;
+        return { outcome: "refused", reason: "capacity" };
+      }
+      return this.#cache.commitBatch(batch);
+    };
+    const write = commit().then((outcome) => {
       const superseded =
         issuedRevision < this.#replacementRevision || (isRetry && issuedRevision !== this.#sourceRevision);
-      if (batch.coverage?.boundary === this.#retirementWrite?.boundary && this.#retirementWrite) {
+      if (outcome && batch.coverage?.boundary === this.#retirementWrite?.boundary && this.#retirementWrite) {
         this.#retirementWrite.persisted = outcome.outcome === "committed" && outcome.coverage !== "not-extended";
       }
-      if (outcome.outcome === "committed") {
+      if (!outcome) {
+        this.#admission.release(bodies, this);
+        for (const row of batch.items) {
+          if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
+        }
+      } else if (outcome.outcome === "committed") {
         if (batch.replacement && !superseded) this.#uncommittedReplacementFrom = undefined;
         this.#retryAttempt = 0;
         // Restoration is conditioned on the outcome's coverage, not the offered
@@ -2165,23 +2432,40 @@ export class TranscriptRepository {
         // survive policy or a suffix could not extend, and the cache refuses to
         // certify it). A superseded retry likewise contributes nothing.
         if (!superseded && batch.coverage && outcome.coverage === "extended") {
-          this.#cacheContinuityLost = false;
-          // Clearing is a claim that this commit's coverage carries the
-          // abandoned work forward, not merely that the repository is live. A
-          // dead repository takes no further work, so its own late completion
-          // can never repair a different cancelled batch. Live, the commit must
-          // cover the abandoned extent; a predecessor finishing ahead of an
-          // abandoned suffix, or a different window at the same snapshot,
-          // leaves the disposition for settled() to report. Continuity is a
-          // local durability fact about this commit's chain and is always
-          // restored.
+          // Clearing continuity loss is a claim that this commit's coverage
+          // carries any outstanding abandoned work forward, not merely that the
+          // repository is live. A later, narrower window (or a different window
+          // at the same snapshot) extends its own certificate while the
+          // abandoned extent stays missing, so it must not certify a partial
+          // local view as current. When no abandonment is outstanding (an
+          // ordinary transient failure whose own retry re-covers it, or a
+          // lifted persistence suppression) continuity is restored.
           const abandoned = this.#recoveryAbandoned;
-          if (
-            !this.#invalidated &&
-            !this.#disposed &&
+          const refused = this.#capacityRefusedReach;
+          const snapshot = batch.coverage.representedSnapshot;
+          // A committed authoritative replacement deletes every omitted row
+          // from its floor onward. It proves that obsolete refused positions
+          // no longer exist, even when its new certificate ends before them.
+          // A refused prefix below that floor, or a newer abandoned snapshot,
+          // remains an obligation. Position alone does not identify a version.
+          const replacesReach = (reach: AbandonedCoverage) =>
+            batch.replacement &&
+            reach.start &&
+            snapshot >= reach.snapshot &&
+            comparePosition(batch.replacement.from, reach.start) <= 0;
+          if (refused && (replacesReach(refused) || commitCarriesCoverage(batch.coverage, refused))) {
+            this.#capacityRefusedReach = undefined;
+          }
+          const repairsAbandoned =
             abandoned !== undefined &&
-            commitCarriesCoverage(batch.coverage, abandoned.reach)
-          ) {
+            (replacesReach(abandoned.reach) || commitCarriesCoverage(batch.coverage, abandoned.reach));
+          if (this.#capacityRefusedReach === undefined && (abandoned === undefined || repairsAbandoned)) {
+            this.#cacheContinuityLost = false;
+          }
+          // Clearing the disposition itself additionally requires a live owner:
+          // a dead repository takes no further work, so its own late completion
+          // can never repair a different cancelled batch.
+          if (!this.#invalidated && !this.#disposed && abandoned !== undefined && repairsAbandoned) {
             this.#recoveryAbandoned = undefined;
             this.#reconciledReach = undefined;
           }
@@ -2220,7 +2504,13 @@ export class TranscriptRepository {
           }
         }
       } else {
-        this.#cacheContinuityLost = true;
+        if (!superseded) this.#cacheContinuityLost = true;
+        if (!superseded && outcome.outcome === "refused" && outcome.reason === "capacity") {
+          const reach = coverageReach(batch.coverage);
+          this.#capacityRefusedReach = this.#capacityRefusedReach
+            ? widerReach(this.#capacityRefusedReach, reach)
+            : reach;
+        }
         for (const row of batch.items) {
           if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
         }
@@ -2239,7 +2529,23 @@ export class TranscriptRepository {
         } else {
           this.#admission.release(bodies, this);
         }
-        if (isExempt) this.#recordAbandonment("failed", [batch.coverage]);
+        // Only the cache can prove intrinsic oversize using its disk encoding
+        // and limit. Queue exemption says nothing about whether eviction or a
+        // smaller certificate could cure this refusal.
+        const plan = this.#cache.refusedCapacityPlan(batch);
+        if (
+          !memoized &&
+          !superseded &&
+          outcome.outcome === "refused" &&
+          outcome.reason === "capacity" &&
+          !this.#disposed &&
+          !this.#invalidated &&
+          this.#cache.isIntrinsicCapacityRefusal(plan)
+        ) {
+          this.#capacityRefusal = plan?.identity;
+          this.#capacityRefusedOffer = offeredContentFingerprint(batch);
+        }
+        if (isExempt && !memoized && !superseded) this.#recordAbandonment("failed", [batch.coverage]);
       }
       this.#inFlight.delete(batch);
       if (isExempt) this.#admission.releaseExempt(this);
@@ -2399,7 +2705,13 @@ export class TranscriptRepository {
   // Retain a failed batch in arrival order. A second distinct failure is
   // deferred behind the first; a re-failed retry keeps the front (atFront) so a
   // dependent suffix never overtakes it. Nothing is discarded. Demand-gated:
-  // with no reader, or after cancel, the failure is an explicit disposition.
+  // without demand, or after cancel, the failure is an explicit disposition.
+  // Demand is not the same as an attached reader: a desired Live background
+  // session holds demand with no reader.
+  #hasDemand(): boolean {
+    return this.#readerCount > 0 || this.#binding.isPreferred?.() === true;
+  }
+
   #enqueueRetry(
     batch: Parameters<SessionEntryCache["commitBatch"]>[0],
     revision: number,
@@ -2411,7 +2723,7 @@ export class TranscriptRepository {
       this.#admission.release(bodies, this);
       return;
     }
-    if (this.#readerCount <= 0) {
+    if (!this.#hasDemand()) {
       this.#recordAbandonment("failed", [batch.coverage]);
       this.#admission.release(bodies, this);
       return;
@@ -2451,7 +2763,7 @@ export class TranscriptRepository {
   #scheduleRetry(): void {
     if (this.#retryScheduled || this.#retryInFlight || this.#disposed || this.#invalidated) return;
     if (this.#binding.suppressed?.()) return;
-    if (this.#readerCount <= 0) return;
+    if (!this.#hasDemand()) return;
     if (this.#retryQueue.length === 0) return;
     this.#retryScheduled = true;
     this.#retryAttempt += 1;
@@ -2494,9 +2806,9 @@ export class TranscriptRepository {
     // repository's own batch is in flight must not issue a concurrent second
     // batch (the shared slot admits a re-entrant same-owner acquisition).
     if (this.#backgroundInFlight) return;
-    if (this.#readerCount <= 0 && this.#retryQueue.length > 0) {
-      // An issued retry needs live reader demand; without it the queued retries
-      // are an explicit cancelled disposition.
+    if (!this.#hasDemand() && this.#retryQueue.length > 0) {
+      // An issued retry needs live demand; without it the queued retries are an
+      // explicit cancelled disposition.
       this.#abandonQueue("cancelled");
       this.#retryQueue.length = 0;
     }
@@ -2505,7 +2817,7 @@ export class TranscriptRepository {
     if (
       !this.#admission.tryAcquireBackground(
         this,
-        () => this.#readerCount > 0,
+        () => this.#hasDemand(),
         () => this.#drainBackground(),
       )
     ) {
@@ -2554,10 +2866,10 @@ export class TranscriptRepository {
   }
 
   // After a background batch settles, drain whatever remains. Retries keep their
-  // paced backoff while reader demand holds; accepted background work (which
-  // needs no reader) continues immediately.
+  // paced backoff while demand holds; accepted background work (which needs no
+  // reader) continues immediately.
   #continueBackground(): void {
-    if (this.#retryQueue.length > 0 && this.#readerCount > 0) {
+    if (this.#retryQueue.length > 0 && this.#hasDemand()) {
       this.#scheduleRetry();
       return;
     }
@@ -2590,11 +2902,12 @@ export class TranscriptRepository {
 
   #reclaimBackgroundModel(): void {
     if (this.#readerCount > 0 || this.#pending.size > 0 || this.#writes.size > 0 || !this.#model) return;
-    this.#model = pruneBackgroundHistoryBodies(this.#model);
+    this.#model = hydratedDisplay(pruneBackgroundHistoryBodies(this.#model));
   }
 
   #publish(): void {
     this.#reconcileHandoffOverlay();
+    if (this.#model) this.#model = hydratedDisplay(this.#model);
     for (const listener of this.#listeners) listener();
   }
 }
