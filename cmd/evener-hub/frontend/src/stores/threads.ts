@@ -4897,8 +4897,10 @@ function replayEntryHydrationNotifications(
     // The repository owns both recorded ingestion and later publications, so
     // the post-cut tail must join that owner, not a temporary store-only fold.
     const accepted = repository.accept(update.notification, { lifetime });
-    if (!accepted && !acceptedLive) continue;
+    // Refused recorded input can still invalidate authority. Preserve that
+    // transition without counting the refused frame as accepted content.
     hydrated = repository.getSnapshot() ?? hydrated;
+    if (!accepted && !acceptedLive) continue;
     // The live path already counted this physical arrival. Replay banks only
     // frames first accepted here, regardless of whether it accepts again.
     if (!update.acceptedEntry) appliedAt.push(update.now);
@@ -4939,7 +4941,27 @@ function publishThreadHydration(
         )
       : replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);
   const backgroundModel = isEntryTranscriptBackgroundOnly(ref) ? pruneBackgroundHistoryBodies(hydrated) : hydrated;
+  const replayInvalidated =
+    entry?.repository &&
+    hydrated.history?.invalidatedAtGeneration !== undefined &&
+    pending.notifications.some((update) => update.notification.method === "history/updated");
   retirePendingHydration(ref, pending, pendingThreadHydrations);
+  if (replayInvalidated) {
+    // Live recovery was gated by this pending read. Retire it before handing
+    // the invalidated owner a replacement, and do not settle stale authority.
+    putThreadModel(ref, backgroundModel);
+    void refreshTrackedThread(
+      pending.client,
+      pending.epoch,
+      ref,
+      true,
+      false,
+      undefined,
+      undefined,
+      hydrationIntentFor(ref),
+    ).catch(() => {});
+    return null;
+  }
   currentAdmissions.set(ref, {
     capabilities: hydrated.capabilities,
     capabilitySource: hydrated.capabilitySource,
@@ -5383,8 +5405,8 @@ function handleNotification(n: AnyNotification): void {
         fixture &&
         productionEntryRoutes.get(ref) === fixture &&
         !fixture.clearInert &&
-        n.method === "history/updated" &&
-        threadsStore.getState().threads.get(ref)?.threadId === n.params.threadId &&
+        (n.method === "history/updated" || n.method.startsWith("overlay/")) &&
+        threadsStore.getState().threads.get(ref)?.threadId === notificationThreadId(n) &&
         !threadsStore.getState().deletedRefs.has(ref) &&
         !threadsStore.getState().cacheLifetimes.get(ref)?.suppressed &&
         !pendingThreadHydrations.has(ref) &&
@@ -5392,8 +5414,9 @@ function handleNotification(n: AnyNotification): void {
         wiredClient?.state === "ready"
       ) {
         // A content clear leaves a bare new thread and retires the old cache
-        // binding. Its first new recorded signal needs an authoritative read,
-        // not a second store-owned ingestion path or the old repository.
+        // binding. Recorded and overlay signals both need a replacement owner.
+        // Pending hydration below retains the signal for repository replay,
+        // rather than creating a second store-owned ingestion path.
         void refreshTrackedThread(
           wiredClient,
           readyEpoch,
