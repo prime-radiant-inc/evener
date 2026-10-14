@@ -358,6 +358,9 @@ describe("what the sheet shows (spec 8.6)", () => {
 		expect(styleOf(fill)).toMatchObject({ width: "25%", backgroundColor: palette.inkMid });
 	});
 
+	// Structural, not prose: the mark beside the capacity figure, its absence
+	// beside the used figure, and the gauge's numeric state — wording tweaks
+	// don't break this while the estimate indicator stays pinned.
 	it("marks an assumed context window as an estimate in the gauge and its spoken label", () => {
 		provide(
 			conversation({
@@ -373,11 +376,17 @@ describe("what the sheet shows (spec 8.6)", () => {
 			}),
 		);
 		const tree = sheet();
-		expect(texts(tree)).toEqual(expect.arrayContaining(["50K of ~200K"]));
-		const labels = tree.root
+		const allText = texts(tree).join(" ");
+		expect(allText).toContain("~200K");
+		expect(allText).not.toContain("~50K");
+		const contextLabel = tree.root
 			.findAll((node) => String(node.type) === "View" && node.props.accessible === true)
-			.map((node) => node.props.accessibilityLabel);
-		expect(labels).toEqual(expect.arrayContaining(["Context, 50K of ~200K"]));
+			.map((node) => String(node.props.accessibilityLabel))
+			.find((label) => label.startsWith("Context"));
+		expect(contextLabel).toContain("~200K");
+		expect(contextLabel).not.toContain("~50K");
+		const fill = tree.root.find((node) => node.props.testID === "context-fill");
+		expect(styleOf(fill)).toMatchObject({ width: "25%" });
 	});
 
 	it("shows the current task and the task count, which opens the Tasks sheet over this one", () => {

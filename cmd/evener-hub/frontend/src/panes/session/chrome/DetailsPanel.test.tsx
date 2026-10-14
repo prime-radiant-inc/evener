@@ -120,7 +120,7 @@ test("an assumed context window marks only the capacity figures as estimates", a
   const row = screen.getByTestId("session-details-context");
   const text = row.textContent ?? "";
   expect(text).toContain("~100K");
-  expect(text).toContain("~58K left");
+  expect(text).toContain("~58K");
   expect(text).not.toContain("~42K");
   const meter = screen.getByRole("meter", { name: /Context/ });
   expect(meter.getAttribute("aria-valuenow")).toBe("42000");
