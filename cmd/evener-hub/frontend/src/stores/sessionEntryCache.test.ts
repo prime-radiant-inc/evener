@@ -123,6 +123,148 @@ afterEach(async () => {
   for (const { factory, name } of databases.splice(0)) await deleteFixtureDatabase(factory, name);
 });
 
+it("rejects an older replacement from another cache before deleting newer authority", async () => {
+  const factory = new IDBFactory();
+  const name = `entry-authority-${crypto.randomUUID()}`;
+  databases.push({ factory, name });
+  const options = { indexedDB: factory, keyRange: IDBKeyRange, databaseName: name, now: () => 10 };
+  const olderCache = new SessionEntryCache(options);
+  const newerCache = new SessionEntryCache(options);
+  caches.push(olderCache, newerCache);
+  const identity = { clientId: "client", hostId: "host", sessionId: "session", incarnation: "inc" };
+  const historyKey = entryHistoryKey(identity);
+  const row = (key: string, entry: number, version: number) => ({
+    historyKey,
+    transcriptKey: key,
+    position: { entry, item: 0 },
+    version,
+    item: { id: key, type: "agentMessage", turnId: "turn", text: `${key}-${version}` },
+  });
+  const snapshot = (length: number) => ({
+    historyKey,
+    clearEpoch: 0,
+    historyGeneration: 0,
+    sourceAuthority: { bootGeneration: "boot", epoch: 0, incarnation: "inc", representedSnapshot: length },
+    replacement: { from: { entry: 1, item: 0 } },
+    items: length === 2 ? [row("shared", 1, 2)] : [row("shared", 1, 3), row("new-only", 2, 3)],
+    coverage: {
+      kind: "read" as const,
+      readId: `read-${length}`,
+      start: { entry: 1, item: 0 },
+      end: { entry: length - 1, item: 0 },
+      representedSnapshot: length,
+      boundary: `boundary-${length}`,
+    },
+    sessionMetadata: {
+      historyKey,
+      requestedRefs: [{ clientId: "client", ref: `ref-${length}` }],
+      resolvedIdentity: identity,
+      savedAt: length,
+      accessedAt: length,
+      formatVersion: 3,
+    },
+  });
+  const older = snapshot(2);
+  const newer = snapshot(3);
+  expect((await newerCache.commitBatch(newer)).outcome).toBe("committed");
+  const beforeRows = await newerCache.getLatest(historyKey, 40);
+  const beforeCoverage = await newerCache.getCoverage(historyKey, "read:read-3");
+  expect(beforeRows).toHaveLength(2);
+  expect(beforeCoverage).toBeDefined();
+  const beforeMeta = await readEntryMeta(factory, name, historyKey);
+  const beforeTotals = await newerCache.getByteTotals(historyKey);
+  const result = await olderCache.commitBatch(older);
+  expect(await newerCache.getLatest(historyKey, 40)).toEqual(beforeRows);
+  expect(await newerCache.getCoverage(historyKey, "read:read-3")).toEqual(beforeCoverage);
+  expect(await readEntryMeta(factory, name, historyKey)).toEqual(beforeMeta);
+  expect(await newerCache.getByteTotals(historyKey)).toEqual(beforeTotals);
+  expect(result).toMatchObject({ outcome: "refused" });
+
+  // A genuinely later replacement still removes absent items legitimately.
+  const latest = snapshot(4);
+  latest.items = [row("shared", 1, 4)];
+  expect((await olderCache.commitBatch(latest)).outcome).toBe("committed");
+  expect((await newerCache.getLatest(historyKey, 40)).map((entry) => entry.transcriptKey)).toEqual(["shared"]);
+
+  const suffix = {
+    ...snapshot(6),
+    replacement: undefined,
+    items: [row("suffix", 5, 6)],
+    coverage: {
+      kind: "suffix" as const,
+      readId: "read-4",
+      continuityId: "live",
+      previousBoundary: "boundary-4",
+      boundary: "boundary-6",
+      start: { entry: 5, item: 0 },
+      end: { entry: 5, item: 0 },
+      representedSnapshot: 6,
+    },
+  };
+  expect((await newerCache.commitBatch(suffix)).outcome).toBe("committed");
+  const protectedRows = await newerCache.getLatest(historyKey, 40);
+  const protectedMeta = await readEntryMeta(factory, name, historyKey);
+  expect(protectedMeta).toMatchObject({ sourceAuthority: { representedSnapshot: 6 } });
+  for (const stale of [
+    snapshot(5),
+    { ...snapshot(7), sourceAuthority: { ...snapshot(7).sourceAuthority, bootGeneration: "other-boot" } },
+    { ...snapshot(7), sourceAuthority: undefined },
+  ]) {
+    expect(await olderCache.commitBatch(stale)).toEqual({ outcome: "refused", reason: "source-authority" });
+    expect(await newerCache.getLatest(historyKey, 40)).toEqual(protectedRows);
+    expect(await readEntryMeta(factory, name, historyKey)).toEqual(protectedMeta);
+  }
+  const database = await openFixtureDatabase(factory, name);
+  const stores = [ENTRY_ITEM_STORE, ENTRY_TURN_STORE, ENTRY_COVERAGE_STORE];
+  const transaction = database.transaction(stores, "readonly");
+  const done = transactionDone(transaction);
+  const persisted = await Promise.all(stores.map((store) => requestValue(transaction.objectStore(store).getAll())));
+  await done;
+  const bytes =
+    persisted.flat().reduce((sum, entry) => sum + independentJsonBytes(entry), 0) +
+    independentJsonBytes(persistedSessionMetadataPayload(protectedMeta));
+  expect(await newerCache.getByteTotals(historyKey)).toEqual({ historyBytes: bytes, aggregateBytes: bytes });
+});
+
+it("allows unfenced legacy replacements then fences later replacements after authority is stored", async () => {
+  const fixture = createEntryCacheFixture();
+  caches.push(fixture.cache);
+  databases.push({ factory: fixture.indexedDB, name: fixture.name });
+  const historyKey = "legacy-history";
+  const row = (key: string, version: number) => ({
+    historyKey,
+    transcriptKey: key,
+    position: { entry: 1, item: 0 },
+    version,
+    item: { id: key, type: "agentMessage", turnId: "turn", text: `${key}-${version}` },
+  });
+  await fixture.cache.putItems([row("legacy", 10)]);
+  const replacement = {
+    historyKey,
+    clearEpoch: 0,
+    replacement: { from: { entry: 0, item: 0 } },
+    items: [row("unfenced", 1)],
+  };
+  // Neither side names source authority: legacy contents have no ordering
+  // protection, including on the first authority-bearing replacement below.
+  expect((await fixture.cache.commitBatch(replacement)).outcome).toBe("committed");
+  expect((await fixture.cache.getLatest(historyKey, 40)).map((item) => item.transcriptKey)).toEqual(["unfenced"]);
+  const sourceAuthority = { bootGeneration: "boot", epoch: 0, incarnation: "inc", representedSnapshot: 3 };
+  expect(
+    (await fixture.cache.commitBatch({ ...replacement, sourceAuthority, items: [row("current", 3)] })).outcome,
+  ).toBe("committed");
+  const metadata = await readEntryMeta(fixture.indexedDB, fixture.name, historyKey);
+  expect(metadata).toMatchObject({ sourceAuthority });
+  for (const candidate of [
+    replacement,
+    { ...replacement, sourceAuthority: { ...sourceAuthority, representedSnapshot: 2 } },
+  ]) {
+    expect(await fixture.cache.commitBatch(candidate)).toEqual({ outcome: "refused", reason: "source-authority" });
+    expect((await fixture.cache.getLatest(historyKey, 40)).map((item) => item.transcriptKey)).toEqual(["current"]);
+    expect(await readEntryMeta(fixture.indexedDB, fixture.name, historyKey)).toEqual(metadata);
+  }
+});
+
 it("waits for the real entry fixture database deletion to settle", async () => {
   const fixture = createEntryCacheFixture();
   caches.push(fixture.cache);
