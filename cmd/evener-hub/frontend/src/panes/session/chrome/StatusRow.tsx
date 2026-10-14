@@ -20,7 +20,7 @@ import { threadsStore } from "../../../stores/threads";
 import { Chevron, Meter, useToasts, VisuallyHidden } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ModelSwitch } from "./ModelSwitch";
-import { contextTone, formatWorkDuration, totalWorkMillis } from "./statusFormat";
+import { assumedWindowMark, contextTone, formatWorkDuration, totalWorkMillis } from "./statusFormat";
 import styles from "./statusrow.module.css";
 
 export interface StatusRowProps {
@@ -136,7 +136,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
   const running = model.activeTurnStartedAt !== undefined;
   const queueDepth = model.queue?.depth ?? 0;
   const contextPercent = Math.round(model.contextPressure * 100);
-  const contextLabel = `Context: ${model.contextUsed} of ${model.contextWindow} tokens used, ${contextPercent} percent`;
+  const contextLabel = `Context: ${model.contextUsed} of ${assumedWindowMark(model.contextAssumed)}${model.contextWindow} tokens used, ${contextPercent} percent`;
 
   return (
     <div className={CLASS.row} data-testid="status-row">

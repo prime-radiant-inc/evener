@@ -107,6 +107,7 @@ const REQUIRED_THREAD_MODEL_KEYS: Record<RequiredKeysOf<ThreadModel>, true> = {
   contextUsed: true,
   contextWindow: true,
   contextPressure: true,
+  contextAssumed: true,
   usage: true,
   workMillis: true,
   reasoningEffortLevels: true,

@@ -140,6 +140,7 @@ const snapshot: ThreadReadResponse = {
       contextUsed: 67_345,
       contextWindow: 100_001,
       contextPressure: 0.673,
+      contextAssumed: false,
       workMillis: 754_000,
       activeTurnStartedAt: 1,
       tasks: {

@@ -102,8 +102,17 @@ func formatContextFragment(detail hubSessionDetail) string {
 		pct := float64(used) / float64(window) * 100
 		compactAt := int(float64(window) * compactThreshold)
 		remaining := max(compactAt-used, 0)
-		return fmt.Sprintf("%s/%s (%.0f%%, %s to compact)",
-			formatTokens(used), formatTokens(window), pct, formatTokens(remaining))
+		// The "~" marks a capacity the daemon assumed for an unknown window
+		// (EvenerThread.ContextAssumed), the same estimate mark the hub's web
+		// meters and the cost row use: the used figure is measured and stays
+		// plain, while the window and the to-compact headroom derived from it
+		// are the assumption.
+		mark := ""
+		if detail.ContextAssumed {
+			mark = "~"
+		}
+		return fmt.Sprintf("%s/%s%s (%.0f%%, %s%s to compact)",
+			formatTokens(used), mark, formatTokens(window), pct, mark, formatTokens(remaining))
 	}
 	if used > 0 && pressure > 0 {
 		return fmt.Sprintf("%s (%.0f%%)", formatTokens(used), pressure*100)

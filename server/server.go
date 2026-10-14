@@ -289,6 +289,7 @@ type ContextMetrics struct {
 	Used      int
 	Window    int
 	Remaining int
+	Assumed   bool
 }
 
 // ActionCapabilities reports which mutating session actions are currently

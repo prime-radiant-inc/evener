@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -86,8 +87,14 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 	if s.cfg.testOnly.modelCallContextWindowFunc != nil {
 		cw = s.cfg.testOnly.modelCallContextWindowFunc(profile)
 	}
+	// An unknown window warns against the same conservative assumption the
+	// context manager budgets compaction against (issue #4564), so a session
+	// filling a model nothing vouches for still hears about it — framed as an
+	// estimate, never as a fact about the model.
+	assumed := false
 	if cw <= 0 {
-		return false
+		cw = contextmgr.AssumedContextWindow
+		assumed = true
 	}
 
 	count := llm.EstimateInputTokensForResolved(profile.Resolved(), req)
@@ -97,6 +104,13 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 	}
 
 	msg := fmt.Sprintf("Context usage at ~%d%% of context window", pct)
+	title := "Context budget"
+	hint := "The conversation is nearing the model's context window; compaction will manage it. No action needed."
+	if assumed {
+		msg = fmt.Sprintf("Context usage at ~%d%% of an assumed %dK-token context window (the model's real window is unknown)", pct, cw/1000)
+		title = "Context budget (estimated)"
+		hint = "The model's context window is unknown; usage is measured against a conservative assumed window. Declare context_window in the provider's model row to warn against the real size."
+	}
 	s.emit(events.EventWarning, events.WarningData{
 		Message: msg,
 		// Same reasoning as warnOutputReduction: an informational context
@@ -104,8 +118,8 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 		// fallback cannot stamp its generic "Evener error" title and
 		// session-log hint onto it.
 		Source:            string(diagnostic.SourceEvener),
-		Title:             "Context budget",
-		Hint:              "The conversation is nearing the model's context window; compaction will manage it. No action needed.",
+		Title:             title,
+		Hint:              hint,
 		Code:              events.WarningCodeContextBudget,
 		ApproxTokens:      approxTokens,
 		ContextWindowSize: cw,

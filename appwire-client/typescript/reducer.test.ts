@@ -7030,6 +7030,7 @@ test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnS
       contextUsed: 12_000,
       contextWindow: 200_000,
       contextPressure: 0.06,
+      contextAssumed: true,
       usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, totalTokens: 160 },
       workMillis: 45_000,
       activeTurnStartedAt: 1_000,
@@ -7043,6 +7044,11 @@ test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnS
   expect(model.contextUsed).toBe(12_000);
   expect(model.contextWindow).toBe(200_000);
   expect(model.contextPressure).toBe(0.06);
+  expect(model.contextAssumed).toBe(true);
+  // Absent on the wire — a known window, or an older daemon — reads as a
+  // real window, never as an assumption.
+  const unassumed = testHydrate({ evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 } } });
+  expect(unassumed.contextAssumed).toBe(false);
   expect(model.usage).toEqual({ inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, totalTokens: 160 });
   expect(model.workMillis).toBe(45_000);
   expect(model.activeTurnStartedAt).toBe(new Date(1_000).toISOString());
