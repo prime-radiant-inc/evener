@@ -573,6 +573,30 @@ test("a local commit failure reports the exact error and never creates optimisti
   expect(pending.result.current).toEqual([]);
 });
 
+test("a rejected strict preparation reports through onFailure while dispatching nothing", async () => {
+  const failure = new Error("durable draft read failed");
+  const onFailure = vi.fn();
+  const perform = vi.fn(() => Promise.resolve());
+  const pending = renderHook(() => usePendingTurnEntries("ref_a"));
+
+  // A recovery resend keeps strict preparation: its durable draft read can
+  // fail after successful initialization, and the refusal must not vanish —
+  // the press's failure feedback fires through the same onFailure the
+  // dispatch path uses, the draft is preserved, and nothing dispatches.
+  const { source } = await browserSource();
+  const strictSource = { ...source, submissionDraft: () => Promise.reject(failure) };
+  await expect(
+    submitWithPendingTracking(
+      { ref: "ref_a", text: "recovery text", recoveryId: "recovery_1", source: strictSource, onFailure },
+      perform,
+    ),
+  ).rejects.toBe(failure);
+
+  expect(onFailure).toHaveBeenCalledWith(failure);
+  expect(perform).not.toHaveBeenCalled();
+  expect(pending.result.current).toEqual([]);
+});
+
 test("a send with skill selections carries them in the durable input after the text", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

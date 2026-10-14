@@ -301,15 +301,26 @@ export function submitWithPendingTracking(
     // draft's own preparation fails (#4194) - the failing storage refuses the
     // settlement, never the send. A recovery resend rewrites a durable pending
     // turn, so it keeps strict preparation: its failures dispatch nothing.
-    const submitted: SubmittedDraft = await source.submissionDraft(
-      {
-        text: opts.text,
-        skillNames,
-        ...(opts.commandNames === undefined ? {} : { commandNames: [...opts.commandNames] }),
-        ...(opts.mentions === undefined ? {} : { mentions: opts.mentions.map((mention) => ({ ...mention })) }),
-      },
-      opts.recoveryId === undefined ? { tolerateStorageFault: true } : undefined,
-    );
+    let submitted: SubmittedDraft;
+    try {
+      submitted = await source.submissionDraft(
+        {
+          text: opts.text,
+          skillNames,
+          ...(opts.commandNames === undefined ? {} : { commandNames: [...opts.commandNames] }),
+          ...(opts.mentions === undefined ? {} : { mentions: opts.mentions.map((mention) => ({ ...mention })) }),
+        },
+        opts.recoveryId === undefined ? { tolerateStorageFault: true } : undefined,
+      );
+    } catch (error) {
+      // A rejected strict preparation must not vanish: report it through the
+      // same onFailure the dispatch path uses, so the press's failure
+      // feedback fires, then propagate the rejection. The durable draft is
+      // preserved (submissionDraft's own failure keeps it) and nothing
+      // dispatches - runSubmission never starts.
+      opts.onFailure(error);
+      throw error;
+    }
     return runSubmission(
       {
         ...submitted,
