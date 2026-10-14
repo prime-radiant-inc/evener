@@ -594,10 +594,16 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         const evidence = work.attempted?.capture.evidence ?? work.comment.capture?.evidence;
         if (evidence && evidenceProvesChange(content, evidence)) {
           // A DEFINITE change to the annotated source is confirmed expiry even
-          // though acceptance threw: retire the stale capture/attempt.
+          // though acceptance threw: retire the stale capture/attempt into the
+          // honest expiry-pending phase. The throw also means no fence
+          // recorded, so no repository expiry work exists to ever wake this
+          // reader: the outcome must stay transient, keeping the demand's
+          // paced retry alive until a real acceptance fences the proven
+          // change and the reread adopts the replacement epoch - recovery
+          // then needs no reload, foreground action or remount.
           displayContent(content);
           enterExpiryPending();
-          return "success";
+          return "transient";
         }
         // Otherwise the throw is uncertainty, not confirmed expiry: render the
         // raw content, suspend usable authority and retain the exact

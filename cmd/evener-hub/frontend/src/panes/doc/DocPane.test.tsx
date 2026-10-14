@@ -3777,6 +3777,95 @@ test("a beginRead storage fault on the first open paces its own retry and recove
   expect(vi.getTimerCount()).toBe(0);
 });
 
+test("a proven-change acceptance fault keeps its paced retry and recovers without any foreground action", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  let failAccept = false;
+  const f = await fixture("read-fault-proven-change", {
+    beforeExpiryFence: async () => {
+      if (failAccept) throw new Error("acceptance fault before the fence");
+    },
+  });
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  mountAnnotated(f, ports, client, "doc-fault-proven-change");
+  const work = documentReaderWork("doc-fault-proven-change", f.document, ports);
+
+  // Arm a capture with real evidence against the accepted content. Under
+  // faked setTimeout the real Selection/Range gesture replaces the polling
+  // helpers, which never advance.
+  await settleFakeReadCycle();
+  expect(screen.getByText("First occurrence: same")).toBeTruthy();
+  const paragraph = screen.getByText("First occurrence: same");
+  const node = paragraph.firstChild;
+  if (!node || node.nodeType !== Node.TEXT_NODE) throw new Error("missing source text node");
+  const range = document.createRange();
+  range.setStart(node, 18);
+  range.setEnd(node, 22);
+  const selection = document.getSelection();
+  if (!selection) throw new Error("missing selection");
+  fireEvent.pointerDown(paragraph, PRIMARY_POINTER);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  fireEvent.pointerUp(paragraph, PRIMARY_POINTER);
+  const captured = work.comment.capture;
+  if (!captured) throw new Error("no capture armed");
+  const leaseBefore = work.lease;
+  if (!leaseBefore) throw new Error("no lease before the fault");
+  expect(work.phase).toBe("reading");
+
+  // A foreground reread fetches proven-changed content, but the acceptance
+  // throws BEFORE any fence records: unlike a fault inside the fence
+  // transaction, this seam leaves no repository expiry work and no wake.
+  // The proven change still retires into the honest expiry-pending phase,
+  // but the outcome must stay transient - a "success" here stops the paced
+  // retries and strands the visible reader once storage heals.
+  failAccept = true;
+  mockRead.mockResolvedValue(docContent(`${SOURCE}CHANGED`, "rev-B"));
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  await act(async () => {
+    fireEvent(document, new Event("visibilitychange"));
+  });
+  await settleFakeReadCycle();
+  expect(work.phase).toBe("expiry-pending");
+  expect(work.lease).toBeNull();
+  expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+  // The demand paces its own retry while the pane stays visible: once the
+  // fault heals, the next cycle fences the proven change for real and the
+  // reread adopts the replacement epoch - with no reload, foregrounding or
+  // remount - leaving the reader able to capture another passage.
+  failAccept = false;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  await settleFakeReadCycle();
+  expect(work.phase).toBe("reading");
+  expect(work.lease).not.toBeNull();
+  expect(work.lease?.epoch).not.toBe(leaseBefore.epoch);
+  const changedParagraph = screen.getByText("First occurrence: same");
+  const changedNode = changedParagraph.firstChild;
+  if (!changedNode || changedNode.nodeType !== Node.TEXT_NODE) throw new Error("missing changed text node");
+  const changedRange = document.createRange();
+  changedRange.setStart(changedNode, 18);
+  changedRange.setEnd(changedNode, 22);
+  const changedSelection = document.getSelection();
+  if (!changedSelection) throw new Error("missing changed selection");
+  fireEvent.pointerDown(changedParagraph, PRIMARY_POINTER);
+  changedSelection.removeAllRanges();
+  changedSelection.addRange(changedRange);
+  fireEvent.pointerUp(changedParagraph, PRIMARY_POINTER);
+  expect(work.comment.capture?.sourceRange).toEqual(FIRST);
+  // Recovered and idle: nothing further is scheduled.
+  expect(vi.getTimerCount()).toBe(0);
+});
+
 test("a reader mounted while the document is hidden starts reading on the visibility transition itself", async ({
   onTestFinished,
 }) => {
