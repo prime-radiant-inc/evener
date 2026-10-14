@@ -207,6 +207,10 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
   let recoveryWrites: Promise<void> = Promise.resolve();
   let acceptedRecoveryWrites = 0;
   let pendingRecoveryWrite: { id: string; version: number } | null = null;
+  // Counts accepted recovery-backed edits. A recovery write may clear
+  // pendingRecoveryWrite only while no edit arrived after the write captured
+  // its value, so a skipped persistence never leaves newer edits unguarded.
+  let recoveryEdits = 0;
   let refreshVersion = 0;
   let persistenceScheduled = false;
   const sourceId = createSecureUUID();
@@ -525,7 +529,14 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     // The selected recovery is part of the capture: reading it AFTER the durable
     // read would let a backing change during that read go unnoticed.
     const recoveryId = activeRecoveryIdRef.current;
-    if (recoveryId !== null && pendingRecoveryWrite?.id === recoveryId) return null;
+    // A recovery edit is durable-unsaved until its persistence commits, and a
+    // stalled attachment encode holds every later edit back from durable
+    // recovery persistence (mounted and detached persistence both skip
+    // mid-encode). Preparing would restore the older durable record over the
+    // typed text and image markers, so preparation refuses while either the
+    // tracked write or the encode is pending; the handoff stays queued as
+    // owner-unavailable and retries once persistence catches up.
+    if (recoveryId !== null && (pendingRecoveryWrite?.id === recoveryId || operations.hasPending)) return null;
     const row = await r.load(k);
     if (!row) return null;
     // The capture must still be alive and exactly unchanged after the read,
@@ -535,7 +546,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       const record = await outbox?.getRecovery(recoveryId);
       if (!record) return null;
       if (disposed || localGeneration !== generation || !sameBacking(runtimeBacking, backing)) return null;
-      if (pendingRecoveryWrite?.id === recoveryId) return null;
+      if (pendingRecoveryWrite?.id === recoveryId || operations.hasPending) return null;
       publishValue(recoveryValue(record), { restores: true });
       draftToken = row.token;
       return {
@@ -818,6 +829,13 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     if (activeRecoveryIdRef.current !== null) {
       markDraftEdited(ref);
       ownedDraftRevisionRef.current = readDraftRevision(ref);
+      // A recovery edit is durable-unsaved from the moment it is accepted:
+      // both persistence paths can skip it (a mid-encode attachment, a pending
+      // retirement), and an unscheduled edit must still refuse a preparation
+      // that would publish the older durable record over this work. The write
+      // that persists the latest edits clears the marker at its commit.
+      recoveryEdits += 1;
+      pendingRecoveryWrite = { id: activeRecoveryIdRef.current, version: recoveryWriteVersionRef.current };
     }
   }
   function editText(text: string): void {
@@ -1031,6 +1049,9 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       stillOwnsValue: consumeOrdinary.stillOwnsValue,
     };
     const version = ++recoveryWriteVersionRef.current;
+    // The edit count this write captures: a commit may clear the unsaved
+    // marker only while no edit was accepted after this point.
+    const edits = recoveryEdits;
     // A settled promise is not proof of a save: refusals and aborts leave the
     // latest accepted value unsaved until its existing public retry commits.
     pendingRecoveryWrite = { id: clientMutationId, version };
@@ -1098,7 +1119,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
               void refreshPendingTurnsProjection(ref);
               if (!discarded) return;
               const persistedGuard = acknowledgeRecoveryWrite(guard);
-              if (pendingRecoveryWrite?.version === version) pendingRecoveryWrite = null;
+              if (pendingRecoveryWrite?.version === version && recoveryEdits === edits) pendingRecoveryWrite = null;
               onPersisted?.(persistedGuard);
               if (
                 !disposed &&
@@ -1127,7 +1148,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
             const updated = record !== undefined;
             if (updated) {
               const persistedGuard = acknowledgeRecoveryWrite(guard);
-              if (pendingRecoveryWrite?.version === version) pendingRecoveryWrite = null;
+              if (pendingRecoveryWrite?.version === version && recoveryEdits === edits) pendingRecoveryWrite = null;
               onPersisted?.(persistedGuard);
             }
             if (
