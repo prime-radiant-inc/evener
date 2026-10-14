@@ -234,7 +234,6 @@ func (m hubModel) reestablishDisplayedSubscription() (hubModel, tea.Cmd) {
 func (m hubModel) settleDeferredReconcile(errShown error) (hubModel, tea.Cmd) {
 	m.liveNavNeedsReconcile = false
 	retried, reconcile := m.reestablishDisplayedSubscription()
-	retried.liveNavNeedsReconcile = false
 	retried.err = errShown
 	return retried, reconcile
 }

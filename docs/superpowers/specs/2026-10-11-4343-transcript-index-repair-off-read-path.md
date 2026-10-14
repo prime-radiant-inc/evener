@@ -103,11 +103,17 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      offsets but has not yet truncated the tables or scanned — a refusal
      there precedes every mutation that trigger would perform (this can
      refuse where a completed scan would have healed, which converges
-     through the repair); and after a successful refresh in `locked`,
-     where a handle whose refused fallback rebuild marked its build
-     stale refuses every operation — a half-applied scan's items sit
-     past the committed counts in that handle's memory, and no window
-     or change read may serve them under the old snapshot length —
+     through the repair), which marks the build stale before its
+     refusal: the rows prove a writer died mid-update and the loaded
+     build's committed slots already carry what it flushed, so the
+     same discipline must hold; and after a successful refresh in
+     `locked`, where a handle whose refused fallback rebuild or
+     leftover-rows refusal marked its build stale refuses every
+     operation — a half-applied scan's items sit past the committed
+     counts in that handle's memory, or its committed slots carry a
+     crashed writer's flushed update past the committed snapshot — and
+     no window or change read may serve them under the old snapshot
+     length —
      until the refresh adopts the repair's committed build, the load
      that clears the mark. The sentinel is the refusal-mode translation
      of the internal `errRebuild` the scan already uses

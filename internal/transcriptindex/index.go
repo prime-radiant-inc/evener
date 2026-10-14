@@ -682,6 +682,13 @@ func (x *Index) extend(length int64) error {
 	// can refuse where a completed scan would have healed; the repair
 	// converges either way.
 	if x.refusing && len(unsafeOffsets) > 0 {
+		// The same crash discipline as the refused fallback rebuild: the
+		// rows prove a writer died mid-update, and the loaded build's
+		// committed slots already carry whatever it flushed — a turn
+		// completion past the committed snapshot. No read — window,
+		// changes, or another catch-up — may serve that memory; refuse
+		// everything until refresh adopts the repair's committed build.
+		x.stale = true
 		return x.refuseRebuild()
 	}
 	// Whatever an extension that did not finish left past the counts goes

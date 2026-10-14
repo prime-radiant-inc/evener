@@ -509,6 +509,70 @@ func TestRefusingCatchUpRefusesEachRebuildTrigger(t *testing.T) {
 	})
 }
 
+// A crash between an extension's record flushes and its meta publish leaves
+// the committed build on disk already carrying the overwritten turn — its
+// completion and newer version under the committed snapshot — with the
+// leftover update-log row announcing it. The refusing CatchUp's leftover-rows
+// refusal must mark the build stale the way the refused fallback rebuild
+// does, so no read — window or changes — serves the half-applied slot until
+// a refresh adopts the repair's committed build (#4343 round-32 medium 1).
+func TestALeftoverUpdateRefusalKeepsReadsRefusingUntilTheRepair(t *testing.T) {
+	fx := fixture{name: "leftover-turn", header: everything().header, lines: []fixtureLine{
+		entryLine(user("hi")),
+		entryLine(assistant(call("c1", "read_file", `{}`))),
+		entryLine(results(result("c1", "read_file", "body"))),
+	}}
+	path, lines := writeHeaderOnly(t, fx)
+	dir := t.TempDir()
+	h := openIndex(t, path, dir)
+	appendBytes(t, path, joinLines(lines[:2]))
+	catchUp(t, h)
+	floor := h.meta.Length
+	appendBytes(t, path, lines[2])
+	// The killed extension stamps the assistant turn with its completion,
+	// logs the turn's update row, flushes the overwritten record, and dies
+	// before meta publishes the covered state.
+	simulateKill(t)
+	if err := h.CatchUp(); err == nil {
+		t.Fatal("the killed extension returned success")
+	}
+	testKillAfterRecordWrites = nil
+
+	want := lastRecordedEntry(t, dir)
+	x := openRefusing(t, path, dir)
+	requireRefusal(t, x.CatchUp(), want)
+
+	// The loaded build's committed turn slot carries the overwritten turn:
+	// serving it — or changes announcing it — publishes state no committed
+	// snapshot covers. Both reads must refuse with the same typed refusal.
+	if _, err := x.Latest(40); err == nil {
+		t.Fatal("the window read served the overwritten turn the leftover refusal refused to trust")
+	} else {
+		requireRefusal(t, err, want)
+	}
+	if _, err := x.ChangedSince(floor); err == nil {
+		t.Fatal("the change read announced the overwritten turn the leftover refusal refused to trust")
+	} else {
+		requireRefusal(t, err, want)
+	}
+
+	// The registry's repair commits a fresh build and rotates CURRENT to
+	// it; the handle's reads adopt it, the stale mark clearing with the
+	// load, and the window serves the repaired derivation.
+	h2 := openIndex(t, path, dir)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h2.Rebuild(info.Size()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := x.Latest(40); err != nil {
+		t.Fatalf("the window read still refused after the repair committed: %v", err)
+	}
+	assertAllWindows(t, x, path)
+}
+
 // A sidecar whose CURRENT pointer cannot be read is an access problem, not a
 // missing build and not a rebuild trigger: a refusing handle answers the
 // ordinary error, so the hub treats the read as transient instead of arming

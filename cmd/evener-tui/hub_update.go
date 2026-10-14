@@ -552,7 +552,6 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.liveNavNeedsReconcile {
 					m.liveNavNeedsReconcile = false
 					retried, reconcile := m.reestablishDisplayedSubscription()
-					retried.liveNavNeedsReconcile = false
 					// preCut rides along: the notifications' follow-up reads
 					// (thread resyncs, status refreshes) are non-subscribing,
 					// so they cannot race the reconcile's replacement
@@ -636,7 +635,6 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.liveNavNeedsReconcile {
 			m.liveNavNeedsReconcile = false
 			retried, reconcile := m.reestablishDisplayedSubscription()
-			retried.liveNavNeedsReconcile = false
 			return retried, tea.Batch(append(preCut, reconcile)...)
 		}
 		preCut = append(preCut, subscribeChildren)

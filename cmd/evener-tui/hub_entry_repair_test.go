@@ -2324,6 +2324,112 @@ func TestASelectedTranscriptReadFailureLeavesTheEntryRetryRetired(t *testing.T) 
 	_ = fetchCmd
 }
 
+// A replacing /details read completing while a recovery flight is still
+// collecting must not erase a reconciliation the coalescing recorded: the
+// superseded pick's replacement can re-point the server-side subscription
+// after this flight's own read leg, and the flight's landing is the only
+// settle point left. The recovery helper owns the demand flag — a caller
+// that settles preserves whatever the coalescing re-recorded (#4343
+// round-32 medium 2).
+func TestAReplacingReadCompletingDuringARecoveryKeepsTheOwedReconcile(t *testing.T) {
+	captureEntryRepairWaits(t)
+	reads := &liveCycleReads{}
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return reads.record(params)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refA := mustParseRef(t, "local:01A")
+	refB := mustParseRef(t, "local:01B")
+
+	// Session A is displayed.
+	entered, _ := m.Update(hubSessionMsg{
+		ref:    refA.String(),
+		detail: hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+	})
+	shown := entered.(hubModel)
+
+	// Three picks issue; the third targets A, supersedes the first two, and
+	// lands current.
+	pick1 := shown
+	pick1.issuePickedSessionRead(refB)
+	seq1 := pick1.liveNavSeq
+	pick2 := pick1
+	pick2.issuePickedSessionRead(refB)
+	seq2 := pick2.liveNavSeq
+	pick3 := pick2
+	pick3.issuePickedSessionRead(refA)
+	landed3, _ := pick3.Update(hubSessionMsg{
+		ref:          refA.String(),
+		detail:       hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		liveNavEntry: true,
+		liveNavSeq:   pick3.liveNavSeq,
+	})
+	settled := landed3.(hubModel)
+
+	// The first superseded pick lands: A's recovery flight issues and its
+	// response is held in flight.
+	afterStale1, _ := settled.Update(hubSessionMsg{
+		ref:          refB.String(),
+		detail:       hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		liveNavEntry: true,
+		liveNavSeq:   seq1,
+	})
+	stalled := afterStale1.(hubModel)
+	flight := stalled.liveNavRecoveryFlight
+	flightSeq := stalled.liveNavSeq
+	if !stalled.liveNavRecoveryInFlight {
+		t.Fatal("setup: the first superseded pick issued no recovery flight")
+	}
+
+	// The second superseded pick lands and coalesces onto that flight: the
+	// demand is recorded for the flight's landing to settle.
+	afterStale2, _ := stalled.Update(hubSessionMsg{
+		ref:          refB.String(),
+		detail:       hubSessionDetail{Ref: refB.String(), SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		liveNavEntry: true,
+		liveNavSeq:   seq2,
+	})
+	demanded := afterStale2.(hubModel)
+	if !demanded.liveNavNeedsReconcile {
+		t.Fatal("setup: the second superseded pick recorded no coalesced demand")
+	}
+
+	// A replacing /details read for the displayed session completes while
+	// the flight is still collecting: its landing settles the standing
+	// demand, and the settle coalesces onto the flight, re-recording the
+	// demand its landing owes.
+	afterDetails, _ := demanded.Update(hubSessionMsg{
+		ref:                   refA.String(),
+		detail:                hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		liveNavRefresh:        true,
+		liveNavRefreshReplace: true,
+		liveNavSeq:            demanded.liveNavSeq,
+	})
+	detailed := afterDetails.(hubModel)
+	if detailed.liveNavRecoveryFlight != flight || !detailed.liveNavRecoveryInFlight {
+		t.Fatalf("setup: the replacing read disturbed the in-flight recovery: flight = %d inFlight = %v",
+			detailed.liveNavRecoveryFlight, detailed.liveNavRecoveryInFlight)
+	}
+
+	// The flight lands: the demand the settle re-recorded must hold, so its
+	// landing issues the follow-up restore the superseded picks are owed.
+	afterFlight, _ := detailed.Update(hubSessionMsg{
+		ref:                   refA.String(),
+		detail:                hubSessionDetail{Ref: refA.String(), SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+		liveNavRecovery:       true,
+		liveNavRecoveryFlight: flight,
+		liveNavSeq:            flightSeq,
+	})
+	landed := afterFlight.(hubModel)
+	if !landed.liveNavRecoveryInFlight || landed.liveNavRecoveryFlight == flight {
+		t.Fatal("the flight's landing settled without the follow-up the coalesced demand owes")
+	}
+}
+
 // A picked read supersedes an in-flight cycle: the obsolete pending target
 // retires at issuance, so a stale cycling response reconciles the displayed
 // session's subscription instead of deferring forever on it, and the next
