@@ -2215,8 +2215,14 @@ export class TranscriptRepository {
         )
         .map(([prior]) => prior);
       if (inherited.length > 0) {
+        // Replacement deletion is part of the payload operation, not its old
+        // coverage certificate. Union suffix scopes at their earliest boundary.
+        const replacementFrom = inherited
+          .flatMap((prior) => (prior.replacement ? [prior.replacement.from] : []))
+          .sort(comparePosition)[0];
         batch = {
           ...batch,
+          replacement: replacementFrom ? { from: replacementFrom } : undefined,
           items: [
             ...new Map(
               [...inherited.flatMap((prior) => prior.items), ...batch.items].map((row) => [row.transcriptKey, row]),
