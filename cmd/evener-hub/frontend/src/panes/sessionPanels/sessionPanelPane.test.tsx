@@ -282,8 +282,11 @@ test("claims after a delayed connection becomes ready and releases the hydrated 
   expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThanOrEqual(1);
 
   unmount();
-  expect(threadsStore.getState().threads.has(model.ref)).toBe(false);
-  expect(threadsStore.getState().frameTimes.has(model.ref)).toBe(false);
+  // The ordinary entry route retires its repository through a finite final
+  // read before it drops the ref, so the release is asynchronous where the
+  // seeded legacy model dropped synchronously. The guarantee is the same.
+  await waitFor(() => expect(threadsStore.getState().threads.has(model.ref)).toBe(false));
+  await waitFor(() => expect(threadsStore.getState().frameTimes.has(model.ref)).toBe(false));
 });
 
 test("does not claim a ref when unmounted before the delayed connection is ready", async () => {

@@ -611,7 +611,13 @@ function loadedSection(
   section: "live" | "needs_you",
 ): LoadedSection {
   const pages = [...state.resources.values()]
-    .filter((resource) => resource.key.kind === "section" && resource.key.section === section && resource.data !== null)
+    .filter(
+      (resource) =>
+        resource.key.kind === "section" &&
+        resource.key.section === section &&
+        resource.data !== null &&
+        state.visibleResourceKeys.has(keyID(resource.key)),
+    )
     .sort((a, b) =>
       a.key.kind === "section" && b.key.kind === "section"
         ? a.key.offset - b.key.offset || a.key.limit - b.key.limit

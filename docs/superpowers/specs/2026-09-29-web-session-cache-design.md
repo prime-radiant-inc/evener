@@ -6,6 +6,21 @@
 **Parent specs:** `2026-09-25-transcript-read-model-design.md` (v6 read model),
 `2026-09-01-atomic-transcript-item-paging-design.md`
 
+> **Current behaviour (this design is superseded).** The whole-record `records`
+> cache described below was replaced by the entry-backed repository
+> (`cmd/evener-hub/frontend/src/stores/transcriptRepository.ts`), which is now the
+> ordinary browser's single owner of recorded-history ingestion and persistence
+> and the source of truth for a session's cached transcript; the server
+> transcript remains authoritative. The legacy `records` and `meta` stores this
+> design defines, and the later `current` and `currentMeta` stores, are removed in
+> a cache schema bump, and
+> old cached transcripts are discarded on upgrade and rebuilt from the server
+> rather than migrated. Recovery, the bounded memory exception for active
+> unfinished output, the Clear lifetime and the affected browser surfaces are
+> described in
+> [the entry-backed transcripts design](2026-10-08-entry-backed-background-transcripts-design.md).
+> This document is kept as the dated record of what was designed then.
+
 ## Problem
 
 Reload the web UI and every session pane the layout restores starts from an

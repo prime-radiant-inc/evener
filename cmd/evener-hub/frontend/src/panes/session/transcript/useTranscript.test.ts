@@ -2,12 +2,15 @@ import type { Thread, ThreadCapabilities, ThreadTurnsListResponse } from "@evene
 import { hydrateThread, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, render, renderHook } from "@testing-library/react";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { createElement, type PropsWithChildren, StrictMode, Suspense, useEffect } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { conversationPaneLifetime } from "../../../shell/paneLifetime";
 import { type OpenPaneRecord, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { activityDelegate } from "../../../stores/sessionActivityTestUtils";
+import { SessionEntryCache } from "../../../stores/sessionEntryCache";
+import { observeProductionEntryForTests } from "../../../stores/testing/entryProductionHarness";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { enterAgentCascade, returnFromAgentCascade } from "../../zoom/actions";
 import { useTranscriptScroll } from "./flow/useTranscriptScroll";
@@ -63,14 +66,24 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
-function mountWorkspaceTranscript(ref: string, paneId: string, strict = false) {
+function mountWorkspaceTranscript(ref: string, paneId: string, strict = false, port?: HTMLDivElement) {
   return renderHook(
     () => {
       const transcript = useTranscript(ref, paneId);
       const flow = useTranscriptScroll({
         ref,
         model: transcript.model,
-        listRef: { current: null },
+        listRef: {
+          current: port
+            ? {
+                getScrollElement: () => port,
+                getVisibleRange: () => null,
+                isLayoutCurrent: () => true,
+                scrollToIndex: () => {},
+              }
+            : null,
+        },
+        ...(port ? { measure: () => ({ scrollTop: port.scrollTop, scrollHeight: 2000, clientHeight: 500 }) } : {}),
         loadOlder: transcript.loadOlder,
         cancelOlder: transcript.cancelOlder,
       });
@@ -1247,3 +1260,262 @@ test("keeps fulfilled unresolved history quiet and paces geometry demand until i
   expect(result.current.olderError).toBeNull();
   unmount();
 });
+
+// Installs the entry route for a pane-isolation test. The caller adds the
+// thread/turns/list handler and owns disposal.
+function installEntryPaneRoute(label: string, maxBytes?: number) {
+  const REF = `local:entry-pane-${label}`;
+  const entryCache = new SessionEntryCache({
+    indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
+    databaseName: `entry-pane-${label}-${crypto.randomUUID()}`,
+    ...(maxBytes === undefined ? {} : { maxBytes }),
+  });
+  const fixture = observeProductionEntryForTests(entryCache, REF);
+  const fake = connectFakeClient();
+  const item = (entry: number, turnId: string) => ({
+    type: "agentMessage" as const,
+    id: `item-${entry}`,
+    transcriptKey: `item-${entry}`,
+    turnId,
+    position: { entry, item: 0 },
+    version: entry,
+    text: `row-${entry}`,
+  });
+  const page = (id: string, entries: number[]) =>
+    ({
+      data: [
+        { id, status: "completed", itemsView: "full", version: 8, items: entries.map((entry) => item(entry, id)) },
+      ],
+      nextCursor: undefined,
+      bootGeneration: "1",
+      epoch: 0,
+      snapshot: { incarnation: "inc_pane", length: 8 },
+    }) as ThreadTurnsListResponse;
+  fake.on("thread/read", (params) => ({
+    thread: testThread(REF, {
+      turns: [
+        {
+          id: "turn_top",
+          status: "completed",
+          itemsView: "full",
+          version: 8,
+          items: [item(6, "turn_top"), item(7, "turn_top"), item(8, "turn_top")],
+        },
+      ],
+    }),
+    requestGeneration: params.requestGeneration,
+    bootGeneration: "1",
+    epoch: 0,
+    snapshot: { incarnation: "inc_pane", length: 8 },
+    overlay: [],
+    olderCursor: "cursor_1",
+  }));
+  return { REF, entryCache, fixture, fake, item, page };
+}
+
+test.each([false, true])(
+  "an entry-route pane's jump-to-live cancels only its demand, leaving a competing pane's retained demand to retry (withdraw survivor: %s)",
+  async (withdrawSurvivor) => {
+    // A preceding test leaves fake timers installed; this test awaits real timers
+    // while the async entry-route page and its paced retry settle.
+    vi.useRealTimers();
+    const { REF, entryCache, fixture, fake, page } = installEntryPaneRoute("cancel");
+    let listCalls = 0;
+    let failFirst!: (error: Error) => void;
+    const retryBox: { resolve?: (response: ThreadTurnsListResponse) => void } = {};
+    fake.on("thread/turns/list", () => {
+      listCalls += 1;
+      if (listCalls === 1) {
+        return new Promise<ThreadTurnsListResponse>((_resolve, reject) => {
+          failFirst = reject;
+        });
+      }
+      return new Promise<ThreadTurnsListResponse>((resolve) => {
+        retryBox.resolve = resolve;
+      });
+    });
+    try {
+      await act(async () => {
+        await threadsStore.getState().ensureThread(REF);
+      });
+      const portA = document.createElement("div");
+      const portB = document.createElement("div");
+      const a = mountWorkspaceTranscript(REF, "pane-a", false, portA);
+      let b = mountWorkspaceTranscript(REF, "pane-b", false, portB);
+      act(() => {
+        for (const [hook, port] of [
+          [a, portA],
+          [b, portB],
+        ] as const) {
+          hook.result.current.flow.markGesture();
+          port.scrollTop = 500;
+          port.dispatchEvent(new Event("scroll"));
+        }
+      });
+      expect(a.result.current.flow.pillVisible, "A is browsing history").toBe(true);
+      expect(b.result.current.flow.pillVisible, "B is browsing history").toBe(true);
+      act(() => {
+        // The same tick: both panes share one in-flight request.
+        void a.result.current.transcript.loadOlder().catch(() => {});
+        void b.result.current.transcript.loadOlder().catch(() => {});
+      });
+      await act(async () => {
+        for (let i = 0; i < 50 && listCalls < 1; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(listCalls).toBe(1);
+      expect(b.result.current.transcript.loadingOlder).toBe(true);
+      // Pane A's scroll intent (jump to live) abandons only A's demand.
+      act(() => {
+        a.result.current.flow.jumpToBottom();
+        portA.dispatchEvent(new Event("scroll"));
+      });
+      expect(a.result.current.flow.pillVisible, "A confirmed its live landing").toBe(false);
+      expect(b.result.current.flow.pillVisible, "A's landing must not change B's browse intent").toBe(true);
+      if (withdrawSurvivor) b.unmount();
+      // The shared page fails. Only B's retained demand can own a retry; if A's
+      // cancellation had also dropped B, no retry would ever be issued.
+      await act(async () => {
+        failFirst(new Error("temporary"));
+        if (withdrawSurvivor) await new Promise((resolve) => setTimeout(resolve, 1500));
+        else for (let i = 0; i < 100 && listCalls < 2; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+      });
+      if (withdrawSurvivor) {
+        expect(listCalls, "with B withdrawn, cancelled A must not own any retry").toBe(1);
+        b = mountWorkspaceTranscript(REF, "pane-b", false, portB);
+        await act(async () => {
+          for (let i = 0; i < 100 && listCalls < 2; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+        });
+      }
+      expect(listCalls, "B's retained demand must own the retry after A's scroll-intent cancellation").toBe(2);
+      await act(async () => {
+        retryBox.resolve?.(page("turn_old", [3, 4, 5]));
+        for (let i = 0; i < 80; i += 1) {
+          const done = (b.result.current.transcript.model?.turns ?? [])
+            .flatMap((turn) => turn.items)
+            .some((entry) => entry.position?.entry === 3);
+          if (done) break;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      });
+      expect(listCalls).toBe(2);
+      const entries = (b.result.current.transcript.model?.turns ?? [])
+        .flatMap((turn) => turn.items)
+        .map((entry) => entry.position?.entry);
+      expect(entries).toEqual(expect.arrayContaining([3, 4, 5, 6, 7, 8]));
+      expect(entries.filter((entry) => entry === 3)).toHaveLength(1);
+      a.unmount();
+      b.unmount();
+    } finally {
+      threadsStore.getState().releaseThread(REF);
+      fixture.dispose();
+      entryCache.close();
+    }
+  },
+);
+
+test.each([false, true])(
+  "real disk eviction of an entry history does not acquire or cancel a Find consumer's demand (withdraw survivor: %s)",
+  async (withdrawSurvivor) => {
+    vi.useRealTimers();
+    const { REF, entryCache, fixture, fake, item, page } = installEntryPaneRoute("find", 20_000);
+    let listCalls = 0;
+    let failFirst!: (error: Error) => void;
+    const retryBox: { resolve?: (response: ThreadTurnsListResponse) => void } = {};
+    fake.on("thread/turns/list", () => {
+      listCalls += 1;
+      if (listCalls === 1) {
+        return new Promise<ThreadTurnsListResponse>((_resolve, reject) => {
+          failFirst = reject;
+        });
+      }
+      return new Promise<ThreadTurnsListResponse>((resolve) => {
+        retryBox.resolve = resolve;
+      });
+    });
+    try {
+      await act(async () => {
+        await threadsStore.getState().ensureThread(REF);
+      });
+      await fixture.settled();
+      const historyKey = fixture.inspect().historyKey;
+      if (!historyKey) throw new Error("fixture did not expose a history key");
+      let find = renderHook(() => useTranscript(REF, "find"));
+      const pane = renderHook(() => useTranscript(REF, "pane-a"));
+      act(() => {
+        void find.result.current.loadOlder().catch(() => {});
+        void pane.result.current.loadOlder().catch(() => {});
+      });
+      await act(async () => {
+        for (let i = 0; i < 50 && listCalls < 1; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(listCalls).toBe(1);
+      // The pane abandons its history demand; the Find consumer keeps its own.
+      act(() => pane.result.current.cancelOlder());
+      // A real reclamation: another history exceeds the disk budget and evicts
+      // the entry history's rows while the shared page is still in flight.
+      const before = await entryCache.getByteTotals(historyKey);
+      const other = `other-${crypto.randomUUID()}`;
+      await entryCache.commitBatch({
+        historyKey: other,
+        clearEpoch: 0,
+        items: [
+          {
+            historyKey: other,
+            transcriptKey: "other-item",
+            position: { entry: 1, item: 0 },
+            version: 1,
+            item: {
+              ...item(1, "other-turn"),
+              id: "other-item",
+              transcriptKey: "other-item",
+              text: "x".repeat(20_000 - before.historyBytes + 500),
+            },
+          },
+        ],
+      });
+      expect(await entryCache.getLatest(historyKey, 40)).toEqual([]);
+      // The held rows survive in memory: eviction removed disk rows only.
+      expect(
+        (find.result.current.model?.turns ?? []).flatMap((turn) => turn.items).map((it) => it.position?.entry),
+      ).toEqual(expect.arrayContaining([6, 7, 8]));
+      if (withdrawSurvivor) find.unmount();
+      // The Find consumer's demand survives the reclamation and owns the retry;
+      // the pane's cancelled demand is not re-acquired.
+      await act(async () => {
+        failFirst(new Error("temporary"));
+        if (withdrawSurvivor) await new Promise((resolve) => setTimeout(resolve, 1500));
+        else for (let i = 0; i < 100 && listCalls < 2; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+      });
+      if (withdrawSurvivor) {
+        expect(listCalls, "with Find withdrawn after eviction, cancelled pane must not own any retry").toBe(1);
+        find = renderHook(() => useTranscript(REF, "find"));
+        await act(async () => {
+          for (let i = 0; i < 100 && listCalls < 2; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+        });
+      }
+      expect(listCalls, "the Find consumer's demand must own the retry after the pane cancelled").toBe(2);
+      await act(async () => {
+        retryBox.resolve?.(page("turn_old", [3, 4, 5]));
+        for (let i = 0; i < 80; i += 1) {
+          const done = (find.result.current.model?.turns ?? [])
+            .flatMap((turn) => turn.items)
+            .some((entry) => entry.position?.entry === 3);
+          if (done) break;
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      });
+      expect(listCalls).toBe(2);
+      const entries = (find.result.current.model?.turns ?? [])
+        .flatMap((turn) => turn.items)
+        .map((entry) => entry.position?.entry);
+      expect(entries).toEqual(expect.arrayContaining([3, 4, 5, 6, 7, 8]));
+      find.unmount();
+      pane.unmount();
+    } finally {
+      threadsStore.getState().releaseThread(REF);
+      fixture.dispose();
+      entryCache.close();
+    }
+  },
+);

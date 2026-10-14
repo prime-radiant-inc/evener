@@ -79,6 +79,7 @@ export {
   subagentTallyToShow,
 } from "./selectors";
 export type {
+  BackgroundLivePages,
   NavigationClient,
   NavigationPersistence,
   NavigationStore,

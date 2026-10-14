@@ -35,5 +35,11 @@ export function installFocusedScope(ref: string, row?: NavigationSessionSummary)
     error: null,
     generationID: "g1",
   };
-  navigationStore.setState({ mode: "v3", resources: new Map([[keyID(key), resource]]) });
+  // The display selectors only surface a loaded section row once the store has
+  // registered its key as visible (visibleResourceKeys, set by the ordinary
+  // load()/loadSection() foreground path). Seeding `resources` directly must
+  // register the same visibility, exactly as the product's foreground load
+  // does; otherwise every seeded row is treated as background-only and hidden.
+  const id = keyID(key);
+  navigationStore.setState({ mode: "v3", resources: new Map([[id, resource]]), visibleResourceKeys: new Set([id]) });
 }

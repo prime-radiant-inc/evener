@@ -40,6 +40,7 @@ function node(overrides: Partial<NavigationSessionSummary> = {}): NavigationSess
 function setLive(rows: NavigationSessionSummary[]): void {
   const key = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
   navigationStore.setState({
+    visibleResourceKeys: new Set([keyID(key)]),
     resources: new Map([
       [
         keyID(key),

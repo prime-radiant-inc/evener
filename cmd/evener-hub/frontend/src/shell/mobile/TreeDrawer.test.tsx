@@ -27,6 +27,7 @@ function setNeedsYou(count: number): void {
   navigationStore.setState({
     mode: "v3",
     clientGenerationID: "generation_test",
+    visibleResourceKeys: new Set([keyID(key)]),
     resources: new Map([
       [
         keyID(key),

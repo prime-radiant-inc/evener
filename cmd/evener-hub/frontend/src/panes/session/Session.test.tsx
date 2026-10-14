@@ -10,7 +10,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { StrictMode, useSyncExternalStore } from "react";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../../shell/activitybar/activitySidebarStore";
@@ -254,6 +254,7 @@ beforeAll(() => {
 beforeEach(() => {
   stubSessionSlots();
   globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetTranscriptPagingForTests();
@@ -362,6 +363,10 @@ test("desktop session panes own separate location and activity footers", async (
 
   const bars = await screen.findAllByTestId("statusbar");
   expect(bars).toHaveLength(2);
+  // The ordinary entry route hydrates a couple of tasks behind the first
+  // paint, so wait for both panes' models before reading their footers.
+  await waitFor(() => expect(threadsStore.getState().threads.has("local:one")).toBe(true));
+  await waitFor(() => expect(threadsStore.getState().threads.has("local:two")).toBe(true));
   const first = within(bars[0]!);
   const second = within(bars[1]!);
   expect(first.getByTestId("composer-repo-path").textContent).toBe("/work/local:one");
@@ -498,7 +503,11 @@ test("shows a loading placeholder before the thread hydrates", async () => {
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
   // request()'s handler invocation (which captures the resolver) is
   // deferred a microtask behind the synchronous render() above.
-  await flushUntil(() => box.resolve !== null);
+  // The ordinary entry route issues this read only after its bounded durable
+  // cache lookup settles, which is a macrotask behind render - not the single
+  // microtask the legacy route needed. Wait for the request to actually reach
+  // the fake before resolving it.
+  await waitFor(() => expect(box.resolve).not.toBeNull());
   box.resolve?.(readResponse("ref_a"));
   await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
   expect(screen.getByTestId("pane-edge-footer")).toBeTruthy();
@@ -1225,7 +1234,7 @@ test.each(["failed", "error", "cancelled"])(
       fake.emitNotification({
         method: "history/updated",
         params: {
-          threadId: "thread-1",
+          threadId: "thr_ref_a",
           ref: "ref_a",
           bootGeneration: "1",
           epoch: 1,
@@ -1552,7 +1561,9 @@ test("releaseThread fires exactly once on unmount", async () => {
 
   unmount();
 
-  expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  // The ordinary entry route retires through a finite final read before it
+  // drops the ref, so the release is asynchronous.
+  await waitFor(() => expect(threadsStore.getState().threads.has("ref_a")).toBe(false));
 });
 
 test("StrictMode's mount-unmount-remount double-invoke nets out to exactly one tracked pane, cleanly released", async () => {
@@ -1571,7 +1582,7 @@ test("StrictMode's mount-unmount-remount double-invoke nets out to exactly one t
   // A leaked extra refcount claim (from an unguarded double-invoke) would
   // survive one release; this must be the LAST pane holding the ref.
   cleanup();
-  expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  await waitFor(() => expect(threadsStore.getState().threads.has("ref_a")).toBe(false));
 });
 
 test("survives unmount/remount mid-stream: durable state lives in the store, not component state", async () => {
@@ -1703,9 +1714,9 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
-  await act(async () => {
-    await flushUntil(() => threadsStore.getState().threads.has("ref_a"));
-  });
+  // The ordinary entry route hydrates a task behind the first paint, so wait for
+  // the model rather than draining a fixed number of microtasks.
+  await waitFor(() => expect(threadsStore.getState().threads.has("ref_a")).toBe(true));
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect')).toHaveLength(0);
   const footerRenderCount = vi.mocked(StatusBarModule.StatusBar).mock.calls.length;
 
@@ -1793,7 +1804,7 @@ test("scrolled away: a live item arriving shows the real NewContentPill, wired t
     fake.emitNotification({
       method: "history/updated",
       params: {
-        threadId: "thread-1",
+        threadId: "thr_ref_a",
         ref: "ref_a",
         bootGeneration: "1",
         epoch: 1,
@@ -2004,9 +2015,9 @@ test("the liveness line renders in the reserved footer beside the composer, neve
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
-  await act(async () => {
-    await flushUntil(() => threadsStore.getState().threads.has("ref_a"));
-  });
+  // The ordinary entry route hydrates a task behind the first paint, so wait for
+  // the model rather than draining a fixed number of microtasks.
+  await waitFor(() => expect(threadsStore.getState().threads.has("ref_a")).toBe(true));
 
   // Cross the quiet threshold (20s) so the liveness line actually renders -
   // useNowTick's own clock, advanced the same way the Cadence frame-trace
@@ -2263,7 +2274,7 @@ test("mounts Composer even when the transcript is empty (no turns yet) - the com
   );
 
   await screen.findByTestId("empty-state");
-  expect(screen.getByTestId("composer-slot")).toBeTruthy();
+  expect(await screen.findByTestId("composer-slot")).toBeTruthy();
 });
 
 // A real evener session's transcript is never literally turns.length === 0:
@@ -2308,7 +2319,7 @@ test("treats a transcript whose only turn is the synthetic prelude (turn_system)
 
   await screen.findByTestId("empty-state");
   expect(screen.queryByTestId("turn-block")).toBeNull();
-  expect(screen.getByTestId("composer-slot")).toBeTruthy();
+  expect(await screen.findByTestId("composer-slot")).toBeTruthy();
 });
 
 // The instant a real conversation exists alongside the prelude turn (the
@@ -2442,6 +2453,9 @@ test("a dormant session's transcript follows new content the instant its first r
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
     </ClientProvider>,
   );
+  // The ordinary entry route publishes the model a task behind the first
+  // paint; the live turn below must arrive against a real model/repository.
+  await waitFor(() => expect(threadsStore.getState().threads.has("ref_a")).toBe(true));
   await screen.findByTestId("empty-state");
 
   // The dormant session's first real turn - the transition that must
@@ -2450,7 +2464,7 @@ test("a dormant session's transcript follows new content the instant its first r
     fake.emitNotification({
       method: "history/updated",
       params: {
-        threadId: "thread-1",
+        threadId: "thr_ref_a",
         ref: "ref_a",
         bootGeneration: "1",
         epoch: 1,
@@ -2486,7 +2500,7 @@ test("a dormant session's transcript follows new content the instant its first r
     fake.emitNotification({
       method: "history/updated",
       params: {
-        threadId: "thread-1",
+        threadId: "thr_ref_a",
         ref: "ref_a",
         bootGeneration: "1",
         epoch: 1,
@@ -3252,7 +3266,10 @@ test("picks up a daemon exit automatically on evener/thread/resync", async () =>
 // thread/read answers - which is the missed-notification case.
 test("a reconnect recovers the degraded pane without any resync notification", async () => {
   const first = connectFakeClient();
-  first.on("thread/read", () => readResponse("ref_a", { status: { type: "restartRequired" } }));
+  first.on("thread/read", ({ requestGeneration }) => ({
+    ...versionedReadResponse("ref_a", { status: { type: "restartRequired" } }),
+    requestGeneration,
+  }));
   const tree = (client: FakeClient) => (
     <ClientProvider client={client}>
       <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
@@ -3263,7 +3280,10 @@ test("a reconnect recovers the degraded pane without any resync notification", a
   expect(notice.getAttribute("data-reason")).toBe("version-mismatch");
 
   const second = new FakeClient("ready");
-  second.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  second.on("thread/read", ({ requestGeneration }) => ({
+    ...versionedReadResponse("ref_a", { status: { type: "idle" } }),
+    requestGeneration,
+  }));
   await act(async () => {
     connectionStore.getState().connect(second);
   });
@@ -3904,10 +3924,13 @@ test("offers explicit resume after restart even without pending messages", async
   const fake = connectFakeClient();
   const resumeTransport = vi.spyOn(fake, "resumeThread");
   let status = "restartRequired";
-  fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+  fake.on("thread/read", ({ requestGeneration }) => ({
+    ...versionedReadResponse("ref_a", { status: { type: status } }),
+    requestGeneration,
+  }));
   fake.on("thread/resume", () => {
     status = "idle";
-    return readResponse("ref_a", { status: { type: "idle" } });
+    return versionedReadResponse("ref_a", { status: { type: "idle" } });
   });
   render(
     <ClientProvider client={fake}>
@@ -3989,7 +4012,10 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   const fake = connectFakeClient();
   const ref = "local:incompatible-root";
   let status = "restartRequired";
-  fake.on("thread/read", () => readResponse(ref, { status: { type: status } }));
+  fake.on("thread/read", ({ requestGeneration }) => ({
+    ...versionedReadResponse(ref, { status: { type: status } }),
+    requestGeneration,
+  }));
   fake.on("evener/thread/forceStop", () => {
     if (outcome === "refused") throw new Error("no direct daemon ownership claim");
     status = "notLoaded";
@@ -4064,7 +4090,10 @@ test("confirmed force stop refreshes the session and surfaces the Send face", as
   const ref = "local:force-stop-resume";
   setNavigationTitle(ref, "Force stop recovery");
   let status = "restartRequired";
-  fake.on("thread/read", () => readResponse(ref, { status: { type: status } }));
+  fake.on("thread/read", ({ requestGeneration }) => ({
+    ...versionedReadResponse(ref, { status: { type: status } }),
+    requestGeneration,
+  }));
   fake.on("evener/thread/forceStop", () => {
     status = "notLoaded";
     return {};
@@ -4103,8 +4132,8 @@ test.each(["notLoaded", "active", "idle"])(
     let status = "restartRequired";
     let mutationId = "";
     let resumed = false;
-    fake.on("thread/read", () =>
-      readResponse("ref_a", {
+    fake.on("thread/read", ({ requestGeneration }) => ({
+      ...versionedReadResponse("ref_a", {
         status: { type: status },
         evener: {
           ref: "ref_a",
@@ -4113,11 +4142,12 @@ test.each(["notLoaded", "active", "idle"])(
           queue: { revision: 1, clientMutationIds: resumed ? [mutationId] : [] },
         },
       }),
-    );
+      requestGeneration,
+    }));
     fake.on("thread/resume", () => {
       resumed = true;
       status = "idle";
-      return readResponse("ref_a", { status: { type: "idle" } });
+      return versionedReadResponse("ref_a", { status: { type: "idle" } });
     });
     render(
       <ClientProvider client={fake}>
@@ -4175,7 +4205,9 @@ test.each(["notLoaded", "active", "idle"])(
       await flushPendingTurnsProjectionForTests();
       fireEvent.click(resume);
       await flushPendingTurnsProjectionForTests();
-      expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined();
+      // Reconciliation of the resumed, uncertain send drains the outbox row
+      // through an asynchronous storage pass on the ordinary entry route.
+      await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
       expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
     } finally {
@@ -4259,8 +4291,8 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
   const fake = connectFakeClient();
   let resumed = false;
   let owned = true;
-  fake.on("thread/read", () =>
-    readResponse("local:retained-child", {
+  fake.on("thread/read", ({ requestGeneration }) => ({
+    ...versionedReadResponse("local:retained-child", {
       status: { type: resumed ? "idle" : owned ? status : "notLoaded" },
       evener: {
         ref: "local:retained-child",
@@ -4271,7 +4303,8 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
         queue: { revision: 1, clientMutationIds: resumed ? [mutationId] : [] },
       },
     }),
-  );
+    requestGeneration,
+  }));
   fake.on("thread/resume", () => {
     resumed = true;
     return readResponse("local:retained-child", { status: { type: status } });
@@ -4283,12 +4316,19 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
     </ClientProvider>,
   );
   const refresh = await screen.findByRole("button", { name: "Refresh session" });
+  await waitFor(() => expect(threadsStore.getState().threads.has("local:retained-child")).toBe(true));
   expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
   expect(screen.getByRole("link", { name: "Open owning session" }).getAttribute("href")).toContain("parent");
   expect(threadsStore.getState().restartBlockingObligations.size).toBe(0);
   expect(threadsStore.getState().mutationAuthorityRefs.has("local:retained-child")).toBe(false);
   await flushPendingTurnsProjectionForTests();
-  expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
+  // The ordinary entry route publishes its reconciliation a task behind the
+  // projection flush; awaiting the outbox read yields to that task, so the read
+  // runs inside act and that store update lands inside the scope instead of as
+  // an un-acted update to Session (#2599's sibling: act to settle the publish).
+  await act(async () => {
+    expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
+  });
   expect(fake.calls.filter((call) => call.method === "thread/resume" || call.method === "turn/start")).toHaveLength(0);
   fireEvent.click(refresh);
   await waitFor(() => expect((refresh as HTMLButtonElement).disabled).toBe(false));
@@ -4307,7 +4347,7 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
   await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(resume);
   await flushPendingTurnsProjectionForTests();
-  expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined();
+  await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
 });
@@ -4484,9 +4524,10 @@ test("recovery rejection blocks durable dispatch and surfaces the Send face", as
     let fenced = false;
     let reads = 0;
     let mutationId = "";
-    fake.on("thread/read", () => {
+    fake.on("thread/read", ({ requestGeneration }) => {
       reads++;
-      const response = readResponse(ref, { status: { type: "idle" } });
+      const response = versionedReadResponse(ref, { status: { type: "idle" } });
+      response.requestGeneration = requestGeneration;
       response.thread.evener.resumeRequired = fenced;
       response.thread.evener.capabilities = { ...CAPABILITIES, send: !fenced };
       response.thread.evener.instanceId = "known-instance";
@@ -4803,8 +4844,9 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   let stopped = false;
   const activityRefs: unknown[] = [];
   const subtreeRefs: unknown[] = [];
-  fake.on("thread/read", () => {
-    const response = readResponse(ref, { status: { type: "notLoaded" } });
+  fake.on("thread/read", ({ requestGeneration }) => {
+    const response = versionedReadResponse(ref, { status: { type: "notLoaded" } });
+    response.requestGeneration = requestGeneration;
     response.thread.evener.resumeRequired = !stopped;
     response.thread.evener.mutationStateAuthoritative = false;
     // The wire capability remains fenced; explicit user intent owns resume,
@@ -4830,13 +4872,17 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).toBeUndefined();
   // The fence must not hide the editor or its force-stop menu.
-  const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
   await waitFor(() => expect(activityRefs).toEqual([ref]));
   // One shared subagent count read, however many surfaces show it.
   await waitFor(() => expect(subtreeRefs).toEqual([ref]));
   expect(sessionActivitySnapshot(fake, ref, "session")?.summary).not.toBeNull();
   expect(sessionActivitySnapshot(fake, ref, "session")?.summaryState.loading).toBe(false);
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  // Query the menu trigger only AFTER the entry-route hydration settles: the
+  // publish re-renders the composer's chrome and replaces the trigger node, so
+  // a handle taken before the activity discovery resolves is detached by the
+  // time it is clicked.
+  const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
   const editor = screen.getByRole("textbox", { name: "Message" });
   // The composer's editor is a contenteditable div, which carries neither
   // `disabled` nor `readOnly`; `contenteditable="true"` is the one writable
@@ -4845,12 +4891,12 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   expect(editor.getAttribute("contenteditable")).toBe("true");
   const user = userEvent.setup();
   await user.click(menuTrigger);
-  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Force shutdown…" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
   await user.click(menuTrigger);
-  await user.click(screen.getByRole("menuitem", { name: "Force shutdown…" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Force shutdown…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force shutdown" }));
   await settleForceStop(ref);
   expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([

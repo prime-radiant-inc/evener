@@ -28,6 +28,7 @@ import { navigationInvalidatedNotification } from "../../testing/notifications";
 import type {
   InitializeResponse,
   NavigationCapability,
+  NavigationInvalidatedPayload,
   NavigationReadParams,
   NavigationReadResponse,
   NavigationSnapshot,
@@ -313,6 +314,7 @@ test("needs-you selectors keep manifest count, first-occurrence order, short-pag
       generationID: generation,
     },
     resources,
+    visibleResourceKeys: new Set(resources.keys()),
   });
   const state = store.getState();
   expect(selectNeedsYouCount(state)).toBe(75);
@@ -370,6 +372,7 @@ test("needs-you cursor uses limit as the same-offset canonical tie-break", () =>
         },
       ],
     ]),
+    visibleResourceKeys: new Set([keyID(narrow), keyID(wide)]),
   });
   const state = store.getState();
   expect(selectSectionRemaining("needs_you", state)).toBe(2);
@@ -1705,6 +1708,140 @@ test("shutdown convergence follows the invalidation receipt when one arrives", a
   await converged;
   expect(store.getState().lastSequence).toBe(1);
 });
+
+test("shutdown convergence keeps its entry foreground snapshot across receipts", async () => {
+  let revision = 1;
+  const client = await init((params) => {
+    if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
+    if (params.offset === 2) throw new Error("newly foreground page unavailable");
+    return wireSnapshot(params, { sessions: [], remaining: 0, truncated: false }, `"section-${revision}"`, revision);
+  });
+  await store.getState().loadSection("live", 0, 2);
+
+  const firstWaiter = store.getState().awaitNavigationInvalidation(() => true);
+  const firstConvergence = store.awaitConvergence(firstWaiter, [{ kind: "section", section: "live" }], {
+    timeoutMs: 10_000,
+  });
+  const newlyForeground = await store.getState().loadSection("live", 2, 2);
+  expect((newlyForeground.error as Error | null)?.message).toBe("newly foreground page unavailable");
+  revision = 2;
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 1,
+      targets: [{ kind: "section", section: "live", revision: 2 }],
+    }),
+  );
+  await expect(firstConvergence).resolves.toBeUndefined();
+
+  const nextWaiter = store.getState().awaitNavigationInvalidation(() => true);
+  const nextConvergence = store.awaitConvergence(nextWaiter, [{ kind: "section", section: "live" }], {
+    timeoutMs: 10_000,
+  });
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 2,
+      targets: [{ kind: "section", section: "live", revision: 2 }],
+    }),
+  );
+  await expect(nextConvergence).rejects.toThrow("target convergence failed");
+});
+
+test.each(["settles", "fails"] as const)(
+  "a reentrant ordinary mutation keeps its own project scope when the convergence snapshot %s",
+  async (projectOutcome) => {
+    const projectRefreshGateStarted = deferred<void>();
+    const subscriberFired = deferred<void>();
+    const finishProjectRefresh = deferred<void>();
+    let liveRevision = 1;
+    let projectRevision = 1;
+    let projectReads = 0;
+    let projectRefreshStarted = false;
+    const client = await init(async (params) => {
+      if (params.resource === "manifest") return wireSnapshot(params, emptyManifest());
+      if (params.resource === "section")
+        return wireSnapshot(
+          params,
+          { sessions: [], remaining: 0, truncated: false },
+          `"live-${liveRevision}"`,
+          liveRevision,
+        );
+      if (params.resource === "project") {
+        projectReads++;
+        if (projectReads > 1) {
+          projectRefreshStarted = true;
+          projectRefreshGateStarted.resolve();
+          await finishProjectRefresh.promise;
+          if (projectOutcome === "fails") throw new Error("scoped project refresh failed");
+          projectRevision = 2;
+        }
+        return wireSnapshot(
+          params,
+          {
+            current: { sessions: [], remaining: 0 },
+            recent: { sessions: [], remaining: 0 },
+            archived: { sessions: [], remaining: 0 },
+          },
+          `"project-${projectRevision}"`,
+          projectRevision,
+        );
+      }
+      throw new Error(`unexpected navigation read ${JSON.stringify(params)}`);
+    });
+
+    await store.getState().loadSection("live");
+    const receipt = deferred<NavigationInvalidatedPayload>();
+    const waiter = { promise: receipt.promise, cancel: () => {} };
+    const convergenceA = store.awaitConvergence(waiter, [{ kind: "section", section: "live" }], { timeoutMs: 10_000 });
+    await store.getState().loadProject("project-key");
+
+    let mutationB: Promise<void> | undefined;
+    let observedMutationB: Promise<void> | undefined;
+    let mutationBSettled = false;
+    let invoked = false;
+    const unsubscribe = store.subscribe((state) => {
+      const live = [...state.resources.values()].find(
+        (resource) => resource.key.kind === "section" && resource.key.section === "live",
+      );
+      if (invoked || !live?.loading) return;
+      invoked = true;
+      subscriberFired.resolve();
+      mutationB = store.getState().applyNavigationMutation({
+        generation_id: generation,
+        targets: [{ kind: "project", projectKey: "project-key", revision: 2 }],
+      });
+      observedMutationB = mutationB.then(
+        () => {
+          mutationBSettled = true;
+        },
+        (error: unknown) => {
+          mutationBSettled = true;
+          throw error;
+        },
+      );
+    });
+
+    liveRevision = 2;
+    receipt.resolve({
+      generationId: generation,
+      sequence: 1,
+      targets: [{ kind: "section", section: "live", revision: 2 }],
+    });
+    await subscriberFired.promise;
+    unsubscribe();
+    await convergenceA;
+    expect(invoked).toBe(true);
+    expect(mutationB).toBeDefined();
+    expect(projectRefreshStarted).toBe(true);
+    expect(mutationBSettled).toBe(false);
+    finishProjectRefresh.resolve();
+    if (projectOutcome === "fails") await expect(observedMutationB!).rejects.toThrow("target convergence failed");
+    else await observedMutationB;
+    expect(mutationBSettled).toBe(true);
+    client.close();
+  },
+);
 
 test("shutdown convergence re-arms past unrelated receipts until its session settles", async () => {
   let revision = 1;

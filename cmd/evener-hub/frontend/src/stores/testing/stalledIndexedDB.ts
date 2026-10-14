@@ -1,5 +1,6 @@
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { vi } from "vitest";
+import { CLEAR_EPOCH_KEY, ENTRY_META_STORE } from "../sessionCacheSchema";
 
 // A request that never fires success, error, or blocked: the wedged
 // connection-coordinator shape, where open()/deleteDatabase() return and then
@@ -61,13 +62,13 @@ export function deleteIndexedDatabase(name: string): Promise<void> {
 // connection closes once it commits.
 export function bumpCacheEpochRow(indexedDB: IDBFactory, epoch: number): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const request = indexedDB.open("evener-session-cache", 1);
+    const request = indexedDB.open("evener-session-cache");
     request.addEventListener(
       "success",
       () => {
         const database = request.result;
-        const tx = database.transaction("meta", "readwrite");
-        tx.objectStore("meta").put({ ref: "__clearEpoch", epoch });
+        const tx = database.transaction(ENTRY_META_STORE, "readwrite");
+        tx.objectStore(ENTRY_META_STORE).put({ historyKey: CLEAR_EPOCH_KEY, epoch });
         tx.addEventListener(
           "complete",
           () => {
@@ -179,6 +180,13 @@ export function holdNextTransactionEvent(
       hold?.release();
     },
   };
+}
+
+// Main's entry-backed-transcripts seam: the complete-event hold over an
+// explicit mode (the session cache's four-store write passes "readwrite").
+// See holdNextTransactionEvent.
+export function holdNextTransaction(stores: readonly string[], mode: IDBTransactionMode) {
+  return holdNextTransactionEvent(stores, "complete", mode);
 }
 
 // One real macrotask hop, off the faked timers: MessageChannel is a task the

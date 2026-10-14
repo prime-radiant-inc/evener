@@ -1,7 +1,7 @@
 import type { NotesHumanSetParams, ThreadCapabilities, ThreadModel, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { useEffect } from "react";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
@@ -16,22 +16,39 @@ import {
 } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { resetPanelStoreEvictionForTests } from "./panelStoreEviction";
+import { SessionEntryCache } from "./sessionEntryCache";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
-import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
+import {
+  resetThreadsStoreForTests,
+  setMutationStorageForTests,
+  setProductionEntryCacheForTests,
+  settleEntryTranscriptForTests,
+  threadsStore,
+} from "./threads";
 
 let storage: MutationOutboxIndexedDB;
-beforeEach(() => {
+let entryCache: SessionEntryCache;
+beforeEach(async () => {
   resetPanelStoreEvictionForTests();
   resetWorkspaceStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   const indexedDB = new IDBFactory();
   vi.stubGlobal("indexedDB", indexedDB);
+  vi.stubGlobal("IDBKeyRange", IDBKeyRange);
   storage = new MutationOutboxIndexedDB({ indexedDB });
   setMutationStorageForTests(storage);
+  entryCache = new SessionEntryCache({
+    indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
+    databaseName: `human-note-drafts-${crypto.randomUUID()}`,
+  });
+  setProductionEntryCacheForTests(entryCache);
+  await entryCache.getClearEpoch();
 });
 afterEach(() => {
   cleanup();
+  entryCache.close();
   resetThreadsStoreForTests();
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -391,6 +408,10 @@ test("a background save whose blocked row settles elsewhere mid-retry ends in th
   await storage.markUnknown(original.clientMutationId, "blockedUnknown");
   syncHumanNote(ref, "");
   const { result } = renderHook(() => useHumanNoteDraft(ref));
+  // The ordinary entry route's hydration refresh can schedule a drafts-store
+  // update a task behind this mount; flush it inside act so it never lands as
+  // an un-acted update on the freshly mounted hook.
+  await act(async () => {});
   await act(async () => {
     await storage.listOutbox();
   });
@@ -614,6 +635,10 @@ test("a note row canceled by Stop reports the canceled status and no blur cycle 
   fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
   await threadsStore.getState().ensureThread(ref);
   await threadsStore.getState().refreshThread(ref);
+  // Drain the ordinary entry route's queued durable write before the hook
+  // subscribes: its completion republishes the store, and an unawaited
+  // publish after renderHook would update React outside a test's act() window.
+  await settleEntryTranscriptForTests(ref);
   const original = await persisted("stopped note text");
   await storage.cancelUnattempted(ref);
   expect((await storage.getOutbox(original.clientMutationId))?.state).toBe("canceled");
@@ -630,9 +655,11 @@ test("a note row canceled by Stop reports the canceled status and no blur cycle 
     window.dispatchEvent(new Event("pagehide"));
   });
   await advance(10_000);
-  expect((await storage.listOutbox(ref)).map((row) => [row.clientMutationId, row.state])).toEqual([
-    [original.clientMutationId, "canceled"],
-  ]);
+  await act(async () => {
+    expect((await storage.listOutbox(ref)).map((row) => [row.clientMutationId, row.state])).toEqual([
+      [original.clientMutationId, "canceled"],
+    ]);
+  });
 });
 
 // RoboRev Medium (PR 1393 fresh review, b04a358): the accepted-row mapping the

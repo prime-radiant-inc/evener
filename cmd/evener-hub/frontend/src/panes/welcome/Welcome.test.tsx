@@ -57,12 +57,15 @@ function node(overrides: Partial<NavigationSessionSummary> = {}): NavigationSess
 }
 function setRows(needsYou: NavigationSessionSummary[] = [], live: NavigationSessionSummary[] = []): void {
   const resources = new Map();
+  const visibleResourceKeys = new Set<string>();
   for (const [section, rows] of [
     ["needs_you", needsYou],
     ["live", live],
   ] as const) {
     const key = { kind: "section", section, offset: 0, limit: 50 } as const;
-    resources.set(keyID(key), {
+    const id = keyID(key);
+    visibleResourceKeys.add(id);
+    resources.set(id, {
       key,
       data: { generation_id: "generation_test", revision: 1, sessions: rows, remaining: 0, truncated: false },
       loadedRevision: 1,
@@ -75,7 +78,7 @@ function setRows(needsYou: NavigationSessionSummary[] = [], live: NavigationSess
       generationID: "generation_test",
     });
   }
-  navigationStore.setState({ mode: "v3", clientGenerationID: "generation_test", resources });
+  navigationStore.setState({ mode: "v3", clientGenerationID: "generation_test", resources, visibleResourceKeys });
 }
 
 test("shows the empty state when no session is open", () => {

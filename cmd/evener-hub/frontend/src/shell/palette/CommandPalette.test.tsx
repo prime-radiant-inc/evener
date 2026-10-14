@@ -192,6 +192,7 @@ function setNeedsYouRows(rows: NavigationSessionSummary[] | null): void {
   navigationStore.setState({
     mode: "v3",
     clientGenerationID: "generation_test",
+    visibleResourceKeys: rows === null ? new Set<string>() : new Set([keyID(key)]),
     resources:
       rows === null
         ? new Map()
@@ -954,7 +955,17 @@ test("Enter on an unknown slash command against a Send-resumes fenced session pa
         queue: { revision: 1, clientMutationIds: [uncertain] },
       },
     });
-  fake.on("thread/read", () => ({ thread: resumed ? idle() : fenced() }) satisfies ThreadReadResponse);
+  fake.on(
+    "thread/read",
+    ({ requestGeneration }) =>
+      ({
+        thread: resumed ? idle() : fenced(),
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 0 },
+        requestGeneration,
+      }) satisfies ThreadReadResponse,
+  );
   let resumeRequested!: () => void;
   const requested = new Promise<void>((resolve) => {
     resumeRequested = resolve;
@@ -1024,7 +1035,9 @@ test("Enter on an unknown slash command against a Send-resumes fenced session pa
   });
   await flushPendingTurnsProjectionForTests();
   expect(threadsStore.getState().resumeFailures.size).toBe(0);
-  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  // The resume RPC starts an entry read, whose authoritative reconciliation
+  // clears the fence asynchronously, after pending-turn projection can settle.
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false));
   await waitFor(() => expect(starts).toBe(1));
   expect(starts).toBe(1);
 });

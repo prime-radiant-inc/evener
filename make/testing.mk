@@ -26,7 +26,7 @@ test-web: web-preflight build-dev
 # failing case does not hide the remaining guard's verdict; exit status is the
 # first nonzero one.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
-## shellguard, spawnguard, transcriptscrollguard, sessioncacheguard,
+## shellguard, spawnguard, transcriptscrollguard,
 ## retirementguard, mermaidguard, docannotationguard) plus the
 ##   full-stack `web-skillguard` (TestSkillComposerBrowser behind the
 ##   `browserguard` tag), `web-cascadeguard` (TestAgentCascadeBrowser behind
@@ -35,9 +35,7 @@ test-web: web-preflight build-dev
 ##   cannot evaluate.
 ## proves: Headless Chrome evaluates real CSS geometry, the real Session
 ##   reducer/tree, the real Spawn staging/breakpoint path, the real transcript
-##   scroll/jump-to-latest path, session-cache deletion healing, clear-epoch
-##   suppression and envelope filtering across two real tabs with native
-##   BroadcastChannel and IndexedDB, the real selected-thread recovery contract
+##   scroll/jump-to-latest path, the real selected-thread recovery contract
 ##   when its daemon retires and is replaced, and the small document-annotation
 ##   component cases; the skill guard drives the production composer through
 ##   a REAL hub and two REAL `evener serve` daemons with only the LLM provider
@@ -53,10 +51,10 @@ test-web: web-preflight build-dev
 ##   temporary/XDG roots, and a private browser profile. No WebKit/Safari
 ##   runner. retirementguard also needs the Go toolchain: its npm script runs
 ##   the isolated TestRetirementBrowser fixture, which starts the Hub and
-##   drives the guard against it. The skill, cascade and annotation-journey
-##   guards also need the Go toolchain and the built frontend, which this
-##   target builds first (`build-web`); the gate still builds one when the
-##   dist is missing.
+##   drives the guard against it. The skill, cascade, background-transcript
+##   and annotation-journey guards also need the Go toolchain and the built
+##   frontend, which this target builds first (`build-web`); the gate still
+##   builds one when the dist is missing.
 ## fails-when: Any guard error, Vite failure, cleanup failure, or missing
 ##   Chrome/Chromium is nonzero.
 test-web-browser: build-web build-dev
