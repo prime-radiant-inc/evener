@@ -24,6 +24,12 @@ export interface DocumentHighlightsProps {
   map: BoundDocumentMap;
   annotations: readonly AnnotationView[];
   scrollElement: HTMLElement;
+  // The rendered content's own root (the markdown host). Mermaid renders
+  // diagrams asynchronously: a diagram can grow the content after mount while
+  // the scroll owner's box is unchanged, moving annotated paragraphs with no
+  // scroll, resize or font event. Observing the content root catches that
+  // growth; omit it when the caller cannot name the content root.
+  contentElement?: HTMLElement | null;
 }
 
 const CLASS = {
@@ -38,7 +44,7 @@ function overlaps(a: SourceRange, b: SourceRange): boolean {
   return Math.max(a.start, b.start) < Math.min(a.end, b.end);
 }
 
-export function DocumentHighlights({ map, annotations, scrollElement }: DocumentHighlightsProps) {
+export function DocumentHighlights({ map, annotations, scrollElement, contentElement }: DocumentHighlightsProps) {
   const [fragments, setFragments] = useState<readonly HighlightFragment[]>([]);
   const [activeOperationId, setActiveOperationId] = useState<string | null>(null);
   // The delegated listeners live for the effect's whole lifetime, so they read
@@ -222,6 +228,12 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
 
     measure();
     sizeObserver?.observe(scrollElement);
+    // Async content growth (a mermaid diagram rendering late) moves annotated
+    // paragraphs without changing the scroll owner's own box, so the observer
+    // above never fires: observe the rendered content's root as well, and its
+    // layout growth re-measures the same verified ranges at their new
+    // geometry.
+    if (contentElement) sizeObserver?.observe(contentElement);
     scrollElement.addEventListener("scroll", onScroll);
     view?.addEventListener("resize", onResize);
     fonts?.addEventListener("loadingdone", onScroll);
@@ -256,7 +268,7 @@ export function DocumentHighlights({ map, annotations, scrollElement }: Document
       ownerDocument.removeEventListener("pointerup", onPointerUp);
       ownerDocument.removeEventListener("pointercancel", onPointerCancel);
     };
-  }, [map, annotations, scrollElement]);
+  }, [map, annotations, scrollElement, contentElement]);
 
   // A band is `position: absolute`, so its `left`/`top` are measured from THIS
   // overlay's padding box, not the scroll owner's border box. The overlay travels

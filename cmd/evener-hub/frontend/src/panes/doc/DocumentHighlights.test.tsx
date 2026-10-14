@@ -254,6 +254,7 @@ interface NestedReaderProps {
 function NestedReader({ source, annotations, identity = IDENTITY, mapRef, hostRef }: NestedReaderProps) {
   const [map, setMap] = useState<BoundDocumentMap | null>(null);
   const [scroll, setScroll] = useState<HTMLElement | null>(null);
+  const [content, setContent] = useState<HTMLDivElement | null>(null);
   const onMap = useCallback(
     (value: BoundDocumentMap | null) => {
       mapRef.current = value;
@@ -264,6 +265,7 @@ function NestedReader({ source, annotations, identity = IDENTITY, mapRef, hostRe
   const bindHost = useCallback(
     (node: HTMLDivElement | null) => {
       hostRef.current = node;
+      setContent(node);
       setScroll(node?.parentElement ?? null);
     },
     [hostRef],
@@ -272,7 +274,9 @@ function NestedReader({ source, annotations, identity = IDENTITY, mapRef, hostRe
     <div data-testid="scroll">
       <div ref={bindHost} data-testid="host">
         <DocumentMarkdown source={source} identity={identity} onMap={onMap} />
-        {map && scroll && <DocumentHighlights map={map} annotations={annotations} scrollElement={scroll} />}
+        {map && scroll && (
+          <DocumentHighlights map={map} annotations={annotations} scrollElement={scroll} contentElement={content} />
+        )}
       </div>
     </div>
   );
@@ -542,6 +546,52 @@ test("recomputes bands when the pane element itself changes size (no window or v
     fire();
   });
   expect(bandFor(scroll, "op-1").style.left).toBe("30px");
+
+  view.unmount();
+  expect(observers.every((observer) => observer.disconnected)).toBe(true);
+});
+
+test("recomputes bands when the rendered content grows with no pane, scroll or viewport event", () => {
+  const { observers } = installResizeObserverCapability();
+  const mapRef: { current: BoundDocumentMap | null } = { current: null };
+  const hostRef: { current: HTMLDivElement | null } = { current: null };
+  const view = render(<NestedReader source={SOURCE} annotations={single} mapRef={mapRef} hostRef={hostRef} />);
+  onUnmount(() => view.unmount());
+  const scroll = screen.getByTestId("scroll") as HTMLDivElement;
+  const host = hostRef.current;
+  if (!host) throw new Error("markdown host not bound");
+  const map = mapRef.current;
+  if (!map) throw new Error("map not bound");
+  geometry.setElementRect(scroll, NESTED_SCROLL_RECT);
+  geometry.setElementRect(host, NESTED_HOST_RECT);
+  const overlay = host.children[1];
+  if (!(overlay instanceof HTMLElement)) throw new Error("positioned overlay is not an element");
+  geometry.setElementRect(overlay, NESTED_HOST_RECT);
+  geometry.configure(map, FIRST, [[NESTED_INSIDE_RECT]]);
+  fireEvent.scroll(scroll);
+  expect(bands(scroll)).toHaveLength(1);
+  expect(bands(scroll)[0]?.style.left).toBe("16px");
+
+  // Mermaid renders asynchronously: a diagram can grow the rendered content
+  // after mount while the pane's own box, the viewport and the fonts are all
+  // unchanged, so none of the existing observers fire. The content host's own
+  // layout growth must re-measure the same verified ranges at their new
+  // geometry, or saved highlights stay over the wrong passage until an
+  // unrelated scroll or resize.
+  const contentObserver = observers.find((observer) => !observer.disconnected && observer.targets.includes(host));
+  expect(contentObserver).toBeTruthy();
+  geometry.configure(map, FIRST, [
+    [{ ...NESTED_INSIDE_RECT, left: NESTED_INSIDE_RECT.left + 12, top: NESTED_INSIDE_RECT.top + 8 }],
+  ]);
+  act(() => {
+    contentObserver?.cb(
+      [{ target: host } as unknown as ResizeObserverEntry],
+      contentObserver as unknown as ResizeObserver,
+    );
+  });
+  expect(bands(scroll)).toHaveLength(1);
+  expect(bands(scroll)[0]?.style.left).toBe("28px");
+  expect(bands(scroll)[0]?.style.top).toBe("34px");
 
   view.unmount();
   expect(observers.every((observer) => observer.disconnected)).toBe(true);
