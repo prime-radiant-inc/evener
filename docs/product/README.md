@@ -13,6 +13,8 @@ changes; keep implementation history in Git and pull requests.
   points, dependencies, and recovery ownership across the product.
 - [Session activity](session-activity.md): scoped delegate, job and watch reads,
   navigation boundaries, pagination and shared recovery ownership.
+- [History content](history-content.md): selectable conversation, reasoning, tool,
+  intent, system and diagnostics content on reads, pages and subscriptions.
 - [Device pairing protocol](../device-pairing.md): self-hosted invitations, device comparison, encrypted credential delivery, QR and acoustic wire formats.
 - [Playdate client](playdate-client.md): direct session browsing, chat transcripts,
   voice review, acoustic setup, native enrollment and device-owned draft recovery.

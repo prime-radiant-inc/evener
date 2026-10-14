@@ -1318,7 +1318,7 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	readThread := func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		if err := appwire.ValidateThreadReadParams(params); err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
@@ -1493,7 +1493,7 @@ func registerThreadHandlers(
 			}
 		}
 		return resp, nil
-	})
+	}
 	// thread/unsubscribe drops only the calling connection's downstream
 	// subscription — the browser's own read of a thread it is navigating away
 	// from. The relay key is derived by the same helper thread/read's relay
@@ -1534,7 +1534,7 @@ func registerThreadHandlers(
 		appserver.UnsubscribeLifecycle(ctx, relayKey)
 		return appwire.EmptyResponse{}, nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	listThreadTurns := func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 		if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
@@ -1584,7 +1584,8 @@ func registerThreadHandlers(
 			return appwire.ThreadTurnsListResponse{}, srcErr
 		}
 		return live, liveErr
-	})
+	}
+	appserver.HandleThreadHistory(server.Router(), readThread, listThreadTurns)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSubagentPreview, func(ctx context.Context, params appwire.EvenerSubagentPreviewParams) (appwire.EvenerSubagentPreviewResponse, error) {
 		ref := strings.TrimSpace(params.Ref)
 		if ref == "" {
