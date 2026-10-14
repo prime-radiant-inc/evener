@@ -765,7 +765,7 @@ func (c *Connection) enqueueResponse(ctx context.Context, msg appwire.Message) e
 				if c.server.beforeHydrationCommit != nil {
 					c.server.beforeHydrationCommit()
 				}
-				finalizer.commit()
+				finalizer.commit(responseSucceeded)
 				c.hydrationMu.Unlock()
 				finalizer.commitAfterRelease()
 			} else {
@@ -1088,8 +1088,12 @@ type hydrationResponseFinalizer struct {
 	releaseOnErrorResponse bool
 }
 
-func (f *hydrationResponseFinalizer) commit() {
-	f.server.releaseHydration(f.conn, f.threadID, f.generation)
+func (f *hydrationResponseFinalizer) commit(responseSucceeded bool) {
+	var failedCapture *subscriptionCaptureRollback
+	if !responseSucceeded {
+		failedCapture = &f.rollback
+	}
+	f.server.releaseHydration(f.conn, f.threadID, f.generation, failedCapture)
 }
 
 func (f *hydrationResponseFinalizer) commitAfterRelease() {
@@ -1504,8 +1508,11 @@ func captureSubscription(
 	return true
 }
 
-func (s *Server) releaseHydration(conn *Connection, threadID string, generation uint64) {
+func (s *Server) releaseHydration(conn *Connection, threadID string, generation uint64, failedCapture *subscriptionCaptureRollback) {
 	s.projectionMu.Lock()
+	if failedCapture != nil {
+		s.subs.restoreContent(conn.id, threadID, generation, *failedCapture)
+	}
 	content := s.subs.content(conn.id, threadID)
 	records, ok := s.subs.Release(conn.id, threadID, generation)
 	s.deliveryMu.Lock()

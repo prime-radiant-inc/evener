@@ -1,11 +1,13 @@
 package apphistory
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -34,7 +36,7 @@ func fixtureHistory() *historyFixture {
 			kind = "agentMessage"
 		}
 		position := appwire.ThreadItemPosition{Entry: uint64(i), Item: 0}
-		f.candidates = append(f.candidates, appitempaging.TranscriptItemCandidate{TurnID: "turn", Turn: appwire.Turn{ID: "turn"}, Position: position, Item: appwire.ThreadItem{Type: kind, ID: fmt.Sprint(i), TranscriptKey: fmt.Sprint(i), Position: &position, TurnID: "turn", Text: fmt.Sprint(i), Output: "tool-data"}})
+		f.candidates = append(f.candidates, appitempaging.TranscriptItemCandidate{TurnID: "turn", Turn: appwire.Turn{ID: "turn"}, Position: position, Item: appwire.ThreadItem{Type: kind, ID: strconv.Itoa(i), TranscriptKey: strconv.Itoa(i), Position: &position, TurnID: "turn", Text: strconv.Itoa(i), Output: "tool-data"}})
 	}
 	return f
 }
@@ -128,7 +130,7 @@ func TestSelectedHistoryFillsPagesAndReachesOldest(t *testing.T) {
 	}
 	var want []string
 	for i := 1; i <= 201; i += 20 {
-		want = append(want, fmt.Sprint(i))
+		want = append(want, strconv.Itoa(i))
 	}
 	if !reflect.DeepEqual(all, want) {
 		t.Fatalf("paged ids=%v want=%v", all, want)
@@ -183,7 +185,7 @@ func TestSelectedHistoryDefaultAndMetadataReadsDoNoExtraPaging(t *testing.T) {
 	}
 	a, _ := json.Marshal(got)
 	b, _ := json.Marshal(want)
-	if string(a) != string(b) || f.lists != 0 {
+	if !bytes.Equal(a, b) || f.lists != 0 {
 		t.Fatal("default response changed")
 	}
 	p.IncludeTurns = false
@@ -307,8 +309,7 @@ func TestSelectedHistoryRefusesChangedSourceIdentity(t *testing.T) {
 		return r, err
 	}
 	_, err := Read(t.Context(), p, f.read, list)
-	var wire appwire.WireError
-	if !errors.As(err, &wire) {
+	if _, ok := errors.AsType[appwire.WireError](err); !ok {
 		t.Fatalf("mixed incarnations accepted: %v", err)
 	}
 }

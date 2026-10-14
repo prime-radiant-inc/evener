@@ -18,11 +18,11 @@ func TestHistoryContentRealProducerPagingRefreshAndReconnect(t *testing.T) {
 	// Not parallel: servedTranscript installs a package-wide publication observer.
 	st := newServedTranscript(t, NewServer(ServerConfig{}), "selected")
 	var want []string
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		text := fmt.Sprintf("fixture-%d", i)
 		want = append(want, text)
 		st.record(t, schema.NewTurn(schema.TurnUserInput, llm.User(text)))
-		for j := 0; j < 12; j++ {
+		for range 12 {
 			st.record(t, schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "reasoning-data"}}}}))
 		}
 	}

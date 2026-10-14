@@ -52,8 +52,9 @@ notifications remain available. History updates with no selected items still
 advance the snapshot. Overlay reset/end notifications still clear live state.
 
 Each downstream subscription generation owns its selection and selected overlay
-identities. Capture rollback restores the previous owner and its filter;
-unsubscribe disposes of both. Hub relay reads and feeds remain complete, so a
+identities. A failed refresh preserves the previous view and live overlay
+identities while still delivering daemon recovery notifications. Capture rollback
+restores the previous owner and its filter; unsubscribe disposes of both. Hub relay reads and feeds remain complete, so a
 compact client cannot hide data from a full client sharing the same source.
 The shared adapter in `internal/apphistory` and registration in
 `internal/appserver.HandleThreadHistory` serve both Hub and daemon APIs.

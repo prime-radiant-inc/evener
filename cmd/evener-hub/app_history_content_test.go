@@ -49,7 +49,7 @@ func TestHubHistoryContentSavedTranscriptAndMetadata(t *testing.T) {
 		t.Fatal("metadata selection changed thread identity or fetched history")
 	}
 	params.IncludeTurns = true
-	params.ThreadContentParams.IncludeConversation = &no
+	params.IncludeConversation = &no
 	empty, err := client.ThreadRead(t.Context(), params)
 	if err != nil {
 		t.Fatal(err)

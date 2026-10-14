@@ -57,6 +57,29 @@ func (s *Subscriptions) setContent(connID, threadID string, generation uint64, f
 	}
 }
 
+// Failed daemon reads still release recovery notifications. Restore only the
+// previous view, including its live overlay identities, before that release.
+func (s *Subscriptions) restoreContent(connID, threadID string, generation uint64, rollback subscriptionCaptureRollback) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.byConn[connID][threadID]
+	if current == nil || !current.buffering || current.generation != generation {
+		return
+	}
+	previous := rollback.threadPrevious
+	if rollback.replace {
+		for i := range rollback.connection.subscriptions {
+			if sub := &rollback.connection.subscriptions[i]; sub.threadID == threadID {
+				previous = sub
+				break
+			}
+		}
+	}
+	if previous != nil && !previous.withdrawn {
+		current.content = previous.content
+	}
+}
+
 func (s *Subscriptions) content(connID, threadID string) *apphistory.Filter {
 	filter, _ := s.contentOwner(connID, threadID)
 	return filter
