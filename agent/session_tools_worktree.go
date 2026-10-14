@@ -632,6 +632,14 @@ func (e *gitCmdError) ExitCode() int { return e.code }
 // fall back to RunGit's shell-escaped wrapper, which preserves the same
 // guarantee the old escaping did. A non-zero exit is reported as a
 // *gitCmdError carrying the code and stderr.
+//
+// A successful invocation whose capture tripped the per-stream cap is refused
+// only where stdout is DECODED as records (see gitOutputIsParsed): a truncated
+// porcelain listing or ref set would be parsed as if whole. A mutating
+// subcommand's stdout is progress diagnostic nobody reads, so its success is
+// preserved even when that output truncated — failing a completed `worktree
+// add` on a verbose post-checkout hook would strand the worktree and branch it
+// just created.
 func gitRunner(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 	return func(args ...string) (string, error) {
 		res, err := execenv.RunGit(ctx, env, "", worktreeGitTimeoutMS, args...)
@@ -641,15 +649,44 @@ func gitRunner(ctx context.Context, env execenv.ExecutionEnvironment) worktree.G
 		if err != nil {
 			return res.Stdout, err
 		}
-		// A capped capture is head and tail fragments, not a record stream: a
-		// porcelain parser would read a partial listing as the whole one. Refuse
-		// it here, at the boundary every worktree parser reads through, so the
-		// caller treats the read as failed rather than decoding it (#4568 round 2).
-		if terr := res.Truncated(); terr != nil {
+		if terr := res.Truncated(); terr != nil && gitOutputIsParsed(args) {
 			return res.Stdout, fmt.Errorf("git %s: %w", strings.Join(args, " "), terr)
 		}
 		return res.Stdout, nil
 	}
+}
+
+// gitWorktreeMutations are the `git worktree` subcommands that change state;
+// their stdout is progress diagnostic, not records.
+var gitWorktreeMutations = map[string]bool{
+	"add": true, "remove": true, "prune": true, "lock": true,
+	"unlock": true, "move": true, "repair": true,
+}
+
+// gitOutputIsParsed reports whether an invocation's stdout is decoded as
+// records, so a truncated capture must be refused rather than read as if whole.
+// Only the state-changing subcommands are treated as unparsed; an unknown
+// command defaults to parsed, so a new record read added later is refused by
+// default rather than silently accepted (#4621 round 2, M1).
+func gitOutputIsParsed(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	if args[0] == "worktree" {
+		if len(args) < 2 {
+			return true
+		}
+		return !gitWorktreeMutations[args[1]]
+	}
+	if args[0] == "branch" {
+		for _, a := range args[1:] {
+			switch a {
+			case "-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy":
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // newWorktreeGitRunner returns the lifecycle Git boundary for this session.
