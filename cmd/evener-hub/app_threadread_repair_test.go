@@ -909,6 +909,54 @@ func TestTheRepairFailureBudget(t *testing.T) {
 	}
 }
 
+// A repair registered after the project's deletion — the refusal was obtained
+// before it, and the delayed registration arrived once forget had already
+// retired the entry — fails because the transcript is gone. The failure must
+// complete the deletion cleanup instead of retaining a failed entry (and its
+// queued asks) for a session that no longer exists (#4343 fast-follow low 1).
+func TestADelayedRepairRegistrationAfterDeletionLeavesNoRegistryResidue(t *testing.T) {
+	wireRepairsForTest(t)
+	feed, completions, calls := installRepairSeam(t)
+	cfg, entry, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("a"))),
+	)
+	staleSidecarForTest(t, path)
+
+	// A read obtains the refusal before the deletion, and its repair
+	// completes.
+	_, err := readStaleSession(t, cfg, entry)
+	requireTranscriptIndexRebuilding(t, err)
+	feed(func(_, _ string) error { return nil })
+	<-completions
+
+	// The deletion: forget retires the entry and the transcript file goes.
+	transcriptIndexRepairs.forget(path)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	// The delayed registration arrives carrying the pre-deletion refusal.
+	// The lane takes it, the recipe fails because the transcript is gone,
+	// and the failure must retire the resurrected entry and its queued asks.
+	transcriptIndexRepairs.askFromRefresher(path, refusedBuildName(t, path))
+	feed(func(_, _ string) error { return errors.New("repair failed on purpose") })
+	<-completions
+
+	transcriptIndexRepairs.mu.Lock()
+	_, hasEntry := transcriptIndexRepairs.entries[path]
+	queued := len(transcriptIndexRepairs.laneQueue)
+	transcriptIndexRepairs.mu.Unlock()
+	if hasEntry {
+		t.Fatal("a repair that failed because the transcript is gone retained a registry entry for the deleted session")
+	}
+	if queued != 0 {
+		t.Fatalf("retained asks = %d, want the deleted session's queued asks retired", queued)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("repairs = %d, want 2 (the pre-deletion repair and the delayed registration's)", got)
+	}
+}
+
 // exhaustTheLaneBudget runs three failing refresher-fed repairs through the
 // lane, takes the exhausted path's first unpaced re-arm and fails it too, and
 // proves the next lane ask within the interval skips: the path is now paced,
