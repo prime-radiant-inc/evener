@@ -98,6 +98,94 @@ async function openTab(hydrate = true) {
   return tab;
 }
 
+it("replaces history invalidated by a newer epoch after the response cut", async () => {
+  const tab = await openTab(false);
+  const authority = deferred<number>();
+  const entered = deferred<void>();
+  vi.spyOn(tab.cache, "getHistoryGeneration").mockImplementationOnce(() => {
+    entered.resolve();
+    return authority.promise;
+  });
+  let reads = 0;
+  tab.client.on("thread/read", (params) => ({
+    ...read(++reads === 1 ? 1 : 2),
+    epoch: reads === 1 ? 1 : 2,
+    requestGeneration: params.requestGeneration,
+  }));
+  const opening = tab.threads.threadsStore.getState().ensureThread(ref);
+  await entered.promise;
+  try {
+    expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
+    const update = suffix(2);
+    if (update.method !== "history/updated") throw new Error("expected recorded update");
+    update.params.epoch = 2;
+    tab.client.emitNotification(update);
+    authority.resolve(0);
+    await opening;
+    await vi.waitFor(() => expect(reads).toBe(2));
+    await tab.threads.settleEntryTranscriptForTests(ref);
+    const repository = tab.threads.productionEntryTranscriptForTests(ref).repository!;
+    expect(repository.getSnapshot()?.history?.invalidatedAtGeneration).toBeUndefined();
+    expect(repository.getSnapshot()?.history?.epoch).toBe(2);
+    const subsequent = suffix(3);
+    if (subsequent.method !== "history/updated") throw new Error("expected recorded update");
+    subsequent.params.epoch = 2;
+    tab.client.emitNotification(subsequent);
+    expect(
+      repository
+        .getSnapshot()
+        ?.history?.turns.flatMap((turn) => turn.items)
+        .map((row) => row.text),
+    ).toContain("body-3");
+    expect(tab.threads.threadsStore.getState().threads.get(ref)?.history?.epoch).toBe(2);
+  } finally {
+    authority.resolve(0);
+    await opening;
+  }
+});
+
+it("recovers an overlay notice after content Clear without a recorded update", async () => {
+  const tab = await openTab();
+  const fresh = read(0);
+  fresh.thread.id = "cleared-thread";
+  fresh.thread.evener.instanceId = "cleared-thread";
+  fresh.thread.turns = [];
+  fresh.snapshot = { incarnation: "cleared-incarnation", length: 0 };
+  tab.client.on("thread/clear", (params) => ({
+    thread: fresh.thread,
+    ref,
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: fresh.thread.id,
+      instanceId: fresh.thread.id,
+      projectionState: "reflected",
+    },
+  }));
+  await tab.threads.threadsStore.getState().clearThread(ref);
+  await (await import("./projectionWork")).settleProjectionWorkForTests();
+  expect(tab.threads.productionEntryTranscriptForTests(ref).repository).toBeUndefined();
+  expect(tab.threads.threadsStore.getState().threads.get(ref)?.history).toBeUndefined();
+  const reads = tab.client.calls.filter((call) => call.method === "thread/read").length;
+  tab.client.on("thread/read", (params) => ({ ...fresh, requestGeneration: params.requestGeneration }));
+  const notice = {
+    key: "notice:after-clear",
+    kind: "notice" as const,
+    item: { id: "after-clear", type: "agentMessage" as const, text: "unrecorded error after Clear" },
+  };
+  tab.client.emitNotification({
+    method: "overlay/upserted",
+    params: { ref, threadId: fresh.thread.id, item: notice },
+  });
+  await vi.waitFor(() =>
+    expect(tab.client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1),
+  );
+  await tab.threads.settleEntryTranscriptForTests(ref);
+  const repository = tab.threads.productionEntryTranscriptForTests(ref).repository!;
+  expect(repository.getSnapshot()?.overlay?.[notice.key]?.item.text).toBe(notice.item.text);
+  expect(tab.threads.threadsStore.getState().threads.get(ref)?.overlay?.[notice.key]?.item.text).toBe(notice.item.text);
+});
+
 it("keeps replayed overlay deltas exactly once when live history preserves the read snapshot length", async () => {
   const tab = await openTab();
   const slot = {
