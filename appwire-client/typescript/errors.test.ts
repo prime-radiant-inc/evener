@@ -12,6 +12,8 @@ import {
   ErrorInvalidHostField,
   ErrorMarketplaceRemoveApplied,
   ErrorTranscriptHistoryFailed,
+  ErrorTranscriptIndexLocked,
+  ErrorTranscriptIndexRebuilding,
   ErrorUpgradeRequired,
   errorKind,
   errorText,
@@ -23,6 +25,8 @@ import {
   isInstanceRemoveApplied,
   isMethodNotFound,
   isTranscriptHistoryFailedError,
+  isTranscriptIndexLockedError,
+  isTranscriptIndexRebuildingError,
   isUpgradeRequiredError,
   refusedBeforeRunning,
   sessionActionError,
@@ -160,6 +164,63 @@ describe("the history-failed and upgrade-required discriminators are bound to ap
     expect(isUpgradeRequiredError(upgradeRequired)).toBe(true);
     expect(isUpgradeRequiredError(historyFailed)).toBe(false);
     expect(isTranscriptHistoryFailedError(new Error("thread history failed at entry 7"))).toBe(false);
+  });
+});
+
+// A read whose transcript index is being rebuilt in the background is the
+// retryable sibling of the history-failed discriminant: the hub owns one
+// repair off the read path, and the read that follows its commit succeeds,
+// so a client that recognizes it keeps the history it holds and retries. A
+// hub-side rename of the discriminant has to break this binding rather than
+// silently read a retryable state as a terminal one.
+describe("the transcript-index-rebuilding discriminant is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorTranscriptIndexRebuilding).toBe(goErrorInfo("ErrorTranscriptIndexRebuilding"));
+  });
+
+  test("the predicate reads only that discriminant", () => {
+    const rebuilding = new WireError("thread history is being rebuilt in the background", -32603, {
+      evenerErrorInfo: ErrorTranscriptIndexRebuilding,
+    });
+    const historyFailed = new WireError("thread history failed at entry 7", -32603, {
+      evenerErrorInfo: ErrorTranscriptHistoryFailed,
+    });
+    expect(isTranscriptIndexRebuildingError(rebuilding)).toBe(true);
+    expect(isTranscriptIndexRebuildingError(historyFailed)).toBe(false);
+    expect(isTranscriptHistoryFailedError(rebuilding)).toBe(false);
+    expect(isTranscriptIndexRebuildingError(new Error("thread history is being rebuilt in the background"))).toBe(
+      false,
+    );
+  });
+});
+
+// The lock-contention discriminant names ordinary contention — a writer
+// mid-extension or a foreign rebuild, with no hub repair in flight — so a
+// client that wants to tell a running repair from a transient collision can.
+// A hub-side rename of the discriminant has to break this binding rather
+// than silently leave the standing code read as an unknown one.
+describe("the transcript-index-locked discriminant is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorTranscriptIndexLocked).toBe(goErrorInfo("ErrorTranscriptIndexLocked"));
+  });
+
+  test("the package root re-exports both names, the only surface consumers import", async () => {
+    const root = await import("./index");
+    expect(root.ErrorTranscriptIndexLocked).toBe(ErrorTranscriptIndexLocked);
+    expect(root.isTranscriptIndexLockedError).toBe(isTranscriptIndexLockedError);
+  });
+
+  test("the predicate reads only that discriminant", () => {
+    const locked = new WireError("thread history index is busy with a live writer", -32603, {
+      evenerErrorInfo: ErrorTranscriptIndexLocked,
+    });
+    const rebuilding = new WireError("thread history is being rebuilt in the background", -32603, {
+      evenerErrorInfo: ErrorTranscriptIndexRebuilding,
+    });
+    expect(isTranscriptIndexLockedError(locked)).toBe(true);
+    expect(isTranscriptIndexLockedError(rebuilding)).toBe(false);
+    expect(isTranscriptIndexRebuildingError(locked)).toBe(false);
+    expect(isTranscriptIndexLockedError(new Error("thread history index is busy with a live writer"))).toBe(false);
   });
 });
 

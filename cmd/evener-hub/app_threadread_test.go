@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
@@ -446,6 +447,7 @@ func seedPastSessionWithSkillFixtures(t *testing.T) (hubcore.WebConfig, hubcore.
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
+	indexPastTranscriptForTest(t, stateDir, sessionID)
 	idx := hubcore.NewPastIndex(filepath.Join(root, "state", "projects", "*"))
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -1228,6 +1230,33 @@ func TestPastThreadReadProjectsIdleSubagentIdle(t *testing.T) {
 	}
 }
 
+// indexPastTranscriptForTest builds the past session's first transcript-index
+// sidecar, the way any read built one inline before the off-path repair took
+// over (#4343): a test that asserts on a session's content, not on the first
+// index of it, reads through the refusing path, which answers a never-indexed
+// session with the retryable rebuilding state instead of data. Only a sidecar
+// that does not exist yet is built — one a test deliberately staled or
+// corrupted stays exactly as the test set it up, and a transcript no reader
+// can index stays unindexed, its first-read behavior being that test's own
+// subject.
+func indexPastTranscriptForTest(t testing.TB, stateDir, sessionID string) {
+	t.Helper()
+	path := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(transcriptindex.DirFor(path), "CURRENT")); err == nil {
+		return
+	}
+	index, err := transcriptindex.Open(path, transcriptindex.DirFor(path))
+	if err != nil {
+		return // a transcript no reader can index: the read answers for it
+	}
+	if err := index.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadParams) {
 	t.Helper()
 	root := t.TempDir()
@@ -1275,6 +1304,7 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
+	indexPastTranscriptForTest(t, stateDir, sessionID)
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -1432,13 +1462,28 @@ func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A transcript whose header no reader accepts can never be indexed, so
+	// the read can neither repair it nor pretend the session has no history:
+	// both surfaces answer the terminal history-failed error directly — the
+	// header gate in answerPastTranscriptIndexError, which names entry 0,
+	// a transcript that can never be indexed having no recorded entry to
+	// name. The daemonless read identity is stamped at the wire layer, above
+	// this raw call, so the plain error shape is what this layer answers.
 	resp, found, err := pastThreadReadResponse(context.Background(), cfg, params)
-	if !found || !errors.Is(err, transcript.ErrUnsupportedFormat) || resp.Thread.Turns != nil {
-		t.Fatalf("past thread/read = (%+v, %v, %v), want found empty ErrUnsupportedFormat", resp, found, err)
+	if !found {
+		t.Fatal("past thread not found")
+	}
+	requireTranscriptHistoryFailedWithoutIdentity(t, err, 0)
+	if resp.Thread.Turns != nil {
+		t.Fatalf("past thread/read turns = %+v, want none", resp.Thread.Turns)
 	}
 	page, found, err := pastThreadTurnsList(context.Background(), cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, ItemLimit: 1})
-	if !found || !errors.Is(err, transcript.ErrUnsupportedFormat) || page.Data != nil {
-		t.Fatalf("past thread/turns/list = (%+v, %v, %v), want found empty ErrUnsupportedFormat", page, found, err)
+	if !found {
+		t.Fatal("past thread not found")
+	}
+	requireTranscriptHistoryFailedWithoutIdentity(t, err, 0)
+	if page.Data != nil {
+		t.Fatalf("past thread/turns/list data = %+v, want none", page.Data)
 	}
 }
 
@@ -1658,6 +1703,7 @@ func seedPastItemPagingThread(t *testing.T) (hubcore.WebConfig, hubcore.PastEntr
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
+	indexPastTranscriptForTest(t, stateDir, sessionID)
 	index := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := index.Rebuild(); err != nil {
 		t.Fatal(err)
@@ -1958,6 +2004,7 @@ func TestPastEntryTurns_FlushesUnpairedCommunicate(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
+	indexPastTranscriptForTest(t, stateDir, sessionID)
 
 	entry := hubcore.PastEntry{
 		ID:       sessionID,

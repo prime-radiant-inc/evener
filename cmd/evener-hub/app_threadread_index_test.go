@@ -53,6 +53,15 @@ func seedIndexedPastSession(t *testing.T, entries ...schema.Turn) (hubcore.WebCo
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
+	// Build the transcript's index sidecar up front: the hub's read path
+	// answers a never-indexed session with the rebuilding state while a
+	// repair builds it, and the existing tests read the session's data
+	// directly. These tests depend on the sidecar existing, so a build that
+	// silently did not happen fails here rather than confusing them later.
+	indexPastTranscriptForTest(t, stateDir, sessionID)
+	if _, err := os.Stat(filepath.Join(transcriptindex.DirFor(path), "CURRENT")); err != nil {
+		t.Fatal("seeded session's sidecar did not build")
+	}
 	index := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := index.Rebuild(); err != nil {
 		t.Fatal(err)

@@ -667,6 +667,7 @@ func (s *WebServer) removeProjectDeletionArtifacts(stateDir, sessionID string) e
 	// files open.
 	transcriptPath := filepath.Join(sessionsDir, sessionID+".transcript.jsonl")
 	pastTranscriptIndexes.Forget(transcriptPath)
+	transcriptIndexRepairs.forget(transcriptPath)
 	if err := removeProjectSessionDir(transcriptindex.DirFor(transcriptPath)); err != nil && !os.IsNotExist(err) {
 		return err
 	}

@@ -304,6 +304,34 @@ test("a durably deleted target is permanent but a history-read failure remains u
   leave();
 });
 
+// #4343: the hub answers an older-page demand whose transcript index is
+// being rebuilt in the background with the transcriptIndexRebuilding
+// discriminant. It is retryable, never permanent — permanent is only
+// upgradeRequired or targetDeleted — so the demand owner keeps demanding
+// and a later read completes the page once the repair commits.
+test("an index-rebuilding rejection stays unresolved and a later read completes the page", async () => {
+  const rebuilding = new WireError("thread history is being rebuilt in the background", -32000, {
+    evenerErrorInfo: "transcriptIndexRebuilding",
+  });
+  let cursor: string | null = "page-1";
+  let failing = true;
+  const load = vi.fn(async () => {
+    if (failing) throw rebuilding;
+  });
+  const paging = new HistoryPaging(() => cursor, load);
+  const leave = paging.activate("reader");
+  await expect(paging.request()).rejects.toBe(rebuilding);
+  expect(paging.getSnapshot()).toMatchObject({ pending: true, permanent: false });
+  // The repair commits: the cursor advances to no-more-pages and the paced
+  // retry's read completes the page.
+  failing = false;
+  cursor = null;
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(paging.getSnapshot()).toMatchObject({ loading: false, pending: false, error: null });
+  expect(vi.getTimerCount()).toBe(0);
+  leave();
+});
+
 test("cancelling Find stops its retries without discarding a reader's demand", async () => {
   const load = vi.fn(async () => {
     throw new Error("temporary");

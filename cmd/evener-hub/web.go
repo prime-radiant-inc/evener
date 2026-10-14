@@ -200,6 +200,14 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		transcriptDisplayStoreErr: transcriptDisplayStoreErr,
 		keybindingsStoreErr:       keybindingsStoreErr,
 	}
+	// Transcript-index repairs hang off the server's lifetime like the rest
+	// of its background work: construction arms the repair registry with the
+	// default lifetime, so a directly constructed server — an embedder or a
+	// test building NewWebServer and serving Handler() without runMain —
+	// recovers a staled or missing sidecar on its own instead of answering
+	// history-failed with no repair anywhere. runMain re-wires with the
+	// hub's lifetime context, so shutdown still gates repairs.
+	transcriptIndexRepairs.wire(web.lifetime)
 	if web.cfg.LiveModels == nil {
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
