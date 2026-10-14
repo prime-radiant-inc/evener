@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/agent/searchresult"
 )
 
 // floodFixture writes an executable that emits record bytes from a file whose
@@ -36,14 +38,14 @@ func floodFixture(t *testing.T, dir, name string, record []byte, minBytes int) (
 // paths the tests mint carry no quotes, so the simple wrap is exact.
 func shellQuotePath(p string) string { return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'" }
 
-// TestGrepArmsDiscloseByteTruncationIdentically runs the same fixture through
-// both grep arms and requires the same byte-truncation disclosure. On main the
-// rg arm captured its whole stdout unbounded and cut only by line count, so it
-// never emitted grepRetainedBytes' note while the native arm did — the two arms
-// disclosed the same omission differently. The fake rg floods past the 8 MiB
-// capture cap, so the rg arm must discard the corrupted capture and rerun the
-// native capped walker, whose note is the one both arms emit.
-func TestGrepArmsDiscloseByteTruncationIdentically(t *testing.T) {
+// TestGrepArmsDiscloseByteTruncationTheSameWay runs the same fixture through
+// both grep arms and requires the same byte-truncation DISCLOSURE: the same note
+// after the blank-line separator. The result SETS differ by design — on an
+// overflow the rg arm parses ripgrep's own retained records so it keeps
+// ripgrep's exclusion rules, while the native arm walks with its own (#4621 M2)
+// — so equality of entries is deliberately not required. Before the round-1 fix
+// the rg arm emitted no note at all while the native arm did.
+func TestGrepArmsDiscloseByteTruncationTheSameWay(t *testing.T) {
 	// Not parallel: shrinks the package-wide grepRetainedBytes budget.
 	root := t.TempDir()
 	const files = 6
@@ -86,7 +88,12 @@ func TestGrepArmsDiscloseByteTruncationIdentically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rg arm: %v", err)
 	}
-	if rgOut != nativeOut {
-		t.Fatalf("grep arms disclosed byte truncation differently:\n rg     = %q\n native = %q", rgOut, nativeOut)
+	_, nativeNotes := searchresult.Split(nativeOut)
+	_, rgNotes := searchresult.Split(rgOut)
+	if nativeNotes == "" {
+		t.Fatalf("native arm carried no disclosure note: %q", nativeOut)
+	}
+	if rgNotes != nativeNotes {
+		t.Fatalf("grep arms disclosed byte truncation differently:\n rg notes     = %q\n native notes = %q", rgNotes, nativeNotes)
 	}
 }

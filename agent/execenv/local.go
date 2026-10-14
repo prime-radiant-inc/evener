@@ -2334,22 +2334,29 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	// escape on any platform.
 	res, err := e.ExecArgv(ctx, rg, args, 10_000, e.RootDir, nil)
 	if err == nil {
-		// A capped capture is head and tail fragments around an omission
-		// marker, not a record stream: parsed as ripgrep output it yields
-		// split lines, the marker as a bogus result row, and silently missing
-		// middle matches — a wrong answer from a successful search. Discard it
-		// and rerun through the native capped walker, whose retained-output
-		// note is the one byte-truncation disclosure both grep arms emit.
-		if res.StdoutTruncated {
-			return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, nil)
+		filesOnly := outputMode == "files_with_matches"
+		truncated := res.StdoutTruncated
+		stdout := res.Stdout
+		if truncated {
+			// The capture tripped the byte cap. Keep ripgrep's OWN exclusion
+			// rules by parsing the records the bounded capture retained, rather
+			// than rerunning the native walker: the native walker reads no
+			// .ignore and no .gitignore above the search base, so a rerun could
+			// surface files ripgrep excludes (#4621 round 2, M2). Only the
+			// complete leading records are used, and the byte-truncation note
+			// discloses the rest.
+			stdout = rgRetainedRecords(stdout, filesOnly)
 		}
 		// Keep the first maxResults lines. In content mode that counts context
 		// lines and "--" separators too, which is what the grep tool's
 		// max_results promises ("lines, file paths, or count entries by output
 		// mode", tool.DefGrep) and what grepAccum.feedContent counts, so with
 		// context_lines a cut can fall inside a match's context.
-		lines := ripgrepOutputLines(res.Stdout, dir, grepTargetsOneFile(dir), outputMode == "files_with_matches")
+		lines := ripgrepOutputLines(stdout, dir, grepTargetsOneFile(dir), filesOnly)
 		var notes []string
+		if truncated {
+			notes = append(notes, grepRetainedTruncationNote())
+		}
 		if len(lines) > maxResults {
 			notes = append(notes, grepTruncationNote(maxResults))
 		}
@@ -2481,6 +2488,31 @@ func (c *nulCounter) Write(p []byte) (int, error) {
 func grepTargetsOneFile(dir string) bool {
 	info, err := os.Stat(dir)
 	return err == nil && !info.IsDir()
+}
+
+// rgRetainedRecords returns the complete leading records a truncated ripgrep
+// capture kept. The capture holds a head and a tail around the omission marker;
+// only the head is a prefix of ripgrep's own output, so it is parsed and the
+// tail discarded. The head is cut back to its last complete record — a record
+// ends with a newline in content/count mode and with a NUL in
+// files-with-matches mode — so a path or line split at the cut never becomes a
+// bogus row. An empty result means the cap tripped before one record finished.
+// A match line that itself contains the marker prefix would cut early, keeping
+// fewer of ripgrep's records: still ripgrep's rules, never another tool's.
+func rgRetainedRecords(captured string, filesOnly bool) string {
+	if i := strings.Index(captured, outputOmissionMarker[:6]); i >= 0 {
+		captured = captured[:i]
+	}
+	if filesOnly {
+		if i := strings.LastIndexByte(captured, 0); i >= 0 {
+			return captured[:i+1]
+		}
+		return ""
+	}
+	if i := strings.LastIndexByte(captured, '\n'); i >= 0 {
+		return captured[:i+1]
+	}
+	return ""
 }
 
 // ripgrepOutputLines splits ripgrep's --null output into lines in the shape
