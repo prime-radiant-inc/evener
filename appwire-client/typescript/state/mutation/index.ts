@@ -41,7 +41,6 @@ export {
 } from "./pendingEntries";
 export type {
   DraftBackingIdentity,
-  DraftSessionToken,
   DraftSettlement,
   DraftSettlementGuard,
   PendingTurnsDraftPort,
@@ -70,6 +69,7 @@ export { createMutationProjectionWorkTracker } from "./projectionWork";
 export type {
   ClientIdentity,
   ClientIdentityStorage,
+  DraftSessionToken,
   MutationAttachmentRef,
   MutationIntent,
   MutationOptimisticRecord,

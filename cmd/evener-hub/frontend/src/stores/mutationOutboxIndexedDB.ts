@@ -208,6 +208,17 @@ export interface RecoveryOrdinaryConsumption {
   stillOwnsValue: () => boolean;
 }
 
+// The completed guarded recovery update: the record the write produced, and
+// the session token the SAME transaction's session write left on the ref's
+// durable row — the storage's own answer for the revision the completed write
+// produced, so a source records that fact instead of deriving it from its
+// guard. sessionToken is undefined only when an unguarded update consumed an
+// absent ordinary row and initialized no session row.
+export interface RecoveryInputUpdate {
+  record: MutationRecoveryRecord;
+  sessionToken: DraftSessionToken | undefined;
+}
+
 // The one mapping an update writes: input, the display it renders, attachments
 // and the composer text/mentions, preserving absent-versus-empty mentions and
 // the schema `version`. PURE, so updateRecoveryInput and Task 3 can share it
@@ -722,7 +733,8 @@ export class MutationOutboxIndexedDB {
       if (recoveryRecord !== undefined || supersededRemoved > 0) {
         const key = recoverySessionKey(source.targetRef);
         const { namespace, row } = await this.#readSession(transaction, key);
-        await Promise.all(this.#issueSessionWrite(transaction, key, namespace, row, undefined));
+        const { writes } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
+        await Promise.all(writes);
       }
       return true;
     });
@@ -753,7 +765,8 @@ export class MutationOutboxIndexedDB {
       if (recoveryRecord !== undefined || supersededRemoved > 0) {
         const key = recoverySessionKey(source.targetRef);
         const { namespace, row } = await this.#readSession(transaction, key);
-        await Promise.all(this.#issueSessionWrite(transaction, key, namespace, row, undefined));
+        const { writes } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
+        await Promise.all(writes);
       }
       settledSource = source;
       return true;
@@ -902,13 +915,19 @@ export class MutationOutboxIndexedDB {
         const recovery: MutationRecoveryRecord = { ...record, recoveryKind, recoveryReason };
         const key = recoverySessionKey(record.targetRef);
         const { namespace, row } = await this.#readSession(transaction, key);
-        const writes = [
-          requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery)),
+        const { writes, sessionToken } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
+        // The transfer's own session write carried no edit, so the token it
+        // produced is the durable proof later preparations adopt in
+        // preference to guessing at a competing advance.
+        const transferred: MutationRecoveryRecord =
+          sessionToken === undefined ? recovery : { ...recovery, transferredSessionToken: sessionToken };
+        const allWrites = [
+          requestResult(transaction.objectStore(RECOVERY_STORE).put(transferred)),
           requestResult(outbox.delete(clientMutationId)),
-          ...this.#issueSessionWrite(transaction, key, namespace, row, undefined),
+          ...writes,
         ];
-        await Promise.all(writes);
-        return recovery;
+        await Promise.all(allWrites);
+        return transferred;
       },
     );
   }
@@ -938,7 +957,7 @@ export class MutationOutboxIndexedDB {
     composerMentions?: readonly ComposerMention[],
     guard?: RecoveryWriteGuard,
     consumeOrdinary?: RecoveryOrdinaryConsumption,
-  ): Promise<MutationRecoveryRecord | undefined> {
+  ): Promise<RecoveryInputUpdate | undefined> {
     return this.#write(RECOVERY_WITH_SESSION_STORES, "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
       const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
@@ -955,14 +974,12 @@ export class MutationOutboxIndexedDB {
         if (!guard.stillAuthorized()) return undefined;
       }
       const next = applyRecoveryInput(record, input, attachments, composerText, composerMentions);
+      const { writes, sessionToken } = this.#issueSessionWrite(transaction, key, namespace, row, consumeOrdinary);
       // The recovery edit and the session write are issued together, before
       // either is awaited, so both are in flight in this one transaction.
-      const writes = [
-        requestResult(store.put(next)),
-        ...this.#issueSessionWrite(transaction, key, namespace, row, consumeOrdinary),
-      ];
-      await Promise.all(writes);
-      return next;
+      const allWrites = [requestResult(store.put(next)), ...writes];
+      await Promise.all(allWrites);
+      return { record: next, sessionToken };
     });
   }
 
@@ -988,11 +1005,9 @@ export class MutationOutboxIndexedDB {
       // callback last before any write.
       if (shouldDiscard && !shouldDiscard()) return false;
       if (guard && !guard.stillAuthorized()) return false;
-      const writes = [
-        requestResult(store.delete(clientMutationId)),
-        ...this.#issueSessionWrite(transaction, key, namespace, row, undefined),
-      ];
-      await Promise.all(writes);
+      const { writes } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
+      const allWrites = [requestResult(store.delete(clientMutationId)), ...writes];
+      await Promise.all(allWrites);
       return true;
     });
   }
@@ -1042,7 +1057,8 @@ export class MutationOutboxIndexedDB {
         state: "submitting",
         attempted: false,
       };
-      const writes = [
+      const { writes } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
+      const allWrites = [
         requestResult(
           sequenceStore.put({
             ...sequenceRow,
@@ -1052,9 +1068,9 @@ export class MutationOutboxIndexedDB {
         ),
         requestResult(transaction.objectStore(OUTBOX_STORE).add(record)),
         requestResult(recoveryStore.delete(clientMutationId)),
-        ...this.#issueSessionWrite(transaction, key, namespace, row, undefined),
+        ...writes,
       ];
-      await Promise.all(writes);
+      await Promise.all(allWrites);
       return record;
     });
   }
@@ -1099,7 +1115,7 @@ export class MutationOutboxIndexedDB {
     namespace: NamespaceRow | undefined,
     row: SessionRow | undefined,
     consumption: RecoveryOrdinaryConsumption | undefined,
-  ): Promise<unknown>[] {
+  ): { writes: Promise<unknown>[]; sessionToken: DraftSessionToken | undefined } {
     if (row) {
       const consumed =
         consumption !== undefined &&
@@ -1109,9 +1125,9 @@ export class MutationOutboxIndexedDB {
         sameComposerValue(row, consumption.value) &&
         consumption.stillOwnsValue();
       const next = consumed ? nextSessionRow(row, { text: "", skillNames: [] }) : nextSessionRow(row);
-      return [requestResult(putSessionRow(transaction, next))];
+      return { writes: [requestResult(putSessionRow(transaction, next))], sessionToken: { ...next.token } };
     }
-    if (consumption) return [];
+    if (consumption) return { writes: [], sessionToken: undefined };
     const incarnation = namespace?.incarnation ?? createSecureUUID();
     const writes: Promise<unknown>[] = [];
     if (!namespace) {
@@ -1134,7 +1150,7 @@ export class MutationOutboxIndexedDB {
         }),
       ),
     );
-    return writes;
+    return { writes, sessionToken: { namespaceIncarnation: incarnation, sessionRevision: 1 } };
   }
 
   #upgrade(database: IDBDatabase): void {
