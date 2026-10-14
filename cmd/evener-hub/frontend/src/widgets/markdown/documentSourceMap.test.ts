@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { afterEach, expect, test } from "vitest";
 import { FIRST, RICH_RANGES, RICH_SOURCE, SECOND, SOURCE } from "../../panes/doc/testing/annotationFixtures";
 import { DocumentMarkdown } from "./DocumentMarkdown";
-import { type BoundDocumentMap, renderDocument } from "./documentSourceMap";
+import { type BoundDocumentMap, parseDocument, renderDocument } from "./documentSourceMap";
 
 afterEach(() => window.getSelection()?.removeAllRanges());
 function documentFor(source: string) {
@@ -226,7 +226,10 @@ test("maps a large heavily formatted document with exact coordinates", () => {
     );
   }
   const source = `# Large document\n\n${blocks.join("\n\n")}\n\n## Tail\n`;
-  const { map, segments } = renderDocument(source, { displayedSnapshotId: "snap-large", mappingId: "map-large" });
+  const { map, segments } = renderDocument(parseDocument(source), {
+    displayedSnapshotId: "snap-large",
+    mappingId: "map-large",
+  });
   expect(segments.length).toBeGreaterThan(0);
   expect(map.textRuns.length).toBeGreaterThan(4000);
   const bold = map.textRuns.find((run) => run.renderedText === "bold 1000");
@@ -251,7 +254,10 @@ test("maps a large heavily formatted document with exact coordinates", () => {
 // never depend on that limit).
 test("maps a giant single-line list item with a tab within the size limit", () => {
   const source = `- ${"a".repeat(500_000)}\tb\n`;
-  const { map, segments } = renderDocument(source, { displayedSnapshotId: "snap-giant", mappingId: "map-giant" });
+  const { map, segments } = renderDocument(parseDocument(source), {
+    displayedSnapshotId: "snap-giant",
+    mappingId: "map-giant",
+  });
   expect(segments.length).toBeGreaterThan(0);
   const run = map.textRuns.find((entry) => entry.renderedText.includes("a"));
   if (!run) throw new Error("missing giant list item run");
@@ -283,7 +289,10 @@ test("maps a long list continuation with exact coordinates", () => {
   lines[0] = "Item start with a **bold anchor** head.";
   lines[1500] = "Line 1500 with a **bold 1500** inline.";
   const source = `# List continuation\n\n- ${lines.join("\n")}\n\n## Tail\n`;
-  const { map, segments } = renderDocument(source, { displayedSnapshotId: "snap-list", mappingId: "map-list" });
+  const { map, segments } = renderDocument(parseDocument(source), {
+    displayedSnapshotId: "snap-list",
+    mappingId: "map-list",
+  });
   expect(segments.length).toBeGreaterThan(0);
   const bold = map.textRuns.find((run) => run.renderedText === "bold 1500");
   if (!bold) throw new Error("missing middle bold run");
@@ -318,7 +327,10 @@ test("maps a long indented list continuation with exact coordinates", () => {
     lines.push(`    Line ${i} with indented continuation text.`);
   }
   const source = `# Indented continuation\n\n- Item start.\n${lines.join("\n")}\n\n## Tail\n`;
-  const { map, segments } = renderDocument(source, { displayedSnapshotId: "snap-ind", mappingId: "map-ind" });
+  const { map, segments } = renderDocument(parseDocument(source), {
+    displayedSnapshotId: "snap-ind",
+    mappingId: "map-ind",
+  });
   expect(segments.length).toBeGreaterThan(0);
   const mid = map.textRuns.find((run) => run.renderedText.includes("Line 1500 with indented"));
   if (!mid) throw new Error("missing mid-document text run");
