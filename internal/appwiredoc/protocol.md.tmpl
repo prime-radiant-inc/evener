@@ -67,6 +67,23 @@ change it, edit the catalog and/or the prose template
    reconnect. The web client also self-heals a long silent stall by
    re-subscribing.
 
+## History content selection
+
+`thread/read` and `thread/turns/list` accept `includeConversation`,
+`includeThinking`, `includeToolCalls`, `includeToolCallIntents`,
+`includeSystemMessages`, and `includeDiagnostics`. Each defaults to true.
+Tool calls include arguments and results together; intents can be requested
+without that payload. Selection applies before the public page count and byte
+limits, and to the read's downstream subscription. Shared upstream feeds stay
+complete. Cursors and opaque snapshot incarnations distinguish normalized
+selections; changing selection requires a fresh latest read. Status, capability,
+mutation and recovery metadata are always retained.
+Metadata-only reads and mutation relay setup preserve an existing subscription's
+history selection; an `includeTurns: true` read establishes or changes that view.
+
+See [the history content contract](product/history-content.md) for item mapping,
+intent representation, selected paging and reconnect behavior.
+
 ## Error model
 
 Errors use JSON-RPC codes in `error.code` with a human `error.message`.
