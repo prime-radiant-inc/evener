@@ -19,7 +19,7 @@ import {
 } from "../../../../stores/browserDraftRepository";
 import { connectionStore } from "../../../../stores/connection";
 import { ANNOTATION_NAMESPACES_STORE, COMPOSER_DRAFTS_STORE } from "../../../../stores/localCompositionSchema";
-import { holdNextWriteTransaction } from "../../../../stores/testing/stalledIndexedDB";
+import { holdNextWriteTransaction, nextRealTask } from "../../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
 import { getToasts } from "../../../../widgets/toast/store";
@@ -655,6 +655,72 @@ describe("per-message fork affordance", () => {
       expect((await repository.load(key))?.text).toBe("literal /same\nsecond line");
     } finally {
       faultArmed = false;
+      repositoryAccessor.mockRestore();
+      repository.close();
+    }
+  });
+
+  test("the child is retained before the seed settles: a press after an unmount mid-seed never repeats the fork RPC", async () => {
+    const fake = connectForkClient();
+    let forkCalls = 0;
+    fake.on("thread/fork", () => {
+      forkCalls += 1;
+      return {
+        thread: forkWireThread({
+          id: `child_${forkCalls}`,
+          sessionId: `child_${forkCalls}`,
+          evener: { ...forkWireThread().evener, ref: `local/child_${forkCalls}` },
+        }),
+        originalInput: "literal /same\nsecond line",
+      };
+    });
+    const repository = createBrowserDraftRepository({});
+    const repositoryAccessor = vi.spyOn(browserDrafts, "getBrowserDraftRepository").mockReturnValue(repository);
+    // The toasts store outlives this describe's reset, so convergence is
+    // asserted against the count this test started with, not absolute absence.
+    const errorToastsBefore = getToasts().filter((toast) => toast.kind === "error").length;
+    try {
+      const row = item({ text: "original", transcriptKey: "apptranscript-item-v2:turn_1:0:0" });
+      const { unmount } = render(<UserMessageItem item={row} turn={turn} live={false} sessionRef="ref_a" />);
+      const button = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      // The first press creates the child and pauses inside its seed
+      // transaction - no seeding outcome has settled yet.
+      const hold = holdNextWriteTransaction([COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE]);
+      await act(async () => {
+        fireEvent.click(button);
+        await hold.reached;
+      });
+      expect(forkCalls).toBe(1);
+
+      // The transcript virtualizes its rows: the row unmounts while the
+      // seed is still pending, and the remounted button has fresh state.
+      unmount();
+      render(<UserMessageItem item={row} turn={turn} live={false} sessionRef="ref_a" />);
+      const remountedButton = screen.getByRole<HTMLButtonElement>("button", { name: /fork from here/i });
+      await act(async () => {
+        fireEvent.click(remountedButton);
+        // Let the remounted press read its retention and queue whatever it
+        // issues behind the still-held seed transaction before releasing.
+        await nextRealTask();
+        await nextRealTask();
+        await nextRealTask();
+      });
+      // The remounted press found the child the first press created and
+      // never repeated the fork RPC, so no duplicate session exists.
+      expect(forkCalls).toBe(1);
+
+      hold.release();
+      await waitFor(() => expect(workspaceStore.getState().panes.length).toBe(1));
+      expect(forkCalls).toBe(1);
+      const pane = workspaceStore.getState().panes[0];
+      if (!pane) throw new Error("the retained fork child did not open");
+      expect(pane.params).toEqual({ ref: "local/child_1" });
+      const key = browserDrafts.browserDraftKey("local/child_1");
+      expect((await repository.load(key))?.text).toBe("literal /same\nsecond line");
+      // Both presses converge silently: the second seed resolved through
+      // the conflict-compare path, so no new error reached the user.
+      expect(getToasts().filter((toast) => toast.kind === "error").length).toBe(errorToastsBefore);
+    } finally {
       repositoryAccessor.mockRestore();
       repository.close();
     }
