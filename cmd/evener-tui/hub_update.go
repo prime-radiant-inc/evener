@@ -400,10 +400,12 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.entryRepairSeq = m.liveNavSeq
 					}
 					m.err = nil
-					if (msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile && m.mode == hubModeSession {
+					if m.mode == hubModeSession && (((msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile) || m.replacedAwayFromDisplayed(msg)) {
 						// The failed flight carried the superseded read's
-						// deferred reconciliation: settle it alongside the
-						// retry this failure schedules, or the displayed
+						// deferred reconciliation, or its own read leg
+						// already re-pointed the subscription at this
+						// failed ref: settle either alongside the retry
+						// this failure schedules, or the displayed
 						// session stays unsubscribed through every paced
 						// retry the repair runs.
 						retried, reconcile := m.settleDeferredReconcile(nil)
@@ -411,7 +413,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return m, hubEntryRepairRetryCmd(m.entryRepairDelay, ref, m.entryRepairSeq)
 				case armedFor && !isHubTranscriptEntryTerminal(msg.err):
-					if (msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile && m.mode == hubModeSession {
+					if m.mode == hubModeSession && (((msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile) || m.replacedAwayFromDisplayed(msg)) {
 						// Same settle, armed-failure flavor: the standing
 						// status rides after the reconcile.
 						retried, reconcile := m.settleDeferredReconcile(msg.err)
@@ -437,7 +439,10 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// theirs at the failed flight's own end — the armed flight
 				// they schedule may not land for minutes — so only the
 				// non-retryable conclusions reach this second settle point.
-				if (msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile && m.mode == hubModeSession {
+				// A replaced read away from the displayed session settles
+				// here too, whatever its error class: the subscription
+				// follows the failed ref and nothing else will restore it.
+				if m.mode == hubModeSession && (((msg.liveNavEntry || msg.entryRetrySeq > 0) && m.liveNavNeedsReconcile) || m.replacedAwayFromDisplayed(msg)) {
 					retried, reconcile := m.settleDeferredReconcile(msg.err)
 					return retried, reconcile
 				}

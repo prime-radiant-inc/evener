@@ -2166,3 +2166,299 @@ func TestTheArmedRetryReadReconcilesTheDisplayedSessionOnItsOwnRebuildingAnswer(
 		t.Fatal("the armed failure dropped its paced retry")
 	}
 }
+
+// A picked entry's fetch replaces the connection's server-side subscription
+// through its successful thread/read and can then fail in the older pages it
+// collects: the read leg landed, so the hub-side subscription follows the
+// picked ref while the model — which never entered it — still displays
+// another session, left with neither its main nor its child subscription.
+// The failure must restore the displayed session's subscriptions alongside
+// the retry it arms, or the displayed session goes quiet through every
+// paced retry (roborev PR #4497 round-26 medium).
+func TestAPagingFailureAfterAReplacedReadRestoresTheDisplayedSessionAlongsideItsRetry(t *testing.T) {
+	captureEntryRepairWaits(t)
+	var readParams []appwire.ThreadReadParams
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			readParams = append(readParams, params)
+			if params.Ref == "local:01B" {
+				// The read leg succeeds — the subscription replacement the
+				// params carry happens server-side — and hands the fetch an
+				// older page to collect.
+				return appwire.ThreadReadResponse{
+					Thread:      appwireThread(hubTreeNode{Ref: "local:01B", SessionID: "01B", Title: "b", State: "idle", Live: true}, "/tmp/details"),
+					OlderCursor: "older-1",
+				}, nil
+			}
+			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{Ref: "local:01A", SessionID: "01A", Title: "a", State: "idle", Live: true}, "/tmp/details")}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+			return appwire.ThreadTurnsListResponse{}, rebuildingEntryError(t)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refB := mustParseRef(t, "local:01B")
+
+	// Session A is displayed when the user picks B.
+	enteredA, _ := m.Update(hubSessionMsg{
+		ref:    "local:01A",
+		detail: hubSessionDetail{Ref: "local:01A", SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+	})
+	watching := enteredA.(hubModel)
+
+	// B's pick fetches: the read leg succeeds and carries the replacement,
+	// the older page fails retryably, and the one error that lands must arm
+	// the paced retry while restoring A's subscriptions beside it.
+	pickCmd := watching.issuePickedSessionRead(refB)
+	landing := pickCmd().(hubSessionMsg)
+	if landing.err == nil {
+		t.Fatal("setup: the picked fetch succeeded through its pages")
+	}
+	if got := readParams[len(readParams)-1]; got.Ref != "local:01B" || !got.ReplaceSubscription {
+		t.Fatalf("setup: B's read = %+v, want the replacing read the scenario stands on", got)
+	}
+	after, cmd := watching.Update(landing)
+	armed := after.(hubModel)
+	if armed.entryRepairRef != refB {
+		t.Fatalf("the paging failure did not arm the retry: entryRepairRef = %v", armed.entryRepairRef)
+	}
+	if armed.mode != hubModeSession || armed.detail.Ref != "local:01A" {
+		t.Fatalf("the paging failure moved the display: mode = %v detail = %v", armed.mode, armed.detail.Ref)
+	}
+	var recoveryLanding hubSessionMsg
+	reconciled := false
+	var tick tea.Msg
+	for _, c := range flattenBatch(t, cmd) {
+		msg := c()
+		if recovery, ok := msg.(hubSessionMsg); ok && recovery.liveNavRecovery && recovery.ref == "local:01A" {
+			reconciled = true
+			recoveryLanding = recovery
+		}
+		if tk, ok := msg.(hubEntryRepairTickMsg); ok {
+			tick = tk
+		}
+	}
+	if !reconciled {
+		t.Fatal("the paging failure issued no re-subscribe for the displayed session")
+	}
+	if tick == nil {
+		t.Fatal("the paging failure dropped its paced retry")
+	}
+
+	// The re-subscribe lands: A refreshes in place — still displayed, the
+	// retry still standing for B — so A keeps receiving updates through the
+	// backoff.
+	afterRecovery, _ := armed.Update(recoveryLanding)
+	recovered := afterRecovery.(hubModel)
+	if recovered.mode != hubModeSession || recovered.detail.Ref != "local:01A" {
+		t.Fatalf("the re-subscribe switched sessions: mode = %v detail = %v", recovered.mode, recovered.detail.Ref)
+	}
+	if recovered.entryRepairRef != refB {
+		t.Fatal("the re-subscribe retired the standing retry")
+	}
+
+	// The retry's own re-read fails the same way — its read leg replaces
+	// the subscription again, its page fails — and the armed failure
+	// restores A alongside keeping the retry armed.
+	afterTick, reReadCmd := recovered.Update(tick)
+	ticking := afterTick.(hubModel)
+	if reReadCmd == nil {
+		t.Fatal("the retry's tick re-issued no read")
+	}
+	reread := reReadCmd().(hubSessionMsg)
+	if reread.err == nil {
+		t.Fatal("setup: the retry's re-read succeeded through its pages")
+	}
+	afterReread, cmd2 := ticking.Update(reread)
+	shown := afterReread.(hubModel)
+	if shown.entryRepairRef != refB {
+		t.Fatalf("the armed failure disarmed the retry: entryRepairRef = %v", shown.entryRepairRef)
+	}
+	if shown.mode != hubModeSession || shown.detail.Ref != "local:01A" {
+		t.Fatalf("the armed failure moved the display: mode = %v detail = %v", shown.mode, shown.detail.Ref)
+	}
+	reconciledAgain := false
+	retriedAgain := false
+	for _, c := range flattenBatch(t, cmd2) {
+		msg := c()
+		if recovery, ok := msg.(hubSessionMsg); ok && recovery.liveNavRecovery && recovery.ref == "local:01A" {
+			reconciledAgain = true
+		}
+		if _, ok := msg.(hubEntryRepairTickMsg); ok {
+			retriedAgain = true
+		}
+	}
+	if !reconciledAgain {
+		t.Fatal("the armed failure issued no re-subscribe for the displayed session")
+	}
+	if !retriedAgain {
+		t.Fatal("the armed failure dropped its paced retry")
+	}
+}
+
+// The terminal flavor of the same replacement: B's read leg succeeds and
+// re-points the subscription, its pages answer the budget's history-failed,
+// and the retired-with-nothing-armed error must still restore the
+// displayed session — the error-side settle point's replaced-read arm.
+func TestATerminalPagingFailureAfterAReplacedReadRestoresTheDisplayedSession(t *testing.T) {
+	captureEntryRepairWaits(t)
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			if params.Ref == "local:01B" {
+				return appwire.ThreadReadResponse{
+					Thread:      appwireThread(hubTreeNode{Ref: "local:01B", SessionID: "01B", Title: "b", State: "idle", Live: true}, "/tmp/details"),
+					OlderCursor: "older-1",
+				}, nil
+			}
+			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{Ref: "local:01A", SessionID: "01A", Title: "a", State: "idle", Live: true}, "/tmp/details")}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+			return appwire.ThreadTurnsListResponse{}, historyFailedEntryError(t)
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refB := mustParseRef(t, "local:01B")
+
+	enteredA, _ := m.Update(hubSessionMsg{
+		ref:    "local:01A",
+		detail: hubSessionDetail{Ref: "local:01A", SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+	})
+	watching := enteredA.(hubModel)
+
+	pickCmd := watching.issuePickedSessionRead(refB)
+	landing := pickCmd().(hubSessionMsg)
+	if landing.err == nil {
+		t.Fatal("setup: the picked fetch succeeded through its pages")
+	}
+	after, cmd := watching.Update(landing)
+	ended := after.(hubModel)
+	if ended.entryRepairRef != (appwire.Ref{}) {
+		t.Fatalf("the terminal paging failure armed a retry: entryRepairRef = %v", ended.entryRepairRef)
+	}
+	if ended.mode != hubModeSession || ended.detail.Ref != "local:01A" {
+		t.Fatalf("the terminal paging failure moved the display: mode = %v detail = %v", ended.mode, ended.detail.Ref)
+	}
+	if !isHubTranscriptEntryTerminal(ended.err) {
+		t.Fatalf("model error = %v, want the terminal answer still shown", ended.err)
+	}
+	reconciled := false
+	for _, c := range flattenBatch(t, cmd) {
+		if recovery, ok := c().(hubSessionMsg); ok && recovery.liveNavRecovery && recovery.ref == "local:01A" {
+			reconciled = true
+		}
+	}
+	if !reconciled {
+		t.Fatal("the terminal paging failure issued no re-subscribe for the displayed session")
+	}
+}
+
+// The armed-failure flavor: B's pick fails retryably in its pages (arming
+// the retry and restoring A), and the retry's own re-read then fails its
+// pages with an ordinary transient — the armed-failure path's own traffic
+// — after its read leg replaced the subscription again. A is restored
+// alongside the retry that stays armed.
+func TestAnArmedPagingFailureAfterAReplacedReadRestoresTheDisplayedSession(t *testing.T) {
+	captureEntryRepairWaits(t)
+	var pageCalls int
+	ordinaryPageErr := errors.New("thread history is unavailable at this moment")
+	client, feed, cleanup := newTestHubClientWithFeed(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			if params.Ref == "local:01B" {
+				return appwire.ThreadReadResponse{
+					Thread:      appwireThread(hubTreeNode{Ref: "local:01B", SessionID: "01B", Title: "b", State: "idle", Live: true}, "/tmp/details"),
+					OlderCursor: "older-1",
+				}, nil
+			}
+			return appwire.ThreadReadResponse{Thread: appwireThread(hubTreeNode{Ref: "local:01A", SessionID: "01A", Title: "a", State: "idle", Live: true}, "/tmp/details")}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadTurnsList, func(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+			pageCalls++
+			if pageCalls == 1 {
+				return appwire.ThreadTurnsListResponse{}, rebuildingEntryError(t)
+			}
+			return appwire.ThreadTurnsListResponse{}, ordinaryPageErr
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "")
+	m.frames = feed
+	refB := mustParseRef(t, "local:01B")
+
+	enteredA, _ := m.Update(hubSessionMsg{
+		ref:    "local:01A",
+		detail: hubSessionDetail{Ref: "local:01A", SessionID: "sess_a", State: appwire.ThreadStatusIdle},
+	})
+	watching := enteredA.(hubModel)
+
+	// B's pick fails retryably: the retry arms and A is restored — the
+	// round's first site, here the setup for the armed failure.
+	pickCmd := watching.issuePickedSessionRead(refB)
+	landing := pickCmd().(hubSessionMsg)
+	if landing.err == nil {
+		t.Fatal("setup: the picked fetch succeeded through its pages")
+	}
+	after, cmd := watching.Update(landing)
+	armed := after.(hubModel)
+	if armed.entryRepairRef != refB {
+		t.Fatalf("setup: the paging failure did not arm the retry: entryRepairRef = %v", armed.entryRepairRef)
+	}
+	var tick tea.Msg
+	for _, c := range flattenBatch(t, cmd) {
+		if tk, ok := c().(hubEntryRepairTickMsg); ok {
+			tick = tk
+		}
+	}
+	if tick == nil {
+		t.Fatal("setup: the paging failure dropped its paced retry")
+	}
+
+	// The retry's re-read fails its pages with an ordinary transient after
+	// its read leg replaced the subscription: the armed failure restores A
+	// alongside keeping the retry.
+	afterTick, reReadCmd := armed.Update(tick)
+	ticking := afterTick.(hubModel)
+	if reReadCmd == nil {
+		t.Fatal("the retry's tick re-issued no read")
+	}
+	reread := reReadCmd().(hubSessionMsg)
+	if reread.err == nil {
+		t.Fatal("setup: the retry's re-read succeeded through its pages")
+	}
+	// The fetch's failure is real — its read leg replaced the subscription,
+	// its page failed ordinarily — but the wire reconstructs the error, so
+	// the landing carries the held identity for the assertion.
+	reread.err = ordinaryPageErr
+	afterReread, cmd2 := ticking.Update(reread)
+	shown := afterReread.(hubModel)
+	if shown.entryRepairRef != refB {
+		t.Fatalf("the armed failure disarmed the retry: entryRepairRef = %v", shown.entryRepairRef)
+	}
+	if shown.mode != hubModeSession || shown.detail.Ref != "local:01A" {
+		t.Fatalf("the armed failure moved the display: mode = %v detail = %v", shown.mode, shown.detail.Ref)
+	}
+	if !errors.Is(shown.err, ordinaryPageErr) {
+		t.Fatalf("the settle displaced the ordinary transient: model error = %v", shown.err)
+	}
+	assertStatusLine(t, shown, rebuildingEntryError(t))
+	reconciledAgain := false
+	retriedAgain := false
+	for _, c := range flattenBatch(t, cmd2) {
+		msg := c()
+		if recovery, ok := msg.(hubSessionMsg); ok && recovery.liveNavRecovery && recovery.ref == "local:01A" {
+			reconciledAgain = true
+		}
+		if _, ok := msg.(hubEntryRepairTickMsg); ok {
+			retriedAgain = true
+		}
+	}
+	if !reconciledAgain {
+		t.Fatal("the armed failure issued no re-subscribe for the displayed session")
+	}
+	if !retriedAgain {
+		t.Fatal("the armed failure dropped its paced retry")
+	}
+}

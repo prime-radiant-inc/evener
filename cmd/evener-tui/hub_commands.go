@@ -59,6 +59,12 @@ type hubSessionMsg struct {
 	// cycling read.
 	liveNavEntry bool
 	err          error
+	// subscriptionReplaced marks an errored fetch whose thread/read leg
+	// already succeeded under a replacing read: the hub-side subscription
+	// now follows this ref, and a failure landing after it — the older
+	// pages the fetch collects — must restore the displayed session's
+	// subscriptions, which no superseded landing exists to reconcile.
+	subscriptionReplaced bool
 	// beforeCut carries the frames the connection delivered ahead of this
 	// read's response, and capture holds the ones it delivered after. The
 	// response is an exact cut, so the two go on opposite sides of the
@@ -252,7 +258,10 @@ func fetchHubSessionRead(feed *hubFrameFeed, client *appwire.Client, ref appwire
 		thread, err := collectHubThreadPages(ctx, client, ref.String(), resp.Thread, resp.OlderCursor)
 		if err != nil {
 			capture.Abandon()
-			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err}
+			// The read leg already succeeded: a replacing read re-pointed
+			// the connection's server-side subscription at this ref before
+			// the pages failed, so the landing must say so.
+			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err, subscriptionReplaced: replaceSubscription}
 		}
 		return hubSessionMsg{detail: hubDetailFromThread(thread), messages: transcript.MessagesFromThread(thread), ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, beforeCut: capture.BeforeCut(), capture: capture}
 	}

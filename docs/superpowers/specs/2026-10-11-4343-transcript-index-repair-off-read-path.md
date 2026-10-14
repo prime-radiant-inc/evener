@@ -398,7 +398,12 @@ redundant double catch-up on every cold read: one inside `Open`, one at
      that landing is a retryable failure that arms or keeps the paced
      retry, settling alongside the retry it schedules, so the displayed
      session is not left unsubscribed through the retries the repair
-     paces. A hub reconnect is not a departure: the pending retry
+     paces. The same restore covers the flight that needs no superseded
+     landing at all: a replacing read whose thread/read leg succeeded
+     re-points the server-side subscription at its ref before its older
+     pages fail, so the failure's own handling — the arming, the armed
+     failure, or the terminal settle — restores the displayed session's
+     subscriptions beside it, whatever the error class. A hub reconnect is not a departure: the pending retry
      survives it, rebound to the replacement connection's generation, so
      its paced read resumes on the new connection while the dead
      connection's late responses land as superseded. The TUI's

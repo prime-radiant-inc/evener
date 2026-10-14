@@ -239,6 +239,18 @@ func (m hubModel) settleDeferredReconcile(errShown error) (hubModel, tea.Cmd) {
 	return retried, reconcile
 }
 
+// replacedAwayFromDisplayed reports whether this errored read's fetch
+// already re-pointed the connection's server-side subscription at the
+// failed ref — a replacing read's thread/read leg succeeded before the
+// older pages failed — while the model still displays a different
+// session: that displayed session is left with neither its main nor its
+// child subscription, and no superseded landing ever existed to record
+// the reconciliation obligation. A failure whose ref is the displayed
+// session's own leaves the replacement pointing where it already pointed.
+func (m hubModel) replacedAwayFromDisplayed(msg hubSessionMsg) bool {
+	return msg.subscriptionReplaced && m.detail.Ref != "" && m.detail.Ref != msg.ref
+}
+
 // resubscribeDisplayedSessionAfterReconnect is the reconnect flavor: the
 // replacement connection carries no subscriptions (the dead connection's died
 // with it), so the read stays ADDITIVE — a replacing one has nothing to cull,
