@@ -296,7 +296,7 @@ function serializedTransferKey(namespace: BrowserDraftKey["namespace"], legacyKe
 class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
   readonly #connection: IDBConnection;
   readonly #databaseName: string;
-  readonly #storage: Storage;
+  readonly #storage: Storage | undefined;
   readonly #beforeCommit: ((operation: BrowserDraftOperation) => void) | undefined;
   readonly #beforeLegacyCleanup: (() => void) | undefined;
   readonly #onListenerDiagnostic: (diagnostic: BrowserDraftListenerDiagnostic) => void;
@@ -305,8 +305,19 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
   constructor(options: BrowserDraftRepositoryOptions) {
     const indexedDB = options.indexedDB ?? globalThis.indexedDB;
     if (!indexedDB) throw new Error("IndexedDB is unavailable");
-    const storage = options.storage ?? globalThis.localStorage;
-    if (!storage) throw new Error("localStorage is unavailable");
+    // Legacy localStorage is best-effort migration input, never a requirement:
+    // a durable repository must stay fully usable when the legacy store is
+    // absent or its accessor faults, and its migration scan then reports
+    // unavailable. Acquire it guarded so a throwing getter cannot fail
+    // construction before any durable operation.
+    let storage = options.storage;
+    if (storage === undefined) {
+      try {
+        storage = globalThis.localStorage;
+      } catch {
+        storage = undefined;
+      }
+    }
     this.#databaseName = options.databaseName ?? LOCAL_COMPOSITION_DATABASE_NAME;
     this.#storage = storage;
     this.#beforeCommit = options.beforeCommit;
@@ -712,10 +723,12 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
   }
 
   #inspectSupportedDrafts(namespace: BrowserDraftKey["namespace"]): InspectedDraft[] {
+    if (this.#storage === undefined) throw new Error("legacy storage is unavailable");
+    const storage = this.#storage;
     const refs = new Set<string>();
     const v1Prefix = draftStorageKey("");
     const v2Prefix = composerDraftStorageKey("");
-    const keys = Array.from({ length: this.#storage.length }, (_, index) => this.#storage.key(index));
+    const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index));
     for (const storageKey of keys) {
       if (storageKey?.startsWith(v1Prefix)) refs.add(storageKey.slice(v1Prefix.length));
       if (storageKey?.startsWith(v2Prefix)) refs.add(storageKey.slice(v2Prefix.length));
@@ -723,8 +736,8 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     return [...refs].sort().map((sessionRef) => {
       const legacyKeyV1 = draftStorageKey(sessionRef);
       const legacyKeyV2 = composerDraftStorageKey(sessionRef);
-      const legacyV1 = this.#storage.getItem(legacyKeyV1);
-      const structuredV2 = this.#storage.getItem(legacyKeyV2);
+      const legacyV1 = storage.getItem(legacyKeyV1);
+      const structuredV2 = storage.getItem(legacyKeyV2);
       const draftKey: BrowserDraftKey = { namespace: { ...namespace }, sessionRef };
       return {
         key: draftKey,
@@ -741,12 +754,16 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
   #cleanupInspected(inspected: readonly InspectedDraft[]): void {
     try {
       this.#beforeLegacyCleanup?.();
+      // Cleanup only runs after a successful inspection, which requires a
+      // legacy store; an absent store has inspected nothing to clean.
+      const storage = this.#storage;
+      if (storage === undefined) return;
       for (const item of inspected) {
         for (const [legacyKey, bytes] of [
           [item.legacyKeyV2, item.structuredV2],
           [item.legacyKeyV1, item.legacyV1],
         ] as const) {
-          if (bytes !== null && this.#storage.getItem(legacyKey) === bytes) this.#storage.removeItem(legacyKey);
+          if (bytes !== null && storage.getItem(legacyKey) === bytes) storage.removeItem(legacyKey);
         }
       }
     } catch {

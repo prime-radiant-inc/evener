@@ -1550,6 +1550,47 @@ test("transfer read faults report unavailable and emit no console error", async 
   expect(warnSpy).not.toHaveBeenCalled();
 });
 
+test.each(["throwing getter", "absent store"] as const)(
+  "a %s leaves durable drafts fully usable and migration unavailable",
+  async (fault) => {
+    // jsdom's localStorage is inherited, so each fault shadows it with an own
+    // accessor and the restore deletes the shadow.
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      ...(fault === "throwing getter"
+        ? {
+            get() {
+              throw new Error("legacy storage unreadable");
+            },
+          }
+        : { get: () => undefined }),
+    });
+    try {
+      const repository = createBrowserDraftRepository({
+        indexedDB: new IDBFactory(),
+        databaseName: `legacy-unusable-${fault.replace(" ", "-")}`,
+      });
+      closeAfterTest(() => repository.close());
+      const draftKey = key("root");
+      const seeded = committed(
+        await repository.seedDraft(draftKey, { text: "durable draft", skillNames: [], mentions: [] }),
+      );
+      const row = await repository.load(draftKey);
+      expect(row?.text).toBe("durable draft");
+      const edited = await repository.commitEdit(
+        draftKey,
+        seeded.token,
+        { text: "durable edit", skillNames: [] },
+        () => true,
+      );
+      expect(edited.state).toBe("committed");
+      expect(await repository.transferSupportedDrafts(namespace)).toEqual({ state: "unavailable" });
+    } finally {
+      delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  },
+);
+
 // Dependency fault injection over the REAL injected IDBFactory, through public
 // IndexedDB APIs only. Every normal production request is forwarded unchanged.
 // State, the first-row entry snapshot, the observed successes and the single
