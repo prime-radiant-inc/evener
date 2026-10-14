@@ -677,28 +677,41 @@ const noteVisibilityExpr = `(() => {
 // Reach the saved note through a genuine highlight interaction, not the editor.
 // The note surface is waited on boundedly before exact equality.
 async function assertSavedNoteViaHighlight(operationId) {
-  const bands = await evaluate(driver.send, highlightBandsExpr);
-  assert.ok(Array.isArray(bands) && bands.length > 0, "the document exposes its saved highlight bands");
-  const band = bands.find((candidate) => candidate.operationId === operationId);
+  // The reopened pane paints its saved band once its read cycle accepts, and
+  // that paint is asynchronous: under parallel lane load it can land after
+  // the guard's first read. Wait bounded for THIS operation's band instead of
+  // asserting on one immediate read. A layout reflow can also move a painted
+  // band between the rect read and the click's own CDP roundtrip (a font
+  // swap, an async diagram growth), so every retrying click re-reads the
+  // CURRENT rect first: a repeated tap only toggles a note that is already
+  // revealed, and each attempt waits for exactly that note, so a missed
+  // click (no note) is always safe to retry.
+  const bandExpr = `(() => {
+    const scope = window.__annotationDocumentScope;
+    if (!scope || !scope.isConnected || scope.ownerDocument !== document) return null;
+    const node = [...scope.querySelectorAll("[data-document-highlight]")].find(
+      (candidate) => candidate.getAttribute("data-operation-id") === ${q(operationId)}
+    );
+    if (!node) return null;
+    const r = node.getBoundingClientRect();
+    return r.width > 0 && r.height > 0
+      ? { operationId: node.getAttribute("data-operation-id"), left: r.left, top: r.top, right: r.right, bottom: r.bottom }
+      : null;
+  })()`;
+  let band = await driver.waitPage(bandExpr, {
+    label: "the reopened document paints its saved highlight band",
+    timeoutMs: 5000,
+  });
   assert.ok(band, "a saved band carries the applied operation id");
-  // The click coordinates come from a separate CDP roundtrip after the rect
-  // read: a layout reflow between the two (a font swap, an async diagram
-  // growth) moves the painted band and the click lands on bare prose, so the
-  // reveal never fires and the wait times out. Re-read the CURRENT rect and
-  // click again, bounded, so the reveal is always exercised against where the
-  // band actually is. A repeated tap only toggles a note that is already
-  // revealed, and each attempt waits for exactly that note, so a missed click
-  // (no note) is always safe to retry.
   let opened = false;
   for (let attempt = 1; attempt <= 3 && !opened; attempt += 1) {
     if (attempt > 1) {
-      const fresh = await evaluate(driver.send, highlightBandsExpr);
-      const moved = Array.isArray(fresh) ? fresh.find((candidate) => candidate.operationId === operationId) : null;
-      assert.ok(moved, "the saved band is still painted for its reveal click");
-      await driver.clickAt((moved.left + moved.right) / 2, (moved.top + moved.bottom) / 2);
-    } else {
-      await driver.clickAt((band.left + band.right) / 2, (band.top + band.bottom) / 2);
+      band = await driver.waitPage(bandExpr, {
+        label: "the saved band is still painted for its reveal click",
+        timeoutMs: 1500,
+      });
     }
+    await driver.clickAt((band.left + band.right) / 2, (band.top + band.bottom) / 2);
     try {
       await driver.waitPage(
         `(() => {
