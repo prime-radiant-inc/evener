@@ -24,7 +24,7 @@ interface TextOffset {
  * inline formatting, but ambiguous multi-node references remain unchanged. */
 export function enhanceFileReferences(
   root: HTMLElement,
-  context: { sessionRef: string; cwd: string; sourcePaneId: string },
+  context: { sessionRef: string; cwd: string; sourcePaneId: string; origin?: DocumentOpenRequest["origin"] },
 ): () => void {
   const epoch = {};
   epochs.set(root, epoch);
@@ -56,7 +56,13 @@ export function enhanceFileReferences(
   for (const link of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
     if (link.closest(`pre, [data-entity-host], [${MERMAID_DIAGRAM_ATTR}]`)) continue;
     const reference = parseFileReference(link.getAttribute("href") ?? "", "link", context.cwd);
-    if (reference) activate(link, { session: context.sessionRef, reference, sourcePaneId: context.sourcePaneId });
+    if (reference)
+      activate(link, {
+        session: context.sessionRef,
+        reference,
+        sourcePaneId: context.sourcePaneId,
+        ...(context.origin === undefined ? {} : { origin: context.origin }),
+      });
   }
 
   // Retain the original Text as an empty anchor, just like the entity pass.
@@ -70,7 +76,12 @@ export function enhanceFileReferences(
       const link = document.createElement("a");
       link.textContent = original.slice(span.start, span.end);
       fragment.append(link);
-      activate(link, { session: context.sessionRef, reference: span.reference, sourcePaneId: context.sourcePaneId });
+      activate(link, {
+        session: context.sessionRef,
+        reference: span.reference,
+        sourcePaneId: context.sourcePaneId,
+        ...(context.origin === undefined ? {} : { origin: context.origin }),
+      });
       cursor = span.end;
     }
     fragment.append(original.slice(cursor));
