@@ -211,6 +211,22 @@ describe("captured context", () => {
       after: "\n\ndivider",
     });
   });
+
+  it("expands to a whole repeated document without searching every intermediate window", () => {
+    // A document whose every paragraph is identical never distinguishes a
+    // window, so the expansion must reach the whole document - without
+    // scanning each intermediate window, which is quadratic work a
+    // selection must not stall the reader on.
+    const repeated = "repeat\n\n".repeat(80000);
+    const started = performance.now();
+    const context = contextForRange(repeated, { start: 0, end: 6 });
+    const elapsed = performance.now() - started;
+    // The distinguishing window ends at the last paragraph: the trailing
+    // separator has nothing after it to repeat, so the window that ends
+    // there is already unique.
+    expect(context).toEqual({ before: "", after: repeated.slice(6, repeated.length - 2) });
+    expect(elapsed).toBeLessThan(2000);
+  }, 60_000);
 });
 
 describe("annotation reference formatting", () => {

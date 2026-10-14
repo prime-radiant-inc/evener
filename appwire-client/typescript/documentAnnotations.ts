@@ -242,17 +242,45 @@ export function contextForRange(source: string, range: SourceRange): { before: s
   if (first < 0) first = 0;
   if (last < 0) last = paragraphs.length - 1;
 
-  let contextStart = paragraphs[first]?.start ?? 0;
-  let contextEnd = paragraphs[last]?.end ?? source.length;
-  while (occursMoreThanOnce(source, source.slice(contextStart, contextEnd))) {
-    const canExpandBefore = first > 0;
-    const canExpandAfter = last + 1 < paragraphs.length;
-    if (!canExpandBefore && !canExpandAfter) break;
-    if (canExpandBefore) first -= 1;
-    if (canExpandAfter) last += 1;
-    contextStart = paragraphs[first]?.start ?? 0;
-    contextEnd = paragraphs[last]?.end ?? source.length;
+  const firstSelected = first;
+  const lastSelected = last;
+  // The window after `step` expansions of each expandable side. Uniqueness is
+  // monotone in the step - a window that contains a unique window is unique,
+  // because any second occurrence of the larger window would contain a second
+  // occurrence of the smaller one - so binary search finds the same first
+  // unique window the one-at-a-time expansion stopped at, without scanning
+  // every intermediate window: a document of repeated paragraphs stays a
+  // handful of whole-source searches instead of one per paragraph.
+  const windowEnd = (step: number): number =>
+    paragraphs[Math.min(lastSelected + step, paragraphs.length - 1)]?.end ?? source.length;
+  const windowStart = (step: number): number => paragraphs[Math.max(firstSelected - step, 0)]?.start ?? 0;
+  const uniqueAt = (step: number): boolean => {
+    const window = source.slice(windowStart(step), windowEnd(step));
+    return !occursMoreThanOnce(source, window);
+  };
+  const maxStep = Math.max(firstSelected, paragraphs.length - 1 - lastSelected);
+  let step: number;
+  if (uniqueAt(0)) {
+    step = 0;
+  } else {
+    let low = 1;
+    let high = maxStep;
+    let firstUnique = -1;
+    while (low <= high) {
+      const mid = low + ((high - low) >> 1);
+      if (uniqueAt(mid)) {
+        firstUnique = mid;
+        high = mid - 1;
+      } else {
+        low = mid + 1;
+      }
+    }
+    // No unique window exists (the whole document repeats): the expansion ran
+    // to its limit, same as the one-at-a-time loop's terminal state.
+    step = firstUnique >= 0 ? firstUnique : maxStep;
   }
+  const contextStart = windowStart(step);
+  const contextEnd = windowEnd(step);
   return { before: source.slice(contextStart, range.start), after: source.slice(range.end, contextEnd) };
 }
 
