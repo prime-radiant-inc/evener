@@ -3666,6 +3666,74 @@ test("a beginRead storage fault on the first open paces its own retry and recove
   expect(vi.getTimerCount()).toBe(0);
 });
 
+test("a reader mounted while the document is hidden starts reading on the visibility transition itself", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  const f = await fixture("reader-mounted-hidden");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  mountAnnotated(f, ports, client, "doc-mounted-hidden");
+
+  // The hidden document keeps the demand inactive, so the mount reads
+  // nothing; no committed wake or annotation-retry publication arrives to
+  // recompute activity (storage retries are stalled here by construction).
+  await settleFakeReadCycle();
+  expect(mockRead).not.toHaveBeenCalled();
+  expect(screen.queryByText("First occurrence: same")).toBeNull();
+
+  // Becoming visible is the transition that recovers the reader: activity is
+  // recomputed on the transition itself and the read starts without waiting
+  // for any other publication.
+  visibility.mockReturnValue("visible");
+  await act(async () => {
+    fireEvent(document, new Event("visibilitychange"));
+  });
+  await settleFakeReadCycle();
+  expect(mockRead).toHaveBeenCalledTimes(1);
+  expect(screen.getByText("First occurrence: same")).toBeTruthy();
+});
+
+test("hiding the document retires the annotated reader's armed paced retry", async ({ onTestFinished }) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  const f = await fixture("reader-hidden-retires-retry");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  const failReads = true;
+  mockRead.mockImplementation(() =>
+    failReads ? Promise.reject(new Error("transient read fault")) : Promise.resolve(docContent(SOURCE, "rev-A")),
+  );
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  mountAnnotated(f, ports, client, "doc-hidden-retires-retry");
+
+  // The first transient failure paces a retry one second out.
+  await settleFakeReadCycle();
+  expect(mockRead).toHaveBeenCalledTimes(1);
+
+  // Hiding the document retires the armed retry immediately: the reader is
+  // not visible-and-connected work anymore, and no timer survives.
+  visibility.mockReturnValue("hidden");
+  await act(async () => {
+    fireEvent(document, new Event("visibilitychange"));
+  });
+  expect(vi.getTimerCount()).toBe(0);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  await settleFakeReadCycle();
+  expect(mockRead).toHaveBeenCalledTimes(1);
+});
+
 test("a controller reconnect re-reads through the demand owner", async () => {
   const f = await fixture("reader-reconnect");
   await settleBaseline(f);

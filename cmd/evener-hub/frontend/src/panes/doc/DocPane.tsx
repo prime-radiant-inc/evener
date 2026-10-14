@@ -653,10 +653,17 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       )
         demand.refresh();
     });
-    // A genuine foreground reread of the current ticket, in addition to the
-    // shared retained-attempt retry.
+    // Every visibility transition recomputes the demand's activity: the demand
+    // drops refreshes while inactive, so a pane mounted while the document was
+    // hidden would otherwise depend on a committed wake or an annotation-retry
+    // publication (which storage faults can delay) to start reading, and a
+    // hidden document would keep armed paced retries under a stale active
+    // state. The refresh runs FIRST - an inactive demand drops it, and the
+    // activation's own series then reads exactly once, while an already-active
+    // foreground keeps its genuine reread with the recompute a no-op.
     const onForeground = (): void => {
-      if (document.visibilityState === "visible") demand.refresh();
+      demand.refresh();
+      updateActive();
     };
     document.addEventListener("visibilitychange", onForeground);
     updateActive();
