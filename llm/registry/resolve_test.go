@@ -311,6 +311,21 @@ func TestResolve_CrossProtocolAliasDerivesShape(t *testing.T) {
 	if alias.Caps.ThinkingShape == nil || *alias.Caps.ThinkingShape != "level" {
 		t.Fatalf("alias with its own config controls must derive level: %+v", alias.Caps.ThinkingShape)
 	}
+
+	// A cross-protocol alias whose target records toggle-only controls but
+	// carries an effort ladder must not derive a level: the pass-through
+	// appends effort for the ladder, but that invented control is not
+	// evidence (roborev round 12). The target is openrouter's
+	// gemini-2.5-flash: toggle-only controls with a budget-shaped model.
+	r10 := fixtureLoad(t, map[string]string{"GEMINI_API_KEY": "k", "OPENROUTER_API_KEY": "k"}, "[providers.google.models.or-25flash]\nalias_of = \"openrouter/google/gemini-2.5-flash\"\n")
+	target = mustResolve(t, r10, "openrouter/google/gemini-2.5-flash")
+	if target.Provenance["ReasoningControls"] == "derived" {
+		t.Fatalf("the target's toggle control must be recorded: %v", target.Provenance)
+	}
+	alias = mustResolve(t, r10, "google/or-25flash")
+	if alias.Caps.ThinkingShape != nil {
+		t.Fatalf("alias of a toggle-only target with an inherited ladder must derive no shape, got %v", *alias.Caps.ThinkingShape)
+	}
 }
 
 // A shape verdict is protocol-specific: a cross-protocol target's shape is

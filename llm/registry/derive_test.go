@@ -24,6 +24,21 @@ func TestDerive_GoogleThinkingShapes(t *testing.T) {
 		{"uncataloged live-listed", nil, true, ""},
 	}
 	for _, c := range cases {
+		// A row with toggle-only controls but an inherited effort ladder:
+		// the pass-through appends effort for the ladder, but that invented
+		// control is not evidence for the shape (roborev round 12).
+		if c.name == "toggle-only row" {
+			t.Run("toggle-only with inherited ladder", func(t *testing.T) {
+				caps := Caps{Reasoning: new(true), ReasoningControls: []string{"toggle"}, EffortValues: []string{"low", "high"}}
+				m := Model{Family: "gemini"}
+				in := deriveInput{Protocol: ProtocolGoogle, ProviderSurface: SurfaceGoogle}
+				prov := map[string]string{}
+				derive(&caps, &m, in, prov)
+				if caps.ThinkingShape != nil {
+					t.Fatalf("toggle-only row with an inherited ladder must derive no shape, got %v (controls %v, prov %v)", *caps.ThinkingShape, caps.ReasoningControls, prov)
+				}
+			})
+		}
 		t.Run(c.name, func(t *testing.T) {
 			caps := Caps{Reasoning: new(true), ReasoningControls: c.controls}
 			m := Model{Family: "gemini"}

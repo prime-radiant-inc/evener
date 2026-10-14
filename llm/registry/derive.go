@@ -41,8 +41,11 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 		}
 	}
 
-	// 1. Effort control pass-through.
+	// 1. Effort control pass-through. Capture the pre-augmentation state:
+	// the google shape check below must not mistake an effort control this
+	// pass-through invented for catalog evidence.
 	controlsWereEmpty := len(c.ReasoningControls) == 0
+	effortWasPresent := slices.Contains(c.ReasoningControls, "effort")
 	if !reasoningOff {
 		if controlsWereEmpty {
 			c.ReasoningControls = []string{"effort"}
@@ -99,17 +102,19 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 		switch {
 		case slices.Contains(c.ReasoningControls, "budget_tokens"):
 			shape = "budget"
-		case slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty:
+		case slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty && effortWasPresent:
 			// The effort control must be recorded evidence: one derivation
-			// invented for an empty list says nothing about what the model
-			// accepts. After the full replay, the provenance tag is final:
-			// "alias" means the controls were inherited from the target.
-			// Cross-protocol inherited controls are never evidence for the
-			// shape — a third-party gateway's OpenAI-compatible shim may
-			// record effort for a budget-shaped model (nano-gpt's
-			// gemini-2.5-pro), and only google-protocol evidence or an
-			// explicit override vouches for the level shape. Any non-alias
-			// tag means a real layer on this side restated the control.
+			// invented for an empty list (here or on the alias's target) or
+			// the pass-through above appended for a ladder says nothing about
+			// what the model accepts. After the full replay, the provenance
+			// tag is final: "alias" means the controls were inherited from
+			// the target. Cross-protocol inherited controls are never
+			// evidence for the shape — a third-party gateway's
+			// OpenAI-compatible shim may record effort for a budget-shaped
+			// model (nano-gpt's gemini-2.5-pro), and only google-protocol
+			// evidence or an explicit override vouches for the level shape.
+			// Any non-alias tag means a real layer on this side restated
+			// the control.
 			aliasInherited := in.Aliased && prov["ReasoningControls"] == provAlias
 			if !aliasInherited {
 				shape = "level"
