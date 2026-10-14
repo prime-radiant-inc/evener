@@ -182,6 +182,15 @@ func TestFormatContextFragment(t *testing.T) {
 			detail: hubSessionDetail{ContextUsed: 195000, ContextWindow: 200000, ContextPressure: 0.975},
 			want:   "195k/200k (98%, 0 to compact)",
 		},
+		{
+			// An assumed window (#4607): the capacity figures — the window,
+			// and the to-compact headroom derived from it — carry the "~"
+			// estimate mark; the used figure stays plain, because usage is
+			// measured and only the capacity is assumed.
+			name:   "assumed-window-marks-the-capacity-figures",
+			detail: hubSessionDetail{ContextUsed: 46000, ContextWindow: 128000, ContextAssumed: true},
+			want:   "46k/~128k (36%, ~75k to compact)",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -224,6 +233,43 @@ func TestHubDetailFromThreadMapsWorkingStateFields(t *testing.T) {
 	}
 	if detail.ActiveTurnStartedAt != 1750000000 {
 		t.Fatalf("ActiveTurnStartedAt=%d, want 1750000000", detail.ActiveTurnStartedAt)
+	}
+}
+
+// TestHubDetailFromThreadCarriesContextAssumed pins the wire-to-render seam
+// for the assumed-window flag (#4607): formatContextFragment decides by the
+// flag on the detail, so a mapping that drops it resurfaces as the terminal
+// presenting an assumed capacity as a known one.
+func TestHubDetailFromThreadCarriesContextAssumed(t *testing.T) {
+	assumed := appwire.Thread{
+		ID:        "th_1",
+		SessionID: "th_1",
+		Source:    "local",
+		Evener: appwire.EvenerThread{
+			Ref:              "local:th_1",
+			ContextUsed:      46000,
+			ContextWindow:    128000,
+			ContextRemaining: 82000,
+			ContextAssumed:   true,
+		},
+	}
+	if detail := hubDetailFromThread(assumed); !detail.ContextAssumed {
+		t.Fatal("ContextAssumed=false, want the wire's true carried onto the detail")
+	}
+
+	known := appwire.Thread{
+		ID:        "th_2",
+		SessionID: "th_2",
+		Source:    "local",
+		Evener: appwire.EvenerThread{
+			Ref:              "local:th_2",
+			ContextUsed:      46000,
+			ContextWindow:    128000,
+			ContextRemaining: 82000,
+		},
+	}
+	if detail := hubDetailFromThread(known); detail.ContextAssumed {
+		t.Fatal("ContextAssumed=true, want false for a window the wire vouches for")
 	}
 }
 
