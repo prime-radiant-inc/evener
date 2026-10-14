@@ -22,10 +22,14 @@ func TestHistoryContentFailedDaemonReadPreservesSelectionAndStream(t *testing.T)
 		name            string
 		initial, failed appwire.ThreadContentParams
 		wantItems       int
+		resync          bool
 	}{
-		{"selected-refresh", selected, selected, 1},
-		{"selected-to-full", selected, appwire.ThreadContentParams{}, 1},
-		{"full-to-selected", appwire.ThreadContentParams{}, selected, 2},
+		{"selected-refresh", selected, selected, 1, false},
+		{"selected-to-full", selected, appwire.ThreadContentParams{}, 1, false},
+		{"full-to-selected", appwire.ThreadContentParams{}, selected, 2, false},
+		{"resync-selected-refresh", selected, selected, 1, true},
+		{"resync-selected-to-full", selected, appwire.ThreadContentParams{}, 1, true},
+		{"resync-full-to-selected", appwire.ThreadContentParams{}, selected, 2, true},
 	} {
 		for _, replace := range []bool{false, true} {
 			name := tc.name
@@ -78,6 +82,20 @@ func TestHistoryContentFailedDaemonReadPreservesSelectionAndStream(t *testing.T)
 				}
 				if len(initial.Overlay) != 1 {
 					t.Fatalf("initial overlays=%d", len(initial.Overlay))
+				}
+				if tc.resync {
+					// Environment resync invalidates the history envelope without
+					// ending the producer's active assistant stream.
+					srv.RecordAppEvent(threadEvent(st.threadID, events.EnvironmentChangedData{WorkingDir: t.TempDir()}))
+					for {
+						frame, err := transport.Recv(ctx)
+						if err != nil {
+							t.Fatal(err)
+						}
+						if frame.Notification != nil && frame.Notification.Method == appwire.NotifyEvenerThreadResync {
+							break
+						}
+					}
 				}
 				threadReadAfterCutHook = func() {
 					if err := os.Rename(st.path, st.path+".unavailable"); err != nil {

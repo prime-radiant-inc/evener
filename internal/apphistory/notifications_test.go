@@ -33,6 +33,9 @@ func TestContentFilterHistoryAndOverlayDeltas(t *testing.T) {
 	selection := conversationParams().Selection()
 	f := NewFilter(selection)
 	f.Seed([]appwire.OverlayItem{{Key: "stream", StreamID: "s", Item: appwire.ThreadItem{Type: "agentMessage"}}})
+	if _, keep, err := f.Notification(notification(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{ThreadID: "thread"})); err != nil || !keep {
+		t.Fatal("resync was not delivered", err)
+	}
 	for _, tc := range []struct {
 		key   string
 		field appwire.OverlayDeltaField

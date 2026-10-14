@@ -113,8 +113,6 @@ func (f *Filter) Notification(n appwire.Notification) (appwire.Notification, boo
 				delete(f.overlays, key)
 			}
 		}
-	case appwire.NotifyEvenerThreadResync:
-		clear(f.overlays)
 	}
 	return n, true, nil
 }

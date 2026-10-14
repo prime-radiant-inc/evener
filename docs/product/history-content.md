@@ -52,7 +52,10 @@ Selection also applies to the subscription established by a read: history
 updates, overlay items and their deltas use the same view. Lifecycle, status,
 capabilities, queue state, delivery receipts, mutation authority and recovery
 notifications remain available. History updates with no selected items still
-advance the snapshot. Overlay reset/end notifications still clear live state.
+advance the snapshot. A resync requests fresh history without retiring active
+stream identities, so a failed refresh can continue receiving their deltas.
+Overlay reset/end notifications still clear live state; successful subscription
+replacement seeds identities from the new snapshot.
 
 Each downstream subscription generation owns its selection and selected overlay
 identities. Metadata reads and mutation relay preparation wait for overlapping
