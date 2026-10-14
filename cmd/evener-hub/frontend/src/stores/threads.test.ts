@@ -6709,8 +6709,8 @@ test("a send whose durable write the browser refuses for quota goes out directly
 
 // #4342: the hub's high-water backpressure refusal is transient. The row
 // stays queued in the outbox FIFO (never recovery), the pending surface
-// shows the hub did not accept it yet — the busy marker clears as the next
-// attempt goes out and a fresh refusal re-marks it — and the store paces
+// shows the hub did not accept it yet — the busy marker holds until the row
+// settles and a fresh refusal re-marks it at the next pace step — and the store paces
 // retries through the injectable backoff scheduler, one arm per refusal,
 // doubling while the hub keeps refusing. A retry the hub accepts settles
 // the row and leaves nothing marked.
@@ -6750,16 +6750,16 @@ test("a backpressured send stays queued, surfaces busy, and paces retries that r
   expect(threadsStore.getState().transientMutationRefusals.has(refused.clientMutationId)).toBe(true);
   expect(scheduled.map((entry) => entry.attempt)).toEqual([1]);
 
-  // Firing the retry while the hub still refuses: the marker cleared as the
-  // attempt went out, and the second refusal re-marks it at a doubled pace.
+  // Firing the retry while the hub still refuses: the marker holds through
+  // the attempt in flight, and the refusal that answers it re-marks at a
+  // doubled pace.
   const firstRetry = scheduled[0];
   if (!firstRetry) throw new Error("expected the first paced retry to be armed");
   firstRetry.retry();
   await flushIndexedDBUntil(
-    () =>
-      fake.calls.filter((call) => call.method === "turn/start").length === 2 &&
-      threadsStore.getState().transientMutationRefusals.has(refused.clientMutationId),
+    () => fake.calls.filter((call) => call.method === "turn/start").length === 2 && scheduled.length === 2,
   );
+  expect(threadsStore.getState().transientMutationRefusals.has(refused.clientMutationId)).toBe(true);
   expect(scheduled.map((entry) => entry.attempt)).toEqual([1, 2]);
 
   // A retry the hub accepts settles the row and clears the marker.
@@ -6885,6 +6885,144 @@ test("a backpressure refusal on the direct-send path rejects with the hub's mess
   expect(await storage.listOutbox()).toEqual([]);
   expect(threadsStore.getState().transientMutationRefusals.size).toBe(0);
   expect(scheduled).toEqual([]);
+  restoreScheduler();
+});
+
+// #4342 (implementation review): a fresh refusal for a ref replaces the
+// pending paced retry's timer rather than stacking a second one — the
+// outbox's 2s discovery cadence re-drives a refused row on its own, and a
+// live timer per refusal would multiply dispatches past the pace the
+// backoff promises.
+test("a fresh refusal replaces the pending paced retry's timer", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("turn/start", (params) => {
+    throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+      evenerErrorInfo: "connectionBackpressure",
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "automatic",
+      cause: "queueSaturated",
+    });
+  });
+  const attempts: number[] = [];
+  const cancels: number[] = [];
+  const restoreScheduler = installBackpressureRetrySchedulerForTests((attempt) => {
+    const index = attempts.length;
+    attempts.push(attempt);
+    return () => cancels.push(index);
+  });
+
+  await threadsStore.getState().send("ref_a", "held one");
+  await flushIndexedDBUntil(() => attempts.length === 1);
+  // Let the refused dispatch's settle chain drain before re-driving: the
+  // dispatcher coalesces a notify onto the still-settling run and its stop
+  // outcome discards the requested run, so a notify that races the settle
+  // would be lost. IndexedDB turns yield to the microtasks that finish the
+  // settle, so two turns bound the drain.
+  await flushIndexedDBUntil(() => false, 2);
+  // A discovery-driven re-attempt before the first retry fires refuses
+  // again; the new arm must replace (cancel) the first.
+  notifyReadyForMutationDispatch(["ref_a"]);
+  await flushIndexedDBUntil(() => attempts.length === 2);
+  expect(attempts).toEqual([1, 2]);
+  expect(cancels).toEqual([0]);
+  restoreScheduler();
+});
+
+// #4342 (implementation review): the busy marker's contract is settlement —
+// it clears when the refused record settles (a receipt, a reclassification),
+// not when the paced attempt fires. An in-flight attempt is still the hub's
+// refusal being worked: the row must keep reading as busy until its retry is
+// actually accepted.
+test("the busy marker clears when the record settles, not when the paced attempt fires", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  let refuse = true;
+  const acceptedRetry = deferred<TurnStartResponse>();
+  fake.on("turn/start", (params) => {
+    if (refuse) {
+      throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+        evenerErrorInfo: "connectionBackpressure",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "automatic",
+        cause: "queueSaturated",
+      });
+    }
+    return acceptedRetry.promise;
+  });
+  const retries: Array<() => void> = [];
+  const restoreScheduler = installBackpressureRetrySchedulerForTests((_attempt, retry) => {
+    retries.push(retry);
+    return () => {};
+  });
+
+  await threadsStore.getState().send("ref_a", "held until accepted");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  const [row] = await storage.listOutbox("ref_a");
+  if (!row) throw new Error("expected the refused row to stay durable");
+  expect(threadsStore.getState().transientMutationRefusals.has(row.clientMutationId)).toBe(true);
+
+  // The paced attempt goes out and parks on the hub's answer: the marker
+  // must survive the attempt in flight.
+  refuse = false;
+  expect(retries.length).toBe(1);
+  const firstRetry = retries[0];
+  if (!firstRetry) throw new Error("expected the paced retry to be armed");
+  firstRetry();
+  await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/start").length === 2);
+  expect(threadsStore.getState().transientMutationRefusals.has(row.clientMutationId)).toBe(true);
+
+  // The accepted retry settles the row; settlement is what clears the marker.
+  acceptedRetry.resolve({
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    receipt: mutationReceipt(row.clientMutationId),
+  });
+  await flushIndexedDBUntil(() => !threadsStore.getState().transientMutationRefusals.has(row.clientMutationId));
+  const settleProbe = new MutationOutboxIndexedDB();
+  for (let turn = 0; turn < 30 && (await storage.listOutbox("ref_a")).length > 0; turn += 1) {
+    await settleProbe.listTargetRefs();
+  }
+  settleProbe.close();
+  expect(await storage.listOutbox("ref_a")).toEqual([]);
+  restoreScheduler();
+});
+
+// #4342 (implementation review): the store's test reset cancels every armed
+// paced retry along with the pace map — clearing the map alone would leave
+// each arm's timer live against the next test's fresh runtime.
+test("resetting the store cancels pending paced retries", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  fake.on("turn/start", (params) => {
+    throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+      evenerErrorInfo: "connectionBackpressure",
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "automatic",
+      cause: "queueSaturated",
+    });
+  });
+  let arms = 0;
+  const cancels: number[] = [];
+  const restoreScheduler = installBackpressureRetrySchedulerForTests(() => {
+    const index = arms;
+    arms += 1;
+    return () => cancels.push(index);
+  });
+
+  await threadsStore.getState().send("ref_a", "held across a reset");
+  await flushIndexedDBUntil(() => arms === 1);
+  resetThreadsStoreForTests();
+  expect(arms).toBe(1);
+  expect(cancels).toEqual([0]);
   restoreScheduler();
 });
 

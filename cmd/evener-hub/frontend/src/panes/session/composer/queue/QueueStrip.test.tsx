@@ -934,6 +934,34 @@ describe("canceled rows", () => {
     expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
   });
 
+  // #4342 (implementation review): the busy marker reaches every pending-row
+  // surface, not only the send chips — a hub-refused turn/queue row in the
+  // strip marks itself busy with the paced retry the store armed.
+  test("a hub-refused pending queue row marks itself busy", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const storage = new MutationOutboxIndexedDB();
+    const row = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "queued while busy" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "queued while busy" }] },
+    });
+    storage.close();
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+    threadsStore.setState((state) => ({
+      transientMutationRefusals: new Set(state.transientMutationRefusals).add(row.clientMutationId),
+    }));
+    renderStrip(defaultProps());
+    const pending = await screen.findByText("queued while busy");
+    expect(pending.closest("li")?.getAttribute("data-kind")).toBe("pending");
+    expect(pending.closest("li")?.getAttribute("data-busy")).toBe("true");
+    expect(screen.getByText(/Retrying/)).toBeTruthy();
+  });
+
   // Mirrors "visible Retry treats an other-tab settled/reopened row as a
   // benign no-op": another tab's user Retry releases the row durably before
   // this tab's press, so the press must neither report a failure nor touch

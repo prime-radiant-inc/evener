@@ -439,7 +439,20 @@ fixtures, and an injectable transport/observer where needed.
   plus an exported membership function `RetrySafeMutationMethod(name)`. The
   spec's `RetrySafeMutationMethods` spelling was illustrative ("e.g."); the
   parity test pins the Go and TS sets equal by reading the dispatcher source,
-  and the TS set is exported (`RETRY_SAFE_MUTATION_METHODS`).
+  and the TS set is exported (`RETRY_SAFE_MUTATION_METHODS`, re-exported from
+  the package entry alongside the dispatcher).
+- §5's busy surface reaches every pending-row surface, not only the send
+  chips: queue rows in the composer strip and the steer family's ghosts carry
+  the same marker (data-busy plus a visible Retrying/Waiting label), and the
+  refusal's paced-retry timer replaces the pending one a prior refusal armed
+  (re-arm cancels; no timer stacking under the discovery cadence). The busy
+  marker itself clears on settlement — a receipt, a recovery transfer, a
+  blocked reclassification, each of which the dispatcher announces as a
+  storage change — not when the paced attempt fires: an in-flight attempt is
+  still the refusal being worked. Methods with no pending row of their own
+  (thread/clear, turn/interrupt, turn/cancelQueued) keep the retry machinery
+  without a dedicated row to mark, and notes/human/set's busy state is the
+  note editor's own pending state.
 - Item 8's TUI e2e uses a fixture-specific refusal message, so the pin proves
   the hub's message reaches the TUI's failure line verbatim rather than two
   copies of a known string agreeing, and asserts the refusal's ledger

@@ -1006,37 +1006,72 @@ export function installBackpressureRetrySchedulerForTests(scheduler: Backpressur
   };
 }
 
-// Per ref, the row the hub last refused in band and the consecutive refusal
-// count pacing its retry. Serialized per-ref dispatch means at most one
-// refused row per ref at a time (the FIFO head), so one entry per ref is
-// exact. The count deliberately survives the retry that re-dispatches the
-// row — the refusal that follows a refused retry is what doubles the pace —
-// and a refusal naming a different row starts the ladder over. An entry
-// whose row settled lingers invisibly (its marker left with the attempt)
+// Per ref, the row the hub last refused in band, the consecutive refusal
+// count pacing its retry, and the cancel handle of the retry that refusal
+// armed. Serialized per-ref dispatch means at most one refused row per ref
+// at a time (the FIFO head), so one entry per ref is exact. The count
+// deliberately survives the retry that re-dispatches the row — the refusal
+// that follows a refused retry is what doubles the pace — and a refusal
+// naming a different row starts the ladder over. The settle prune retires an
+// entry with its row; one bypassed by a direct row removal lingers invisibly
 // until the ref's next refusal replaces it.
-const transientRefusalPace = new Map<string, { clientMutationId: string; attempt: number }>();
+const transientRefusalPace = new Map<string, { clientMutationId: string; attempt: number; cancelRetry: () => void }>();
 
 // Records a hub backpressure refusal of one queued row: marks the row busy in
-// the store and arms its paced retry. The retry clears the busy marker as
-// the attempt goes out (a fresh refusal re-marks it at the next pace step)
-// and re-drives the ref's ordinary dispatch, which every ready, discovery
-// and lifecycle event also does — the pace only shortens the wait.
+// the store and arms its paced retry, replacing any timer an earlier
+// refusal for the row already armed. The retry re-drives the ref's ordinary
+// dispatch, which every ready, discovery and lifecycle event also does —
+// the pace only shortens the wait. The busy marker itself leaves with
+// settlement (pruneSettledTransientRefusals), not with the attempt: an
+// in-flight attempt is still the refusal being worked.
 function markTransientMutationRefusal(runtime: MutationRuntime, record: MutationOutboxRecord): void {
   const previous = transientRefusalPace.get(record.targetRef);
   const attempt = previous?.clientMutationId === record.clientMutationId ? previous.attempt + 1 : 1;
-  transientRefusalPace.set(record.targetRef, { clientMutationId: record.clientMutationId, attempt });
+  // The refused row is the ref's one refused row (serialized dispatch), so
+  // the retry an earlier refusal for it armed is superseded: cancel it
+  // before arming the replacement, or refusals arriving faster than the
+  // timer fires would stack one live timer per refusal.
+  previous?.cancelRetry();
+  const cancelRetry = backpressureRetryScheduler(attempt, () => {
+    if (!isCurrentMutationRuntime(runtime)) return;
+    scheduleMutationDispatch(runtime, [record.targetRef]);
+  });
+  transientRefusalPace.set(record.targetRef, { clientMutationId: record.clientMutationId, attempt, cancelRetry });
   threadsStore.setState((state) => ({
     transientMutationRefusals: new Set(state.transientMutationRefusals).add(record.clientMutationId),
   }));
-  backpressureRetryScheduler(attempt, () => {
+}
+
+// The settlement half of the busy marker's contract: the marker clears when
+// the refused record settles — a receipt, a recovery transfer, a blocked
+// reclassification. Every settlement the dispatcher performs changes storage
+// and notifies onStorageChange for the ref, so this prune rides that
+// notification: it re-reads the outbox and clears the entry whose row no
+// longer sits submitting there. A refused retry does not disturb the ladder
+// — the transient refusal path changes nothing a reader can see and notifies
+// nothing.
+async function pruneSettledTransientRefusals(runtime: MutationRuntime, targetRefs: Iterable<string>): Promise<void> {
+  for (const targetRef of targetRefs) {
+    const entry = transientRefusalPace.get(targetRef);
+    if (!entry) continue;
+    const rows = await runtime.storage.listOutbox(targetRef);
     if (!isCurrentMutationRuntime(runtime)) return;
-    threadsStore.setState((state) => {
-      const next = new Set(state.transientMutationRefusals);
-      next.delete(record.clientMutationId);
-      return { transientMutationRefusals: next };
-    });
-    scheduleMutationDispatch(runtime, [record.targetRef]);
-  });
+    if (rows.some((row) => row.clientMutationId === entry.clientMutationId && row.state === "submitting")) continue;
+    // The refused row settled: its marker, its pace entry, and any retry
+    // still armed for it are spent. The identity check keeps a refusal that
+    // replaced this entry between the read and the clear.
+    entry.cancelRetry();
+    if (transientRefusalPace.get(targetRef)?.clientMutationId === entry.clientMutationId) {
+      transientRefusalPace.delete(targetRef);
+    }
+    if (threadsStore.getState().transientMutationRefusals.has(entry.clientMutationId)) {
+      threadsStore.setState((state) => {
+        const next = new Set(state.transientMutationRefusals);
+        next.delete(entry.clientMutationId);
+        return { transientMutationRefusals: next };
+      });
+    }
+  }
 }
 
 let wiredClient: AppwireClientLike | null = null;
@@ -1591,7 +1626,10 @@ function getMutationRuntime(): MutationRuntime | null {
       // blocked reclassification - invalidate in-flight reads for every ref it
       // names, on the rule noteMutationStateChange states.
       for (const targetRef of targetRefs) noteMutationStateChange(targetRef);
-      if (isCurrentMutationRuntime(runtime)) notifyMutationPersistence(targetRefs);
+      if (isCurrentMutationRuntime(runtime)) {
+        notifyMutationPersistence(targetRefs);
+        void pruneSettledTransientRefusals(runtime, targetRefs);
+      }
     },
     onBlockedMutation: (targetRef, client) => {
       if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client) return;
@@ -6519,6 +6557,7 @@ export function resetThreadsStoreForTests(): void {
   undeliveredMutationIds.clear();
   mutationStateGenerations.clear();
   dispatchableMutationRefs.clear();
+  for (const entry of transientRefusalPace.values()) entry.cancelRetry();
   transientRefusalPace.clear();
   dispatchReadyClient = null;
   dispatchReadyEpoch = -1;
