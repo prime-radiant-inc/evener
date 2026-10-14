@@ -485,25 +485,38 @@ def raise_worst(level):
 	if order[level] > order[worst]:
 		worst = level
 
-# A class must be an object naming a numeric (non-bool) ceiling and a non-empty
-# list of string test names. A hand-edited map that gets any of that wrong would
-# otherwise mis-enforce — a None or bool ceiling, a non-object spec, or a
-# `tests` string that iterates as characters and matches nothing — instead of
-# saying what is wrong: it FAILs naming the class and drops the class, leaving
-# its tests on the flat warn-only default below rather than crashing the check.
-# (The map itself being a non-object is the harder error above, handled before
-# any class is read.)
+# A class must be an object naming a usable (non-bool) ceiling and a non-empty
+# list of string test names. The ceiling goes through the shared seconds_error
+# definition and the malformed-config path above — every mode, naming the class
+# and the field — like the package values and the flat perTestCeilingSeconds
+# (#4629). The remaining faults (a non-object spec, or a `tests` string that
+# iterates as characters and matches nothing) FAIL naming the class and drop the
+# class, leaving its members on the flat warn-only default below rather than
+# crashing the check. (The map itself being a non-object is the harder error
+# above, handled before any class is read.)
 valid_classes = {}
 for class_name, spec in ceiling_classes.items():
-	if (not isinstance(spec, dict)
-			or isinstance(spec.get("ceilingSeconds"), bool)
-			or not isinstance(spec.get("ceilingSeconds"), (int, float))
-			or not math.isfinite(spec.get("ceilingSeconds"))
-			or not isinstance(spec.get("tests"), list)
+	bad_spec = (f"FAIL  ceiling class '{class_name}' must be an object with a "
+		f"non-empty tests list of strings (testing-budget.json perTestCeilingClasses)")
+	if not isinstance(spec, dict):
+		lines.append(bad_spec)
+		raise_worst("fail")
+		continue
+	# seconds_error is the one definition of "cannot serve as seconds", and it is
+	# overflow-safe: a JSON integer too large to convert to a float used to reach
+	# math.isfinite first and raise OverflowError — a traceback in every mode, from
+	# a shape the strict-only FAIL line below would only have downgraded (#4629).
+	# Routing its problem through fail_malformed names the class and the field in
+	# every mode. A huge but FINITE ceiling stays accepted: a ceiling is an upper
+	# bound, so a very large finite value simply disables that class.
+	problem = seconds_error(spec.get("ceilingSeconds"))
+	if problem:
+		fail_malformed("perTestCeilingClasses[" + json.dumps(class_name)
+			+ "].ceilingSeconds must be a number of seconds (" + problem + ")")
+	if (not isinstance(spec.get("tests"), list)
 			or not spec.get("tests")
 			or not all(isinstance(t, str) for t in spec.get("tests"))):
-		lines.append(f"FAIL  ceiling class '{class_name}' needs a numeric ceilingSeconds and a "
-			f"non-empty tests list of strings (testing-budget.json perTestCeilingClasses)")
+		lines.append(bad_spec)
 		raise_worst("fail")
 		continue
 	valid_classes[class_name] = spec
