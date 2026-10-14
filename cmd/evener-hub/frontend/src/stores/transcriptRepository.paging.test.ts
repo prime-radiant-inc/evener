@@ -16,7 +16,11 @@ import type {
 import { decodeTranscriptItem } from "@evener/appwire-client";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
-import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
+import {
+  entryHistoryKey,
+  SESSION_CACHE_LOOKUP_DEADLINE_MS,
+  type TranscriptResolvedIdentity,
+} from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { createEntryCacheFixture } from "./testing/entryCacheFixture";
 import { TranscriptRepository } from "./transcriptRepository";
@@ -1028,5 +1032,111 @@ test("an open reader keeps its loaded rows when disk eviction removes the histor
     repo.dispose();
   } finally {
     cache.close();
+  }
+});
+
+// Storage is optional for paging, including after successful hydration.
+test.each(["rows", "metadata"] as const)("local paging falls back when %s throws", async (stage) => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  const reader = repo.attachReader();
+  expect(
+    repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), {
+      lifetime: 1,
+      readId: "r1",
+      boundary: "b1",
+    }),
+  ).toBe(true);
+  await repo.settled();
+  await commitLocalPage(fixture.cache, repo.getBaselineIdentity());
+  const before = repo.getSnapshot();
+  const publish = vi.fn();
+  const unsubscribe = repo.subscribe(publish);
+  const spy = vi.spyOn(fixture.cache, stage === "rows" ? "getOlderWindow" : "getTurn").mockImplementation(() => {
+    throw new Error("IndexedDB unavailable");
+  });
+  try {
+    await expect(repo.loadOlderPage(40, 1)).resolves.toEqual({ kind: "server" });
+    expect(spy).toHaveBeenCalled();
+    expect(repo.getSnapshot()).toBe(before);
+    expect(publish).not.toHaveBeenCalled();
+  } finally {
+    spy.mockRestore();
+    unsubscribe();
+    reader.dispose();
+  }
+});
+
+test.each(["rows", "metadata"] as const)("local paging bounds stalled %s and ignores late results", async (stage) => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  const reader = repo.attachReader();
+  expect(
+    repo.acceptRead(readOf([6, 7, 8], { olderCursor: "C1", length: 8 }), {
+      lifetime: 1,
+      readId: "r1",
+      boundary: "b1",
+    }),
+  ).toBe(true);
+  await repo.settled();
+  await commitLocalPage(fixture.cache, repo.getBaselineIdentity());
+  const window = await fixture.cache.getOlderWindow(historyKey, { entry: 6, item: 0 }, 40, repo.getBaselineIdentity());
+  const turn = await fixture.cache.getTurn(historyKey, "turn_1");
+  expect(window.rows).toHaveLength(3);
+  const before = repo.getSnapshot();
+  const publish = vi.fn();
+  const unsubscribe = repo.subscribe(publish);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const rowSpy = vi.spyOn(fixture.cache, "getOlderWindow");
+  const turnSpy = vi.spyOn(fixture.cache, "getTurn");
+  // Keep durable authority reads real while controlling only the two payload reads.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  rowSpy.mockImplementation(async () => {
+    if (stage === "rows") await held;
+    else await new Promise((resolve) => setTimeout(resolve, 100));
+    return window;
+  });
+  let metadataEntered!: () => void;
+  const metadataCalled = new Promise<void>((resolve) => {
+    metadataEntered = resolve;
+  });
+  turnSpy.mockImplementation(async () => {
+    metadataEntered();
+    if (stage === "metadata") await held;
+    return turn;
+  });
+  let result: unknown;
+  const lookup = repo.loadOlderPage(40, 1).then((value) => {
+    result = value;
+  });
+  try {
+    await vi.advanceTimersByTimeAsync(100);
+    if (stage === "metadata") await metadataCalled;
+    await vi.advanceTimersByTimeAsync(SESSION_CACHE_LOOKUP_DEADLINE_MS - 101);
+    expect(result).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(result).toEqual({ kind: "server" });
+    expect(publish).not.toHaveBeenCalled();
+    release();
+    await lookup;
+    // Drain real IndexedDB authority reads too, not just promise microtasks.
+    await fixture.cache.getHistoryGeneration(historyKey);
+    await fixture.cache.getClearEpoch();
+    expect(repo.getSnapshot()).toBe(before);
+    expect(publish).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    release();
+    await lookup;
+    rowSpy.mockRestore();
+    turnSpy.mockRestore();
+    vi.useRealTimers();
+    unsubscribe();
+    reader.dispose();
   }
 });
