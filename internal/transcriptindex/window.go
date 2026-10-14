@@ -398,6 +398,12 @@ func (x *Index) firstTurnCreatedAt(offset int64) (uint64, error) {
 func (x *Index) fail(err error) error {
 	if errors.Is(err, errCorrupt) {
 		x.stale = true
+		if x.refusing {
+			// The refusal, not the raw error, so the repair registers
+			// immediately; the stale mark survives it for an ordinary
+			// handle's next extension.
+			return x.refuseRebuild()
+		}
 	}
 	return err
 }

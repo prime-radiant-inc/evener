@@ -194,8 +194,15 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 	zeroCM := NewManager(&provider.Profile{}, nil, cheapmodel.New(nil))
 	zeroHistory := cmgpHistory(token + "-zero")
 	zeroCM.MaybeCompact(ctx, &zeroHistory, 0, cmgpNoopEmit)
-	if got := zeroCM.EstimateUsage(zeroHistory, 0); got != (schema.ContextMetrics{}) || zeroCM.Pressure(zeroHistory, 0) != 0 {
-		t.Fatalf("zero-window manager produced metrics: %+v", got)
+	// Unknown means assumed (issue #4564): a profile with no window budgets
+	// against the conservative default, so the metrics carry the assumption
+	// instead of reporting nothing.
+	zeroMetrics := zeroCM.EstimateUsage(zeroHistory, 0)
+	if zeroMetrics.Window != AssumedContextWindow || zeroMetrics.Used <= 0 {
+		t.Fatalf("unknown-window manager metrics = %+v, want the assumed window %d with a used count", zeroMetrics, AssumedContextWindow)
+	}
+	if p := zeroCM.Pressure(zeroHistory, 0); p <= 0 {
+		t.Fatalf("unknown-window manager pressure = %v, want > 0 against the assumed window", p)
 	}
 }
 

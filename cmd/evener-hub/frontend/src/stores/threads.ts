@@ -46,6 +46,7 @@ import {
   isStaleCursorError,
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
+  isTranscriptIndexRebuildingError,
   mergeOlderItemPage,
   mergeTailTurns,
   mutationErrorData,
@@ -240,6 +241,16 @@ export interface ThreadsStoreState {
   // markThreadDeletedIfFenced. An ordinary transient rejection is still
   // presumed transport and keeps its retry-forever contract.
   deletedRefs: Set<string>;
+  /** Refs whose latest latest-window read answered the hub's
+   * transcriptIndexRebuilding discriminant (#4343): one owned repair runs
+   * off the read path, the store's paced hydration retry keeps re-reading,
+   * and the loading surface shows "Repairing session history" for these
+   * refs. Set when the latest read failed with the code, cleared by the
+   * next read that does not — success or any other failure, the
+   * budget-exhausted history-failed answer included — and dropped with the
+   * ref's model state on release. Unlike `deletedRefs` this is not terminal:
+   * it follows the ref's reads. */
+  repairingRefs: Set<string>;
   /** Cache state follows the owned model through its final release, including
    * mutation pins. A sibling deletion can create a suppression-only record
    * before a claim captures its lease; that record must not block a cold read.
@@ -588,12 +599,27 @@ type PendingThreadHydration = {
   // (ThreadReadParams.requestGeneration), echoed by the response and used to
   // discard a superseded ErrorTranscriptHistoryFailed rejection.
   requestGeneration?: number;
+  // The per-ref read sequence history-requesting hydration reads stamp from
+  // (threadReadSequences): pending-entry currency is per-kind, so only this
+  // shared counter orders reads across the tracked and watched maps — an
+  // older read of one kind cannot publish over a newer read of the other.
+  // A lean watched read (no turns) neither advances it nor publishes a
+  // repair-clearing verdict: it does not touch the transcript index, so it
+  // has no cross-kind repair verdict to order.
+  readSequence: number;
 };
 // A thread/read subscribes before it returns its snapshot. Notifications can
 // therefore arrive in the gap between the source subscription and snapshot
 // response. Keep the newest hydration's notifications out of the old model,
 // then fold them onto the returned snapshot before publishing it.
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
+// The per-ref read sequence history-requesting reads stamp their pendings
+// from: each map keeps its own current entry, so pending-entry currency alone
+// cannot order a tracked read against a watched one. Monotonic per ref, and
+// advanced only by reads that request history — a lean watched read carries
+// the current value instead, so it cannot fence out a tracked read's repair
+// verdict.
+const threadReadSequences = new Map<string, number>();
 // Tracked-hydration attempts: one monotonically increasing counter per ref,
 // stamped onto each tracked pending and never reset. This is the currency the
 // Stop-cancellation unwind requires: only the ref's NEWEST attempt may unwind
@@ -877,7 +903,11 @@ function removeThreadModel(ref: string): void {
     nextFrameTimes.delete(ref);
     const nextDeletedRefs = new Set(s.deletedRefs);
     nextDeletedRefs.delete(ref);
-    return { threads: nextThreads, frameTimes: nextFrameTimes, deletedRefs: nextDeletedRefs };
+    return {
+      threads: nextThreads,
+      frameTimes: nextFrameTimes,
+      deletedRefs: nextDeletedRefs,
+    };
   });
 }
 
@@ -1238,6 +1268,16 @@ function dropUnpinnedModel(ref: string): void {
   clearOversizeMemo(ref);
   // Nothing owns this ref any more, so no scheduled retry may outlive it.
   retireOwnedHydration("thread", ref);
+  // A read still on the wire when the pin left belongs to the lifetime this
+  // drain just ended: retire its pending entry and its inflight bookkeeping
+  // the way releaseThread does, so a late resolution finds the publication
+  // fence closed — and a pane reopening here starts its own fresh
+  // hydration instead of adopting a promise whose rejection can no longer
+  // schedule a retry.
+  pendingThreadHydrations.delete(ref);
+  inflightHydrates.delete(ref);
+  inflightHydrateClients.delete(ref);
+  inflightHydrateEpochs.delete(ref);
   // The model is leaving `threads` here, so its index membership leaves with
   // it (see putThreadModel/removeThreadModel — the membership paths).
   const dropped = threadsStore.getState().threads.get(ref);
@@ -1262,6 +1302,9 @@ function dropUnpinnedModel(ref: string): void {
     const cacheLifetimes = releaseCacheLifetime(state.cacheLifetimes, ref);
     return { threads, frameTimes, hydrations, cacheLifetimes };
   });
+  // With the last durable claim gone, the repair flag follows unless a
+  // watcher still holds the ref.
+  clearThreadRepairingIfUnowned(ref);
 }
 
 async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterable<string>): Promise<void> {
@@ -2367,6 +2410,57 @@ function shouldRetryWithoutHeldSnapshot(held: SnapshotIdentity | undefined, err:
   return held !== undefined && isStaleCursorError(err);
 }
 
+// setThreadRepairing records the ref's latest latest-window read outcome for
+// #4343's rebuilding status: true when the read answered the hub's
+// transcriptIndexRebuilding discriminant, false when it answered anything
+// else or succeeded. The rule is per-ref and per-read — the flag never
+// outlives the read that set it — so the loading surface reading it stays
+// honest through the whole repair-and-retry cycle, including the
+// budget-exhausted transition to the history-failed diagnostic.
+function setThreadRepairing(ref: string, repairing: boolean): void {
+  threadsStore.setState((s) => {
+    if (s.repairingRefs.has(ref) === repairing) return s;
+    const next = new Set(s.repairingRefs);
+    if (repairing) next.add(ref);
+    else next.delete(ref);
+    return { repairingRefs: next };
+  });
+}
+
+// publishThreadRepairing is setThreadRepairing behind the same ownership fence
+// publishThreadHydration and scheduleOwnedHydrationRetry use, plus what that
+// fence cannot see across kinds: only the ref's CURRENT pending hydration,
+// on the current client and ready epoch, whose read is the ref's newest of
+// EITHER kind, may publish its repair outcome. A late resolution from an
+// attempt a newer one superseded, from a lifetime its owner released (the
+// releases delete the pending entry first), or from an older read of the
+// other kind — still current in its own map — must not clear a flag a newer
+// read set or recreate one a newer read already answered.
+function publishThreadRepairing(
+  kind: HydrationOwnerKind,
+  ref: string,
+  pending: PendingThreadHydration,
+  repairing: boolean,
+): void {
+  const pendingHydrations = kind === "watched" ? pendingWatchedHydrations : pendingThreadHydrations;
+  if (pendingHydrations.get(ref) !== pending) return;
+  if (wiredClient !== pending.client || readyEpoch !== pending.epoch) return;
+  if ((threadReadSequences.get(ref) ?? 0) !== pending.readSequence) return;
+  setThreadRepairing(ref, repairing);
+}
+
+// The repair flag never outlives its owners: the release that drops the ref's
+// last holder of either kind clears it, because no read that could answer it
+// honestly is still in flight — this release already deleted the pending
+// entry a late read would need to publish one — and no owner remains to
+// re-open the ref. A remaining holder of the other kind keeps the flag: their
+// pane or card still renders the same in-flight repair.
+function clearThreadRepairingIfUnowned(ref: string): void {
+  if ((refCounts.get(ref) ?? 0) > 0 || pinnedMutationRefs.has(ref)) return;
+  if ((watchRefCounts.get(ref) ?? 0) > 0) return;
+  setThreadRepairing(ref, false);
+}
+
 interface ThreadHydration {
   model: ThreadModel;
   response: ThreadReadResponse;
@@ -2396,6 +2490,11 @@ async function hydrateAndSubscribe(
     // rejection here is a transport failure, not a slow file read and not a
     // lost claim. Ask this ref's owner generation to read again.
     markThreadDeletedIfFenced(ref, err);
+    // #4343: a typed "index rebuilding" answer is a retryable state — record
+    // it for the loading surface (set on this code, cleared by any other
+    // outcome of this attempt's read, the success path below included; the
+    // publishThreadRepairing fence drops a superseded attempt's late say).
+    publishThreadRepairing("thread", ref, pending, isTranscriptIndexRebuildingError(err));
     // A structured "history failed" response is not a transport hiccup: the
     // spec says the client shows one visible diagnostic and waits for a later
     // read to succeed, never auto-retrying in a loop. Applied only against
@@ -2408,6 +2507,9 @@ async function hydrateAndSubscribe(
     }
     throw err;
   }
+  // The read succeeded: any repairing status from this attempt's earlier
+  // read is over — a superseded attempt leaves the newer one's say standing.
+  publishThreadRepairing("thread", ref, pending, false);
   if (discardHeldHistory) clearOversizeMemo(ref); // the stale-snapshot retry's replacement is a mid-lifetime shrink
   // A retry that dropped the held snapshot asked for, and must be treated
   // as, a full latest-window replacement: applyReadResponse would still
@@ -2534,6 +2636,15 @@ async function hydrateAndSubscribeWatch(
     }
   } catch (err) {
     markThreadDeletedIfFenced(ref, err);
+    // #4343: same per-ref recording as hydrateAndSubscribe's own catch —
+    // the watched read is this ref's latest read too, under the same
+    // ownership fence. A lean read publishes only an explicit rebuilding
+    // answer it received itself: its ordinary rejection says nothing about
+    // the transcript index, so it must not replace a tracked read's repair
+    // status (the rejection-side twin of the success gate above).
+    if (includeTurns || isTranscriptIndexRebuildingError(err)) {
+      publishThreadRepairing("watched", ref, pending, isTranscriptIndexRebuildingError(err));
+    }
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
       putWatchedThreadModel(
         ref,
@@ -2544,6 +2655,13 @@ async function hydrateAndSubscribeWatch(
     }
     throw err;
   }
+  // The read succeeded. Only a history-requesting read observed the index:
+  // a lean watch the hub can answer without touching the transcript index
+  // saw nothing about the repair, so its success must not clear a status a
+  // tracked read owns (the lean read's own rebuilding answer still
+  // publishes in the catch above — that error the read observed itself). A
+  // superseded rich attempt leaves the newer one's say standing.
+  if (includeTurns) publishThreadRepairing("watched", ref, pending, false);
   // See hydrateAndSubscribe's identical comment: a retry that dropped the
   // held snapshot must fully replace history, not merge into it.
   const model =
@@ -3734,6 +3852,8 @@ function beginThreadHydration(
   ensureCacheLease(ref);
   const attempt = (trackedHydrationAttempts.get(ref) ?? 0) + 1;
   trackedHydrationAttempts.set(ref, attempt);
+  const readSequence = (threadReadSequences.get(ref) ?? 0) + 1;
+  threadReadSequences.set(ref, readSequence);
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putThreadModel(ref, baseModel);
   const pending = {
@@ -3744,6 +3864,7 @@ function beginThreadHydration(
     attempt,
     baseModel,
     requestGeneration,
+    readSequence,
   };
   pendingThreadHydrations.set(ref, pending);
   return pending;
@@ -3754,7 +3875,22 @@ function beginWatchedHydration(
   client: AppwireClientLike,
   model: ThreadModel | undefined,
   epoch: number,
+  includeTurns: boolean,
 ): PendingThreadHydration {
+  // Only a history-requesting read orders the repair-status sequence: a
+  // lean watch the hub can answer without touching the transcript index
+  // must not advance the shared counter out from under a tracked read's
+  // still-pending publication — the fence would drop the tracked read's
+  // own verdict. The lean read carries the current value instead, which
+  // satisfies the fence for the one verdict it did observe itself: its
+  // catch-path rebuilding answer.
+  let readSequence: number;
+  if (includeTurns) {
+    readSequence = (threadReadSequences.get(ref) ?? 0) + 1;
+    threadReadSequences.set(ref, readSequence);
+  } else {
+    readSequence = threadReadSequences.get(ref) ?? 0;
+  }
   const { baseModel, requestGeneration } = issuedGenerationFor(model);
   if (baseModel && baseModel !== model) putWatchedThreadModel(ref, baseModel);
   const pending = {
@@ -3764,6 +3900,7 @@ function beginWatchedHydration(
     routing: pendingHydrationRouting(ref, baseModel ?? model),
     baseModel,
     requestGeneration,
+    readSequence,
   };
   pendingWatchedHydrations.set(ref, pending);
   return pending;
@@ -4577,8 +4714,14 @@ async function refreshWatchedThread(
   const generation = watchGenerations.get(ref) ?? 0;
   const previous = pendingWatchedHydrations.get(ref);
   if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
-  const pending = beginWatchedHydration(ref, client, threadsStore.getState().watchedThreads.get(ref), epoch);
   const includeTurns = watchIncludeTurns.get(ref) ?? false;
+  const pending = beginWatchedHydration(
+    ref,
+    client,
+    threadsStore.getState().watchedThreads.get(ref),
+    epoch,
+    includeTurns,
+  );
   // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
   const hydration = hydrateAndSubscribeWatch(client, ref, Date.now(), pending, includeTurns).then((model) =>
     isDiscardedReadResult(pending, model)
@@ -4972,6 +5115,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   hydrations: new Map(),
   watchedThreads: new Map(),
   deletedRefs: new Set(),
+  repairingRefs: new Set(),
   cacheLifetimes: new Map(),
   clearInFlight: undefined,
 
@@ -5225,6 +5369,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // should start fresh, the same way it re-reads a fresh model.
     flushCacheWrite(ref); // the tail commits before the model leaves the map
     removeThreadModel(ref);
+    // With the last tracked holder gone, the repair flag follows unless a
+    // watched lifecycle still holds the ref.
+    clearThreadRepairingIfUnowned(ref);
   },
 
   // watchThread is the transcript/tools stream's own sanctioned addition:
@@ -5261,6 +5408,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         hydrationClient,
         threadsStore.getState().watchedThreads.get(ref),
         hydrationEpoch,
+        needTurns,
       );
       const hydration = hydrateAndSubscribeWatch(hydrationClient, ref, Date.now(), pending, needTurns)
         .then((model) => publishWatchedHydration(ref, pending, model, needTurns, generation))
@@ -5374,6 +5522,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // too does the wire subscription have no remaining holder.
 
     removeWatchedThreadModel(ref);
+    // With the last watcher gone, the repair flag follows unless a tracked
+    // pane still holds the ref.
+    clearThreadRepairingIfUnowned(ref);
   },
 
   async refreshThread(ref, beforePublish): Promise<void> {
@@ -6382,6 +6533,7 @@ export function resetThreadsStoreForTests(): void {
       hydrations: new Map(),
       watchedThreads: new Map(),
       deletedRefs: new Set(),
+      repairingRefs: new Set(),
       cacheLifetimes: new Map(),
       clearInFlight: undefined,
     },

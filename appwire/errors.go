@@ -47,6 +47,18 @@ const (
 	// is not a failure: the index shows it as one unreadable-entry item. Its
 	// data is HistoryReadErrorData.
 	ErrorTranscriptHistoryFailed ErrorInfo = "transcriptHistoryFailed"
+	// ErrorTranscriptIndexRebuilding marks a history read whose transcript
+	// index needs a rebuild the hub has taken ownership of in the
+	// background: one repair runs off the read path, and the read that
+	// follows its commit succeeds. Its data is HistoryReadErrorData.
+	ErrorTranscriptIndexRebuilding ErrorInfo = "transcriptIndexRebuilding"
+	// ErrorTranscriptIndexLocked marks a history read that met the
+	// transcript index's lock in ordinary contention — a writer
+	// mid-extension or a foreign rebuild — with no hub repair in flight:
+	// the hub has registered nothing, and retrying is the right response.
+	// Its data is HistoryReadErrorData once the wire stamps the read
+	// identity, ErrorData before.
+	ErrorTranscriptIndexLocked ErrorInfo = "transcriptIndexLocked"
 	// ErrorUpgradeRequired marks initialize refusing a client that announced
 	// an older AppWire protocol than the server speaks; the message names both
 	// versions.
@@ -677,6 +689,37 @@ func TranscriptHistoryFailed(ordinal uint64) WireError {
 		Code:    CodeInternalError,
 		Message: fmt.Sprintf("thread history failed at entry %d", ordinal),
 		Data:    ErrorData{EvenerErrorInfo: ErrorTranscriptHistoryFailed},
+	}
+}
+
+// TranscriptIndexRebuilding reports a history read whose transcript index is
+// being rebuilt in the background: retrying is the right response, and the
+// read that follows the repair's commit succeeds. The history read stamps it
+// with WithHistoryReadIdentity.
+func TranscriptIndexRebuilding() WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: "thread history is being rebuilt in the background",
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorTranscriptIndexRebuilding,
+			RetryDisposition: RetryDispositionAutomatic,
+		},
+	}
+}
+
+// TranscriptIndexLocked reports a history read that met the transcript
+// index's lock in ordinary contention — a writer mid-extension or a foreign
+// rebuild — with no hub repair in flight: retrying is the right response, and
+// the hub has registered nothing for it. The history read stamps it with
+// WithHistoryReadIdentity.
+func TranscriptIndexLocked() WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: "thread history index is busy with a live writer",
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorTranscriptIndexLocked,
+			RetryDisposition: RetryDispositionAutomatic,
+		},
 	}
 }
 

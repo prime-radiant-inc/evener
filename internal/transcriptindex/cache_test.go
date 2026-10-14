@@ -444,3 +444,50 @@ func TestCacheConcurrentAcquireRelease(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Releasing a handle back to the cache drops the record buffers its open
+// loaded: the buffering exists for active builds and extensions — appends and
+// in-place rewrites become memcpys — and a parked handle holding whole record
+// files in memory changes the cache's bound from handles and headers to
+// complete sidecars, up to three recordBufferLimit files per handle times the
+// cache's capacity when large histories are browsed (#4343 round-33
+// medium 2). The parked handle still reads and extends through the files.
+func TestAReleasedCacheHandleDropsItsRecordBuffers(t *testing.T) {
+	fx := fixture{name: "cache-buffers", header: everything().header, lines: []fixtureLine{
+		entryLine(user("hi")),
+		entryLine(assistant(call("c1", "read_file", `{}`))),
+		entryLine(results(result("c1", "read_file", "body"))),
+	}}
+	path := writeFixture(t, fx)
+	c := NewCache(2)
+	defer c.Close() //nolint:errcheck // test cleanup
+
+	x, err := c.Acquire(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if x.items.buf == nil || x.turns.buf == nil || x.strings.buf == nil {
+		t.Fatal("setup: the open loaded no record buffers to drop")
+	}
+	c.Release(x)
+	if x.items.buf != nil || x.turns.buf != nil || x.strings.buf != nil {
+		t.Fatal("the released handle kept its record buffers parked in the cache")
+	}
+
+	// The parked handle still works through the files: a fresh acquire reads
+	// the same transcript, and a grown transcript still extends it — the
+	// extension writes through the dropped buffers.
+	y, err := c.Acquire(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if y != x {
+		t.Fatal("setup: the cache reopened a handle it still parks")
+	}
+	appendBytes(t, path, encodeEntry(t, 4, user("more")))
+	if err := y.CatchUp(); err != nil {
+		t.Fatalf("the re-acquired handle could not extend through the files: %v", err)
+	}
+	assertAllWindows(t, y, path)
+	c.Release(y)
+}

@@ -192,6 +192,24 @@ func TestFormatContextFragment(t *testing.T) {
 	}
 }
 
+// The assumed-window fragment (#4607) asserts structurally, not with the
+// table's full-string compare: the mark sits beside the capacity figures —
+// the window and the to-compact headroom derived from it — and never beside
+// the measured used figure, whose presence and the percentage stay pinned as
+// the fragment's numeric state. Wording tweaks don't break it while the
+// estimate indicator stays caught.
+func TestFormatContextFragmentAssumedWindow(t *testing.T) {
+	got := formatContextFragment(hubSessionDetail{ContextUsed: 46000, ContextWindow: 128000, ContextAssumed: true})
+	for _, want := range []string{"46k/", "~128k", "36%", "~75k"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("fragment %q missing %q", got, want)
+		}
+	}
+	if strings.Contains(got, "~46k") {
+		t.Errorf("fragment %q marks the measured used figure", got)
+	}
+}
+
 // TestHubDetailFromThreadMapsWorkingStateFields asserts hubDetailFromThread
 // carries thread.Evener.{Usage,WorkMillis,ActiveTurnStartedAt} (WS2) onto
 // hubSessionDetail verbatim, mirroring how Queue/Goal are already mapped.
@@ -224,6 +242,43 @@ func TestHubDetailFromThreadMapsWorkingStateFields(t *testing.T) {
 	}
 	if detail.ActiveTurnStartedAt != 1750000000 {
 		t.Fatalf("ActiveTurnStartedAt=%d, want 1750000000", detail.ActiveTurnStartedAt)
+	}
+}
+
+// TestHubDetailFromThreadCarriesContextAssumed pins the wire-to-render seam
+// for the assumed-window flag (#4607): formatContextFragment decides by the
+// flag on the detail, so a mapping that drops it resurfaces as the terminal
+// presenting an assumed capacity as a known one.
+func TestHubDetailFromThreadCarriesContextAssumed(t *testing.T) {
+	assumed := appwire.Thread{
+		ID:        "th_1",
+		SessionID: "th_1",
+		Source:    "local",
+		Evener: appwire.EvenerThread{
+			Ref:              "local:th_1",
+			ContextUsed:      46000,
+			ContextWindow:    128000,
+			ContextRemaining: 82000,
+			ContextAssumed:   true,
+		},
+	}
+	if detail := hubDetailFromThread(assumed); !detail.ContextAssumed {
+		t.Fatal("ContextAssumed=false, want the wire's true carried onto the detail")
+	}
+
+	known := appwire.Thread{
+		ID:        "th_2",
+		SessionID: "th_2",
+		Source:    "local",
+		Evener: appwire.EvenerThread{
+			Ref:              "local:th_2",
+			ContextUsed:      46000,
+			ContextWindow:    128000,
+			ContextRemaining: 82000,
+		},
+	}
+	if detail := hubDetailFromThread(known); detail.ContextAssumed {
+		t.Fatal("ContextAssumed=true, want false for a window the wire vouches for")
 	}
 }
 

@@ -58,6 +58,7 @@ const fixtureThread: Thread = {
     contextUsed: 42_000,
     contextWindow: 100_000,
     contextPressure: 0.42,
+    contextAssumed: false,
     tasks: { total: 5, done: 2 },
     goal: { status: "in progress", iterations: 3 },
     reasoningEffort: "medium",

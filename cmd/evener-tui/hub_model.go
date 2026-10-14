@@ -143,7 +143,12 @@ type hubModel struct {
 	spawnPluginPreviewParamsDigest string
 	spawnPluginPreviewLastSuccess  string
 	spawnSubmitting                bool
-	spawnFocus                     hubSpawnField
+	// spawnSubmittedPrompt holds the prompt as it was when the standing
+	// spawn form was submitted: the entry read's automatic completion holds
+	// when the form has been edited since, so entering does not silently
+	// discard the newer draft (#4343 round-28 high).
+	spawnSubmittedPrompt string
+	spawnFocus           hubSpawnField
 	// spawnRecentDirs holds the hub's most recently used project dirs (the
 	// Dir field's prepopulated dropdown options, issue #35), fetched with the
 	// spawn options. spawnRecentIdx tracks the tab-cycle position: the index
@@ -340,6 +345,22 @@ type hubModel struct {
 	// press has superseded.
 	liveNavPendingRef string
 	liveNavSeq        int
+	// liveNavEntryPendingSeq is the generation of the latest picked entry
+	// read still in flight (a dashboard list or palette pick, a fork or
+	// spawn landing): while a picked read is pending, a superseded read's
+	// discard defers its subscription reconciliation rather than racing the
+	// pick's own replacement, exactly as a pending cycling read's target
+	// does. Cleared at the pick response's landing — its entry, its error,
+	// or its same-ref apply — and on reconnect, whose fresh connection
+	// carries no reads (#4343 round-16 medium 2).
+	liveNavEntryPendingSeq int
+	// entryRepairReadInFlight marks the armed entry-repair retry's re-read
+	// as a flight reconciliation must respect: a superseded response
+	// landing while the retry's own read is running defers, since a
+	// recovery read would race the retry's replacement. Set when the tick
+	// issues the re-read; cleared at the re-read's landing (any outcome)
+	// and when the retry retires (#4343 round-17 medium 3).
+	entryRepairReadInFlight bool
 	// liveNavNeedsReconcile records that a stale recovery response was
 	// dropped while a newer read was still pending: its server-side
 	// replacement may have landed after the newer read's, so once the newest
@@ -348,6 +369,25 @@ type hubModel struct {
 	// PR #1044 round-15 medium 1). Cleared when the reconcile issues, on
 	// reconnect (its own resub), and by any direct re-establish.
 	liveNavNeedsReconcile bool
+	// liveNavRecoveryInFlight, while set, marks a reestablishDisplayedSubscription
+	// read issued and not yet landed: a second concurrent recovery would race
+	// its server-side replacement, so further callers coalesce onto it. Set at
+	// the read's issuance; cleared at its landing (any outcome) and on
+	// reconnect (the dead connection's flight never lands there).
+	liveNavRecoveryInFlight bool
+	// liveNavRecoveryFlight is the id of the in-flight recovery read, bumped
+	// at every issuance and never reset, so a completion can be judged
+	// against the flight it belongs to: a stale completion — a dead
+	// connection's late response after a reconnect — must not unfence a
+	// newer flight.
+	liveNavRecoveryFlight uint64
+	// liveNavRecoveryRef and liveNavRecoverySeq record the display ref and
+	// navigation generation the in-flight recovery read was issued under, so
+	// a later caller can tell whether the flight is still this display's at
+	// this generation — or belongs to an abandoned navigation the current
+	// display must not wait behind (#4343 round-30 medium 1).
+	liveNavRecoveryRef string
+	liveNavRecoverySeq int
 	// liveNavRecoveryRetries counts consecutive failed recovery reads
 	// (reestablishDisplayedSubscription). A persistent RPC failure must not
 	// loop recovery forever: after hubLiveNavRecoveryMaxRetries the failure
@@ -356,6 +396,21 @@ type hubModel struct {
 	// again) or a recovery response succeeds (roborev PR #1044 round-13
 	// medium 2).
 	liveNavRecoveryRetries int
+
+	// entryRepairRef, while non-zero, marks the pending navigation-scoped
+	// retry of a session entry whose read answered the hub's typed
+	// transcriptIndexRebuilding code (#4343): the retry re-issues the entry
+	// read on a paced schedule (hub_entry_repair.go), and the error line
+	// shows the repair status instead of the entry error while it stands.
+	// Retired when the intent departs — a new pick, a session switch, the
+	// terminal history-failed answer — and by the departing tick itself.
+	entryRepairRef appwire.Ref
+	// entryRepairDelay is the wait the pending retry sleeps before its next
+	// re-read: the base after arming, doubling at each tick, capped.
+	entryRepairDelay time.Duration
+	// entryRepairSeq is the liveNavSeq the retry was armed under: any
+	// session switch or cycling pick bumps it, retiring the retry.
+	entryRepairSeq int
 }
 
 // hubLiveNavRecoveryMaxRetries bounds consecutive recovery-read retries: the
@@ -413,9 +468,13 @@ func newSpawnDirInput() textinput.Model {
 // prominentErrors returns every live account the hub model should render as
 // an error line, transient first, then the standing marketplace-removal
 // outcome warning. It is nil-safe: a model with no live account renders
-// nothing.
+// nothing. While an entry-repair retry stands (#4343), the repair status is
+// the line's first account in place of the entry error it displaced.
 func (m hubModel) prominentErrors() []error {
 	var errs []error
+	if m.entryRepairRef != (appwire.Ref{}) {
+		errs = append(errs, errHubEntryRepairing)
+	}
 	if m.err != nil {
 		errs = append(errs, m.err)
 	}

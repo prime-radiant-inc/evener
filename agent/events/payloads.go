@@ -598,6 +598,13 @@ const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
 // these warnings by this stable code, never by matching their prose.
 const WarningCodeContextBudget = "context_budget"
 
+// WarningCodeContextWindowAssumed identifies the one-time notice that the
+// session's model has no known context window, so compaction is budgeting
+// against a conservative assumed window instead (issue #4564). Clients show
+// it as a configuration disclosure carrying the remedy — declare
+// context_window on the model's provider row — not as an error.
+const WarningCodeContextWindowAssumed = "context_window_assumed"
+
 // WarningCodePluginCompatibility identifies plugin, skill, and evener-wide
 // command settings that Evener preserves but does not enforce. The affected
 // content remains available, so clients show this advisory only in full

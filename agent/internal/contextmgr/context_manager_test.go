@@ -2632,12 +2632,23 @@ func TestPressure_ReturnsEstimate(t *testing.T) {
 }
 
 func TestPressure_ZeroContextWindow(t *testing.T) {
-	profile := &provider.Profile{} // zero value reports ContextWindowSize() == 0
+	profile := &provider.Profile{} // zero value reports ContextWindowSize() == 0: unknown
 	cm := NewManager(profile, nil, cheapmodel.New(nil))
 
 	p := cm.Pressure(nil, 0)
 	if p != 0 {
-		t.Fatalf("Pressure() = %.2f, want 0 for zero context window", p)
+		t.Fatalf("Pressure() = %.2f, want 0 with nothing in history", p)
+	}
+	// Unknown no longer means "no budget" (issue #4564): with history present,
+	// the same zero-window profile pressure-reads against the assumed default,
+	// so the fraction is low but no longer pinned to 0.
+	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("token ", 4_000)))}
+	if m := cm.EstimateUsage(history, 0); m.Window != AssumedContextWindow {
+		t.Fatalf("EstimateUsage window = %d, want the assumed %d", m.Window, AssumedContextWindow)
+	}
+	p = cm.Pressure(history, 0)
+	if p <= 0 || p >= 1 {
+		t.Fatalf("Pressure() = %v, want a fraction of the assumed window", p)
 	}
 }
 
@@ -3297,35 +3308,53 @@ func TestSummaryPromptGolden(t *testing.T) {
 	}
 }
 
-// TestUnknownContextWindowNeverCompacts pins spec §7.3: a row whose window the
-// registry does not know reports 0, and 0 means unknown, not tiny. With no
-// window there is no budget, so pressure is 0, the metrics report nothing, and
-// no layer of MaybeCompact runs however long the history grows.
-func TestUnknownContextWindowNeverCompacts(t *testing.T) {
+// TestUnknownWindowCompactsUnderAssumedDefault pins issue #4564's rule for a
+// row whose window the registry does not know: 0 still means unknown, never
+// tiny — but unknown now budgets against a conservative assumed window rather
+// than disabling management, so pressure and the metrics read against the
+// assumption, MaybeCompact folds a history that has outgrown it, and the
+// assumption is disclosed as exactly one warning per manager, not per round.
+// This test superseded the pre-#4564 pin that MaybeCompact never ran without
+// a known window.
+func TestUnknownWindowCompactsUnderAssumedDefault(t *testing.T) {
 	t.Parallel()
-	profile := provider.FromResolved(registry.Resolved{Instance: "gw", ModelID: "nobody-knows-this-one"}, nil)
-	if profile.ContextWindowSize() != 0 {
-		t.Fatalf("fixture window = %d, want 0 (unknown)", profile.ContextWindowSize())
-	}
-	cm := NewManager(profile, nil, cheapmodel.New(nil))
+	cm := NewManager(unknownGatewayProfile(), nil, cheapmodel.New(nil))
 
-	history := []schema.Turn{
-		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("token ", 200_000))),
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("reply ", 200_000))),
-	}
+	// Ten turns at ~15K tokens each: ~150K tokens, past the checkpoint
+	// threshold against the 128K assumption. The summarize layer stays out —
+	// no client.
+	history := bulkHistory(10, 10_000)
 	before := len(history)
 
-	if got := cm.Pressure(history, 100_000); got != 0 {
-		t.Fatalf("Pressure = %v, want 0 with no known window", got)
+	if got := cm.Pressure(history, 0); got < cm.CheckpointThreshold {
+		t.Fatalf("Pressure = %v, want ≥ %v against the assumed window", got, cm.CheckpointThreshold)
 	}
-	if got := cm.EstimateUsage(history, 100_000); got != (schema.ContextMetrics{}) {
-		t.Fatalf("EstimateUsage = %+v, want the zero metrics with no known window", got)
+	metrics := cm.EstimateUsage(history, 0)
+	if metrics.Window != AssumedContextWindow {
+		t.Fatalf("EstimateUsage window = %d, want the assumed %d", metrics.Window, AssumedContextWindow)
+	}
+	if metrics.Used <= 0 {
+		t.Fatalf("EstimateUsage used = %d, want the estimated bulk", metrics.Used)
 	}
 
-	var events0 int
-	cm.MaybeCompact(context.Background(), &history, 100_000, func(events.EventKind, events.EventData) { events0++ })
-	if len(history) != before || events0 != 0 {
-		t.Fatalf("MaybeCompact compacted %d turns and emitted %d events with no known window", before-len(history), events0)
+	spy := &emitSpy{}
+	cm.MaybeCompact(context.Background(), &history, 0, spy.fn)
+	if len(history) >= before {
+		t.Fatalf("MaybeCompact left %d turns (had %d): unknown window folded nothing", len(history), before)
+	}
+	if len(spy.compaction) == 0 || history[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("no checkpoint fold: %d turns, %d compaction events", len(history), len(spy.compaction))
+	}
+	if n := spy.disclosures(); n != 1 {
+		t.Fatalf("assumed-window disclosures = %d, want exactly 1", n)
+	}
+
+	// The disclosure is once per manager: a second pass under the same unknown
+	// window stays quiet about the assumption.
+	spy2 := &emitSpy{}
+	cm.MaybeCompact(context.Background(), &history, 0, spy2.fn)
+	if n := spy2.disclosures(); n != 0 {
+		t.Fatalf("second pass disclosed the assumption %d times, want 0", n)
 	}
 }
 

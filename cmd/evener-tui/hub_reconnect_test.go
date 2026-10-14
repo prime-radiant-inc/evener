@@ -121,6 +121,41 @@ func TestHubReconnectReissuesTaggedMarketplaceReconciliation(t *testing.T) {
 	}
 }
 
+// A recovery read in flight on the dead connection must not fence the
+// reconnect's own resubscribe: the replacement connection carries no
+// subscriptions, and the dead flight's response may sit on the dead
+// transport for a long time. The reconnect clears the in-flight recovery
+// fence with the rest of the per-connection state and re-reads the
+// displayed session.
+func TestHubReconnectResubscribesWhileARecoveryReadIsInFlight(t *testing.T) {
+	client, _, cleanupA := newTestHubClientWithFeed(t, nil)
+	defer cleanupA()
+	oldClient, oldFeed, dropOldConnection := newTestHubClientWithFeed(t, nil)
+
+	m := hubModel{
+		client:                  oldClient,
+		frames:                  oldFeed,
+		mode:                    hubModeSession,
+		detail:                  hubSessionDetail{Ref: "local:01B", SessionID: "sess_b", State: appwire.ThreadStatusIdle},
+		liveNavRecoveryInFlight: true,
+	}
+	dropOldConnection()
+
+	cmd := m.applyHubReconnect(hubReconnectMsg{client: client, frames: oldFeed})
+	if cmd == nil {
+		t.Fatal("reconnect should resubscribe the displayed session")
+	}
+	seen := false
+	for _, msg := range runBatchedCmds(t, cmd) {
+		if s, ok := msg.(hubSessionMsg); ok && s.liveNavRecovery && s.ref == "local:01B" {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatal("the reconnect's resubscribe was fenced by the dead connection's in-flight recovery")
+	}
+}
+
 // runBatchedCmds runs cmd and flattens one level of tea.Batch, which is how
 // bubbletea would deliver the follow-ups a reconnect returns.
 func runBatchedCmds(t *testing.T, cmd tea.Cmd) []tea.Msg {
