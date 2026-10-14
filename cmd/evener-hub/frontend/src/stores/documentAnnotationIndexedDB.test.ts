@@ -31,7 +31,7 @@ import {
 import { createComposerSourceState } from "../panes/session/composer/sourceState";
 import { type BrowserDraftKey, browserDraftKey } from "../stores/browserDraftRepository";
 import { type NamespaceRow, serializeSessionKey } from "../stores/compositionRevision";
-import { createDocumentAnnotationRepository } from "../stores/documentAnnotationIndexedDB";
+import { createDocumentAnnotationRepository, issuedReadTicketsForTests } from "../stores/documentAnnotationIndexedDB";
 import {
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
@@ -3584,4 +3584,30 @@ it("retryPending completes a persisted unfinished expiry receipt from a fresh ad
       (row) => row.evidenceKey === oldEvidenceKey,
     ),
   ).toBe(false);
+});
+
+it("issuing a newer read retires this adapter's superseded issued tickets", async () => {
+  const f = await fixture("issued-reads-pruning");
+  const otherDocument: DocumentKey = { ...f.document, path: "OTHER.md" };
+  const superseded = await f.repo.beginRead(f.document);
+  const other = await f.repo.beginRead(otherDocument);
+  const current = await f.repo.beginRead(f.document);
+
+  // Only the newest ticket per document survives issuance: this document's
+  // earlier ticket was superseded by the durable read generation the newer
+  // issuance advanced, while the other document's ticket keeps its own slot.
+  const tickets = issuedReadTicketsForTests(f.repo);
+  expect(tickets.size).toBe(2);
+  expect(tickets.has(superseded.requestId)).toBe(false);
+  expect(tickets.has(other.requestId)).toBe(true);
+  expect(tickets.has(current.requestId)).toBe(true);
+
+  // A superseded ticket validates exactly as before: stale-ticket through
+  // the durable generation, never accepted.
+  expect((await f.repo.acceptRead(superseded, docContent(SOURCE, "rev-A"))).state).toBe("stale-ticket");
+  // The current ticket still accepts through the durable head, and its
+  // acceptance retires its own entry while the untouched document keeps its.
+  expect((await f.repo.acceptRead(current, docContent(SOURCE, "rev-A"))).state).toBe("accepted");
+  expect(tickets.has(current.requestId)).toBe(false);
+  expect(tickets.size).toBe(1);
 });
