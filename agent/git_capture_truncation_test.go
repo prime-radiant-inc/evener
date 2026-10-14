@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 )
 
 // truncationGitEnv answers RunGit from a table keyed by the joined argv, so a
@@ -69,31 +70,28 @@ func TestSnapshotGitRefusesATruncatedStatus(t *testing.T) {
 	}
 }
 
-// TestTruncatedStatusOmitsTheCountClaimFromThePrompt is M3 at the render
-// boundary: with the status unknown the git block must not state a count, so a
-// dirty repo is never rendered as clean. promptData.GitStatusUnknown is the
-// structured flag the template gates on; the known-status render still carries
-// its counts, and the unknown-status render still carries the known branch.
-func TestTruncatedStatusOmitsTheCountClaimFromThePrompt(t *testing.T) {
+// TestGitStatusPromptGoldens pins the system prompt's git block as a COMPLETE
+// rendering for the known and unknown status states — the repo's convention for
+// prompt prose is a whole-output golden, never fragment matching. The gate is
+// the structured promptData.GitStatusUnknown; the structured status state
+// itself (whether the counts were obtained) is pinned by
+// TestSnapshotGitRefusesATruncatedStatus.
+func TestGitStatusPromptGoldens(t *testing.T) {
 	t.Parallel()
-	known := promptData{IsGitRepo: true, GitBranch: "main", GitModifiedFiles: 3, GitUntrackedFiles: 2}
-	outKnown, err := executeSystemPromptTemplate(known)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(outKnown, "Modified files: 3") {
-		t.Fatalf("known-status prompt lost its counts: %q", gitFragment(outKnown))
-	}
-	unknown := promptData{IsGitRepo: true, GitBranch: "main", GitModifiedFiles: 3, GitUntrackedFiles: 2, GitStatusUnknown: true}
-	outUnknown, err := executeSystemPromptTemplate(unknown)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(outUnknown, "Modified files:") || strings.Contains(outUnknown, "Untracked files:") {
-		t.Fatalf("unknown-status prompt still claims counts: %q", gitFragment(outUnknown))
-	}
-	if !strings.Contains(outUnknown, "Branch: main") {
-		t.Fatalf("unknown-status prompt dropped the known branch: %q", gitFragment(outUnknown))
+	for _, tc := range []struct {
+		name    string
+		unknown bool
+	}{
+		{"status-known", false},
+		{"status-unknown", true},
+	} {
+		data := promptData{IsGitRepo: true, GitBranch: "main", GitModifiedFiles: 3, GitUntrackedFiles: 2, GitStatusUnknown: tc.unknown}
+		out, err := executeSystemPromptTemplate(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		agenttest.CheckGolden(t, filepath.Join("testdata", "gitprompt", tc.name+".md"), []byte(gitFragment(out)+"\n"), *updatePromptGoldens,
+			"Regenerate with `go test ./agent -run 'TestGitStatusPromptGoldens$' -count=1 -update-prompt` and read the diff.")
 	}
 }
 
@@ -105,6 +103,30 @@ func gitFragment(prompt string) string {
 		}
 	}
 	return prompt
+}
+
+// TestSnapshotGitReportsStatusKnownWhenTheStatusWasRead pins the other side of
+// the structured state: a status read that succeeded reports its counts as
+// known, so the template renders them.
+func TestSnapshotGitReportsStatusKnownWhenTheStatusWasRead(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := truncationGitEnv{results: map[string]execenv.ExecResult{
+		"rev-parse --is-inside-work-tree":   {Stdout: "true\n"},
+		"rev-parse --abbrev-ref HEAD":       {Stdout: "main\n"},
+		"status --porcelain":                {Stdout: " M a\n?? b\n"},
+		"log -n 5 --pretty=format:%h%x20%s": {Stdout: "abc first\n"},
+	}}
+	_, _, mod, untracked, _, statusKnown := snapshotGit(context.Background(), env, root)
+	if !statusKnown {
+		t.Fatal("a status read that succeeded reported the counts as unknown")
+	}
+	if mod != 1 || untracked != 1 {
+		t.Fatalf("counts = %d modified / %d untracked, want 1/1", mod, untracked)
+	}
 }
 
 // TestGitRunnerPreservesATruncatedMutation is M1: a successful `worktree add`
