@@ -39,7 +39,7 @@ const CLASS = {
 
 export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Element | null {
   const entries = usePendingTurnEntries(sessionRef);
-  const hubRefusedIds = useThreadsStore((state) => state.transientMutationRefusals);
+  const refusedId = useThreadsStore((state) => state.transientRefusalPaces.get(sessionRef)?.clientMutationId);
   // Filter to the sends this strip owns - steer/drain/promote ghosts render
   // in the transcript's trailing row (steering-ghost spec) and QueueStrip
   // owns "queue". The one label this strip renders is present-tense: it
@@ -53,8 +53,8 @@ export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Elemen
   return (
     <ul className={CLASS.chips} data-testid="pending-chips">
       {optimistic.map((entry) => (
-        <li key={entry.id} className={CLASS.chip} data-busy={hubRefusedIds.has(entry.id) ? "true" : undefined}>
-          <span className={CLASS.method}>{hubRefusedIds.has(entry.id) ? "Retrying" : "Sending"}</span>
+        <li key={entry.id} className={CLASS.chip} data-busy={entry.id === refusedId ? "true" : undefined}>
+          <span className={CLASS.method}>{entry.id === refusedId ? "Retrying" : "Sending"}</span>
           <span className={CLASS.text} data-testid="pending-chip-preview">
             {pendingEntryPreview(entry)}
           </span>

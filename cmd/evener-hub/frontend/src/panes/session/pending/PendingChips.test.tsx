@@ -92,7 +92,10 @@ test("a hub-refused send's chip marks itself busy instead of reading as an ordin
   await refreshPendingTurnsProjection("ref_a");
   await flushPendingTurnsProjectionForTests();
   threadsStore.setState((state) => ({
-    transientMutationRefusals: new Set(state.transientMutationRefusals).add(row.clientMutationId),
+    transientRefusalPaces: new Map(state.transientRefusalPaces).set("ref_a", {
+      clientMutationId: row.clientMutationId,
+      attempt: 1,
+    }),
   }));
 
   render(<PendingChips sessionRef="ref_a" />);

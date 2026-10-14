@@ -708,13 +708,7 @@ export class MutationOutboxIndexedDB {
   // Commit attempt evidence before transport so another tab or a reload cannot
   // mistake a possibly delivered mutation for an unsent intent.
   async markAttempted(clientMutationId: string): Promise<boolean> {
-    return this.#write(OUTBOX_STORE, "markAttempted", async (transaction) => {
-      const store = transaction.objectStore(OUTBOX_STORE);
-      const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
-      if (record?.state !== "submitting") return false;
-      await requestResult(store.put({ ...record, attempted: true }));
-      return true;
-    });
+    return this.#setAttempted(clientMutationId, "markAttempted", true);
   }
 
   // Rolls the pre-transport attempt evidence back after the hub
@@ -724,11 +718,22 @@ export class MutationOutboxIndexedDB {
   // it and the ordinary flush rediscovers it. Authoritative outcomes own
   // every other state, so only a submitting row rolls back.
   async unmarkAttempted(clientMutationId: string): Promise<boolean> {
-    return this.#write(OUTBOX_STORE, "unmarkAttempted", async (transaction) => {
+    return this.#setAttempted(clientMutationId, "unmarkAttempted", false);
+  }
+
+  // The one setter both attempted-flag writes share: only a submitting row
+  // ever flips, and the operation label keeps each write's diagnostics
+  // distinct.
+  async #setAttempted(
+    clientMutationId: string,
+    operation: MutationOutboxOperation,
+    attempted: boolean,
+  ): Promise<boolean> {
+    return this.#write(OUTBOX_STORE, operation, async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (record?.state !== "submitting") return false;
-      await requestResult(store.put({ ...record, attempted: false }));
+      await requestResult(store.put({ ...record, attempted }));
       return true;
     });
   }

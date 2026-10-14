@@ -1776,11 +1776,14 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 // either way.
 func (c *Connection) backpressureRefusal(msg appwire.Message) (appwire.Message, bool) {
 	request := msg.Request
-	if request == nil || !appwire.RetrySafeMutationMethod(request.Method) {
+	if request == nil {
 		return appwire.Message{}, false
 	}
 	highWater := (cap(c.requests) + 1) / 2
 	if len(c.requests) < highWater {
+		return appwire.Message{}, false
+	}
+	if !appwire.RetrySafeMutationMethod(request.Method) {
 		return appwire.Message{}, false
 	}
 	return appwire.ErrorMessage(request.ID, appwire.BackpressureRefusal(clientMutationIDOf(request.Params),

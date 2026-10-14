@@ -953,7 +953,10 @@ describe("canceled rows", () => {
     await refreshPendingTurnsProjection("ref_a");
     await flushPendingTurnsProjectionForTests();
     threadsStore.setState((state) => ({
-      transientMutationRefusals: new Set(state.transientMutationRefusals).add(row.clientMutationId),
+      transientRefusalPaces: new Map(state.transientRefusalPaces).set("ref_a", {
+        clientMutationId: row.clientMutationId,
+        attempt: 1,
+      }),
     }));
     renderStrip(defaultProps());
     const pending = await screen.findByText("queued while busy");

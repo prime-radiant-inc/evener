@@ -189,7 +189,7 @@ export function QueueStrip({
   const mutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   const recoveryObligated = useThreadsStore((s) => s.restartBlockingObligations.has(sessionRef));
   const reconciliationStorageBlocked = useThreadsStore((s) => s.mutationReconciliationStorageBlocked.has(sessionRef));
-  const hubRefusedIds = useThreadsStore((s) => s.transientMutationRefusals);
+  const refusedId = useThreadsStore((s) => s.transientRefusalPaces.get(sessionRef)?.clientMutationId);
   const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue").filter(
     // A queue-method row Stop canceled (or one whose delivery turned unknown)
     // is a durable row below, not a bare pending one - the same slot rule the
@@ -591,7 +591,7 @@ export function QueueStrip({
           );
         })}
         {pendingQueueEntries.map((entry) => {
-          const hubRefused = hubRefusedIds.has(entry.id);
+          const hubRefused = entry.id === refusedId;
           return (
             <li
               key={entry.id}

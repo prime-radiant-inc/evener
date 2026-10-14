@@ -297,11 +297,7 @@ func TestRetrySafeMutationMethodsMatchSharedDispatcher(t *testing.T) {
 			t.Errorf("the shared dispatcher's set has %q, the Go set does not", name)
 		}
 	}
-	for _, name := range []string{
-		MethodTurnStart, MethodTurnSteer, MethodTurnInterrupt, MethodTurnQueue,
-		MethodTurnDrainAsSteer, MethodTurnPromoteQueuedAsSteer, MethodTurnCancelQueued,
-		MethodThreadClear, MethodNotesHumanSet,
-	} {
+	for name := range retrySafeMutationMethods {
 		if !RetrySafeMutationMethod(name) {
 			t.Errorf("RetrySafeMutationMethod(%q) = false, want true", name)
 		}

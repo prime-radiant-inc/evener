@@ -60,18 +60,20 @@ export function heldCaptionParts(
   now: number,
   hubRefused = false,
 ): HeldCaptionParts {
-  // A hub-refused steer waits on the store's paced retry, not on the turn:
-  // the caption must not read as an ordinary in-flight join while the hub
-  // has explicitly not accepted the row yet.
+  let stage: HeldCaptionParts["stage"];
+  let held: boolean;
   if (hubRefused) {
-    return entry.createdAt === undefined
-      ? { stage: "waiting-for-hub", held: false }
-      : { stage: "waiting-for-hub", held: false, elapsedMs: now - entry.createdAt };
+    // A hub-refused steer waits on the store's paced retry, not on the turn:
+    // the caption must not read as an ordinary in-flight join while the hub
+    // has explicitly not accepted the row yet.
+    stage = "waiting-for-hub";
+    held = false;
+  } else {
+    held = entry.state === "accepted";
+    // An accepted steer waits out the running step; a submitting one joins
+    // the turn already in flight.
+    stage = !turnActive ? "next-turn" : held ? "step-finishes" : "joining";
   }
-  const held = entry.state === "accepted";
-  // An accepted steer waits out the running step; a submitting one joins the
-  // turn already in flight.
-  const stage = !turnActive ? "next-turn" : held ? "step-finishes" : "joining";
   return entry.createdAt === undefined ? { stage, held } : { stage, held, elapsedMs: now - entry.createdAt };
 }
 
@@ -115,7 +117,7 @@ export function HeldSteerStack({ ref: sessionRef }: { ref: string }): JSX.Elemen
   const allEntries = usePendingTurnEntries(sessionRef);
   const entries = heldSteerEntries(allEntries);
   const statusType = useThreadsStore((s) => s.threads.get(sessionRef)?.status.type);
-  const hubRefusedIds = useThreadsStore((s) => s.transientMutationRefusals);
+  const refusedId = useThreadsStore((s) => s.transientRefusalPaces.get(sessionRef)?.clientMutationId);
   // The caption reads the same clock the liveness line does: Session's
   // 3s SessionNowContext tick, so no per-second machinery re-renders the
   // virtualized row and the caption is never itself a ticking live region.
@@ -125,7 +127,7 @@ export function HeldSteerStack({ ref: sessionRef }: { ref: string }): JSX.Elemen
   return (
     <ul className={styles.stack} data-testid="held-steer-stack">
       {entries.map((entry) => {
-        const hubRefused = hubRefusedIds.has(entry.id);
+        const hubRefused = entry.id === refusedId;
         return (
           <li key={entry.id} data-busy={hubRefused ? "true" : undefined}>
             <UserMessageView

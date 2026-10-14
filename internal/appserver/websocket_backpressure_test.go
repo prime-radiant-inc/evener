@@ -130,7 +130,7 @@ func TestServeWebSocketHighWaterRefusalAnswersMutationsInBand(t *testing.T) {
 	for id := int64(2); id <= 5; id++ {
 		sendRaw(t, transport, rawRequest(t, id, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	}
-	waitUntil(t, "the queue to reach high-water depth", func() bool { return len(conn.requests) == 4 })
+	waitForQueueDepth(t, conn, 4)
 	if lines := countAdvisoryLines(logged, "high-water"); lines != 0 {
 		t.Fatalf("reads at high water fired the high-water advisory %d times, want 0:\n%s", lines, logged())
 	}
@@ -169,7 +169,7 @@ func TestServeWebSocketHighWaterRefusalAnswersMutationsInBand(t *testing.T) {
 
 	// Reads below full still ride FIFO: nothing about them changed.
 	sendRaw(t, transport, rawRequest(t, 8, appwire.MethodThreadList, appwire.ThreadListParams{}))
-	waitUntil(t, "the read to ride behind the parked worker", func() bool { return len(conn.requests) == 5 })
+	waitForQueueDepth(t, conn, 5)
 
 	// Filling the queue to full afterwards still fires the full-queue
 	// advisory exactly once: the refusal's one-shot cannot consume it.
@@ -196,11 +196,11 @@ func TestServeWebSocketHighWaterBelowWaterMutationsRide(t *testing.T) {
 	for id := int64(2); id <= 4; id++ {
 		sendRaw(t, transport, rawRequest(t, id, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	}
-	waitUntil(t, "the queue to sit just below high water", func() bool { return len(conn.requests) == 3 })
+	waitForQueueDepth(t, conn, 3)
 
 	// Below high water the mutation rides the queue, no refusal in band.
 	sendRaw(t, transport, rawRequest(t, 5, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "cmid-5"}))
-	waitUntil(t, "the below-water mutation to ride the queue", func() bool { return len(conn.requests) == 4 })
+	waitForQueueDepth(t, conn, 4)
 	select {
 	case msg := <-frames:
 		t.Fatalf("frame arrived for a below-high-water mutation: %+v", msg)
@@ -222,7 +222,7 @@ func TestServeWebSocketHighWaterRefusalWithoutClientMutationID(t *testing.T) {
 	for id := int64(2); id <= 3; id++ {
 		sendRaw(t, transport, rawRequest(t, id, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	}
-	waitUntil(t, "the queue to reach high-water depth", func() bool { return len(conn.requests) == 2 })
+	waitForQueueDepth(t, conn, 2)
 
 	// No clientMutationId in the params: the refusal still answers the frame.
 	sendRaw(t, transport, rawRequest(t, 4, appwire.MethodTurnStart, map[string]any{"threadId": "t"}))
@@ -299,7 +299,7 @@ func TestServeWebSocketRefusedMutationRetriesIntoAFreedHub(t *testing.T) {
 	for id := int64(2); id <= 3; id++ {
 		sendRaw(t, transport, rawRequest(t, id, appwire.MethodThreadList, appwire.ThreadListParams{}))
 	}
-	waitUntil(t, "the queue to reach high-water depth", func() bool { return len(conn.requests) == 2 })
+	waitForQueueDepth(t, conn, 2)
 	// The mutation is refused in band, never queued, never run.
 	sendRaw(t, transport, rawRequest(t, 4, appwire.MethodTurnStart, appwire.TurnStartParams{ClientMutationID: "cmid-4"}))
 	requireBackpressureRefusal(t, "the high-water refusal", waitFor(t, "the high-water refusal", frames), 4, "cmid-4")
@@ -313,7 +313,7 @@ func TestServeWebSocketRefusedMutationRetriesIntoAFreedHub(t *testing.T) {
 	for range len(conn.requests) + 1 {
 		release <- struct{}{}
 	}
-	waitUntil(t, "the worker to drain the queue", func() bool { return len(conn.requests) == 0 })
+	waitForQueueDepth(t, conn, 0)
 
 	// The retried send rides the empty queue and runs exactly once. Its
 	// params validate now — the refusal answered before this validation only

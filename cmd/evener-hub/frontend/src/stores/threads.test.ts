@@ -456,9 +456,9 @@ class MissCacheAdapter extends SessionCacheIndexedDB {
   }
 }
 
-async function flushIndexedDBUntil(done: () => boolean, maxTurns = 30): Promise<void> {
+async function flushIndexedDBUntil(done: () => boolean | Promise<boolean>, maxTurns = 30): Promise<void> {
   const probe = new MutationOutboxIndexedDB();
-  for (let turn = 0; turn < maxTurns && !done(); turn += 1) await probe.listTargetRefs();
+  for (let turn = 0; turn < maxTurns && !(await done()); turn += 1) await probe.listTargetRefs();
   probe.close();
 }
 
@@ -6747,7 +6747,7 @@ test("a backpressured send stays queued, surfaces busy, and paces retries that r
   if (!refused) throw new Error("expected the refused row to stay durable");
   expect(refused.state).toBe("submitting");
   expect(refused.attempted).toBe(false);
-  expect(threadsStore.getState().transientMutationRefusals.has(refused.clientMutationId)).toBe(true);
+  expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.clientMutationId).toBe(refused.clientMutationId);
   expect(scheduled.map((entry) => entry.attempt)).toEqual([1]);
 
   // Firing the retry while the hub still refuses: the marker holds through
@@ -6759,7 +6759,7 @@ test("a backpressured send stays queued, surfaces busy, and paces retries that r
   await flushIndexedDBUntil(
     () => fake.calls.filter((call) => call.method === "turn/start").length === 2 && scheduled.length === 2,
   );
-  expect(threadsStore.getState().transientMutationRefusals.has(refused.clientMutationId)).toBe(true);
+  expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.clientMutationId).toBe(refused.clientMutationId);
   expect(scheduled.map((entry) => entry.attempt)).toEqual([1, 2]);
 
   // A retry the hub accepts settles the row and clears the marker.
@@ -6768,13 +6768,9 @@ test("a backpressured send stays queued, surfaces busy, and paces retries that r
   if (!secondRetry) throw new Error("expected the doubled paced retry to be armed");
   secondRetry.retry();
   await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/start").length === 3);
-  const settleProbe = new MutationOutboxIndexedDB();
-  for (let turn = 0; turn < 30 && (await storage.listOutbox("ref_a")).length > 0; turn += 1) {
-    await settleProbe.listTargetRefs();
-  }
-  settleProbe.close();
+  await flushIndexedDBUntil(async () => (await storage.listOutbox("ref_a")).length === 0);
   expect(await storage.listOutbox("ref_a")).toEqual([]);
-  expect(threadsStore.getState().transientMutationRefusals.size).toBe(0);
+  expect(threadsStore.getState().transientRefusalPaces.size).toBe(0);
   restoreScheduler();
 });
 
@@ -6838,11 +6834,7 @@ test("a backpressured send survives the non-authoritative reconcile park and red
   refuse = false;
   notifyReadyForMutationDispatch(["ref_a"]);
   await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/start").length === 3);
-  const settleProbe = new MutationOutboxIndexedDB();
-  for (let turn = 0; turn < 30 && (await storage.listOutbox("ref_a")).length > 0; turn += 1) {
-    await settleProbe.listTargetRefs();
-  }
-  settleProbe.close();
+  await flushIndexedDBUntil(async () => (await storage.listOutbox("ref_a")).length === 0);
   expect(await storage.listOutbox("ref_a")).toEqual([]);
   restoreScheduler();
 });
@@ -6883,7 +6875,7 @@ test("a backpressure refusal on the direct-send path rejects with the hub's mess
   expect(add).toHaveBeenCalledTimes(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   expect(await storage.listOutbox()).toEqual([]);
-  expect(threadsStore.getState().transientMutationRefusals.size).toBe(0);
+  expect(threadsStore.getState().transientRefusalPaces.size).toBe(0);
   expect(scheduled).toEqual([]);
   restoreScheduler();
 });
@@ -6966,7 +6958,7 @@ test("the busy marker clears when the record settles, not when the paced attempt
   await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
   const [row] = await storage.listOutbox("ref_a");
   if (!row) throw new Error("expected the refused row to stay durable");
-  expect(threadsStore.getState().transientMutationRefusals.has(row.clientMutationId)).toBe(true);
+  expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.clientMutationId).toBe(row.clientMutationId);
 
   // The paced attempt goes out and parks on the hub's answer: the marker
   // must survive the attempt in flight.
@@ -6976,19 +6968,17 @@ test("the busy marker clears when the record settles, not when the paced attempt
   if (!firstRetry) throw new Error("expected the paced retry to be armed");
   firstRetry();
   await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/start").length === 2);
-  expect(threadsStore.getState().transientMutationRefusals.has(row.clientMutationId)).toBe(true);
+  expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.clientMutationId).toBe(row.clientMutationId);
 
   // The accepted retry settles the row; settlement is what clears the marker.
   acceptedRetry.resolve({
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
     receipt: mutationReceipt(row.clientMutationId),
   });
-  await flushIndexedDBUntil(() => !threadsStore.getState().transientMutationRefusals.has(row.clientMutationId));
-  const settleProbe = new MutationOutboxIndexedDB();
-  for (let turn = 0; turn < 30 && (await storage.listOutbox("ref_a")).length > 0; turn += 1) {
-    await settleProbe.listTargetRefs();
-  }
-  settleProbe.close();
+  await flushIndexedDBUntil(
+    () => threadsStore.getState().transientRefusalPaces.get("ref_a")?.clientMutationId !== row.clientMutationId,
+  );
+  await flushIndexedDBUntil(async () => (await storage.listOutbox("ref_a")).length === 0);
   expect(await storage.listOutbox("ref_a")).toEqual([]);
   restoreScheduler();
 });

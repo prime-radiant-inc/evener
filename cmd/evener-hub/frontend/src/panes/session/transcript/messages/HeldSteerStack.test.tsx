@@ -187,7 +187,10 @@ test("a hub-refused held steer's ghost marks itself busy", async () => {
   await hydrate(fake, "ref_a");
   const clientMutationId = await seedHeld("steer", "steer the parser");
   threadsStore.setState((state) => ({
-    transientMutationRefusals: new Set(state.transientMutationRefusals).add(clientMutationId),
+    transientRefusalPaces: new Map(state.transientRefusalPaces).set("ref_a", {
+      clientMutationId,
+      attempt: 1,
+    }),
   }));
   render(
     <SessionNowContext.Provider value={NOW}>
