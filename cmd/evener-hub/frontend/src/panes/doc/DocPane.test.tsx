@@ -1866,6 +1866,84 @@ test("two leaseless readers with interleaved fetches stop superseding each other
   expect(beginReads.mock.calls.length).toBe(4);
 });
 
+// RoboRev round 34 medium: the twice-stale leaseless reader rendered with
+// suspended authority and returned success, which stopped retries - so with
+// two visible windows on one document, the reader whose acceptances went
+// stale stayed unable to select passages or display highlights indefinitely:
+// the winning acceptance publishes no wake and the loser has no lease. The
+// recovery joins the demand's paced retry instead: nothing issues
+// immediately, and the one-second retry lands after the competing read has
+// settled, so both readers eventually regain annotation authority.
+test("a twice-stale leaseless reader regains annotation authority through the demand's paced retry", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  const f = await fixture("reader-stale-paced-recovery");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  const held: Array<(content: DocFileContent) => void> = [];
+  mockRead.mockImplementation(
+    () =>
+      new Promise<DocFileContent>((resolve) => {
+        held.push(resolve);
+      }),
+  );
+  const paneA = mountAnnotated(f, ports, client, "doc-paced-a");
+  const paneB = mountAnnotated(f, ports, client, "doc-paced-b");
+  const workA = documentReaderWork("doc-paced-a", f.document, ports);
+  const workB = documentReaderWork("doc-paced-b", f.document, ports);
+  await settleFakeReadCycle();
+  expect(held.length).toBe(2);
+
+  const release = async (index: number): Promise<void> => {
+    await act(async () => {
+      held[index]?.(docContent(SOURCE, "rev-A"));
+    });
+  };
+  // The pinned interleave: A stale, B stale, A stale again, B accepts. A
+  // rendered its fetched content with suspended authority.
+  await release(0);
+  await settleFakeReadCycle();
+  expect(held.length).toBe(3);
+  await release(1);
+  await settleFakeReadCycle();
+  expect(held.length).toBe(4);
+  await release(2);
+  await release(3);
+  await settleFakeReadCycle();
+  expect(within(paneA.container).getByText("First occurrence: same")).toBeTruthy();
+  expect(within(paneB.container).getByText("First occurrence: same")).toBeTruthy();
+  expect([workA.lease, workB.lease].filter((lease) => lease !== null)).toHaveLength(1);
+  expect(workA.lease).toBeNull();
+
+  // Nothing issues immediately after the second stale; the demand paces the
+  // recovery one second out.
+  // Nothing issues immediately after the second stale; the demand paces the
+  // recovery one second out.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(999);
+  });
+  expect(held.length).toBe(4);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  // The paced read issues after the clock hop; the real-macrotask hops let
+  // the repository's beginRead settle before the fetch is observable.
+  await settleFakeReadCycle();
+  expect(held.length).toBe(5);
+  await release(4);
+  await settleFakeReadCycle();
+  // The paced read lands with no competing issuance in flight and accepts:
+  // the suspended reader regains annotation authority without any foreground
+  // event, reopen or wake, and both readers hold current leases.
+  expect(workA.lease).not.toBeNull();
+  expect(workB.lease).not.toBeNull();
+});
+
 test("a failed expiry fence keeps the pending phase, suppresses the stale highlight and old-lease Send, then recovers on a current read", async () => {
   let failFence = true;
   const f = await fixture("reader-expiry-pending", {

@@ -695,17 +695,22 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
           return "success";
         }
         // A SECOND consecutive stale acceptance means another reader's
-        // in-flight issuance keeps superseding ours; re-issuing would only
-        // supersede theirs back, and two leaseless readers would fetch and
-        // write read generations forever. The fetch itself succeeded: render
-        // its real raw content with suspended authority - the same honest
-        // display a failed beginRead produces - and stop issuing. The other
-        // reader's ticket then settles, and a foreground reread, a reopen or
-        // a later committed wake revalidates this pane.
-        leaselessStaleRef.current = 0;
+        // in-flight issuance keeps superseding ours, so an immediate
+        // re-issue would only supersede theirs back. The fetch itself
+        // succeeded: render its real raw content with suspended authority -
+        // the same honest display a failed beginRead produces - and hand the
+        // recovery to the demand's paced retry instead of stopping forever:
+        // the winning acceptance publishes no wake and this reader has no
+        // lease, so nothing else would ever revalidate the pane. The paced
+        // retry lands after the competing read has settled and accepts, so
+        // both readers eventually regain annotation authority. The bound
+        // stays honest: the stale counter is deliberately NOT reset, so one
+        // immediate refresh per series (the first stale above) is all the
+        // tight-loop interleave there is, and every later stale paces with the
+        // demand's growing backoff instead of re-arming the immediate path.
         displayContent(content);
         setAuthoritySuspended(true);
-        return "success";
+        return "transient";
       }
       displayContent(content);
       if (accepted.state === "accepted") {
