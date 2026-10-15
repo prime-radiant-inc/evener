@@ -173,12 +173,16 @@ export function registerLocalCompositionSchema(database: IDBDatabase, transactio
   }
   // The document+epoch indexes exist on fresh and upgraded databases alike:
   // the version-change transaction covers stores this upgrade created and
-  // stores that already existed, and the guards make the step idempotent.
-  const evidenceStore = transaction?.objectStore(ANNOTATION_EVIDENCE_STORE);
+  // stores that already existed, and the guards make the step idempotent. A
+  // real version-change transaction always provides objectStore; a synthetic
+  // upgrade that models only the transaction's presence does not, and the
+  // step simply has no index work to do in that world.
+  const upgradeTransaction = typeof transaction?.objectStore === "function" ? transaction : undefined;
+  const evidenceStore = upgradeTransaction?.objectStore(ANNOTATION_EVIDENCE_STORE);
   if (evidenceStore && !evidenceStore.indexNames.contains(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX)) {
     evidenceStore.createIndex(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX, ["documentKey", "epoch"]);
   }
-  const payloadsStore = transaction?.objectStore(ANNOTATION_PAYLOADS_STORE);
+  const payloadsStore = upgradeTransaction?.objectStore(ANNOTATION_PAYLOADS_STORE);
   if (payloadsStore && !payloadsStore.indexNames.contains(ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX)) {
     payloadsStore.createIndex(ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX, ["documentKey", "epoch"]);
   }
