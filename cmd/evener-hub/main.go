@@ -145,6 +145,7 @@ type hubOptions struct {
 	// be absent and yield DefaultConfig().
 	configExplicit bool
 	addr           string
+	addrPresent    bool
 	evenerBinary   string
 	appwireTrace   string
 	// deployBinary and buildSource describe how a missed host gets the
@@ -276,14 +277,16 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
 		return err
 	}
+	cfg, endpoint, err := resolveLoadedEndpointConfig(cfg, opts.configPath, EndpointInput{opts.addr, opts.addrPresent})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
+		return err
+	}
 	// Stamp the build User-Agent once: previously every registry-client
 	// construction rewrote this process global per request, racing
 	// in-flight Codex requests. Fetch paths now bind scoped
 	// authenticators per request and never write it.
 	tokenauth.ClientVersion = buildinfo.Version()
-	if opts.addr != "" {
-		cfg.Addr = opts.addr
-	}
 	if err := deps.ensureDirs(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
@@ -472,20 +475,19 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// performing a synchronous network walk per request.
 	remoteCache := &hubcore.RemoteThreadCache{}
 
-	// Bind the listener before anything downstream (WebConfig.HubAddr, the
-	// startup log line, the advertised auth URL) reads cfg.Addr, and
-	// overwrite cfg.Addr with what actually got bound. This is what makes
+	// Bind the selected listener before anything downstream needs the actual
+	// bound address. Leave cfg.Addr as the configured value. This makes
 	// "-addr 127.0.0.1:0" a real ephemeral-port request instead of a literal
 	// ":0" that never resolves to anything callable: the OS hands back a
 	// free port that cannot collide with another hub, sidestepping the
 	// TOCTOU race in "probe a free port, then hope nothing else grabs it
 	// before we bind" (see docs/developing-evener/agentic-testing.md).
-	hubListener, err := deps.listen(context.Background(), "tcp", cfg.Addr)
+	hubListener, err := deps.listen(context.Background(), "tcp", endpoint.ListenAddr.String())
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] listen %s: %v\n", cfg.Addr, err)
 		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
 	}
-	cfg.Addr = hubListener.Addr().String()
+	boundAddr := hubListener.Addr().String()
 
 	resumeLocks, err := hubcore.NewPersistentResumeLocks(hubStateRoot)
 	if err != nil {
@@ -631,9 +633,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	scratchReconcile := newScratchReconciler(hubcore.WebConfig{Past: past, Archive: archive, Roster: roster})
 	web := newWebServer(hubcore.WebConfig{
-		HubAddr:                   cfg.Addr,
+		HubAddr:                   boundAddr,
 		AuthToken:                 authToken,
-		MobileBaseURL:             cfg.MobileBaseURL,
+		PublicURL:                 cfg.PublicURL,
 		HubStateRoot:              cfg.HubStateRoot,
 		LaunchConfigRoot:          cmdutil.DefaultConfigRoot(),
 		MachineRoots:              cfg.Roots,
@@ -929,7 +931,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	srv := &listenerHTTPServer{
 		Server: &http.Server{
-			Addr:              cfg.Addr,
+			Addr:              boundAddr,
 			Handler:           web.Handler(),
 			ReadHeaderTimeout: hubHTTPReadHeaderTimeout,
 			IdleTimeout:       hubHTTPIdleTimeout,
@@ -939,12 +941,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
 	// it with a hostname the operator can reach the hub at.
-	authHost := advertisedHubHost(cfg.Addr, hubHostname)
+	authHost := advertisedHubHost(boundAddr, hubHostname)
 	browserAddress := "http://" + authHost
 	_, _ = fmt.Fprintf(stderr, "[hub] Browser address: %s\n", browserAddress)
 	_, _ = fmt.Fprintf(stderr, "[hub] Private sign-in link: %s\n", hubedge.AuthURLFor(browserAddress, authToken))
 	_, _ = fmt.Fprintln(stderr, "[hub] Keep this terminal running while you use Evener in the browser.")
-	_, _ = fmt.Fprintf(stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
+	_, _ = fmt.Fprintf(stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, boundAddr, runDir)
 	_, _ = fmt.Fprintf(stderr, "[hub] Auth token file: %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
 	if err := deps.serve(ctx, srv); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
@@ -1127,8 +1129,11 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 		// default path is allowed to be absent. fs.Visit reports the flags that
 		// were actually set, so the two are distinguishable after parsing.
 		fs.Visit(func(f *flag.Flag) {
-			if f.Name == "config" {
+			switch f.Name {
+			case "config":
 				opts.configExplicit = true
+			case "addr":
+				opts.addrPresent = true
 			}
 		})
 	}

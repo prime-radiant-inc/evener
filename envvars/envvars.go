@@ -58,12 +58,16 @@ func (v Var) Assignment(value string) string {
 }
 
 var (
-	EVENERAllowedDecisions            = Var{Name: "EVENER_ALLOWED_DECISIONS", Summary: "Sets allowed communicate.output.decision values for workflow routing, as a JSON array or comma-separated list; not tool approval modes.", Visibility: Public}
-	EVENERFluencyModel                = Var{Name: "EVENER_FLUENCY_MODEL", Summary: "Default model for the tool-fluency development harness.", Visibility: Tooling}
-	EVENERHostTempBases               = Var{Name: "EVENER_HOST_TEMP_BASES", Summary: "OS path list of absolute directories that replaces /tmp and /var/tmp as the world-usable host temp bases session temp containers are created in and the startup crashed-scratch sweep walks; each must be a world-writable sticky directory. Set but empty or malformed is refused, never replaced by the defaults.", Visibility: Public}
-	EVENERHubAddr                     = Var{Name: "EVENER_HUB_ADDR", Summary: "Default hub address for local development tooling (the Vite dev-server proxy and browser guards).", Visibility: Public}
+	EVENERAllowedDecisions = Var{Name: "EVENER_ALLOWED_DECISIONS", Summary: "Sets allowed communicate.output.decision values for workflow routing, as a JSON array or comma-separated list; not tool approval modes.", Visibility: Public}
+	EVENERFluencyModel     = Var{Name: "EVENER_FLUENCY_MODEL", Summary: "Default model for the tool-fluency development harness.", Visibility: Tooling}
+	EVENERHostTempBases    = Var{Name: "EVENER_HOST_TEMP_BASES", Summary: "OS path list of absolute directories that replaces /tmp and /var/tmp as the world-usable host temp bases session temp containers are created in and the startup crashed-scratch sweep walks; each must be a world-writable sticky directory. Set but empty or malformed is refused, never replaced by the defaults.", Visibility: Public}
+	// EVENERHubAddr is retained only to diagnose use of the removed name;
+	// it is deliberately absent from All, Find and supported environment help.
+	EVENERHubAddr                     = Var{Name: "EVENER_HUB_ADDR"}
+	EVENERHubListenAddr               = Var{Name: "EVENER_HUB_LISTEN_ADDR", Summary: "Hub server listener as host:port; overrides hub.toml addr.", Visibility: Public}
 	EVENERHubSpawned                  = Var{Name: "EVENER_HUB_SPAWNED", Summary: "Set by evener-hub for spawned evener serve daemons.", Visibility: Internal}
 	EVENERHubToken                    = Var{Name: "EVENER_HUB_TOKEN", Summary: "Per-hub bearer token passed to spawned evener serve daemons.", Secret: true, Visibility: Internal}
+	EVENERHubURL                      = Var{Name: "EVENER_HUB_URL", Summary: "Hub client HTTP(S) origin for development tooling.", Visibility: Public}
 	EVENERLoginHeadless               = Var{Name: "EVENER_LOGIN_HEADLESS", Summary: "Overrides OpenAI login flow detection: 1 for device-code, 0 for browser.", Visibility: Public}
 	EVENERModel                       = Var{Name: "EVENER_MODEL", Summary: "Default model as provider/model when --model is omitted.", Visibility: Public}
 	EVENERNoUserSkills                = Var{Name: "EVENER_NO_USER_SKILLS", Summary: "Set to 1 to omit the operator's user-global sources: their home skills (~/.agents/skills), user config skills directory, installed plugins' skills, global MCP servers (~/.config/evener/mcp.json), and evener-wide commands (~/.config/evener/commands). Bundled, project, and explicitly added sources remain. The tool-fluency harness sets it so eval rounds depend only on the revision under test.", Visibility: Tooling}
@@ -203,9 +207,10 @@ var allVars = []Var{
 	EVENERAllowedDecisions,
 	EVENERFluencyModel,
 	EVENERHostTempBases,
-	EVENERHubAddr,
+	EVENERHubListenAddr,
 	EVENERHubSpawned,
 	EVENERHubToken,
+	EVENERHubURL,
 	EVENERLoginHeadless,
 	EVENERModel,
 	EVENERNoUserSkills,

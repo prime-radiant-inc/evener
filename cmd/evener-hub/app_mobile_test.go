@@ -29,8 +29,8 @@ func TestHubMobilePairingUsesExplicitSafeOrigin(t *testing.T) {
 
 func TestHubMobilePairingConfiguredBaseURLTakesPrecedence(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{
-		AuthToken:     "mobile-secret",
-		MobileBaseURL: "https://hub.example.test:9443",
+		AuthToken: "mobile-secret",
+		PublicURL: "https://hub.example.test:9443",
 	})
 
 	response, err := dispatchMobilePairing(t, web, appwire.MobilePairingParams{
@@ -153,8 +153,8 @@ func TestHubMobilePairingRejectsUnsafeOriginWithoutLeakingToken(t *testing.T) {
 
 func TestHubMobilePairingRejectsUnsafeConfiguredBaseURL(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{
-		AuthToken:     "mobile-secret",
-		MobileBaseURL: "http://127.0.0.1:9180",
+		AuthToken: "mobile-secret",
+		PublicURL: "http://127.0.0.1:9180",
 	})
 
 	_, err := dispatchMobilePairing(t, web, appwire.MobilePairingParams{

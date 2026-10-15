@@ -14,7 +14,8 @@ reference also includes internal processes and test controls.
 | `EVENER_ALLOWED_DECISIONS` | Restricts tool-decision modes allowed by the active profile. |
 | `EVENER_CREDENTIALS_CONFIG` | Path to `credentials.toml`. Unset means the sibling of the resolved providers-config path. |
 | `EVENER_HOST_TEMP_BASES` | Replaces the world-usable host temp bases, `/tmp` then `/var/tmp`, with an OS path list (`:`-separated on POSIX) of absolute directories. Session temp containers (see `TMPDIR`) are created in the first entry that serves, and the startup crashed-scratch sweep reclaims abandoned containers only in these bases. Each entry must be an existing world-writable, world-traversable sticky directory, the same test `/tmp` has to pass; an entry that fails it is skipped. Unset means the defaults. A value that is set but empty, or that has an empty or relative entry, is refused rather than replaced by `/tmp` and `/var/tmp`: every `evener` and `evener serve` start prints a warning naming the variable, the sweep skips the host temp bases, and no session temp container is created, so commands keep the inherited `TMPDIR` as they do when no base serves. POSIX platforms only. The test rig (`agent/sandbox/sandboxtest`) sets it so the `evener` processes a test starts stay inside the test's own temp root. |
-| `EVENER_HUB_ADDR` | Default hub address for local development tooling (the Vite dev-server proxy and browser guards). |
+| `EVENER_HUB_LISTEN_ADDR` | Server listener as `host:port`; overrides top-level `addr` in `hub.toml`, but an explicit `evener hub --addr` wins. |
+| `EVENER_HUB_URL` | Client HTTP(S) origin; never a server bind setting. |
 | `EVENER_LOGIN_HEADLESS` | Overrides OpenAI login flow detection: `1` for device-code, `0` for browser. |
 | `EVENER_MODEL` | Default model as `provider/model` when `--model` is omitted. |
 | `EVENER_OFFLINE` | Set to `1` to keep the provider registry offline: no models.dev refresh, embedded snapshot only. |

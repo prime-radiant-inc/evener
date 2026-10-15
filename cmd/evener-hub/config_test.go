@@ -364,7 +364,7 @@ func TestLoadConfig_PreservesExplicitHubStateRoot(t *testing.T) {
 	}
 }
 
-func TestMobileBaseURLConfig(t *testing.T) {
+func TestPublicURLConfig(t *testing.T) {
 	tests := []struct {
 		name string
 		url  string
@@ -388,7 +388,7 @@ func TestMobileBaseURLConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "hub.toml")
-			if err := os.WriteFile(path, []byte(`mobile_base_url = "`+tt.url+`"`), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte(`public_url = "`+tt.url+`"`), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := LoadConfig(path)
@@ -396,13 +396,13 @@ func TestMobileBaseURLConfig(t *testing.T) {
 				if err != nil {
 					t.Fatalf("LoadConfig: %v", err)
 				}
-				if cfg.MobileBaseURL != tt.url {
-					t.Fatalf("MobileBaseURL = %q, want %q", cfg.MobileBaseURL, tt.url)
+				if cfg.PublicURL != tt.url {
+					t.Fatalf("PublicURL = %q, want %q", cfg.PublicURL, tt.url)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("LoadConfig accepted invalid mobile_base_url %q", tt.url)
+				t.Fatalf("LoadConfig accepted invalid public_url %q", tt.url)
 			}
 		})
 	}

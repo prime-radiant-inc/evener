@@ -48,7 +48,7 @@ func (p *devicePairings) prune() {
 func (p *devicePairings) create(params appwire.DevicePairingCreateParams) (appwire.DevicePairingInvitation, error) {
 	origin := params.Origin
 	if origin == "" {
-		origin = p.cfg.MobileBaseURL
+		origin = p.cfg.PublicURL
 		if origin == "" {
 			origin, _ = mobilePairingOrigin(p.cfg, "")
 		}

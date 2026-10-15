@@ -35,7 +35,7 @@ func mobilePairing(cfg hubcore.WebConfig, params appwire.MobilePairingParams) (a
 // unspecified listener address does not identify a destination. Scoped IPv6
 // addresses cannot be represented in browser URLs or shared across devices.
 func safeMobileOrigin(raw string) (string, bool) {
-	if err := validateMobileBaseURL(raw); err != nil {
+	if err := validatePublicURL(raw); err != nil {
 		return "", false
 	}
 	u, err := url.Parse(raw)

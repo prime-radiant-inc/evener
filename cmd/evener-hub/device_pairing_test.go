@@ -34,7 +34,7 @@ func TestDevicePairingRejectsMalformedNumericHosts(t *testing.T) {
 				cfg := hubcore.WebConfig{AuthToken: "synthetic-credential"}
 				params := appwire.DevicePairingCreateParams{Origin: "http://" + host + ":9180", Tailnet: true}
 				if viaConfig {
-					cfg.MobileBaseURL = "https://" + host + ":9180"
+					cfg.PublicURL = "https://" + host + ":9180"
 					params.Origin = ""
 				}
 				p := newDevicePairings(cfg)
@@ -43,7 +43,7 @@ func TestDevicePairingRejectsMalformedNumericHosts(t *testing.T) {
 				if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams || invite.Invitation != "" || len(p.entries) != 0 {
 					t.Fatalf("malformed host created an invitation: code=%d entries=%d err=%v", wireErr.Code, len(p.entries), err)
 				}
-				p.cfg.MobileBaseURL = ""
+				p.cfg.PublicURL = ""
 				if _, err := p.create(appwire.DevicePairingCreateParams{Origin: "http://magic-kingdom:9180", Tailnet: true}); err != nil || len(p.entries) != 1 {
 					t.Fatalf("valid destination did not recover pairing: entries=%d err=%v", len(p.entries), err)
 				}
@@ -61,7 +61,7 @@ func TestDevicePairingUsesSelectedOrigin(t *testing.T) {
 		{"edited destination", "http://magic-kingdom:9180", "https://old.example.test", "", "http://magic-kingdom:9180"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := newDevicePairings(hubcore.WebConfig{AuthToken: "synthetic-credential", HubAddr: tc.bound, MobileBaseURL: tc.configured})
+			p := newDevicePairings(hubcore.WebConfig{AuthToken: "synthetic-credential", HubAddr: tc.bound, PublicURL: tc.configured})
 			invite, err := p.create(appwire.DevicePairingCreateParams{Origin: tc.proposed})
 			if err != nil {
 				t.Fatal(err)

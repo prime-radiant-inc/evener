@@ -90,6 +90,8 @@ launch files described below.
 Create `hub.toml` when you need to override those paths or the listen
 address. If it already exists, preserve a private copy and edit only the intended fields rather than running this file-creation recipe over it. The shell expands `hub_config` and `hub_state_root` in the heredoc
 before writing the file; TOML itself does not expand shell variables.
+See [hub endpoints](evener-hub-endpoints.md) for listener precedence, port-zero
+binding, public origins, and migration from retired settings.
 
 ```bash
 hub_config="${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml"
@@ -97,6 +99,7 @@ hub_state_root="${XDG_STATE_HOME:-$HOME/.local/state}/evener"
 mkdir -p "$(dirname "$hub_config")"
 cat > "$hub_config" <<EOF
 addr = "127.0.0.1:9180"
+# Optional reverse-proxy origin for pairing: public_url = "https://evener.example.com"
 hub_state_root = "$hub_state_root"
 run_dir = "$hub_state_root/run"
 state_glob = "$hub_state_root/projects/*"
@@ -262,8 +265,9 @@ chmod 600 "$log_file"
 evener hub --config "$hub_config" 2>&1 | tee -a "$log_file"
 ```
 
-The hub listens on `127.0.0.1:9180` unless `addr` in `hub.toml` says
-otherwise, and logs the authorization URL described under Trust Boundary on
+The hub listens on `127.0.0.1:9180` unless a top-level `addr` in `hub.toml`,
+`EVENER_HUB_LISTEN_ADDR`, or `evener hub --addr` overrides it, in that order.
+The hub logs the authorization URL described under Trust Boundary on
 every start. That URL contains the bearer credential: protect supervisor
 stdout/stderr and this log as secrets, and do not paste them into tickets or
 chat.
