@@ -190,7 +190,10 @@ exit 2
 		}
 	}
 	// The resume's response arrives while read responses still stream, so a
-	// receive must hold every non-matching frame for its own later receive.
+	// receive must hold every frame — matching ones too — for its own later
+	// receive: the cleanup drain below re-checks the map, and a matching
+	// frame returned without being stored would leave the drain waiting for
+	// an answer that already arrived, out to the context deadline.
 	received := make(map[int64]appwire.Message)
 	receive := func(id int64) appwire.Message {
 		t.Helper()
@@ -204,15 +207,15 @@ exit 2
 			}
 			switch {
 			case message.Response != nil:
+				received[message.Response.ID.Int64()] = message
 				if message.Response.ID.Int64() == id {
 					return message
 				}
-				received[message.Response.ID.Int64()] = message
 			case message.Error != nil:
+				received[message.Error.ID.Int64()] = message
 				if message.Error.ID.Int64() == id {
 					return message
 				}
-				received[message.Error.ID.Int64()] = message
 			}
 			// Notifications carry no id; skip them.
 		}
