@@ -499,6 +499,32 @@ func TestGrepRgShowsTheRecordAfterACaptureEndingOnABoundary(t *testing.T) {
 	}
 }
 
+// TestRgCaptureWholeStreamRefusesACappedSlot pins the other half of wholeStream:
+// a slot cut to its bound is not the record's own bytes, so head and tail are NOT
+// the stream and the caller must keep the tail in the note, where the cut is
+// stated. Without the guard a capture that left nothing out would present the
+// slot's synthetic omission text as part of a complete result.
+func TestRgCaptureWholeStreamRefusesACappedSlot(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	first := dir + "/a.txt\x001:n\n"
+	huge := dir + "/b.txt\x001:" + strings.Repeat("n", rgTailSlotBytes) + "\n"
+	c := newRgCapture(len(first)) // the cap ends exactly at the first record's end
+	if _, err := c.Write([]byte(first + huge)); err != nil {
+		t.Fatal(err)
+	}
+	view := c.view(dir, false)
+	if len(view.tail) != 1 {
+		t.Fatalf("tail = %q, want the one record after the cap", view.tail)
+	}
+	if view.omitted != 0 {
+		t.Fatalf("the capture holds every byte, but reports %d omitted", view.omitted)
+	}
+	if whole := view.wholeStream(); whole != "" {
+		t.Fatalf("a slot cut to its bound was presented as the stream: %q", whole)
+	}
+}
+
 // FuzzRgCapture drives the capture with arbitrary bytes: whatever the stream and
 // the cap, the object stays inside its bound, its view accounts for every byte
 // it did not keep, and chunking the writes cannot change the view.
