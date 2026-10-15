@@ -137,6 +137,8 @@ export function preparedAnnotationFromLease(
 }
 
 // Build one genuine accepted operation from a real beginRead/acceptRead lease.
+// A truncated baseline observes the file the way a too-large document reads:
+// the displayed prefix, with the capture evidence to match.
 export async function acceptedOperation(
   repo: Pick<DocumentAnnotationRepository, "beginRead" | "acceptRead">,
   key: DocumentKey,
@@ -144,10 +146,11 @@ export async function acceptedOperation(
   note: string,
   destination: DestinationProvenance,
   revision = "rev-A",
+  truncated = false,
 ): Promise<PreparedAnnotation> {
-  const read = await repo.acceptRead(await repo.beginRead(key), docContent(SOURCE, revision));
+  const read = await repo.acceptRead(await repo.beginRead(key), docContent(SOURCE, revision, truncated));
   if (read.state !== "accepted") throw new Error("read not accepted");
-  return preparedAnnotationFromLease(read.lease, operationId, note, destination, revision);
+  return preparedAnnotationFromLease(read.lease, operationId, note, destination, revision, truncated);
 }
 
 export async function fixture(
@@ -166,6 +169,7 @@ export async function fixture(
       | "onPendingExpiryRetained"
     >
   > = {},
+  baselineTruncated = false,
 ) {
   // Native structuredClone (fake IndexedDB) cannot preserve jsdom Blob bytes,
   // so the attachment is created and read with Node's real Blob. Restoration is
@@ -250,7 +254,15 @@ export async function fixture(
         : null,
   });
   cleanupAfterTest(() => repo.close());
-  const operation = await acceptedOperation(repo, document, "op-1", "Keep this scope.", destination);
+  const operation = await acceptedOperation(
+    repo,
+    document,
+    "op-1",
+    "Keep this scope.",
+    destination,
+    "rev-A",
+    baselineTruncated,
+  );
   await repo.saveAnnotation(operation);
   return {
     factory,
