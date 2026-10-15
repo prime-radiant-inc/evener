@@ -29,13 +29,14 @@ var ErrWorkingDirectoryGone = errors.New("working directory no longer exists")
 // requireLiveWorkingDirForRelative refuses a relative-path mutation when the
 // environment's working directory no longer exists, so a write cannot silently
 // recreate a deleted directory and land outside any checkout (issue #4671). It
-// is called only on the plain, unrestricted mutation arm — the one that joins
-// the working directory and `MkdirAll`s parents — because that is the only path
-// that recreates a deleted directory. The sandbox and scratch arms resolve
-// through a captured root descriptor and fail rather than recreate, and the
-// confined-file arm has its own root semantics, so they are left untouched. It
-// is a no-op for an absolute path, an empty path, or an empty RootDir (whose
-// relative handling is already a bare join).
+// It is called only on the plain, unrestricted mutation arm — the one that
+// joins the working directory and `MkdirAll`s parents — because that is the
+// path that recreates a deleted directory. The sandbox and scratch arms resolve
+// through a captured root descriptor; the scratch arm in particular serves the
+// confined-file root, whose logical path may legitimately not exist while its
+// captured descriptor is live, so a working-directory liveness check cannot be
+// applied there. It is a no-op for an absolute path, an empty path, or an empty
+// RootDir (whose relative handling is already a bare join).
 func (e *LocalExecutionEnvironment) requireLiveWorkingDirForRelative(path string) error {
 	p := strings.TrimSpace(path)
 	if p == "" || filepath.IsAbs(p) || e.RootDir == "" {
@@ -45,7 +46,7 @@ func (e *LocalExecutionEnvironment) requireLiveWorkingDirForRelative(path string
 		return nil
 	}
 	return fmt.Errorf(
-		"%s: working directory %s no longer exists; re-anchor the session to an existing directory or operate from a valid working directory (%w)",
+		"%s: working directory %s is not an existing directory; re-anchor the session to an existing directory or operate from a valid working directory (%w)",
 		p, e.RootDir, ErrWorkingDirectoryGone)
 }
 

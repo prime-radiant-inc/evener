@@ -47,21 +47,54 @@ func anchorGoneRepo(t *testing.T) (r *wtRepo, dead, live string) {
 // a path that is gone.
 func TestWorktreeDeadAnchor_ListEnumeratesLiveLanes(t *testing.T) {
 	t.Parallel()
-	r, _, live := anchorGoneRepo(t)
+	r, dead, live := anchorGoneRepo(t)
 
 	entries, err := r.s.worktreeList(t.Context())
 	if err != nil {
 		t.Fatalf("worktreeList with a dead anchor = %v, want no error", err)
 	}
 	found := false
+	deadListed := false
 	for _, e := range entries {
 		if filepath.Clean(e.Path) == filepath.Clean(live) {
 			found = true
+		}
+		if filepath.Clean(e.Path) == filepath.Clean(dead) {
+			deadListed = true
 		}
 	}
 	if !found {
 		t.Fatalf("list did not report the live lane %q; entries = %+v", live, entries)
 	}
+	// The lane whose directory was removed with a bare delete stays in git's
+	// registry, so list reports it rather than dropping it silently.
+	if !deadListed {
+		t.Fatalf("list dropped the deleted lane %q entirely; entries = %+v", dead, entries)
+	}
+}
+
+// The other mutating operations refuse with the same named error rather than
+// leaking the lstat (issue #4671: every operation names the dead path).
+func TestWorktreeDeadAnchor_MutatingOpsRefuseNamed(t *testing.T) {
+	t.Parallel()
+	r, dead, _ := anchorGoneRepo(t)
+
+	check := func(op string, err error) {
+		t.Helper()
+		var gone *worktreeAnchorGoneError
+		if !errors.As(err, &gone) {
+			t.Fatalf("%s error = %v, want *worktreeAnchorGoneError", op, err)
+		}
+		if filepath.Clean(gone.path) != filepath.Clean(dead) {
+			t.Fatalf("%s named path %q, want the dead lane %q", op, gone.path, dead)
+		}
+	}
+	_, createErr := r.create(t, map[string]any{"name": "another"})
+	check("create", createErr)
+	_, removeErr := r.s.worktreeRemove(t.Context(), "live-lane", false, false, false)
+	check("remove", removeErr)
+	_, pruneErr := r.s.worktreePrune(t.Context())
+	check("prune", pruneErr)
 }
 
 // T2: `switch` and `exit` must refuse with the named dead-anchor error, naming
