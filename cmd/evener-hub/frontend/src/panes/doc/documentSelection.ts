@@ -5,7 +5,9 @@
 // read from that context's own Selection. A finished gesture belongs to the
 // root's mount and to its recorded pointer: a press that begins outside the
 // root never arms, and only the arming pointer's release finishes or abandons
-// the interaction. The subscription lives for the mount, not for a render:
+// the interaction. A cancelled pointer stream hands the gesture to the OS: the
+// native selection it leaves behind completes once it stops changing, so
+// long-press selection and handle adjustments still open the comment box. The subscription lives for the mount, not for a render:
 // revalidation reads rebind the map without cancelling an armed gesture, and
 // the release reads the map current at that moment, so a selection over
 // content that changed underneath it maps to nothing and emits no capture. A
@@ -39,7 +41,39 @@ export function observeFinishedDocumentSelections(input: ObserveFinishedDocument
   let activePointer: number | null = null;
   let shiftActive = false;
   let shiftBaseline: SourceRange | null = null;
+  // The OS-owned selection a cancelled pointer stream leaves behind. The
+  // baseline is the range the cancel interrupted; a settle that lands on the
+  // identical range re-opens nothing (the same rule the keyboard path keeps).
+  let nativeBaseline: SourceRange | null | undefined;
+  let nativeTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
+
+  // How long the native selection must stop changing before it counts as
+  // settled: handle adjustments arrive as a selectionchange burst, and each
+  // one re-defers the settle so the passage completes once when they stop.
+  const NATIVE_SETTLE_MS = 250;
+
+  const clearNativeSettle = (): void => {
+    nativeBaseline = undefined;
+    if (nativeTimer !== null) {
+      clearTimeout(nativeTimer);
+      nativeTimer = null;
+    }
+  };
+
+  const armNativeSettle = (): void => {
+    if (nativeTimer !== null) clearTimeout(nativeTimer);
+    nativeTimer = setTimeout(() => {
+      nativeTimer = null;
+      if (disposed) return;
+      const baseline = nativeBaseline;
+      nativeBaseline = undefined;
+      const current = mappedRange();
+      if (!current) return;
+      if (baseline && baseline.start === current.start && baseline.end === current.end) return;
+      finish();
+    }, NATIVE_SETTLE_MS);
+  };
 
   // The current verified nonempty mapped range, or null for an unmapped,
   // collapsed or stale selection.
@@ -84,6 +118,9 @@ export function observeFinishedDocumentSelections(input: ObserveFinishedDocument
     if (event.isPrimary === false) return;
     if (event.button !== 0) return;
     if (!withinRoot(event.target)) return;
+    // A new press owns the interaction: any settle the previous gesture's
+    // cancellation left pending must not complete behind the new one.
+    clearNativeSettle();
     activePointer = event.pointerId;
   };
   const onPointerUp = (event: PointerEvent): void => {
@@ -94,6 +131,11 @@ export function observeFinishedDocumentSelections(input: ObserveFinishedDocument
   const onPointerCancel = (event: PointerEvent): void => {
     if (activePointer === null || event.pointerId !== activePointer) return;
     activePointer = null;
+    // The OS took the gesture over for its own selection: completing or
+    // adjusting that selection arrives as selectionchange with no pointer
+    // behind it, so the first such change arms the settle that completes it
+    // once it stops changing.
+    nativeBaseline = mappedRange();
   };
   const onKeyDown = (event: KeyboardEvent): void => {
     if (disposed || event.key !== "Shift" || shiftActive) return;
@@ -113,9 +155,15 @@ export function observeFinishedDocumentSelections(input: ObserveFinishedDocument
     if (baseline && baseline.start === current.start && baseline.end === current.end) return;
     finish();
   };
-  // Registered so a selection change is observed without ever completing a
-  // passage on its own: touch-handle adjustment must stay usable.
-  const onSelectionChange = (): void => {};
+  // A selection change alone never completes a passage: while a press is
+  // active its own release owns completion. The one exception is the OS-owned
+  // selection a cancelled stream left behind - there each change re-defers
+  // the armed settle, so native handle adjustments stay usable and the
+  // passage completes once they stop.
+  const onSelectionChange = (): void => {
+    if (disposed || activePointer !== null || nativeBaseline === undefined) return;
+    armNativeSettle();
+  };
 
   doc.addEventListener("pointerdown", onPointerDown);
   doc.addEventListener("pointerup", onPointerUp);
@@ -129,6 +177,7 @@ export function observeFinishedDocumentSelections(input: ObserveFinishedDocument
     activePointer = null;
     shiftActive = false;
     shiftBaseline = null;
+    clearNativeSettle();
     doc.removeEventListener("pointerdown", onPointerDown);
     doc.removeEventListener("pointerup", onPointerUp);
     doc.removeEventListener("pointercancel", onPointerCancel);

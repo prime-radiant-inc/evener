@@ -389,6 +389,55 @@ test("a cancelled or superseded interaction never emits a stale capture", () => 
   expect(onFinish).toHaveBeenCalledWith(expected(SECOND));
 });
 
+test("a cancelled touch stream completes through the native selection it leaves behind", () => {
+  const { holder, root } = mountDocument(SOURCE);
+  const onFinish = vi.fn();
+  observe(root, holder.map as BoundDocumentMap, onFinish);
+  const paragraph = firstParagraph(root);
+
+  // The long-press begins as an in-root touch press, then the OS takes the
+  // gesture over: the pointer stream cancels and nothing has been selected
+  // yet, so the press alone can complete nothing.
+  expect(pointer("pointerdown", paragraph, "touch")).toBe(true);
+  expect(pointer("pointercancel", paragraph, "touch")).toBe(true);
+  vi.advanceTimersByTime(FLUSH_MS);
+  expect(onFinish).not.toHaveBeenCalled();
+
+  // The OS's native selection now lands as selectionchange events with no
+  // pointer stream behind them. Once it settles, the passage completes.
+  selectText(root, "same");
+  expect(selectionchange()).toBe(true);
+  vi.advanceTimersByTime(FLUSH_MS);
+
+  expect(onFinish).toHaveBeenCalledTimes(1);
+  expect(onFinish).toHaveBeenCalledWith(expected(FIRST));
+});
+
+test("native handle adjustments keep deferring the settle and complete once when they stop", () => {
+  const { holder, root } = mountDocument(SOURCE);
+  const onFinish = vi.fn();
+  observe(root, holder.map as BoundDocumentMap, onFinish);
+  const paragraph = firstParagraph(root);
+
+  pointer("pointerdown", paragraph, "touch");
+  pointer("pointercancel", paragraph, "touch");
+
+  // The native flow selects the first occurrence, then the user drags the
+  // handles to the second: each adjustment re-defers the settle, so the
+  // interaction is still active at every partial advance.
+  selectText(root, "same");
+  expect(selectionchange()).toBe(true);
+  vi.advanceTimersByTime(ACTIVE_TOUCH_MS);
+  selectText(root, "same", 1);
+  expect(selectionchange()).toBe(true);
+  vi.advanceTimersByTime(ACTIVE_TOUCH_MS);
+  expect(onFinish).not.toHaveBeenCalled();
+
+  vi.advanceTimersByTime(FLUSH_MS);
+  expect(onFinish).toHaveBeenCalledTimes(1);
+  expect(onFinish).toHaveBeenCalledWith(expected(SECOND));
+});
+
 test("a pointer interaction outside the mapped root never finishes the retained passage", () => {
   const { holder, root } = mountDocument(SOURCE);
   const onFinish = vi.fn();
