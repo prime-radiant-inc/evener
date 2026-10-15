@@ -35,8 +35,8 @@ func TestMutations_RefuseRelativePathUnderDeadWorkingDir(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.call()
-			if !errors.Is(err, ErrWorkingDirectoryGone) {
-				t.Fatalf("%s error = %v, want ErrWorkingDirectoryGone", tc.name, err)
+			if !errors.Is(err, ErrWorkingDirectoryUnavailable) {
+				t.Fatalf("%s error = %v, want ErrWorkingDirectoryUnavailable", tc.name, err)
 			}
 			if _, statErr := os.Stat(root); !os.IsNotExist(statErr) {
 				t.Fatalf("%s recreated the deleted working directory: stat err = %v", tc.name, statErr)

@@ -55,12 +55,14 @@ func TestWorktreeDeadAnchor_ListEnumeratesLiveLanes(t *testing.T) {
 	}
 	found := false
 	deadListed := false
+	deadLocked := false
 	for _, e := range entries {
 		if filepath.Clean(e.Path) == filepath.Clean(live) {
 			found = true
 		}
 		if filepath.Clean(e.Path) == filepath.Clean(dead) {
 			deadListed = true
+			deadLocked = e.Locked
 		}
 	}
 	if !found {
@@ -71,13 +73,19 @@ func TestWorktreeDeadAnchor_ListEnumeratesLiveLanes(t *testing.T) {
 	if !deadListed {
 		t.Fatalf("list dropped the deleted lane %q entirely; entries = %+v", dead, entries)
 	}
+	// git keeps a locked worktree registered even when its directory is gone, so
+	// the deleted lane still appears, still carrying this session's lock (it is
+	// not marked prunable while locked).
+	if !deadLocked {
+		t.Fatalf("deleted lane %q reported unlocked; entries = %+v", dead, entries)
+	}
 }
 
 // The other mutating operations refuse with the same named error rather than
 // leaking the lstat (issue #4671: every operation names the dead path).
 func TestWorktreeDeadAnchor_MutatingOpsRefuseNamed(t *testing.T) {
 	t.Parallel()
-	r, dead, _ := anchorGoneRepo(t)
+	r, dead, live := anchorGoneRepo(t)
 
 	check := func(op string, err error) {
 		t.Helper()
@@ -95,6 +103,15 @@ func TestWorktreeDeadAnchor_MutatingOpsRefuseNamed(t *testing.T) {
 	check("remove", removeErr)
 	_, pruneErr := r.s.worktreePrune(t.Context())
 	check("prune", pruneErr)
+
+	// Each refusal aborts before touching anything: create made no lane, remove
+	// did not take the live lane, and the live lane is still on disk.
+	if _, statErr := os.Stat(r.managedPath(t, r.canonicalMain(t), "another")); !os.IsNotExist(statErr) {
+		t.Fatalf("refused create left a lane behind: %v", statErr)
+	}
+	if _, statErr := os.Stat(live); statErr != nil {
+		t.Fatalf("refused remove took the live lane: %v", statErr)
+	}
 }
 
 // T2: `switch` and `exit` must refuse with the named dead-anchor error, naming

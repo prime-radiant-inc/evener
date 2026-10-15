@@ -20,16 +20,17 @@ import (
 // unrestricted off sessions to that root. Allocated scratch keeps its own
 // fd-anchored contract.
 
-// ErrWorkingDirectoryGone reports that a relative-path mutation was refused
-// because the environment's working directory no longer exists. A deleted
-// directory must never be recreated by a write that silently lands outside any
-// checkout (issue #4671). Absolute-path mutations never raise it.
-var ErrWorkingDirectoryGone = errors.New("working directory no longer exists")
+// ErrWorkingDirectoryUnavailable reports that a relative-path mutation was
+// refused because the environment's working directory is not an existing
+// directory — deleted, or otherwise not a usable directory. A deleted directory
+// must never be recreated by a write that silently lands outside any checkout
+// (issue #4671). Absolute-path mutations never raise it.
+var ErrWorkingDirectoryUnavailable = errors.New("working directory unavailable")
 
 // requireLiveWorkingDirForRelative refuses a relative-path mutation when the
 // environment's working directory no longer exists, so a write cannot silently
 // recreate a deleted directory and land outside any checkout (issue #4671). It
-// It is called only on the plain, unrestricted mutation arm — the one that
+// is called only on the plain, unrestricted mutation arm — the one that
 // joins the working directory and `MkdirAll`s parents — because that is the
 // path that recreates a deleted directory. The sandbox and scratch arms resolve
 // through a captured root descriptor; the scratch arm in particular serves the
@@ -47,7 +48,7 @@ func (e *LocalExecutionEnvironment) requireLiveWorkingDirForRelative(path string
 	}
 	return fmt.Errorf(
 		"%s: working directory %s is not an existing directory; re-anchor the session to an existing directory or operate from a valid working directory (%w)",
-		p, e.RootDir, ErrWorkingDirectoryGone)
+		p, e.RootDir, ErrWorkingDirectoryUnavailable)
 }
 
 // ReadFileRaw returns the raw bytes of path subject to the active policy.
