@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,6 +97,15 @@ func TestResumeRendezvousSurvivesAReadStorm(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// --- repair accounting ---------------------------------------------------
+	// The cleanup below joins the storm's detached repairs by counting them:
+	// arms counts every repair the registry starts for the storm path, and
+	// recorded counts every repair whose outcome is recorded and whose
+	// post-recording hook has fired — the repair goroutine's last statement.
+	// The wrappers only observe: the recipe runs unchanged for every path,
+	// and other paths' hooks pass through untouched.
+	stormArms, stormRecorded := installRepairAccounting(t, stormPath)
+
 	// --- fake daemon: script for spawn/rendezvous, Go server for the read ---
 	// The spawned "daemon" is two pieces. The script binary answers the
 	// spawner's launch-check and, on serve, writes the rendezvous entry the
@@ -142,7 +152,8 @@ exit 2
 	// web.go wires it with the server's lifetime, the same wiring a directly
 	// constructed production server uses to recover a staled sidecar on its
 	// own — so the storm's refused reads arm real repairs with the real
-	// recipe; no seam touches the recipe.
+	// recipe. The only wrapper is installRepairAccounting's observing
+	// counter, which chains to the real recipe unchanged.
 	cfg := hubcore.WebConfig{
 		RunDir:      runDir,
 		Past:        past,
@@ -224,15 +235,14 @@ exit 2
 		<-restalerDone
 		// The repair registry runs its rebuilds detached by design (main.go:
 		// a multi-minute rebuild must not hold hub exit), so the storm's
-		// last-armed repair is still in flight here. Join it too — this
-		// cleanup runs before the TempDir removal (cleanup is LIFO and the
-		// TempDir was registered first), and an unjoined repair would race
-		// that removal and log its completion into whatever later test has
-		// captured the package's repair log.
-		deadline := time.Now().Add(30 * time.Second)
-		for transcriptIndexRepairs.inFlight(stormPath) && time.Now().Before(deadline) {
-			time.Sleep(10 * time.Millisecond)
-		}
+		// last-armed repair can still be live here — including past the
+		// registry's own bookkeeping, whose in-flight flag clears inside
+		// run's critical section while the goroutine's post-recording hook
+		// runs after it. This cleanup runs before the TempDir removal
+		// (cleanup is LIFO and the TempDir was registered first), and an
+		// unjoined repair would race that removal and fire its hook into
+		// whatever later test has installed one.
+		awaitRepairsSettled(t, stormPath, stormArms, stormRecorded)
 	})
 	go func() {
 		defer close(restalerDone)
@@ -331,5 +341,66 @@ exit 2
 	}
 	if historyFailed > 0 {
 		t.Fatalf("%d reads answered history-failed — the repair budget exhausted under continuous re-staling", historyFailed)
+	}
+}
+
+// installRepairAccounting wraps the repair recipe and the post-recording hook
+// with path-scoped counters a cleanup can join on: arms counts every repair
+// the registry starts for path, and recorded counts every repair whose outcome
+// is recorded and whose post-recording hook has fired — the last statement of
+// the repair goroutine. Both wrappers only observe: the recipe runs unchanged
+// for every path, and other paths' hooks pass through to the hook installed
+// before.
+func installRepairAccounting(t *testing.T, path string) (arms, recorded *atomic.Uint64) {
+	t.Helper()
+	arms = &atomic.Uint64{}
+	recorded = &atomic.Uint64{}
+	savedRecipe := runTranscriptIndexRepair
+	savedHook := transcriptIndexRepairRecorded
+	runTranscriptIndexRepair = func(p, refused string) error {
+		if p == path {
+			arms.Add(1)
+		}
+		return savedRecipe(p, refused)
+	}
+	transcriptIndexRepairRecorded = func(p string) {
+		if p == path {
+			recorded.Add(1)
+			return
+		}
+		if savedHook != nil {
+			savedHook(p)
+		}
+	}
+	t.Cleanup(func() {
+		runTranscriptIndexRepair = savedRecipe
+		transcriptIndexRepairRecorded = savedHook
+	})
+	return arms, recorded
+}
+
+// awaitRepairsSettled joins every repair armed for path before the caller's
+// cleanup restores test state. An in-flight flag alone is not a join: the
+// registry clears it inside run's critical section while the goroutine's
+// post-recording hook runs after it, so a poll keyed only on that flag can
+// return with the goroutine still live — able to fire its hook into whatever
+// later test has installed one. The counters close both windows: a repair is
+// armed before its recipe runs, so a goroutine anywhere between its arm and
+// its hook keeps arms ahead of recorded or the in-flight flag set, and the
+// join returns only once every armed repair's hook has fired. A repair that
+// cannot be joined within the budget fails the test instead of escaping the
+// cleanup silently.
+func awaitRepairsSettled(t *testing.T, path string, arms, recorded *atomic.Uint64) {
+	t.Helper()
+	const joinBudget = 30 * time.Second
+	deadline := time.Now().Add(joinBudget)
+	settled := func() bool {
+		return recorded.Load() >= arms.Load() && !transcriptIndexRepairs.inFlight(path)
+	}
+	for !settled() && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !settled() {
+		t.Errorf("repair join timed out after %s: %d armed, %d recorded, in flight = %v — the cleanup cannot prove the last repair joined", joinBudget, arms.Load(), recorded.Load(), transcriptIndexRepairs.inFlight(path))
 	}
 }
