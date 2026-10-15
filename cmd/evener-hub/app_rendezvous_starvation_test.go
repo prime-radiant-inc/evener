@@ -53,12 +53,19 @@ import (
 // 2x the bound. The spec's implementation notes carry the measured
 // numbers this scale was tuned from.
 func TestResumeRendezvousSurvivesAReadStorm(t *testing.T) {
+	// Three entries per round at seedSyntheticPastSession's density
+	// (~1.7KB/round) lands the transcript in the ~67MB class: the probe's
+	// one shared rebuild plus 60 response scans costs well past the 4s red
+	// acceptance at this scale. Under the race detector the same rebuild is
+	// several times slower and the cleanup join must wait out the last
+	// repair's whole recipe, so the race lane runs a smaller fixture: its
+	// subject is the machinery's memory safety, not the latency bound, and
+	// the mutation probe the 67MB scale exists for is a manual exercise.
+	stormRounds := 40000
+	if raceDetectorEnabled {
+		stormRounds = 8000
+	}
 	const (
-		// Three entries per round at seedSyntheticPastSession's density
-		// (~1.7KB/round) lands the transcript in the ~67MB class: the
-		// probe's one shared rebuild plus 60 response scans costs well
-		// past the 4s red acceptance at this scale.
-		stormRounds = 40000
 		// Exceeds the 16-slot slow-read cap so the worker parks, while
 		// initialize + reads + resume stays at 62 frames, under the
 		// 64-frame queue cap, so no send ever blocks.
@@ -395,7 +402,21 @@ func awaitRepairsSettled(t *testing.T, path string, arms, recorded *atomic.Uint6
 	const joinBudget = 30 * time.Second
 	deadline := time.Now().Add(joinBudget)
 	settled := func() bool {
-		return recorded.Load() >= arms.Load() && !transcriptIndexRepairs.inFlight(path)
+		// The flag first, the counters second — the order is load-bearing.
+		// A repair increments arms at its recipe's start and only then lets
+		// the recording clear the flag, so observing the flag clear first
+		// guarantees the counters already reflect every armed repair.
+		// Sampling the counters first lets a whole recipe-and-recording
+		// land between the two loads: the comparison holds against the
+		// stale count, the flag reads clear, and the join returns with the
+		// goroutine still live at its hook — the failure this helper
+		// exists to prevent. Producers are quiesced by the time this runs
+		// (the hub's server is closed and the re-staler joined, so no new
+		// arms can appear behind the observed flag).
+		if transcriptIndexRepairs.inFlight(path) {
+			return false
+		}
+		return recorded.Load() >= arms.Load()
 	}
 	for !settled() && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
