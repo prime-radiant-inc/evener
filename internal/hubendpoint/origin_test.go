@@ -97,6 +97,7 @@ func TestLocalOrigin(t *testing.T) {
 	}{
 		{name: "IPv4 wildcard", boundAddr: "0.0.0.0:9180", origin: "http://127.0.0.1:9180", hostname: "127.0.0.1", port: 9180},
 		{name: "IPv6 wildcard", boundAddr: "[::]:9180", origin: "http://[::1]:9180", hostname: "::1", port: 9180},
+		{name: "IPv4-mapped wildcard", boundAddr: "[::ffff:0.0.0.0]:9180", origin: "http://127.0.0.1:9180", hostname: "127.0.0.1", port: 9180},
 		{name: "specific IPv4", boundAddr: "192.0.2.10:8080", origin: "http://192.0.2.10:8080", hostname: "192.0.2.10", port: 8080},
 		{name: "specific IPv6", boundAddr: "[2001:db8::1]:443", origin: "http://[2001:db8::1]:443", hostname: "2001:db8::1", port: 443},
 	}

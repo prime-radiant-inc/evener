@@ -63,6 +63,15 @@
     "scheme": "https"
   },
   {
+    "name": "IPv4-mapped IPv6 retains IPv6 identity",
+    "raw": "http://[::ffff:127.0.0.1]",
+    "origin": "http://[::ffff:7f00:1]",
+    "rpc_url": "ws://[::ffff:7f00:1]/rpc",
+    "hostname": "::ffff:7f00:1",
+    "port": 80,
+    "scheme": "http"
+  },
+  {
     "name": "empty origin",
     "raw": "",
     "error": {"code": "empty", "field": "origin"}
@@ -143,6 +152,11 @@
     "error": {"code": "wildcard", "field": "host"}
   },
   {
+    "name": "IPv4 wildcard with trailing dot",
+    "raw": "http://0.0.0.0.:9180",
+    "error": {"code": "wildcard", "field": "host"}
+  },
+  {
     "name": "IPv6 wildcard",
     "raw": "http://[::]:9180",
     "error": {"code": "wildcard", "field": "host"}
@@ -158,8 +172,18 @@
     "error": {"code": "host", "field": "host"}
   },
   {
+    "name": "ambiguous abbreviated numeric host with trailing dot",
+    "raw": "http://127.1.",
+    "error": {"code": "host", "field": "host"}
+  },
+  {
     "name": "ambiguous integer numeric host",
     "raw": "http://2130706433",
+    "error": {"code": "host", "field": "host"}
+  },
+  {
+    "name": "ambiguous integer numeric host with trailing dot",
+    "raw": "http://2130706433.",
     "error": {"code": "host", "field": "host"}
   },
   {

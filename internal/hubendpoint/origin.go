@@ -117,14 +117,13 @@ func LocalOrigin(boundAddr string) (Origin, error) {
 	if addr.Zone() != "" {
 		return Origin{}, invalid("scoped_host", "host")
 	}
+	addr = addr.Unmap()
 	if addr.IsUnspecified() {
 		if addr.Is4() {
 			addr = netip.MustParseAddr("127.0.0.1")
 		} else {
 			addr = netip.IPv6Loopback()
 		}
-	} else {
-		addr = addr.Unmap()
 	}
 	return newOrigin("http", addr.String(), listenAddr.port), nil
 }
@@ -191,18 +190,34 @@ func canonicalOriginHost(host string) (string, error) {
 		if addr.Zone() != "" {
 			return "", invalid("scoped_host", "host")
 		}
-		addr = addr.Unmap()
-		if addr.IsUnspecified() {
+		if addr.IsUnspecified() || addr.Unmap().IsUnspecified() {
 			return "", invalid("wildcard", "host")
 		}
-		return addr.String(), nil
+		return canonicalIPLiteral(addr), nil
 	}
 
 	ascii, err := canonicalDNSHost(host)
-	if err != nil || hasNumericHostSuffix(ascii) {
+	if err != nil {
+		return "", invalid("host", "host")
+	}
+	numericHost := strings.TrimSuffix(ascii, ".")
+	if addr, parseErr := netip.ParseAddr(numericHost); parseErr == nil && addr.IsUnspecified() {
+		return "", invalid("wildcard", "host")
+	}
+	if hasNumericHostSuffix(ascii) {
 		return "", invalid("host", "host")
 	}
 	return ascii, nil
+}
+
+func canonicalIPLiteral(addr netip.Addr) string {
+	if !addr.Is4In6() {
+		return addr.String()
+	}
+	bytes := addr.As16()
+	high := uint16(bytes[12])<<8 | uint16(bytes[13])
+	low := uint16(bytes[14])<<8 | uint16(bytes[15])
+	return "::ffff:" + strconv.FormatUint(uint64(high), 16) + ":" + strconv.FormatUint(uint64(low), 16)
 }
 
 func canonicalDNSHost(host string) (string, error) {
@@ -216,6 +231,7 @@ func canonicalDNSHost(host string) (string, error) {
 // hasNumericHostSuffix implements the WHATWG ends-in-a-number check. Such
 // spellings are not canonical IP literals and browsers can reinterpret them.
 func hasNumericHostSuffix(host string) bool {
+	host = strings.TrimSuffix(host, ".")
 	last := host[strings.LastIndexByte(host, '.')+1:]
 	if last == "" {
 		return false
