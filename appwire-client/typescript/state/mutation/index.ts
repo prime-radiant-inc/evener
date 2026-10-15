@@ -14,7 +14,7 @@
 export type { MutationCommit, MutationCommitFeed } from "./commitFeed";
 export { wireMutationCommitFeed } from "./commitFeed";
 export type { MutationDispatchClientLookup, MutationDispatcherOptions } from "./dispatcher";
-export { MutationDispatcher, validConsumedClientMutationIds } from "./dispatcher";
+export { MutationDispatcher, RETRY_SAFE_MUTATION_METHODS, validConsumedClientMutationIds } from "./dispatcher";
 export type {
   MutationClientLookup,
   MutationDiscoveryReason,

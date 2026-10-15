@@ -83,6 +83,7 @@ const COLUMNS = [
 	"created_at",
 	"state",
 	"attempted",
+	"stop_epoch_at_enqueue",
 	"recovery_kind",
 	"recovery_reason",
 ] as const;
@@ -111,6 +112,8 @@ export interface Row {
 	created_at: number;
 	state: string;
 	attempted: number;
+	stop_epoch_at_enqueue: number;
+	unresolved_attempts: number;
 	recovery_kind: string | null;
 	recovery_reason: string | null;
 }
@@ -132,7 +135,13 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
 		intentSequence: row.intent_sequence,
 		createdAt: row.created_at,
 		state: row.state as MutationOutboxState,
-		...(row.state === "accepted" ? {} : { attempted: row.attempted === 1 }),
+		...(row.state === "accepted"
+			? {}
+			: {
+					attempted: row.attempted === 1,
+					unresolvedAttempts: row.unresolved_attempts,
+					stopEpochAtEnqueue: row.stop_epoch_at_enqueue,
+				}),
 		...(row.recovery_kind ? { recoveryKind: row.recovery_kind, recoveryReason: row.recovery_reason ?? undefined } : {}),
 	} as unknown as T;
 }
@@ -161,6 +170,8 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			payload TEXT NOT NULL, attachments TEXT NOT NULL, optimistic_display TEXT NOT NULL,
 			composer_text TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
 			state TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0,
+			unresolved_attempts INTEGER NOT NULL DEFAULT 0,
+			stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0,
 			recovery_kind TEXT, recovery_reason TEXT)`;
 		for (const table of Object.values(TABLES)) this.db.execSync(schema(table));
 		this.db.execSync(
@@ -204,6 +215,30 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN instance_id TEXT`);
 			}
 		}
+		// #4342: unresolved attempt counts live beside the attempted flag on
+		// the outbox table. A database created before the column existed
+		// lacks it, and ALTER TABLE has no IF NOT EXISTS, so check the
+		// columns first - the default-zero column is the whole migration, and
+		// rows written before it existed read as zero unresolved attempts.
+		const outboxColumns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${TABLES.outbox})`);
+		if (!outboxColumns.some((column) => column.name === "unresolved_attempts")) {
+			this.db.execSync(`ALTER TABLE ${TABLES.outbox} ADD COLUMN unresolved_attempts INTEGER NOT NULL DEFAULT 0`);
+		}
+		// #4342: the ref's stop epoch at enqueue time - the barrier's own
+		// read, stored, so a refusal can fence its rollback: a Stop whose
+		// cancel scan skipped the attempted row must not be outrun by the
+		// refusal's redelivery. The column is part of the shared insert
+		// shape, so every record table needs it - the instance_id loop, not an
+		// outbox-only ALTER: a database from the previous schema would
+		// otherwise throw on every optimistic and recovery write. Rows
+		// written before the column existed read as captured-at-zero, the
+		// conservative direction.
+		for (const table of Object.values(TABLES)) {
+			const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
+			if (!columns.some((column) => column.name === "stop_epoch_at_enqueue")) {
+				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0`);
+			}
+		}
 	}
 
 	async enqueueIntent(intent: MutationIntent<A>, barrier?: MutationStopBarrier): Promise<MutationOutboxRecord<A>> {
@@ -214,7 +249,8 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			// write - left the ref's durable stop epoch past the click-time
 			// capture. The row commits born-"canceled": never dispatched,
 			// released only by an explicit Retry.
-			const canceledByBarrier = barrier !== undefined && this.stopEpochOf(intent.targetRef) > barrier.stopEpoch;
+			const stopEpoch = this.stopEpochOf(intent.targetRef);
+			const canceledByBarrier = barrier !== undefined && stopEpoch > barrier.stopEpoch;
 			// Allocate and persist the next sequence in one write so a reentrant
 			// enqueue cannot reuse a value read before another allocation.
 			const intentSequence = this.allocateSequence(intent.targetRef);
@@ -233,6 +269,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				intentSequence,
 				createdAt: this.#now(),
 				state: canceledByBarrier ? "canceled" : "submitting",
+				stopEpochAtEnqueue: stopEpoch,
 				attempted: false,
 			};
 			this.insertNew(TABLES.outbox, record);
@@ -269,6 +306,11 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			const intentSequence = this.allocateSequence(intent.targetRef);
 			const clientMutationId = this.#createMutationId();
 			this.assertMutationIdAvailable(clientMutationId);
+			// The Stop's own interrupt passes no barrier - it IS the click the
+			// epoch records - so its capture is the epoch its Stop just bumped:
+			// a refusal of the interrupt itself redelivers like any transient
+			// refusal instead of fence-canceling the Stop's own row.
+			const stopEpoch = this.stopEpochOf(intent.targetRef);
 			const record: MutationOutboxRecord<A> = {
 				...intent,
 				payload: { ...intent.payload, clientMutationId },
@@ -281,6 +323,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				// the epoch records.
 				state: "submitting",
 				attempted: false,
+				stopEpochAtEnqueue: stopEpoch,
 			};
 			this.insertNew(TABLES.outbox, record);
 			return record;
@@ -298,13 +341,108 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// Commits attempt evidence before transport so another dispatch pass or a
 	// reload cannot mistake a possibly-delivered mutation for an unsent intent.
 	async markAttempted(clientMutationId: string): Promise<boolean> {
+		this.#seedLegacyAttemptCount(clientMutationId);
+		// A row from before the capture column existed reads the migration's
+		// DEFAULT 0. Its first mark proves by survival that no Stop's cancel
+		// scan has run since its birth - any bump would have canceled it
+		// while unattempted - so the epoch as it stands IS the epoch it was
+		// born at: initialize the capture from the sequence here, and the
+		// refusal's fence compares against the birth epoch instead of a
+		// zero a historical Stop trips. A modern row born at epoch zero is
+		// written back unchanged.
+		this.db.runSync(
+			`UPDATE ${TABLES.outbox}
+			 SET stop_epoch_at_enqueue = COALESCE((SELECT stop_epoch FROM mutation_sequence WHERE target_ref = ${TABLES.outbox}.target_ref), 0)
+			 WHERE client_mutation_id = ? AND state = 'submitting' AND stop_epoch_at_enqueue = 0`,
+			clientMutationId,
+		);
 		return (
 			changedRows(
 				this.db.runSync(
-					`UPDATE ${TABLES.outbox} SET attempted = 1 WHERE client_mutation_id = ? AND state = 'submitting'`,
+					`UPDATE ${TABLES.outbox} SET attempted = 1, unresolved_attempts = unresolved_attempts + 1
+						WHERE client_mutation_id = ? AND state = 'submitting'`,
 					clientMutationId,
 				),
 			) > 0
+		);
+	}
+
+	// Rolls the pre-transport attempt evidence back after the hub
+	// authoritatively refused the attempt in band (#4342's
+	// connectionBackpressure): the row is what it was before the dispatch,
+	// so the reconnect reconcile's onlyAttempted-guarded blockedUnknown park
+	// skips it and the ordinary flush rediscovers it - unless a Stop
+	// interrupted the attempt: the refusal proves the attempt never landed,
+	// and §4's conservative direction holds the row canceled (released only
+	// by an explicit Retry) instead of returning it dispatchable ahead of
+	// the interrupt the Stop already queued. Authoritative outcomes own
+	// every other state, so only submitting and blockedUnknown rows roll
+	// back.
+	async unmarkAttempted(clientMutationId: string): Promise<boolean> {
+		this.#seedLegacyAttemptCount(clientMutationId);
+		const row = this.db.getFirstSync<{
+			state: string;
+			unresolved_attempts: number;
+			target_ref: string;
+			stop_epoch_at_enqueue: number;
+		}>(
+			`SELECT state, unresolved_attempts, target_ref, stop_epoch_at_enqueue FROM ${TABLES.outbox} WHERE client_mutation_id = ?`,
+			clientMutationId,
+		);
+		if (row?.state === "blockedUnknown" && row.unresolved_attempts > 1) {
+			this.db.runSync(
+				`UPDATE ${TABLES.outbox} SET unresolved_attempts = unresolved_attempts - 1
+					WHERE client_mutation_id = ? AND state = 'blockedUnknown'`,
+				clientMutationId,
+			);
+			return false;
+		}
+		// A row parked while its only attempt was in flight reopens: the
+		// in-band refusal is authoritative proof that park's uncertainty
+		// resolves - unless a Stop interrupted the attempt, in which case the
+		// fence holds it canceled.
+		if (row?.state === "blockedUnknown") {
+			const stopInterrupted = this.stopEpochOf(row.target_ref) > row.stop_epoch_at_enqueue;
+			this.db.runSync(
+				`UPDATE ${TABLES.outbox} SET state = ?, attempted = 0, unresolved_attempts = 0
+					WHERE client_mutation_id = ? AND state = 'blockedUnknown'`,
+				stopInterrupted ? "canceled" : "submitting",
+				clientMutationId,
+			);
+			return !stopInterrupted;
+		}
+		if (row?.state === "submitting") {
+			const unresolvedAttempts = Math.max(0, row.unresolved_attempts - 1);
+			if (unresolvedAttempts === 0 && this.stopEpochOf(row.target_ref) > row.stop_epoch_at_enqueue) {
+				this.db.runSync(
+					`UPDATE ${TABLES.outbox} SET state = 'canceled', attempted = 0, unresolved_attempts = 0
+						WHERE client_mutation_id = ? AND state = 'submitting'`,
+					clientMutationId,
+				);
+				return false;
+			}
+			this.db.runSync(
+				`UPDATE ${TABLES.outbox} SET attempted = ?, unresolved_attempts = ?
+					WHERE client_mutation_id = ? AND state = 'submitting'`,
+				unresolvedAttempts > 0 ? 1 : 0,
+				unresolvedAttempts,
+				clientMutationId,
+			);
+			return unresolvedAttempts === 0;
+		}
+		return false;
+	}
+
+	// A row written before the unresolved_attempts column existed carries its
+	// evidence as the bare attempted flag over a zero count. Both count
+	// writes seed that legacy shape first, so the refused retry's rollback
+	// decrements real evidence instead of erasing it. Post-field rows never
+	// hold the (attempted, zero-count) shape, so the seed is idempotent.
+	#seedLegacyAttemptCount(clientMutationId: string): void {
+		this.db.runSync(
+			`UPDATE ${TABLES.outbox} SET unresolved_attempts = 1
+				WHERE client_mutation_id = ? AND attempted = 1 AND unresolved_attempts = 0`,
+			clientMutationId,
 		);
 	}
 
@@ -508,9 +646,15 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			const record = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
 			if (record?.state !== "canceled" || record.targetRef !== targetRef) return false;
 			if (this.stopEpochOf(targetRef) > barrier.stopEpoch) return false;
+			// The release is the user deliberately sending after a Stop (§4's
+			// exemption), so it re-authorizes the row past the Stop its fence
+			// captured: the capture refreshes to the current epoch, and the
+			// row's next refusal redelivers instead of re-canceling.
 			this.db.runSync(
-				`UPDATE ${TABLES.outbox} SET state = 'submitting', intent_sequence = ? WHERE client_mutation_id = ?`,
+				`UPDATE ${TABLES.outbox} SET state = 'submitting', intent_sequence = ?, stop_epoch_at_enqueue = ?
+					WHERE client_mutation_id = ?`,
 				this.allocateSequence(targetRef),
+				this.stopEpochOf(targetRef),
 				clientMutationId,
 			);
 			return true;
@@ -668,6 +812,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			record.createdAt,
 			record.state,
 			"attempted" in record && record.attempted ? 1 : 0,
+			"stopEpochAtEnqueue" in record ? (record.stopEpochAtEnqueue ?? 0) : 0,
 			recovery.recoveryKind ?? null,
 			recovery.recoveryReason ?? null,
 		];

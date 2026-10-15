@@ -630,6 +630,11 @@ type Connection struct {
 	// queueSaturationAdvised makes the queue-saturation advisory one-shot per
 	// connection. Only the receive-loop goroutine touches it.
 	queueSaturationAdvised bool
+	// queueHighWaterAdvised makes the high-water refusal advisory one-shot
+	// per connection, separately from queueSaturationAdvised so a refusal
+	// cannot consume the full-queue block advisory (and vice versa). Only
+	// the receive-loop goroutine touches it.
+	queueHighWaterAdvised bool
 	// slowReadSlots is the buffered-channel semaphore capping in-flight slow
 	// reads per connection (slowReadDispatchCap). The worker acquires a slot
 	// before spawning a slow read; the slow-read goroutine releases it when
@@ -1757,6 +1762,48 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 	return c.enqueueRequest(ctx, msg)
 }
 
+// backpressureRefusal mints the in-band refusal for a retry-safe mutation
+// arriving while the inbound queue is at or beyond half its capacity — the
+// depth at which the queue is demonstrably backlogged, while the connection
+// still carries writes. The receive loop, enqueueRequest's only caller and
+// this method's only caller, is the queue's sole producer, so len is exact
+// at the check with no lock. A refusal never enqueues, so it consumes no
+// queue depth; reads and other non-mutation frames keep the FIFO pressure
+// valve at every depth. The refusal precedes the worker's params validation:
+// a malformed mutation refused under load surfaces its real invalid-params
+// error on the retried attempt, and a request whose params carry no
+// extractable clientMutationId is still refused — the frame is never queued
+// either way.
+func (c *Connection) backpressureRefusal(msg appwire.Message) (appwire.Message, bool) {
+	request := msg.Request
+	if request == nil {
+		return appwire.Message{}, false
+	}
+	highWater := (cap(c.requests) + 1) / 2
+	if len(c.requests) < highWater {
+		return appwire.Message{}, false
+	}
+	if !appwire.RetrySafeMutationMethod(request.Method) {
+		return appwire.Message{}, false
+	}
+	return appwire.ErrorMessage(request.ID, appwire.BackpressureRefusal(clientMutationIDOf(request.Params),
+		"the hub's inbound queue is busy and did not accept this message")), true
+}
+
+// clientMutationIDOf extracts the refusal's clientMutationId from the
+// request's raw params with a minimal decode of the one field every
+// retry-safe mutation carries. The extracted id is never logged. Params that
+// do not decode, or carry no id, give "".
+func clientMutationIDOf(params json.RawMessage) string {
+	var only struct {
+		ClientMutationID string `json:"clientMutationId"`
+	}
+	if err := json.Unmarshal(params, &only); err != nil {
+		return ""
+	}
+	return only.ClientMutationID
+}
+
 // enqueueRequest pushes one inbound frame onto the connection's bounded
 // request queue on behalf of the transport's receive loop, which is the only
 // producer. A full queue blocks until the worker frees a slot or the
@@ -1768,6 +1815,28 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 // exactly the ordering it asked for, applied at the transport instead of in
 // server memory.
 func (c *Connection) enqueueRequest(ctx context.Context, msg appwire.Message) bool {
+	if refusal, ok := c.backpressureRefusal(msg); ok {
+		// The first refusal on the connection gets its own advisory, worded
+		// for this branch: the frame is answered in band, the receive loop
+		// keeps reading, and only mutations are turned away. A separate
+		// one-shot from the full-queue block advisory below, which must stay
+		// available to name the wedge signature when a non-mutation frame
+		// later parks the loop.
+		if !c.queueHighWaterAdvised {
+			c.queueHighWaterAdvised = true
+			c.server.logf("appserver: connection %s inbound request queue at high-water depth (%d of %d frames); refusing mutation requests in band until the worker drains", c.id, len(c.requests), cap(c.requests))
+		}
+		// This enqueue runs directly in the receive loop's goroutine, with no
+		// handler and so no handleRecovered call to barrier it — recoverPanic
+		// is the barrier here, the same one the force-stop busy refusal in
+		// receiveInbound uses. Delivery can park on a full outbound buffer
+		// until the connection ends: the same acknowledged trade the inline
+		// ping path makes.
+		c.recoverPanic(msg, func() {
+			c.enqueueDispatched(ctx, refusal)
+		})
+		return true
+	}
 	request := admittedRequest{ctx: ctx, message: msg}
 	select {
 	case c.requests <- request:

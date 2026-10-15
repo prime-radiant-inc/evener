@@ -3,7 +3,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, expect, test } from "vitest";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import type { InputAttachment } from "../../../stores/threads";
-import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import type { PendingMethod } from "../composer/queue/pendingReconcile";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "../composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
@@ -73,6 +73,33 @@ test("renders a compact chip for a pending send, showing its preview text", asyn
   await seedPending("send", "hello there");
   render(<PendingChips sessionRef="ref_a" />);
   expect(screen.getByText("hello there")).toBeTruthy();
+});
+
+// #4342: a send the hub refused in band as backpressure stays a pending
+// chip — the row is still queued — but the chip marks itself busy rather
+// than reading as an ordinary in-flight send: the hub has not accepted it
+// yet and a paced retry will redeliver it.
+test("a hub-refused send's chip marks itself busy instead of reading as an ordinary send", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  const row = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "hub is busy" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hub is busy" }] },
+  });
+  storage.close();
+  await refreshPendingTurnsProjection("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  threadsStore.setState((state) => ({
+    transientRefusalPaces: new Map(state.transientRefusalPaces).set("ref_a", {
+      clientMutationId: row.clientMutationId,
+      attempt: 1,
+    }),
+  }));
+
+  render(<PendingChips sessionRef="ref_a" />);
+  expect(screen.getByText("hub is busy").closest("li")?.getAttribute("data-busy")).toBe("true");
 });
 
 test("chips send only: steer/drain are the ghost stack's surface, never a chip", async () => {

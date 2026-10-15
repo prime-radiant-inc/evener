@@ -258,6 +258,8 @@ test.each(["Stop", "storage abort"] as const)(
     expect(await storage.getOutbox(original.clientMutationId)).toEqual({
       ...original,
       attempted: true,
+      unresolvedAttempts: 1,
+      stopEpochAtEnqueue: 0,
       state: "blockedUnknown",
     });
     syncHumanNote(ref, "");
@@ -327,6 +329,8 @@ test.each(["Stop", "storage abort"] as const)(
     expect(await storage.getOutbox(original.clientMutationId)).toEqual({
       ...original,
       attempted: true,
+      unresolvedAttempts: 1,
+      stopEpochAtEnqueue: 0,
       state: "blockedUnknown",
     });
   },

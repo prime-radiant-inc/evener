@@ -99,6 +99,12 @@ with no server repair in flight — answers its sibling
 `transcriptIndexLocked` with the same automatic retry disposition; their
 terminal sibling `transcriptHistoryFailed` names the last entry the failed
 history had recorded.
+A retry-safe mutation arriving on a connection whose inbound request queue is
+at high-water depth is refused in band as `connectionBackpressure` with
+`data.cause "queueSaturated"`, `mutationOutcome "notAccepted"` and
+`retryDisposition "automatic"`: the mutation was never queued and never
+started, so an identical retry is safe. The message states what happened on
+the hub and promises nothing about what a client will do.
 
 ## Explicit skill and command input
 

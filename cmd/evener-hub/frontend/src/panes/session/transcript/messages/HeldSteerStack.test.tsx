@@ -70,6 +70,17 @@ test("submitting with a turn running joins the turn, with a bare count", () => {
   });
 });
 
+// #4342 (implementation review): a hub-refused steer captions itself as
+// waiting for the hub rather than reading as an ordinary in-flight join —
+// the row was explicitly not accepted yet, and a paced retry will deliver it.
+test("a hub-refused steer captions itself as waiting for the hub", () => {
+  expect(heldCaptionParts(ENTRY("submitting", 1_000), true, 43_000, true)).toEqual({
+    stage: "waiting-for-hub",
+    held: false,
+    elapsedMs: 42_000,
+  });
+});
+
 test("submitting with no turn delivers with the next turn, with a bare count", () => {
   expect(heldCaptionParts(ENTRY("submitting", 1_000), false, 1_000)).toEqual({
     stage: "next-turn",
@@ -166,6 +177,27 @@ test("renders one ghost per held entry with its body and caption", async () => {
   expect(screen.getByTestId("held-steer-stack")).toBeTruthy();
   expect(screen.getByText("focus on the parser")).toBeTruthy();
   expect(screen.getByText(/joining this turn · 0s/i)).toBeTruthy();
+});
+
+// #4342 (implementation review): the busy marker reaches the steer family's
+// own surface — a refused held steer's ghost marks itself busy.
+test("a hub-refused held steer's ghost marks itself busy", async () => {
+  const fake = connectFakeClient();
+  await hydrate(fake, "ref_a");
+  const clientMutationId = await seedHeld("steer", "steer the parser");
+  threadsStore.setState((state) => ({
+    transientRefusalPaces: new Map(state.transientRefusalPaces).set("ref_a", {
+      clientMutationId,
+      attempt: 1,
+    }),
+  }));
+  render(
+    <SessionNowContext.Provider value={NOW}>
+      <HeldSteerStack ref="ref_a" />
+    </SessionNowContext.Provider>,
+  );
+  const row = screen.getByText("steer the parser").closest("li");
+  expect(row?.getAttribute("data-busy")).toBe("true");
 });
 
 test("a skill-only entry renders the skill marker, not an empty bubble", async () => {

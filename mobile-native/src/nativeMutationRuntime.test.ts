@@ -384,6 +384,134 @@ test.each([
 	await runtime.stop();
 });
 
+// #4342: the hub's in-band backpressure refusal leaves the row queued with
+// its refused attempt's evidence rolled back (the row's only unresolved
+// attempt, so the marker clears), so the
+// reconnect reconcile's onlyAttempted-guarded park skips it: the row
+// survives a non-authoritative read still submitting and the ordinary flow
+// redelivers it — on native exactly as on the browser.
+test("a hub-refused row survives the non-authoritative reconcile and redelivers", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	let refuse = true;
+	client.on("turn/start", (params) => {
+		if (refuse) {
+			throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+				evenerErrorInfo: "connectionBackpressure",
+				clientMutationId: (params as { clientMutationId: string }).clientMutationId,
+				mutationOutcome: "notAccepted",
+				retryDisposition: "automatic",
+				cause: "queueSaturated",
+			});
+		}
+		return appliedReceipt(params);
+	});
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+
+	// The gate opens on an authoritative read; the hub refuses in band and
+	// the row stays queued with its attempt evidence rolled back.
+	const openingLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(openingLease!, readResponse("ref-1"));
+	await vi.waitFor(() => expect(client.calls).toHaveLength(1));
+	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({ state: "submitting", attempted: false });
+
+	// A non-authoritative reconnect read runs the onlyAttempted park over
+	// submitting rows; the refused row's cleared marker keeps it out, and
+	// the same flow redelivers it (refused again here — that is the
+	// redelivery, not the park).
+	const reconnectLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(reconnectLease!, readResponse("ref-1", { authoritative: false }));
+	await vi.waitFor(() => expect(client.calls).toHaveLength(2));
+	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({ state: "submitting" });
+
+	// Once the hub accepts, the ordinary read flow settles the row.
+	refuse = false;
+	const retryLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(retryLease!, readResponse("ref-1"));
+	await vi.waitFor(() => expect(client.calls).toHaveLength(3));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-1")).toBeUndefined();
+	});
+	await runtime.stop();
+});
+
+// #4342 (review): a refusal rolls back only its OWN attempt's evidence. An
+// earlier attempt whose response was lost leaves evidence behind, so the
+// refused retry's rollback does not return the row to its never-attempted
+// shape: the reconnect reconcile's onlyAttempted-guarded park keeps
+// guarding the genuinely-uncertain row, and an authoritative read that
+// proves absence reopens it for redelivery.
+test("a refused retry after a lost response keeps the row's uncertain treatment", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	let outcome: "lost" | "refused" | "accepted" = "lost";
+	client.on("turn/start", (params) => {
+		if (outcome === "lost") {
+			// A transport failure: no wire error data, the response never
+			// arrives, the attempt stays unresolved.
+			throw new Error("connection reset mid-request");
+		}
+		if (outcome === "refused") {
+			throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+				evenerErrorInfo: "connectionBackpressure",
+				clientMutationId: (params as { clientMutationId: string }).clientMutationId,
+				mutationOutcome: "notAccepted",
+				retryDisposition: "automatic",
+				cause: "queueSaturated",
+			});
+		}
+		return appliedReceipt(params);
+	});
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+
+	// Attempt 1's response is lost; the row keeps its evidence.
+	const firstLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(firstLease!, readResponse("ref-1"));
+	await vi.waitFor(() => expect(client.calls).toHaveLength(1));
+	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({
+		state: "submitting",
+		attempted: true,
+		unresolvedAttempts: 1,
+	});
+
+	// Attempt 2 is refused in band; its rollback leaves the earlier
+	// attempt's evidence in place.
+	outcome = "refused";
+	const secondLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(secondLease!, readResponse("ref-1"));
+	await vi.waitFor(() => expect(client.calls).toHaveLength(2));
+	expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({
+		state: "submitting",
+		attempted: true,
+		unresolvedAttempts: 1,
+	});
+
+	// The genuinely-uncertain row parks on the non-authoritative reconnect
+	// read instead of slipping past the onlyAttempted guard.
+	const reconnectLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(reconnectLease!, readResponse("ref-1", { authoritative: false }));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-1")).toMatchObject({ state: "blockedUnknown" });
+	});
+
+	// An authoritative read proves absence, the row reopens, and the
+	// ordinary flow redelivers it to acceptance.
+	outcome = "accepted";
+	const retryLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(retryLease!, readResponse("ref-1"));
+	await vi.waitFor(() => expect(client.calls).toHaveLength(3));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOutbox("mutation-1")).toBeUndefined();
+	});
+	await runtime.stop();
+});
+
 test("a non-authoritative read blocks attempted work without blocking later targets", async () => {
 	const runtime = new NativeMutationRuntime(openDatabase(), {
 		createMutationId: (() => {

@@ -5,7 +5,8 @@
 // the steering-ghost spec (docs/web-ui/specs/2026-09-20-steering-ghost-live-edge.md).
 // Reconciliation is owned entirely by pendingTurnsStore's durable outbox and
 // authoritative pending-mutation projection; this component adds no store
-// state and imports the hook read-only.
+// state and imports the hooks read-only (the busy-refusal marker joins the
+// thread store's transient refusals by clientMutationId — #4342).
 //
 // Deliberately rendered here beside the composer, NOT injected into the
 // virtualized transcript: an optimistic item in the virtual list is beyond the
@@ -15,6 +16,7 @@
 // attention-family state (color-is-attention).
 import type { JSX } from "react";
 import { useMemo } from "react";
+import { useThreadsStore } from "../../../stores/threads";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import type { PendingTurnEntry } from "../composer/queue/pendingReconcile";
 import { usePendingTurnEntries } from "../composer/queue/pendingTurnsStore";
@@ -37,6 +39,7 @@ const CLASS = {
 
 export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Element | null {
   const entries = usePendingTurnEntries(sessionRef);
+  const refusedId = useThreadsStore((state) => state.transientRefusalPaces.get(sessionRef)?.clientMutationId);
   // Filter to the sends this strip owns - steer/drain/promote ghosts render
   // in the transcript's trailing row (steering-ghost spec) and QueueStrip
   // owns "queue". The one label this strip renders is present-tense: it
@@ -49,14 +52,17 @@ export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Elemen
 
   return (
     <ul className={CLASS.chips} data-testid="pending-chips">
-      {optimistic.map((entry) => (
-        <li key={entry.id} className={CLASS.chip}>
-          <span className={CLASS.method}>Sending</span>
-          <span className={CLASS.text} data-testid="pending-chip-preview">
-            {pendingEntryPreview(entry)}
-          </span>
-        </li>
-      ))}
+      {optimistic.map((entry) => {
+        const hubRefused = entry.id === refusedId && entry.state === "submitting";
+        return (
+          <li key={entry.id} className={CLASS.chip} data-busy={hubRefused ? "true" : undefined}>
+            <span className={CLASS.method}>{hubRefused ? "Retrying" : "Sending"}</span>
+            <span className={CLASS.text} data-testid="pending-chip-preview">
+              {pendingEntryPreview(entry)}
+            </span>
+          </li>
+        );
+      })}
     </ul>
   );
 }

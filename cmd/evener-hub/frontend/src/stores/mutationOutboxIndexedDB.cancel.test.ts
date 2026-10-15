@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import type { MutationIntent, MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { rewriteOutboxRowWithoutFields } from "./testing/legacyOutboxRows";
 
 // Stop's cancellation is a durable record state, not in-memory bookkeeping:
 // these tests run the real adapter against fake-indexeddb and read the rows
@@ -62,35 +63,6 @@ describe("MutationOutboxIndexedDB cancellation", () => {
 
   function store(options: Partial<ConstructorParameters<typeof MutationOutboxIndexedDB>[0]> = {}) {
     return new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence(), ...options });
-  }
-
-  // Rewrite a row exactly as the pre-#936 code wrote it: the same record with
-  // no `attempted` metadata at all. The adapter has written `attempted` on
-  // every row since #936, so the legacy shape can only be seeded by a raw
-  // IndexedDB write against the same database - a real durable write at the
-  // real boundary, the way the old code actually produced these rows.
-  async function rewriteRowWithoutAttemptedMetadata(clientMutationId: string): Promise<void> {
-    const openRequest = indexedDB.open(databaseName);
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      openRequest.addEventListener("success", () => resolve(openRequest.result), { once: true });
-      openRequest.addEventListener("error", () => reject(openRequest.error), { once: true });
-    });
-    try {
-      const read = database.transaction("outbox", "readonly").objectStore("outbox").get(clientMutationId);
-      const row = await new Promise<MutationOutboxRecord>((resolve, reject) => {
-        read.addEventListener("success", () => resolve(read.result), { once: true });
-        read.addEventListener("error", () => reject(read.error), { once: true });
-      });
-      const legacyRow: MutationOutboxRecord = { ...row };
-      delete legacyRow.attempted;
-      const write = database.transaction("outbox", "readwrite").objectStore("outbox").put(legacyRow);
-      await new Promise<void>((resolve, reject) => {
-        write.addEventListener("success", () => resolve(), { once: true });
-        write.addEventListener("error", () => reject(write.error), { once: true });
-      });
-    } finally {
-      database.close();
-    }
   }
 
   test("enqueueInterruptAndCancel cancels every non-attempted row for the ref and commits the interrupt with them", async () => {
@@ -312,7 +284,9 @@ describe("MutationOutboxIndexedDB cancellation", () => {
   test("a legacy row without attempted metadata is never canceled by Stop", async () => {
     const storage = store();
     const legacy = await storage.enqueueIntent(intent("legacy row"));
-    await rewriteRowWithoutAttemptedMetadata(legacy.clientMutationId);
+    // The pre-#936 shape: a row the old code persisted with no `attempted`
+    // metadata at all.
+    await rewriteOutboxRowWithoutFields(indexedDB, databaseName, legacy.clientMutationId, ["attempted"]);
     const fresh = await storage.enqueueIntent(intent("fresh row"));
 
     const canceled = await storage.cancelUnattempted(TARGET);
@@ -432,6 +406,62 @@ describe("MutationOutboxIndexedDB cancellation", () => {
       openRequest.addEventListener("error", () => resolve(openRequest.error), { once: true });
     });
     expect((failure as DOMException).name).toBe("VersionError");
+  });
+
+  test("an old tab's version-3 open against the version-4 database fails closed", async () => {
+    const storage = store();
+    await storage.enqueueIntent(intent("a row the old code cannot count"));
+    storage.close();
+
+    // The deployed pre-counter code opens the database at version 3. The
+    // version-4 database this build writes must refuse that open with a
+    // VersionError instead of sharing rows whose attempt evidence the old
+    // code cannot count: a new tab's refusal rollback would decrement a
+    // counter that never counted the old tab's concurrent dispatch, erasing
+    // the row's only attempt evidence so Stop could misclassify a possibly
+    // delivered row as never sent (docs/design/stop-cancellation-outbox.md
+    // §8). Failing the open is the safe direction: every outbox read and
+    // write in the old tab then reports a storage error, and projections
+    // degrade to "storage unavailable" - the safe mixed-version state is a
+    // reload, never a silent share.
+    const openRequest = indexedDB.open(databaseName, 3);
+    const failure = await new Promise<unknown>((resolve, reject) => {
+      openRequest.addEventListener("success", () => reject(new Error("the version-3 open unexpectedly succeeded")), {
+        once: true,
+      });
+      openRequest.addEventListener("error", () => resolve(openRequest.error), { once: true });
+    });
+    expect((failure as DOMException).name).toBe("VersionError");
+  });
+
+  // #4342 (round-5 review): an explicit release is the user deliberately
+  // sending after a Stop (§4's exemption), so it re-authorizes the row past
+  // the Stop its fence captured: the released row's capture refreshes to the
+  // current epoch, and its next refusal redelivers instead of re-canceling.
+  test("an explicit release re-authorizes a Stop-interrupted row past its captured Stop", async () => {
+    const stopped = store();
+    const row = await stopped.enqueueIntent(intent("refused while stopped"));
+    await stopped.markAttempted(row.clientMutationId);
+    // The Stop lands while the attempt is in flight: the scan skips the
+    // attempted row, the epoch bumps, and the refusal fence-holds the row.
+    await stopped.enqueueInterruptAndCancel(intent("stop"));
+    expect(await stopped.unmarkAttempted(row.clientMutationId)).toBe(false);
+    expect((await stopped.getOutbox(row.clientMutationId))?.state).toBe("canceled");
+
+    // The user presses Retry after the Stop: the press's barrier is the
+    // post-Stop epoch, the release passes it, and the capture refreshes.
+    const capture = await stopped.readStopEpoch(TARGET);
+    expect(await stopped.releaseCanceled(row.clientMutationId, { stopEpoch: capture })).toBe(true);
+
+    // The released row's next refusal must not see the historical Stop again.
+    await stopped.markAttempted(row.clientMutationId);
+    expect(await stopped.unmarkAttempted(row.clientMutationId)).toBe(true);
+    expect((await stopped.getOutbox(row.clientMutationId))?.state).toBe("submitting");
+    // And without another user action, the ordinary drive settles it.
+    await stopped.markAttempted(row.clientMutationId);
+    expect(await stopped.settleReceipt(row.clientMutationId, "reflected")).toBe(true);
+    expect(await stopped.getOutbox(row.clientMutationId)).toBeUndefined();
+    stopped.close();
   });
 
   test("discardCanceledOfInstance removes only the superseded instance's canceled rows", async () => {
