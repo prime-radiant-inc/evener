@@ -222,6 +222,17 @@ exit 2
 		// Join the goroutine so its last flip cannot outlive the test and
 		// every error it reported is counted.
 		<-restalerDone
+		// The repair registry runs its rebuilds detached by design (main.go:
+		// a multi-minute rebuild must not hold hub exit), so the storm's
+		// last-armed repair is still in flight here. Join it too — this
+		// cleanup runs before the TempDir removal (cleanup is LIFO and the
+		// TempDir was registered first), and an unjoined repair would race
+		// that removal and log its completion into whatever later test has
+		// captured the package's repair log.
+		deadline := time.Now().Add(30 * time.Second)
+		for transcriptIndexRepairs.inFlight(stormPath) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
 	})
 	go func() {
 		defer close(restalerDone)
