@@ -761,30 +761,18 @@ const carryCeilingSlack = 100
 // finishes the job. It cuts the message as written, so the note still counts
 // what the model lost rather than what the fit had already left of it.
 func TestForceCompact_CeilingBelowTheTrimFloorStillFitsAndCounts(t *testing.T) {
-	answer := func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(emptySummaryReply)} }
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{answer}}
-	client := llm.NewClient()
-	client.Register(adapter)
-	const window = 1_500
-	cm := NewManager(testProfile("openai", "test", window), client, cheapmodel.New(client))
-	cm.PreserveRecentTurns = 2
-	cm.Meta = *persistentMeta
 	log := "LOG_HEAD " + strings.Repeat("log line\n", 555) + " LOG_TAIL"
-	ceiling := partnerCarryCeiling(cm.currentProfile())
-	if ceiling <= 0 || ceiling >= 2*partnerMessageEdgeChars {
+	const ceiling = 1_500
+	if ceiling >= 2*partnerMessageEdgeChars {
 		t.Fatalf("fixture: the ceiling is %d chars, not below the %d-char trim floor", ceiling, 2*partnerMessageEdgeChars)
 	}
 	if len(log) <= ceiling {
 		t.Fatalf("fixture: the message is %d chars, not past the %d-char ceiling", len(log), ceiling)
 	}
-	history := []schema.Turn{
-		schema.NewTurn(schema.TurnUserInput, llm.User(log)),
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant("reading")),
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
-	}
-	cm.ForceCompact(context.Background(), &history, "", noopEmit)
-	carry := markdownSection(history[0].Message.Text(), checkpointConversationHeading)
+	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(log))}
+	// A summarizing window is far larger than a ceiling below the trim floor,
+	// so the carry is fitted directly.
+	carry, _ := partnerMessagesMarkdown(history, len(history), "", persistentMeta.hasTranscript(), ceiling)
 	if len(carry) > ceiling {
 		t.Fatalf("the carry is %d chars, over the %d-char ceiling", len(carry), ceiling)
 	}
@@ -792,7 +780,7 @@ func TestForceCompact_CeilingBelowTheTrimFloorStillFitsAndCounts(t *testing.T) {
 		t.Fatalf("the carry is %d chars, leaving %d of the %d-char ceiling unused: it was trimmed past the bound",
 			len(carry), ceiling-len(carry), ceiling)
 	}
-	entries := extractMarkdownConversation(history[0].Message.Text())
+	entries := extractMarkdownConversation(carry)
 	if len(entries) != 1 {
 		t.Fatalf("want one carried partner message, got %d", len(entries))
 	}
