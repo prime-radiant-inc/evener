@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -20,20 +21,26 @@ import (
 
 // ReadFileRaw returns the raw bytes of path subject to the active policy.
 func (e *LocalExecutionEnvironment) ReadFileRaw(path string) ([]byte, error) {
+	return e.ReadFileRawCtx(context.Background(), path)
+}
+
+// ReadFileRawCtx is ReadFileRaw with the caller's context threaded to the
+// read, so a cancelled call ends a read parked on a stream.
+func (e *LocalExecutionEnvironment) ReadFileRawCtx(ctx context.Context, path string) ([]byte, error) {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
-		return sfs.readFile("apply_patch", e.resolve(path))
+		return sfs.readFileCtx(ctx, "apply_patch", e.resolve(path))
 	}
 	abs := e.resolve(path)
 	if sfs := e.scratchSandboxFor(abs); sfs != nil {
 		defer sfs.release()
-		return sfs.readFile("apply_patch", abs)
+		return sfs.readFileCtx(ctx, "apply_patch", abs)
 	}
 	abs, err := e.resolveWrite(path)
 	if err != nil {
 		return nil, err
 	}
-	return readFileCapped(e.filesystem(), abs)
+	return readFileCappedCtx(ctx, e.filesystem(), abs)
 }
 
 // WriteFileRaw writes data to path, creating missing parents, confined to the

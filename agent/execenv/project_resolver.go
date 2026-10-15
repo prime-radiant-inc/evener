@@ -280,6 +280,13 @@ func execGitOutput(env ExecutionEnvironment, cwd string, args ...string) (string
 	if result.ExitCode != 0 {
 		return "", fmt.Errorf("command exited with code %d", result.ExitCode)
 	}
+	// A truncated STDOUT capture is head and tail fragments; a partial path
+	// decoded here would be a wrong answer, so refuse it (#4568 round 2). The
+	// answer comes from stdout, so a capped STDERR still leaves it whole
+	// (#4621 round 16).
+	if result.StdoutTruncated {
+		return "", ErrOutputTruncated
+	}
 	output := strings.TrimSpace(result.Stdout)
 	if output == "" {
 		return "", errors.New("command returned blank output")

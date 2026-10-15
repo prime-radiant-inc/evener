@@ -40,8 +40,9 @@ func TestSandboxReadFileCapsWholeFileRead(t *testing.T) {
 
 // A regular the classification routes as a stream can block in read(2)
 // although it stats regular — the aliased kmsg shape, canonical root-only —
-// and the file-tools read has no context to observe, so the stall deadline
-// must bound it in time (#4574 round 10 ruling): a never-ready stream fails
+// and this context-less entry has no cancellation to observe, so the stall
+// deadline must bound it in time (#4574 round 10 ruling; the ctx-carrying
+// readFileCtx observes a cancellation instead): a never-ready stream fails
 // at grepReadStallTimeout instead of holding the read forever. A FIFO under
 // a spelled-pseudo root with a writer that never writes stands in for the
 // root-only regular: the admission stub bypasses only the type gate, handing

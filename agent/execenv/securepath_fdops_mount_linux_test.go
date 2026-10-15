@@ -42,9 +42,9 @@ func TestSecureDirFSOpenKeepsNonblockingForAPseudoRootReachedThroughAnAlias(t *t
 	}
 }
 
-// fdStreamed must answer from the descriptor's mount, because the spelled
-// path an aliased anchor produces lies about where the file lives.
-func TestFdStreamedClassifiesTheDescriptorsMountNotTheSpelling(t *testing.T) {
+// admitOpenedFD must classify the descriptor's mount, because the spelled path
+// an aliased anchor produces lies about where the file lives.
+func TestAdmitOpenedFDClassifiesTheDescriptorsMountNotTheSpelling(t *testing.T) {
 	t.Parallel()
 	alias := filepath.Join(t.TempDir(), "proc-alias")
 	if err := os.Symlink("/proc", alias); err != nil {
@@ -54,32 +54,40 @@ func TestFdStreamedClassifiesTheDescriptorsMountNotTheSpelling(t *testing.T) {
 	if isPseudoFsPath(spelled) {
 		t.Fatalf("fixture: %s must spell non-pseudo", spelled)
 	}
-	f, err := os.Open(spelled)
-	if err != nil {
-		t.Fatal(err)
+	admit := func(path string, spelled bool) *os.File {
+		t.Helper()
+		fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := admitOpenedFD(fd, path, admitOptions{}, spelled)
+		if err != nil {
+			t.Fatalf("admitOpenedFD(%s): %v", path, err)
+		}
+		return f
 	}
-	defer func() { _ = f.Close() }()
-	if !fdStreamed(int(f.Fd()), isPseudoFsPath(spelled)) {
-		t.Errorf("fdStreamed on an aliased /proc/version = false, want true: the descriptor lives on procfs whatever the spelling says")
+	// The descriptor lives on procfs whatever the spelling says.
+	aliased := admit(spelled, false)
+	if !fdNonblocking(t, aliased) {
+		t.Errorf("admitOpenedFD on an aliased /proc/version cleared O_NONBLOCK: the descriptor lives on procfs whatever the spelling says")
 	}
+	_ = aliased.Close()
 	plain := filepath.Join(t.TempDir(), "plain.txt")
 	if err := os.WriteFile(plain, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cf, err := os.Open(plain)
-	if err != nil {
-		t.Fatal(err)
+	ordinary := admit(plain, false)
+	if fdNonblocking(t, ordinary) {
+		t.Errorf("admitOpenedFD on an ordinary %s-rooted file kept O_NONBLOCK, want it cleared", filepath.Base(filepath.Dir(plain)))
 	}
-	defer func() { _ = cf.Close() }()
-	if fdStreamed(int(cf.Fd()), isPseudoFsPath(plain)) {
-		t.Errorf("fdStreamed on an ordinary %s-rooted file = true, want false", filepath.Base(filepath.Dir(plain)))
-	}
+	_ = ordinary.Close()
 	// The spelled check stays authoritative where the descriptor's mount
-	// cannot be faked (stub-backed test roots), so a spelled pseudo path
-	// classifies streamed regardless of the mount.
-	if !fdStreamed(int(cf.Fd()), true) {
-		t.Errorf("fdStreamed with a spelled pseudo path = false, want true: the spelling must keep its authority")
+	// cannot be faked (stub-backed test roots).
+	spelledPseudo := admit(plain, true)
+	if !fdNonblocking(t, spelledPseudo) {
+		t.Errorf("admitOpenedFD with a spelled pseudo path cleared O_NONBLOCK: the spelling must keep its authority")
 	}
+	_ = spelledPseudo.Close()
 }
 
 // The same aliased anchor must not stop a readable pseudo file from being
