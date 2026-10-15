@@ -32,7 +32,12 @@ export interface DocumentAnnotationRuntime {
   // retry need here: no failed save or pending handoff will, so without this
   // the next storage-success notification cannot start the completing pass.
   registerRetryNeed(): void;
-  invalidate(key: DocumentKey): void;
+  // Retire the failed saves of one retired authority: only operations whose
+  // lease names the retired lease's namespace incarnation and epoch leave the
+  // retry map, so a reader retiring its own dead authority cannot also drop a
+  // failed save another reader of the same document holds against the live
+  // replacement epoch.
+  invalidate(key: DocumentKey, retired: PreparedAnnotation["lease"] | null): void;
   // Retire exactly ONE retained failed operation, keyed by its existing
   // namespace-qualified operation identity, leaving every other operation in the
   // shared failed-work set untouched. Cancel uses this to dismiss only its own
@@ -161,9 +166,15 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     registerRetryNeed: () => {
       needRetry();
     },
-    invalidate: (key) => {
+    invalidate: (key, retired) => {
       for (const [operationKey, operation] of failed)
-        if (annotationDocumentKey(operation.lease.key) === annotationDocumentKey(key)) failed.delete(operationKey);
+        if (
+          retired !== null &&
+          annotationDocumentKey(operation.lease.key) === annotationDocumentKey(key) &&
+          operation.lease.namespaceIncarnation === retired.namespaceIncarnation &&
+          operation.lease.epoch === retired.epoch
+        )
+          failed.delete(operationKey);
     },
     retireAttempted: (operation) => {
       failed.delete(id(operation));

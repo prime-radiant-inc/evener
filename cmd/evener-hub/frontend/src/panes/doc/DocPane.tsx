@@ -419,12 +419,13 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   // authority. `phase` is the honest status to publish for that retirement.
   const retireAuthority = useCallback(
     (phase: DocumentReaderWork["phase"]) => {
+      const retired = work.lease ?? work.attempted?.lease ?? null;
       work.lease = null;
       work.attempted = null;
       work.attemptedComment = null;
       work.phase = phase;
       work.comment = invalidateCommentCapture(work.comment);
-      ports.runtime.invalidate(key);
+      ports.runtime.invalidate(key, retired);
       publishReader(work);
     },
     [work, ports, key],
@@ -779,7 +780,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
           work.attempted = null;
           work.attemptedComment = null;
           work.comment = invalidateCommentCapture(work.comment);
-          ports.runtime.invalidate(key);
+          ports.runtime.invalidate(key, priorAuthority);
         }
         work.lease = accepted.lease;
         work.phase = work.attempted ? "unsaved" : "reading";
