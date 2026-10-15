@@ -40,7 +40,38 @@ export function withSavepoint<T>(db: SqliteSync, name: string, body: () => T): T
 		db.execSync(`RELEASE ${name}`);
 		return result;
 	} catch (error) {
-		db.execSync(`ROLLBACK TO ${name}; RELEASE ${name}`);
+		try {
+			db.execSync(`ROLLBACK TO ${name}; RELEASE ${name}`);
+		} catch {
+			// A full disk or an I/O error makes SQLite end the transaction itself,
+			// so the savepoint is already gone ("no such savepoint"). The failure
+			// worth reporting is the original one.
+		}
 		throw error;
 	}
+}
+
+// The messages SQLite gives for the result codes where the storage itself
+// failed, not what was asked of it. expo-sqlite surfaces only these messages
+// (as "Error code N: <message>" or the bare message, with no structured code),
+// and node:sqlite carries the same text, so the text is the one handle both
+// share. A constraint violation, a missing table or a syntax error is a bug in
+// the adapter and is absent on purpose.
+const STORAGE_FAILURE_MESSAGES: readonly string[] = [
+	"database or disk is full", // SQLITE_FULL
+	"disk i/o error", // SQLITE_IOERR
+	"unable to open database file", // SQLITE_CANTOPEN
+	"attempt to write a readonly database", // SQLITE_READONLY
+	"database is locked", // SQLITE_BUSY
+	"database disk image is malformed", // SQLITE_CORRUPT
+	"file is not a database", // SQLITE_NOTADB
+	"out of memory", // SQLITE_NOMEM
+];
+
+/** Whether a SQLite call failed because storage did (a full disk, an I/O
+ * error, a database that cannot be opened or written), as opposed to a bug in
+ * the SQL or the record. Only these earn the send's direct-request fallback. */
+export function isSqliteStorageFailure(error: unknown): boolean {
+	const message = error instanceof Error ? error.message.toLowerCase() : "";
+	return STORAGE_FAILURE_MESSAGES.some((known) => message.includes(known));
 }

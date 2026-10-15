@@ -41,7 +41,7 @@ and should not be presented as reproduced production incidents.
 | [C08](#c08-remote-provider-setup-at-launch) | Medium | Remote setup sends the user away from an otherwise usable setup path | S02, S07, S15 |
 | [C10](#c10-quiet-task-panels) | Medium | A quiet Tasks panel remains failed until Try again | S02, S03, S05, S12 |
 | [C12](#c12-remote-credential-transfer-outcomes) | Medium | Reconnecting hides a completed credential-transfer report; uncertain transfers require manual investigation | S02, S05, S07, S15 |
-| [C13](#c13-storage-unavailable-send-fallback-ordering-and-stop-fence) | High (deferred) | A storage wedge lets a web send reorder, escape a cross-tab Stop, or duplicate | S02, S11 |
+| [C13](#c13-storage-unavailable-send-fallback-ordering-and-stop-fence) | High (deferred) | A storage wedge lets a web or phone send reorder, escape a Stop, or duplicate | S02, S11 |
 | [C14](#c14-staged-image-attachments-across-identity-changes) | Medium | An image staged in the composer is lost silently when the session identity changes, while the typed draft survives | S02, S11 |
 | [R01](#r01-transcript-durability-stop) | High | A healed storage problem leaves the chat permanently stopped | S08, S09, S10 |
 | [R02](#r02-finished-turn-ownership) | High | A finished turn continues blocking new messages | S09, S11 |
@@ -420,6 +420,16 @@ lands and its reply is lost the composer reports a failure and keeps the draft,
 and the person's re-send is a new intent with a new id, so the daemon can apply
 the send twice.
 
+The phone follows the same rule over its SQLite outbox. A composer send whose
+durable write fails because SQLite reports the storage itself failing (a full
+disk, an I/O error, a database that cannot be opened or written) is dispatched
+as a plain request on the target's ready connection, and a failed request
+rejects so the draft stays. It makes one attempt; the web retries once. The send is remembered as this phone's for coordinator messages, and a direct drain settles the queued messages it consumed once a write succeeds. The consumed ids are held in memory, because the drain has no row to replay its receipt from, so quitting the app before storage accepts a write leaves those queued rows displayed as pending. A direct send has no row, and the composer's pending projection and send routing read durable records for provenance, so the composer shows no pending ghost for it and treats it as another client's: the turn appears when the daemon applies it, and a second message sent before then can go out as a start the daemon refuses (the draft stays). The web's fallback has the same gap. Constraint violations, a missing table, syntax errors and the outbox's own
+validation stay ordinary send failures, as do Stop and promote. The phone has
+no in-memory ordering guard, so the per-ref ordering gap applies without
+a refusal, and its dispatch gate does not apply to the fallback. With no
+ready connection the storage error is the send's failure.
+
 **Evidence.** [enqueueMutationIntent](../../cmd/evener-hub/frontend/src/stores/threads.ts#L2999)
 and its [direct-fallback branch and ordering guard](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3092);
 [dispatchMutationDirectly](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3303)
@@ -430,7 +440,12 @@ classification](../../cmd/evener-hub/frontend/src/stores/threads.ts#L3865)
 splits the storage-caused failure from a genuine one, and
 [currentDispatchClient](../../cmd/evener-hub/frontend/src/stores/threads.ts#L1150)
 fences a storage-blocked ref everywhere except the send fallback's own re-earn.
-`threads.test.ts` pins the direct dispatch through a wedge and a full origin, the retry ladder, the refusal to
+[NativeMutationRuntime.submit](../../mobile-native/src/nativeMutationRuntime.ts)
+and `isSqliteStorageFailure` in
+[sqliteSync](../../mobile-native/src/sqliteSync.ts) are the phone's side;
+`nativeMutationRuntime.test.ts` pins the direct send through a read-only
+database and a real full disk, the rejection that keeps the draft, and the
+bug and Stop cases that stay failures. `threads.test.ts` pins the direct dispatch through a wedge and a full origin, the retry ladder, the refusal to
 jump an undelivered or concurrent durable send, the storage-blocked
 classification, the wedged-reconcile journey (a send still delivers when the
 same wedge failed the reconcile), the still-pending variant, and the refusal a

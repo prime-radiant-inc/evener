@@ -153,14 +153,14 @@ func TestSummaryFailureValidationReasons(t *testing.T) {
 			return err
 		}},
 		{"empty batch", "empty_batch", func(cm *Manager) error {
-			_, err := cm.condensePartnerMessages(context.Background(), []string{strings.Repeat("x", 100)}, 30)
+			_, err := cm.condensePartnerMessages(context.Background(), cm.currentProfile(), []string{strings.Repeat("x", 100)}, 30)
 			return err
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client := llm.NewClient()
 			client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) { return llm.Response{}, nil }})
-			cm := NewManager(testOpenAIProfileWithContextWindow(1000), client, cheapmodel.New(client))
+			cm := NewManager(testOpenAIProfileWithContextWindow(minSummarizingWindow), client, cheapmodel.New(client))
 			warning := summarizerFailureWarning(tc.run(cm))
 			if warning.SummaryFailure == nil {
 				t.Fatal("missing local diagnostic")
@@ -235,7 +235,7 @@ func TestSummaryFailureUncondensablePartnerMessages(t *testing.T) {
 			cm := NewManager(profile, client, cheapmodel.New(client))
 			lines := []string{strings.Repeat("x", 6001)}
 			original := append([]string(nil), lines...)
-			_, err := cm.condensePartnerMessages(context.Background(), lines, 6000)
+			_, err := cm.condensePartnerMessages(context.Background(), cm.currentProfile(), lines, 6000)
 			if !errors.Is(err, errSummaryUncondensable) || len(calls) < 4 {
 				t.Fatal("non-shrinking summary was accepted")
 			}
@@ -273,7 +273,7 @@ func TestSummaryFailureLaterCompactionRecovers(t *testing.T) {
 		}
 		return llm.Response{Message: llm.Assistant("## Progress\nrecovery-marker-9a2c")}, nil
 	}})
-	cm := NewManager(testOpenAIProfileWithContextWindow(1000), client, cheapmodel.New(client))
+	cm := NewManager(testOpenAIProfileWithContextWindow(minSummarizingWindow), client, cheapmodel.New(client))
 	cm.PreserveRecentTurns = 2
 	history := canaryHistory()
 	emit, warnings := warningsFrom()

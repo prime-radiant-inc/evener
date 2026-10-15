@@ -31,8 +31,8 @@ func TestLoginShellPATHProbeDeadlineDoesNotWaitForAnOrphanedPipeHolder(t *testin
 	}()
 	done := make(chan probeRun, 1)
 	go func() {
-		out, err := loginShellPATHOutput(ctx, shell, "-lc", "echo $PATH")
-		done <- probeRun{out, err}
+		capture, err := loginShellPATHOutput(ctx, shell, "-lc", "echo $PATH")
+		done <- probeRun{capture.view, err}
 	}()
 	if got := orphanpipetest.Await(t, h, done); got.err == nil {
 		t.Fatalf("probe after its context ended = nil error, output %q", got.out)
@@ -56,8 +56,8 @@ func TestLoginShellPATHSurvivesAnOrphanedPipeHolder(t *testing.T) {
 	shell := h.WriteScript(t, "fake-shell", h.Spawn()+"\necho /from/login/shell\n")
 	done := make(chan probeRun, 1)
 	go func() {
-		out, err := loginShellPATHOutput(context.Background(), shell, "-lc", "echo $PATH")
-		done <- probeRun{out, err}
+		capture, err := loginShellPATHOutput(context.Background(), shell, "-lc", "echo $PATH")
+		done <- probeRun{capture.view, err}
 	}()
 	got := orphanpipetest.Await(t, h, done)
 	if got.err != nil {

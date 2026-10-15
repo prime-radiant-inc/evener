@@ -1436,6 +1436,174 @@ test("submit resolves at the durable enqueue boundary", async () => {
 	await runtime.stop();
 });
 
+// A real SQLITE_READONLY from the engine: every outbox write is refused, as on
+// a phone whose storage went read-only under the app.
+function refuseWrites(db: SqliteDoubleDatabase): void {
+	db.exec("PRAGMA query_only = ON");
+}
+
+// node:sqlite's errcode for SQLITE_READONLY; expo-sqlite has no structured code.
+const SQLITE_READONLY = 8;
+
+async function readyRuntimeWithClient(createMutationId?: () => string) {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId });
+	const client = new FakeClient("ready");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+	return { runtime, client };
+}
+
+test.each([
+	["send", "turn/start", {}],
+	["queue", "turn/queue", {}],
+	["steer", "turn/steer", {}],
+	["steer", "turn/drainAsSteer", { expectedQueueRevision: 7 }],
+] as const)(
+	"a %s on %s whose outbox write is refused by storage goes out as a plain request",
+	async (kind, method, extra) => {
+		const { runtime, client } = await readyRuntimeWithClient();
+		client.on(method as never, (params) => appliedReceipt(params));
+		refuseWrites(database!);
+
+		await runtime.submit({ ...request(kind), ...extra });
+
+		expect(client.calls).toHaveLength(1);
+		expect(client.calls[0]).toMatchObject({
+			method,
+			params: { ref: "ref-1", expectedInstanceId: "instance-1", ...extra },
+		});
+		expect((client.calls[0]?.params as { clientMutationId?: string }).clientMutationId).toEqual(expect.any(String));
+		expect(await runtime.storage.listOutbox("")).toEqual([]);
+		await runtime.stop();
+	},
+);
+
+test("a direct send is remembered as this phone's", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/start", (params) => appliedReceipt(params));
+	refuseWrites(database!);
+
+	await runtime.submit(request("send"));
+
+	const sent = (client.calls[0]?.params as { clientMutationId: string }).clientMutationId;
+	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-1")).has(sent)).toBe(true);
+	await runtime.stop();
+});
+
+test("a direct drain settles the queued messages it consumed once storage answers", async () => {
+	let nextId = 0;
+	const { runtime, client } = await readyRuntimeWithClient(() => `mutation-${++nextId}`);
+	client.on("turn/queue", (params) => appliedReceipt(params));
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await runtime.submit(request("queue"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+	});
+	client.on("turn/drainAsSteer", (params) => {
+		database!.exec("PRAGMA query_only = OFF");
+		const response = appliedReceipt(params) as { receipt: object };
+		return { receipt: { ...response.receipt, consumedClientMutationIds: ["mutation-1"] } } as never;
+	});
+	refuseWrites(database!);
+
+	await runtime.submit({ ...request("steer"), expectedQueueRevision: 7 });
+
+	expect(await runtime.storage.getOptimistic("mutation-1")).toBeUndefined();
+	await runtime.stop();
+});
+
+test("a drain's consumed messages left unsettled by a refused write settle on the next authoritative read", async () => {
+	let nextId = 0;
+	const { runtime, client } = await readyRuntimeWithClient(() => `mutation-${++nextId}`);
+	client.on("turn/queue", (params) => appliedReceipt(params));
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await runtime.submit(request("queue"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+	});
+	client.on("turn/drainAsSteer", (params) => {
+		const response = appliedReceipt(params) as { receipt: object };
+		return { receipt: { ...response.receipt, consumedClientMutationIds: ["mutation-1"] } } as never;
+	});
+	refuseWrites(database!);
+
+	await runtime.submit({ ...request("steer"), expectedQueueRevision: 7 });
+	expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+
+	database!.exec("PRAGMA query_only = OFF");
+	const reread = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(reread!, readResponse("ref-1"));
+	expect(await runtime.storage.getOptimistic("mutation-1")).toBeUndefined();
+	await runtime.stop();
+});
+
+// SQLITE_FULL rolls the transaction back itself, so the savepoint's own
+// rollback fails too; the send must still see the full-disk error.
+test("a send on a full disk goes out as a plain request", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/start", (params) => appliedReceipt(params));
+	const { page_count: pages } = database!.prepare("PRAGMA page_count").get() as { page_count: number };
+	database!.exec(`PRAGMA max_page_count = ${pages}`);
+
+	await runtime.submit({ ...request("send"), input: [{ type: "text", text: "x".repeat(200_000) }] });
+
+	expect(client.calls).toHaveLength(1);
+	await runtime.stop();
+});
+
+test("a direct send the daemon refuses rejects, so the draft stays", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	const refusal = new WireError("refused", -32000);
+	client.on("turn/start", () => {
+		throw refusal;
+	});
+	refuseWrites(database!);
+
+	await expect(runtime.submit(request("send"))).rejects.toBe(refusal);
+	await runtime.stop();
+});
+
+test("a refused write with no ready connection still fails the send with the storage error", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase());
+	const client = new FakeClient("connecting");
+	runtime.registerTarget("hub-1", "ref-1", client);
+	await runtime.start();
+	refuseWrites(database!);
+
+	await expect(runtime.submit(request("send"))).rejects.toMatchObject({ errcode: SQLITE_READONLY });
+	expect(client.calls).toHaveLength(0);
+	await runtime.stop();
+});
+
+test("a Stop whose outbox write is refused by storage stays fail-closed", async () => {
+	const { runtime, client } = await readyRuntimeWithClient();
+	client.on("turn/interrupt", (params) => appliedReceipt(params));
+	refuseWrites(database!);
+
+	await expect(runtime.submit({ ...request("send"), kind: "interrupt" })).rejects.toMatchObject({
+		errcode: SQLITE_READONLY,
+	});
+	expect(client.calls).toHaveLength(0);
+	await runtime.stop();
+});
+
+test("an outbox bug stays a visible send failure with no request", async () => {
+	const { runtime, client } = await readyRuntimeWithClient(() => "mutation-1");
+	client.on("turn/start", (params) => appliedReceipt(params));
+	await runtime.submit(request("send"));
+	client.calls.length = 0;
+
+	// The same id twice is the outbox's own validation refusing the record.
+	const failure = await runtime.submit(request("send")).catch((error: unknown) => error);
+	expect(failure).toBeInstanceOf(Error);
+	expect(failure).not.toHaveProperty("errcode");
+	expect(client.calls).toHaveLength(0);
+	expect(await runtime.storage.getOutbox("mutation-1")).toBeDefined();
+	await runtime.stop();
+});
+
 test("each enqueue gets a fresh mutation id", async () => {
 	let nextId = 0;
 	const runtime = new NativeMutationRuntime(openDatabase(), {

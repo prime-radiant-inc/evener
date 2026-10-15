@@ -25,7 +25,7 @@ func canaryManager(t *testing.T) *Manager {
 	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
 		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", http.StatusBadRequest, "invalid messages[1].content: "+summarizerCanary, nil, nil)
 	}})
-	cm := NewManager(testOpenAIProfileWithContextWindow(1000), client, cheapmodel.New(client))
+	cm := NewManager(testOpenAIProfileWithContextWindow(minSummarizingWindow), client, cheapmodel.New(client))
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
@@ -126,7 +126,7 @@ func TestSummarizerFailureWarningsLeaveTheProviderBodyOut(t *testing.T) {
 	t.Run("session log", func(t *testing.T) {
 		cm := canaryManager(t)
 		cm.CheckpointThreshold = 2.0
-		strategy, err := NewSessionLogStrategy(cm, &fakeStrategyHost{stateDir: t.TempDir(), id: "canary", profile: testOpenAIProfileWithContextWindow(1000)})
+		strategy, err := NewSessionLogStrategy(cm, &fakeStrategyHost{stateDir: t.TempDir(), id: "canary", profile: testOpenAIProfileWithContextWindow(minSummarizingWindow)})
 		if err != nil {
 			t.Fatalf("NewSessionLogStrategy: %v", err)
 		}
