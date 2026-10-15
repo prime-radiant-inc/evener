@@ -57,6 +57,20 @@ export class DocumentGeometrySeam {
     });
   }
 
+  // A popped-out document renders in its own window, whose Range.prototype is
+  // a different object: install the same rectangle capability there. Recorded
+  // for restore like the global install.
+  installWindow(view: Window): void {
+    const seam = this;
+    this.patch(view.Range.prototype, "getClientRects", function (this: Range): DOMRectList {
+      return seam.rectsForRange(this).map(testDomRect) as unknown as DOMRectList;
+    });
+    this.patch(view.Range.prototype, "getBoundingClientRect", function (this: Range): DOMRect {
+      const [first] = seam.rectsForRange(this);
+      return testDomRect(first ?? EMPTY_RECT);
+    });
+  }
+
   // Put back every exact previous descriptor, deleting own properties the seam
   // added. Safe to call once per test even after a failed assertion.
   restore(): void {
@@ -79,7 +93,10 @@ export class DocumentGeometrySeam {
       );
     ranges.forEach((range, index) => {
       const node = range.startContainer;
-      if (!(node instanceof Text)) throw new Error("fragment start is not a text node");
+      // Realm-safe: a foreign document (an iframe) has its own Text
+      // constructor, so the global one cannot see its nodes.
+      const TextCtor = node.ownerDocument?.defaultView?.Text ?? Text;
+      if (!(node instanceof TextCtor)) throw new Error("fragment start is not a text node");
       let nodeRects = this.rectsByNode.get(node);
       if (!nodeRects) {
         nodeRects = new Map();
@@ -98,7 +115,9 @@ export class DocumentGeometrySeam {
 
   private rectsForRange(range: Range): TestRect[] {
     const node = range.startContainer;
-    if (!(node instanceof Text)) return [];
+    // Realm-safe: a foreign document's text nodes are not the global Text.
+    const TextCtor = node.ownerDocument?.defaultView?.Text ?? Text;
+    if (!(node instanceof TextCtor)) return [];
     return this.rectsByNode.get(node)?.get(`${range.startOffset}:${range.endOffset}`) ?? [];
   }
 
