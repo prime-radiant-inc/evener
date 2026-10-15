@@ -520,7 +520,7 @@ test("accepted source invalidation retains the exact note while retiring the sta
   // helpers and the real runtime.invalidate, not the real DocPane source-change
   // path. The real accepted-source-change journey belongs to the later
   // DocPane.test.tsx checkpoint.
-  ports.runtime.invalidate(work.key);
+  ports.runtime.invalidate(work.key, work.lease);
   work.attempted = null;
   work.attemptedComment = null;
   work.comment = invalidateCommentCapture(work.comment);

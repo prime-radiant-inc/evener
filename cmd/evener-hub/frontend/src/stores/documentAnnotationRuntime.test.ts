@@ -2,7 +2,7 @@
 // bounded outcome govern retry health across the real annotation adapter, using
 // the same retained runtime for the first Send and every retry. The regression
 // that exercises the adapter alone lives in documentAnnotationIndexedDB.test.ts.
-import type { SaveReceipt } from "@evener/appwire-client";
+import { displayedFingerprint, type PreparedAnnotation, type SaveReceipt } from "@evener/appwire-client";
 import { IDBObjectStore } from "fake-indexeddb";
 import { expect, it, vi } from "vitest";
 import { REFERENCE, SOURCE } from "../panes/doc/testing/annotationFixtures";
@@ -14,6 +14,7 @@ import {
   docContent,
   expectStampedNoEarlierThan,
   fixture,
+  preparedAnnotationFromLease,
   rowsForTests,
 } from "../panes/doc/testing/annotationRepositoryFixtures";
 import { createDocumentAnnotationRepository } from "../stores/documentAnnotationIndexedDB";
@@ -235,7 +236,7 @@ it.each(["draft", "recovery"] as const)(
     await expectStillPending();
     await retainedRuntime.whenIdle();
     expect(retries).toHaveBeenCalledTimes(1); // a pending outcome does not self-reschedule
-    retainedRuntime.invalidate(original.lease.key); // empty failed map must not clear persisted-pending health
+    retainedRuntime.invalidate(original.lease.key, original.lease); // empty failed map must not clear persisted-pending health
     failAppend = false;
     observeSuccess = true;
     await f.repo.beginRead({ ...f.document, path: "STORAGE-RECOVERED.md" }); // unrelated real success, no Send/open/foreground
@@ -341,7 +342,7 @@ it("invalidates failed work and disposal stops later storage and explicit retry 
   const invalidated = await acceptedOperation(f.repo, f.document, "invalidated-id", "old capture", f.destination);
   failSave = true;
   expect(await retainedRuntime.save(invalidated)).toBeNull();
-  retainedRuntime.invalidate(invalidated.lease.key);
+  retainedRuntime.invalidate(invalidated.lease.key, invalidated.lease);
   failSave = false;
   await retainedRuntime.retryPending("foreground");
   expect(saves.mock.calls.filter(([operation]) => operation.operationId === invalidated.operationId)).toHaveLength(1);
@@ -376,6 +377,73 @@ it("invalidates failed work and disposal stops later storage and explicit retry 
     ),
   ).toBe(false);
   expect((await f.repo.handoff(f.document, "op-1")).state).toBe("already-applied");
+});
+
+// RoboRev round 37 medium: invalidate swept every failed save for the document
+// by document key alone, so a reader retiring its own dead authority also
+// removed a FAILED SAVE against the live replacement epoch held by another
+// reader of the same document on the same runtime - and that reader's comment
+// stayed unsaved until a fresh Send. Invalidation is scoped to the retired
+// lease's incarnation and epoch, preserving failures against newer authority.
+it("an older reader's invalidation retires only its own epoch's failed saves", async () => {
+  let failSave = false;
+  const f = await fixture("retry-invalidate-epoch-scoped", {
+    beforeCommit: (operation) => {
+      if (operation === "save" && failSave) throw new Error("save fault");
+    },
+  });
+  await f.repo.handoff(f.document, "op-1");
+  const runtime = createDocumentAnnotationRuntime(f.repo);
+  cleanupAfterTest(() => runtime.dispose());
+  const saves = vi.spyOn(f.repo, "saveAnnotation");
+
+  // The older reader leases the document's first epoch and fails its save
+  // while that authority is still live.
+  const older = await acceptedOperation(f.repo, f.document, "older-id", "older reader note", f.destination);
+  failSave = true;
+  expect(await runtime.save(older)).toBeNull();
+
+  // The document changes: the changed read fences the first epoch, and the
+  // next read leases the replacement epoch - a second reader of the same
+  // document on newer authority.
+  const fenced = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(`${SOURCE}CHANGED`, "rev-B"));
+  if (fenced.state !== "expiry-pending") throw new Error("the changed read should fence the first epoch");
+  const replacementRead = await f.repo.acceptRead(
+    await f.repo.beginRead(f.document),
+    docContent(`${SOURCE}CHANGED`, "rev-B"),
+  );
+  if (replacementRead.state !== "accepted") throw new Error("the replacement read should accept");
+  const newerBase = preparedAnnotationFromLease(
+    replacementRead.lease,
+    "newer-id",
+    "newer reader note",
+    f.destination,
+    "rev-B",
+  );
+  const newer: PreparedAnnotation = {
+    ...newerBase,
+    capture: {
+      ...newerBase.capture,
+      evidence: { wholeRevision: "rev-B", fingerprint: displayedFingerprint(`${SOURCE}CHANGED`, false) },
+    },
+  };
+  if (newer.lease.epoch === older.lease.epoch) throw new Error("the replacement lease kept the first epoch");
+  expect(await runtime.save(newer)).toBeNull();
+
+  // The older reader retires its own dead authority. Its failed save must
+  // stop retrying with it, but the newer reader's failed save against the
+  // live replacement epoch must survive for the retry passes.
+  runtime.invalidate(older.lease.key, older.lease);
+  failSave = false;
+  await runtime.retryPending("foreground");
+  await runtime.whenIdle();
+  expect(saves.mock.calls.filter(([operation]) => operation.operationId === older.operationId)).toHaveLength(1);
+  expect(saves.mock.calls.filter(([operation]) => operation.operationId === newer.operationId)).toHaveLength(2);
+  expect(
+    (await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE)).some(
+      (row) => row.operation.operationId === newer.operationId,
+    ),
+  ).toBe(true);
 });
 
 // Fault the real target transaction at a specific database/store/mode boundary:
