@@ -69,10 +69,7 @@ func summaryFailure(err error, route summarizationRoute, role string) *summaryFa
 	if resolution, ok := errors.AsType[*cheapmodel.ResolutionError](err); ok {
 		route = summarizationRoute{provider: resolution.Terminal.Provider, model: resolution.Terminal.Model}
 		failure.detail.Terminal = summaryAttempt(route, role, resolution.Terminal.Err)
-		for _, previous := range resolution.Previous {
-			if len(failure.detail.Previous) == 2 {
-				break
-			}
+		for _, previous := range resolution.Previous[:min(len(resolution.Previous), 2)] {
 			failure.detail.Previous = append(failure.detail.Previous, summaryAttempt(summarizationRoute{provider: previous.Provider, model: previous.Model}, "cheap", previous.Err))
 		}
 	} else {
@@ -88,9 +85,11 @@ func summarizerFailureWarning(err error) events.WarningData {
 	if !errors.As(err, &failure) {
 		failure = summaryFailure(err, summarizationRoute{}, "none")
 	}
-	detail := diagnostic.SummaryFailure{Terminal: summaryAttempt(summarizationRoute{}, "none", nil)}
+	var detail diagnostic.SummaryFailure
 	if failure != nil {
 		detail = failure.detail
+	} else {
+		detail.Terminal = summaryAttempt(summarizationRoute{}, "none", nil)
 	}
 	message, info := diagnostic.SummaryFailureInfo(detail)
 	return events.WarningData{

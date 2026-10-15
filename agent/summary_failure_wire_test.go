@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -57,13 +58,9 @@ func TestSummaryFailureWireFixtures(t *testing.T) {
 	if err := sess.Compact(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	installed := false
-	for _, turn := range currentHistory(t, sess) {
-		if turn.Kind == schema.TurnSummary && strings.Contains(turn.Message.Text(), "recovered-summary-731c") {
-			installed = true
-		}
-	}
-	if !installed {
+	if !slices.ContainsFunc(currentHistory(t, sess), func(turn schema.Turn) bool {
+		return turn.Kind == schema.TurnSummary && strings.Contains(turn.Message.Text(), "recovered-summary-731c")
+	}) {
 		t.Fatal("successful compaction did not install its summary")
 	}
 	if _, err := sess.ProcessInput(context.Background(), "continue-94ae", nil); err != nil {

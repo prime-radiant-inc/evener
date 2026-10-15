@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -94,13 +95,9 @@ func TestSummaryFailureJourney(t *testing.T) {
 	if err := sess.Compact(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	installed := false
-	for _, turn := range currentHistory(t, sess) {
-		if turn.Kind == schema.TurnSummary && strings.Contains(turn.Message.Text(), "summary-restored-94a1") {
-			installed = true
-		}
-	}
-	if !installed {
+	if !slices.ContainsFunc(currentHistory(t, sess), func(turn schema.Turn) bool {
+		return turn.Kind == schema.TurnSummary && strings.Contains(turn.Message.Text(), "summary-restored-94a1")
+	}) {
 		t.Error("recovery did not install the summary")
 	}
 	if _, err := sess.ProcessInput(context.Background(), "continue-11de", nil); err != nil {
@@ -223,13 +220,9 @@ func TestSummaryFailureChildWithUnreadEvents(t *testing.T) {
 			if err := sess.Compact(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			installed := false
-			for _, turn := range currentHistory(t, sess) {
-				if turn.Kind == schema.TurnSummary && strings.Contains(turn.Message.Text(), "child-summary-f3a7") {
-					installed = true
-				}
-			}
-			if !installed {
+			if !slices.ContainsFunc(currentHistory(t, sess), func(turn schema.Turn) bool {
+				return turn.Kind == schema.TurnSummary && strings.Contains(turn.Message.Text(), "child-summary-f3a7")
+			}) {
 				t.Error("logging prevented later summary installation")
 			}
 			sess.Close()
