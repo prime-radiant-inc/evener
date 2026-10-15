@@ -17,7 +17,7 @@ import type { AppwireClientLike, DestinationProvenance, DocumentKey } from "@eve
 import * as docContentModule from "@evener/appwire-client/docContent";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { render, screen } from "@testing-library/react";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { type ComponentType, createElement, lazy } from "react";
 import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { StubResizeObserver } from "../../resizeObserverTestUtils";
@@ -43,14 +43,19 @@ import { REFERENCE, SOURCE } from "./testing/annotationFixtures";
 import { acceptedOperation, cleanupAfterTest, docContent } from "./testing/annotationRepositoryFixtures";
 
 let originalIndexedDB: IDBFactory;
+let originalIDBKeyRange: typeof IDBKeyRange;
 
 beforeAll(() => {
   originalIndexedDB = globalThis.indexedDB;
+  originalIDBKeyRange = globalThis.IDBKeyRange;
   globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
   // The one fresh IndexedDB universe the production ports singleton will capture,
-  // installed before its first resolution and never replaced afterwards.
+  // installed before its first resolution and never replaced afterwards. The
+  // store's bounded queries build key ranges through the browser's global
+  // IDBKeyRange, so the fake factory's class installs beside its factory.
   globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
   resetBrowserDraftRepositoryForTests();
   // The real `session` pane type openPane() validates against (the heavier
   // panes/session module is never needed for the lifetime assertions).
@@ -68,6 +73,7 @@ afterAll(async () => {
   ports.repository.close();
   resetBrowserDraftRepositoryForTests();
   globalThis.indexedDB = originalIndexedDB;
+  globalThis.IDBKeyRange = originalIDBKeyRange;
 });
 
 beforeEach(() => {

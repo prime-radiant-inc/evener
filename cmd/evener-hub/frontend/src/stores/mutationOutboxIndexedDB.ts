@@ -312,7 +312,7 @@ export class MutationOutboxIndexedDB {
       databaseName: this.#databaseName,
       databaseVersion: DATABASE_VERSION,
       waitMs: STORAGE_WAIT_MS,
-      upgrade: (database) => this.#upgrade(database),
+      upgrade: (database, transaction) => this.#upgrade(database, transaction),
       errors: {
         open: () => new MutationStorageError("Unable to open mutation outbox"),
         superseded: () => new MutationStorageError("Mutation outbox connection was closed"),
@@ -1153,8 +1153,8 @@ export class MutationOutboxIndexedDB {
     return { writes, sessionToken: { namespaceIncarnation: incarnation, sessionRevision: 1 } };
   }
 
-  #upgrade(database: IDBDatabase): void {
-    registerLocalCompositionSchema(database);
+  #upgrade(database: IDBDatabase, transaction: IDBTransaction | null): void {
+    registerLocalCompositionSchema(database, transaction);
   }
 
   // Record one open failure path. The try/catch is the whole contract: a

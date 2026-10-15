@@ -74,7 +74,7 @@ test("opening the shared database upgrades populated version-3 mutation stores w
   await adapter.listOutbox();
   const upgraded = await openCurrent(indexedDB, databaseName);
 
-  expect(upgraded.version).toBe(4);
+  expect(upgraded.version).toBe(5);
   expect([...upgraded.objectStoreNames]).toEqual([
     "annotationEvidence",
     "annotationExpiry",
@@ -91,6 +91,12 @@ test("opening the shared database upgrades populated version-3 mutation stores w
     "recovery",
     "sequences",
   ]);
+  // The version-5 upgrade indexes the evidence and payload stores on the
+  // version-change transaction: stores that already existed gain the index,
+  // which the bounded queries depend on.
+  const indexes = upgraded.transaction(["annotationEvidence", "annotationPayloads"], "readonly");
+  expect([...indexes.objectStore("annotationEvidence").indexNames]).toContain("annotationEvidenceByDocumentEpoch");
+  expect([...indexes.objectStore("annotationPayloads").indexNames]).toContain("annotationPayloadsByDocumentEpoch");
   const read = upgraded.transaction(["outbox", "optimistic", "recovery", "sequences"], "readonly");
   const values = await Promise.all(
     ["outbox", "optimistic", "recovery", "sequences"].map(

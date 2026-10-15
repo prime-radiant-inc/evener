@@ -33,11 +33,13 @@ import type { AppendAnnotationResult, BrowserDraftKey, BrowserDraftRepository } 
 import { type NamespaceRow, serializeSessionKey } from "./compositionRevision";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import {
+  ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX,
   ANNOTATION_EVIDENCE_STORE,
   ANNOTATION_EXPIRY_STORE,
   ANNOTATION_HEADS_STORE,
   ANNOTATION_NAMESPACES_STORE,
   ANNOTATION_OPERATIONS_STORE,
+  ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX,
   ANNOTATION_PAYLOADS_STORE,
   ANNOTATION_SEQUENCES_STORE,
   type AnnotationEvidenceRow,
@@ -545,9 +547,14 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // inconclusive evidence alone never expires notes.
         const currentEpoch = head?.epoch;
         const retained = currentEpoch
-          ? (await requestResult<AnnotationEvidenceRow[]>(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).getAll()))
-              .filter((row) => row.documentKey === documentKey && row.epoch === currentEpoch)
-              .map((row) => row.content)
+          ? (
+              await requestResult<AnnotationEvidenceRow[]>(
+                transaction
+                  .objectStore(ANNOTATION_EVIDENCE_STORE)
+                  .index(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX)
+                  .getAll(IDBKeyRange.only([documentKey, currentEpoch])),
+              )
+            ).map((row) => row.content)
           : [];
         const contentChanged = contentChangedAgainst(retained, content);
         // A locally confirmed suppression keeps the current durable epoch dead even
@@ -869,9 +876,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // comment despite its original evidence still being retained. Within an
         // epoch every retained observation is validated-comparable; a genuine
         // change fences into a new epoch, which the epoch check above rejects.
-        const epochEvidence = (
-          await requestResult<AnnotationEvidenceRow[]>(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).getAll())
-        ).filter((row) => row.documentKey === documentKey && row.epoch === head.epoch);
+        const epochEvidence = await requestResult<AnnotationEvidenceRow[]>(
+          transaction
+            .objectStore(ANNOTATION_EVIDENCE_STORE)
+            .index(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX)
+            .getAll(IDBKeyRange.only([documentKey, head.epoch])),
+        );
         if (!epochEvidence.some((row) => evidenceMatches(row.content, captured.capture.evidence))) {
           throw new Error("accepted source evidence does not match the durable evidence");
         }
@@ -1005,18 +1015,24 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         if (!expiryRow || expiryRow.receipt.expiredEpoch !== receipt.expiredEpoch) return;
         if (expiryRow.receipt.phase === "deleted") return;
         const [payloads, evidence] = await Promise.all([
-          requestResult<AnnotationPayloadRow[]>(transaction.objectStore(ANNOTATION_PAYLOADS_STORE).getAll()),
-          requestResult<AnnotationEvidenceRow[]>(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).getAll()),
+          requestResult<AnnotationPayloadRow[]>(
+            transaction
+              .objectStore(ANNOTATION_PAYLOADS_STORE)
+              .index(ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX)
+              .getAll(IDBKeyRange.only([documentKey, receipt.expiredEpoch])),
+          ),
+          requestResult<AnnotationEvidenceRow[]>(
+            transaction
+              .objectStore(ANNOTATION_EVIDENCE_STORE)
+              .index(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX)
+              .getAll(IDBKeyRange.only([documentKey, receipt.expiredEpoch])),
+          ),
         ]);
         for (const payload of payloads) {
-          if (payload.documentKey === documentKey && payload.epoch === receipt.expiredEpoch) {
-            await requestResult(transaction.objectStore(ANNOTATION_PAYLOADS_STORE).delete(payload.payloadKey));
-          }
+          await requestResult(transaction.objectStore(ANNOTATION_PAYLOADS_STORE).delete(payload.payloadKey));
         }
         for (const row of evidence) {
-          if (row.documentKey === documentKey && row.epoch === receipt.expiredEpoch) {
-            await requestResult(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).delete(row.evidenceKey));
-          }
+          await requestResult(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).delete(row.evidenceKey));
         }
         await requestResult(
           transaction.objectStore(ANNOTATION_EXPIRY_STORE).put({
