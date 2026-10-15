@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import type { MutationIntent, MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { rewriteOutboxRowWithoutFields } from "./testing/legacyOutboxRows";
 
 // Stop's cancellation is a durable record state, not in-memory bookkeeping:
 // these tests run the real adapter against fake-indexeddb and read the rows
@@ -62,35 +63,6 @@ describe("MutationOutboxIndexedDB cancellation", () => {
 
   function store(options: Partial<ConstructorParameters<typeof MutationOutboxIndexedDB>[0]> = {}) {
     return new MutationOutboxIndexedDB({ indexedDB, databaseName, createMutationId: idSequence(), ...options });
-  }
-
-  // Rewrite a row exactly as the pre-#936 code wrote it: the same record with
-  // no `attempted` metadata at all. The adapter has written `attempted` on
-  // every row since #936, so the legacy shape can only be seeded by a raw
-  // IndexedDB write against the same database - a real durable write at the
-  // real boundary, the way the old code actually produced these rows.
-  async function rewriteRowWithoutAttemptedMetadata(clientMutationId: string): Promise<void> {
-    const openRequest = indexedDB.open(databaseName);
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      openRequest.addEventListener("success", () => resolve(openRequest.result), { once: true });
-      openRequest.addEventListener("error", () => reject(openRequest.error), { once: true });
-    });
-    try {
-      const read = database.transaction("outbox", "readonly").objectStore("outbox").get(clientMutationId);
-      const row = await new Promise<MutationOutboxRecord>((resolve, reject) => {
-        read.addEventListener("success", () => resolve(read.result), { once: true });
-        read.addEventListener("error", () => reject(read.error), { once: true });
-      });
-      const legacyRow: MutationOutboxRecord = { ...row };
-      delete legacyRow.attempted;
-      const write = database.transaction("outbox", "readwrite").objectStore("outbox").put(legacyRow);
-      await new Promise<void>((resolve, reject) => {
-        write.addEventListener("success", () => resolve(), { once: true });
-        write.addEventListener("error", () => reject(write.error), { once: true });
-      });
-    } finally {
-      database.close();
-    }
   }
 
   test("enqueueInterruptAndCancel cancels every non-attempted row for the ref and commits the interrupt with them", async () => {
@@ -312,7 +284,9 @@ describe("MutationOutboxIndexedDB cancellation", () => {
   test("a legacy row without attempted metadata is never canceled by Stop", async () => {
     const storage = store();
     const legacy = await storage.enqueueIntent(intent("legacy row"));
-    await rewriteRowWithoutAttemptedMetadata(legacy.clientMutationId);
+    // The pre-#936 shape: a row the old code persisted with no `attempted`
+    // metadata at all.
+    await rewriteOutboxRowWithoutFields(indexedDB, databaseName, legacy.clientMutationId, ["attempted"]);
     const fresh = await storage.enqueueIntent(intent("fresh row"));
 
     const canceled = await storage.cancelUnattempted(TARGET);

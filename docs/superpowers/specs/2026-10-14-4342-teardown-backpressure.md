@@ -481,7 +481,18 @@ fixtures, and an injectable transport/observer where needed.
   `attempted` boolean, which both adapters read as one unresolved attempt
   (the browser normalizes at read time; native seeds the zero count from
   the flag before each count-touching write), so a refused retry preserves
-  that legacy evidence too. Cross-tab
+  that legacy evidence too. One class older still (round-7 review,
+  medium): a record with neither the count nor the `attempted` boolean -
+  a pre-#936 row, persisted untouched through every later schema version
+  because the browser's upgrade handler never rewrites records - has an
+  unknown delivery state from that era, exactly the Stop guard's own rule
+  for these rows ("never canceled by Stop"): the rollback's baseline
+  reads it as one unresolved attempt, only an explicit `attempted: false`
+  proving a clean row, so the refused attempt's rollback preserves the
+  uncertain treatment instead of declaring the row never-attempted.
+  Native is structurally exempt - its first schema already carried
+  NOT NULL attempt columns, so no native row can hold the absent shape.
+  Cross-tab
   settlements clear this tab's marker through the dispatch-tail prune, and
   every surface renders the refusal state only for `submitting` rows.
   The same review's mixed-version finding fences the browser database at

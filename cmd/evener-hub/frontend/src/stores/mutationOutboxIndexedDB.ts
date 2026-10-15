@@ -72,6 +72,20 @@ const RECOVERY_STORE = "recovery";
 const SEQUENCE_STORE = "sequences";
 const TARGET_SEQUENCE_INDEX = "byTargetSequence";
 const STORAGE_WAIT_MS = 10_000;
+
+// The unresolved-attempt baseline a record's own metadata proves. A missing
+// count on a pre-count record reads as the one unresolved attempt its
+// attempted boolean claims. A record with neither field is a pre-#936 row,
+// persisted untouched through every later schema version, whose delivery
+// state from that era is unknown - the Stop guard's own rule for these rows
+// - so it keeps one unresolved attempt as its baseline: only an explicit
+// `attempted: false` proves no earlier attempt.
+function priorUnresolvedAttempts(record: { unresolvedAttempts?: number; attempted?: boolean }): number {
+  if (record.unresolvedAttempts !== undefined) return record.unresolvedAttempts;
+  if (record.attempted === undefined) return 1;
+  return record.attempted ? 1 : 0;
+}
+
 // The store scope every enqueue transaction opens: the three active record
 // stores plus the sequence store. All three record stores are locked so the
 // cross-store clientMutationId uniqueness check (#assertMutationIdAvailable)
@@ -739,7 +753,7 @@ export class MutationOutboxIndexedDB {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (record?.state !== "submitting") return false;
-      const unresolvedAttempts = (record.unresolvedAttempts ?? (record.attempted ? 1 : 0)) + 1;
+      const unresolvedAttempts = priorUnresolvedAttempts(record) + 1;
       await requestResult(store.put({ ...record, attempted: true, unresolvedAttempts }));
       return true;
     });
@@ -758,9 +772,7 @@ export class MutationOutboxIndexedDB {
     return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "unmarkAttempted", async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
-      // A missing count on a pre-field record reads as the one unresolved
-      // attempt its attempted boolean claims.
-      const priorAttempts = record?.unresolvedAttempts ?? (record?.attempted ? 1 : 0);
+      const priorAttempts = record ? priorUnresolvedAttempts(record) : 0;
       if (record?.state === "submitting") {
         const unresolvedAttempts = Math.max(0, priorAttempts - 1);
         if (unresolvedAttempts === 0) {

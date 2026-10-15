@@ -95,8 +95,13 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   // what keeps that boolean honest when one row carries more than one
   // unresolved attempt (two tabs dispatching concurrently, or a
   // transport-failed attempt followed by a refused retry). Optional because
-  // records written before the field existed carry none, and a missing count
-  // reads as zero.
+  // records written before the field existed carry none: a missing count
+  // then reads as the attempted boolean's own evidence - one unresolved
+  // attempt when true, zero when false - and a record with neither field
+  // (a pre-#936 row, persisted untouched through every later schema
+  // version) keeps one unresolved attempt as its baseline, because its
+  // delivery state from that era is unknown and only an explicit
+  // `attempted: false` proves no earlier attempt.
   unresolvedAttempts?: number;
   // #4342: the ref's stop epoch at enqueue time - the barrier's own read,
   // stored. A refusal proves the attempt never landed, and a Stop whose
