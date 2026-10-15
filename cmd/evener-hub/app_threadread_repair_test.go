@@ -88,6 +88,40 @@ func captureRepairLog(t *testing.T) func() []string {
 	}
 }
 
+// flipSidecarProjection rewrites the sidecar's committed projection meta to
+// a foreign identity — the shape a week-old daemon leaves behind when a
+// schema-fingerprint change lands. A projection string no binary here
+// computes: readMeta rejects it, and the refusing handle refuses the
+// rebuild. Returns the committed build's recorded entry count, the value a
+// refusal carries and a history-failed answer names. Shared by
+// staleSidecarForTest and the rendezvous-starvation storm's re-staler, so
+// the make-it-refuse mechanism lives exactly once.
+func flipSidecarProjection(path string) (entries uint64, err error) {
+	dir := transcriptindex.DirFor(path)
+	current, err := os.ReadFile(filepath.Join(dir, "CURRENT"))
+	if err != nil {
+		return 0, err
+	}
+	metaPath := filepath.Join(dir, strings.TrimSpace(string(current)), "meta.json")
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return 0, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return 0, err
+	}
+	if err := json.Unmarshal(fields["entries"], &entries); err != nil {
+		return 0, err
+	}
+	fields["projection"] = json.RawMessage(`"transcript-read-model-v6:0000000000000000000000000000000000000000000000000000000000000ff"`)
+	rewritten, err := json.Marshal(fields)
+	if err != nil {
+		return 0, err
+	}
+	return entries, os.WriteFile(metaPath, rewritten, 0o600)
+}
+
 // staleSidecarForTest rewrites the sidecar's committed projection to a foreign
 // identity — the shape a week-old daemon leaves behind when a
 // schema-fingerprint change lands. Rewritten after a healthy build rather
@@ -103,32 +137,8 @@ func staleSidecarForTest(t *testing.T, path string) uint64 {
 	if err := index.Close(); err != nil {
 		t.Fatal(err)
 	}
-	dir := transcriptindex.DirFor(path)
-	current, err := os.ReadFile(filepath.Join(dir, "CURRENT"))
+	entries, err := flipSidecarProjection(path)
 	if err != nil {
-		t.Fatal(err)
-	}
-	metaPath := filepath.Join(dir, strings.TrimSpace(string(current)), "meta.json")
-	data, err := os.ReadFile(metaPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		t.Fatal(err)
-	}
-	var entries uint64
-	if err := json.Unmarshal(fields["entries"], &entries); err != nil {
-		t.Fatal(err)
-	}
-	// A projection string no binary here computes: readMeta rejects it, and
-	// the refusing handle refuses the rebuild.
-	fields["projection"] = json.RawMessage(`"transcript-read-model-v6:0000000000000000000000000000000000000000000000000000000000000ff"`)
-	rewritten, err := json.Marshal(fields)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(metaPath, rewritten, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if entries == 0 {

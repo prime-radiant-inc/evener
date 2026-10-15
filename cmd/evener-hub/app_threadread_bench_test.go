@@ -23,23 +23,27 @@ import (
 // tool results — the shape the derived usage/failure scans walk) and returns the
 // WebConfig plus the thread/read params a client's initial past-session click
 // issues. It is the benchmark counterpart of seedBoundedPastThread.
-func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.ThreadReadParams, string) {
+// seedSyntheticPastSession writes one past session's synthetic transcript at
+// the benchmark fixture's density: three entries per round (user input,
+// assistant answer with a tool call, tool result) carrying usage, failed tool
+// results on the 16th/8th cadences, and per-entry timestamps from the writer's
+// sequence. The density is load-bearing calibration, not filler — the cold
+// read bench and the rendezvous-starvation storm both derive their
+// per-rebuild and per-read costs from it — so it lives exactly once. Returns
+// the transcript path.
+func seedSyntheticPastSession(tb testing.TB, stateDir, sessionID, workingDir string, rounds int) string {
 	tb.Helper()
-	root := tb.TempDir()
-	stateDir := filepath.Join(root, "projects", "project-bench-0000000000")
-	sessionID := "02wMz5Txv47YP64RR3B9YJ"
-	sessions := filepath.Join(stateDir, "sessions")
-	if err := os.MkdirAll(sessions, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		tb.Fatal(err)
 	}
 	now := time.Unix(1700000000, 0).UTC()
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID: sessionID, ProfileID: "openai", Model: "gpt-5", TurnCount: rounds,
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/project"}, CreatedAt: now, UpdatedAt: now,
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir}, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		tb.Fatal(err)
 	}
-	path := filepath.Join(sessions, sessionID+".transcript.jsonl")
+	path := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
 	writer, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
 	})
@@ -62,6 +66,10 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 	}
 	assistantText := strings.Repeat("a long assistant answer line that mirrors real transcript density ", 8)
 	cacheRead := 800
+	shellArgs := json.RawMessage(`{"argv":["ls","-la"]}`)
+	commandFailed := strings.Repeat("command failed output ", 2)
+	commandFailedState := json.RawMessage(`{"exit_code":1}`)
+	toolOutput := strings.Repeat("tool output text mirroring a real result body ", 6)
 	for i := range rounds {
 		appendTurn(schema.Turn{
 			Kind: schema.TurnUserInput, Message: llm.User(fmt.Sprintf("round %d request", i)),
@@ -71,7 +79,7 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 			Kind: schema.TurnAssistant,
 			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 				{Kind: llm.ContentText, Text: assistantText},
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: callID, Name: "shell", Arguments: json.RawMessage(`{"argv":["ls","-la"]}`)}},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: callID, Name: "shell", Arguments: shellArgs}},
 			}},
 			Usage: llm.Usage{InputTokens: 1200, OutputTokens: 340, CacheReadTokens: &cacheRead},
 		})
@@ -81,10 +89,10 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 		// failure scan has real work either way.
 		toolResult := &llm.ToolResultData{ToolCallID: callID, Name: "shell"}
 		if i%16 == 0 {
-			toolResult.Content = strings.Repeat("command failed output ", 2)
-			toolResult.ToolState = json.RawMessage(`{"exit_code":1}`)
+			toolResult.Content = commandFailed
+			toolResult.ToolState = commandFailedState
 		} else {
-			toolResult.Content = strings.Repeat("tool output text mirroring a real result body ", 6)
+			toolResult.Content = toolOutput
 			toolResult.IsError = i%8 == 0
 		}
 		appendTurn(schema.Turn{
@@ -97,6 +105,15 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 	if err := writer.Close(); err != nil {
 		tb.Fatal(err)
 	}
+	return path
+}
+
+func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.ThreadReadParams, string) {
+	tb.Helper()
+	root := tb.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-bench-0000000000")
+	sessionID := "02wMz5Txv47YP64RR3B9YJ"
+	path := seedSyntheticPastSession(tb, stateDir, sessionID, "/tmp/project", rounds)
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := idx.Rebuild(); err != nil {
 		tb.Fatal(err)
