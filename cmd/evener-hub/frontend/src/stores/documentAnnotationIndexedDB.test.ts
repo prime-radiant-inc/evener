@@ -127,6 +127,38 @@ it("does not recreate missing recovery", async () => {
   expect(await f.drafts.load(f.key)).toEqual(ordinaryBefore);
 });
 
+// Issue #4649: prepareAnnotation adopted the loaded durable row's token
+// UNCONDITIONALLY - the cross-tab adoption shape #4581 removed from the
+// submission preparation, one call site over. A competing same-ref tab
+// committing during this source's preparation makes the loaded row carry that
+// tab's revision; adopting it would let the append rebase onto the competitor's
+// row instead of refusing. This drives the real handoff: the competitor commits
+// first, and the append's sameSessionToken check must refuse (revision-conflict)
+// and leave the competitor's row intact.
+it("a competing tab's revision committed before the append refuses the annotation instead of rebasing", async () => {
+  const f = await fixture("competing-append");
+  const competitor = createBrowserDraftRepository({ indexedDB: f.factory, databaseName: f.databaseName });
+  cleanupAfterTest(() => competitor.close());
+  const baseline = await f.drafts.load(f.key);
+  if (!baseline) throw new Error("fixture baseline row missing");
+  const committed = await competitor.commitEdit(
+    f.key,
+    baseline.token,
+    { text: "competitor winner /same", skillNames: ["same"], mentions: [] },
+    () => true,
+  );
+  if (committed.state !== "committed") throw new Error("expected the competing tab's draft to commit");
+
+  const result = await f.repo.handoff(f.document, "op-1");
+  expect(result).toEqual({ state: "pending", reason: "revision-conflict" });
+
+  // The competing row survives unchanged: no reference was appended.
+  const after = await f.drafts.load(f.key);
+  expect(after).toEqual(committed.draft);
+  expect(after?.text).toBe("competitor winner /same");
+  expect(after?.text).not.toContain(REFERENCE);
+});
+
 it("an acknowledged append claims the shared edit revision against a retained same-ref source's late write", async () => {
   const f = await fixture("append-retained-late-write");
   // A second LIVE source on the same ref whose pane is already gone. Its
@@ -139,10 +171,13 @@ it("an acknowledged append claims the shared edit revision against a retained sa
     retained.dispose();
   });
   await retained.ready();
-  // The retained source owns the draft with its own committed edit, older text
-  // than anything the append will add.
-  retained.acceptEdit({ text: "retained draft", skillNames: [], mentions: [] });
-  await retained.whenSettled();
+  // The retained source owns the current draft revision (it committed no edit,
+  // and nothing advanced the shared revision since it hydrated), so its late
+  // write WOULD land were the append not to claim the revision. A pre-append
+  // edit by the retained source is deliberately omitted: under the #4649
+  // own-lineage preparation the annotating source would then refuse the append
+  // as a competing same-ref write, which is a different case from the one this
+  // test pins.
 
   // The handoff appends the reference through the fixture source and
   // acknowledges the appended token and value.
@@ -172,12 +207,20 @@ const mentionCases: Array<{ name: string; mentions: ComposerMention[] | undefine
 
 it.each(mentionCases)("preserves meaningful mention $name on recovery append", async ({ name, mentions }) => {
   const f = await fixture(`mentions-${name}`);
-  // updateRecoveryInput is itself a durable session write; capture the baseline
-  // row after it so the append's single revision advance is what +1 measures.
-  await f.outbox.updateRecoveryInput("rec-1", buildInput("recovery", [], [], [], mentions), [], "recovery", mentions);
+  // The recovery input is written through the source's OWN persistence
+  // (queueRecoveryPersistence), so its durable session write advances both the
+  // row and this source's recorded lineage together: the append's own-lineage
+  // preparation (#4649) can then classify the row as its own, exactly as it
+  // does in production. Capture the baseline row after it so the append's
+  // single revision advance is what +1 measures.
+  f.source.setActiveRecoveryId("rec-1");
+  // Stage the selection metadata first: queueRecoveryPersistence's command and
+  // mention arguments default to this source's staged selection, so an ABSENT
+  // set is persisted as absent (undefined) and an EMPTY set as empty ([]).
+  f.source.updateSelectionMeta({ text: "", skillNames: [], mentions });
+  await f.source.queueRecoveryPersistence("rec-1", "recovery", [], []);
   const beforeOrdinary = await f.drafts.load(f.key);
   if (!beforeOrdinary) throw new Error("fixture baseline row missing");
-  f.source.setActiveRecoveryId("rec-1");
   expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
   const recovery = await f.outbox.getRecovery("rec-1");
   if (!recovery) throw new Error("appended recovery missing");

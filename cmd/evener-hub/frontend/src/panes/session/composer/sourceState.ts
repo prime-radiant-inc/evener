@@ -635,6 +635,27 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     }
   }
 
+  // Issue #4649: adopt a loaded row's token ONLY when its revision is one this
+  // source produced - its own recorded lineage (same revision, whatever
+  // incarnation the row was re-tokened to by a namespace epoch change). This is
+  // the own-lineage proof the #4581 submission preparation uses, applied to
+  // prepareAnnotation, which adopted the loaded row's token unconditionally. A
+  // competing same-ref tab committing inside the preparation's read window
+  // leaves the row past this source's lineage; adopting it would put that tab's
+  // authority behind the append, so the source keeps its own lineage and the
+  // append's sameSessionToken check refuses honestly. Keeping the common path
+  // synchronous (no await) matches the submission preparation: the async
+  // transfer-baseline proof runs only when the row moved past the lineage.
+  // Returns true when the token was adopted here.
+  function adoptOwnDurableLineage(row: StoredComposerDraft): boolean {
+    const lineage = draftToken;
+    if (lineage !== null && row.token.sessionRevision === lineage.sessionRevision) {
+      draftToken = { ...row.token };
+      return true;
+    }
+    return false;
+  }
+
   async function prepareAnnotation(): Promise<ComposerPreparation | null> {
     if (disposed) return null;
     await ready();
@@ -663,25 +684,35 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     // The capture must still be alive and exactly unchanged after the read,
     // before any token or local publication.
     if (disposed || localGeneration !== generation || !sameBacking(runtimeBacking, backing)) return null;
+    // Adopt the loaded row's token only when this source can prove the revision
+    // is its own (see adoptOwnDurableLineage); otherwise try the one other proof, a
+    // revision a recovery transfer durably recorded as its baseline. A competing
+    // revision is left un-adopted, so the returned preparation keeps this
+    // source's lineage and the append's sameSessionToken check refuses instead
+    // of rebasing onto the competitor's row (#4649).
+    if (!adoptOwnDurableLineage(row)) {
+      await adoptProvenTransferBaseline(row, true);
+      // The baseline proof is the only await past the current-check; a local
+      // edit that landed while it ran must still refuse the capture.
+      if (disposed || localGeneration !== generation || !sameBacking(runtimeBacking, backing)) return null;
+    }
     if (recoveryId !== null) {
       const record = await outbox?.getRecovery(recoveryId);
       if (!record) return null;
       if (disposed || localGeneration !== generation || !sameBacking(runtimeBacking, backing)) return null;
       if (pendingRecoveryWrite?.id === recoveryId || operations.hasPending) return null;
       publishValue(recoveryValue(record), { restores: true });
-      draftToken = row.token;
       return {
         key: { namespace: { ...k.namespace }, sessionRef: k.sessionRef },
-        token: { ...row.token },
+        token: getDraftToken(),
         backing: { kind: "recovery", recoveryId },
         localGeneration: generation,
       };
     }
     publishValue(storedValue(row), { restores: true });
-    draftToken = row.token;
     return {
       key: { namespace: { ...k.namespace }, sessionRef: k.sessionRef },
-      token: { ...row.token },
+      token: getDraftToken(),
       backing: { kind: "draft" },
       localGeneration: generation,
     };
