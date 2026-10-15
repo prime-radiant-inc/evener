@@ -251,6 +251,16 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         // instead. This loop stops rather than spinning on the refusal.
         // mutationErrorData answers only WireErrors, so the data this branch
         // matched on proves the error's shape.
+        // The row's pre-rollback state tells the true shapes apart: the
+        // rollback's `true` covers both a clean submitting rollback (the
+        // projected queue unchanged) and a blockedUnknown reopen (the
+        // reconcile parked the row while its request was pending, and the
+        // refusal's proof of non-delivery moves it back where every
+        // projection renders it). A concurrent park in the read-to-rollback
+        // window misclassifies once, and the next notification or
+        // discovery refresh self-heals - the same bounded cross-tab
+        // interleaving the attempt counts already tolerate.
+        const beforeRollback = await this.#storage.getOutbox(record.clientMutationId);
         const rolledBackClean = await this.#storage.unmarkAttempted(record.clientMutationId);
         if (rolledBackClean) {
           this.#onTransientRefusal(record, error as WireError);
@@ -263,7 +273,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         // rollback can still move the row where projections see it, and
         // hosts whose projections refresh through storage notifications
         // have no other observer for those transitions.
-        let projectedShapeUnchanged = rolledBackClean;
+        let projectedShapeUnchanged = rolledBackClean && beforeRollback?.state === "submitting";
         if (!rolledBackClean) {
           const row = await this.#storage.getOutbox(record.clientMutationId);
           projectedShapeUnchanged = row !== undefined && row.state !== "canceled";

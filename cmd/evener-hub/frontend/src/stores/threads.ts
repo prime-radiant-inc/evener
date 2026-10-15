@@ -1917,6 +1917,12 @@ function markTransientMutationRefusal(runtime: MutationRuntime, record: Mutation
   // timer fires would stack one live timer per refusal.
   transientRefusalCancels.get(record.targetRef)?.();
   const cancelRetry = backpressureRetryScheduler(attempt, () => {
+    // The handle is spent at its own fire: `transientRefusalRetryPending`
+    // reads this map, and a fired timer must not keep suppressing the
+    // projection hand-off once nothing is left to re-drive the ref - the
+    // marker outlives the timer (it clears on settlement), so the map is
+    // the one structure that tracks the timer's own lifetime.
+    transientRefusalCancels.delete(record.targetRef);
     if (!isCurrentMutationRuntime(runtime)) return;
     scheduleMutationDispatch(runtime, [record.targetRef]);
   });
@@ -2434,6 +2440,19 @@ export function notifyReadyForMutationDispatch(refs: Iterable<string>): void {
   const runtime = getMutationRuntime();
   if (!runtime) return;
   scheduleMutationDispatch(runtime, refs);
+}
+
+// True while the ref's paced-retry timer is live. That timer owns the
+// re-drive of the ref's refused row, so a projection refresh completing in
+// its window must not hand readiness to the dispatcher: the refusal's own
+// notification can trigger exactly that refresh (a reopened row's rollback
+// changed the projected shape), and the hand-off would redeliver the refused
+// row immediately instead of waiting its pace step. The handle is consumed
+// at the timer's fire (markTransientMutationRefusal), so the suppression
+// always has a live re-drive behind it and ends when the timer does - the
+// fired timer itself schedules the dispatch the hand-off would have.
+export function transientRefusalRetryPending(targetRef: string): boolean {
+  return transientRefusalCancels.has(targetRef);
 }
 
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {

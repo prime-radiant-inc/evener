@@ -10031,7 +10031,14 @@ test("a backpressured send stays queued, surfaces busy, and paces retries that r
   });
 
   await threadsStore.getState().send("ref_a", "held by backpressure");
-  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  // The rollback lands one storage read after the wire call (the refusal
+  // path's pre-rollback state read), so wait for the marker the
+  // assertions below read rather than the call alone.
+  await flushIndexedDBUntil(
+    () =>
+      fake.calls.some((call) => call.method === "turn/start") &&
+      threadsStore.getState().transientRefusalPaces.get("ref_a")?.attempt === 1,
+  );
   const [refused] = await storage.listOutbox("ref_a");
   if (!refused) throw new Error("expected the refused row to stay durable");
   expect(refused.state).toBe("submitting");
@@ -10102,6 +10109,46 @@ test("a refusal's storage notification does not itself redispatch the refused ro
 
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.attempt).toBe(1);
+  restoreScheduler();
+});
+
+// #4342 (round-12 review): a projection refresh from any source - the
+// discovery cadence, a commit, the reopened row's own notification-driven
+// refresh - completing while a refused row's paced-retry timer is live
+// must not hand readiness to the dispatcher: that timer owns the re-drive,
+// and its fire schedules the same dispatch the hand-off would. The gate
+// marker, so it cannot outlive what backs it.
+test("a projection refresh during a live paced retry does not redispatch the refused row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  fake.on("turn/start", (params) => {
+    throw new WireError(HUB_REFUSAL_MESSAGE, -32014, {
+      evenerErrorInfo: "connectionBackpressure",
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "automatic",
+      cause: "queueSaturated",
+    });
+  });
+  const restoreScheduler = installBackpressureRetrySchedulerForTests(() => () => {});
+
+  await threadsStore.getState().ensureThread("ref_a");
+  await threadsStore.getState().send("ref_a", "refused, paced, and refreshed");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  await flushIndexedDBUntil(() => threadsStore.getState().transientRefusalPaces.get("ref_a")?.attempt === 1);
+  expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.attempt).toBe(1);
+
+  // A projection read from outside the refusal's own path - the same read
+  // the discovery cadence and every commit run - while the pace is live
+  // (the withheld scheduler keeps the timer armed, as an in-window read
+  // would find it). The read completes, the projection is true, and its
+  // readiness hand-off must still hand nothing to the dispatcher.
+  await refreshPendingTurnsProjection("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  expect((await storage.listOutbox("ref_a"))[0]?.state).toBe("submitting");
   restoreScheduler();
 });
 
@@ -10200,11 +10247,21 @@ test("a backpressured send survives the non-authoritative reconcile park and red
       cause: "queueSaturated",
     });
   });
-  const restoreScheduler = installBackpressureRetrySchedulerForTests(() => () => {});
+  const paced: Array<() => void> = [];
+  const restoreScheduler = installBackpressureRetrySchedulerForTests((_attempt, retry) => {
+    paced.push(retry);
+    return () => {};
+  });
 
   await threadsStore.getState().ensureThread("ref_a");
   await threadsStore.getState().send("ref_a", "held across a reconnect");
-  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  // The rollback lands one storage read after the wire call, so wait for
+  // the marker the assertions below read rather than the call alone.
+  await flushIndexedDBUntil(
+    () =>
+      fake.calls.some((call) => call.method === "turn/start") &&
+      threadsStore.getState().transientRefusalPaces.get("ref_a")?.attempt === 1,
+  );
   const [refused] = await storage.listOutbox("ref_a");
   if (!refused) throw new Error("expected the refused row to stay durable");
   expect(refused.state).toBe("submitting");
@@ -10223,14 +10280,18 @@ test("a backpressured send survives the non-authoritative reconcile park and red
   // proves the redelivery reached the wire while the row never parked.
   notifyReadyForMutationDispatch(["ref_a"]);
   await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/start").length === 2);
+  await flushIndexedDBUntil(() => threadsStore.getState().transientRefusalPaces.get("ref_a")?.attempt === 2);
   const [redelivered] = await storage.listOutbox("ref_a");
   if (!redelivered) throw new Error("expected the refused row to stay durable through redelivery");
   expect(redelivered.state).toBe("submitting");
   expect(redelivered.clientMutationId).toBe(refused.clientMutationId);
 
-  // Once the hub accepts, the same drive settles the row.
+  // Once the hub accepts, the refusal's paced retry redelivers it - the
+  // redrive the spec gives a refused row. (A direct drive made here would
+  // join the second refusal's still-running dispatch and die with its
+  // stop; the pace is what recovers it.)
   refuse = false;
-  notifyReadyForMutationDispatch(["ref_a"]);
+  paced.at(-1)?.();
   await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/start").length === 3);
   await flushIndexedDBUntil(async () => (await storage.listOutbox("ref_a")).length === 0);
   expect(await storage.listOutbox("ref_a")).toEqual([]);
@@ -10351,7 +10412,13 @@ test("the busy marker clears when the record settles, not when the paced attempt
   });
 
   await threadsStore.getState().send("ref_a", "held until accepted");
-  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  // The rollback lands one storage read after the wire call, so wait for
+  // the marker the assertions below read rather than the call alone.
+  await flushIndexedDBUntil(
+    () =>
+      fake.calls.some((call) => call.method === "turn/start") &&
+      threadsStore.getState().transientRefusalPaces.get("ref_a")?.attempt === 1,
+  );
   const [row] = await storage.listOutbox("ref_a");
   if (!row) throw new Error("expected the refused row to stay durable");
   expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.clientMutationId).toBe(row.clientMutationId);
@@ -10433,7 +10500,13 @@ test("a refusal's busy marker leaves when another tab settles the row", async ()
   const restoreScheduler = installBackpressureRetrySchedulerForTests(() => () => {});
 
   await threadsStore.getState().send("ref_a", "held across tabs");
-  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  // The rollback lands one storage read after the wire call, so wait for
+  // the marker the assertions below read rather than the call alone.
+  await flushIndexedDBUntil(
+    () =>
+      fake.calls.some((call) => call.method === "turn/start") &&
+      threadsStore.getState().transientRefusalPaces.get("ref_a")?.attempt === 1,
+  );
   const [row] = await storage.listOutbox("ref_a");
   if (!row) throw new Error("expected the refused row to stay durable");
   expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.clientMutationId).toBe(row.clientMutationId);
@@ -10532,7 +10605,13 @@ test("a refusal's busy marker survives a prune whose storage read fails", async 
   const restoreScheduler = installBackpressureRetrySchedulerForTests(() => () => {});
 
   await threadsStore.getState().send("ref_a", "held through a failed prune");
-  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  // The rollback lands one storage read after the wire call, so wait for
+  // the marker the assertions below read rather than the call alone.
+  await flushIndexedDBUntil(
+    () =>
+      fake.calls.some((call) => call.method === "turn/start") &&
+      threadsStore.getState().transientRefusalPaces.get("ref_a")?.attempt === 1,
+  );
   const [row] = await storage.listOutbox("ref_a");
   if (!row) throw new Error("expected the refused row to stay durable");
   expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.clientMutationId).toBe(row.clientMutationId);

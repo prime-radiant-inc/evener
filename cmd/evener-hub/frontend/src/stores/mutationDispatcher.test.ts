@@ -494,6 +494,63 @@ describe("MutationDispatcher", () => {
     expect(changes.flat()).toContain("ref-a");
   });
 
+  // #4342 (round-12 review): `unmarkAttempted` resolves true for a
+  // blockedUnknown reopen exactly as it does for an unchanged clean
+  // rollback, but the reopen moves the row where every projection renders
+  // it (blockedUnknown back to submitting). The dispatcher must report the
+  // shapes apart, or a host that skips unchanged-shape refreshes leaves the
+  // reopen unrendered - the UI stuck on delivery uncertainty and
+  // projection-readiness gates closed until some later refresh.
+  test("a refusal that reopens a parked row reports the projection shape changed", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "refusal-reopen", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "parked mid-attempt"));
+    const client = new FakeClient();
+    const inFlight = deferred<TurnQueueResponse>();
+    let reachedWire!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      reachedWire = resolve;
+    });
+    client.on("turn/queue", () => {
+      reachedWire();
+      return inFlight.promise;
+    });
+    const causes: Array<{ kind: string; projectedShapeUnchanged: boolean } | undefined> = [];
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => client,
+      onStorageChange: (_refs, cause) => {
+        causes.push(cause);
+      },
+    });
+
+    const dispatch = dispatcher.dispatchTargets(["ref-a"]);
+    // The dispatch's own mark commits before the request reaches the wire,
+    // so the park below lands on the attempted row exactly as the reconcile
+    // would find it.
+    await reached;
+    // The reconnect reconcile's park while the request is pending, exactly
+    // as it would find the attempted row.
+    await expect(outbox.markUnknown(record.clientMutationId, "blockedUnknown")).resolves.toBeTruthy();
+    inFlight.reject(
+      new WireError("the hub's inbound queue is busy", -32014, {
+        evenerErrorInfo: "connectionBackpressure",
+        clientMutationId: record.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "automatic",
+        cause: "queueSaturated",
+      }),
+    );
+    await dispatch;
+
+    // The refusal proves the attempt never landed, so the parked row
+    // reopens - and the reported cause must say the projection changed.
+    await expect(outbox.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+      state: "submitting",
+      attempted: false,
+    });
+    expect(causes.at(-1)).toEqual({ kind: "transientRefusal", projectedShapeUnchanged: false });
+  });
+
   // Live reconciliation reopens unresolved records without changing their
   // payloads. The daemon's durable journal and original instance fence own
   // replay safety; omission from the snapshot does not prove non-delivery.

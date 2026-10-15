@@ -579,6 +579,26 @@ fixtures, and an injectable transport/observer where needed.
   ignores the cause and re-reads on every notification, keeping the
   round-6 contract; the marker, its timer, and the paced ladder are
   untouched, and discovery and the timer remain the only redrivers.
+  The review after that closed the classification's own gap and finished
+  the gate: the rollback's `true` covers a blockedUnknown reopen exactly
+  as it does the unchanged clean rollback (the reconcile parked the row
+  while its request was pending, and the refusal's proof of non-delivery
+  moves it back where every projection renders it), so the dispatcher
+  reads the row's pre-rollback state to tell the shapes apart and
+  reports the reopen as changed - a concurrent park in the
+  read-to-rollback window misclassifies once and the next refresh
+  self-heals, the same bounded cross-tab interleaving the attempt counts
+  tolerate. And the reopen's refresh runs without its readiness hand-off
+  redelivering the row immediately: the hand-off skips refs whose paced
+  retry timer is live - that timer owns the re-drive, and its fire
+  schedules the same dispatch the hand-off would - with the handle
+  consumed at the timer's own fire so the gate never outlives what backs
+  it (the round-10 medium's key, done right: the marker clears on
+  settlement, the timer's lifetime is the map's). The fire carries one
+  more duty the old hand-off silently doubled as: a dispatch request
+  that joins a refusal's still-running dispatch dies with that run's
+  stop, and the paced fire - not an immediate re-drain, which was the
+  round-10 loop's shape - is what serves it.
 - The busy surface's visible copy is pinned structurally, not verbatim
   (round-4 review, low): the queue row's reason span carries a
   data-busy-reason hook asserted non-empty, the ghost's caption stage and
