@@ -28,7 +28,7 @@ func probeOutputFixture(t *testing.T, path, finalLine string, floodLines int) {
 
 func probeOutputFixtureGuards(t *testing.T) {
 	t.Helper()
-	for _, tool := range []string{"sh", "yes", "head"} {
+	for _, tool := range []string{"sh", "head"} {
 		if _, err := execLookPath(tool); err != nil {
 			t.Skip(tool + " not available")
 		}
@@ -232,7 +232,7 @@ func TestOSVersionTruncatedButCompleteStillAccepted(t *testing.T) {
 // probeLongTailGuards skips when the long-tail fixture's tools are unavailable.
 func probeLongTailGuards(t *testing.T) {
 	t.Helper()
-	for _, tool := range []string{"sh", "yes", "head", "tr"} {
+	for _, tool := range []string{"sh", "head", "tr"} {
 		if _, err := execLookPath(tool); err != nil {
 			t.Skip(tool + " not available")
 		}
@@ -242,35 +242,36 @@ func probeLongTailGuards(t *testing.T) {
 // TestProbeTrustedAnswerTailShapes pins the trust decision structurally, on the
 // authoritative windows rather than any rendered text: an answer that is the
 // retained tail's first line (its start may be cut) is refused even when a later
-// blank line contributes a newline, while a line preceded by a retained newline,
-// or a head-prefix line under a blank tail, is trusted. The view carries
+// blank line contributes a newline, while a line preceded by a retained
+// newline is trusted. The view carries
 // marker-shaped text that must never be consulted.
 func TestProbeTrustedAnswerTailShapes(t *testing.T) {
 	t.Parallel()
 	const fakeMarker = "head\n[... 5 bytes omitted ...]\n"
 	cases := []struct {
 		name      string
-		head      []byte
 		tail      []byte
 		truncated bool
 		view      []byte
 		want      string
 		wantOK    bool
 	}{
-		{"cut suffix then blank line", nil, []byte("suffix\n \n"), true, []byte(fakeMarker + "suffix\n \n"), "", false},
-		{"cut suffix then crlf blank", nil, []byte("suffix\r\n \r\n"), true, []byte(fakeMarker + "suffix\r\n \r\n"), "", false},
-		{"cut suffix no newline", nil, []byte("suffix"), true, []byte(fakeMarker + "suffix"), "", false},
-		{"answer after a retained newline", nil, []byte("\nanswer\n"), true, []byte(fakeMarker + "\nanswer\n"), "answer", true},
-		{"answer not the tail's first line", nil, []byte("frag\nanswer\n"), true, []byte(fakeMarker + "frag\nanswer\n"), "answer", true},
-		{"blank tail falls back to head", []byte("banner\nANSWER\n"), []byte("\n \n"), true, []byte("banner\nANSWER\n[... 5 bytes omitted ...]\n\n \n"), "ANSWER", true},
-		{"empty tail falls back to head", []byte("banner\nANSWER\n"), []byte(""), true, []byte("banner\nANSWER\n[... 5 bytes omitted ...]"), "ANSWER", true},
-		{"marker-shaped view text does not rescue a cut suffix", nil, []byte("suffix\n"), true, []byte("[... 123 bytes omitted ...]\n[... 5 bytes omitted ...]\nsuffix\n"), "", false},
-		{"under cap uses the view", nil, nil, false, []byte("only\nANSWER\n"), "ANSWER", true},
+		{"cut suffix then blank line", []byte("suffix\n \n"), true, []byte(fakeMarker + "suffix\n \n"), "", false},
+		{"cut suffix then crlf blank", []byte("suffix\r\n \r\n"), true, []byte(fakeMarker + "suffix\r\n \r\n"), "", false},
+		{"cut suffix no newline", []byte("suffix"), true, []byte(fakeMarker + "suffix"), "", false},
+		{"answer after a retained newline", []byte("\nanswer\n"), true, []byte(fakeMarker + "\nanswer\n"), "answer", true},
+		{"answer not the tail's first line", []byte("frag\nanswer\n"), true, []byte(fakeMarker + "frag\nanswer\n"), "answer", true},
+		{"blank tail proves nothing", []byte("\n \n"), true, []byte("banner\nANSWER\n[... 5 bytes omitted ...]\n\n \n"), "", false},
+		{"empty tail proves nothing", []byte(""), true, []byte("banner\nANSWER\n[... 5 bytes omitted ...]"), "", false},
+		{"answer omitted between head and blank tail", []byte("\n"), true, []byte("banner\n[... 5 bytes omitted ...]\n"), "", false},
+		{"head ends midway through a line", []byte(""), true, []byte("banner\nhalf-an[... 5 bytes omitted ...]"), "", false},
+		{"marker-shaped view text does not rescue a cut suffix", []byte("suffix\n"), true, []byte("[... 123 bytes omitted ...]\n[... 5 bytes omitted ...]\nsuffix\n"), "", false},
+		{"under cap uses the view", nil, false, []byte("only\nANSWER\n"), "ANSWER", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			got, ok := probeTrustedAnswer(probeCapture{view: tc.view, head: tc.head, tail: tc.tail, truncated: tc.truncated})
+			got, ok := probeTrustedAnswer(probeCapture{view: tc.view, tail: tc.tail, truncated: tc.truncated})
 			if ok != tc.wantOK || got != tc.want {
 				t.Fatalf("probeTrustedAnswer = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOK)
 			}
@@ -341,23 +342,26 @@ func TestLoginShellPATHMarkerShapedTextUnderCapAccepted(t *testing.T) {
 	}
 }
 
-// TestLoginShellPATHEmptyRetainedTailAcceptsHeadLine pins round 3's improvement
-// over round 2's conservative refusal: when the whole retained tail is blank,
-// the last non-empty line sits in the byte-exact head prefix (its start is
-// visible), so the answer is trusted rather than dropped.
-func TestLoginShellPATHEmptyRetainedTailAcceptsHeadLine(t *testing.T) {
+// TestLoginShellPATHRefusesWhenTheTailHoldsNoAnswer pins that a blank retained
+// tail proves nothing: the emission's real last line may sit in the omitted
+// middle (banner lines flood the head, trailing newlines fill the tail), and
+// the guard cannot see the omitted region. The head's last line — a banner
+// fragment here, or a line the head cut midway — must not be served as the
+// PATH; the resolver falls back to the inherited PATH instead.
+func TestLoginShellPATHRefusesWhenTheTailHoldsNoAnswer(t *testing.T) {
 	probeOutputFixtureGuards(t)
 	const pathLine = "/probe-cap/bin:/usr/local/bin:/usr/bin:/bin"
-	fixture := filepath.Join(t.TempDir(), "head-answer-blank-tail")
+	fixture := filepath.Join(t.TempDir(), "answer-in-omitted-middle")
 	script := "#!/bin/sh\n" +
-		"printf '%s\\n' 'filler-line'\n" +
+		// ~76KiB of banner lines: the byte-exact head holds only banner, and
+		// the PATH line lands in the omitted middle.
+		"yes 'FLOOD-FILLER-LINE-0000000000000000000000' | head -n 2000\n" +
 		"printf '%s\\n' '" + pathLine + "'\n" +
-		// 70000 newlines: the stream trips the 64KiB cap and the last 32KiB
-		// tail window holds no non-empty line, so the answer is in the head.
+		// 70000 newlines: the last 32KiB tail window holds no non-empty line.
 		"yes '' | head -n 70000\n"
 	writeExecFixture(t, fixture, script)
 	t.Setenv("SHELL", fixture)
-	if got := resolveLoginShellPATH(); got != pathLine {
-		t.Fatalf("resolveLoginShellPATH() = %q, want the head's PATH line %q to survive a blank retained tail", got, pathLine)
+	if got := resolveLoginShellPATH(); got != "" {
+		t.Fatalf("resolveLoginShellPATH() = %q (%d bytes), want the banner-fragment answer refused as \"\" — the real PATH fell in the omitted middle", probeTailForPrint([]byte(got)), len(got))
 	}
 }

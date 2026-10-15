@@ -1469,11 +1469,10 @@ func lastNonEmptyLine(s string) string {
 
 // probeCapture is a launch probe's captured output: the rendered view (the exact
 // stream under the cap, else head + omission marker + tail), the buffer's
-// authoritative byte-exact head prefix and retained tail window when the cap
-// tripped, and whether it tripped.
+// authoritative retained tail window when the cap tripped, and whether it
+// tripped.
 type probeCapture struct {
 	view      []byte
-	head      []byte
 	tail      []byte
 	truncated bool
 }
@@ -1485,7 +1484,6 @@ type probeCapture struct {
 func newProbeCapture(b *cappedOutputBuffer) probeCapture {
 	c := probeCapture{view: []byte(b.String()), truncated: b.truncated()}
 	if c.truncated {
-		c.head = b.head
 		c.tail = b.tailView()
 	}
 	return c
@@ -1524,8 +1522,10 @@ func lastNonEmptyLineAt(b []byte) (line string, start int, ok bool) {
 // any non-blank line, the tail is the stream's end, so its last non-blank line
 // is the view's last non-blank line — trusted only when a newline precedes its
 // start (it is not the tail's first line, whose beginning may be cut). When the
-// whole retained tail is blank, the last non-blank line lies in the byte-exact
-// head prefix, whose line starts are visible, and is trusted.
+// whole retained tail is blank nothing is trusted: the omitted middle may hold
+// the stream's real last line, and the byte-exact head can end midway through
+// a line, so its last line is a fragment — the caller falls back to the
+// inherited PATH rather than cache either.
 func probeTrustedAnswer(c probeCapture) (string, bool) {
 	if !c.truncated {
 		return lastNonEmptyLine(string(c.view)), true
@@ -1535,9 +1535,6 @@ func probeTrustedAnswer(c probeCapture) (string, bool) {
 			return answer, true
 		}
 		return "", false
-	}
-	if answer := lastNonEmptyLine(string(c.head)); answer != "" {
-		return answer, true
 	}
 	return "", false
 }
