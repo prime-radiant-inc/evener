@@ -1760,6 +1760,8 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 // it fails rather than cut any short.
 func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, budget int) (string, error) {
 	const maxRounds = 4 // each round shrinks the text; four reach any realistic volume
+	var route summarizationRoute
+	var role string
 	for round := 0; ; round++ {
 		total := 0
 		for _, line := range lines {
@@ -1787,6 +1789,7 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 			if err != nil {
 				return "", err
 			}
+			route, role = resp.route, resp.role
 			// A long summary is split like a long message, so the next round's
 			// batches stay within budget.
 			parts := splitMessage(strings.TrimSpace(resp.Text()), budget/3, 400)
@@ -1804,7 +1807,7 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 	// Summaries that will not shrink to fit are never cut short: failing here
 	// fails the summary, and the checkpoint, which keeps every partner
 	// message, stands.
-	return "", errSummaryUncondensable
+	return "", summaryFailure(errSummaryUncondensable, route, role)
 }
 
 // splitMessage splits text into parts of at most size bytes, each cut at the
@@ -1998,6 +2001,14 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 	}
 }
 
+// summarizationResult retains the selected route for validation that spans
+// multiple otherwise successful model calls, such as partner condensation.
+type summarizationResult struct {
+	llm.Response
+	route summarizationRoute
+	role  string
+}
+
 // completeSummarization runs prompt on the summarizer's routes. The cheap
 // caller owns the first rung — it picks the configured cheap model, or the
 // session model when none is configured, and handles a refused cheap model
@@ -2009,10 +2020,10 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 // the session model, and is returned as an error if that reply is rejected
 // too. A rejected reply was still a successful API call, so the attempt group
 // settles on the API error alone.
-func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(llm.Response) error) (llm.Response, error) {
+func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(llm.Response) error) (summarizationResult, error) {
 	routes := summarizationModels(profile)
 	if len(routes) == 0 {
-		return llm.Response{}, errSummaryMissingModel
+		return summarizationResult{}, errSummaryMissingModel
 	}
 	judge := func(resp llm.Response) error {
 		if accept == nil {
@@ -2060,10 +2071,11 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 		}
 	}
 	attemptGroupScope.SettleResult(apiErr)
+	result := summarizationResult{Response: resp, route: route, role: role}
 	if failure != nil {
-		return resp, failure
+		return result, failure
 	}
-	return resp, nil
+	return result, nil
 }
 
 // partnerAuthorityRule keeps a summary from adding or dropping the human

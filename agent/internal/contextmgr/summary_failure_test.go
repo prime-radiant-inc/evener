@@ -213,24 +213,53 @@ func TestSummaryFailureValidationPreservesAPISuccess(t *testing.T) {
 
 func TestSummaryFailureUncondensablePartnerMessages(t *testing.T) {
 	t.Parallel()
-	client := llm.NewClient()
-	calls := 0
-	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
-		calls++
-		return llm.Response{Message: llm.Assistant(strings.Repeat("x", 6001))}, nil
-	}})
-	cm := NewManager(testOpenAIProfileWithContextWindow(100000), client, cheapmodel.New(client))
-	_, err := cm.condensePartnerMessages(context.Background(), []string{strings.Repeat("x", 6001)}, 6000)
-	if err == nil || calls < 4 {
-		t.Fatal("non-shrinking summary was accepted")
-	}
-	warning := summarizerFailureWarning(err)
-	if warning.SummaryFailure == nil {
-		t.Fatal("missing condensation diagnostic")
-	}
-	got := warning.SummaryFailure.Terminal
-	if got.Kind != "rejected_output" || got.Stage != "validation" || got.Reason != "uncondensable_partner_messages" || got.Route != "none" || got.Model != "" {
-		t.Fatalf("wrong condensation diagnostic: %+v", got)
+	for _, tc := range []struct {
+		name, cheap, model, route string
+		refused                   bool
+	}{
+		{"session", "", "active-fixture", "session", false},
+		{"cheap", "cheap-fixture", "cheap-fixture", "cheap", false},
+		{"refused cheap", "cheap-fixture", "active-fixture", "session", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := llm.NewClient()
+			var calls []string
+			client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(req llm.Request) (llm.Response, error) {
+				calls = append(calls, req.Model)
+				if tc.refused && req.Model == "cheap-fixture" {
+					return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "provided model identifier is invalid", nil, nil)
+				}
+				return llm.Response{Message: llm.Assistant(strings.Repeat("x", 6001))}, nil
+			}})
+			profile := WithCheapModel(testProfile("openai", "active-fixture", 100000), tc.cheap)
+			cm := NewManager(profile, client, cheapmodel.New(client))
+			lines := []string{strings.Repeat("x", 6001)}
+			original := append([]string(nil), lines...)
+			_, err := cm.condensePartnerMessages(context.Background(), lines, 6000)
+			if !errors.Is(err, errSummaryUncondensable) || len(calls) < 4 {
+				t.Fatal("non-shrinking summary was accepted")
+			}
+			if !reflect.DeepEqual(lines, original) {
+				t.Fatal("condensation changed the original messages")
+			}
+			for i, model := range calls {
+				want := tc.model
+				if tc.refused && i == 0 {
+					want = "cheap-fixture"
+				}
+				if model != want {
+					t.Fatalf("call %d selected %q, want %q", i, model, want)
+				}
+			}
+			warning := summarizerFailureWarning(err)
+			if warning.SummaryFailure == nil {
+				t.Fatal("missing condensation diagnostic")
+			}
+			got := warning.SummaryFailure.Terminal
+			if got.Kind != "rejected_output" || got.Stage != "validation" || got.Reason != "uncondensable_partner_messages" || got.Route != tc.route || got.Model != tc.model || got.Provider != "openai" {
+				t.Fatalf("wrong condensation diagnostic: %+v", got)
+			}
+		})
 	}
 }
 
