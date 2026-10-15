@@ -1442,6 +1442,19 @@ function refuseWrites(db: SqliteDoubleDatabase): void {
 	db.exec("PRAGMA query_only = ON");
 }
 
+const SQLITE_READONLY = 8;
+
+// What a rejected submit threw, so a test can check the storage error's own
+// result code instead of its wording.
+async function rejectionOf(submitted: Promise<unknown>): Promise<unknown> {
+	try {
+		await submitted;
+	} catch (error) {
+		return error;
+	}
+	throw new Error("expected the submit to reject");
+}
+
 async function readyRuntimeWithClient(createMutationId?: () => string) {
 	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId });
 	const client = new FakeClient("ready");
@@ -1569,7 +1582,7 @@ test("a refused write with no ready connection still fails the send with the sto
 	await runtime.start();
 	refuseWrites(database!);
 
-	await expect(runtime.submit(request("send"))).rejects.toThrow(/readonly database/);
+	expect(await rejectionOf(runtime.submit(request("send")))).toMatchObject({ errcode: SQLITE_READONLY });
 	expect(client.calls).toHaveLength(0);
 	await runtime.stop();
 });
@@ -1579,7 +1592,9 @@ test("a Stop whose outbox write is refused by storage stays fail-closed", async 
 	client.on("turn/interrupt", (params) => appliedReceipt(params));
 	refuseWrites(database!);
 
-	await expect(runtime.submit({ ...request("send"), kind: "interrupt" })).rejects.toThrow(/readonly database/);
+	expect(await rejectionOf(runtime.submit({ ...request("send"), kind: "interrupt" }))).toMatchObject({
+		errcode: SQLITE_READONLY,
+	});
 	expect(client.calls).toHaveLength(0);
 	await runtime.stop();
 });
@@ -1591,8 +1606,11 @@ test("an outbox bug stays a visible send failure with no request", async () => {
 	client.calls.length = 0;
 
 	// The same id twice is the outbox's own validation refusing the record.
-	await expect(runtime.submit(request("send"))).rejects.toThrow(/already active/);
+	const failure = await rejectionOf(runtime.submit(request("send")));
+	expect(failure).toBeInstanceOf(Error);
+	expect(failure).not.toHaveProperty("errcode");
 	expect(client.calls).toHaveLength(0);
+	expect(await runtime.storage.getOutbox("mutation-1")).toBeDefined();
 	await runtime.stop();
 });
 
