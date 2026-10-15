@@ -971,6 +971,56 @@ it("discards one durable pending operation outside an acceptance, leaving every 
   ).toEqual(appliedRows.find((row) => row.operationKey === op2Key));
 });
 
+it("an accepted read queries only its own document's evidence, never every document's snapshots", async () => {
+  const f = await fixture("evidence-bounded-scan");
+  // A second document's evidence row exists in the same store: validating
+  // this document's read must not deserialize it.
+  const foreignKey = { ...f.document, path: "OTHER.md" };
+  const foreignRow = {
+    evidenceKey: "foreign-evidence",
+    documentKey: annotationDocumentKey(foreignKey),
+    epoch: "foreign-epoch",
+    content: docContent("another document's snapshots"),
+  };
+  const database = await new Promise<IDBDatabase>((resolve, reject) => {
+    const open = f.factory.open(f.databaseName);
+    open.onsuccess = () => resolve(open.result);
+    open.onerror = () => reject(open.error);
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = database.transaction(ANNOTATION_EVIDENCE_STORE, "readwrite");
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.objectStore(ANNOTATION_EVIDENCE_STORE).put(foreignRow);
+    });
+  } finally {
+    database.close();
+  }
+
+  // The mechanism oracle: an unbounded getAll on the evidence store is the
+  // whole-document-corpus deserialization the index exists to prevent; a
+  // bounded query never calls it.
+  const unbounded: IDBObjectStore[] = [];
+  const realGetAll = FDBObjectStore.prototype.getAll;
+  const getAllSpy = vi.spyOn(FDBObjectStore.prototype, "getAll").mockImplementation(function (
+    this: IDBObjectStore,
+    query?: IDBValidKey | IDBKeyRange | null,
+  ) {
+    if (this.name === ANNOTATION_EVIDENCE_STORE && (query === undefined || query === null)) unbounded.push(this);
+    return realGetAll.call(this, query);
+  });
+  cleanupAfterTest(() => getAllSpy.mockRestore());
+
+  const accepted = await f.repo.acceptRead(await f.repo.beginRead(f.document), docContent(SOURCE, "rev-A"));
+  expect(accepted.state).toBe("accepted");
+  expect(unbounded).toHaveLength(0);
+  // The bounded query still reads the store: both documents' evidence rows
+  // survive the acceptance untouched.
+  const evidence = await rowsForTests<AnnotationEvidenceRow>(f.factory, f.databaseName, ANNOTATION_EVIDENCE_STORE);
+  expect(evidence.map((row) => row.evidenceKey)).toContain("foreign-evidence");
+});
+
 it("rejects a save against a confirmed-suppressed epoch whose fence transaction failed", async () => {
   const fail = true;
   const f = await fixture("suppressed-epoch-save", {

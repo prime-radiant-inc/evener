@@ -26,7 +26,9 @@ const key = (sessionRef: string): BrowserDraftKey => ({ namespace, sessionRef })
 function openDatabase(indexedDB: IDBFactory, databaseName: string): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(databaseName, LOCAL_COMPOSITION_DATABASE_VERSION);
-    request.addEventListener("upgradeneeded", () => registerLocalCompositionSchema(request.result));
+    request.addEventListener("upgradeneeded", () =>
+      registerLocalCompositionSchema(request.result, request.transaction),
+    );
     request.addEventListener("success", () => resolve(request.result), { once: true });
     request.addEventListener("error", () => reject(request.error ?? new Error("open failed")), { once: true });
   });

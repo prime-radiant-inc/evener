@@ -7,7 +7,11 @@ import type {
 } from "@evener/appwire-client";
 
 export const LOCAL_COMPOSITION_DATABASE_NAME = "evener-mutation-outbox";
-export const LOCAL_COMPOSITION_DATABASE_VERSION = 4;
+// Version 5 indexes the annotation evidence and payload stores by document
+// and epoch: the accepted-read, save-validation and expiry-deletion paths
+// query exactly their own document's rows instead of deserializing every
+// document's snapshots on each read.
+export const LOCAL_COMPOSITION_DATABASE_VERSION = 5;
 
 export const MUTATION_OUTBOX_STORE = "outbox";
 export const MUTATION_OPTIMISTIC_STORE = "optimistic";
@@ -21,7 +25,9 @@ export const DRAFT_CONFLICTS_STORE = "draftConflicts";
 export const ANNOTATION_NAMESPACES_STORE = "annotationNamespaces";
 export const ANNOTATION_HEADS_STORE = "annotationHeads";
 export const ANNOTATION_EVIDENCE_STORE = "annotationEvidence";
+export const ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX = "annotationEvidenceByDocumentEpoch";
 export const ANNOTATION_PAYLOADS_STORE = "annotationPayloads";
+export const ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX = "annotationPayloadsByDocumentEpoch";
 export const ANNOTATION_OPERATIONS_STORE = "annotationOperations";
 export const ANNOTATION_SEQUENCES_STORE = "annotationSequences";
 export const ANNOTATION_EXPIRY_STORE = "annotationExpiry";
@@ -118,7 +124,7 @@ export function sameHandoffDestination(left: DestinationProvenance, right: Desti
   return true;
 }
 
-export function registerLocalCompositionSchema(database: IDBDatabase): void {
+export function registerLocalCompositionSchema(database: IDBDatabase, transaction: IDBTransaction | null): void {
   if (!database.objectStoreNames.contains(MUTATION_OUTBOX_STORE)) {
     const outbox = database.createObjectStore(MUTATION_OUTBOX_STORE, { keyPath: "clientMutationId" });
     outbox.createIndex(MUTATION_TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
@@ -164,5 +170,16 @@ export function registerLocalCompositionSchema(database: IDBDatabase): void {
   }
   if (!database.objectStoreNames.contains(ANNOTATION_EXPIRY_STORE)) {
     database.createObjectStore(ANNOTATION_EXPIRY_STORE, { keyPath: "expiryKey" });
+  }
+  // The document+epoch indexes exist on fresh and upgraded databases alike:
+  // the version-change transaction covers stores this upgrade created and
+  // stores that already existed, and the guards make the step idempotent.
+  const evidenceStore = transaction?.objectStore(ANNOTATION_EVIDENCE_STORE);
+  if (evidenceStore && !evidenceStore.indexNames.contains(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX)) {
+    evidenceStore.createIndex(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX, ["documentKey", "epoch"]);
+  }
+  const payloadsStore = transaction?.objectStore(ANNOTATION_PAYLOADS_STORE);
+  if (payloadsStore && !payloadsStore.indexNames.contains(ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX)) {
+    payloadsStore.createIndex(ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX, ["documentKey", "epoch"]);
   }
 }
