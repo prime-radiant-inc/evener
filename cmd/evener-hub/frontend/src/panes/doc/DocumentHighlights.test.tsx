@@ -1033,7 +1033,9 @@ test("reveals a saved band by hover coordinates inside a popped-out document's o
   document.body.append(frame);
   onUnmount(() => frame.remove());
   const owner = frame.contentDocument;
-  const ownerWindow = frame.contentWindow;
+  // The DOM Window type does not declare the realm's constructors, though every
+  // real window carries them.
+  const ownerWindow = frame.contentWindow as (Window & typeof globalThis) | null;
   if (!owner || !ownerWindow) throw new Error("missing iframe document");
   expect(ownerWindow.MouseEvent).not.toBe(MouseEvent);
   geometry.installWindow(ownerWindow);

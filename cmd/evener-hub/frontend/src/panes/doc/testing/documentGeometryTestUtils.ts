@@ -59,8 +59,9 @@ export class DocumentGeometrySeam {
 
   // A popped-out document renders in its own window, whose Range.prototype is
   // a different object: install the same rectangle capability there. Recorded
-  // for restore like the global install.
-  installWindow(view: Window): void {
+  // for restore like the global install. The parameter carries the window's
+  // realm constructors, which the DOM Window type does not declare.
+  installWindow(view: Window & typeof globalThis): void {
     const seam = this;
     this.patch(view.Range.prototype, "getClientRects", function (this: Range): DOMRectList {
       return seam.rectsForRange(this).map(testDomRect) as unknown as DOMRectList;
