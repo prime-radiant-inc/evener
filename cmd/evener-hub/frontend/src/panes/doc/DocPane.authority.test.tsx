@@ -137,9 +137,12 @@ const PRIMARY_POINTER = { pointerId: 1, isPrimary: true, pointerType: "mouse", b
 
 // A real Selection/Range over the FIRST paragraph's text node (source 18..22),
 // with the normal primary-pointer fields. Offsets are text-node offsets; the
-// expected source positions stay literal in the assertions.
-async function selectFirstPassage(): Promise<void> {
-  const paragraph = await screen.findByText("First occurrence: same");
+// expected source positions stay literal in the assertions. An optional
+// container scopes the query so two mounted panes never collide on the same
+// rendered text.
+async function selectFirstPassage(container?: HTMLElement): Promise<void> {
+  const scope = container ? within(container) : screen;
+  const paragraph = await scope.findByText("First occurrence: same");
   fireEvent.pointerDown(paragraph, PRIMARY_POINTER);
   const node = paragraph.firstChild;
   if (!node || node.nodeType !== Node.TEXT_NODE) throw new Error("missing source text node");
@@ -970,6 +973,165 @@ test("an epoch changed by another reader's fence retires the retained capture wh
   });
   await selectFirstPassage();
   expect(work.comment.capture).toBeDefined();
+});
+
+// ---------------------------------------------------------------------------
+// Saved-evidence epoch scope (roborev: work.saved survived epoch retirement,
+// so a faulted reread of an unchanged adopted epoch compared against the
+// retired epoch's saved evidence, expired the ADOPTED epoch, and the
+// retirement dropped another reader's failed save from the shared retry
+// runtime).
+// ---------------------------------------------------------------------------
+
+test("a faulted reread of an unchanged adopted epoch keeps that epoch's lease and another reader's failed save retryable", async () => {
+  let failSave = false;
+  const f = await fixture("authority-saved-epoch-mismatch", {
+    beforeCommit: (operation) => {
+      if (operation === "save" && failSave) throw new Error("reader-2 save fault");
+    },
+  });
+  await settleBaseline(f);
+  const { ports } = annotationPorts(f);
+  const client = connectFakeClient();
+  const changedSource = `${SOURCE}\nCHANGED`;
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const { beginReads, acceptances } = observeReadOwners(f.repo);
+  const listReads = observeListAnnotations(f.repo);
+
+  // Reader 1 saves an annotation under epoch A: the save settles and stays
+  // retained as this reader's last committed work.
+  const host1 = mountAnnotated(f, ports, client, "doc-saved-epoch-a");
+  const work1 = documentReaderWork("doc-saved-epoch-a", f.document, ports);
+  await waitForCurrentBoundMap(work1, maps);
+  const savedEpoch = work1.lease?.epoch;
+  if (!savedEpoch) throw new Error("reader-1 baseline lease missing");
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Reader 1 note." } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => {
+    if (!work1.saved) throw new Error("reader-1 save never settled");
+  });
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  const saved1 = work1.saved;
+  if (!saved1) throw new Error("reader-1 save never settled");
+  expect(saved1.lease.epoch).toBe(savedEpoch);
+  expect(work1.phase).toBe("reading");
+
+  // ANOTHER adapter fences a changed source first: epoch B replaces A under
+  // the same incarnation, and reader 1's next reread adopts the replacement.
+  const second = createDocumentAnnotationRepository({
+    indexedDB: f.factory,
+    databaseName: f.databaseName,
+    drafts: f.drafts,
+    targetFor: () => null,
+  });
+  cleanupAfterTest(() => second.close());
+  mockRead.mockResolvedValue(docContent(changedSource, "rev-B"));
+  const adoptionAcceptBase = acceptances.length;
+  const adoptionMapBase = maps.length;
+  let fenced: Awaited<ReturnType<Fixture["repo"]["acceptRead"]>> | undefined;
+  await act(async () => {
+    fenced = await second.acceptRead(await second.beginRead(f.document), docContent(changedSource, "rev-B"));
+  });
+  if (!fenced) throw new Error("other adapter did not fence");
+  expect(fenced.state).toBe("expiry-pending");
+  if (fenced.state !== "expiry-pending" || !fenced.receipt) throw new Error("other adapter did not fence");
+
+  // Reader 1 adopts epoch B, observed exactly as the epoch-retire case above:
+  // the wake-driven reread's acceptance, map and lease. The epoch-A save
+  // survives the adoption, retained for its own epoch.
+  const beginAfterFence = beginReads.length;
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  await waitFor(() => expect(beginReads.length).toBeGreaterThan(beginAfterFence + 1));
+  const fresh = await waitForFreshAcceptedMap(acceptances, maps, work1, adoptionAcceptBase, adoptionMapBase);
+  if (fresh.state !== "accepted") throw new Error("reader-1 reread was not accepted");
+  expect(fresh.lease.epoch).not.toBe(savedEpoch);
+  const adoptedEpoch = fresh.lease.epoch;
+  await waitFor(() => expect(work1.lease?.epoch).toBe(adoptedEpoch));
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+    expect(work1.saved?.lease.epoch).toBe(savedEpoch);
+  });
+
+  // Reader 2 mounts on epoch B and its Send faults at the real save boundary:
+  // the shared runtime retains the failed save for the ADOPTED epoch.
+  const host2 = mountAnnotated(f, ports, client, "doc-saved-epoch-b");
+  const work2 = documentReaderWork("doc-saved-epoch-b", f.document, ports);
+  await waitForCurrentBoundMap(work2, maps);
+  expect(work2.lease?.epoch).toBe(adoptedEpoch);
+  await selectFirstPassage(host2.container);
+  fireEvent.change(await within(host2.container).findByRole("textbox"), { target: { value: "Reader 2 note." } });
+  failSave = true;
+  fireEvent.click(within(host2.container).getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(work2.phase).toBe("unsaved"));
+  const reader2Attempt = work2.attempted;
+  if (!reader2Attempt) throw new Error("reader-2 attempt not retained");
+  expect(reader2Attempt.lease.epoch).toBe(adoptedEpoch);
+
+  // Reader 1's next read faults at the real beginRead boundary while the raw
+  // fetch of the UNCHANGED epoch-B source succeeds: no ticket issues, so only
+  // retained evidence could "prove" a change here - and the only retained
+  // evidence is the save from the already-replaced epoch A.
+  const armed = { value: true };
+  faultBeginReadTransaction(armed);
+  cleanupAfterTest(() => {
+    armed.value = false;
+  });
+  host1.unmount();
+  const host1b = mountAnnotated(f, ports, client, "doc-saved-epoch-a");
+  await within(host1b.container).findByText("CHANGED"); // the ticket-less raw fetch really rendered
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+
+  // The faulted reread proved nothing about the adopted epoch: its lease
+  // survives, the phase never claims an expiry, and the epoch-A save stays
+  // retained for its own epoch without ever serving as evidence for B.
+  expect(work1.phase).toBe("reading");
+  expect(work1.lease?.epoch).toBe(adoptedEpoch);
+  expect(work1.saved?.lease.epoch).toBe(savedEpoch);
+
+  // Storage heals. The shared runtime's retry pass must re-apply reader 2's
+  // failed save for the adopted epoch: a retirement that never honestly
+  // happened must not have dropped it.
+  armed.value = false;
+  failSave = false;
+  await act(async () => {
+    await ports.runtime.retryPending("composer-open");
+    await settleReaderRefreshes(listReads);
+  });
+  const appliedIds = (await f.repo.listAnnotations(f.document)).map((view) => view.receipt.operationId);
+  expect(appliedIds).toContain(reader2Attempt.operationId);
+
+  // Reader 1's suspended authority revalidates on an ordinary foreground
+  // reread: a fresh ticket accepts the unchanged epoch-B source and the pane
+  // keeps its lease.
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const recoveryAcceptBase = acceptances.length;
+  const recoveryMapBase = maps.length;
+  await act(async () => {
+    fireEvent(document, new Event("visibilitychange"));
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  const recovered = await waitForFreshAcceptedMap(acceptances, maps, work1, recoveryAcceptBase, recoveryMapBase);
+  if (recovered.state !== "accepted") throw new Error("reader-1 recovery read was not accepted");
+  expect(recovered.lease.epoch).toBe(adoptedEpoch);
+  await waitFor(() => expect(work1.lease?.epoch).toBe(adoptedEpoch));
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+    expect(work1.phase).toBe("reading");
+  });
 });
 
 // ---------------------------------------------------------------------------

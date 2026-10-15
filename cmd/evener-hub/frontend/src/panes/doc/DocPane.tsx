@@ -214,6 +214,20 @@ function evidenceProvesChange(content: DocFileContent, evidence: CapturedPassage
   return sameRange && retained.value !== current.value;
 }
 
+// The last save's evidence may only prove a change against the authority that
+// the proven change would retire. A save from an epoch this reader has already
+// replaced proves nothing about the adopted epoch's content - the change it
+// would "prove" is the adoption itself - and letting it feed would expire the
+// CURRENT epoch and drop every failed save the shared runtime holds for it.
+function savedEvidenceFor(work: DocumentReaderWork): CapturedPassage["evidence"] | undefined {
+  const saved = work.saved;
+  const authority = work.lease ?? work.attempted?.lease ?? null;
+  if (!saved || !authority) return undefined;
+  if (saved.lease.namespaceIncarnation !== authority.namespaceIncarnation) return undefined;
+  if (saved.lease.epoch !== authority.epoch) return undefined;
+  return saved.capture.evidence;
+}
+
 // The status the pane-level indicator and the comment box share. `saved` and
 // `saved, pending draft` come from ACTUAL annotation views; a retained attempt
 // or a newer unsaved comment keeps the honest `unsaved` state. A preserved
@@ -610,8 +624,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // identity. The discard runs FIRST and its own fault falls back to the
         // interim retention below - work, capture and durable row retire
         // together or not at all.
-        const evidence =
-          work.attempted?.capture.evidence ?? work.comment.capture?.evidence ?? work.saved?.capture.evidence;
+        const evidence = work.attempted?.capture.evidence ?? work.comment.capture?.evidence ?? savedEvidenceFor(work);
         if (evidence && evidenceProvesChange(content, evidence)) {
           const attempted = work.attempted;
           if (attempted) {
@@ -662,8 +675,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         accepted = await ports.repository.acceptRead(ticket, content);
       } catch {
         if (!attempt.isCurrent()) return "success";
-        const evidence =
-          work.attempted?.capture.evidence ?? work.comment.capture?.evidence ?? work.saved?.capture.evidence;
+        const evidence = work.attempted?.capture.evidence ?? work.comment.capture?.evidence ?? savedEvidenceFor(work);
         if (evidence && evidenceProvesChange(content, evidence)) {
           // The ticket this acceptance held is gone with the throw, so no
           // fence can ever record this expiry: retiring the in-memory attempt
