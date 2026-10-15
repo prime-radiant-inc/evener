@@ -114,6 +114,14 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 	stateDir := filepath.Join(root, "projects", "project-bench-0000000000")
 	sessionID := "02wMz5Txv47YP64RR3B9YJ"
 	path := seedSyntheticPastSession(tb, stateDir, sessionID, "/tmp/project", rounds)
+	// Post-#4343 a cold read refuses a session with no transcript-index
+	// sidecar: it opens the refusing cache, gets ErrRebuildRequired, and the
+	// read answers the retryable rebuilding state while a repair builds the
+	// very first index (#4654). The bench's subject is the *healthy* cold read
+	// — the full-transcript derived scans and the latest-40 projection — so the
+	// fixture builds the sidecar up front, exactly as a completed repair leaves
+	// it, and benchmarks the read that runs against it.
+	indexPastTranscriptForTest(tb, stateDir, sessionID)
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := idx.Rebuild(); err != nil {
 		tb.Fatal(err)
