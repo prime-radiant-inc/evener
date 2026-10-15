@@ -934,6 +934,41 @@ describe("canceled rows", () => {
     expect(screen.queryByRole("button", { name: /retry/i })).toBeNull();
   });
 
+  // #4342 (implementation review): the busy marker reaches every pending-row
+  // surface, not only the send chips — a hub-refused turn/queue row in the
+  // strip marks itself busy with the paced retry the store armed.
+  test("a hub-refused pending queue row marks itself busy", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const storage = new MutationOutboxIndexedDB();
+    const row = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "queued while busy" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "queued while busy" }] },
+    });
+    storage.close();
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+    threadsStore.setState((state) => ({
+      transientRefusalPaces: new Map(state.transientRefusalPaces).set("ref_a", {
+        clientMutationId: row.clientMutationId,
+        attempt: 1,
+      }),
+    }));
+    renderStrip(defaultProps());
+    const pending = await screen.findByText("queued while busy");
+    expect(pending.closest("li")?.getAttribute("data-kind")).toBe("pending");
+    expect(pending.closest("li")?.getAttribute("data-busy")).toBe("true");
+    // The visible affordance is a non-empty reason span, not a phrase: copy
+    // is not a test oracle, so its wording stays free to change. The ?? ""
+    // also pins the span's existence: without it a vanished span yields
+    // undefined, which passes vacuously.
+    expect(pending.closest("li")?.querySelector("[data-busy-reason]")?.textContent?.trim() ?? "").not.toBe("");
+  });
+
   // Mirrors "visible Retry treats an other-tab settled/reopened row as a
   // benign no-op": another tab's user Retry releases the row durably before
   // this tab's press, so the press must neither report a failure nor touch

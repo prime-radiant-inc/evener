@@ -463,6 +463,94 @@ describe("MutationDispatcher", () => {
     expect(await outbox.getRecovery(record.clientMutationId)).toBeUndefined();
   });
 
+  // #4342 (round-5 review): the transient refusal's rollback can move the
+  // row - back to submitting, or to canceled when a Stop interrupted the
+  // attempt - and hosts whose projections refresh through storage
+  // notifications have no other observer for those transitions, so the
+  // branch publishes like every other outcome.
+  test("a transient backpressure refusal publishes its storage change", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "transient-notify", ["mutation-a"]);
+    await outbox.enqueueIntent(queueIntent("ref-a", "transiently refused"));
+    const changes: string[][] = [];
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("the hub's inbound queue is busy", -32014, {
+        evenerErrorInfo: "connectionBackpressure",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "automatic",
+        cause: "queueSaturated",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => client,
+      onStorageChange: (refs) => changes.push(refs),
+      onTransientRefusal: () => {},
+    });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(changes.flat()).toContain("ref-a");
+  });
+
+  // #4342 (round-12 review): `unmarkAttempted` resolves true for a
+  // blockedUnknown reopen exactly as it does for an unchanged clean
+  // rollback, but the reopen moves the row where every projection renders
+  // it (blockedUnknown back to submitting). The dispatcher must report the
+  // shapes apart, or a host that skips unchanged-shape refreshes leaves the
+  // reopen unrendered - the UI stuck on delivery uncertainty and
+  // projection-readiness gates closed until some later refresh.
+  test("a refusal that reopens a parked row reports the projection shape changed", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "refusal-reopen", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "parked mid-attempt"));
+    const client = new FakeClient();
+    const inFlight = deferred<TurnQueueResponse>();
+    let reachedWire!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      reachedWire = resolve;
+    });
+    client.on("turn/queue", () => {
+      reachedWire();
+      return inFlight.promise;
+    });
+    const causes: Array<{ kind: string; projectedShapeUnchanged: boolean } | undefined> = [];
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => client,
+      onStorageChange: (_refs, cause) => {
+        causes.push(cause);
+      },
+    });
+
+    const dispatch = dispatcher.dispatchTargets(["ref-a"]);
+    // The dispatch's own mark commits before the request reaches the wire,
+    // so the park below lands on the attempted row exactly as the reconcile
+    // would find it.
+    await reached;
+    // The reconnect reconcile's park while the request is pending, exactly
+    // as it would find the attempted row.
+    await expect(outbox.markUnknown(record.clientMutationId, "blockedUnknown")).resolves.toBeTruthy();
+    inFlight.reject(
+      new WireError("the hub's inbound queue is busy", -32014, {
+        evenerErrorInfo: "connectionBackpressure",
+        clientMutationId: record.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "automatic",
+        cause: "queueSaturated",
+      }),
+    );
+    await dispatch;
+
+    // The refusal proves the attempt never landed, so the parked row
+    // reopens - and the reported cause must say the projection changed.
+    await expect(outbox.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+      state: "submitting",
+      attempted: false,
+    });
+    expect(causes.at(-1)).toEqual({ kind: "transientRefusal", projectedShapeUnchanged: false });
+  });
+
   // Live reconciliation reopens unresolved records without changing their
   // payloads. The daemon's durable journal and original instance fence own
   // replay safety; omission from the snapshot does not prove non-delivery.
@@ -555,6 +643,85 @@ describe("MutationDispatcher", () => {
 
     expect(await outbox.getRecovery(first.clientMutationId)).toMatchObject({ recoveryKind: "rejected" });
     expect(await outbox.getOutbox(second.clientMutationId)).toBeUndefined();
+  });
+
+  // #4342: the hub's high-water backpressure refusal answers a mutation in
+  // band with notAccepted plus retryDisposition "automatic" — a transient
+  // refusal, not a terminal one. The terminal branch would move the row to
+  // recovery as "rejected" and stop retrying, exactly wrong for backpressure:
+  // the row stays queued in the outbox FIFO with its pre-transport attempted
+  // marker rolled back (so each host's reconnect reconcile
+  // onlyAttempted-guarded park skips it), and the busy state surfaces through
+  // onTransientRefusal for the host to pace. One attempt only: the dispatcher
+  // never spins on a refusal; a later event starts the next attempt.
+  test("a backpressure refusal keeps the record queued, unmarks the attempt, and surfaces the transient", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "backpressure", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "held message"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+        evenerErrorInfo: "connectionBackpressure",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "automatic",
+        cause: "queueSaturated",
+      });
+    });
+    const transientRefusals: MutationOutboxRecord[] = [];
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => client,
+      onTransientRefusal: (refused) => transientRefusals.push(refused),
+    });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({
+      state: "submitting",
+      attempted: false,
+    });
+    expect(await outbox.getRecovery(record.clientMutationId)).toBeUndefined();
+    expect(transientRefusals.map((refused) => refused.clientMutationId)).toEqual([record.clientMutationId]);
+    expect(client.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  });
+
+  // #4342 (review): a refusal rolls back only its own attempt's evidence.
+  // When an earlier attempt is still unresolved (a transport failure left
+  // the row attempted, or another tab holds one in flight), the rollback
+  // resolves without the never-attempted shape, so the row keeps its
+  // uncertain treatment — attempted stays true, the reconcile park keeps
+  // guarding it — and no busy surface or paced retry arms for it.
+  test("a backpressure refusal with residual attempt evidence surfaces no busy state", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "backpressure-evidence", ["mutation-a"]);
+    const record = await outbox.enqueueIntent(queueIntent("ref-a", "earlier attempt unresolved"));
+    // An earlier attempt whose response was lost: evidence retained.
+    await outbox.markAttempted(record.clientMutationId);
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+        evenerErrorInfo: "connectionBackpressure",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "automatic",
+        cause: "queueSaturated",
+      });
+    });
+    const transientRefusals: MutationOutboxRecord[] = [];
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => client,
+      onTransientRefusal: (refused) => transientRefusals.push(refused),
+    });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(record.clientMutationId)).toMatchObject({
+      state: "submitting",
+      attempted: true,
+      unresolvedAttempts: 1,
+    });
+    expect(transientRefusals).toEqual([]);
+    expect(client.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
   });
 
   // Kata 2f41. The daemon sends BOTH a category (evenerErrorInfo: "conflict") and

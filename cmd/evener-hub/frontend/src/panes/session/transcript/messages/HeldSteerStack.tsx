@@ -37,8 +37,10 @@ export function heldSteerEntries(entries: readonly PendingTurnEntry[]): PendingT
 // createdAt is unknown - never NaN, never a false 0s.
 export interface HeldCaptionParts {
   // When the steer delivers: with the next turn, when the running step
-  // finishes, or by joining the turn already in flight.
-  stage: "next-turn" | "step-finishes" | "joining";
+  // finishes, by joining the turn already in flight, or — for a row the hub
+  // refused under backpressure — when the paced retry the store owns
+  // delivers it.
+  stage: "next-turn" | "step-finishes" | "joining" | "waiting-for-hub";
   // Whether the count reads as time held (an accepted steer waiting).
   held: boolean;
   // How long since createdAt; undefined when createdAt is unknown.
@@ -49,18 +51,34 @@ const HELD_STAGE_LABELS: Record<HeldCaptionParts["stage"], string> = {
   "next-turn": "Delivers with the next turn",
   "step-finishes": "Delivers when this step finishes",
   joining: "Joining this turn",
+  "waiting-for-hub": "Waiting for the hub",
 };
 
-export function heldCaptionParts(entry: PendingTurnEntry, turnActive: boolean, now: number): HeldCaptionParts {
-  const held = entry.state === "accepted";
-  // An accepted steer waits out the running step; a submitting one joins the
-  // turn already in flight.
-  const stage = !turnActive ? "next-turn" : held ? "step-finishes" : "joining";
+export function heldCaptionParts(
+  entry: PendingTurnEntry,
+  turnActive: boolean,
+  now: number,
+  hubRefused = false,
+): HeldCaptionParts {
+  let stage: HeldCaptionParts["stage"];
+  let held: boolean;
+  if (hubRefused) {
+    // A hub-refused steer waits on the store's paced retry, not on the turn:
+    // the caption must not read as an ordinary in-flight join while the hub
+    // has explicitly not accepted the row yet.
+    stage = "waiting-for-hub";
+    held = false;
+  } else {
+    held = entry.state === "accepted";
+    // An accepted steer waits out the running step; a submitting one joins
+    // the turn already in flight.
+    stage = !turnActive ? "next-turn" : held ? "step-finishes" : "joining";
+  }
   return entry.createdAt === undefined ? { stage, held } : { stage, held, elapsedMs: now - entry.createdAt };
 }
 
-export function heldCaption(entry: PendingTurnEntry, turnActive: boolean, now: number): string {
-  const { stage, held, elapsedMs } = heldCaptionParts(entry, turnActive, now);
+export function heldCaption(entry: PendingTurnEntry, turnActive: boolean, now: number, hubRefused = false): string {
+  const { stage, held, elapsedMs } = heldCaptionParts(entry, turnActive, now, hubRefused);
   const label = HELD_STAGE_LABELS[stage];
   if (elapsedMs === undefined) return label;
   const elapsed = formatElapsed(elapsedMs);
@@ -99,6 +117,7 @@ export function HeldSteerStack({ ref: sessionRef }: { ref: string }): JSX.Elemen
   const allEntries = usePendingTurnEntries(sessionRef);
   const entries = heldSteerEntries(allEntries);
   const statusType = useThreadsStore((s) => s.threads.get(sessionRef)?.status.type);
+  const refusedId = useThreadsStore((s) => s.transientRefusalPaces.get(sessionRef)?.clientMutationId);
   // The caption reads the same clock the liveness line does: Session's
   // 3s SessionNowContext tick, so no per-second machinery re-renders the
   // virtualized row and the caption is never itself a ticking live region.
@@ -107,20 +126,23 @@ export function HeldSteerStack({ ref: sessionRef }: { ref: string }): JSX.Elemen
   const turnActive = isTurnActive(statusType ?? "");
   return (
     <ul className={styles.stack} data-testid="held-steer-stack">
-      {entries.map((entry) => (
-        <li key={entry.id}>
-          <UserMessageView
-            item={{
-              id: entry.id,
-              turnId: "",
-              type: "userMessage",
-              text: pendingEntryPreview(entry) || "[queued messages]",
-            }}
-            opensExchange={false}
-            provisional={heldCaption(entry, turnActive, now)}
-          />
-        </li>
-      ))}
+      {entries.map((entry) => {
+        const hubRefused = entry.id === refusedId && entry.state === "submitting";
+        return (
+          <li key={entry.id} data-busy={hubRefused ? "true" : undefined}>
+            <UserMessageView
+              item={{
+                id: entry.id,
+                turnId: "",
+                type: "userMessage",
+                text: pendingEntryPreview(entry) || "[queued messages]",
+              }}
+              opensExchange={false}
+              provisional={heldCaption(entry, turnActive, now, hubRefused)}
+            />
+          </li>
+        );
+      })}
     </ul>
   );
 }
