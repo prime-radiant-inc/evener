@@ -631,6 +631,28 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         if (!attempt.isCurrent()) return "success";
         const evidence = work.attempted?.capture.evidence ?? work.comment.capture?.evidence;
         if (evidence && evidenceProvesChange(content, evidence)) {
+          // The ticket this acceptance held is gone with the throw, so no
+          // fence can ever record this expiry: retiring the in-memory attempt
+          // alone would leave the durable pending-operation row reappliable by
+          // the runtime's next retry pass - and the throw releases the
+          // acceptance's provisional suppression, so that retry WOULD re-apply
+          // the expired operation behind the changed source. The discard runs
+          // FIRST and its own fault falls back to the interim retention below -
+          // work, capture and durable row retire together or not at all.
+          const attempted = work.attempted;
+          if (attempted) {
+            try {
+              await ports.repository.discardPendingOperation(attempted.lease.key, attempted.operationId);
+            } catch {
+              // The discard is durable work under the same storage that
+              // faulted the acceptance; keep the exact retained work and let
+              // the paced retry attempt the whole retirement again.
+              if (!attempt.isCurrent()) return "success";
+              displayContent(content);
+              setAuthoritySuspended(true);
+              return "transient";
+            }
+          }
           // A DEFINITE change to the annotated source is confirmed expiry even
           // though acceptance threw: retire the stale capture/attempt into the
           // honest expiry-pending phase. The throw also means no fence

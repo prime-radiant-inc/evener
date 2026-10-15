@@ -3708,6 +3708,199 @@ test("a beginRead fault behind a proven source change discards the durable pendi
   });
   expectStampedNoEarlierThan(draftFinal, baseline);
 });
+test("an acceptRead fault behind a proven source change discards the durable pending row and retires the retained attempt together, keeping the exact note, then recovers with a distinct new operation", async () => {
+  // The peer adapter below shares the fixture's database, so it also shares
+  // the annotation wake channel; the stub keeps the peer's committed wake
+  // from settling the reader's retained work before the fault branch runs.
+  vi.stubGlobal("BroadcastChannel", undefined);
+  cleanupAfterTest(() => {
+    vi.unstubAllGlobals();
+  });
+  let fail = false;
+  let fenceFault = false;
+  const f = await fixture("accept-fault-proven-change", {
+    beforeCommit: (operation) => {
+      if (operation === "save" && fail) throw new Error("first-save fault");
+    },
+    beforeExpiryFence: async () => {
+      if (fenceFault) throw new Error("acceptance expiry-fence fault");
+    },
+  });
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const { acceptances } = observeReadOwners(f.repo);
+  const listReads = observeListAnnotations(f.repo);
+  const baseline = await f.drafts.load(f.key);
+  if (!baseline) throw new Error("missing baseline");
+
+  mountAnnotated(f, ports, client, "doc-accept-fault-proven-change");
+  const work = documentReaderWork("doc-accept-fault-proven-change", f.document, ports);
+  await screen.findByText("First occurrence: same");
+  await waitForCurrentBoundMap(work, maps);
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Keep this scope." } });
+  fail = true;
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(work.phase).toBe("unsaved"));
+  const attempted = work.attempted;
+  if (!attempted) throw new Error("first attempt not retained");
+  const original = structuredClone(attempted);
+  expect(await operationRowsFor(f, original.operationId)).toHaveLength(0);
+
+  // A peer adapter commits the retained attempt's durable pending row: the
+  // row is durable while the attempt stays retained.
+  fail = false;
+  const peer = createDocumentAnnotationRepository({
+    indexedDB: f.factory,
+    databaseName: f.databaseName,
+    drafts: f.drafts,
+    targetFor: () => null,
+  });
+  cleanupAfterTest(() => peer.close());
+  await peer.saveAnnotation(original);
+  const pendingRow = (await operationRowsFor(f, original.operationId))[0];
+  if (pendingRow?.state !== "pending") throw new Error("peer pending row missing");
+  expect(work.attempted).toEqual(original);
+
+  // The raw fetch proves a definite change (rev-B) while every acceptance
+  // throws at its expiry fence: without the discard, the throw releases the
+  // provisional suppression and the runtime's next retry pass re-applies the
+  // expired operation behind the changed source. The reader must retire
+  // work, capture and durable row TOGETHER.
+  mockRead.mockResolvedValue(docContent(`${SOURCE}\nCHANGED`, "rev-B"));
+  fenceFault = true;
+  cleanupAfterTest(() => {
+    fenceFault = false;
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  await screen.findByText("CHANGED");
+  expect(work.attempted).toBeNull();
+  expect(work.comment.capture).toBeUndefined();
+  expect(work.comment.note).toBe("Keep this scope.");
+  expect(work.phase).toBe("expiry-pending");
+  expect((await operationRowsFor(f, original.operationId))[0]?.state).toBe("cancelled");
+
+  // The runtime's handoff retry must find nothing to re-apply: the durable
+  // row is terminal, so the obsolete operation can never append behind the
+  // proven change.
+  await act(async () => {
+    await ports.runtime.retryPending("storage-recovered");
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  expect((await operationRowsFor(f, original.operationId))[0]?.state).toBe("cancelled");
+  // The list's visibility follows the reader's current lease (the repeated
+  // beginRead issuances advanced the head past the baseline's lease), so the
+  // baseline may or may not be listed - but the obsolete operation must never
+  // appear: its append is the hazard the discard exists to prevent.
+  expect((await f.repo.listAnnotations(f.document)).map((view) => view.receipt.operationId)).not.toContain(
+    original.operationId,
+  );
+  expect(await f.drafts.load(f.key)).toEqual(baseline);
+
+  // Recover through a real acceptance once the fault heals: the proven change
+  // fences the expired epoch and the reread adopts the replacement; a later
+  // deliberate Send produces a NEW operation, never the retired one.
+  fenceFault = false;
+  const acceptBase = acceptances.length;
+  const mapBase = maps.length;
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  await waitForFreshAcceptedMap(acceptances, maps, work, acceptBase, mapBase);
+  await act(async () => {
+    await settleReaderRefreshes(listReads);
+  });
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Keep this scope." } });
+  const saves = vi.spyOn(f.repo, "saveAnnotation");
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(work.attempted).toBeNull());
+  const produced = saves.mock.calls.at(-1)?.[0];
+  if (!produced) throw new Error("no produced operation");
+  expect(produced.operationId).not.toBe(original.operationId);
+  await waitFor(async () =>
+    expect(
+      (await f.repo.listAnnotations(f.document)).find((v) => v.receipt.operationId === produced.operationId)?.handoff
+        .state,
+    ).toBe("already-applied"),
+  );
+  const views = await f.repo.listAnnotations(f.document);
+  expect(views.map((v) => v.receipt.operationId)).toEqual([produced.operationId]);
+  expect(views[0]?.operation.capture.evidence.wholeRevision).toBe("rev-B");
+});
+test("a failed discard behind a proven acceptRead fault keeps the retained attempt for a whole-retry retirement", async () => {
+  vi.stubGlobal("BroadcastChannel", undefined);
+  cleanupAfterTest(() => {
+    vi.unstubAllGlobals();
+  });
+  let fail = false;
+  let fenceFault = false;
+  const f = await fixture("accept-fault-discard-fault", {
+    beforeCommit: (operation) => {
+      if (operation === "save" && fail) throw new Error("first-save fault");
+    },
+    beforeExpiryFence: async () => {
+      if (fenceFault) throw new Error("acceptance expiry-fence fault");
+    },
+  });
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+
+  mountAnnotated(f, ports, client, "doc-accept-fault-discard-fault");
+  const work = documentReaderWork("doc-accept-fault-discard-fault", f.document, ports);
+  await screen.findByText("First occurrence: same");
+  await waitForCurrentBoundMap(work, maps);
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Keep this scope." } });
+  fail = true;
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(work.phase).toBe("unsaved"));
+  const attempted = work.attempted;
+  if (!attempted) throw new Error("first attempt not retained");
+  const original = structuredClone(attempted);
+
+  fail = false;
+  const peer = createDocumentAnnotationRepository({
+    indexedDB: f.factory,
+    databaseName: f.databaseName,
+    drafts: f.drafts,
+    targetFor: () => null,
+  });
+  cleanupAfterTest(() => peer.close());
+  await peer.saveAnnotation(original);
+  if ((await operationRowsFor(f, original.operationId))[0]?.state !== "pending")
+    throw new Error("peer pending row missing");
+
+  // The discard itself faults under the same storage that faulted the
+  // acceptance: the retirement must keep the retained attempt, the capture
+  // and the durable row exactly - work retires together or not at all - and
+  // the paced retry can attempt the whole retirement again.
+  const discardFault = vi.spyOn(f.repo, "discardPendingOperation").mockRejectedValueOnce(new Error("discard fault"));
+  cleanupAfterTest(() => discardFault.mockRestore());
+  mockRead.mockResolvedValue(docContent(`${SOURCE}\nCHANGED`, "rev-B"));
+  fenceFault = true;
+  cleanupAfterTest(() => {
+    fenceFault = false;
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  await screen.findByText("CHANGED");
+  expect(discardFault).toHaveBeenCalledOnce();
+  expect(work.attempted).toEqual(original);
+  expect(work.phase).not.toBe("expiry-pending");
+  expect((await operationRowsFor(f, original.operationId))[0]?.state).toBe("pending");
+
+  // Once the discard heals, a deliberate reload retires work, capture and
+  // durable row together behind the still-faulting acceptance.
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  await waitFor(() => expect(work.attempted).toBeNull());
+  expect(work.phase).toBe("expiry-pending");
+  expect((await operationRowsFor(f, original.operationId))[0]?.state).toBe("cancelled");
+});
 test.each(["main", "secondary"] as const)(
   "visible %s document reads independently of focus, hiding pauses and close releases ownership",
   async (slot) => {
