@@ -28,7 +28,7 @@ func probeOutputFixture(t *testing.T, path, finalLine string, floodLines int) {
 
 func probeOutputFixtureGuards(t *testing.T) {
 	t.Helper()
-	for _, tool := range []string{"sh", "head"} {
+	for _, tool := range []string{"sh", "yes", "head"} {
 		if _, err := execLookPath(tool); err != nil {
 			t.Skip(tool + " not available")
 		}
@@ -232,7 +232,7 @@ func TestOSVersionTruncatedButCompleteStillAccepted(t *testing.T) {
 // probeLongTailGuards skips when the long-tail fixture's tools are unavailable.
 func probeLongTailGuards(t *testing.T) {
 	t.Helper()
-	for _, tool := range []string{"sh", "head", "tr"} {
+	for _, tool := range []string{"sh", "yes", "head", "tr"} {
 		if _, err := execLookPath(tool); err != nil {
 			t.Skip(tool + " not available")
 		}
