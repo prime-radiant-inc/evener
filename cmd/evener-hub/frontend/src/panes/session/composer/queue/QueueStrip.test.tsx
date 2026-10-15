@@ -963,8 +963,10 @@ describe("canceled rows", () => {
     expect(pending.closest("li")?.getAttribute("data-kind")).toBe("pending");
     expect(pending.closest("li")?.getAttribute("data-busy")).toBe("true");
     // The visible affordance is a non-empty reason span, not a phrase: copy
-    // is not a test oracle, so its wording stays free to change.
-    expect(pending.closest("li")?.querySelector("[data-busy-reason]")?.textContent?.trim()).not.toBe("");
+    // is not a test oracle, so its wording stays free to change. The ?? ""
+    // also pins the span's existence: without it a vanished span yields
+    // undefined, which passes vacuously.
+    expect(pending.closest("li")?.querySelector("[data-busy-reason]")?.textContent?.trim() ?? "").not.toBe("");
   });
 
   // Mirrors "visible Retry treats an other-tab settled/reopened row as a
