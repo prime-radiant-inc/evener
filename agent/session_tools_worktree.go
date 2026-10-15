@@ -649,8 +649,11 @@ func gitRunner(ctx context.Context, env execenv.ExecutionEnvironment) worktree.G
 		if err != nil {
 			return res.Stdout, err
 		}
-		if terr := res.Truncated(); terr != nil && gitOutputIsParsed(args) {
-			return res.Stdout, fmt.Errorf("git %s: %w", strings.Join(args, " "), terr)
+		// Only a capped STDOUT poisons a parsed command: the parsed stream is
+		// stdout, so a stderr cap is the command's diagnostics, not its records
+		// (#4621 round 15).
+		if res.StdoutTruncated && gitOutputIsParsed(args) {
+			return res.Stdout, fmt.Errorf("git %s: %w", strings.Join(args, " "), execenv.ErrOutputTruncated)
 		}
 		return res.Stdout, nil
 	}

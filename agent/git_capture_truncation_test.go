@@ -70,6 +70,63 @@ func TestSnapshotGitRefusesATruncatedStatus(t *testing.T) {
 	}
 }
 
+// TestSnapshotGitKeepsCountsWhenOnlyStderrTrippedTheCap is MEDIUM 2 (round 15):
+// the status and log guards read ExecResult.Truncated(), which fires for EITHER
+// stream, so a successful porcelain status whose STDERR overflowed — a noisy hook
+// or warning storm on a perfectly good status — was discarded along with its
+// valid counts, and the prompt rendered a dirty repository as clean. These
+// parsers read stdout only, so the stdout stream is what must be whole.
+func TestSnapshotGitKeepsCountsWhenOnlyStderrTrippedTheCap(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := truncationGitEnv{results: map[string]execenv.ExecResult{
+		"rev-parse --is-inside-work-tree":   {Stdout: "true\n"},
+		"rev-parse --abbrev-ref HEAD":       {Stdout: "main\n"},
+		"status --porcelain":                {Stdout: " M a\n?? b\n", StderrTruncated: true},
+		"log -n 5 --pretty=format:%h%x20%s": {Stdout: "abc first\n", StderrTruncated: true},
+	}}
+	inRepo, branch, mod, untracked, commits, statusKnown := snapshotGit(context.Background(), env, root)
+	if !inRepo || branch != "main" {
+		t.Fatalf("inRepo %v branch %q, want true/main", inRepo, branch)
+	}
+	if !statusKnown || mod != 1 || untracked != 1 {
+		t.Fatalf("a capped STDERR discarded a valid status: statusKnown=%v counts=%d/%d, want true/1/1",
+			statusKnown, mod, untracked)
+	}
+	if len(commits) != 1 || commits[0] != "abc first" {
+		t.Fatalf("a capped STDERR discarded a valid log: %q", commits)
+	}
+}
+
+// TestGitRunnerLetsAParsedCommandThroughWhenOnlyStderrTrippedTheCap is the same
+// defect at the worktree GitRunner, where it is worse: a parsed-stdout command
+// whose stderr overflowed failed outright, so a clean tree could not be reported
+// clean on the strength of a warning nobody asked for. The stdout refusal is
+// untouched — a capped stdout still refuses.
+func TestGitRunnerLetsAParsedCommandThroughWhenOnlyStderrTrippedTheCap(t *testing.T) {
+	t.Parallel()
+	env := truncationGitEnv{results: map[string]execenv.ExecResult{
+		"worktree list --porcelain": {Stdout: "worktree /x\n", StderrTruncated: true},
+	}}
+	out, err := gitRunner(context.Background(), env)("worktree", "list", "--porcelain")
+	if err != nil {
+		t.Fatalf("a porcelain read with a capped STDERR = %v, want success: its stdout is whole", err)
+	}
+	if !strings.Contains(out, "worktree /x") {
+		t.Fatalf("the whole stdout was not returned: %q", out)
+	}
+
+	capped := truncationGitEnv{results: map[string]execenv.ExecResult{
+		"worktree list --porcelain": {Stdout: "worktree /x\n", StdoutTruncated: true},
+	}}
+	if _, err := gitRunner(context.Background(), capped)("worktree", "list", "--porcelain"); !errors.Is(err, execenv.ErrOutputTruncated) {
+		t.Fatalf("a truncated porcelain capture = %v, want ErrOutputTruncated", err)
+	}
+}
+
 // TestGitStatusPromptGoldens pins the system prompt's git block as a COMPLETE
 // rendering for the known and unknown status states — the repo's convention for
 // prompt prose is a whole-output golden, never fragment matching. The gate is

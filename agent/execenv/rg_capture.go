@@ -210,7 +210,7 @@ func lastRecordEnd(b, prefix []byte, filesOnly bool) int {
 // fragment of a record that started earlier and are left out.
 func tailRecords(b, prefix []byte, filesOnly, atBoundary bool) (slots []string, source, cut int) {
 	if !atBoundary {
-		b = b[resync(b, filesOnly):]
+		b = b[resync(b, prefix, filesOnly):]
 	}
 	ends := rgRecordEnds(b, prefix, filesOnly)
 	if len(ends) == 0 {
@@ -243,28 +243,37 @@ func tailRecords(b, prefix []byte, filesOnly, atBoundary bool) (slots []string, 
 
 // resync drops the bytes of a window that opens inside a record, returning the
 // offset of the first complete record for the framing. A window's start is
-// wherever the cap tripped, so its leading bytes are a record's tail: a NUL ends
-// the path they fell inside (and, when records carry a payload line, the newline
-// after that NUL ends that record), while a stream framing no paths at all ends a
-// pathless line at its newline. Walking from the window's first byte instead
-// reads a pathname's tail as a pathless line — dropping every tail record in
-// files_with_matches mode, whose records have no newline at all — and reads a
-// newline inside a pathname as a record boundary, presenting a pathname fragment
-// as a complete record.
-func resync(b []byte, filesOnly bool) int {
-	if nul := bytes.IndexByte(b, 0); nul >= 0 {
-		if filesOnly {
-			return nul + 1
+// wherever the cap tripped, so its leading bytes are a record's tail, and WHICH
+// tail decides where the fragment ends. A payload tail ends at its own newline,
+// which comes before the window's first NUL — that NUL belongs to the next
+// record. A pathname tail runs to the first NUL and then that record's payload
+// newline; a stream framing no paths at all ends a pathless line at its newline.
+// Walking from the window's first byte instead reads a pathname's tail as a
+// pathless line, dropping every tail record in files_with_matches mode, whose
+// records have no newline at all.
+//
+// So a newline before the first NUL is the fragment's end only when a record
+// start follows it: a newline-bearing pathname puts a newline there too, and
+// treating it as a boundary presents a pathname fragment as a complete record —
+// the bytes after it are checked for the searched directory's prefix first.
+func resync(b, prefix []byte, filesOnly bool) int {
+	nul := bytes.IndexByte(b, 0)
+	if nul < 0 {
+		if nl := bytes.IndexByte(b, '\n'); nl >= 0 {
+			return nl + 1
 		}
-		if nl := bytes.IndexByte(b[nul+1:], '\n'); nl >= 0 {
-			return nul + nl + 2
-		}
-		return len(b) // no record ends inside the window
+		return len(b)
 	}
-	if nl := bytes.IndexByte(b, '\n'); nl >= 0 {
+	if filesOnly {
+		return nul + 1
+	}
+	if nl := bytes.IndexByte(b[:nul], '\n'); nl >= 0 && bytes.HasPrefix(b[nl+1:], prefix) {
 		return nl + 1
 	}
-	return len(b)
+	if nl := bytes.IndexByte(b[nul+1:], '\n'); nl >= 0 {
+		return nul + nl + 2
+	}
+	return len(b) // no record ends inside the window
 }
 
 // capTailSlot bounds one tail record: past the slot cap it keeps the record's

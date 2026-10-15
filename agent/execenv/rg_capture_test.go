@@ -525,6 +525,30 @@ func TestRgCaptureWholeStreamRefusesACappedSlot(t *testing.T) {
 	}
 }
 
+// TestRgCaptureResynchronizesAPayloadTailToTheNextRecord is MEDIUM 1 (round 15):
+// a window that opens inside a match PAYLOAD ends at its own newline, which comes
+// BEFORE the window's first NUL — that NUL belongs to the next record. The
+// pathname-tail skip therefore runs past a complete record the capture is holding,
+// and a payload cut followed by one record yields an empty tail.
+func TestRgCaptureResynchronizesAPayloadTailToTheNextRecord(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	first := dir + "/a.txt\x001:" + strings.Repeat("n", 64) + "\n"
+	second := dir + "/b.txt\x002:match\n"
+	// The cap lands just inside the first record's payload line.
+	c := newRgCapture(len(dir) + len("/a.txt\x001:"))
+	if _, err := c.Write([]byte(first + second)); err != nil {
+		t.Fatal(err)
+	}
+	view := c.view(dir, false)
+	if len(view.tail) != 1 || view.tail[0] != second {
+		t.Fatalf("the record after a payload cut was lost:\n got  = %q\n want = %q", view.tail, []string{second})
+	}
+	if view.omitted <= 0 {
+		t.Fatalf("a capture that dropped bytes reported %d omitted", view.omitted)
+	}
+}
+
 // TestRgCaptureReportsACutSlotWithNothingOmitted is MEDIUM 1 (round 13): a
 // boundary-ending cap whose tail holds an oversized record omits no bytes and
 // cuts one slot to its bound. The view must say so, because the caller's
