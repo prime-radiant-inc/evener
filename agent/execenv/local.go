@@ -1364,12 +1364,12 @@ var (
 	execCommandContext = exec.CommandContext
 	execCommand        = exec.Command
 	runtimeGOOS        = runtime.GOOS
-	osVersionOutput    = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	osVersionOutput    = func(ctx context.Context, name string, args ...string) ([]byte, bool, error) {
 		cmd := execCommandContext(ctx, name, args...)
 		out := newCappedOutputBuffer(probeOutputCaptureCap)
 		cmd.Stdout = out
 		err := cmd.Run()
-		return []byte(out.String()), err
+		return []byte(out.String()), out.truncated(), err
 	}
 	shellStat              = os.Stat
 	grepReadFile           = grepReadFileCapped
@@ -1383,13 +1383,13 @@ var (
 	venvCandidateDirs      = func(root, binDir string) []string {
 		return []string{filepath.Join(root, ".venv", binDir), filepath.Join(root, "venv", binDir)}
 	}
-	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) ([]byte, bool, error) {
 		cmd := execCommandContext(ctx, name, args...)
 		cmd.WaitDelay = loginShellPATHWaitDelay
 		out := newCappedOutputBuffer(probeOutputCaptureCap)
 		cmd.Stdout = out
 		err := cmd.Run()
-		return []byte(out.String()), orphanpipe.ChildErr(cmd, err)
+		return []byte(out.String()), out.truncated(), orphanpipe.ChildErr(cmd, err)
 	}
 )
 
@@ -1425,8 +1425,9 @@ const probeOutputCaptureCap = 64 * 1024
 // /opt/homebrew/bin that only the rc chain adds (kata 31gh). Resolved once
 // per process and cached, exactly like OSVersion: a wedged or slow rc file
 // costs at most one short-timeout probe, never one per session or per spawn.
-// Returns "" when $SHELL is unset, the probe fails, or it times out —
-// callers then leave the inherited process PATH unchanged.
+// Returns "" when $SHELL is unset, the probe fails, it times out, or the
+// capture truncated across the answer's start (a cut fragment) — callers then
+// leave the inherited process PATH unchanged.
 func LoginShellPATH() string {
 	loginShellPATHOnce.Do(func() { loginShellPATHValue = resolveLoginShellPATH() })
 	return loginShellPATHValue
@@ -1439,11 +1440,15 @@ func resolveLoginShellPATH() string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), loginShellPATHTimeout)
 	defer cancel()
-	out, err := loginShellPATHOutput(ctx, shell, "-lc", "echo $"+envvars.Path.Name)
+	out, truncated, err := loginShellPATHOutput(ctx, shell, "-lc", "echo $"+envvars.Path.Name)
 	if err != nil {
 		return ""
 	}
-	return lastNonEmptyLine(string(out))
+	answer, ok := probeTrustedAnswer(out, truncated)
+	if !ok {
+		return ""
+	}
+	return answer
 }
 
 // lastNonEmptyLine returns the last non-blank line of s, trimmed. An rc file
@@ -1462,19 +1467,74 @@ func lastNonEmptyLine(s string) string {
 	return ""
 }
 
+// probeMarkerOpen and probeMarkerClose are the fixed ends of the omission
+// marker a truncated capture carries, split out of the one outputOmissionMarker
+// format so probeTailSection stays in step with it.
+var probeMarkerOpen, probeMarkerClose, _ = strings.Cut(outputOmissionMarker, "%d")
+
+// probeTailSection returns the text after the omission marker in a probe view —
+// the capture's retained tail window — and whether the view carried a marker.
+func probeTailSection(view string) (string, bool) {
+	_, rest, ok := strings.Cut(view, probeMarkerOpen)
+	if !ok {
+		return "", false
+	}
+	_, tail, ok := strings.Cut(rest, probeMarkerClose)
+	if !ok {
+		return "", false
+	}
+	return tail, true
+}
+
+// probeAnswerMayBeCut reports whether a truncated probe's answer line is the
+// sole line of the retained tail window. There the cap fell between the
+// answer's start and the window, so no newline is visible before the answer and
+// its beginning may be missing — the fragment must not be trusted. A line that
+// is not the tail's first line was preceded by a newline the window kept, so
+// its start is visible and it stays trustworthy even under truncation.
+func probeAnswerMayBeCut(view, answer string) bool {
+	if answer == "" {
+		return false
+	}
+	tail, ok := probeTailSection(view)
+	if !ok {
+		return false
+	}
+	return !strings.Contains(strings.TrimRight(tail, "\n"), "\n")
+}
+
+// probeTrustedAnswer extracts a probe's answer line and reports whether it is
+// trustworthy. An untruncated capture is always trusted; a truncated one only
+// when its answer is not a cut tail-window fragment (probeAnswerMayBeCut).
+func probeTrustedAnswer(out []byte, truncated bool) (string, bool) {
+	view := string(out)
+	answer := lastNonEmptyLine(view)
+	if answer == "" {
+		return "", false
+	}
+	if truncated && probeAnswerMayBeCut(view, answer) {
+		return "", false
+	}
+	return answer, true
+}
+
 func resolveOSVersion() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	switch runtimeGOOS {
 	case "darwin", "linux":
-		out, err := osVersionOutput(ctx, "uname", "-rs")
+		out, truncated, err := osVersionOutput(ctx, "uname", "-rs")
 		if err == nil {
-			return strings.TrimSpace(string(out))
+			if version, ok := probeTrustedAnswer(out, truncated); ok {
+				return version
+			}
 		}
 	case "windows":
-		out, err := osVersionOutput(ctx, "cmd", "/c", "ver")
+		out, truncated, err := osVersionOutput(ctx, "cmd", "/c", "ver")
 		if err == nil {
-			return strings.TrimSpace(string(out))
+			if version, ok := probeTrustedAnswer(out, truncated); ok {
+				return version
+			}
 		}
 	}
 	return runtimeGOOS + "/" + runtime.GOARCH // fallback
