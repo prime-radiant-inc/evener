@@ -103,7 +103,10 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 	cmgpCheckPureManagerHelpers(t, token, history, profile)
 	cmgpCheckSummarizerBehavior(t, ctx, token, profile, client, cheap)
 
-	// A very small window forces the automatic checkpoint and summary layers.
+	// Tiny thresholds force the automatic checkpoint and summary layers, on
+	// the smallest window compaction summarizes on.
+	summaryProfile := provider.WithContextWindow(profile, minSummarizingWindow)
+	cm.SetProfile(summaryProfile)
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 0.0001
 	cm.RecordInputTokens(999, len(history))
@@ -134,7 +137,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 		respond: func(llm.Request) (llm.Response, error) { return llm.Response{}, errors.New("scripted summary failure") },
 	}, nil)
 	failureHistory := cmgpHistory(token + "-failure")
-	failureCM := NewManager(testOpenAIProfileWithContextWindow(64), failureClient, cheapmodel.New(failureClient))
+	failureCM := NewManager(testOpenAIProfileWithContextWindow(minSummarizingWindow), failureClient, cheapmodel.New(failureClient))
 	failureCM.PreserveRecentTurns = 2
 	failureCM.CheckpointThreshold = 0.0001
 	failureCM.SummarizeThreshold = 0.0001
@@ -146,7 +149,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 
 	// ForceCompact must apply the same two layers regardless of pressure.
 	forceHistory := cmgpHistory(token + "-force")
-	forceCM := NewManager(profile, client, cheapmodel.New(client))
+	forceCM := NewManager(summaryProfile, client, cheapmodel.New(client))
 	forceCM.PreserveRecentTurns = 2
 	var forced cmgpEventLog
 	var forcedTurns []schema.Turn
@@ -181,7 +184,7 @@ func cmgpRunManagerLifecycle(t *testing.T, program []byte) {
 	}
 
 	forceFailureHistory := cmgpHistory(token + "-force-failure")
-	forceFailureCM := NewManager(testOpenAIProfileWithContextWindow(64), failureClient, cheapmodel.New(failureClient))
+	forceFailureCM := NewManager(testOpenAIProfileWithContextWindow(minSummarizingWindow), failureClient, cheapmodel.New(failureClient))
 	forceFailureCM.PreserveRecentTurns = 2
 	var forceFailure cmgpEventLog
 	summarized := forceFailureCM.ForceCompact(ctx, &forceFailureHistory, "", forceFailure.emit)
@@ -340,6 +343,9 @@ func cmgpCheckPureManagerHelpers(t *testing.T, token string, history []schema.Tu
 
 func cmgpCheckSummarizerBehavior(t *testing.T, ctx context.Context, token string, profile *provider.Profile, client *llm.Client, cheap *cmgpAdapter) {
 	t.Helper()
+	// The summarizer sizes its history budget from the model's window (#4321);
+	// a window this large leaves the full 80k budget these renderings assume.
+	profile = provider.WithContextWindow(profile, 1_000_000)
 	input := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("u", 5_100)+token)),
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("assistant evidence "+token)),

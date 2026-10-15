@@ -1442,6 +1442,9 @@ function refuseWrites(db: SqliteDoubleDatabase): void {
 	db.exec("PRAGMA query_only = ON");
 }
 
+// node:sqlite's errcode for SQLITE_READONLY; expo-sqlite has no structured code.
+const SQLITE_READONLY = 8;
+
 async function readyRuntimeWithClient(createMutationId?: () => string) {
 	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId });
 	const client = new FakeClient("ready");
@@ -1569,7 +1572,7 @@ test("a refused write with no ready connection still fails the send with the sto
 	await runtime.start();
 	refuseWrites(database!);
 
-	await expect(runtime.submit(request("send"))).rejects.toThrow(/readonly database/);
+	await expect(runtime.submit(request("send"))).rejects.toMatchObject({ errcode: SQLITE_READONLY });
 	expect(client.calls).toHaveLength(0);
 	await runtime.stop();
 });
@@ -1579,7 +1582,9 @@ test("a Stop whose outbox write is refused by storage stays fail-closed", async 
 	client.on("turn/interrupt", (params) => appliedReceipt(params));
 	refuseWrites(database!);
 
-	await expect(runtime.submit({ ...request("send"), kind: "interrupt" })).rejects.toThrow(/readonly database/);
+	await expect(runtime.submit({ ...request("send"), kind: "interrupt" })).rejects.toMatchObject({
+		errcode: SQLITE_READONLY,
+	});
 	expect(client.calls).toHaveLength(0);
 	await runtime.stop();
 });
@@ -1591,8 +1596,11 @@ test("an outbox bug stays a visible send failure with no request", async () => {
 	client.calls.length = 0;
 
 	// The same id twice is the outbox's own validation refusing the record.
-	await expect(runtime.submit(request("send"))).rejects.toThrow(/already active/);
+	const failure = await runtime.submit(request("send")).catch((error: unknown) => error);
+	expect(failure).toBeInstanceOf(Error);
+	expect(failure).not.toHaveProperty("errcode");
 	expect(client.calls).toHaveLength(0);
+	expect(await runtime.storage.getOutbox("mutation-1")).toBeDefined();
 	await runtime.stop();
 });
 

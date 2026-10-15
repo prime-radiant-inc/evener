@@ -345,7 +345,7 @@ func FuzzCtxmgrSummarizeSteered(f *testing.F) {
 			history := ctxmgr_buildHistory(r)
 			preserve := int(preserveSel) % 10
 
-			profile := testOpenAIProfileWithContextWindow(1000)
+			profile := testOpenAIProfileWithContextWindow(minSummarizingWindow)
 			if withCheap {
 				profile = WithCheapModel(profile, "cheap-model")
 			}
@@ -359,6 +359,13 @@ func FuzzCtxmgrSummarizeSteered(f *testing.F) {
 		result, history, err := run()
 		if err != nil {
 			return
+		}
+		// A history with turns to fold is summarized: the window is one
+		// compaction summarizes on, so only the fold's own early returns leave
+		// the history as it was.
+		if preserve := int(preserveSel) % 10; attentionTransparentTurnCount(history) > preserve && foldCutoff(history, preserve) >= 0 &&
+			reflect.DeepEqual(ctxmgr_fingerprints(result), ctxmgr_fingerprints(history)) {
+			t.Fatalf("a foldable history came back unsummarized")
 		}
 		// A nil result is only legitimate when the input history was itself nil
 		// (the early no-op returns history unchanged).
@@ -440,7 +447,7 @@ func FuzzCtxmgrCheckpointPredManageContext(f *testing.F) {
 			r := &ctxmgr_reader{b: data}
 			history := ctxmgr_buildHistory(r)
 
-			profile := testOpenAIProfileWithContextWindow(1000)
+			profile := testOpenAIProfileWithContextWindow(minSummarizingWindow)
 			client := ctxmgr_scriptedClient(profile.ID(), "## Progress\npredicted checkpoint body", faultPlan)
 			cm := NewManager(profile, client, cheapmodel.New(client))
 			ctxmgr_manageThresholds(cm, thrSel, preserveSel)
@@ -485,7 +492,7 @@ func FuzzCtxmgrSessionLogManageContext(f *testing.F) {
 			r := &ctxmgr_reader{b: data}
 			history := ctxmgr_buildHistory(r)
 
-			profile := testOpenAIProfileWithContextWindow(1000)
+			profile := testOpenAIProfileWithContextWindow(minSummarizingWindow)
 			client := ctxmgr_scriptedClient(profile.ID(), "## Progress\nsession summary body", faultPlan)
 			cm := NewManager(profile, client, cheapmodel.New(client))
 			ctxmgr_manageThresholds(cm, thrSel, preserveSel)
