@@ -115,6 +115,11 @@ export interface BrowserDocumentAnnotationRepository extends AnnotationReadRepos
   // ticket to fence with. The row's operation identity is the caller's own
   // retained attempt.
   discardPendingOperation(key: DocumentKey, operationId: string): Promise<void>;
+  // Suppress one epoch's listing and pending handoffs from a source change the
+  // reader PROVED outside any acceptance: the fault-branch completion a SAVED
+  // annotation needs, whose durable row must survive for the expiry machinery
+  // to retire while its handoff must not append behind the changed source.
+  suppressEpochForExpiry(lease: AcceptedSourceLease): void;
   retryPending(reason: AnnotationRetryReason): Promise<void>;
   retryPendingWithOutcome(reason: AnnotationRetryReason): Promise<BrowserAnnotationRetryOutcome>;
   resetOwnedNamespace(
@@ -240,7 +245,11 @@ class SupersededFenceError extends Error {}
 class SaveCancelledError extends Error {}
 
 interface SuppressionEntry {
-  requestId: string;
+  // The ticket whose read owns a provisional entry, or null when no ticket
+  // owns it (a suppression installed from a proven change outside any
+  // acceptance): ticket-owned entries are confirmed or released by that
+  // ticket's validation, and a null-owner entry is never released by a ticket.
+  requestId: string | null;
   confirmed: boolean;
 }
 
@@ -1118,6 +1127,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         transaction.objectStore(ANNOTATION_OPERATIONS_STORE).put({ ...terminal, state: "cancelled" }),
       );
     });
+  }
+
+  // The suppression half of the same fault-branch completion: a source change
+  // the READER proved against retained evidence (a faulted beginRead's raw
+  // fetch, an acceptance that threw before its own changed-read suppression
+  // could run) must still cancel the affected epoch's pending handoffs and
+  // hide it from listing. The entry is confirmed - the change was proven, not
+  // a local guess - and owns no ticket, so no validation can release it. It
+  // lives like the changed-read suppression: until the expiry's fence and
+  // deletion complete, and inert once the epoch's rows are gone.
+  suppressEpochForExpiry(lease: AcceptedSourceLease): void {
+    this.#suppressedEpochs.set(epochIdentity(lease), { requestId: null, confirmed: true });
   }
 
   // Complete retained pending expiry fences first, then visit persisted pending

@@ -12,8 +12,10 @@ import {
   DocFileError,
   displayedFingerprint,
   type ExpiryReceipt,
+  editCommentText,
   formatAnnotationReference,
   type PreparedAnnotation,
+  selectCommentPassage,
 } from "@evener/appwire-client";
 import * as docContentModule from "@evener/appwire-client/docContent";
 import { bindFilePath } from "@evener/appwire-client/docContent";
@@ -43,6 +45,8 @@ import {
   type DocumentAnnotationRuntime,
 } from "../../stores/documentAnnotationRuntime";
 import {
+  ANNOTATION_EVIDENCE_STORE,
+  ANNOTATION_EXPIRY_STORE,
   ANNOTATION_HEADS_STORE,
   ANNOTATION_NAMESPACES_STORE,
   ANNOTATION_OPERATIONS_STORE,
@@ -63,6 +67,8 @@ import {
   disposeDocumentReaderWork,
   documentReaderWork,
   publishReader,
+  retryDocumentReaders,
+  saveReaderAnnotation,
   setDocumentAnnotationPortsForTests,
   subscribeDocumentReaderWork,
 } from "./documentReadState";
@@ -819,6 +825,41 @@ function faultBeginReadPersistently(armed: { value: boolean }): void {
     const scope = [...this.transaction.objectStoreNames].sort().join("|");
     if (armed.value && this.transaction.mode === "readwrite" && scope === BEGIN_READ_SCOPE) {
       throw new Error("annotation storage read fault");
+    }
+    return realGet.call(this, query);
+  });
+}
+
+// The acceptance transaction's exact store set: READ_STORES plus evidence,
+// operations and expiry. A fault scoped to this shape hits the real acceptRead
+// validation (and the fence, which never runs past a faulted validation) while
+// beginRead, saves and every other transaction keep their real code.
+const ACCEPT_READ_SCOPE = [
+  ANNOTATION_NAMESPACES_STORE,
+  ANNOTATION_HEADS_STORE,
+  ANNOTATION_EVIDENCE_STORE,
+  ANNOTATION_OPERATIONS_STORE,
+  ANNOTATION_EXPIRY_STORE,
+]
+  .sort()
+  .join("|");
+
+// Platform fault injection at the REAL acceptRead validation boundary: the
+// first `get` of the acceptance transaction throws, so the real acceptRead
+// promise rejects BEFORE the changed-read suppression or the fence could ever
+// run - a storage fault inside validation, the one acceptance-fault shape whose
+// suppression gap is the reader's alone to close. Like the beginRead seam it is
+// one-shot: disarm `armed.value` to let the same real transaction run.
+function faultAcceptReadTransaction(armed: { value: boolean }): void {
+  const realGet = FDBObjectStore.prototype.get;
+  vi.spyOn(FDBObjectStore.prototype, "get").mockImplementation(function (
+    this: IDBObjectStore,
+    query: IDBValidKey | IDBKeyRange,
+  ) {
+    const scope = [...this.transaction.objectStoreNames].sort().join("|");
+    if (armed.value && this.transaction.mode === "readwrite" && scope === ACCEPT_READ_SCOPE) {
+      armed.value = false;
+      throw new Error("annotation storage acceptance fault");
     }
     return realGet.call(this, query);
   });
@@ -1942,6 +1983,291 @@ test("a twice-stale leaseless reader regains annotation authority through the de
   // event, reopen or wake, and both readers hold current leases.
   expect(workA.lease).not.toBeNull();
   expect(workB.lease).not.toBeNull();
+});
+
+// RoboRev round 35 medium: a storage fault suspends a reader that already
+// holds a rendered lease, and the paced recovery read's fresh ticket can be
+// superseded by a peer pane's issuance. The stale-ticket early return counted
+// the retained lease plus rendered content as authority worth keeping and
+// reported success - but a suspended pane's retained lease is not usable:
+// only this reader's own paced retry can clear the suspension, and the
+// winning peer's acceptance publishes no wake, so the pane stayed suspended
+// forever. Suspended authority now falls through to the same bounded paced
+// recovery a leaseless pane gets.
+test("a suspended reader whose recovery ticket a peer supersedes keeps revalidating and regains usable authority", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  const f = await fixture("reader-suspended-paced-recovery");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  const held: Array<(content: DocFileContent) => void> = [];
+  mockRead.mockImplementation(
+    () =>
+      new Promise<DocFileContent>((resolve) => {
+        held.push(resolve);
+      }),
+  );
+  mountAnnotated(f, ports, client, "doc-suspended-paced-a");
+  const workA = documentReaderWork("doc-suspended-paced-a", f.document, ports);
+  await settleFakeReadCycle();
+  expect(held.length).toBe(1);
+  await act(async () => {
+    held[0]?.(docContent(SOURCE, "rev-A"));
+  });
+  await settleFakeReadCycle();
+  // A real accepted lease with rendered content: the world the fault then
+  // suspends.
+  const retainedLease = workA.lease;
+  expect(retainedLease).not.toBeNull();
+
+  // A foreground reread whose beginRead faults at the platform boundary while
+  // the raw fetch succeeds: the pane renders with suspended authority,
+  // retaining the lease, and the fault's transient arms the paced retry.
+  const fault = { value: true };
+  faultBeginReadTransaction(fault);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  fireEvent(document, new Event("visibilitychange"));
+  await settleFakeReadCycle();
+  expect(held.length).toBe(2);
+  await act(async () => {
+    held[1]?.(docContent(SOURCE, "rev-A"));
+  });
+  await settleFakeReadCycle();
+  expect(workA.lease).toBe(retainedLease);
+
+  // The paced retry issues on healed storage; its fresh ticket is superseded
+  // by a peer pane's mount issuance before it completes.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  await settleFakeReadCycle();
+  expect(held.length).toBe(3);
+  mountAnnotated(f, ports, client, "doc-suspended-paced-b");
+  const workB = documentReaderWork("doc-suspended-paced-b", f.document, ports);
+  await settleFakeReadCycle();
+  expect(held.length).toBe(4);
+
+  // The peer's read completes and accepts first; the suspended reader's
+  // recovery read then completes with its ticket superseded.
+  await act(async () => {
+    held[3]?.(docContent(SOURCE, "rev-A"));
+  });
+  await settleFakeReadCycle();
+  expect(workB.lease).not.toBeNull();
+  await act(async () => {
+    held[2]?.(docContent(SOURCE, "rev-A"));
+  });
+  await settleFakeReadCycle();
+
+  // The finding's moment: the stale-ticket must not strand the suspended
+  // pane. The peer's acceptance publishes no wake, so if this return reports
+  // success the demand goes silent and the suspension can never clear -
+  // nothing may ever issue again. The fixed fall-through keeps recovery alive.
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  await settleFakeReadCycle();
+  expect(held.length).toBeGreaterThan(4);
+
+  // The recovery reads accept against the settled peer and replace the
+  // retained lease with fresh accepted authority - the same acceptance that
+  // clears the suspension. Recovered and idle, nothing further schedules.
+  for (let index = 4; index < held.length; index += 1) {
+    await act(async () => {
+      held[index]?.(docContent(SOURCE, "rev-A"));
+    });
+    await settleFakeReadCycle();
+  }
+  expect(workA.lease).not.toBe(retainedLease);
+  expect(workA.lease).not.toBeNull();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+// RoboRev round 35 medium: a saved annotation awaiting handoff has cleared
+// both unsaved evidence slots, so a definitively-newer fetch behind a faulted
+// beginRead proved nothing - the pane suspended as uncertainty while the saved
+// operation stayed handoff-eligible, and a runtime retry appended its obsolete
+// reference behind the changed source. The saved operation's own retained
+// evidence now proves the change: the reader retires into expiry-pending and
+// the saved epoch's pending handoff is suppressed until the expiry completes.
+test("a saved annotation awaiting handoff cannot append behind a source change a faulted beginRead proved", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  let failAppend = false;
+  const f = await fixture("reader-saved-handoff-begin-read", {
+    beforeAbortableCompletion: () => {
+      if (failAppend) throw new Error("append boundary");
+    },
+  });
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  const held: Array<(content: DocFileContent) => void> = [];
+  mockRead.mockImplementation(
+    () =>
+      new Promise<DocFileContent>((resolve) => {
+        held.push(resolve);
+      }),
+  );
+  mountAnnotated(f, ports, client, "doc-saved-handoff-a");
+  const work = documentReaderWork("doc-saved-handoff-a", f.document, ports);
+  await settleFakeReadCycle();
+  await act(async () => {
+    held[0]?.(docContent(SOURCE, "rev-A"));
+  });
+  await settleFakeReadCycle();
+  expect(work.lease).not.toBeNull();
+
+  // A real save whose handoff append faults: the durable row commits, both
+  // unsaved slots clear, and the reference stays unappended.
+  work.comment = selectCommentPassage(editCommentText(work.comment, "Keep this scope."), f.operation.capture);
+  failAppend = true;
+  await act(async () => {
+    await saveReaderAnnotation(work, f.destination);
+  });
+  await settleFakeReadCycle();
+  const saved = (await f.repo.listAnnotations(f.document)).find((entry) => entry.handoff.state === "pending");
+  if (!saved) throw new Error("handoff did not stay pending across the faulted append");
+  const baselineText = (await f.drafts.load(f.key))?.text;
+  if (!baselineText) throw new Error("baseline draft missing");
+  expect(work.attempted).toBeNull();
+  expect(work.comment.capture).toBeUndefined();
+
+  // A reread whose beginRead faults while the raw fetch returns definitively
+  // newer content. The saved operation's evidence must prove the change and
+  // retire the reader into expiry-pending. (The append fault stays armed through
+  // the visibilitychange: the app-level foreground retry it also fires must
+  // not be the thing that settles the handoff inside the window.)
+  const fault = { value: true };
+  faultBeginReadTransaction(fault);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  fireEvent(document, new Event("visibilitychange"));
+  await settleFakeReadCycle();
+  await act(async () => {
+    held[1]?.(docContent(`${SOURCE}CHANGED`, "rev-B"));
+  });
+  await settleFakeReadCycle();
+  expect(work.phase).toBe("expiry-pending");
+
+  // Inside the recovery window the composer-open retry must not append the
+  // saved operation's obsolete reference behind the changed source.
+  failAppend = false;
+  await act(async () => {
+    await retryDocumentReaders("composer-open");
+  });
+  await settleFakeReadCycle();
+  expect((await f.drafts.load(f.key))?.text).toBe(baselineText);
+});
+
+// The acceptance-fault branch of the same finding: a fault inside acceptRead's
+// validation rejects the read BEFORE the changed-read suppression or the fence
+// could ever run, so the reader's own proven-change branch is the only thing
+// that can suppress the saved epoch's pending handoff.
+test("a saved annotation awaiting handoff cannot append behind a source change a faulted acceptance proved", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  let failAppend = false;
+  const f = await fixture("reader-saved-handoff-accept-read", {
+    beforeAbortableCompletion: () => {
+      if (failAppend) throw new Error("append boundary");
+    },
+  });
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  const held: Array<(content: DocFileContent) => void> = [];
+  mockRead.mockImplementation(
+    () =>
+      new Promise<DocFileContent>((resolve) => {
+        held.push(resolve);
+      }),
+  );
+  mountAnnotated(f, ports, client, "doc-saved-handoff-b");
+  const work = documentReaderWork("doc-saved-handoff-b", f.document, ports);
+  await settleFakeReadCycle();
+  await act(async () => {
+    held[0]?.(docContent(SOURCE, "rev-A"));
+  });
+  await settleFakeReadCycle();
+  expect(work.lease).not.toBeNull();
+
+  // The same real save with a faulted handoff append.
+  work.comment = selectCommentPassage(editCommentText(work.comment, "Keep this scope."), f.operation.capture);
+  failAppend = true;
+  await act(async () => {
+    await saveReaderAnnotation(work, f.destination);
+  });
+  await settleFakeReadCycle();
+  const saved = (await f.repo.listAnnotations(f.document)).find((entry) => entry.handoff.state === "pending");
+  if (!saved) throw new Error("handoff did not stay pending across the faulted append");
+  const baselineText = (await f.drafts.load(f.key))?.text;
+  if (!baselineText) throw new Error("baseline draft missing");
+  expect(work.attempted).toBeNull();
+  expect(work.comment.capture).toBeUndefined();
+
+  // A reread whose acceptRead faults inside validation while the raw fetch
+  // returned definitively newer content: the proven-change branch must retire
+  // the reader into expiry-pending and suppress the saved epoch's handoff.
+  const fault = { value: true };
+  faultAcceptReadTransaction(fault);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  fireEvent(document, new Event("visibilitychange"));
+  await settleFakeReadCycle();
+  await act(async () => {
+    held[1]?.(docContent(`${SOURCE}CHANGED`, "rev-B"));
+  });
+  await settleFakeReadCycle();
+  expect(work.phase).toBe("expiry-pending");
+
+  failAppend = false;
+  await act(async () => {
+    await retryDocumentReaders("composer-open");
+  });
+  await settleFakeReadCycle();
+  expect((await f.drafts.load(f.key))?.text).toBe(baselineText);
+});
+
+// RoboRev round 35 low, pane wiring: the retained reader work keeps the note
+// text across a host swap, and the same work now keeps the textarea's caret
+// selection - so a remounted pane restores the range and its direction instead
+// of mounting a fresh textarea with an empty selection.
+test("a remounted comment box restores the retained caret selection with its direction", async () => {
+  const f = await fixture("reader-comment-selection");
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const host = mountAnnotated(f, ports, client, "doc-comment-selection");
+  await screen.findByText("First occurrence: same");
+
+  // Author a note, then place a selection inside it.
+  await selectFirstPassage();
+  const textbox = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+  fireEvent.change(textbox, { target: { value: "Keep this scope." } });
+  fireEvent.select(textbox, { target: { selectionStart: 5, selectionEnd: 9, selectionDirection: "backward" } });
+
+  // The pane host swaps: the retained reader work survives, the textarea is a
+  // fresh element.
+  host.unmount();
+  mountAnnotated(f, ports, client, "doc-comment-selection");
+  const remounted = (await screen.findByRole("textbox")) as HTMLTextAreaElement;
+  expect(remounted.value).toBe("Keep this scope.");
+  expect(remounted.selectionStart).toBe(5);
+  expect(remounted.selectionEnd).toBe(9);
+  expect(remounted.selectionDirection).toBe("backward");
 });
 
 test("a failed expiry fence keeps the pending phase, suppresses the stale highlight and old-lease Send, then recovers on a current read", async () => {

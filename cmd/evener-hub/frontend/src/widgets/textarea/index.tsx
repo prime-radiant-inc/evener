@@ -4,6 +4,7 @@ import {
   type CSSProperties,
   forwardRef,
   type KeyboardEvent,
+  type UIEvent,
   useLayoutEffect,
   useRef,
 } from "react";
@@ -54,6 +55,10 @@ export interface TextareaProps {
    * off the clipboard while leaving a text-only paste to the browser's own
    * default insertion (never calling preventDefault() itself). */
   onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
+  /** Native select passthrough - e.g. a reader retaining its comment field's
+   * caret and selection across remounts (the value its next mount restores
+   * through setSelectionRange). */
+  onSelect?: (event: UIEvent<HTMLTextAreaElement>) => void;
   /** Accessible name when no visible `<label>` owns this field - e.g. a
    * composer whose only visual cue is a placeholder (which screen readers
    * must not rely on alone). */
@@ -133,6 +138,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     name,
     onKeyDown,
     onPaste,
+    onSelect,
     onFocus,
     onBlur,
     "aria-label": ariaLabel,
@@ -193,6 +199,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
       onChange={onChange}
       onKeyDown={onKeyDown}
       onPaste={onPaste}
+      onSelect={onSelect}
       onFocus={onFocus}
       onBlur={onBlur}
       placeholder={placeholder}

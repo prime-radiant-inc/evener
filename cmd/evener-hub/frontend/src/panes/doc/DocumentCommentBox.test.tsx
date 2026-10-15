@@ -295,6 +295,64 @@ test("opening the component does not steal focus or the surrounding selection", 
   expect(selection.getRangeAt(0).toString()).toBe("selectable prose");
 });
 
+// RoboRev round 35 low: the note text survives a remount through the retained
+// reader work, but the textarea's caret and selected substring did not - a
+// fresh textarea always mounted with an empty selection. The box now restores
+// the retained range AND its direction on mount, without stealing focus or
+// disturbing the document selection, and delegates live selection changes.
+test("a retained caret selection restores on mount without stealing focus or the document selection", async () => {
+  const f = await fixture("comment-selection-restore");
+  const capture = f.operation.capture;
+  const onNote = vi.fn();
+  const onSend = vi.fn();
+  const onCancel = vi.fn();
+  const onSelection = vi.fn();
+
+  const outside = document.createElement("button");
+  outside.textContent = "outside";
+  document.body.appendChild(outside);
+  cleanupAfterTest(() => outside.remove());
+  const prose = document.createElement("p");
+  prose.textContent = "selectable prose";
+  document.body.appendChild(prose);
+  cleanupAfterTest(() => prose.remove());
+
+  outside.focus();
+  const range = document.createRange();
+  range.selectNodeContents(prose);
+  const selection = document.getSelection();
+  if (!selection) throw new Error("missing document selection");
+  selection.removeAllRanges();
+  selection.addRange(range);
+  cleanupAfterTest(() => selection.removeAllRanges());
+
+  render(
+    <DocumentCommentBox
+      work={{ note: "Keep this scope.", capture, captureFrozen: true }}
+      onNote={onNote}
+      onSend={onSend}
+      onCancel={onCancel}
+      onSelection={onSelection}
+      saving={false}
+      status="unsaved"
+      retainedSelection={{ start: 5, end: 9, direction: "backward" }}
+    />,
+  );
+
+  const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(textbox.selectionStart).toBe(5);
+  expect(textbox.selectionEnd).toBe(9);
+  expect(textbox.selectionDirection).toBe("backward");
+  // The restore moves only the field's own caret: focus and the document
+  // selection over the prose stay exactly as they were.
+  expect(document.activeElement).toBe(outside);
+  expect(selection.getRangeAt(0).toString()).toBe("selectable prose");
+
+  // Live selection changes delegate their range and direction to the host.
+  fireEvent.select(textbox, { target: { selectionStart: 0, selectionEnd: 4, selectionDirection: "forward" } });
+  expect(onSelection).toHaveBeenCalledWith({ start: 0, end: 4, direction: "forward" });
+});
+
 // ---------------------------------------------------------------------------
 // Visible captured passage (whole-UI finding 4). The box opens "with the
 // selected passage and Send", so the user keeps a visible confirmation of what

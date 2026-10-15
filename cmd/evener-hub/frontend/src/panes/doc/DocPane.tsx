@@ -45,6 +45,7 @@ import { DocumentHighlights } from "./DocumentHighlights";
 import { filenameOf, formatDocBytes, isMarkdownPath } from "./docFile";
 import styles from "./docpane.module.css";
 import {
+  type CommentSelection,
   type DocumentReaderWork,
   documentReaderWork,
   getDocumentAnnotationPorts,
@@ -243,6 +244,16 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   // usable highlights/selection mapping stay suspended, but the retained lease,
   // attempt and exact note/capture are kept for recovery.
   const [authoritySuspended, setAuthoritySuspended] = useState(false);
+  // The read pipeline runs inside an effect whose closure cannot observe this
+  // state changing (its inputs are captured per cycle from
+  // latestReadInputs), so the pipeline reads the mirror instead: a cycle must
+  // see the CURRENT suspension, including one an earlier cycle set, without
+  // waiting for a re-render to land first.
+  const authoritySuspendedRef = useRef(false);
+  const suspendAuthority = useCallback((suspended: boolean): void => {
+    authoritySuspendedRef.current = suspended;
+    setAuthoritySuspended(suspended);
+  }, []);
   const [scrollElement, setScrollElement] = useState<HTMLElement | null>(null);
   const [contentElement, setContentElement] = useState<HTMLDivElement | null>(null);
   const [, bump] = useState(0);
@@ -576,8 +587,9 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
 
       if (ticket === null) {
         // The raw fetch succeeded, so its content is real evidence even though
-        // the metadata read faulted: a DEFINITE change against the retained
-        // capture proves the stale work must retire - the same comparison the
+        // the metadata read faulted: a DEFINITE change against any retained
+        // capture (the unsaved attempt's, the composed comment's, or the last
+        // save's) proves the stale work must retire - the same comparison the
         // acceptance-fault branch makes. The ticket this branch lacks is also
         // the ticket a fence needs, so the retirement must take the durable
         // pending-operation row with it: without the discard, the runtime's
@@ -585,7 +597,8 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // identity. The discard runs FIRST and its own fault falls back to the
         // interim retention below - work, capture and durable row retire
         // together or not at all.
-        const evidence = work.attempted?.capture.evidence ?? work.comment.capture?.evidence;
+        const evidence =
+          work.attempted?.capture.evidence ?? work.comment.capture?.evidence ?? work.saved?.capture.evidence;
         if (evidence && evidenceProvesChange(content, evidence)) {
           const attempted = work.attempted;
           if (attempted) {
@@ -597,11 +610,18 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
               // let the paced retry attempt the whole retirement again.
               if (!attempt.isCurrent()) return "success";
               displayContent(content);
-              setAuthoritySuspended(true);
+              suspendAuthority(true);
               return "transient";
             }
             if (!attempt.isCurrent()) return "success";
           }
+          // A SAVED annotation awaiting handoff kept no in-memory attempt to
+          // retire: its durable row is the expiry machinery's to delete, but
+          // its pending handoff must not append an obsolete reference behind
+          // the changed source, so suppress the saved epoch until the expiry
+          // completes. The recovery acceptance's own changed read then
+          // installs the durable fence.
+          if (work.saved) ports.repository.suppressEpochForExpiry(work.saved.lease);
           // No ticket was issued, so no fence recorded and no repository
           // expiry work exists to ever wake this reader: the outcome must
           // stay transient, keeping the demand's paced retry alive until a
@@ -620,7 +640,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // this pane is visible and connected; the next cycle revalidates
         // through a fresh ticket and a real acceptance.
         displayContent(content);
-        setAuthoritySuspended(true);
+        suspendAuthority(true);
         return "transient";
       }
 
@@ -629,7 +649,8 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         accepted = await ports.repository.acceptRead(ticket, content);
       } catch {
         if (!attempt.isCurrent()) return "success";
-        const evidence = work.attempted?.capture.evidence ?? work.comment.capture?.evidence;
+        const evidence =
+          work.attempted?.capture.evidence ?? work.comment.capture?.evidence ?? work.saved?.capture.evidence;
         if (evidence && evidenceProvesChange(content, evidence)) {
           // The ticket this acceptance held is gone with the throw, so no
           // fence can ever record this expiry: retiring the in-memory attempt
@@ -649,10 +670,16 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
               // the paced retry attempt the whole retirement again.
               if (!attempt.isCurrent()) return "success";
               displayContent(content);
-              setAuthoritySuspended(true);
+              suspendAuthority(true);
               return "transient";
             }
           }
+          // The same saved-annotation completion as the beginRead-fault branch:
+          // the durable row survives for the expiry machinery, the epoch's
+          // pending handoff must not append behind the changed source, and
+          // the recovery acceptance's own changed read installs the durable
+          // fence.
+          if (work.saved) ports.repository.suppressEpochForExpiry(work.saved.lease);
           // A DEFINITE change to the annotated source is confirmed expiry even
           // though acceptance threw: retire the stale capture/attempt into the
           // honest expiry-pending phase. The throw also means no fence
@@ -669,7 +696,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // raw content, suspend usable authority and retain the exact
         // note/capture/attempt and the shared retry ownership.
         displayContent(content);
-        setAuthoritySuspended(true);
+        suspendAuthority(true);
         // The acceptance never completed, so the demand paces a retry while
         // this pane is visible and connected; the next cycle revalidates
         // through a fresh ticket and a real acceptance.
@@ -687,8 +714,18 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // does not hold: nothing is being kept, and a peer's successful
         // acceptance emits no wake, so the return would strand the fresh
         // mount on its loading skeleton forever. With nothing rendered, the
-        // same bounded recovery below applies.
-        if ((work.lease !== null || work.attempted !== null) && renderedContentRef.current) return "success";
+        // same bounded recovery below applies. A SUSPENDED pane's retained
+        // lease is not the usable authority this return protects: the pane is
+        // waiting for the revalidation that only its own demand can run, and
+        // the winning peer's acceptance emits no wake - returning success here
+        // would strand the suspension forever. Suspended authority joins the
+        // same bounded paced recovery.
+        if (
+          !authoritySuspendedRef.current &&
+          (work.lease !== null || work.attempted !== null) &&
+          renderedContentRef.current
+        )
+          return "success";
         if (leaselessStaleRef.current === 0) {
           leaselessStaleRef.current = 1;
           readDemandRef.current?.refresh();
@@ -709,7 +746,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // tight-loop interleave there is, and every later stale paces with the
         // demand's growing backoff instead of re-arming the immediate path.
         displayContent(content);
-        setAuthoritySuspended(true);
+        suspendAuthority(true);
         return "transient";
       }
       displayContent(content);
@@ -734,7 +771,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         }
         work.lease = accepted.lease;
         work.phase = work.attempted ? "unsaved" : "reading";
-        setAuthoritySuspended(false);
+        suspendAuthority(false);
         setIdentity({ displayedSnapshotId: accepted.lease.displayedSnapshotId, mappingId: createSecureUUID() });
         publishReader(work);
         const fencedExpiry = expiryReceiptRef.current;
@@ -815,7 +852,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       unsubscribeNotifications();
       document.removeEventListener("visibilitychange", onForeground);
     };
-  }, [refreshRead]);
+  }, [refreshRead, suspendAuthority]);
   useLayoutEffect(() => {
     const inputs = latestReadInputs.current;
     if (!inputs) return;
@@ -945,6 +982,11 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     work.comment = editCommentText(work.comment, note);
     publishReader(work);
   };
+  const onSelection = (selection: CommentSelection): void => {
+    // Retained for the next mount's restore; nothing renders from it, so no
+    // publish - a keystroke must not churn render listeners.
+    work.commentSelection = selection;
+  };
   const onSend = (): void => {
     // A suspended authority keeps the retained lease/capture for recovery, but the
     // newest raw response was never accepted: sending would persist an operation
@@ -961,6 +1003,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     const attempted = work.attempted;
     if (attempted) ports.runtime.retireAttempted(attempted);
     work.comment = { note: "", captureFrozen: false };
+    work.commentSelection = null;
     work.attempted = null;
     work.attemptedComment = null;
     if (work.phase !== "reading" && work.phase !== "expiry-pending") work.phase = "reading";
@@ -985,6 +1028,8 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
       saving={saving}
       status={status}
       suspended={authoritySuspended}
+      retainedSelection={work.commentSelection}
+      onSelection={onSelection}
     />
   ) : null;
   const statusFooter = (
