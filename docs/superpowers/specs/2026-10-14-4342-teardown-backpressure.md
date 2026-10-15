@@ -510,7 +510,20 @@ fixtures, and an injectable transport/observer where needed.
   fence covers both rollback branches (the submitting rollback and the
   blockedUnknown reopen); rows with earlier unresolved evidence keep
   their uncertain treatment, and the dispatcher arms no busy surface and
-  no pacing for a fence-held row.
+  no pacing for a fence-held row. Three refinements the same day's review
+  forced: the Stop's own interrupt record captures the epoch its Stop just
+  bumped (§4's "the interrupt passes no barrier" - a refusal of the
+  interrupt itself redelivers instead of fence-canceling the Stop); an
+  explicit release refreshes the captured epoch to the current one, so a
+  Retry's own refused redeliveries are re-authorized past the Stop the
+  fence held (§4's deliberate-post-Stop-send exemption, release barrier
+  still fencing newer Stops); and the dispatcher's transient branch
+  publishes its storage change like every other outcome, because the
+  rollback can move the row (submitting, or canceled through the fence)
+  and native's projections refresh through storage notifications. On
+  native the capture also rides the row plumbing - COLUMNS, insertValues,
+  fromRow - not just the returned record, or a fresh adapter over the
+  same database reads every capture as zero.
 - The busy surface's visible copy is pinned structurally, not verbatim
   (round-4 review, low): the queue row's reason span carries a
   data-busy-reason hook asserted non-empty, the ghost's caption stage and

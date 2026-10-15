@@ -331,6 +331,11 @@ export class MutationOutboxIndexedDB {
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const clientMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, clientMutationId);
+      // The Stop's own interrupt passes no barrier - it IS the click the
+      // epoch records - so its capture is the epoch its Stop just bumped: a
+      // refusal of the interrupt itself redelivers like any transient
+      // refusal instead of fence-canceling the Stop's own row.
+      const stopEpoch = await this.#stopEpochOf(transaction, intent.targetRef);
       const record: MutationOutboxRecord = {
         ...intent,
         payload: { ...intent.payload, clientMutationId },
@@ -341,6 +346,7 @@ export class MutationOutboxIndexedDB {
         createdAt: this.#now(),
         state: "submitting",
         attempted: false,
+        stopEpochAtEnqueue: stopEpoch,
       };
       await requestResult(outbox.add(record));
       return record;
@@ -434,7 +440,13 @@ export class MutationOutboxIndexedDB {
       if (barrier !== undefined && (await this.#stopEpochOf(transaction, record.targetRef)) > barrier.stopEpoch) {
         return false;
       }
-      await requestResult(store.put({ ...record, state: "submitting" }));
+      // The release is the user deliberately sending after a Stop (§4's
+      // exemption), so it re-authorizes the row past the Stop its fence
+      // captured: the capture refreshes to the current epoch, and the row's
+      // next refusal redelivers instead of re-canceling. The barrier above
+      // still fences a Stop newer than this press.
+      const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
+      await requestResult(store.put({ ...record, state: "submitting", stopEpochAtEnqueue: stopEpoch }));
       return true;
     });
   }

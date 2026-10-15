@@ -460,6 +460,36 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     expect((failure as DOMException).name).toBe("VersionError");
   });
 
+  // #4342 (round-5 review): an explicit release is the user deliberately
+  // sending after a Stop (§4's exemption), so it re-authorizes the row past
+  // the Stop its fence captured: the released row's capture refreshes to the
+  // current epoch, and its next refusal redelivers instead of re-canceling.
+  test("an explicit release re-authorizes a Stop-interrupted row past its captured Stop", async () => {
+    const stopped = store();
+    const row = await stopped.enqueueIntent(intent("refused while stopped"));
+    await stopped.markAttempted(row.clientMutationId);
+    // The Stop lands while the attempt is in flight: the scan skips the
+    // attempted row, the epoch bumps, and the refusal fence-holds the row.
+    await stopped.enqueueInterruptAndCancel(intent("stop"));
+    expect(await stopped.unmarkAttempted(row.clientMutationId)).toBe(false);
+    expect((await stopped.getOutbox(row.clientMutationId))?.state).toBe("canceled");
+
+    // The user presses Retry after the Stop: the press's barrier is the
+    // post-Stop epoch, the release passes it, and the capture refreshes.
+    const capture = await stopped.readStopEpoch(TARGET);
+    expect(await stopped.releaseCanceled(row.clientMutationId, { stopEpoch: capture })).toBe(true);
+
+    // The released row's next refusal must not see the historical Stop again.
+    await stopped.markAttempted(row.clientMutationId);
+    expect(await stopped.unmarkAttempted(row.clientMutationId)).toBe(true);
+    expect((await stopped.getOutbox(row.clientMutationId))?.state).toBe("submitting");
+    // And without another user action, the ordinary drive settles it.
+    await stopped.markAttempted(row.clientMutationId);
+    expect(await stopped.settleReceipt(row.clientMutationId, "reflected")).toBe(true);
+    expect(await stopped.getOutbox(row.clientMutationId)).toBeUndefined();
+    stopped.close();
+  });
+
   test("discardCanceledOfInstance removes only the superseded instance's canceled rows", async () => {
     const storage = store();
     const deadRow = await storage.enqueueIntent({ ...intent("superseded instance's row"), threadId: "thr-old" });

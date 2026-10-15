@@ -463,6 +463,37 @@ describe("MutationDispatcher", () => {
     expect(await outbox.getRecovery(record.clientMutationId)).toBeUndefined();
   });
 
+  // #4342 (round-5 review): the transient refusal's rollback can move the
+  // row - back to submitting, or to canceled when a Stop interrupted the
+  // attempt - and hosts whose projections refresh through storage
+  // notifications have no other observer for those transitions, so the
+  // branch publishes like every other outcome.
+  test("a transient backpressure refusal publishes its storage change", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "transient-notify", ["mutation-a"]);
+    await outbox.enqueueIntent(queueIntent("ref-a", "transiently refused"));
+    const changes: string[][] = [];
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => {
+      throw new WireError("the hub's inbound queue is busy", -32014, {
+        evenerErrorInfo: "connectionBackpressure",
+        clientMutationId: params.clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "automatic",
+        cause: "queueSaturated",
+      });
+    });
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => client,
+      onStorageChange: (refs) => changes.push(refs),
+      onTransientRefusal: () => {},
+    });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(changes.flat()).toContain("ref-a");
+  });
+
   // Live reconciliation reopens unresolved records without changing their
   // payloads. The daemon's durable journal and original instance fence own
   // replay safety; omission from the snapshot does not prove non-delivery.

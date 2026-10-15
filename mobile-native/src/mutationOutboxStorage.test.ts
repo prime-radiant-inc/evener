@@ -120,6 +120,42 @@ test("enqueueIntent persists a submitting record with the full intent", async ()
 	expect(row).toMatchObject({ state: "submitting", attempted: 0, intent_sequence: 1 });
 });
 
+// #4342 (round-5 review): the enqueue capture must survive the row plumbing,
+// not just the returned record - a fresh adapter reading the same database
+// sees the captured epoch, or a row submitted after any Stop reads as
+// captured-at-zero and its first refusal wrongly re-cancels it.
+test("the enqueue stop-epoch capture persists through the row plumbing", async () => {
+	await storage.enqueueInterruptAndCancel(interruptIntent());
+	const message = await storage.enqueueIntent(intent("sent after the stop"));
+	expect(rawRow("mutation_outbox", message.clientMutationId)?.stop_epoch_at_enqueue).toBe(1);
+	expect((await storage.getOutbox(message.clientMutationId))?.stopEpochAtEnqueue).toBe(1);
+});
+
+// #4342 (round-5 review): an explicit release is the user deliberately
+// sending after a Stop (§4's exemption), so it re-authorizes the row past
+// the Stop its fence captured: the release refreshes the capture to the
+// current epoch, and the row's next refusal redelivers instead of
+// re-canceling.
+test("an explicit release re-authorizes a Stop-interrupted row past its captured Stop", async () => {
+	const row = await storage.enqueueIntent(intent("refused while stopped"));
+	await storage.markAttempted(row.clientMutationId);
+	await storage.enqueueInterruptAndCancel(interruptIntent());
+	expect(await storage.unmarkAttempted(row.clientMutationId)).toBe(false);
+	expect((await storage.getOutbox(row.clientMutationId))?.state).toBe("canceled");
+
+	// The Retry press's barrier is the post-Stop epoch; the release passes it.
+	expect(await storage.releaseCanceled(row.clientMutationId, TARGET, { stopEpoch: 1 })).toBe(true);
+
+	// The released row's next refusal must not see the historical Stop again.
+	await storage.markAttempted(row.clientMutationId);
+	expect(await storage.unmarkAttempted(row.clientMutationId)).toBe(true);
+	expect((await storage.getOutbox(row.clientMutationId))?.state).toBe("submitting");
+	// And without another user action, the ordinary drive settles it.
+	await storage.markAttempted(row.clientMutationId);
+	expect(await storage.settleReceipt(row.clientMutationId, "reflected")).toBe(true);
+	expect(await storage.getOutbox(row.clientMutationId)).toBeUndefined();
+});
+
 // RoboRev PR #1873 Medium, the fresh review: MutationIntent.instanceId - the
 // fused fencing identity the web's identity fix (4059723ab4) added, where
 // every durable row carries its enqueue-time instance and the cleanup fences

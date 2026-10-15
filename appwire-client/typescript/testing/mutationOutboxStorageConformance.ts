@@ -290,6 +290,21 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
       });
     });
 
+    // #4342 (round-5 review): the Stop's own interrupt record passes no
+    // barrier - it IS the click the epoch records - so its capture is the
+    // epoch its Stop just bumped. A backpressure refusal of the interrupt
+    // itself must redeliver like any transient refusal, not fence-cancel the
+    // Stop's own row and leave the agent running.
+    test("the interrupt's own refused attempt redelivers rather than fence-cancels", async () => {
+      const interrupt = await storage.enqueueInterruptAndCancel(conformanceInterruptIntent(CONFORMANCE_TARGET));
+      await expect(storage.markAttempted(interrupt.clientMutationId)).resolves.toBe(true);
+      await expect(storage.unmarkAttempted(interrupt.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getOutbox(interrupt.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: false,
+      });
+    });
+
     test("markAttempted counts concurrent unresolved attempts", async () => {
       const record = await storage.enqueueIntent(conformanceTextIntent("two tabs, one row"));
       await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);

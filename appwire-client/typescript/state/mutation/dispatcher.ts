@@ -241,6 +241,11 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         if (await this.#storage.unmarkAttempted(record.clientMutationId)) {
           this.#onTransientRefusal(record, error as WireError);
         }
+        // The rollback can move the row - back to submitting, or to canceled
+        // when a Stop interrupted the attempt - and hosts whose projections
+        // refresh through storage notifications have no other observer for
+        // those transitions.
+        this.#onStorageChange([record.targetRef]);
         return "stop";
       }
       if (data?.mutationOutcome === "notAccepted") {

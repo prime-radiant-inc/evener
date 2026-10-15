@@ -83,6 +83,7 @@ const COLUMNS = [
 	"created_at",
 	"state",
 	"attempted",
+	"stop_epoch_at_enqueue",
 	"recovery_kind",
 	"recovery_reason",
 ] as const;
@@ -111,6 +112,7 @@ export interface Row {
 	created_at: number;
 	state: string;
 	attempted: number;
+	stop_epoch_at_enqueue: number;
 	unresolved_attempts: number;
 	recovery_kind: string | null;
 	recovery_reason: string | null;
@@ -135,7 +137,11 @@ export function fromRow<A extends MutationAttachmentRef, T extends MutationRecor
 		state: row.state as MutationOutboxState,
 		...(row.state === "accepted"
 			? {}
-			: { attempted: row.attempted === 1, unresolvedAttempts: row.unresolved_attempts }),
+			: {
+					attempted: row.attempted === 1,
+					unresolvedAttempts: row.unresolved_attempts,
+					stopEpochAtEnqueue: row.stop_epoch_at_enqueue,
+				}),
 		...(row.recovery_kind ? { recoveryKind: row.recovery_kind, recoveryReason: row.recovery_reason ?? undefined } : {}),
 	} as unknown as T;
 }
@@ -294,6 +300,11 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			const intentSequence = this.allocateSequence(intent.targetRef);
 			const clientMutationId = this.#createMutationId();
 			this.assertMutationIdAvailable(clientMutationId);
+			// The Stop's own interrupt passes no barrier - it IS the click the
+			// epoch records - so its capture is the epoch its Stop just bumped:
+			// a refusal of the interrupt itself redelivers like any transient
+			// refusal instead of fence-canceling the Stop's own row.
+			const stopEpoch = this.stopEpochOf(intent.targetRef);
 			const record: MutationOutboxRecord<A> = {
 				...intent,
 				payload: { ...intent.payload, clientMutationId },
@@ -306,6 +317,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				// the epoch records.
 				state: "submitting",
 				attempted: false,
+				stopEpochAtEnqueue: stopEpoch,
 			};
 			this.insertNew(TABLES.outbox, record);
 			return record;
@@ -614,9 +626,15 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			const record = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
 			if (record?.state !== "canceled" || record.targetRef !== targetRef) return false;
 			if (this.stopEpochOf(targetRef) > barrier.stopEpoch) return false;
+			// The release is the user deliberately sending after a Stop (§4's
+			// exemption), so it re-authorizes the row past the Stop its fence
+			// captured: the capture refreshes to the current epoch, and the
+			// row's next refusal redelivers instead of re-canceling.
 			this.db.runSync(
-				`UPDATE ${TABLES.outbox} SET state = 'submitting', intent_sequence = ? WHERE client_mutation_id = ?`,
+				`UPDATE ${TABLES.outbox} SET state = 'submitting', intent_sequence = ?, stop_epoch_at_enqueue = ?
+					WHERE client_mutation_id = ?`,
 				this.allocateSequence(targetRef),
+				this.stopEpochOf(targetRef),
 				clientMutationId,
 			);
 			return true;
@@ -774,6 +792,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			record.createdAt,
 			record.state,
 			"attempted" in record && record.attempted ? 1 : 0,
+			"stopEpochAtEnqueue" in record ? (record.stopEpochAtEnqueue ?? 0) : 0,
 			recovery.recoveryKind ?? null,
 			recovery.recoveryReason ?? null,
 		];
