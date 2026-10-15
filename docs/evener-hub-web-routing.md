@@ -60,6 +60,35 @@ working directory, reports per-session outcomes, and returns a navigation
 receipt. Clients reconcile the returned invalidation targets through AppWire.
 - Rename uses `evener/thread/name/set` for both live and ended sessions.
 
+## Session snapshot and live delivery
+
+The [hub relay](../cmd/evener-hub/app_relay.go) shares one canonical upstream
+connection across a session and its descendant routes. The
+[source relay](../cmd/evener-hub/internal/appsource/relay_session.go) serializes
+reads and keeps the snapshot-to-live acknowledgement barrier.
+
+```mermaid
+flowchart LR
+    Admission[Admit one source read] --> Routes[Publish authoritative routes]
+    Routes --> Acks[Drain pre-response acknowledgements]
+    Acks --> Handoff[Install downstream subscription]
+    Handoff --> Live[Resume ordered live delivery]
+```
+
+Only the admitted read owns unresolved route discovery. A queued read cannot
+hold acknowledgements needed by the read ahead of it. Publishing authoritative
+routes resolves that discovery and wakes parked deliveries before waiting for
+their acknowledgements. Known targets retain their ordering barrier; updates
+for a route that remains unbound do not enter a different session's stream.
+
+The command owner has a longer lifetime, through downstream subscription
+handoff. It retains daemon-departure recovery for a joining subscriber even
+after routing is known. Cancellation releases read ownership; connection loss
+fences the old epoch, and rejoining establishes a fresh snapshot and ordered
+live stream. These guarantees apply to every AppWire client, including browser
+tabs and background subscriptions, native clients, and the TUI. Reads alone
+never launch or stop a daemon.
+
 ## Session document reads
 
 The [document server](../cmd/evener-hub/doc_serve.go) resolves a file against its

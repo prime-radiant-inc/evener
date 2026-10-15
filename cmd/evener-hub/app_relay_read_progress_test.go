@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"runtime/pprof"
@@ -37,74 +39,9 @@ func TestHubRelayPendingTargetBurstMakesProgress(t *testing.T) {
 
 func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead bool, childEvents int) {
 	t.Helper()
-	// Not parallel: observes the package's relay functions and pending wait.
-	const rootID, childID = "read-progress-root", "read-progress-child"
-	const rootRef, childRef = "local:" + rootID, "local:" + childID
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	t.Cleanup(cancel)
-
-	var relays hubRelayFunctions
-	var pendingWait atomic.Bool
-	previousFunctions, previousWait := observeHubRelayFunctions, observeHubRelayWait
-	observeHubRelayFunctions = func(f hubRelayFunctions) { relays = f }
-	observeHubRelayWait = func() { pendingWait.Store(true) }
-	t.Cleanup(func() {
-		observeHubRelayFunctions, observeHubRelayWait = previousFunctions, previousWait
-	})
-
-	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
-	t.Cleanup(daemon.Close)
-	prepared, err := daemonserver.PrepareAppIdentity("local", rootID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	daemon.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
-	daemon.SetStatus(daemonserver.StatusInfo{SessionID: rootID, State: "idle"})
-	daemon.RecordDescendantAppEvent(rootID, events.SessionEvent{
-		Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{},
-	})
-
-	var gateArmed atomic.Bool
-	gateEntered, gateRelease := make(chan struct{}), make(chan struct{})
-	var releaseOnce sync.Once
-	releaseGate := func() { releaseOnce.Do(func() { close(gateRelease) }) }
-	daemon.AppServer().SetBeforeSubscriptionGate(func() {
-		if gateArmed.CompareAndSwap(true, false) {
-			close(gateEntered)
-			select {
-			case <-gateRelease:
-			case <-ctx.Done():
-			}
-		}
-	})
-	t.Cleanup(releaseGate)
-	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
-	t.Cleanup(daemonHTTP.Close)
-	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: daemonHTTP.URL, SourceID: "local", ThreadID: rootID, SessionID: rootID, WorkspaceRef: rootRef}
-	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		return []appsource.LocalDaemonEntry{
-			{Entry: entry, SessionID: rootID},
-			{Entry: entry, SessionID: childID, OwnerSessionID: rootID, ReadOnlyAlias: true},
-		}
-	}, daemonHTTP.Client())
-	sources := appsource.NewRegistry()
-	sources.Add(source)
-	idleDeleted := make(chan string, 4)
-	hubServer := newHubAppServer(hubcore.WebConfig{
-		HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""),
-		RelayHooks: hubcore.RelayLifecycleHooks{AfterIdleDelete: func(id string) { idleDeleted <- id }},
-	}, sources)
-	hubHTTP := httptest.NewServer(http.HandlerFunc(hubServer.ServeWebSocket))
-	t.Cleanup(hubHTTP.Close)
-	t.Cleanup(func() { relays.stopCanonicalRelay(appwire.Ref{SourceID: "local", ThreadID: rootID}) })
-	open := func() *appwire.Client {
-		client := dialHubRPC(t, hubHTTP)
-		t.Cleanup(func() { _ = client.Close() })
-		if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-			t.Fatal(err)
-		}
-		return client
-	}
+	f := newHubRelayProgressFixture(t, hubcore.RelayLifecycleHooks{})
+	ctx, daemon, relays, open := f.ctx, f.daemon, f.relays, f.open
+	idleDeleted, gateEntered, releaseGate := f.idleDeleted, f.gateEntered, f.releaseGate
 	root, child := open(), open()
 	for _, target := range []struct {
 		client *appwire.Client
@@ -129,7 +66,7 @@ func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead bool, childEv
 		t.Fatalf("retained upstream child subscriptions = %d, want 1", got)
 	}
 
-	gateArmed.Store(true)
+	f.gateArmed.Store(true)
 	type readOutcome struct {
 		response appwire.ThreadReadResponse
 		err      error
@@ -180,7 +117,7 @@ func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead bool, childEv
 	case <-time.After(time.Second):
 		var stacks bytes.Buffer
 		_ = pprof.Lookup("goroutine").WriteTo(&stacks, 1)
-		t.Fatalf("root read blocked after the response cut: pendingDelivery=%v commands=%d\n%s", pendingWait.Load(), relays.relayCommandCount(rootRef), stacks.String())
+		t.Fatalf("root read blocked after the response cut: pendingDelivery=%v commands=%d\n%s", f.pendingWait.Load(), relays.relayCommandCount(rootRef), stacks.String())
 	}
 	if queuedRead {
 		select {
@@ -238,5 +175,349 @@ func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead bool, childEv
 		case <-ctx.Done():
 			t.Fatal("root live note did not arrive after the reads")
 		}
+	}
+}
+
+const rootID, childID = "read-progress-root", "read-progress-child"
+const rootRef, childRef = "local:" + rootID, "local:" + childID
+
+func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
+	oldEntered, oldRelease := make(chan struct{}), make(chan struct{})
+	var oldArmed atomic.Bool
+	var releaseOnce sync.Once
+	releaseOld := func() { releaseOnce.Do(func() { close(oldRelease) }) }
+	f := newHubRelayProgressFixture(t, hubcore.RelayLifecycleHooks{
+		AfterCanonicalPublishEntry: func(key string, _ appwire.Notification) {
+			if key == childRef && oldArmed.CompareAndSwap(true, false) {
+				close(oldEntered)
+				<-oldRelease
+			}
+		},
+	})
+	t.Cleanup(releaseOld)
+	existing := f.open()
+	if _, err := existing.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: childRef, Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+	oldArmed.Store(true)
+	f.daemon.RecordDescendantAppEvent(rootID, events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: childID, Data: events.NotesUpdatedData{HumanNote: "old-owner"}})
+	select {
+	case <-oldEntered:
+	case <-f.ctx.Done():
+		t.Fatal("old publication did not enter")
+	}
+
+	const replacementID = "read-progress-replacement"
+	replacement := daemonserver.NewServer(daemonserver.ServerConfig{})
+	t.Cleanup(replacement.Close)
+	identity, err := daemonserver.PrepareAppIdentity("local", replacementID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement.ReplaceAppIdentity(identity.WithBootGeneration("1"), nil)
+	replacement.SetStatus(daemonserver.StatusInfo{SessionID: replacementID, State: "idle"})
+	replacement.RecordDescendantAppEvent(replacementID, events.SessionEvent{Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{}})
+	var gateArmed atomic.Bool
+	gateEntered, gateRelease := make(chan struct{}), make(chan struct{})
+	var gateOnce sync.Once
+	releaseGate := func() { gateOnce.Do(func() { close(gateRelease) }) }
+	replacement.AppServer().SetBeforeSubscriptionGate(func() {
+		if gateArmed.CompareAndSwap(true, false) {
+			close(gateEntered)
+			select {
+			case <-gateRelease:
+			case <-f.ctx.Done():
+			}
+		}
+	})
+	replacementHTTP := httptest.NewServer(http.HandlerFunc(replacement.AppServer().ServeWebSocket))
+	t.Cleanup(replacementHTTP.Close)
+	t.Cleanup(func() { releaseOld(); releaseGate() })
+	f.remapChild(rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: replacementHTTP.URL, SourceID: "local", ThreadID: replacementID, SessionID: replacementID, WorkspaceRef: "local:" + replacementID})
+	canonical := appwire.Ref{SourceID: "local", ThreadID: replacementID}
+	t.Cleanup(func() { f.relays.stopCanonicalRelay(canonical) })
+	// Retain a real upstream subscription before the hub learns the replacement
+	// route. This is the same source-owned subscription lifetime as a retired
+	// downstream route, without a scripted lease or fabricated wire frame.
+	lease, err := f.source.AcquireRelaySession(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(lease.Close)
+	primed, err := lease.Read(f.ctx, appwire.ThreadReadParams{Ref: childRef, Subscribe: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !primed.Handoff.Prepare() || !primed.Handoff.Commit() {
+		t.Fatal("upstream subscription handoff failed")
+	}
+	joining := f.open()
+	gateArmed.Store(true)
+	// Publication waits once for the displaced route, and the first child
+	// notification parks once behind unresolved routing. Later same-target
+	// notifications join that pending queue without another wait callback.
+	waits := make(chan struct{}, 8)
+	observeHubRelayWait = func() { waits <- struct{}{} }
+	type outcome struct {
+		response appwire.ThreadReadResponse
+		err      error
+	}
+	joined := make(chan outcome, 1)
+	go func() {
+		response, err := joining.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: childRef, Subscribe: true})
+		joined <- outcome{response, err}
+	}()
+	select {
+	case <-gateEntered:
+	case <-f.ctx.Done():
+		t.Fatal("replacement read did not enter")
+	}
+	for _, note := range []string{"replacement-first", "replacement-second"} {
+		replacement.RecordDescendantAppEvent(replacementID, events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: childID, Data: events.NotesUpdatedData{HumanNote: note}})
+	}
+	releaseGate()
+	for i := range 2 {
+		select {
+		case <-waits:
+		case <-time.After(time.Second):
+			var stacks bytes.Buffer
+			_ = pprof.Lookup("goroutine").WriteTo(&stacks, 1)
+			t.Fatalf("replacement wait count = %d, want 2\n%s", i, stacks.String())
+		}
+	}
+	releaseOld()
+	select {
+	case result := <-joined:
+		if result.err != nil || result.response.Thread.Evener.HumanNote != "replacement-second" {
+			t.Fatalf("replacement snapshot: note=%q err=%v", result.response.Thread.Evener.HumanNote, result.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("route publication did not wake its retained deliveries")
+	}
+	for _, want := range []string{"old-owner", "replacement-first", "replacement-second"} {
+		if got := nextRelayProgressNote(f.ctx, t, existing); got.Ref != childRef || got.HumanNote != want {
+			t.Fatalf("existing consumer got %+v, want %s on %s", got, want, childRef)
+		}
+	}
+	replacement.RecordDescendantAppEvent(replacementID, events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: childID, Data: events.NotesUpdatedData{HumanNote: "replacement-live"}})
+	for _, client := range []*appwire.Client{existing, joining} {
+		if got := nextRelayProgressNote(f.ctx, t, client); got.Ref != childRef || got.HumanNote != "replacement-live" {
+			t.Fatalf("post-handoff consumer got %+v", got)
+		}
+	}
+}
+
+func TestHubRelayReadCancellationAllowsNextRead(t *testing.T) {
+	testHubRelayInterruptedRead(t, false)
+}
+
+func TestHubRelayReconnectAfterPendingRead(t *testing.T) {
+	testHubRelayInterruptedRead(t, true)
+}
+
+func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
+	t.Helper()
+	f := newHubRelayProgressFixture(t, hubcore.RelayLifecycleHooks{})
+	client := f.open()
+	if _, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatal(err)
+	}
+	readCtx, cancelRead := context.WithCancel(f.ctx)
+	t.Cleanup(cancelRead)
+	f.gateArmed.Store(true)
+	finished := make(chan error, 1)
+	go func() {
+		// Calling the actual hub read boundary lets cancellation reach the
+		// server-side owner. Canceling an AppWire client call alone only removes
+		// that client's response waiter, not the server's dispatched request.
+		read, err := f.relays.readThread(readCtx, f.source, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
+		if read != nil {
+			read.finish(false)
+		}
+		finished <- err
+	}()
+	select {
+	case <-f.gateEntered:
+	case <-f.ctx.Done():
+		t.Fatal("read did not acquire the upstream subscription gate")
+	}
+	if disconnect {
+		f.daemon.RecordAppEvent(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: rootID, Data: events.NotesUpdatedData{HumanNote: "old-epoch"}})
+		f.closeUpstream()
+	} else {
+		cancelRead()
+	}
+	select {
+	case err := <-finished:
+		if err == nil || (!disconnect && !errors.Is(err, context.Canceled)) {
+			t.Fatalf("interrupted read returned %v", err)
+		}
+	case <-f.ctx.Done():
+		t.Fatal("interrupted read did not release its owner")
+	}
+	f.releaseGate()
+	if got := f.relays.relayCommandCount(rootRef); got != 0 {
+		t.Fatalf("interrupted read retained %d command owners", got)
+	}
+	if _, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+		t.Fatalf("read after interruption: %v", err)
+	}
+	for _, value := range []string{"new-epoch-first", "new-epoch-second"} {
+		f.daemon.RecordAppEvent(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: rootID, Data: events.NotesUpdatedData{HumanNote: value}})
+	}
+	for _, want := range []string{"new-epoch-first", "new-epoch-second"} {
+		got := nextRelayProgressNote(f.ctx, t, client)
+		if got.Ref != rootRef || got.ThreadID != rootID || got.HumanNote != want {
+			t.Fatalf("notification after interruption = %+v, want %s on %s", got, want, rootRef)
+		}
+	}
+}
+
+func nextRelayProgressNote(ctx context.Context, t *testing.T, client *appwire.Client) appwire.NotesUpdatedParams {
+	t.Helper()
+	for {
+		select {
+		case note, ok := <-client.Notifications():
+			if !ok {
+				t.Fatal("notification stream closed")
+			}
+			if note.Method != appwire.NotifyEvenerNotesUpdated {
+				continue
+			}
+			var params appwire.NotesUpdatedParams
+			if err := json.Unmarshal(note.Params, &params); err != nil {
+				t.Fatal(err)
+			}
+			return params
+		case <-ctx.Done():
+			t.Fatal("ordered live note did not arrive")
+		}
+	}
+}
+
+type hubRelayProgressFixture struct {
+	ctx           context.Context
+	daemon        *daemonserver.Server
+	source        *appsource.LocalDaemonSource
+	relays        hubRelayFunctions
+	open          func() *appwire.Client
+	idleDeleted   <-chan string
+	gateArmed     *atomic.Bool
+	gateEntered   <-chan struct{}
+	releaseGate   func()
+	pendingWait   *atomic.Bool
+	closeUpstream func()
+	remapChild    func(rendezvous.Entry)
+}
+
+func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks) hubRelayProgressFixture {
+	t.Helper()
+	// Not parallel: observes the package's relay functions and pending wait.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	t.Cleanup(cancel)
+
+	var relays hubRelayFunctions
+	var pendingWait atomic.Bool
+	previousFunctions, previousWait := observeHubRelayFunctions, observeHubRelayWait
+	observeHubRelayFunctions = func(f hubRelayFunctions) { relays = f }
+	observeHubRelayWait = func() { pendingWait.Store(true) }
+	t.Cleanup(func() {
+		observeHubRelayFunctions, observeHubRelayWait = previousFunctions, previousWait
+	})
+
+	daemon := daemonserver.NewServer(daemonserver.ServerConfig{})
+	t.Cleanup(daemon.Close)
+	prepared, err := daemonserver.PrepareAppIdentity("local", rootID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon.ReplaceAppIdentity(prepared.WithBootGeneration("1"), nil)
+	daemon.SetStatus(daemonserver.StatusInfo{SessionID: rootID, State: "idle"})
+	daemon.RecordDescendantAppEvent(rootID, events.SessionEvent{
+		Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{},
+	})
+
+	var gateArmed atomic.Bool
+	gateEntered, gateRelease := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseGate := func() { releaseOnce.Do(func() { close(gateRelease) }) }
+	daemon.AppServer().SetBeforeSubscriptionGate(func() {
+		if gateArmed.CompareAndSwap(true, false) {
+			close(gateEntered)
+			select {
+			case <-gateRelease:
+			case <-ctx.Done():
+			}
+		}
+	})
+	t.Cleanup(releaseGate)
+	var connectionsMu sync.Mutex
+	var connections []net.Conn
+	daemonHTTP := httptest.NewUnstartedServer(http.HandlerFunc(daemon.AppServer().ServeWebSocket))
+	daemonHTTP.Config.ConnState = func(conn net.Conn, state http.ConnState) {
+		if state == http.StateHijacked {
+			connectionsMu.Lock()
+			connections = append(connections, conn)
+			connectionsMu.Unlock()
+		}
+	}
+	daemonHTTP.Start()
+	closeUpstream := func() {
+		connectionsMu.Lock()
+		old := connections
+		connections = nil
+		connectionsMu.Unlock()
+		for _, conn := range old {
+			_ = conn.Close()
+		}
+	}
+	t.Cleanup(closeUpstream)
+	t.Cleanup(daemonHTTP.Close)
+	entry := rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: daemonHTTP.URL, SourceID: "local", ThreadID: rootID, SessionID: rootID, WorkspaceRef: rootRef}
+	var inventoryMu sync.Mutex
+	inventory := []appsource.LocalDaemonEntry{
+		{Entry: entry, SessionID: rootID},
+		{Entry: entry, SessionID: childID, OwnerSessionID: rootID, ReadOnlyAlias: true},
+	}
+	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		inventoryMu.Lock()
+		defer inventoryMu.Unlock()
+		return append([]appsource.LocalDaemonEntry(nil), inventory...)
+	}, daemonHTTP.Client())
+	remapChild := func(replacement rendezvous.Entry) {
+		inventoryMu.Lock()
+		defer inventoryMu.Unlock()
+		inventory = []appsource.LocalDaemonEntry{
+			{Entry: entry, SessionID: rootID},
+			{Entry: replacement, SessionID: replacement.SessionID},
+			{Entry: replacement, SessionID: childID, OwnerSessionID: replacement.SessionID, ReadOnlyAlias: true},
+		}
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	idleDeleted := make(chan string, 4)
+	hooks.AfterIdleDelete = func(id string) { idleDeleted <- id }
+	hubServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(), Past: hubcore.NewPastIndex(""),
+		RelayHooks: hooks,
+	}, sources)
+	hubHTTP := httptest.NewServer(http.HandlerFunc(hubServer.ServeWebSocket))
+	t.Cleanup(hubHTTP.Close)
+	t.Cleanup(func() { relays.stopCanonicalRelay(appwire.Ref{SourceID: "local", ThreadID: rootID}) })
+	open := func() *appwire.Client {
+		client := dialHubRPC(t, hubHTTP)
+		t.Cleanup(func() { _ = client.Close() })
+		if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatal(err)
+		}
+		return client
+	}
+
+	// Release any test-owned barrier before waiting for server shutdown.
+	t.Cleanup(func() { releaseGate(); cancel() })
+	return hubRelayProgressFixture{
+		ctx: ctx, daemon: daemon, source: source, relays: relays, open: open,
+		idleDeleted: idleDeleted, gateArmed: &gateArmed, gateEntered: gateEntered,
+		releaseGate: releaseGate, pendingWait: &pendingWait, closeUpstream: closeUpstream, remapChild: remapChild,
 	}
 }
