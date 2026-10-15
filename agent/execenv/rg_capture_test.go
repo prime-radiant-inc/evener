@@ -136,20 +136,20 @@ func TestRgCaptureIsChunkBoundaryInvariant(t *testing.T) {
 	stream.WriteString(dir + "/we\nird.txt\x002:needle\n")
 	raw := stream.Bytes()
 
-	whole := newRgCapture(300)
+	whole := newRgCapture("/base", false, 300)
 	if _, err := whole.Write(raw); err != nil {
 		t.Fatal(err)
 	}
-	want := whole.view(dir, false)
+	want := whole.view(false)
 
 	for _, chunk := range []int{1, 2, 3, 7, 17, 64, 333} {
-		c := newRgCapture(300)
+		c := newRgCapture("/base", false, 300)
 		for i := 0; i < len(raw); i += chunk {
 			if _, err := c.Write(raw[i:min(i+chunk, len(raw))]); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if got := c.view(dir, false); !viewsEqual(got, want) {
+		if got := c.view(false); !viewsEqual(got, want) {
 			t.Fatalf("chunking by %d changed the retained bytes:\n got  = %+v\n want = %+v", chunk, got, want)
 		}
 	}
@@ -167,7 +167,7 @@ func viewsEqual(a, b rgCaptureView) bool {
 func TestRgCaptureHoldsAtMostItsBound(t *testing.T) {
 	t.Parallel()
 	const capBytes = 1024
-	c := newRgCapture(capBytes)
+	c := newRgCapture("/base", false, capBytes)
 	bound := capBytes + rgTailWindowBytes
 	chunk := bytes.Repeat([]byte("/base/f.txt\x001:needle\n"), 64)
 	for i := range 4000 {
@@ -181,7 +181,7 @@ func TestRgCaptureHoldsAtMostItsBound(t *testing.T) {
 	if !c.over {
 		t.Fatal("a stream far past the cap did not trip it")
 	}
-	view := c.view("/base", false)
+	view := c.view(false)
 	if view.omitted != c.total-view.retained {
 		t.Fatalf("the omitted count %d does not account for the %d stream bytes less %d retained",
 			view.omitted, c.total, view.retained)
@@ -197,11 +197,11 @@ func TestRgCaptureDoesNotMarkAShortStream(t *testing.T) {
 	t.Parallel()
 	const dir = "/base"
 	raw := []byte(dir + "/a.txt\x001:needle\n" + dir + "/b.txt\x002:needle\n")
-	c := newRgCapture(1 << 20)
+	c := newRgCapture("/base", false, 1<<20)
 	if _, err := c.Write(raw); err != nil {
 		t.Fatal(err)
 	}
-	view := c.view(dir, false)
+	view := c.view(false)
 	if view.head != string(raw) {
 		t.Fatalf("a stream inside the cap was not retained whole: %q", view.head)
 	}
@@ -219,25 +219,25 @@ func TestRgCaptureNeverPresentsACutRecordFragment(t *testing.T) {
 	const dir = "/base"
 	first := dir + "/a.txt\x001:needle\n"
 	// The cap falls inside the second record's payload line.
-	c := newRgCapture(len(first) + 5)
+	c := newRgCapture("/base", false, len(first)+5)
 	if _, err := c.Write([]byte(first + dir + "/b.txt\x001:need")); err != nil {
 		t.Fatal(err)
 	}
-	if got := c.view(dir, false); got.head != first {
+	if got := c.view(false); got.head != first {
 		t.Fatalf("the head kept a fragment of the record the cap cut: %q", got.head)
 	}
 	// A cut inside a pathname, in the files-only framing, whose records end at
 	// their NUL rather than at a newline.
 	files := []byte(dir + "/a.txt\x00" + dir + "/b.tx")
-	cf := newRgCapture(len(dir) + len("/a.txt\x00") + 3)
+	cf := newRgCapture("/base", true, len(dir)+len("/a.txt\x00")+3)
 	if _, err := cf.Write(files); err != nil {
 		t.Fatal(err)
 	}
-	if got := cf.view(dir, true); got.head != dir+"/a.txt\x00" {
+	if got := cf.view(true); got.head != dir+"/a.txt\x00" {
 		t.Fatalf("a files-only head kept a pathname fragment: %q", got.head)
 	}
-	if strings.Contains(cf.view(dir, true).head, "b.tx") {
-		t.Fatalf("a cut pathname fragment survived into the head: %q", cf.view(dir, true).head)
+	if strings.Contains(cf.view(true).head, "b.tx") {
+		t.Fatalf("a cut pathname fragment survived into the head: %q", cf.view(true).head)
 	}
 }
 
@@ -318,11 +318,11 @@ func TestRgCaptureAccountsRetainedSourceBytes(t *testing.T) {
 	// The cap holds exactly the first record, so the only stream bytes the view
 	// does not retain are the short record the window's own fragment takes with
 	// it: twenty-odd bytes, against five slots' worth of omission text.
-	c := newRgCapture(len(first))
+	c := newRgCapture("/base", false, len(first))
 	if _, err := c.Write(stream); err != nil {
 		t.Fatal(err)
 	}
-	view := c.view(dir, false)
+	view := c.view(false)
 	if view.omitted != c.total-view.retained {
 		t.Fatalf("the omitted count %d does not account for the %d stream bytes less %d retained",
 			view.omitted, c.total, view.retained)
@@ -381,11 +381,11 @@ func TestRgCaptureTailResynchronizesInFilesOnlyMode(t *testing.T) {
 		fmt.Fprintf(&stream, "%s/f%02d.txt\x00", dir, i)
 	}
 	// The cap lands inside the second pathname, so the window opens mid-path.
-	c := newRgCapture(len(dir) + len("/f01.txt\x00") + 3)
+	c := newRgCapture("/base", true, len(dir)+len("/f01.txt\x00")+3)
 	if _, err := c.Write(stream.Bytes()); err != nil {
 		t.Fatal(err)
 	}
-	view := c.view(dir, true)
+	view := c.view(true)
 	if len(view.tail) != rgTailRecords {
 		t.Fatalf("a files-only window kept %d tail records, want %d: %q", len(view.tail), rgTailRecords, view.tail)
 	}
@@ -416,11 +416,11 @@ func TestRgCaptureTailDropsANewlineBearingPathFragment(t *testing.T) {
 	// The cap lands inside the newline-bearing pathname, BEFORE its newline, so
 	// the window opens with bytes that do not start a path and the embedded
 	// newline is the first one the walk sees.
-	c := newRgCapture(len(dir) + len("/we"))
+	c := newRgCapture("/base", false, len(dir)+len("/we"))
 	if _, err := c.Write(stream.Bytes()); err != nil {
 		t.Fatal(err)
 	}
-	view := c.view(dir, false)
+	view := c.view(false)
 	for _, slot := range view.tail {
 		if !strings.HasPrefix(slot, dir+"/") {
 			t.Fatalf("a pathname fragment was presented as a complete record: %q", slot)
@@ -438,11 +438,11 @@ func TestRgCaptureTailDropsANewlineBearingPathFragment(t *testing.T) {
 func TestRgCaptureKeepsTheRecordAfterACaptureEndingOnABoundary(t *testing.T) {
 	t.Parallel()
 	const dir = "/base"
-	c := newRgCapture(len("1:a\n")) // the cap ends exactly at the first record's end
+	c := newRgCapture("/base", false, len("1:a\n")) // the cap ends exactly at the first record's end
 	if _, err := c.Write([]byte("1:a\n2:b\n")); err != nil {
 		t.Fatal(err)
 	}
-	view := c.view(dir, false)
+	view := c.view(false)
 	if len(view.tail) != 1 || view.tail[0] != "2:b\n" {
 		t.Fatalf("a cap that ended at a record boundary lost the record after it: %q", view.tail)
 	}
@@ -460,11 +460,11 @@ func TestRgCaptureKeepsEveryRecordAfterACaptureEndingOnANulBoundary(t *testing.T
 	t.Parallel()
 	const dir = "/base"
 	stream := []byte(dir + "/a.txt\x00" + dir + "/b.txt\x00" + dir + "/c.txt\x00")
-	c := newRgCapture(len(dir) + len("/a.txt\x00"))
+	c := newRgCapture("/base", true, len(dir)+len("/a.txt\x00"))
 	if _, err := c.Write(stream); err != nil {
 		t.Fatal(err)
 	}
-	view := c.view(dir, true)
+	view := c.view(true)
 	want := []string{dir + "/b.txt\x00", dir + "/c.txt\x00"}
 	if !slices.Equal(view.tail, want) {
 		t.Fatalf("a cap that ended at a NUL boundary lost the records after it:\n got  = %q\n want = %q", view.tail, want)
@@ -509,11 +509,11 @@ func TestRgCaptureWholeStreamRefusesACappedSlot(t *testing.T) {
 	const dir = "/base"
 	first := dir + "/a.txt\x001:n\n"
 	huge := dir + "/b.txt\x001:" + strings.Repeat("n", rgTailSlotBytes) + "\n"
-	c := newRgCapture(len(first)) // the cap ends exactly at the first record's end
+	c := newRgCapture("/base", false, len(first)) // the cap ends exactly at the first record's end
 	if _, err := c.Write([]byte(first + huge)); err != nil {
 		t.Fatal(err)
 	}
-	view := c.view(dir, false)
+	view := c.view(false)
 	if len(view.tail) != 1 {
 		t.Fatalf("tail = %q, want the one record after the cap", view.tail)
 	}
@@ -522,6 +522,32 @@ func TestRgCaptureWholeStreamRefusesACappedSlot(t *testing.T) {
 	}
 	if whole := view.wholeStream(); whole != "" {
 		t.Fatalf("a slot cut to its bound was presented as the stream: %q", whole)
+	}
+}
+
+// TestRgCaptureDoesNotFabricateARecordFromANewlineBearingPath is round 17's
+// finding: a pathname may hold a newline, and what follows that newline can look
+// exactly like a record start, so content alone cannot tell a pathname tail from
+// a payload tail. The legal pathname "/base/we\n/base/fake.txt" with the cap just
+// before its embedded newline must never present "/base/fake.txt" as a record.
+func TestRgCaptureDoesNotFabricateARecordFromANewlineBearingPath(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	// One record whose pathname holds a newline, then a real record after it.
+	record := dir + "/we\n" + dir + "/fake.txt\x001:match\n"
+	after := dir + "/real.txt\x002:match\n"
+	c := newRgCapture("/base", false, len(dir)+len("/we")) // the cap ends just before the newline
+	if _, err := c.Write([]byte(record + after)); err != nil {
+		t.Fatal(err)
+	}
+	view := c.view(false)
+	for _, slot := range view.tail {
+		if strings.Contains(slot, "/fake.txt") {
+			t.Fatalf("a pathname fragment was presented as a record: %q", slot)
+		}
+	}
+	if len(view.tail) != 1 || view.tail[0] != after {
+		t.Fatalf("the record after the cut pathname was lost:\n got  = %q\n want = %q", view.tail, []string{after})
 	}
 }
 
@@ -536,11 +562,11 @@ func TestRgCaptureResynchronizesAPayloadTailToTheNextRecord(t *testing.T) {
 	first := dir + "/a.txt\x001:" + strings.Repeat("n", 64) + "\n"
 	second := dir + "/b.txt\x002:match\n"
 	// The cap lands just inside the first record's payload line.
-	c := newRgCapture(len(dir) + len("/a.txt\x001:"))
+	c := newRgCapture("/base", false, len(dir)+len("/a.txt\x001:"))
 	if _, err := c.Write([]byte(first + second)); err != nil {
 		t.Fatal(err)
 	}
-	view := c.view(dir, false)
+	view := c.view(false)
 	if len(view.tail) != 1 || view.tail[0] != second {
 		t.Fatalf("the record after a payload cut was lost:\n got  = %q\n want = %q", view.tail, []string{second})
 	}
@@ -558,11 +584,11 @@ func TestRgCaptureReportsACutSlotWithNothingOmitted(t *testing.T) {
 	const dir = "/base"
 	short := dir + "/a.txt\x001:n\n"
 	huge := dir + "/big.txt\x001:" + strings.Repeat("n", rgTailSlotBytes) + "\n"
-	c := newRgCapture(len(short)) // the cap ends exactly at the first record's end
+	c := newRgCapture("/base", false, len(short)) // the cap ends exactly at the first record's end
 	if _, err := c.Write([]byte(short + huge)); err != nil {
 		t.Fatal(err)
 	}
-	view := c.view(dir, false)
+	view := c.view(false)
 	if view.omitted != 0 {
 		t.Fatalf("the capture holds every byte, but reports %d omitted", view.omitted)
 	}
@@ -618,11 +644,11 @@ func TestRgCaptureIgnoresABoundaryProofTheWindowSlideInvalidated(t *testing.T) {
 	// A final record larger than the whole tail window, so the window slides into
 	// its payload and holds no record start at all.
 	huge := dir + "/big.txt\x001:" + strings.Repeat("n", 2*rgTailWindowBytes) + "\n"
-	c := newRgCapture(len(short))
+	c := newRgCapture("/base", false, len(short))
 	if _, err := c.Write([]byte(short + huge)); err != nil {
 		t.Fatal(err)
 	}
-	view := c.view(dir, false)
+	view := c.view(false)
 	for _, slot := range view.tail {
 		if !strings.HasPrefix(slot, dir+"/") {
 			t.Fatalf("a payload suffix was presented as a complete record: %q", slot[:min(len(slot), 80)])
@@ -644,11 +670,11 @@ func TestRgCaptureCapsARecordWhoseMarkerMatchesItsDroppedBytes(t *testing.T) {
 	if len(exact) != rgTailSlotBytes+28 {
 		t.Fatalf("fixture record is %d bytes, want %d", len(exact), rgTailSlotBytes+28)
 	}
-	c := newRgCapture(len(short))
+	c := newRgCapture("/base", false, len(short))
 	if _, err := c.Write([]byte(short + exact)); err != nil {
 		t.Fatal(err)
 	}
-	view := c.view(dir, false)
+	view := c.view(false)
 	if view.cut != 1 {
 		t.Fatalf("cut = %d, want the record that is longer than its slot", view.cut)
 	}
@@ -696,11 +722,11 @@ func FuzzRgCapture(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, stream []byte, capSel uint16) {
 		capBytes := 1 + int(capSel)%4096
-		whole := newRgCapture(capBytes)
+		whole := newRgCapture("/base", false, capBytes)
 		if _, err := whole.Write(stream); err != nil {
 			t.Fatal(err)
 		}
-		view := whole.view("/base", false)
+		view := whole.view(false)
 		if held := whole.heldBytes(); held > capBytes+rgTailWindowBytes {
 			t.Fatalf("capture held %d bytes, past its %d-byte bound", held, capBytes+rgTailWindowBytes)
 		}
@@ -713,13 +739,13 @@ func FuzzRgCapture(f *testing.F) {
 		}
 		// Chunking the same stream must not change what is kept.
 		for _, chunk := range []int{1, 5, 64} {
-			c := newRgCapture(capBytes)
+			c := newRgCapture("/base", false, capBytes)
 			for i := 0; i < len(stream); i += chunk {
 				if _, err := c.Write(stream[i:min(i+chunk, len(stream))]); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if got := c.view("/base", false); !viewsEqual(got, view) {
+			if got := c.view(false); !viewsEqual(got, view) {
 				t.Fatalf("chunking by %d changed the view:\n got  = %+v\n want = %+v", chunk, got, view)
 			}
 		}

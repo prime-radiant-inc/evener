@@ -2337,7 +2337,7 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	// Bound ripgrep's stdout at the capture itself, then parse the bounded bytes
 	// with the same formatter the native arm's lines go through, so the result
 	// keeps ripgrep's own exclusion rules by construction (rgCapture).
-	capture := newRgCapture(grepRetainedBytes)
+	capture := newRgCapture(dir, filesOnly, grepRetainedBytes)
 	res, err := e.execPreparedCommandStdout(ctx, e.commands().Argv(rg, args...), 10_000, e.RootDir, nil, capture)
 	if err == nil {
 		// Keep the first maxResults lines. In content mode that counts context
@@ -2345,7 +2345,7 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// max_results promises ("lines, file paths, or count entries by output
 		// mode", tool.DefGrep) and what grepAccum.feedContent counts, so with
 		// context_lines a cut can fall inside a match's context.
-		view := capture.view(dir, filesOnly)
+		view := capture.view(filesOnly)
 		// A capture that left nothing out holds the stream in two pieces: the
 		// head, and the tail's records, which are the stream's own final ones
 		// whenever the cap fell on a record boundary (wholeStream). Parsing them

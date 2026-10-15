@@ -41,27 +41,54 @@ const rgCaptureDiagnosticBytes = 64 << 10
 //
 // One copier owns a capture from Start until the exec joins it, so no method
 // needs a lock.
+// rgFraming is where the rolling window's first byte sits in ripgrep's record
+// stream. Content alone cannot tell a payload tail from a pathname tail — a
+// pathname may hold a newline, and what follows that newline can look exactly
+// like the next record's start — so the capture, which saw every byte, tracks
+// this as the window advances and the view resumes from it.
+type rgFraming int
+
+const (
+	// frameRecordStart: the window's first byte begins a record.
+	frameRecordStart rgFraming = iota
+	// framePath: inside a record's pathname, before the NUL that ends it.
+	framePath
+	// framePayload: past the path's NUL, before the line that ends the record.
+	framePayload
+	// framePathless: inside a line that frames no path.
+	framePathless
+)
+
 type rgCapture struct {
-	capBytes int
+	capBytes  int
+	filesOnly bool   // a files_with_matches record ends at its NUL, with no line
+	prefix    []byte // the searched directory's path-separator-terminated prefix
 
 	head   []byte // the stream's first capBytes, byte-exact
 	window []byte // rolling: the last rgTailWindowBytes bytes written past the cap
 	total  int
 	over   bool
-	// windowSlid records that the rolling trim has moved the window's start. The
-	// window then opens inside a record, so the head's boundary proof — which
-	// describes the stream position the cap ended at — no longer describes where
-	// the window begins.
-	windowSlid bool
+
+	// frame is the framing at c.window[0]: the capture tracks it over every byte
+	// the window's start has passed, so the view knows where it opens instead of
+	// guessing from the window's content.
+	frame rgFraming
+	// unitHead is the current unit's opening bytes, enough to tell a record whose
+	// pathname it is from a line that frames no path; no longer than the prefix.
+	unitHead []byte
 }
 
 // newRgCapture returns a capture bounded at capBytes. A non-positive cap falls
 // back to the production default rather than silently removing the bound.
-func newRgCapture(capBytes int) *rgCapture {
+func newRgCapture(dir string, filesOnly bool, capBytes int) *rgCapture {
 	if capBytes <= 0 {
 		capBytes = maxCapturedOutputBytes
 	}
-	return &rgCapture{capBytes: capBytes}
+	return &rgCapture{
+		capBytes:  capBytes,
+		filesOnly: filesOnly,
+		prefix:    []byte(strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator)),
+	}
 }
 
 // Write consumes the stream, always reporting a full write: a full pipe would
@@ -73,6 +100,9 @@ func (c *rgCapture) Write(p []byte) (int, error) {
 		if room := c.capBytes - len(c.head); room > 0 {
 			n := min(len(p), room)
 			c.head = append(c.head, p[:n]...)
+			// The tracker follows the head to the cap, so when the window opens
+			// it already describes that first byte.
+			c.trackFraming(p[:n])
 			p = p[n:]
 		}
 		c.over = len(c.head) >= c.capBytes
@@ -80,11 +110,61 @@ func (c *rgCapture) Write(p []byte) (int, error) {
 	if len(p) > 0 && c.over {
 		c.window = append(c.window, p...)
 		if extra := len(c.window) - rgTailWindowBytes; extra > 0 {
+			// The bytes the trim discards are exactly what the new window start
+			// has passed, so the state stays in sync with one bounded scan.
+			c.trackFraming(c.window[:extra])
 			c.window = append(c.window[:0], c.window[extra:]...)
-			c.windowSlid = true
 		}
 	}
 	return written, nil
+}
+
+// trackFraming advances the framing state over bytes the window's start has
+// passed. A record is its pathname up to a NUL and then its line; a pathname may
+// hold newlines, which is why a newline inside one does not end it, and a line
+// that opens without the directory prefix frames no path at all.
+func (c *rgCapture) trackFraming(p []byte) {
+	for _, b := range p {
+		switch c.frame {
+		case frameRecordStart:
+			c.unitHead = append(c.unitHead[:0], b)
+			switch {
+			case b == 0:
+				c.frame = framePayload // no path at all before this NUL
+			case !c.unitHeadIsPath():
+				c.frame = framePathless
+			default:
+				c.frame = framePath
+			}
+		case framePath:
+			if b == 0 {
+				// A files-only record is its path and NUL: the NUL ends it, so the
+				// state moves straight to the next record's start.
+				if c.filesOnly {
+					c.frame = frameRecordStart
+				} else {
+					c.frame = framePayload
+				}
+				continue
+			}
+			if len(c.unitHead) < len(c.prefix) {
+				c.unitHead = append(c.unitHead, b)
+				if !c.unitHeadIsPath() {
+					c.frame = framePathless
+				}
+			}
+		case framePayload, framePathless:
+			if b == '\n' {
+				c.frame = frameRecordStart
+			}
+		}
+	}
+}
+
+// unitHeadIsPath reports whether the current unit still opens like the searched
+// directory, so it can be a pathname rather than a pathless line.
+func (c *rgCapture) unitHeadIsPath() bool {
+	return bytes.HasPrefix(c.prefix, c.unitHead)
 }
 
 // heldBytes is what the capture holds, for its own accounting ceiling.
@@ -126,21 +206,15 @@ func (v rgCaptureView) wholeStream() string {
 // framing ripgrepOutputLines reads. The head ends where the stream was cut, which
 // is mid-record, so it is cut back to its last complete record rather than
 // presenting a fragment as a result.
-func (c *rgCapture) view(dir string, filesOnly bool) rgCaptureView {
-	prefix := []byte(strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator))
+func (c *rgCapture) view(filesOnly bool) rgCaptureView {
 	head := c.head
-	// atBoundary is the head's own framing proving the cap fell exactly at a
-	// record end, AND the window still opening where the cap left it. The window's
-	// first record is then whole, and dropping it as a fragment would lose one the
-	// capture holds entire. Once the trim has slid the window, its first bytes are
-	// a record's tail again and the proof is stale.
-	atBoundary := !c.windowSlid
 	if c.over {
-		end := lastRecordEnd(head, prefix, filesOnly)
-		atBoundary = atBoundary && end == len(head)
-		head = head[:end]
+		head = head[:lastRecordEnd(head, c.prefix, filesOnly)]
 	}
-	tail, tailBytes, cut := tailRecords(c.window, prefix, filesOnly, atBoundary)
+	// Where the window opens is the tracker's to say: its state and the head's
+	// boundary proof describe the same fact, and the tracker is the one that
+	// stays true when the window slides.
+	tail, tailBytes, cut := tailRecords(c.window, c.prefix, filesOnly, c.frame)
 	// A capped slot carries synthetic omission text, which is not stream bytes:
 	// counting the slots instead of their records understates the omission, and
 	// once the slots' text outweighs what was really dropped the count goes
@@ -208,10 +282,8 @@ func lastRecordEnd(b, prefix []byte, filesOnly bool) int {
 // unless the head proved the cap fell on a record boundary (atBoundary) it is
 // resynchronized first: the bytes before its first genuine record boundary are a
 // fragment of a record that started earlier and are left out.
-func tailRecords(b, prefix []byte, filesOnly, atBoundary bool) (slots []string, source, cut int) {
-	if !atBoundary {
-		b = b[resync(b, prefix, filesOnly):]
-	}
+func tailRecords(b, prefix []byte, filesOnly bool, frame rgFraming) (slots []string, source, cut int) {
+	b = b[resync(b, filesOnly, frame):]
 	ends := rgRecordEnds(b, prefix, filesOnly)
 	if len(ends) == 0 {
 		return nil, 0, 0
@@ -242,38 +314,33 @@ func tailRecords(b, prefix []byte, filesOnly, atBoundary bool) (slots []string, 
 }
 
 // resync drops the bytes of a window that opens inside a record, returning the
-// offset of the first complete record for the framing. A window's start is
-// wherever the cap tripped, so its leading bytes are a record's tail, and WHICH
-// tail decides where the fragment ends. A payload tail ends at its own newline,
-// which comes before the window's first NUL — that NUL belongs to the next
-// record. A pathname tail runs to the first NUL and then that record's payload
-// newline; a stream framing no paths at all ends a pathless line at its newline.
-// Walking from the window's first byte instead reads a pathname's tail as a
-// pathless line, dropping every tail record in files_with_matches mode, whose
-// records have no newline at all.
-//
-// So a newline before the first NUL is the fragment's end only when a record
-// start follows it: a newline-bearing pathname puts a newline there too, and
-// treating it as a boundary presents a pathname fragment as a complete record —
-// the bytes after it are checked for the searched directory's prefix first.
-func resync(b, prefix []byte, filesOnly bool) int {
-	nul := bytes.IndexByte(b, 0)
-	if nul < 0 {
+// offset of the first complete record. The framing state says where the window
+// opens — the one fact its content cannot supply, since a pathname may hold a
+// newline and what follows it can look exactly like the next record's start.
+// A window opening at a record start keeps everything; a pathname tail is
+// dropped through the NUL that ends it and the line after that NUL; a payload
+// tail ends at its own newline, which comes before the window's first NUL (that
+// NUL belongs to the next record); a pathless line ends at its newline.
+func resync(b []byte, filesOnly bool, frame rgFraming) int {
+	switch frame {
+	case frameRecordStart:
+		return 0
+	case framePayload, framePathless:
 		if nl := bytes.IndexByte(b, '\n'); nl >= 0 {
 			return nl + 1
 		}
 		return len(b)
+	default: // framePath
+		if nul := bytes.IndexByte(b, 0); nul >= 0 {
+			if filesOnly {
+				return nul + 1
+			}
+			if nl := bytes.IndexByte(b[nul+1:], '\n'); nl >= 0 {
+				return nul + nl + 2
+			}
+		}
+		return len(b) // no record ends inside the window
 	}
-	if filesOnly {
-		return nul + 1
-	}
-	if nl := bytes.IndexByte(b[:nul], '\n'); nl >= 0 && bytes.HasPrefix(b[nl+1:], prefix) {
-		return nl + 1
-	}
-	if nl := bytes.IndexByte(b[nul+1:], '\n'); nl >= 0 {
-		return nul + nl + 2
-	}
-	return len(b) // no record ends inside the window
 }
 
 // capTailSlot bounds one tail record: past the slot cap it keeps the record's
