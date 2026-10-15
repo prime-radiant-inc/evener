@@ -14,7 +14,7 @@ import {
   type PreparedAnnotation,
   type ReadTicket,
 } from "@evener/appwire-client";
-import { IDBObjectStore as FDBObjectStore, IDBDatabase } from "fake-indexeddb";
+import { IDBObjectStore as FDBObjectStore, IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { expect, it, vi } from "vitest";
 import { REFERENCE, SOURCE } from "../panes/doc/testing/annotationFixtures";
 import {
@@ -29,7 +29,7 @@ import {
   rowsForTests,
 } from "../panes/doc/testing/annotationRepositoryFixtures";
 import { createComposerSourceState } from "../panes/session/composer/sourceState";
-import { type BrowserDraftKey, browserDraftKey } from "../stores/browserDraftRepository";
+import { type BrowserDraftKey, browserDraftKey, createBrowserDraftRepository } from "../stores/browserDraftRepository";
 import { type NamespaceRow, serializeSessionKey } from "../stores/compositionRevision";
 import { createDocumentAnnotationRepository, issuedReadTicketsForTests } from "../stores/documentAnnotationIndexedDB";
 import {
@@ -1019,6 +1019,55 @@ it("an accepted read queries only its own document's evidence, never every docum
   // survive the acceptance untouched.
   const evidence = await rowsForTests<AnnotationEvidenceRow>(f.factory, f.databaseName, ANNOTATION_EVIDENCE_STORE);
   expect(evidence.map((row) => row.evidenceKey)).toContain("foreign-evidence");
+});
+
+it("completes reads without an IDBKeyRange class through the full-scan fallback", async () => {
+  // jsdom has no IDBKeyRange global and this construction passes none, which
+  // is the world of every test wiring the production ports without the
+  // annotation fixture: reads must still complete through the full scan.
+  const factory = new IDBFactory();
+  const databaseName = "annotation-fallback-scan";
+  const drafts = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  const repo = createDocumentAnnotationRepository({
+    indexedDB: factory,
+    databaseName,
+    drafts,
+    targetFor: () => null,
+  });
+  cleanupAfterTest(() => {
+    repo.close();
+    drafts.close();
+  });
+  const document: DocumentKey = { ...browserDraftKey("root", location.origin), path: "NOTES.md" };
+
+  // The mechanism oracle, inverted: without a key-range constructor the
+  // adapter's evidence read is the unbounded getAll, and it still completes.
+  const unbounded: IDBObjectStore[] = [];
+  const realGetAll = FDBObjectStore.prototype.getAll;
+  const getAllSpy = vi.spyOn(FDBObjectStore.prototype, "getAll").mockImplementation(function (
+    this: IDBObjectStore,
+    query?: IDBValidKey | IDBKeyRange | null,
+  ) {
+    if (this.name === ANNOTATION_EVIDENCE_STORE && (query === undefined || query === null)) unbounded.push(this);
+    return realGetAll.call(this, query);
+  });
+  cleanupAfterTest(() => getAllSpy.mockRestore());
+
+  // The read lifecycle through the fallback: a first-ever read accepts with
+  // nothing to fence, a changed read fences the old epoch (the receipt proves
+  // the fence committed rather than the fault branch's receipt-less
+  // retention), and the unchanged re-read validates against the fenced
+  // epoch's evidence through the same fallback comparison.
+  const first = await repo.acceptRead(await repo.beginRead(document), docContent(SOURCE, "rev-A"));
+  expect(first.state).toBe("accepted");
+  const changed = await repo.acceptRead(await repo.beginRead(document), docContent(SOURCE, "rev-B"));
+  expect(changed.state).toBe("expiry-pending");
+  if (changed.state !== "expiry-pending" || !changed.receipt) throw new Error("missing fenced expiry receipt");
+  const unchanged = await repo.acceptRead(await repo.beginRead(document), docContent(SOURCE, "rev-B"));
+  expect(unchanged.state).toBe("accepted");
+  expect(unbounded.length).toBeGreaterThan(0);
+  const evidence = await rowsForTests<AnnotationEvidenceRow>(factory, databaseName, ANNOTATION_EVIDENCE_STORE);
+  expect(evidence.length).toBeGreaterThan(0);
 });
 
 it("rejects a save against a confirmed-suppressed epoch whose fence transaction failed", async () => {

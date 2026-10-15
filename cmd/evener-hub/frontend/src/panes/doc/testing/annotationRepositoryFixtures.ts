@@ -173,10 +173,6 @@ export async function fixture(
   // disposers, even when setup fails partway.
   const { Blob: NodeBlob } = await vi.importActual<{ Blob: typeof Blob }>("node:buffer");
   vi.stubGlobal("Blob", NodeBlob);
-  // jsdom has no IndexedDB globals at all: the store's bounded queries
-  // construct key ranges through the browser's IDBKeyRange global, so the
-  // fake factory's own range class must sit beside it.
-  vi.stubGlobal("IDBKeyRange", IDBKeyRange);
   cleanupAfterTest(() => {
     vi.unstubAllGlobals();
   });
@@ -239,6 +235,7 @@ export async function fixture(
   const repo = createDocumentAnnotationRepository({
     indexedDB: factory,
     databaseName,
+    keyRange: IDBKeyRange,
     drafts,
     ...hooks,
     targetFor: (origin: DestinationProvenance, doc: DocumentKey) =>

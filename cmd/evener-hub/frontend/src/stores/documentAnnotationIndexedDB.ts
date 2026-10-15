@@ -72,6 +72,11 @@ export type AnnotationReadBoundary =
 export interface DocumentAnnotationOptions {
   indexedDB?: IDBFactory;
   databaseName?: string;
+  // Key-range constructor for the compound document+epoch index queries.
+  // Browsers always provide IDBKeyRange; jsdom does not, so tests wiring the
+  // production ports without the annotation fixture leave it undefined and the
+  // adapter's queries fall back to a full scan.
+  keyRange?: typeof IDBKeyRange;
   drafts: BrowserDraftRepository;
   targetFor(destination: PreparedAnnotation["destination"], key: DocumentKey): ComposerSourceState | null;
   beforeCommit?: (operation: "acceptRead" | "save" | "expiry" | "deleteExpiry" | "reset") => void;
@@ -305,6 +310,43 @@ function destinationNeverResolves(destination: PreparedAnnotation["destination"]
   return destination.kind !== "browser-origin";
 }
 
+// Read exactly one document+epoch's rows. With a key-range constructor (every
+// browser) the compound index bounds the scan; without one (jsdom with no fake
+// class installed) the read falls back to the pre-index full scan with the
+// same filter, so an environment without IDBKeyRange keeps working instead of
+// crashing.
+async function evidenceRowsForDocumentEpoch(
+  evidenceStore: IDBObjectStore,
+  keyRange: typeof IDBKeyRange | undefined,
+  documentKey: string,
+  epoch: string,
+): Promise<AnnotationEvidenceRow[]> {
+  if (keyRange) {
+    return requestResult<AnnotationEvidenceRow[]>(
+      evidenceStore.index(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX).getAll(keyRange.only([documentKey, epoch])),
+    );
+  }
+  return (await requestResult<AnnotationEvidenceRow[]>(evidenceStore.getAll())).filter(
+    (row) => row.documentKey === documentKey && row.epoch === epoch,
+  );
+}
+
+async function payloadRowsForDocumentEpoch(
+  payloadStore: IDBObjectStore,
+  keyRange: typeof IDBKeyRange | undefined,
+  documentKey: string,
+  epoch: string,
+): Promise<AnnotationPayloadRow[]> {
+  if (keyRange) {
+    return requestResult<AnnotationPayloadRow[]>(
+      payloadStore.index(ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX).getAll(keyRange.only([documentKey, epoch])),
+    );
+  }
+  return (await requestResult<AnnotationPayloadRow[]>(payloadStore.getAll())).filter(
+    (row) => row.documentKey === documentKey && row.epoch === epoch,
+  );
+}
+
 class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotationRepository {
   readonly #connection: IDBConnection;
   readonly #options: DocumentAnnotationOptions;
@@ -326,11 +368,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // Best-effort peer wakeups, scoped to this adapter's database.
   readonly #channel: AnnotationWakeChannel;
   readonly #channelSourceId = makeSourceId();
+  readonly #keyRange: typeof IDBKeyRange | undefined;
 
   constructor(options: DocumentAnnotationOptions) {
     const indexedDB = options.indexedDB ?? globalThis.indexedDB;
     if (!indexedDB) throw new Error("IndexedDB is unavailable");
     this.#options = options;
+    this.#keyRange = options.keyRange ?? globalThis.IDBKeyRange;
     this.#channel = createVersionedChannel<AnnotationWakeMessage>({
       name: `evener-annotation:${options.databaseName ?? LOCAL_COMPOSITION_DATABASE_NAME}`,
       getSourceId: () => this.#channelSourceId,
@@ -548,11 +592,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         const currentEpoch = head?.epoch;
         const retained = currentEpoch
           ? (
-              await requestResult<AnnotationEvidenceRow[]>(
-                transaction
-                  .objectStore(ANNOTATION_EVIDENCE_STORE)
-                  .index(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX)
-                  .getAll(IDBKeyRange.only([documentKey, currentEpoch])),
+              await evidenceRowsForDocumentEpoch(
+                transaction.objectStore(ANNOTATION_EVIDENCE_STORE),
+                this.#keyRange,
+                documentKey,
+                currentEpoch,
               )
             ).map((row) => row.content)
           : [];
@@ -876,11 +920,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // comment despite its original evidence still being retained. Within an
         // epoch every retained observation is validated-comparable; a genuine
         // change fences into a new epoch, which the epoch check above rejects.
-        const epochEvidence = await requestResult<AnnotationEvidenceRow[]>(
-          transaction
-            .objectStore(ANNOTATION_EVIDENCE_STORE)
-            .index(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX)
-            .getAll(IDBKeyRange.only([documentKey, head.epoch])),
+        const epochEvidence = await evidenceRowsForDocumentEpoch(
+          transaction.objectStore(ANNOTATION_EVIDENCE_STORE),
+          this.#keyRange,
+          documentKey,
+          head.epoch,
         );
         if (!epochEvidence.some((row) => evidenceMatches(row.content, captured.capture.evidence))) {
           throw new Error("accepted source evidence does not match the durable evidence");
@@ -1015,17 +1059,17 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         if (!expiryRow || expiryRow.receipt.expiredEpoch !== receipt.expiredEpoch) return;
         if (expiryRow.receipt.phase === "deleted") return;
         const [payloads, evidence] = await Promise.all([
-          requestResult<AnnotationPayloadRow[]>(
-            transaction
-              .objectStore(ANNOTATION_PAYLOADS_STORE)
-              .index(ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX)
-              .getAll(IDBKeyRange.only([documentKey, receipt.expiredEpoch])),
+          payloadRowsForDocumentEpoch(
+            transaction.objectStore(ANNOTATION_PAYLOADS_STORE),
+            this.#keyRange,
+            documentKey,
+            receipt.expiredEpoch,
           ),
-          requestResult<AnnotationEvidenceRow[]>(
-            transaction
-              .objectStore(ANNOTATION_EVIDENCE_STORE)
-              .index(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX)
-              .getAll(IDBKeyRange.only([documentKey, receipt.expiredEpoch])),
+          evidenceRowsForDocumentEpoch(
+            transaction.objectStore(ANNOTATION_EVIDENCE_STORE),
+            this.#keyRange,
+            documentKey,
+            receipt.expiredEpoch,
           ),
         ]);
         for (const payload of payloads) {
