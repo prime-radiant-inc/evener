@@ -33,6 +33,7 @@ import {
   retryBlockedMutation,
   subscribeMutationPersistence,
   threadsStore,
+  transientRefusalRetryPending,
   updateRecoveryMutation,
   useThreadsStore,
 } from "../../../../stores/threads";
@@ -169,7 +170,16 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   // scheduler - the same explicit hand-off publishAndReconcileThreadHydration
   // makes when its reconciliation opens the gate. A ref with no dispatchable
   // mutation is a no-op there.
-  if (loaded.length > 0) notifyReadyForMutationDispatch(loaded);
+  if (loaded.length > 0) {
+    // #4342: a ref whose paced-retry timer is live has that timer owning
+    // its refused row's re-drive - its fire schedules the same dispatch
+    // this hand-off would - so the hand-off skips it rather than redeliver
+    // the refused row immediately after its refusal (a reopened row's
+    // refresh does run, making this gate live). The timer's fire consumes
+    // its own handle, so the gate never outlives what backs it.
+    const handoff = loaded.filter((ref) => !transientRefusalRetryPending(ref));
+    if (handoff.length > 0) notifyReadyForMutationDispatch(handoff);
+  }
   return true;
 }
 

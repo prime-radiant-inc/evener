@@ -188,11 +188,13 @@ type memoryEnvironmentFlight struct {
 // session renders the pages as they are, with fallback descriptions, until a
 // writing session migrates. A failed migration never blocks the rendering;
 // the next one retries it. A failed listing leaves p as it was.
-func (s *Session) renderMemoryScope(env *execenv.LocalExecutionEnvironment, p *memoryProjection) error {
+// ctx is threaded to the listing and any migration it runs, so a cancelled
+// memory read ends a read parked on a stream.
+func (s *Session) renderMemoryScope(ctx context.Context, env *execenv.LocalExecutionEnvironment, p *memoryProjection) error {
 	if s.memorySaveInstructionsEnabled() {
-		_ = migrateMemoryScope(env)
+		_ = migrateMemoryScopeCtx(ctx, env)
 	}
-	pages, err := listMemoryPages(env)
+	pages, err := listMemoryPagesCtx(ctx, env)
 	if err != nil {
 		return err
 	}
@@ -399,13 +401,14 @@ func (s *Session) closeMemoryEnvironments() {
 }
 
 func (s *Session) readMemoryIndex(scope string) memoryProjection {
-	p, _ := s.readMemoryScope(scope, nil)
+	p, _ := s.readMemoryScope(context.Background(), scope, nil)
 	return p
 }
 
 // readMemoryScope reads scope's index and, beneath the same environment
 // lease, the current record of each named page.
-func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjection, map[string]memoryPageRecord) {
+// ctx is threaded to each page read.
+func (s *Session) readMemoryScope(ctx context.Context, scope string, pages []string) (memoryProjection, map[string]memoryPageRecord) {
 	p := memoryProjection{Scope: scope, Status: "unavailable"}
 	env, release, err := s.acquireMemoryEnvironment(scope)
 	if err != nil {
@@ -433,10 +436,24 @@ func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjectio
 	if err := s.beforeMemoryIO(scope, "index_read"); err != nil {
 		return p, nil
 	}
-	_ = s.renderMemoryScope(env, &p) // a failed rendering leaves p unavailable
+	_ = s.renderMemoryScope(ctx, env, &p) // a failed rendering leaves p unavailable
 	records := make(map[string]memoryPageRecord, len(pages))
 	for _, page := range pages {
-		if record, ok := readMemoryPageRecord(env, page); ok {
+		if err := ctx.Err(); err != nil {
+			// A cancelled read must not return a degraded projection as success:
+			// leave it unavailable and report no records (#4621 round 2, M4).
+			p.Status = "unavailable"
+			return p, nil
+		}
+		record, ok := readMemoryPageRecord(ctx, env, page)
+		// memoryPageRecordFrom reports a read failure as "no record", which would
+		// swallow a cancellation during the LAST page's read: check ctx after the
+		// read, not only before the next one (#4621 round 4, class sweep).
+		if cerr := ctx.Err(); cerr != nil {
+			p.Status = "unavailable"
+			return p, nil
+		}
+		if ok {
 			records[page] = record
 		}
 	}
@@ -445,8 +462,9 @@ func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjectio
 
 // readMemoryPageRecord reads page's current record through env. It reports
 // false when the page could not be read, so its last record stands.
-func readMemoryPageRecord(env *execenv.LocalExecutionEnvironment, page string) (memoryPageRecord, bool) {
-	return memoryPageRecordFrom(env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), page)))
+// ctx is threaded to the read.
+func readMemoryPageRecord(ctx context.Context, env *execenv.LocalExecutionEnvironment, page string) (memoryPageRecord, bool) {
+	return memoryPageRecordFrom(env.ReadFileRawCtx(ctx, filepath.Join(env.WorkingDirectory(), page)))
 }
 
 // memoryPageRecordFrom turns a page read into its record, reporting false
@@ -656,7 +674,9 @@ func (s *Session) memoryFlight(scope string, pages []string) *memoryIndexFlight 
 	s.memoryIndexFlights[scope] = flight
 	s.memoryMu.Unlock()
 	go func() {
-		flight.projection, flight.pages = s.readMemoryScope(scope, pages)
+		// A background flight has no caller context to observe; the read runs
+		// under context.Background().
+		flight.projection, flight.pages = s.readMemoryScope(context.Background(), scope, pages)
 		close(flight.done)
 	}()
 	return flight

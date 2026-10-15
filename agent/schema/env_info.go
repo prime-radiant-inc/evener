@@ -21,6 +21,7 @@ type EnvironmentInfo struct {
 	GitOriginURL          string        `json:"git_origin_url,omitempty"`           // "origin" remote URL
 	GitModifiedFiles      int           `json:"git_modified_files"`                 // count of tracked files with changes
 	GitUntrackedFiles     int           `json:"git_untracked_files"`                // count of untracked files
+	GitStatusUnknown      bool          `json:"git_status_unknown,omitempty"`       // true when the status read was truncated or failed, so the counts above are not a claim
 	GitRecentCommitTitles []string      `json:"git_recent_commit_titles,omitempty"` // recent commit subject lines
 	Workspace             WorkspaceInfo `json:"workspace"`                          // detected build/workspace layout
 	Resources             *ResourceCaps `json:"resources,omitempty"`                // effective process resource caps, when observable

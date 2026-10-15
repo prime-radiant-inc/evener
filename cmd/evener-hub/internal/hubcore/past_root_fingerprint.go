@@ -45,7 +45,8 @@ var notShownMetaFields = []string{
 	"WorkMillis", "JobTreeRevision", "ScratchTempDir", "ScratchTreeRootID",
 	"EnvInfo.Platform", "EnvInfo.OSVersion", "EnvInfo.Today", "EnvInfo.KnowledgeCutoff",
 	"EnvInfo.IsGitRepo", "EnvInfo.GitOriginURL", "EnvInfo.GitModifiedFiles",
-	"EnvInfo.GitUntrackedFiles", "EnvInfo.GitRecentCommitTitles", "EnvInfo.Workspace",
+	"EnvInfo.GitUntrackedFiles", "EnvInfo.GitStatusUnknown", "EnvInfo.GitRecentCommitTitles",
+	"EnvInfo.Workspace",
 	"EnvInfo.Resources",
 }
 

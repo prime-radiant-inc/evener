@@ -114,16 +114,16 @@ func snapshotGitBranch(env execenv.ExecutionEnvironment, cwd string) string {
 // failed or timed-out exec is reported as not-in-a-repo — indistinguishable
 // from a genuine non-repo — so a caller that must tell the two apart has to
 // probe structurally rather than read IsGitRepo (see #4138).
-func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string) {
+func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string, statusKnown bool) {
 	if env == nil {
-		return false, "", 0, 0, nil
+		return false, "", 0, 0, nil, false
 	}
 	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
 		cwd = env.WorkingDirectory()
 	}
 	if !hasGitMetadataAncestor(cwd) {
-		return false, "", 0, 0, nil
+		return false, "", 0, 0, nil, false
 	}
 
 	run := func(args ...string) (execenv.ExecResult, error) {
@@ -134,7 +134,7 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 
 	inside, err := run("rev-parse", "--is-inside-work-tree")
 	if err != nil || inside.ExitCode != 0 || strings.TrimSpace(inside.Stdout) != "true" {
-		return false, "", 0, 0, nil
+		return false, "", 0, 0, nil, false
 	}
 	inRepo = true
 
@@ -142,7 +142,14 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 		branch = strings.TrimSpace(br.Stdout)
 	}
 
-	if st, err := run("status", "--porcelain"); err == nil && st.ExitCode == 0 {
+	// A truncated STDOUT capture is refused, not decoded: counting a partial
+	// status stream would report a smaller change set than the repository holds.
+	// Like a failed exec above, a truncated one yields no counts rather than a
+	// wrong one (#4568 round 2). A capped STDERR is not the status parser's
+	// business — it reads stdout — so a noisy stderr no longer discards counts
+	// that were read whole (#4621 round 15).
+	if st, err := run("status", "--porcelain"); err == nil && st.ExitCode == 0 && !st.StdoutTruncated {
+		statusKnown = true
 		for line := range strings.SplitSeq(strings.ReplaceAll(st.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -163,7 +170,7 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	// (workspace_prompt_program_fuzz_test.go) and git_snapshot_test.go key
 	// their scripted responses on — switching it would be pure fixture churn
 	// for no behavior change.
-	if lg, err := run("log", "-n", "5", "--pretty=format:%h%x20%s"); err == nil && lg.ExitCode == 0 {
+	if lg, err := run("log", "-n", "5", "--pretty=format:%h%x20%s"); err == nil && lg.ExitCode == 0 && !lg.StdoutTruncated {
 		for line := range strings.SplitSeq(strings.ReplaceAll(lg.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -173,7 +180,7 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 		}
 	}
 
-	return inRepo, branch, modifiedFiles, untrackedFiles, recentCommitTitles
+	return inRepo, branch, modifiedFiles, untrackedFiles, recentCommitTitles, statusKnown
 }
 
 func hasGitMetadataAncestor(cwd string) bool {

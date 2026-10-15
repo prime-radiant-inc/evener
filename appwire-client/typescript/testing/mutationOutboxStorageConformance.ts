@@ -32,6 +32,19 @@ export interface MutationOutboxStorageFactory {
   // Human-readable host name, used as the describe block's label.
   readonly name: string;
   createStorage(options?: MutationOutboxStorageFactoryOptions): MutationOutboxStorage | Promise<MutationOutboxStorage>;
+  // Rewrites one already-marked record into the pre-unresolvedAttempts
+  // legacy shape: the bare attempted boolean with no count, exactly as the
+  // pre-field adapter wrote it. The legacy contracts below pin that both
+  // adapters read that shape as ONE unresolved attempt, not zero. Only a
+  // host whose persistence can hold the pre-field shape supplies this.
+  stripAttemptCount?(storage: MutationOutboxStorage, clientMutationId: string): Promise<void> | void;
+  // Rewrites one record into the pre-capture legacy shape: the
+  // stopEpochAtEnqueue field absent (browser) or zeroed (native, whose
+  // migration column reads DEFAULT 0), exactly as a build from before the
+  // field existed persisted it - untouched by every later schema version.
+  // Only a host whose persistence can hold the pre-field shape supplies
+  // this.
+  stripCaptureAtEnqueue?(storage: MutationOutboxStorage, clientMutationId: string): Promise<void> | void;
 }
 
 const CONFORMANCE_TARGET = "local:conformance-1";
@@ -222,6 +235,181 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
       await expect(storage.markAttempted("missing")).resolves.toBe(false);
       await storage.markUnknown(record.clientMutationId, "blockedUnknown");
       await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(false);
+    });
+
+    // #4342: after the hub authoritatively refused an attempt in band (a
+    // connectionBackpressure refusal), the dispatcher rolls back exactly
+    // that attempt's evidence. The row returns to its never-attempted shape
+    // — so each host's reconnect reconcile onlyAttempted-guarded
+    // blockedUnknown park skips it and the ordinary flush rediscovers it —
+    // only when the refused attempt was the row's one unresolved attempt;
+    // evidence of an earlier or concurrent unresolved attempt survives, and
+    // a row parked while its only attempt was in flight reopens, because
+    // that refusal is authoritative proof the park's uncertainty resolves.
+    // Authoritative outcomes own every other state, so only submitting and
+    // blockedUnknown rows roll back.
+    test("unmarkAttempted returns a once-attempted row to its never-attempted shape", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("refused in band"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: false,
+        unresolvedAttempts: 0,
+      });
+    });
+
+    test("unmarkAttempted reopens a row parked while its only attempt was refused in band", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("parked mid-attempt"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: false,
+        unresolvedAttempts: 0,
+      });
+    });
+
+    // #4342 (review): a Stop whose cancel scan skipped the attempted row
+    // bumped the ref's stop epoch while the attempt was in flight. The
+    // refusal then proves the attempt never landed, but the row must not
+    // return dispatchable ahead of the interrupt the Stop already queued:
+    // the rollback holds it canceled, released only by an explicit Retry.
+    test("unmarkAttempted holds a row canceled when a Stop interrupted the refused attempt", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("stopped mid-attempt"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await storage.enqueueInterruptAndCancel(conformanceInterruptIntent(record.targetRef));
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(false);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "canceled",
+      });
+    });
+
+    test("unmarkAttempted holds a parked row canceled when a Stop interrupted the refused attempt", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("parked, then stopped"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+      await storage.enqueueInterruptAndCancel(conformanceInterruptIntent(record.targetRef));
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(false);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "canceled",
+      });
+    });
+
+    // #4342 (round-5 review): the Stop's own interrupt record passes no
+    // barrier - it IS the click the epoch records - so its capture is the
+    // epoch its Stop just bumped. A backpressure refusal of the interrupt
+    // itself must redeliver like any transient refusal, not fence-cancel the
+    // Stop's own row and leave the agent running.
+    test("the interrupt's own refused attempt redelivers rather than fence-cancels", async () => {
+      const interrupt = await storage.enqueueInterruptAndCancel(conformanceInterruptIntent(CONFORMANCE_TARGET));
+      await expect(storage.markAttempted(interrupt.clientMutationId)).resolves.toBe(true);
+      await expect(storage.unmarkAttempted(interrupt.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getOutbox(interrupt.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: false,
+      });
+    });
+
+    // #4342 (round-8 review): a record from before the capture field
+    // existed reaches this build with none - on native the migration
+    // column reads DEFAULT 0. Its first mark proves by survival that no
+    // Stop's cancel scan ran since its birth (any bump would have
+    // canceled it while unattempted), so the epoch as it stands IS the
+    // epoch it was born at: the mark initializes the capture, and a
+    // historical Stop predating the row does not fence-cancel its first
+    // refusal.
+    test("a pre-capture row's first refusal after a historical Stop stays transient", async () => {
+      if (!factory.stripCaptureAtEnqueue) return;
+      await storage.enqueueInterruptAndCancel(conformanceInterruptIntent(CONFORMANCE_TARGET));
+      const record = await storage.enqueueIntent(conformanceTextIntent("born after the stop"));
+      await factory.stripCaptureAtEnqueue(storage, record.clientMutationId);
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: false,
+      });
+    });
+
+    // The same seam through the interrupt itself: a pre-capture pending
+    // interrupt refuses transiently instead of fence-canceling its own
+    // Stop - the round-5 interrupt rule, held for the legacy shape too.
+    test("a pre-capture pending interrupt's refused attempt redelivers", async () => {
+      if (!factory.stripCaptureAtEnqueue) return;
+      const interrupt = await storage.enqueueInterruptAndCancel(conformanceInterruptIntent(CONFORMANCE_TARGET));
+      await factory.stripCaptureAtEnqueue(storage, interrupt.clientMutationId);
+      await expect(storage.markAttempted(interrupt.clientMutationId)).resolves.toBe(true);
+      await expect(storage.unmarkAttempted(interrupt.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getOutbox(interrupt.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+      });
+    });
+
+    test("markAttempted counts concurrent unresolved attempts", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("two tabs, one row"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        attempted: true,
+        unresolvedAttempts: 2,
+      });
+    });
+
+    test("unmarkAttempted rolls back only the refused attempt, keeping earlier evidence", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("earlier attempt unresolved"));
+      // An earlier attempt whose response was lost: submitting, evidence
+      // retained (a transport failure leaves exactly this shape).
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      // The re-dispatch marks again, then its attempt is refused in band.
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(false);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: true,
+        unresolvedAttempts: 1,
+      });
+      // The earlier attempt's own refusal resolves the last evidence.
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: false,
+        unresolvedAttempts: 0,
+      });
+    });
+
+    test("unmarkAttempted keeps a parked row blocked while earlier evidence remains", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("parked with earlier evidence"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(false);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "blockedUnknown",
+        attempted: true,
+        unresolvedAttempts: 1,
+      });
+      await expect(storage.unmarkAttempted("missing")).resolves.toBe(false);
+    });
+
+    // #4342 (round-2 review): records written before the unresolvedAttempts
+    // field existed carry their evidence as the bare attempted boolean. A
+    // refused retry must not erase that legacy evidence: the count reads
+    // the boolean as one unresolved attempt, not zero.
+    test("a refused retry preserves a legacy record's pre-count attempt evidence", async () => {
+      if (!factory.stripAttemptCount) return;
+      const record = await storage.enqueueIntent(conformanceTextIntent("legacy pre-count evidence"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await factory.stripAttemptCount(storage, record.clientMutationId);
+      // The retry's own mark lands on the legacy evidence, not over it.
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(false);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "submitting",
+        attempted: true,
+        unresolvedAttempts: 1,
+      });
     });
 
     test("markUnknown's onlyAttempted guard refuses an un-attempted record", async () => {

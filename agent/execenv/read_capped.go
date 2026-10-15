@@ -1,9 +1,9 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/spf13/afero"
@@ -16,8 +16,9 @@ import (
 // is what the cap must fail fast on instead of allocating until a
 // memory-limited container is SIGKilled (issue #4556). The value matches the
 // read caps the repo already uses elsewhere (apilog's maxAPILogLineBytes,
-// delegatestore's DefaultMaxLineBytes).
-const MaxWholeFileReadBytes = 128 << 20
+// delegatestore's DefaultMaxLineBytes). A variable so a test can exercise the
+// refusal with a fixture-sized cap.
+var MaxWholeFileReadBytes int64 = 128 << 20
 
 // errNotRegularFile is the refusal for an admitted path that is neither a
 // regular file nor (where allowed) a directory.
@@ -34,22 +35,6 @@ func (e *ReadLimitError) Error() string {
 	return fmt.Sprintf("file exceeds the %d MB whole-file read limit; read it in pieces with shell tools (head/tail)", e.Limit>>20)
 }
 
-// readAllCapped reads at most limit bytes from r and reports a *ReadLimitError
-// once the input holds more. The bound is what keeps a whole-file read of a
-// hostile input — a procfs regular such as /proc/kcore stats in the terabytes —
-// from allocating until the container's memory cap kills the process
-// (issue #4556).
-func readAllCapped(r io.Reader, limit int64) ([]byte, error) {
-	b, err := io.ReadAll(io.LimitReader(r, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(b)) > limit {
-		return nil, &ReadLimitError{Limit: limit}
-	}
-	return b, nil
-}
-
 // ReadFileCapped reads the whole regular file at path on the OS filesystem,
 // refusing devices and FIFOs and failing fast past MaxWholeFileReadBytes. It
 // is the whole-file read seam for callers outside the environment's own file
@@ -58,18 +43,31 @@ func ReadFileCapped(path string) ([]byte, error) {
 	return readFileCapped(afero.NewOsFs(), path)
 }
 
-// readFileCapped is the off arm's whole-file read: it opens without blocking
+// readFileCapped is readFileCappedCtx with context.Background(), for callers
+// that carry no context.
+func readFileCapped(fsys afero.Fs, name string) ([]byte, error) {
+	return readFileCappedCtx(context.Background(), fsys, name)
+}
+
+// readFileCappedCtx is the off arm's whole-file read: it opens without blocking
 // (openNonblock, so a FIFO with no writer cannot hang the open), admits the
 // handle only when it stats regular on that same handle — mirroring
 // admitReadFD, so a device or FIFO the off arm once read is refused — and
-// stops at MaxWholeFileReadBytes. O_NONBLOCK never needs clearing here: only
-// a regular file is read, and a regular file's reads do not honor it. The
-// admission runs through the afero.File interface, never a *os.File type
-// assertion: SetFs accepts OS-backed wrappers (fault.FS, BasePathFs) whose
-// wrapped handles must not hide the file's type, while an injected in-memory
-// filesystem cannot hold a device or FIFO and its FileInfo modes carry no
-// file-type bits, so the admission never refuses them.
-func readFileCapped(fsys afero.Fs, name string) ([]byte, error) {
+// stops at MaxWholeFileReadBytes. The read is bounded in time AND
+// cancellation-observable through readBounded: a directly-named size-0
+// poll-registered never-ready regular — the kmsg shape, root-only in practice
+// — would otherwise block here indefinitely, because O_NONBLOCK only makes the
+// descriptor pollable, not bounded (#4611's off-arm gap). O_NONBLOCK never
+// needs clearing here: only a regular file is read, and a regular file's reads
+// do not honor it. Admission runs through the afero.File interface, never a
+// *os.File type assertion: SetFs accepts OS-backed wrappers (fault.FS,
+// BasePathFs) whose wrapped handles must not hide the file's type, while an
+// injected in-memory filesystem cannot hold a device or FIFO and its FileInfo
+// modes carry no file-type bits, so the admission never refuses them.
+func readFileCappedCtx(ctx context.Context, fsys afero.Fs, name string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	f, err := fsys.OpenFile(name, os.O_RDONLY|openNonblock, 0)
 	if err != nil {
 		return nil, err
@@ -85,5 +83,22 @@ func readFileCapped(fsys afero.Fs, name string) ([]byte, error) {
 	if info.Size() > MaxWholeFileReadBytes {
 		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
 	}
-	return readAllCapped(f, MaxWholeFileReadBytes)
+	// The handle's deadline is armed only when it can take one (an OS-backed
+	// regular on a pollable mount); an in-memory fs handle cannot, and its
+	// reads never block past their data.
+	var deadline readDeadlineSetter
+	if d, ok := f.(readDeadlineSetter); ok {
+		deadline = d
+	}
+	data, over, rerr := readBounded(ctx, f, deadline, MaxWholeFileReadBytes)
+	if rerr != nil {
+		if errors.Is(rerr, errGrepStreamStalled) {
+			return nil, fmt.Errorf("read %q: %w", name, errGrepStreamStalled)
+		}
+		return nil, rerr
+	}
+	if over {
+		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
+	}
+	return data, nil
 }

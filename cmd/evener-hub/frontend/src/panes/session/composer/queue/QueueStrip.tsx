@@ -189,6 +189,7 @@ export function QueueStrip({
   const mutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   const recoveryObligated = useThreadsStore((s) => s.restartBlockingObligations.has(sessionRef));
   const reconciliationStorageBlocked = useThreadsStore((s) => s.mutationReconciliationStorageBlocked.has(sessionRef));
+  const refusedId = useThreadsStore((s) => s.transientRefusalPaces.get(sessionRef)?.clientMutationId);
   const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue").filter(
     // A queue-method row Stop canceled (or one whose delivery turned unknown)
     // is a durable row below, not a bare pending one - the same slot rule the
@@ -589,11 +590,26 @@ export function QueueStrip({
             </li>
           );
         })}
-        {pendingQueueEntries.map((entry) => (
-          <li key={entry.id} className={`${CLASS.row} ${CLASS.rowPending}`} data-kind="pending">
-            <span className={CLASS.rowText}>{pendingPreview(entry)}</span>
-          </li>
-        ))}
+        {pendingQueueEntries.map((entry) => {
+          const hubRefused = entry.id === refusedId && entry.state === "submitting";
+          return (
+            <li
+              key={entry.id}
+              className={`${CLASS.row} ${CLASS.rowPending}`}
+              data-kind="pending"
+              data-busy={hubRefused ? "true" : undefined}
+            >
+              <span className={CLASS.rowText}>
+                {hubRefused ? (
+                  <span className={CLASS.rowReason} data-busy-reason="">
+                    Retrying —{" "}
+                  </span>
+                ) : null}
+                {pendingPreview(entry)}
+              </span>
+            </li>
+          );
+        })}
         {durableEntries.map(({ kind, record }) => {
           const rowBusy = busyEntryIds.has(record.clientMutationId);
           const retryError = retryErrors.get(record.clientMutationId);

@@ -9,6 +9,7 @@ import { parseSkillDocument, skillAtomMentions } from "../panes/session/composer
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import { type MutationIntent, MutationOutbox } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { rewriteOutboxRowWithoutFields } from "./testing/legacyOutboxRows";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 
 // The outbox reads readiness off the same client lookup the dispatcher takes,
@@ -247,7 +248,73 @@ describe("MutationOutboxIndexedDB", () => {
       optimisticDisplay: { text: "survive reload" },
       state: "submitting",
       attempted: false,
+      // The enqueue barrier's own epoch read, stored for the refusal
+      // rollback's stop fence.
+      stopEpochAtEnqueue: 0,
     });
+  });
+
+  // #4342 (round-6 review): the recovery resend is the user's deliberate
+  // post-Stop send (§4's exemption), so the fresh row captures the target's
+  // current epoch - a refusal of its own attempt stays transient instead of
+  // fence-canceling against a Stop that predates the resend.
+  test("a recovery resend after a historical Stop keeps its refused retry transient", async () => {
+    const storage = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+      now: () => 1234,
+    });
+    await storage.enqueueInterruptAndCancel({
+      ...intent("stop once"),
+      method: "turn/interrupt",
+      payload: { ref: TARGET },
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+    const original = await storage.enqueueIntent(intent("resent after the stop"));
+    await storage.transferToRecovery(original.clientMutationId, "rejected", "not accepted");
+    const resent = await storage.resendRecovery(original.clientMutationId, intent("resent fresh"));
+    if (!resent) throw new Error("expected the resend to create a row");
+
+    await storage.markAttempted(resent.clientMutationId);
+    await expect(storage.unmarkAttempted(resent.clientMutationId)).resolves.toBe(true);
+    expect((await storage.getOutbox(resent.clientMutationId))?.state).toBe("submitting");
+  });
+
+  // #4342 (round-7 review): a row from before the attempt fields existed
+  // (#936's `attempted`, and the counts this change added) persists
+  // untouched through every later schema version, so its delivery state
+  // from that era is unknown - the Stop guard's own rule for these rows
+  // (cancel.test.ts: "never canceled by Stop"). The refusal rollback must
+  // not declare that history clean: only an explicit `attempted: false`
+  // proves no earlier attempt.
+  test("a refusal preserves a pre-attempted legacy row's unknown delivery state", async () => {
+    const storage = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+      now: () => 1234,
+    });
+    const legacy = await storage.enqueueIntent(intent("possibly delivered in an earlier era"));
+    await rewriteOutboxRowWithoutFields(indexedDB, databaseName, legacy.clientMutationId, [
+      "attempted",
+      "unresolvedAttempts",
+      "stopEpochAtEnqueue",
+    ]);
+
+    // Today's first dispatch marks the row - the modern fields land on it
+    // here - and the in-band refusal rolls this attempt back. The baseline
+    // for that arithmetic is the row's pre-#936 era, unknown and unproven.
+    await expect(storage.markAttempted(legacy.clientMutationId)).resolves.toBe(true);
+    await expect(storage.unmarkAttempted(legacy.clientMutationId)).resolves.toBe(false);
+
+    // `attempted` is the boolean the reconcile park and the Stop cancel
+    // guard read: kept true, the row keeps its uncertain treatment
+    // instead of turning canceled on the next Stop.
+    const record = await storage.getOutbox(legacy.clientMutationId);
+    expect(record?.attempted).toBe(true);
+    expect(record?.unresolvedAttempts).toBe(1);
+    expect(record?.state).toBe("submitting");
   });
 
   test("attachment blobs survive an IndexedDB round trip", async () => {

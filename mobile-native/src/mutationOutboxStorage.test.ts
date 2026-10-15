@@ -111,9 +111,118 @@ test("enqueueIntent persists a submitting record with the full intent", async ()
 		optimisticDisplay: { text: "survive reload" },
 		state: "submitting",
 		attempted: false,
+		// The enqueue barrier's own epoch read, stored for the refusal
+		// rollback's stop fence. Oracle: "reload restores the complete
+		// persisted intent" asserts the same field (mutationOutbox.test.ts).
+		stopEpochAtEnqueue: 0,
 	});
 	const row = rawRow("mutation_outbox", "mutation-1");
 	expect(row).toMatchObject({ state: "submitting", attempted: 0, intent_sequence: 1 });
+});
+
+// #4342 (round-5 review): the enqueue capture must survive the row plumbing,
+// not just the returned record - a fresh adapter reading the same database
+// sees the captured epoch, or a row submitted after any Stop reads as
+// captured-at-zero and its first refusal wrongly re-cancels it.
+test("the enqueue stop-epoch capture persists through the row plumbing", async () => {
+	await storage.enqueueInterruptAndCancel(interruptIntent());
+	const message = await storage.enqueueIntent(intent("sent after the stop"));
+	expect(rawRow("mutation_outbox", message.clientMutationId)?.stop_epoch_at_enqueue).toBe(1);
+	expect((await storage.getOutbox(message.clientMutationId))?.stopEpochAtEnqueue).toBe(1);
+});
+
+// #4342 (round-6 review): the capture column is part of the shared insert
+// shape, so an upgrade must add it to every record table - a database from
+// the previous schema settles no receipts and transfers no recovery rows
+// otherwise, because those writes share the insert.
+test("an upgrade from the previous schema settles receipts and transfers recovery", async () => {
+	// Simulate the previous schema: the shared insert shape's column is
+	// absent from every record table.
+	for (const table of ["mutation_outbox", "mutation_optimistic", "mutation_recovery"]) {
+		const columns = database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+		if (columns.some((column) => column.name === "stop_epoch_at_enqueue")) {
+			database.prepare(`ALTER TABLE ${table} DROP COLUMN stop_epoch_at_enqueue`).run();
+		}
+	}
+
+	// The reopened adapter runs the upgrade, and every shared-shape table
+	// must accept writes again.
+	openStorage();
+	const upgradedColumns = database.prepare("PRAGMA table_info(mutation_optimistic)").all() as { name: string }[];
+	expect(upgradedColumns.some((column) => column.name === "stop_epoch_at_enqueue")).toBe(true);
+	const record = await storage.enqueueIntent({
+		...intent("upgraded row"),
+		// The real turn/queue display shape, the one carriesOptimisticInput
+		// accepts: without input, a pending receipt retires the row without
+		// writing the optimistic INSERT this test needs to exercise.
+		optimisticDisplay: { input: [{ type: "text", text: "upgraded row" }] },
+	});
+	// A pending receipt with a display to carry is the write the previous
+	// schema could not accept: the accepted optimistic row.
+	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toBeDefined();
+	const second = await storage.enqueueIntent(intent("to recover"));
+	await expect(
+		storage.transferToRecovery(second.clientMutationId, "rejected", "turn is not active"),
+	).resolves.toBeTruthy();
+	expect(rawRow("mutation_recovery", second.clientMutationId)).toBeDefined();
+});
+
+// #4342 (round-8 review): the migration column restores as DEFAULT 0, so a
+// pre-capture row born after a historical Stop reads zero against a nonzero
+// epoch once the upgrade has run. Its first refusal must stay transient -
+// the mark initializes the capture from the epoch the row's own survival
+// proves it was born at - instead of fence-canceling against the Stop that
+// predates it.
+test("an upgraded pre-capture row's first refusal after a historical Stop stays transient", async () => {
+	const stopped = await storage.enqueueInterruptAndCancel({
+		...intent("stop once"),
+		method: "turn/interrupt",
+		payload: { ref: TARGET },
+		optimisticDisplay: { method: "turn/interrupt" },
+	});
+	const preCapture = await storage.enqueueIntent(intent("born before the upgrade"));
+
+	// The previous schema's row: the capture column's absence, then the
+	// upgrade restoring it as DEFAULT 0 over the same row.
+	database.prepare("ALTER TABLE mutation_outbox DROP COLUMN stop_epoch_at_enqueue").run();
+	openStorage();
+	expect((await storage.getOutbox(preCapture.clientMutationId))?.stopEpochAtEnqueue).toBe(0);
+
+	await expect(storage.markAttempted(preCapture.clientMutationId)).resolves.toBe(true);
+	await expect(storage.unmarkAttempted(preCapture.clientMutationId)).resolves.toBe(true);
+	const restored = await storage.getOutbox(preCapture.clientMutationId);
+	expect(restored).toMatchObject({ state: "submitting", attempted: false });
+	// The interrupt row carried the same zero after the upgrade: it
+	// redelivers too, instead of fence-canceling its own Stop.
+	await expect(storage.markAttempted(stopped.clientMutationId)).resolves.toBe(true);
+	await expect(storage.unmarkAttempted(stopped.clientMutationId)).resolves.toBe(true);
+	expect((await storage.getOutbox(stopped.clientMutationId))?.state).toBe("submitting");
+});
+
+// #4342 (round-5 review): an explicit release is the user deliberately
+// sending after a Stop (§4's exemption), so it re-authorizes the row past
+// the Stop its fence captured: the release refreshes the capture to the
+// current epoch, and the row's next refusal redelivers instead of
+// re-canceling.
+test("an explicit release re-authorizes a Stop-interrupted row past its captured Stop", async () => {
+	const row = await storage.enqueueIntent(intent("refused while stopped"));
+	await storage.markAttempted(row.clientMutationId);
+	await storage.enqueueInterruptAndCancel(interruptIntent());
+	expect(await storage.unmarkAttempted(row.clientMutationId)).toBe(false);
+	expect((await storage.getOutbox(row.clientMutationId))?.state).toBe("canceled");
+
+	// The Retry press's barrier is the post-Stop epoch; the release passes it.
+	expect(await storage.releaseCanceled(row.clientMutationId, TARGET, { stopEpoch: 1 })).toBe(true);
+
+	// The released row's next refusal must not see the historical Stop again.
+	await storage.markAttempted(row.clientMutationId);
+	expect(await storage.unmarkAttempted(row.clientMutationId)).toBe(true);
+	expect((await storage.getOutbox(row.clientMutationId))?.state).toBe("submitting");
+	// And without another user action, the ordinary drive settles it.
+	await storage.markAttempted(row.clientMutationId);
+	expect(await storage.settleReceipt(row.clientMutationId, "reflected")).toBe(true);
+	expect(await storage.getOutbox(row.clientMutationId)).toBeUndefined();
 });
 
 // RoboRev PR #1873 Medium, the fresh review: MutationIntent.instanceId - the

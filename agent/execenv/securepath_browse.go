@@ -355,7 +355,20 @@ func truncateContextLine(text string, keep int) string {
 	if len(text) <= keep {
 		return text
 	}
-	marker := fmt.Sprintf(format, len(text)-keep+len(fmt.Sprintf(format, 0)))
+	// The tail is sliced with the final marker's length, so the reported count
+	// must be the fixed point of n = len(text)-keep+len(marker(n)): a count
+	// computed from a shorter placeholder would under-report by the digits the
+	// marker grew. Iterate; the count rises by at most one digit per step and
+	// settles there.
+	omitted := len(text) - keep + len(fmt.Sprintf(format, 0))
+	for {
+		next := len(text) - keep + len(fmt.Sprintf(format, omitted))
+		if next == omitted {
+			break
+		}
+		omitted = next
+	}
+	marker := fmt.Sprintf(format, omitted)
 	if len(marker) >= keep {
 		// No room for any of the line: the marker alone, disclosing all of it.
 		return fmt.Sprintf(format, len(text))
@@ -432,6 +445,12 @@ func (a *grepAccum) finishNotes() (out string, notes []string) {
 // file takes no read deadline and a growing one can outlast any scan — or
 // a stalled read ends the scan. stop is the feed's: the results cap cut the
 // output off.
+//
+// It does not route through readBounded, which reads a whole input to EOF
+// under one limit: this is a streaming window scan with no single read to
+// bound. It shares readBounded's arming point instead — armStreamDeadline for
+// the stall deadline and the ctx watcher, plus the ctx check between windows —
+// so its time bound and cancellation discipline are the same ones.
 func (a *grepAccum) feedLargeFile(ctx context.Context, r io.ReadSeeker) (stop bool, err error) {
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
 		return false, err
@@ -683,11 +702,11 @@ func grepCappedRead(r io.Reader) ([]byte, error) {
 	if f, ok := r.(*grepCtxFile); ok {
 		return grepCappedReadFile(f.ctx, f.File)
 	}
-	data, err := io.ReadAll(io.LimitReader(r, int64(grepMaxFileBytes)+1))
+	data, over, err := readBounded(context.Background(), r, nil, int64(grepMaxFileBytes))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) > grepMaxFileBytes {
+	if over {
 		return nil, errGrepFileTooLarge
 	}
 	return data, nil
@@ -720,34 +739,83 @@ var errGrepStreamStalled = errors.New("stream read stalled")
 // pollable — SetReadDeadline refuses it — and never blocks past its data,
 // so it falls through to the plain capped read.
 func grepCappedReadFile(ctx context.Context, f *os.File) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	disarm := armStreamDeadline(ctx, f)
-	defer disarm()
-	data, err := io.ReadAll(io.LimitReader(f, int64(grepMaxFileBytes)+1))
+	data, over, err := readBounded(ctx, f, f, int64(grepMaxFileBytes))
 	if err != nil {
-		if cerr := ctx.Err(); cerr != nil {
-			return nil, cerr
-		}
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			return nil, errGrepStreamStalled
-		}
 		return nil, err
 	}
-	if len(data) > grepMaxFileBytes {
+	if over {
 		return nil, errGrepFileTooLarge
 	}
 	return data, nil
 }
 
+// readDeadlineSetter is the read-deadline seam of a pollable handle. *os.File
+// implements it; an ordinary regular file's handle refuses a deadline, and an
+// in-memory test filesystem's file does not implement it at all.
+type readDeadlineSetter interface {
+	SetReadDeadline(time.Time) error
+}
+
+// readBounded is the single bounded-read constructor every file read shares:
+// it caps the bytes at limit, arms the stall deadline, and watches ctx — so a
+// byte-bounded read is time-bounded and cancellable by construction, and no
+// site can wire one without the others. f, when non-nil, is the pollable
+// descriptor whose deadline is armed; r is what is read (f itself, or a
+// limiter over it). overflow reports that the input held more than limit. A
+// stall surfaces as errGrepStreamStalled and a cancellation as the context's
+// error.
+func readBounded(ctx context.Context, r io.Reader, f readDeadlineSetter, limit int64) (data []byte, overflow bool, err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	if f != nil {
+		disarm := armStreamDeadline(ctx, f)
+		defer disarm()
+	}
+	// A read that cannot take a deadline — an ordinary regular file refuses
+	// SetReadDeadline — never fails for a cancellation on its own, so check ctx
+	// before each read: a cancelled read must stop rather than finish and let
+	// the caller write on a cancelled call (#4621 round 4, MEDIUM 1).
+	data, err = io.ReadAll(io.LimitReader(ctxReadGuard{ctx: ctx, r: r}, limit+1))
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return nil, false, cerr
+		}
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, false, errGrepStreamStalled
+		}
+		return nil, false, err
+	}
+	// io.ReadAll may return with the last read already satisfied before ctx was
+	// cancelled; a successful read of a cancelled call is still no data.
+	if cerr := ctx.Err(); cerr != nil {
+		return nil, false, cerr
+	}
+	return data, int64(len(data)) > limit, nil
+}
+
+// ctxReadGuard fails a read once ctx is done, so a read that cannot arm a
+// deadline still stops promptly on cancellation. A context that can never be
+// cancelled reads straight through.
+type ctxReadGuard struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (g ctxReadGuard) Read(p []byte) (int, error) {
+	if err := g.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return g.r.Read(p)
+}
+
 // armStreamDeadline arms f's read deadline for grepReadStallTimeout, watched
 // by ctx: cancellation yanks the deadline to now, so a blocked read ends
 // promptly either way. A descriptor the runtime poller does not own — the
-// ordinary blocking regular file — arms nothing, and such a read never
-// blocks past its data. The returned disarm clears the deadline and stops
-// the watcher.
-func armStreamDeadline(ctx context.Context, f *os.File) (disarm func()) {
+// ordinary blocking regular file, an in-memory test handle — refuses the
+// deadline and arms nothing; such a read never blocks past its data. The
+// returned disarm clears the deadline and stops the watcher.
+func armStreamDeadline(ctx context.Context, f readDeadlineSetter) (disarm func()) {
 	if err := f.SetReadDeadline(time.Now().Add(grepReadStallTimeout)); err != nil {
 		return func() {}
 	}
@@ -775,15 +843,19 @@ func armStreamDeadline(ctx context.Context, f *os.File) (disarm func()) {
 // errGrepStreamStalled, which readIgnoreFile's unreadable-skip class
 // already answers; a cancellation maps to itself there.
 func readIgnoreFileBytes(f fs.File, limit int64) ([]byte, error) {
+	ctx := context.Background()
+	var deadline readDeadlineSetter
 	if cf, ok := f.(*grepCtxFile); ok {
-		disarm := armStreamDeadline(cf.ctx, cf.File)
-		defer disarm()
+		ctx, deadline = cf.ctx, cf.File
 	}
-	data, err := io.ReadAll(io.LimitReader(f, limit))
+	// Cap the reader at limit BEFORE readBounded: readBounded peeks one byte
+	// past its limit, so without this an ignore file supplying exactly limit
+	// bytes and then stalling would block that peek until the stall deadline,
+	// and readIgnoreFile would swallow the stall as unreadable rather than make
+	// its over-cap refusal (#4621 round 2, M5). The caller charges its budget
+	// from len(data), so it still sees the exactly-limit read and refuses.
+	data, _, err := readBounded(ctx, io.LimitReader(f, limit), deadline, limit)
 	if err != nil {
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			return nil, errGrepStreamStalled
-		}
 		return nil, err
 	}
 	return data, nil
