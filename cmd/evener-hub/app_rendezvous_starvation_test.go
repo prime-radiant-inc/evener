@@ -280,6 +280,48 @@ exit 2
 	}
 	resumeRequest := int64(2 + queuedReads)
 	resumeSent := time.Now()
+
+	// drainRead receives id's answer without failing the test on a
+	// transport error. The cleanup drain below runs on failure exits where
+	// the original failure is already reported; its job is only to let
+	// in-flight read handlers finish, not to judge their answers.
+	drainRead := func(id int64) error {
+		if _, ok := received[id]; ok {
+			return nil
+		}
+		for {
+			message, err := transport.Recv(ctx)
+			if err != nil {
+				return err
+			}
+			switch {
+			case message.Response != nil:
+				received[message.Response.ID.Int64()] = message
+			case message.Error != nil:
+				received[message.Error.ID.Int64()] = message
+			}
+			if _, ok := received[id]; ok {
+				return nil
+			}
+		}
+	}
+	// Every exit path must receive every read's answer before the transport
+	// closes and the cleanup joins repairs. A read's handler arms its repair
+	// before its answer is written (answerRead runs before the typed error is
+	// returned), so an answer received is an arm the join's counters will
+	// see; an answer still outstanding at cleanup is a handler whose arm has
+	// not landed — a repair the join would never count, running past the
+	// accounting restore and the fixture removal. The drain rides a defer so
+	// no Fatalf exit can skip it; it is idempotent through the received map,
+	// so the green path's explicit receives make it a no-op.
+	defer func() {
+		for _, id := range readIDs {
+			if err := drainRead(id); err != nil {
+				t.Errorf("storm drain: read %d never answered: %v", id, err)
+				return
+			}
+		}
+	}()
 	send(resumeRequest, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: localAppRef(resumeID)})
 	resumeMessage := receive(resumeRequest)
 	window := time.Since(resumeSent)
