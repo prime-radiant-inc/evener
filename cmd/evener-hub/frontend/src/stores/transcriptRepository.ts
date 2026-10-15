@@ -360,7 +360,10 @@ export class TranscriptRepository {
   readonly #binding: Omit<TranscriptRepositoryBinding, "seedModel">;
   readonly #listeners = new Set<() => void>();
   readonly #writes = new Set<Promise<void>>();
-  readonly #preflightWrites = new Map<Parameters<SessionEntryCache["commitBatch"]>[0], Promise<void>>();
+  readonly #preflightWrites = new Map<
+    Parameters<SessionEntryCache["commitBatch"]>[0],
+    { revision: number; write: Promise<void> }
+  >();
   readonly #pending = new Map<string, TranscriptItemRow<CachedSessionItem>>();
   #model: ThreadModel | undefined;
   #boundary = 0;
@@ -1123,6 +1126,13 @@ export class TranscriptRepository {
       }
       const restored = this.#restoreWindow(this.#model ?? current, rows, turns, () => this.#acceptsLifetime(lifetime));
       if (!restored) return { kind: "server" };
+      // Item rows can outlive their separately read turn metadata. A turn
+      // removed from the hydrated display cannot restore those rows, so they
+      // must remain reachable through the existing local continuation.
+      const restoredTurns = new Set(restored.turns.map((turn) => turn.id));
+      if (this.#turnIDsForRows(rows, []).some((turnId) => !restoredTurns.has(turnId))) {
+        return { kind: "reconcile" };
+      }
       if (beforePublish && !beforePublish()) return { kind: "superseded" };
       this.#localOlder = nextBefore ? { ...local, before: nextBefore } : undefined;
       this.#model = restored;
@@ -2192,6 +2202,43 @@ export class TranscriptRepository {
    */
   #queueWrite(batch: Parameters<SessionEntryCache["commitBatch"]>[0], retryRevision?: number): Promise<void> {
     if (this.#binding.mayPersist?.() === false) return this.#declinePersistence(batch);
+    if (retryRevision === undefined && batch.coverage?.kind === "read" && !batch.replacement) {
+      // An ordinary read supersedes certificates, not the accepted payloads
+      // omitted by its response. Carry compatible preflight bodies and turns
+      // into its write. Newer rows already include the reducer's version/richness
+      // merge, so retain one object per key for admission and pending cleanup.
+      const inherited = [...this.#preflightWrites]
+        .filter(
+          ([prior, entry]) =>
+            entry.revision === this.#sourceRevision &&
+            (prior.coverage?.kind === "read" || prior.coverage?.kind === "suffix"),
+        )
+        .map(([prior]) => prior);
+      if (inherited.length > 0) {
+        // Replacement deletion is part of the payload operation, not its old
+        // coverage certificate. Union suffix scopes at their earliest boundary.
+        const replacementFrom = inherited
+          .flatMap((prior) => (prior.replacement ? [prior.replacement.from] : []))
+          .sort(comparePosition)[0];
+        batch = {
+          ...batch,
+          replacement: replacementFrom ? { from: replacementFrom } : undefined,
+          items: [
+            ...new Map(
+              [...inherited.flatMap((prior) => prior.items), ...batch.items].map((row) => [row.transcriptKey, row]),
+            ).values(),
+          ],
+          turns: [
+            ...new Map(
+              [...inherited.flatMap((prior) => prior.turns ?? []), ...(batch.turns ?? [])].map((turn) => [
+                turn.id,
+                turn,
+              ]),
+            ).values(),
+          ],
+        };
+      }
+    }
     const model = this.#model;
     const history = model?.history;
     if (retryRevision === undefined && model && history?.incarnation !== undefined && !this.#seedAuthorityInvalid) {
@@ -2242,7 +2289,7 @@ export class TranscriptRepository {
       batch.coverage?.kind === "suffix"
         ? [...this.#preflightWrites]
             .filter(([prior]) => prior.coverage?.readId === batch.coverage?.readId)
-            .map(([, write]) => write)
+            .map(([, entry]) => entry.write)
         : [];
     if (retryRevision === undefined && this.#capacityRefusal !== undefined) {
       // A lookup retains its candidate just like a write. Charge it to ordinary
@@ -2277,7 +2324,16 @@ export class TranscriptRepository {
           this.#inFlight.delete(batch);
           this.#admission.release(bodies, this);
         }
-        if (issuedRevision !== this.#sourceRevision) {
+        // Ordinary reads share a source revision but replace the read window.
+        // A delayed plan must not commit the window an intervening read replaced.
+        // Pages have independent request IDs and belong to the page authority,
+        // not to the baseline read ID.
+        if (
+          issuedRevision !== this.#sourceRevision ||
+          ((batch.coverage?.kind === "read" || batch.coverage?.kind === "suffix") &&
+            batch.coverage.readId !== this.#coverageReadId) ||
+          (batch.coverage?.kind === "page" && batch.coverage.authority !== this.#baselineIdentity)
+        ) {
           for (const row of batch.items) {
             if (this.#pending.get(row.transcriptKey) === row) this.#pending.delete(row.transcriptKey);
           }
@@ -2287,7 +2343,7 @@ export class TranscriptRepository {
         return this.#admitWrite(batch, issuedRevision, false);
       };
       const checked = check();
-      this.#preflightWrites.set(batch, checked);
+      this.#preflightWrites.set(batch, { revision: issuedRevision, write: checked });
       this.#writes.add(checked);
       void checked.finally(() => {
         this.#preflightWrites.delete(batch);

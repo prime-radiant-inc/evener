@@ -1071,6 +1071,80 @@ test.each(["empty", "short"])(
   },
 );
 
+test("raw paging preserves missing-metadata rows evicted between payload reads", async () => {
+  const cache = new SessionEntryCache({
+    indexedDB: new IDBFactory(),
+    keyRange: IDBKeyRange,
+    databaseName: `entry-metadata-race-${crypto.randomUUID()}`,
+    maxBytes: 20_000,
+    now: () => 1000,
+  });
+  const repo = repository(cache, 1, () => 1000);
+  const response = readOf([1, 2, 3, 4, 5, 6, 7]);
+  response.thread.turns!.push({
+    ...response.thread.turns![0]!,
+    id: "turn_2",
+    items: [8, 9, 10].map((entry) => ({ ...itemOf(entry), turnId: "turn_2" })),
+  });
+  response.snapshot = { incarnation: identity.incarnation, length: 10 };
+  try {
+    repo.acceptRead(response, { lifetime: 1, readId: "r1", boundary: "b1" });
+    await repo.settled();
+    const reader = repo.attachReader();
+    try {
+      const opened = await reader.openLocal(3);
+      expect(opened.model?.turns.map((turn) => turn.id)).toEqual(["turn_2"]);
+      expect(opened.model?.olderCursor).toBeUndefined();
+      expect(repo.localOlderPosition()).toEqual({ entry: 8, item: 0 });
+      const savedRows = await cache.getLatest(historyKey, 40);
+      const savedTurns = reader.getSnapshot()!.history!.turns;
+      const getBefore = cache.getBefore.bind(cache);
+      vi.spyOn(cache, "getBefore").mockImplementationOnce(async (...args) => {
+        const rows = await getBefore(...args);
+        expect(rows).toHaveLength(7);
+        const before = await cache.getByteTotals(historyKey);
+        expect(
+          (
+            await cache.commitBatch({
+              historyKey: "other-history",
+              clearEpoch: 0,
+              items: [
+                {
+                  historyKey: "other-history",
+                  transcriptKey: "other",
+                  position: { entry: 1, item: 0 },
+                  version: 1,
+                  item: { ...itemOf(1), text: "x".repeat(20_000 - before.historyBytes + 500) },
+                },
+              ],
+            })
+          ).outcome,
+        ).toBe("committed");
+        expect(await cache.getTurn(historyKey, "turn_1")).toBeUndefined();
+        return rows;
+      });
+      expect((await repo.loadOlderPage(40, 1)).kind).toBe("reconcile");
+      expect(repo.localOlderPosition()).toEqual({ entry: 8, item: 0 });
+      expect(reader.getSnapshot()?.olderCursor).toBeUndefined();
+      // Once metadata is available again, the retained raw frontier can serve
+      // the bodies without a server cursor or a new read certificate.
+      expect(
+        (await cache.commitBatch({ historyKey, clearEpoch: 0, items: savedRows, turns: savedTurns })).outcome,
+      ).toBe("committed");
+      expect((await repo.loadOlderPage(40, 1)).kind).toBe("local");
+      expect(reader.getSnapshot()?.turns.flatMap((turn) => turn.items.map((item) => item.text))).toEqual(
+        Array.from({ length: 10 }, (_, index) => `row-${index + 1}`),
+      );
+      expect(repo.localOlderPosition()).toBeUndefined();
+    } finally {
+      reader.dispose();
+    }
+  } finally {
+    repo.dispose();
+    cache.close();
+  }
+});
+
 test("an open reader keeps its loaded rows when disk eviction removes the history", async () => {
   const databaseName = `entry-paging-evict-${crypto.randomUUID()}`;
   const indexedDB = new IDBFactory();
