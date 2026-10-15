@@ -14,6 +14,7 @@ import {
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireThread } from "@evener/appwire-client/testing/notifications";
+import { summaryFailureWireFixture } from "@evener/appwire-client/testing/summaryFailureWireFixtures";
 import {
 	type SystemEventWireCase,
 	systemEventWireFailedTurn,
@@ -164,6 +165,21 @@ describe("a failed turn (G5)", () => {
 		expect(
 			rows.filter((row) => row.kind === "failure" || (row.kind === "notice" && row.eventKind === "error")),
 		).toHaveLength(1);
+	});
+});
+
+describe("recorded summary failure", () => {
+	it.each(LEVELS)("retains the failed route in an attention row at %s", (level) => {
+		const fixture = summaryFailureWireFixture();
+		const { rows } = rowsAt(level, [completedTurn([fixture.item, fixture.recovery])], false);
+		const row = rows.find((entry) => entry.id === fixture.item.id);
+		if (row?.kind !== "notice") throw new Error("summary warning notice was lost");
+		expect(isCriticalNotice(row)).toBe(true);
+		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="summary-fixture" />);
+		for (const identifier of ["openai/summary-model-8af1", "429", "rate_limit"])
+			expect(renderedText(tree)).toContain(identifier);
+		expect(inked(tree, palettes.light.attention)).toBe(true);
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "button")).toHaveLength(0);
 	});
 });
 

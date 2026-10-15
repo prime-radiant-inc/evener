@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -635,6 +636,9 @@ const WarningCodeDelegateAttentionUndeliverable = "delegate_attention_undelivera
 // codes, clients show it at every level: it is news the user must act on.
 const WarningCodeAttentionPaused = "attention_paused"
 
+// WarningCodeSummaryFailure identifies a failed conversation summarization.
+const WarningCodeSummaryFailure = "summary_failure"
+
 // WarningData is the payload for an EventWarning event.
 type WarningData struct {
 	Message           string `json:"message"`
@@ -654,6 +658,8 @@ type WarningData struct {
 	// the event the matcher was declared under) for a hook-configuration
 	// warning. Carries only the name, no hook payload or secrets.
 	EventName string `json:"event_name,omitempty"`
+	// SummaryFailure carries bounded route and failure metadata, never provider text.
+	SummaryFailure *diagnostic.SummaryFailure `json:"summary_failure,omitempty"`
 }
 
 // ErrorData is the payload for an EventError event.

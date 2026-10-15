@@ -1,0 +1,55 @@
+{
+  "warning": {
+    "message": "Summary failed for fast/cheap model openai/summary-model-8af1: rate_limit (HTTP 429)",
+    "source": "provider",
+    "code": "summary_failure",
+    "title": "Summary rate limited",
+    "hint": "Wait before retrying, or choose a summary route with available rate capacity. This is the fast/cheap model, which may be configured separately from the main model. Existing history or the checkpoint remains available.",
+    "summary_failure": {
+      "terminal": {
+        "provider": "openai",
+        "model": "summary-model-8af1",
+        "route": "cheap",
+        "kind": "rate_limit",
+        "stage": "provider",
+        "status": 429,
+        "retryable": true
+      }
+    }
+  },
+  "item": {
+    "type": "systemMessage",
+    "id": "notice:0",
+    "turnId": "turn_1",
+    "text": "Summary failed for fast/cheap model openai/summary-model-8af1: rate_limit (HTTP 429)",
+    "description": "Summary rate limited",
+    "status": "completed",
+    "raw": {
+      "warning": {
+        "code": "summary_failure",
+        "hint": "Wait before retrying, or choose a summary route with available rate capacity. This is the fast/cheap model, which may be configured separately from the main model. Existing history or the checkpoint remains available.",
+        "source": "provider",
+        "title": "Summary rate limited"
+      }
+    },
+    "eventKind": "warning"
+  },
+  "recovery": {
+    "type": "systemMessage",
+    "id": "recovery_1",
+    "turnId": "turn_1",
+    "text": "Layer: summarize\nTurns: 3 -\u003e 3\nEstimated tokens: 189 -\u003e 201",
+    "description": "Context compaction",
+    "status": "completed",
+    "raw": {
+      "compaction": {
+        "layer": "summarize",
+        "turns_before": 3,
+        "turns_after": 3,
+        "est_tokens_before": 189,
+        "est_tokens_after": 201
+      }
+    },
+    "eventKind": "context_compaction"
+  }
+}

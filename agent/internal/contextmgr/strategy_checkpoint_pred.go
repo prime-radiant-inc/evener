@@ -134,8 +134,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]s
 			// detailed level, with a neutral title and hint so the
 			// classifier's fallback does not stamp it as an error.
 			emitFn(events.EventWarning, events.WarningData{
-				// Bare, as summarizerFailureWarning is: the error can carry a
-				// provider body echoing the conversation.
+				// Omit the raw error, which can echo the conversation.
 				Message: "Predictive checkpoint failed, using deterministic",
 				Source:  string(diagnostic.SourceEvener),
 				Title:   "Context budget",

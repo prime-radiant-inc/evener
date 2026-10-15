@@ -159,6 +159,12 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 		}
 	}
 	if err == nil || cheap == active || !refusesModel(err) {
+		if err != nil {
+			err = &ResolutionError{
+				Terminal: AttemptFailure{Provider: cheap.provider, Model: cheap.model, Err: err},
+				cause:    err,
+			}
+		}
 		return resp, cheap == active, err
 	}
 
@@ -188,11 +194,14 @@ func (c *Caller) complete(ctx context.Context, profile *provider.Profile, cheap 
 		fallbackErr = llm.WrapContextError(active.provider, fallbackErr)
 		joinedErr := errors.Join(fallbackErr, err)
 		if allModelsRefused {
-			c.finishProbe(cheap, refusedProbe, false)
-			return llm.Response{}, true, errors.Join(ErrAllModelsRefused, joinedErr)
+			joinedErr = errors.Join(ErrAllModelsRefused, joinedErr)
 		}
 		c.finishProbe(cheap, refusedProbe, false)
-		return llm.Response{}, true, joinedErr
+		return llm.Response{}, true, &ResolutionError{
+			Terminal: AttemptFailure{Provider: active.provider, Model: active.model, Err: fallbackErr},
+			Previous: []AttemptFailure{{Provider: cheap.provider, Model: cheap.model, Err: err}},
+			cause:    joinedErr,
+		}
 	}
 	c.finishProbe(cheap, refusedProbe, true)
 	return fallbackResp, true, nil

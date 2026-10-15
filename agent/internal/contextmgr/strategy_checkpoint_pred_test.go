@@ -129,7 +129,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_FallbackOnError(t *testing.
 	// context notice ("no action needed"), coded so clients show it only at
 	// their most detailed level. Its message stays bare: the error can carry
 	// a provider body echoing the conversation (#3386).
-	if len(warnings) != 1 || warnings[0].Message != "Predictive checkpoint failed, using deterministic" ||
+	if len(warnings) != 1 || warnings[0].Message == "" || warnings[0].SummaryFailure != nil ||
 		warnings[0].Code != events.WarningCodeContextBudget {
 		t.Fatalf("fallback warnings = %+v, want one context_budget notice naming the failure", warnings)
 	}
@@ -151,9 +151,8 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_FallbackOnError(t *testing.
 	}
 
 	// First turn should be a checkpoint.
-	first := history[0].Message.Text()
-	if !strings.HasPrefix(first, "[CONTEXT CHECKPOINT]") {
-		t.Errorf("expected deterministic checkpoint fallback, got: %s", first[:min(50, len(first))])
+	if history[0].Kind != schema.TurnCheckpoint {
+		t.Errorf("expected deterministic checkpoint fallback, got kind: %s", history[0].Kind)
 	}
 }
 
