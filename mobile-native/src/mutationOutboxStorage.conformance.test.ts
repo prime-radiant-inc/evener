@@ -47,4 +47,13 @@ describeMutationOutboxStorage({
 			.prepare(`UPDATE ${TABLES.outbox} SET unresolved_attempts = 0 WHERE client_mutation_id = ?`)
 			.run(clientMutationId);
 	},
+	stripCaptureAtEnqueue(_storage, clientMutationId) {
+		const database = databaseFor.get(_storage as MutationOutboxSQLite);
+		if (!database) throw new Error("conformance storage missing its raw database");
+		// The pre-capture column value: the migration's DEFAULT 0, exactly
+		// as a pre-field row reads after the upgrade.
+		database
+			.prepare(`UPDATE ${TABLES.outbox} SET stop_epoch_at_enqueue = 0 WHERE client_mutation_id = ?`)
+			.run(clientMutationId);
+	},
 });

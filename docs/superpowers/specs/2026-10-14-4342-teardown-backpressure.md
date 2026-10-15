@@ -546,7 +546,18 @@ fixtures, and an injectable transport/observer where needed.
   INSERT shape, so the instance_id loop precedent applies, not the
   outbox-only precedent of direct-SQL columns like the attempt count -
   or an upgraded optimistic or recovery write throws on the column the
-  old schema never gained.
+  old schema never gained. The review after that closed the seam those
+  rows still held: a record from before the capture field existed (on
+  native, the migration column's DEFAULT 0) fence-canceled its first
+  refusal against a Stop older than the row. The first mark now
+  initializes the capture, inside the mark's own transaction, from the
+  epoch the row's survival proves it was born at - any Stop since its
+  birth would have scan-canceled it while unattempted - so the fence
+  compares against the birth epoch; a modern row born at epoch zero is
+  written back unchanged, the conditional read keeps every modern row's
+  request sequence byte-identical (the note editor's drain), and a
+  legacy pending interrupt redelivers on refusal instead of canceling
+  its own Stop, the round-5 interrupt rule held for the legacy shape.
 - The busy surface's visible copy is pinned structurally, not verbatim
   (round-4 review, low): the queue row's reason span carries a
   data-busy-reason hook asserted non-empty, the ghost's caption stage and

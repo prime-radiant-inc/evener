@@ -56,4 +56,28 @@ describeMutationOutboxStorage({
       open.onerror = () => reject(open.error);
     });
   },
+  async stripCaptureAtEnqueue(storage, clientMutationId) {
+    const handle = legacyHandles.get(storage as MutationOutboxIndexedDB);
+    if (!handle) throw new Error("conformance storage missing its raw handle");
+    await new Promise<void>((resolve, reject) => {
+      const open = handle.indexedDB.open(handle.databaseName);
+      open.onsuccess = () => {
+        const db = open.result;
+        const transaction = db.transaction("outbox", "readwrite");
+        const store = transaction.objectStore("outbox");
+        const get = store.get(clientMutationId);
+        get.onsuccess = () => {
+          const next = { ...(get.result as Record<string, unknown>) };
+          delete next.stopEpochAtEnqueue;
+          store.put(next);
+        };
+        transaction.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        transaction.onerror = () => reject(transaction.error);
+      };
+      open.onerror = () => reject(open.error);
+    });
+  },
 });

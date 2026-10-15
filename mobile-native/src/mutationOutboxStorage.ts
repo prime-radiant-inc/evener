@@ -342,6 +342,20 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	// reload cannot mistake a possibly-delivered mutation for an unsent intent.
 	async markAttempted(clientMutationId: string): Promise<boolean> {
 		this.#seedLegacyAttemptCount(clientMutationId);
+		// A row from before the capture column existed reads the migration's
+		// DEFAULT 0. Its first mark proves by survival that no Stop's cancel
+		// scan has run since its birth - any bump would have canceled it
+		// while unattempted - so the epoch as it stands IS the epoch it was
+		// born at: initialize the capture from the sequence here, and the
+		// refusal's fence compares against the birth epoch instead of a
+		// zero a historical Stop trips. A modern row born at epoch zero is
+		// written back unchanged.
+		this.db.runSync(
+			`UPDATE ${TABLES.outbox}
+			 SET stop_epoch_at_enqueue = COALESCE((SELECT stop_epoch FROM mutation_sequence WHERE target_ref = ${TABLES.outbox}.target_ref), 0)
+			 WHERE client_mutation_id = ? AND state = 'submitting' AND stop_epoch_at_enqueue = 0`,
+			clientMutationId,
+		);
 		return (
 			changedRows(
 				this.db.runSync(

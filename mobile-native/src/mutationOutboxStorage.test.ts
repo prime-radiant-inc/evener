@@ -168,6 +168,38 @@ test("an upgrade from the previous schema settles receipts and transfers recover
 	expect(rawRow("mutation_recovery", second.clientMutationId)).toBeDefined();
 });
 
+// #4342 (round-8 review): the migration column restores as DEFAULT 0, so a
+// pre-capture row born after a historical Stop reads zero against a nonzero
+// epoch once the upgrade has run. Its first refusal must stay transient -
+// the mark initializes the capture from the epoch the row's own survival
+// proves it was born at - instead of fence-canceling against the Stop that
+// predates it.
+test("an upgraded pre-capture row's first refusal after a historical Stop stays transient", async () => {
+	const stopped = await storage.enqueueInterruptAndCancel({
+		...intent("stop once"),
+		method: "turn/interrupt",
+		payload: { ref: TARGET },
+		optimisticDisplay: { method: "turn/interrupt" },
+	});
+	const preCapture = await storage.enqueueIntent(intent("born before the upgrade"));
+
+	// The previous schema's row: the capture column's absence, then the
+	// upgrade restoring it as DEFAULT 0 over the same row.
+	database.prepare("ALTER TABLE mutation_outbox DROP COLUMN stop_epoch_at_enqueue").run();
+	openStorage();
+	expect((await storage.getOutbox(preCapture.clientMutationId))?.stopEpochAtEnqueue).toBe(0);
+
+	await expect(storage.markAttempted(preCapture.clientMutationId)).resolves.toBe(true);
+	await expect(storage.unmarkAttempted(preCapture.clientMutationId)).resolves.toBe(true);
+	const restored = await storage.getOutbox(preCapture.clientMutationId);
+	expect(restored).toMatchObject({ state: "submitting", attempted: false });
+	// The interrupt row carried the same zero after the upgrade: it
+	// redelivers too, instead of fence-canceling its own Stop.
+	await expect(storage.markAttempted(stopped.clientMutationId)).resolves.toBe(true);
+	await expect(storage.unmarkAttempted(stopped.clientMutationId)).resolves.toBe(true);
+	expect((await storage.getOutbox(stopped.clientMutationId))?.state).toBe("submitting");
+});
+
 // #4342 (round-5 review): an explicit release is the user deliberately
 // sending after a Stop (§4's exemption), so it re-authorizes the row past
 // the Stop its fence captured: the release refreshes the capture to the

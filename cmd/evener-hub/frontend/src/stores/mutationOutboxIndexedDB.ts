@@ -749,12 +749,25 @@ export class MutationOutboxIndexedDB {
   // record written before the count field existed carries its evidence as
   // the bare attempted boolean, which reads as one unresolved attempt.
   async markAttempted(clientMutationId: string): Promise<boolean> {
-    return this.#write(OUTBOX_STORE, "markAttempted", async (transaction) => {
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "markAttempted", async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (record?.state !== "submitting") return false;
       const unresolvedAttempts = priorUnresolvedAttempts(record) + 1;
-      await requestResult(store.put({ ...record, attempted: true, unresolvedAttempts }));
+      // A row from before the capture field existed (persisted untouched
+      // through every later schema version) proves by survival, at its
+      // first mark, that no Stop's cancel scan has run since its birth -
+      // any bump would have canceled it while unattempted - so the epoch
+      // as it stands IS the epoch it was born at: initialize the capture
+      // here, and the refusal's fence compares against the birth epoch
+      // instead of an inherited zero a historical Stop trips. The
+      // conditional keeps every modern row's request sequence byte
+      // identical (the note editor's tightly-sequenced drain).
+      const stopEpochAtEnqueue =
+        record.stopEpochAtEnqueue === undefined
+          ? await this.#stopEpochOf(transaction, record.targetRef)
+          : record.stopEpochAtEnqueue;
+      await requestResult(store.put({ ...record, attempted: true, unresolvedAttempts, stopEpochAtEnqueue }));
       return true;
     });
   }
