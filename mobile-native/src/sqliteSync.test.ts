@@ -105,12 +105,17 @@ test("puts the warning hook back even when loading the module throws", () => {
 
 test("the savepoint helper reports the body's failure when the engine already ended the transaction", () => {
 	const { port } = fixture();
-	expect(() =>
+	const bodyFailure = new Error("the body failed");
+	let caught: unknown;
+	try {
 		withSavepoint(port, "shared_savepoint", () => {
 			port.execSync("ROLLBACK TO shared_savepoint; RELEASE shared_savepoint");
-			throw new Error("database or disk is full");
-		}),
-	).toThrow("database or disk is full");
+			throw bodyFailure;
+		});
+	} catch (error) {
+		caught = error;
+	}
+	expect(caught).toBe(bodyFailure);
 });
 
 test.each([
