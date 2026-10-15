@@ -1,5 +1,6 @@
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
 import { vi } from "vitest";
+import { CLEAR_EPOCH_KEY, ENTRY_META_STORE } from "../sessionCacheSchema";
 
 // A request that never fires success, error, or blocked: the wedged
 // connection-coordinator shape, where open()/deleteDatabase() return and then
@@ -26,6 +27,19 @@ export function neverSettlingFactory(): IDBFactory {
   return indexedDB;
 }
 
+// Wedge every open() of `databaseName` on this factory: the request comes back
+// but never fires success, error or blocked. Opens of any other database still
+// reach the real factory, so a probe can open a different one and finish. The
+// returned spy restores the real open() when the test calls mockRestore().
+export function wedgeDatabaseOpens(indexedDB: IDBFactory, databaseName: string) {
+  const open = indexedDB.open.bind(indexedDB);
+  return vi
+    .spyOn(indexedDB, "open")
+    .mockImplementation((name: string, version?: number) =>
+      name === databaseName ? neverSettlingRequest() : open(name, version),
+    );
+}
+
 // Delete the named database between tests, so no row one test seeded survives
 // into the next one. "blocked" is a bed bug — a connection the test left
 // open — not an outcome to wait out, so it rejects like an error.
@@ -48,13 +62,13 @@ export function deleteIndexedDatabase(name: string): Promise<void> {
 // connection closes once it commits.
 export function bumpCacheEpochRow(indexedDB: IDBFactory, epoch: number): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const request = indexedDB.open("evener-session-cache", 1);
+    const request = indexedDB.open("evener-session-cache");
     request.addEventListener(
       "success",
       () => {
         const database = request.result;
-        const tx = database.transaction("meta", "readwrite");
-        tx.objectStore("meta").put({ ref: "__clearEpoch", epoch });
+        const tx = database.transaction(ENTRY_META_STORE, "readwrite");
+        tx.objectStore(ENTRY_META_STORE).put({ historyKey: CLEAR_EPOCH_KEY, epoch });
         tx.addEventListener(
           "complete",
           () => {
@@ -118,12 +132,12 @@ export function holdIndexedDBEvent(target: EventTarget, type: string) {
   };
 }
 
-// Holds the next readwrite transaction opened over exactly `stores`:
-// fake-indexeddb commits it, but its "complete" event, and with it the
-// storage call that is waiting on that event, stays held until release().
-// `reached` resolves once the held event has arrived, which is when the
-// write is durably done yet still in flight for everything awaiting it.
-export function holdNextWriteTransaction(stores: readonly string[]) {
+// Holds the next transaction in `mode` opened over exactly `stores`:
+// fake-indexeddb commits it, but its "complete" event, and with it the storage
+// call that is waiting on that event, stays held until release(). `reached`
+// resolves once the held event has arrived, which is when the work is durably
+// done yet still in flight for everything awaiting it.
+export function holdNextTransaction(stores: readonly string[], mode: IDBTransactionMode) {
   const transact = IDBDatabase.prototype.transaction;
   let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
   let markReached: (() => void) | undefined;
@@ -137,7 +151,7 @@ export function holdNextWriteTransaction(stores: readonly string[]) {
     const transaction = transact.apply(this, args);
     if (
       !hold &&
-      transaction.mode === "readwrite" &&
+      transaction.mode === mode &&
       transaction.objectStoreNames.length === stores.length &&
       stores.every((store) => transaction.objectStoreNames.contains(store))
     ) {
@@ -153,6 +167,12 @@ export function holdNextWriteTransaction(stores: readonly string[]) {
       hold?.release();
     },
   };
+}
+
+// Holds the next readwrite transaction opened over exactly `stores` (the
+// session cache's four-store write). See holdNextTransaction.
+export function holdNextWriteTransaction(stores: readonly string[]) {
+  return holdNextTransaction(stores, "readwrite");
 }
 
 // One real macrotask hop, off the faked timers: MessageChannel is a task the

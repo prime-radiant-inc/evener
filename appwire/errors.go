@@ -47,6 +47,18 @@ const (
 	// is not a failure: the index shows it as one unreadable-entry item. Its
 	// data is HistoryReadErrorData.
 	ErrorTranscriptHistoryFailed ErrorInfo = "transcriptHistoryFailed"
+	// ErrorTranscriptIndexRebuilding marks a history read whose transcript
+	// index needs a rebuild the hub has taken ownership of in the
+	// background: one repair runs off the read path, and the read that
+	// follows its commit succeeds. Its data is HistoryReadErrorData.
+	ErrorTranscriptIndexRebuilding ErrorInfo = "transcriptIndexRebuilding"
+	// ErrorTranscriptIndexLocked marks a history read that met the
+	// transcript index's lock in ordinary contention — a writer
+	// mid-extension or a foreign rebuild — with no hub repair in flight:
+	// the hub has registered nothing, and retrying is the right response.
+	// Its data is HistoryReadErrorData once the wire stamps the read
+	// identity, ErrorData before.
+	ErrorTranscriptIndexLocked ErrorInfo = "transcriptIndexLocked"
 	// ErrorUpgradeRequired marks initialize refusing a client that announced
 	// an older AppWire protocol than the server speaks; the message names both
 	// versions.
@@ -212,6 +224,16 @@ const (
 	// The live-external reconcile validation (§15) rides the same discriminator
 	// with `{source, hostCount}` data on its own path.
 	ErrorConcurrentEdit ErrorInfo = "concurrent-edit"
+	// ErrorConnectionBackpressure marks the hub's in-band refusal of a
+	// retry-safe mutation that arrived while the connection's inbound request
+	// queue was at or beyond its high-water depth: the mutation was never
+	// queued and never started, and the hub's journal holds nothing for it.
+	// It shares CodeUnavailable with ordinary unavailability, so a client that
+	// wants to distinguish backpressure matches this discriminant, never the
+	// code. Its data is the standard ErrorData carrying the transient mutation
+	// envelope (notAccepted plus retryDisposition automatic) and a cause
+	// naming why.
+	ErrorConnectionBackpressure ErrorInfo = "connectionBackpressure"
 )
 
 // StaleEntryBinding names which binding a stale-entry refusal fired on, exactly
@@ -553,10 +575,16 @@ func (e WireError) Error() string {
 // mutation retry for a failure that was never a transport loss.
 type TransportFailureError struct {
 	WireError
+	// Cause is the failure that ended the client's read loop, such as the
+	// transport's receive error or ErrNotificationOverflow, when known.
+	Cause error
 }
 
 // Unwrap exposes the synthesized WireError so errors.As(err, &WireError) still
-// matches exactly as it did before provenance was retained.
+// matches exactly as it did before provenance was retained. Cause stays out of
+// the chain: callers classify request errors with errors.Is against context,
+// EOF and closed-connection sentinels, and a lost connection must not match
+// those just because its read loop ended with one.
 func (e TransportFailureError) Unwrap() error { return e.WireError }
 
 // IsTransportFailure reports whether err is a failure the client synthesized
@@ -671,6 +699,37 @@ func TranscriptHistoryFailed(ordinal uint64) WireError {
 		Code:    CodeInternalError,
 		Message: fmt.Sprintf("thread history failed at entry %d", ordinal),
 		Data:    ErrorData{EvenerErrorInfo: ErrorTranscriptHistoryFailed},
+	}
+}
+
+// TranscriptIndexRebuilding reports a history read whose transcript index is
+// being rebuilt in the background: retrying is the right response, and the
+// read that follows the repair's commit succeeds. The history read stamps it
+// with WithHistoryReadIdentity.
+func TranscriptIndexRebuilding() WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: "thread history is being rebuilt in the background",
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorTranscriptIndexRebuilding,
+			RetryDisposition: RetryDispositionAutomatic,
+		},
+	}
+}
+
+// TranscriptIndexLocked reports a history read that met the transcript
+// index's lock in ordinary contention — a writer mid-extension or a foreign
+// rebuild — with no hub repair in flight: retrying is the right response, and
+// the hub has registered nothing for it. The history read stamps it with
+// WithHistoryReadIdentity.
+func TranscriptIndexLocked() WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: "thread history index is busy with a live writer",
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorTranscriptIndexLocked,
+			RetryDisposition: RetryDispositionAutomatic,
+		},
 	}
 }
 
@@ -821,6 +880,63 @@ func MutationUnknown(clientMutationID, message string) WireError {
 			Cause:            "persistenceUnavailable",
 		},
 	}
+}
+
+// BackpressureCauseQueueSaturated is the one cause a connectionBackpressure
+// refusal carries: the connection's inbound request queue was at or beyond
+// its high-water depth when the mutation arrived, so the hub refused the
+// mutation without queueing it.
+const BackpressureCauseQueueSaturated = "queueSaturated"
+
+// BackpressureRefusal is the hub's in-band refusal of a retry-safe mutation
+// that arrived on a connection whose inbound request queue was at or beyond
+// its high-water depth: the mutation was never queued and never started, so
+// an identical retry is safe — the ClientMutationID dedup on admission
+// already guards a double-apply. The envelope is the transient one the
+// shared dispatcher classifies (notAccepted plus automatic); message states
+// what happened on the hub and promises nothing about what the client will
+// do, because the TUI and the direct-send fallback do not retry
+// automatically.
+func BackpressureRefusal(clientMutationID, message string) WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: message,
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorConnectionBackpressure,
+			ClientMutationID: clientMutationID,
+			MutationOutcome:  MutationOutcomeNotAccepted,
+			RetryDisposition: RetryDispositionAutomatic,
+			Cause:            BackpressureCauseQueueSaturated,
+		},
+	}
+}
+
+// retrySafeMutationMethods is the wire contract the hub and the shared
+// TypeScript dispatcher both hold for which mutation requests are safe to
+// resend unchanged: each carries a clientMutationId, and the ClientMutationID
+// dedup on admission makes a raced resend a replay no-op. The hub refuses
+// only these in band for backpressure; the dispatcher holds the same set
+// (RETRY_SAFE_MUTATION_METHODS, appwire-client/typescript/state/mutation/
+// dispatcher.ts), and TestRetrySafeMutationMethodsMatchSharedDispatcher pins
+// the two equal. thread/start is deliberately absent: it can refuse after
+// the session has spawned (#3184), so a resend is not always safe.
+var retrySafeMutationMethods = map[string]bool{
+	MethodTurnStart:                true,
+	MethodTurnSteer:                true,
+	MethodTurnInterrupt:            true,
+	MethodTurnQueue:                true,
+	MethodTurnDrainAsSteer:         true,
+	MethodTurnPromoteQueuedAsSteer: true,
+	MethodTurnCancelQueued:         true,
+	MethodThreadClear:              true,
+	MethodNotesHumanSet:            true,
+}
+
+// RetrySafeMutationMethod reports whether name is a retry-safe mutation
+// method: one whose request the hub may refuse in band for backpressure, and
+// one a client may resend unchanged.
+func RetrySafeMutationMethod(name string) bool {
+	return retrySafeMutationMethods[name]
 }
 
 func Unavailable(message string) WireError {

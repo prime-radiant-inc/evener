@@ -341,9 +341,9 @@ func (r *scriptedLaneRepo) addSiblingLane(t *testing.T, dirName, branch string) 
 }
 
 // scriptedGitRepoEnvironmentInfo reports the launch cwd as a git checkout on top
-// of the plain scripted snapshot. The §5 init-inside occupancy rule is gated on
-// the caller's already-computed snapshotGit result, which the scripted boundary
-// suppresses, so a session that must reach that rule needs this snapshot.
+// of the plain scripted snapshot. The §5 init-inside occupancy rule no longer
+// depends on it (it decides repo-ness structurally since #4132), but these
+// sessions do launch inside a git worktree, so the snapshot should say so.
 func scriptedGitRepoEnvironmentInfo(env execenv.ExecutionEnvironment, clk clock.Clock) schema.EnvironmentInfo {
 	info := scriptedEnvironmentInfo(env, clk)
 	info.IsGitRepo = true
@@ -352,7 +352,7 @@ func scriptedGitRepoEnvironmentInfo(env execenv.ExecutionEnvironment, clk clock.
 
 // launchInside is sessionAt for a session that must run the §5 init-inside
 // occupancy rule during its own construction: the environment snapshot reports
-// the launch cwd as a git checkout, which is the flag that rule is gated on.
+// the launch cwd as a git checkout.
 func (r *scriptedLaneRepo) launchInside(t *testing.T, dir string) *scriptedLaneRepo {
 	t.Helper()
 	cfg := worktreeTestSessionConfig()

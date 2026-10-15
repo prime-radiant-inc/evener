@@ -56,11 +56,12 @@ test("the shared recipe leaves the type face to the composing widget", () => {
 });
 
 const COMPOSERS = [
-  { widget: "modelCatalog", face: "var(--font-sans)" },
-  { widget: "pathfield", face: "var(--font-mono)" },
+  { widget: "modelCatalog", face: "var(--font-sans)", triggerClass: "trigger" },
+  { widget: "pathfield", face: "var(--font-mono)", triggerClass: "pathTrigger" },
 ];
 
-for (const { widget, face } of COMPOSERS) {
+for (const { widget, face, triggerClass } of COMPOSERS) {
+  const triggerRule = new RegExp(`\\.${triggerClass}\\s*\\{([^}]*)\\}`);
   const css = declarations(`${widget}/${widget}.module.css`);
 
   test(`${widget} composes the shared trigger rather than copying it`, () => {
@@ -70,7 +71,7 @@ for (const { widget, face } of COMPOSERS) {
   });
 
   test(`${widget} states its own type face on the trigger`, () => {
-    const trigger = css.match(/\.trigger\s*\{([^}]*)\}/)?.[1] ?? "";
+    const trigger = css.match(triggerRule)?.[1] ?? "";
     expect(trigger).toContain(`font-family: ${face}`);
   });
 
@@ -78,7 +79,7 @@ for (const { widget, face } of COMPOSERS) {
   // reintroduces its own height/border/padding on .trigger is back to two
   // copies that can drift.
   test(`${widget} does not re-declare the shared box locally`, () => {
-    const trigger = css.match(/\.trigger\s*\{([^}]*)\}/)?.[1] ?? "";
+    const trigger = css.match(triggerRule)?.[1] ?? "";
     // Every assertion in this loop is negative, so without a non-empty guard a
     // widget whose .trigger rule disappeared would pass "does not re-declare"
     // by having no rule at all.

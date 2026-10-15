@@ -155,12 +155,26 @@ test("a boolean control's (default) option names the resolved default (On/Off)",
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
-  const labels = (name: string) =>
-    Array.from((screen.getByLabelText(name) as HTMLSelectElement).options).map((o) => o.textContent);
-  expect(labels("Log API requests")).toEqual(["On (default)", "On", "Off"]);
-  expect(labels("Verbose event log")).toEqual(["Off (default)", "On", "Off"]);
-  // No layer sets this one: the plain word stays.
-  expect(labels("Non-interactive")).toEqual(["(default)", "On", "Off"]);
+  // Each boolean select is [unset, On, Off]; the unset option names the
+  // resolved value by carrying that choice's own label.
+  const options = (name: string) => Array.from((screen.getByLabelText(name) as HTMLSelectElement).options);
+  for (const name of ["Log API requests", "Verbose event log", "Non-interactive"]) {
+    expect(
+      options(name)
+        .map((o) => o.value)
+        .slice(1),
+    ).toEqual(["true", "false"]);
+  }
+  const [apiUnset, apiOn] = options("Log API requests");
+  expect(apiUnset?.textContent).toContain(apiOn?.textContent);
+  const [verboseUnset, verboseOn, verboseOff] = options("Verbose event log");
+  expect(verboseUnset?.textContent).toContain(verboseOff?.textContent);
+  expect(verboseUnset?.textContent).not.toContain(verboseOn?.textContent);
+  // No layer sets this one: the unset option names neither choice.
+  const [plainUnset, plainOn, plainOff] = options("Non-interactive");
+  expect(plainUnset?.textContent ?? "").not.toBe("");
+  expect(plainUnset?.textContent).not.toContain(plainOn?.textContent);
+  expect(plainUnset?.textContent).not.toContain(plainOff?.textContent);
 });
 
 test("a select control renders exactly one empty option, carrying the resolved default's label", async () => {
@@ -187,7 +201,7 @@ test("a select control renders exactly one empty option, carrying the resolved d
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
   const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
-  expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["high (default)", "high", "max"]);
+  expect(select.options[0]?.textContent).toContain("high");
   expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "high", "max"]);
 });
 
@@ -208,7 +222,9 @@ test("a select control without a resolved default dedupes the schema's own empty
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
   const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
-  expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["(default)", "high"]);
+  expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "high"]);
+  expect(select.options[0]?.textContent ?? "").not.toBe("");
+  expect(select.options[0]?.textContent).not.toContain("high");
 });
 
 test("a modelPicker control names the resolved default model", async () => {
@@ -219,7 +235,7 @@ test("a modelPicker control names the resolved default model", async () => {
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
-  expect(screen.getByRole("button", { name: /change model/i }).textContent).toContain("openai/gpt-5 (default)");
+  expect(screen.getByRole("button", { name: /change model/i }).textContent).toContain("openai/gpt-5");
 });
 
 test("an integer control's placeholder names the resolved default", async () => {
@@ -234,31 +250,25 @@ test("an integer control's placeholder names the resolved default", async () => 
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
-  expect((screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder).toBe("250 (default)");
+  expect((screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder).toContain("250");
   // A resolved builtin fills the empty control too - the label names it.
-  expect((screen.getByLabelText("Max subagent depth") as HTMLInputElement).placeholder).toBe("2 (default)");
+  expect((screen.getByLabelText("Max subagent depth") as HTMLInputElement).placeholder).toContain("2");
 });
 
-test("max_rounds -1 renders as unlimited in the placeholder, matching the flag wording", async () => {
+// max_rounds -1 is the flag's unlimited sentinel, and 0 means the same
+// (applyDefaults' 0→-1 conversion): both name "unlimited" in words, never the
+// raw number.
+test.each([-1, 0])("max_rounds %i renders as unlimited in the placeholder, not as a number", async (maxRounds) => {
   const user = userEvent.setup();
   renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })], {
-    resolvedDefaults: { maxRounds: -1 },
+    resolvedDefaults: { maxRounds },
   });
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
-  expect((screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder).toBe("unlimited (default)");
-});
-
-test("max_rounds 0 also renders as unlimited, matching applyDefaults' 0→-1 conversion", async () => {
-  const user = userEvent.setup();
-  renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })], {
-    resolvedDefaults: { maxRounds: 0 },
-  });
-
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
-
-  expect((screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder).toBe("unlimited (default)");
+  const placeholder = (screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder;
+  expect(placeholder).not.toBe("");
+  expect(placeholder).not.toMatch(/\d/);
 });
 
 test("a text control's placeholder names the resolved default, clipped when long", async () => {
@@ -273,10 +283,10 @@ test("a text control's placeholder names the resolved default, clipped when long
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
-  expect((screen.getByLabelText("Agent") as HTMLInputElement).placeholder).toBe("evener-canary (default)");
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).placeholder).toContain("evener-canary");
   // A long free-text default (a system prompt) is clipped, not dumped whole.
   const promptPlaceholder = (screen.getByLabelText("System prompt text") as HTMLInputElement).placeholder;
-  expect(promptPlaceholder.endsWith("… (default)")).toBe(true);
+  expect(promptPlaceholder).toContain("x".repeat(20));
   expect(promptPlaceholder.length).toBeLessThan(80);
 });
 
@@ -292,19 +302,25 @@ test("a browsable path control's trigger names the resolved default path", async
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
-  expect(screen.getByRole("button", { name: /Trace file/i }).textContent).toContain("/tmp/demo-trace.log (default)");
-  // No layer sets this one: the plain "(default)" trigger stays.
+  expect(screen.getByRole("button", { name: /Trace file/i }).textContent).toContain("/tmp/demo-trace.log");
+  // No layer sets this one: the trigger names no path.
   const cpuTrigger = screen.getByRole("button", { name: /CPU profile/i });
-  expect(cpuTrigger.textContent).toContain("(default)");
+  expect(cpuTrigger.textContent).not.toBe("");
   expect(cpuTrigger.textContent).not.toContain("demo-trace");
 });
 
 // --- inherited collection rows ----------------------------------------------
+
+// The collection list's empty-state row, present only when the list has
+// neither local nor inherited entries.
+function emptyRow(list: HTMLElement): Element | null {
+  return list.querySelector('li[data-reason="empty"]');
+}
 //
 // A collection control's own list holds only the user's per-launch additions;
 // entries the effective config would inherit used to be invisible ("None."
 // even when a session would pick up several). The panel renders them as
-// ghost rows - tagged "(default)", no remove button - computed as the
+// ghost rows - tagged as inherited, no remove button - computed as the
 // resolved effective value minus the user's local entries, which matches each
 // kind's merge semantics (pathList/mcps append, env per-key, modelFallbacks
 // replace) because resolvedDefaults is the resolve RPC's effective layer and
@@ -319,9 +335,9 @@ test("a pathList control ghosts inherited entries, and a local add replaces its 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
   const list = screen.getByRole("list", { name: "Skill directories" });
-  expect(within(list).queryByText("None.")).toBeNull();
+  expect(emptyRow(list)).toBeNull();
   const ghost = within(list).getByText("/opt/skills").closest("li") as HTMLElement;
-  expect(ghost.textContent).toContain("(default)");
+  expect(ghost.dataset.kind).toBe("inherited");
   expect(within(ghost).queryByRole("button")).toBeNull();
 
   // Adding the same path locally turns it into an ordinary removable row and
@@ -329,7 +345,7 @@ test("a pathList control ghosts inherited entries, and a local add replaces its 
   await typePath(user, pathTrigger(/browse/i), "/opt/skills");
   await user.click(screen.getByRole("button", { name: "Add" }));
   const row = within(list).getByText("/opt/skills").closest("li") as HTMLElement;
-  expect(row.textContent).not.toContain("(default)");
+  expect(row.dataset.kind).toBe("local");
   expect(within(row).getByRole("button", { name: "Remove /opt/skills" })).toBeTruthy();
   expect(within(list).getAllByRole("listitem")).toHaveLength(1);
 });
@@ -344,7 +360,7 @@ test("a modelList control ghosts inherited fallbacks", async () => {
 
   const list = screen.getByRole("list", { name: "Model fallbacks" });
   const ghost = within(list).getByText("openai/gpt-5").closest("li") as HTMLElement;
-  expect(ghost.textContent).toContain("(default)");
+  expect(ghost.dataset.kind).toBe("inherited");
   expect(within(ghost).queryByRole("button")).toBeNull();
 });
 
@@ -357,17 +373,17 @@ test("an envMap control ghosts inherited entries, and a local override of the sa
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
   const list = screen.getByRole("list", { name: "Env vars" });
-  expect(within(list).queryByText("None.")).toBeNull();
+  expect(emptyRow(list)).toBeNull();
   for (const text of ["EDITOR=vim", "PAGER=less"]) {
     const ghost = within(list).getByText(text).closest("li") as HTMLElement;
-    expect(ghost.textContent).toContain("(default)");
+    expect(ghost.dataset.kind).toBe("inherited");
     expect(within(ghost).queryByRole("button")).toBeNull();
   }
 
   // Overriding one key locally replaces exactly that ghost row.
   await user.type(screen.getByPlaceholderText("NAME=value"), "EDITOR=emacs{Enter}");
   const row = within(list).getByText("EDITOR=emacs").closest("li") as HTMLElement;
-  expect(row.textContent).not.toContain("(default)");
+  expect(row.dataset.kind).toBe("local");
   expect(within(row).getByRole("button", { name: "Remove EDITOR" })).toBeTruthy();
   expect(within(list).queryByText("EDITOR=vim")).toBeNull();
   expect(within(list).getByText("PAGER=less")).toBeTruthy();
@@ -383,7 +399,7 @@ test("an mcpServerList control ghosts inherited servers", async () => {
 
   const list = screen.getByRole("list", { name: "MCP servers" });
   const ghost = within(list).getByText("docs: npx docs-mcp").closest("li") as HTMLElement;
-  expect(ghost.textContent).toContain("(default)");
+  expect(ghost.dataset.kind).toBe("inherited");
   expect(within(ghost).queryByRole("button")).toBeNull();
 });
 
@@ -444,6 +460,7 @@ test("show resolved config previews the effective launch config", async () => {
   const pre = await screen.findByLabelText("Resolved config");
   expect(pre.textContent).toContain('"sandbox": "off"');
   expect(pre.textContent).toContain('"maxRounds": 5');
+  expect(within(pre).getByRole("button", { name: "Copy" })).toBeTruthy();
 });
 
 test("renders children inside the expanded panel, before any schema control (9ct0)", async () => {
@@ -512,13 +529,20 @@ test.each([
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
 
-  const section = screen.getByRole("region", { name: label });
+  const section = screen.getByRole("group", { name: label });
   const labelId = section.getAttribute("aria-labelledby");
   if (!labelId) throw new Error("expected the collection section to reference its visible schema label");
   const visibleLabel = document.getElementById(labelId);
   if (!visibleLabel) throw new Error("expected the visible schema label to be in the document");
   expectSightedText(visibleLabel, label);
-  if (description) expectSightedText(within(section).getByText(description), description);
+  const helpId = section.getAttribute("aria-describedby");
+  if (description) {
+    const help = document.getElementById(helpId ?? "");
+    if (!help) throw new Error("expected the collection section to be described by its visible help");
+    expectSightedText(help, description);
+  } else {
+    expect(helpId).toBeNull();
+  }
 });
 
 test("a modelList field rejects a model already in the list", async () => {
@@ -749,17 +773,17 @@ test("a pathList field rejects a path already in the list", async () => {
 // Touch target (UX fix, real-phone measurement): the hand-rolled toggle
 // (not a widgets/disclosure consumer - it renders its own <button>, see
 // this file's own header comment) measured 127x24, low-contrast next to the
-// 48px rows around it. Comfortable desktop padding plus a (pointer: coarse)
+// 48px rows around it. Comfortable desktop padding plus a (any-pointer: coarse)
 // tap floor, same pattern as askdock.module.css's own .tab rule and
-// askquestioncard.module.css's own .option rule.
+// askquestioncard.module.css's own .optionRow rule.
 test("the Advanced options toggle gets comfortable padding and reaches the tap floor on a coarse pointer", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "advancedOptions.module.css"), "utf8");
   const desktopRule = css.match(/\.toggle\s*\{([^}]*)\}/);
   expect(desktopRule, "advancedOptions.module.css must declare a base .toggle rule").not.toBeNull();
   expect(desktopRule![1]).toMatch(/padding:\s*var\(--space-2\) var\(--space-3\)/);
 
-  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
-  expect(coarse, "advancedOptions.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const coarse = css.match(/@media \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "advancedOptions.module.css must have a (any-pointer: coarse) media block").not.toBeNull();
   const rule = coarse![1]!.match(/\.toggle\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .toggle").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");

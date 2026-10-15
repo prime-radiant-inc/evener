@@ -11,6 +11,16 @@ import (
 // ErrDetachUnsupported reports that an environment cannot disown commands.
 var ErrDetachUnsupported = errors.New("detached commands are not supported by this execution environment")
 
+// ErrOutputTruncated reports that a buffered command's stdout or stderr
+// capture tripped the per-stream cap, so that stream's text is the retained
+// head and tail around an omission marker, not the complete output. A caller
+// that decodes the text as records — a porcelain listing, a status table, a
+// log line set — must refuse a truncated capture rather than parse a partial
+// stream as if it were whole (#4568 round 2). Grep's ripgrep arm is the one
+// exception: it discards the capture and reruns the search natively, so it
+// keeps its own special handling.
+var ErrOutputTruncated = errors.New("command output truncated at the capture cap")
+
 // ExecResult holds the outcome of a command executed in an ExecutionEnvironment.
 type ExecResult struct {
 	Stdout     string `json:"stdout"`
@@ -18,6 +28,24 @@ type ExecResult struct {
 	ExitCode   int    `json:"exit_code"`
 	TimedOut   bool   `json:"timed_out"`
 	DurationMS int64  `json:"duration_ms"`
+	// StdoutTruncated and StderrTruncated report the per-stream capture cap
+	// tripping: that stream's text is the retained head and tail around an
+	// omission marker, not the full output. A caller that parses the text as
+	// records must treat it as corrupted — Grep's ripgrep arm reruns the search
+	// natively when it trips, so both grep arms disclose byte truncation the
+	// same way.
+	StdoutTruncated bool `json:"stdout_truncated,omitempty"`
+	StderrTruncated bool `json:"stderr_truncated,omitempty"`
+}
+
+// Truncated reports a capture whose per-stream cap tripped: ErrOutputTruncated
+// when either stream is truncated, else nil. A record parser checks it before
+// decoding the text.
+func (r ExecResult) Truncated() error {
+	if r.StdoutTruncated || r.StderrTruncated {
+		return ErrOutputTruncated
+	}
+	return nil
 }
 
 // DirEntry describes a single entry returned when listing a directory.
@@ -119,6 +147,24 @@ type FileMutator interface {
 	RenamePath(oldPath, newPath string) error
 }
 
+// ContextualFileReader is an optional execution-environment capability: the
+// formatted file read and edit entries with the caller's context threaded to
+// the read, so a cancelled tool call ends a read parked on a stream. It is
+// separate from ExecutionEnvironment, like the other optional capabilities, so
+// existing implementers (test fakes) are unaffected; the file tools type-assert
+// for it and fall back to the ctx-less entries when it is absent.
+type ContextualFileReader interface {
+	ReadFileCtx(ctx context.Context, path string, offsetLine, limitLines *int) (string, error)
+	EditFileCtx(ctx context.Context, path, oldString, newString string, replaceAll bool) (string, error)
+}
+
+// ContextualFileMutator is FileMutator's read entry with the caller's context
+// threaded to the read; apply_patch type-asserts for it, falling back to
+// ReadFileRaw when absent.
+type ContextualFileMutator interface {
+	ReadFileRawCtx(ctx context.Context, path string) ([]byte, error)
+}
+
 // StreamHandle is a running streamed process. Wait blocks until exit and returns
 // the exit code; Signal terminates the process group (SIGTERM then SIGKILL).
 // SignalName reports the signal that terminated the process, when the platform
@@ -206,4 +252,21 @@ type GlobExcluder interface {
 // call returns.
 type GlobBudgeter interface {
 	GlobWithBudget(ctx context.Context, pattern, basePath string, includeIgnored bool, budget *GlobBudget) (matches []string, excluded int, err error)
+}
+
+// DirListBudgeter is an optional capability an ExecutionEnvironment's
+// ListDirectory may additionally implement, modelled on GlobBudgeter for the
+// same reason: it keeps the context-aware, budgeted walk off ListDirectory's
+// own signature, which every implementation — including test doubles with no
+// budget accounting — would otherwise have to grow a meaningless extra
+// parameter for. The caller supplies the budget and reads what the call had
+// to cut off it once the call returns; environments without the capability
+// keep the legacy whole-tree walk.
+type DirListBudgeter interface {
+	// ListDirectoryWithBudget lists entries under path, recursing up to
+	// depth levels, like ListDirectory — but it stops once the budget's page
+	// need is met (see NewDirListBudget) or its bounds refuse, instead of
+	// enumerating the whole requested subtree first, and a cancelled ctx
+	// aborts the walk.
+	ListDirectoryWithBudget(ctx context.Context, path string, depth int, budget *DirListBudget) ([]DirEntry, error)
 }

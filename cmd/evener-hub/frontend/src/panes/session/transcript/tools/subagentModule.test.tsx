@@ -3,6 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
+import { requireClass } from "../../../../widgets/internal/requireClass";
+import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
+import visuallyHiddenStyles from "../../../../widgets/visuallyhidden/visuallyhidden.module.css";
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
 import { seedCurrentDelegate } from "./currentDelegate.testFixture";
@@ -18,6 +21,21 @@ import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { SessionNowContext } from "../../liveness";
+
+const VISUALLY_HIDDEN = requireClass(
+  visuallyHiddenStyles.visuallyHidden,
+  "visuallyhidden.module.css",
+  "visuallyHidden",
+);
+
+// What a card tells a screen reader beyond its aria-hidden glyph: its
+// visually hidden lines, which delegate it is and then its status.
+function announced(row: HTMLElement): { delegate?: string; status?: string } {
+  const [delegate, status] = [...row.querySelectorAll(`:scope > .${VISUALLY_HIDDEN}`)].map(
+    (line) => line.textContent ?? "",
+  );
+  return { delegate, status };
+}
 
 // A minimal, test-only "session" pane registration - real registerPane/
 // paneFor/openPane machinery, just without pulling in the actual
@@ -103,7 +121,7 @@ test.each([undefined, "inProgress"])(
     const turn: TurnModel = { id: "launch", status: "inProgress", items: [] };
     const launch = delegateItem({ turnId: turn.id, status, output: "" });
     render(<ToolCallItem item={launch} turn={turn} live={true} />);
-    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+    expect(document.querySelector('[role="img"][data-state="working"]')).not.toBeNull();
     expect(screen.getByTestId("subagent-row").dataset.kind).toBe("running");
   },
 );
@@ -116,15 +134,15 @@ test("unknown lifecycle is unavailable, never a human question, even collapsed",
   });
   const user = userEvent.setup();
   render(<ToolCallItem item={unknown} turn={turn} live={false} />);
-  expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
+  expect(document.querySelector('[role="img"][data-state="needs-you"]')).toBeNull();
   // Expanded at settle: the card's merged status line carries the word.
   const row = screen.getByTestId("subagent-row");
-  expect(within(row).getByTestId("subagent-stats").textContent).toContain("Status unavailable");
+  expect(within(row).getByTestId("delegate-status-word").dataset.kind).toBe("unknown");
   expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
   await user.click(screen.getByTestId("tool-row").querySelector("button[aria-expanded]")!);
   expect(screen.queryByTestId("subagent-row")).toBeNull();
-  expect(screen.queryByRole("img", { name: "Needs you" })).toBeNull();
-  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+  expect(document.querySelector('[role="img"][data-state="needs-you"]')).toBeNull();
+  expect(screen.getByTestId("delegate-lifecycle").dataset.kind).toBe("unknown");
 });
 
 test("resolveRowKey: prefers delegateId, then jobId, then the fallback", () => {
@@ -226,8 +244,8 @@ test("two delegate ToolCallItems each retain their own card and open action", ()
   expect(toolRows).toHaveLength(2);
   expect(within(toolRows[0]!).getAllByTestId("subagent-row")).toHaveLength(1);
   expect(within(toolRows[1]!).getAllByTestId("subagent-row")).toHaveLength(1);
-  expect(within(toolRows[0]!).getByRole("button", { name: "Open transcript" })).toBeTruthy();
-  expect(within(toolRows[1]!).getByRole("button", { name: "Open transcript" })).toBeTruthy();
+  expect(within(toolRows[0]!).getByRole("button", { name: "Open conversation" })).toBeTruthy();
+  expect(within(toolRows[1]!).getByRole("button", { name: "Open conversation" })).toBeTruthy();
 });
 
 // --- row content ----------------------------------------------------------
@@ -248,7 +266,7 @@ test("a settled delegate never presents the launch-call duration as child runtim
   });
   render(<Body item={settled} live={false} />);
   const row = screen.getByTestId("subagent-row");
-  expect(within(row).queryByText("12s")).toBeNull();
+  expect(within(row).getByTestId("subagent-stats").dataset.clockMs).toBeUndefined();
 });
 
 test("a failed card carries the danger rail itself - there is no module chrome to average it away", () => {
@@ -345,7 +363,7 @@ function delegateWithTranscriptRef(ref: string): ItemModel {
   });
 }
 
-test("open transcript opens the read-only transcript pane (mobile / no dockview host): plain full-screen open, not a session pane", async () => {
+test("opening the conversation takes the plain full-screen main slot (mobile / no dockview host)", async () => {
   registerDockviewApi(null); // StackHost registers no api - the mobile signal
   const user = userEvent.setup();
   const turn: TurnModel = { id: "turn_open_mobile", status: "completed", items: [] };
@@ -356,26 +374,27 @@ test("open transcript opens the read-only transcript pane (mobile / no dockview 
       live={false}
     />,
   );
-  const button = screen.getByRole("button", { name: "Open transcript" });
+  const button = screen.getByRole("button", { name: "Open conversation" });
   expect(button.textContent).toBe(""); // the one icon-only form: no visible words
   expect(button.querySelector("svg")).toBeTruthy();
-  expect(button.getAttribute("aria-label")).toBe("Open transcript");
+  expect(button.getAttribute("aria-label")).toBeTruthy();
   await user.click(button);
   const panes = workspaceStore.getState().panes;
-  // The DISTINCT read-only "transcript" pane (plan §Ambiguities #1 / PIN-A:
-  // reachable via openBeside, never a URL) - opened against the child's own ref.
-  const opened = panes.find((p) => p.type === "transcript");
+  // The row opens the child's live conversation pane - the read-only
+  // transcript surface no longer exists - against the child's own ref.
+  const opened = panes.find((p) => p.type === "session");
   expect(opened?.params).toEqual({ ref: "ref_child_open" });
   // Slots are desktop geometry; StackHost has no groups and shows the focused
   // pane full-screen, so the first-pane-takes-main rule is all that applies.
   expect(opened?.slot).toBe("main");
-  // The row must no longer open a live SESSION pane for the child.
-  expect(panes.some((p) => p.type === "session")).toBe(false);
+  // The read-only pane is gone from the product: nothing opens one.
+  expect(panes.some((p) => p.type === "transcript")).toBe(false);
 });
 
-test("open transcript opens the transcript pane in the secondary group, not the main one (desktop host present)", async () => {
+test("opening the conversation lands in the secondary group, not the main one (desktop host present)", async () => {
   registerDockviewApi(fakeApi());
-  const anchor = workspaceStore.getState().openPane("transcript", { ref: "ref_parent_view" });
+  // The main slot already holds the pane being read.
+  workspaceStore.getState().openPane("session", { ref: "ref_parent_view" });
   const user = userEvent.setup();
   const turn: TurnModel = { id: "turn_open_desktop", status: "completed", items: [] };
   render(
@@ -385,15 +404,17 @@ test("open transcript opens the transcript pane in the secondary group, not the 
       live={false}
     />,
   );
-  await user.click(screen.getByRole("button", { name: /open transcript/i }));
-  const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript" && p.id !== anchor);
+  await user.click(screen.getByRole("button", { name: /open conversation/i }));
+  const opened = workspaceStore
+    .getState()
+    .panes.find((p) => p.type === "session" && (p.params as { ref?: unknown }).ref === "ref_child_open");
   expect(opened?.params).toEqual({ ref: "ref_child_open" });
   // The main slot already holds the pane being read, so this lands beside it
-  // rather than replacing it - which is what "open transcript" means here.
+  // rather than replacing it - which is what "open conversation" means here.
   expect(opened?.slot).toBe("secondary");
 });
 
-test("kata 0pzz: open transcript carries the enclosing session ref as parentRef, so the reader can return", async () => {
+test("kata 0pzz: opening the conversation keeps the enclosing session as the reader's return target", async () => {
   registerDockviewApi(fakeApi());
   const user = userEvent.setup();
   const turn: TurnModel = { id: "turn_open_parentref", status: "completed", items: [] };
@@ -405,12 +426,23 @@ test("kata 0pzz: open transcript carries the enclosing session ref as parentRef,
       sessionRef="ref_parent_session"
     />,
   );
-  await user.click(screen.getByRole("button", { name: /open transcript/i }));
-  const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript");
-  expect(opened?.params).toEqual({ ref: "ref_child_open", parentRef: "ref_parent_session" });
+  await user.click(screen.getByRole("button", { name: /open conversation/i }));
+  // The conversation pane no longer carries a parentRef param; the return path
+  // lives in the workspace instead: with no main pane to destroy, the funnel
+  // places the enclosing session in main and the child opens beside it, so
+  // the reader always has the enclosing session to go back to.
+  const opened = workspaceStore
+    .getState()
+    .panes.find((p) => p.type === "session" && (p.params as { ref?: unknown }).ref === "ref_child_open");
+  expect(opened?.params).toEqual({ ref: "ref_child_open" });
+  expect(workspaceStore.getState().mainPane()).toMatchObject({
+    type: "session",
+    params: { ref: "ref_parent_session" },
+  });
+  expect(opened?.slot).toBe("secondary");
 });
 
-test("kata 0pzz: with no enclosing session ref available, parentRef is simply absent (no crash, still opens)", async () => {
+test("kata 0pzz: with no enclosing session ref available the conversation still opens (no crash)", async () => {
   registerDockviewApi(fakeApi());
   const user = userEvent.setup();
   const turn: TurnModel = { id: "turn_open_noparent", status: "completed", items: [] };
@@ -421,12 +453,12 @@ test("kata 0pzz: with no enclosing session ref available, parentRef is simply ab
       live={false}
     />,
   );
-  await user.click(screen.getByRole("button", { name: /open transcript/i }));
-  const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript");
+  await user.click(screen.getByRole("button", { name: /open conversation/i }));
+  const opened = workspaceStore.getState().panes.find((p) => p.type === "session");
   expect(opened?.params).toEqual({ ref: "ref_child_open" });
 });
 
-test("no open-transcript button when the row has no transcriptRef yet", () => {
+test("no open-conversation button when the row has no transcriptRef yet", () => {
   const noRef = delegateItem({
     id: "d_noref",
     callId: "call_noref",
@@ -435,13 +467,13 @@ test("no open-transcript button when the row has no transcriptRef yet", () => {
   });
   const turn: TurnModel = { id: "turn_noref", status: "completed", items: [] };
   render(<ToolCallItem item={{ ...noRef, turnId: turn.id }} turn={turn} live={false} />);
-  expect(screen.queryByRole("button", { name: /open transcript/i })).toBeNull();
+  expect(screen.queryByRole("button", { name: /open conversation/i })).toBeNull();
 });
 
 // yt2q §4.4: the child-transcript link must be available while the subagent is
 // still RUNNING, not gated on the child being done - the opened pane watches
 // the live child thread.
-test("a still-running row (with a transcriptRef) offers Open transcript, not gated on the child being done", () => {
+test("a still-running row (with a transcriptRef) offers Open conversation, not gated on the child being done", () => {
   const running = delegateItem({
     id: "d_run_link",
     callId: "call_run_link",
@@ -451,8 +483,8 @@ test("a still-running row (with a transcriptRef) offers Open transcript, not gat
   const turn: TurnModel = { id: "turn_run_link", status: "inProgress", items: [] };
   render(<ToolCallItem item={{ ...running, turnId: turn.id }} turn={turn} live={true} />);
   const tool = screen.getByTestId("tool-call-item");
-  expect(within(tool).getByRole("img", { name: "Working" })).toBeTruthy(); // genuinely still running
-  expect(within(tool).getByRole("button", { name: /open transcript/i })).toBeTruthy();
+  expect(tool.querySelector('[role="img"][data-state="working"]')).not.toBeNull(); // genuinely still running
+  expect(within(tool).getByRole("button", { name: /open conversation/i })).toBeTruthy();
 });
 
 // --- expanded card: disclosure + Mandate / Activity / Summary (qb8e, tv5k) -
@@ -696,7 +728,7 @@ test("an expanded card with no child activity yet says so instead of rendering a
   const row = screen.getByTestId("subagent-row");
   await user.click(within(row).getByRole("button", { name: /show recent activity/i }));
   const quotes = await within(row).findByTestId("subagent-quotes");
-  expect(within(quotes).getByText(/activity unavailable/i)).toBeTruthy();
+  expect(within(quotes).getByTestId("empty-state").dataset.reason).toBe("unavailable");
   expect(within(quotes).queryAllByRole("listitem")).toHaveLength(0);
 });
 
@@ -886,8 +918,8 @@ test("a resumable delegate renders no Job section; exhaustion evidence still ren
   await openRecentActivity(user, row);
   const detail = within(row).getByTestId("subagent-job-detail");
   expect(within(detail).getByText("Exhaustion budget: 3 of 3")).toBeTruthy();
-  expect(within(detail).queryByText("Resumable")).toBeNull();
-  expect(within(detail).queryByText("Not resumable")).toBeNull();
+  // The budget line and its section label, nothing else.
+  expect(detail.children).toHaveLength(2);
 });
 
 // --- stats line: turns · calls · tokens · clock ------------------------------
@@ -923,8 +955,8 @@ test("the stats line counts the child's turns and tool calls from the full-turns
   // 1 real turn (the prelude excluded), 3 tool calls (the final agent message
   // is not a call; the blank-intent commandExecution still is).
   await waitFor(() => {
-    expect(stats.textContent).toContain("1 turn");
-    expect(stats.textContent).toContain("3 calls");
+    expect(stats.dataset.turns).toBe("1");
+    expect(stats.dataset.calls).toBe("3");
   });
 });
 
@@ -971,11 +1003,9 @@ test("the stats line singularizes a single turn and a single call", async () => 
 
   const stats = await within(screen.getByTestId("subagent-row")).findByTestId("subagent-stats");
   await waitFor(() => {
-    expect(stats.textContent).toContain("1 turn");
-    expect(stats.textContent).toContain("1 call");
+    expect(stats.dataset.turns).toBe("1");
+    expect(stats.dataset.calls).toBe("1");
   });
-  expect(stats.textContent).not.toContain("1 calls");
-  expect(stats.textContent).not.toContain("1 turns");
 });
 
 // The merged-line tests share one fixture: a watched child (1 turn, 3 calls)
@@ -1018,14 +1048,15 @@ test("the card's first line carries the lifecycle word together with turns, call
   // ONE line: the status word leads, and the counts and run clock ride WITH
   // it rather than on a second line below.
   await waitFor(() => {
-    expect(stats.textContent).toContain("Running");
-    expect(stats.textContent).toContain("1 turn");
-    expect(stats.textContent).toContain("3 calls");
-    expect(stats.textContent).toContain("12s");
+    expect(within(stats).getByTestId("delegate-status-word").dataset.kind).toBe("running");
+    expect(stats.dataset.turns).toBe("1");
+    expect(stats.dataset.calls).toBe("3");
+    expect(stats.dataset.clockMs).toBe("12000");
   });
-  expect(stats.textContent.indexOf("Running")).toBeLessThan(stats.textContent.indexOf("1 turn"));
-  expect(stats.textContent.indexOf("1 turn")).toBeLessThan(stats.textContent.indexOf("3 calls"));
-  expect(stats.textContent.indexOf("3 calls")).toBeLessThan(stats.textContent.indexOf("12s"));
+  const order = [...stats.querySelectorAll<HTMLElement>('[data-testid="delegate-status-word"], [data-segment]')].map(
+    (part) => part.dataset.segment ?? "status",
+  );
+  expect(order).toEqual(["status", "turns", "calls", "clock"]);
 });
 
 test("the folded latest-tool-use quote renders below the merged status line", async () => {
@@ -1051,7 +1082,7 @@ test("a running receipt without stable run timing does not invent a child clock"
     </SessionNowContext.Provider>,
   );
   const stats = within(screen.getByTestId("subagent-row")).getByTestId("subagent-stats");
-  expect(stats.textContent).not.toContain("3m41s");
+  expect(stats.dataset.clockMs).toBeUndefined();
 });
 
 test("resumed work keeps its identity and historical report but uses the current run clock", async () => {
@@ -1090,10 +1121,10 @@ test("resumed work keeps its identity and historical report but uses the current
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("running");
   // The card is open, so its merged line carries the word - no standalone div.
-  expect(within(row).getByTestId("subagent-stats").textContent).toContain("Running");
+  const stats = within(row).getByTestId("subagent-stats");
+  expect(within(stats).getByTestId("delegate-status-word").dataset.kind).toBe("running");
   expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
-  expect(within(row).getByText("12s")).toBeTruthy();
-  expect(within(row).queryByText("3m41s")).toBeNull();
+  expect(stats.dataset.clockMs).toBe("12000");
   expect((await within(row).findByTestId("subagent-quote")).textContent).toBe("all done");
 });
 
@@ -1120,14 +1151,18 @@ test("an expanded card owns the status line - the standalone lifecycle div retur
   // Expanded (the delegate descriptor auto-opens at settle): the card's merged
   // line carries the status word; the standalone div must not duplicate it.
   const row = screen.getByTestId("subagent-row");
-  await waitFor(() => expect(within(row).getByTestId("subagent-stats").textContent).toContain("Running"));
+  await waitFor(() =>
+    expect(within(within(row).getByTestId("subagent-stats")).getByTestId("delegate-status-word").dataset.kind).toBe(
+      "running",
+    ),
+  );
   expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
 
   // Collapsed: the card unmounts and the compact standalone line returns.
   const bodyId = screen.getByTestId("tool-call-body").id;
   await user.click(screen.getByTestId("tool-row").querySelector(`button[aria-controls="${bodyId}"]`)!);
   expect(screen.queryByTestId("subagent-row")).toBeNull();
-  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Running");
+  expect(screen.getByTestId("delegate-lifecycle").dataset.kind).toBe("running");
 });
 
 test("an activation-only receipt keeps the standalone lifecycle line even while the body is open", () => {
@@ -1149,7 +1184,7 @@ test("an activation-only receipt keeps the standalone lifecycle line even while 
   // to carry the status - the standalone line must stay.
   expect(screen.getByTestId("tool-call-body")).toBeTruthy();
   expect(screen.queryByTestId("subagent-row")).toBeNull();
-  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+  expect(screen.getByTestId("delegate-lifecycle").dataset.kind).toBe("unknown");
 });
 
 // needsAttention is wake-delivery plumbing (rationale at delegateLifecycleLabel)
@@ -1192,20 +1227,19 @@ test("the stable lifecycle owns the card while child content status changes, and
   // Expanded: the card's merged status line owns the lifecycle word; a pending
   // wake adds no second status.
   const stats = screen.getByTestId("subagent-stats");
-  expect(stats.textContent).toContain("Running");
-  expect(stats.textContent).not.toContain("Needs attention");
+  expect(within(stats).getByTestId("delegate-status-word").dataset.kind).toBe("running");
   expect(stats.getAttribute("data-attention")).toBeNull();
   expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
   const bodyId = screen.getByTestId("tool-call-body").id;
   const toggle = screen.getByTestId("tool-row").querySelector(`button[aria-controls="${bodyId}"]`)!;
   await user.click(toggle);
   expect(screen.queryByTestId("subagent-row")).toBeNull();
-  expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Running");
+  expect(screen.getByTestId("delegate-lifecycle").dataset.kind).toBe("running");
   await user.click(toggle);
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.attention).toBeUndefined();
   expect(row.dataset.kind).toBe("running");
-  expect(within(row).getByText("Status: running")).toBeTruthy();
+  expect(announced(row).status).toMatch(/\brunning$/);
   expect(within(row).getByTestId("subagent-status-glyph").textContent).toBe("●");
 
   for (const status of ["idle", "awaiting"]) {
@@ -1217,7 +1251,7 @@ test("the stable lifecycle owns the card while child content status changes, and
     });
     expect(row.dataset.attention).toBeUndefined();
     expect(row.dataset.kind).toBe("running");
-    expect(within(row).getByText("Status: running")).toBeTruthy();
+    expect(announced(row).status).toMatch(/\brunning$/);
     expect(within(row).getByTestId("subagent-status-glyph").textContent).toBe("●");
   }
 
@@ -1231,7 +1265,7 @@ test("the stable lifecycle owns the card while child content status changes, and
   });
   expect(row.dataset.attention).toBeUndefined();
   expect(row.dataset.kind).toBe("running");
-  expect(within(row).getByText("Status: running")).toBeTruthy();
+  expect(announced(row).status).toMatch(/\brunning$/);
   expect(within(row).getByTestId("subagent-status-glyph").textContent).toBe("●");
 
   await act(async () => {
@@ -1256,7 +1290,7 @@ test("the stable lifecycle owns the card while child content status changes, and
   });
   expect(row.dataset.attention).toBeUndefined();
   expect(row.dataset.kind).toBe("done");
-  expect(within(row).getByText("Status: done")).toBeTruthy();
+  expect(announced(row).status).toMatch(/\bdone$/);
   expect(within(row).getByTestId("subagent-status-glyph").textContent).toBe("✓");
 });
 
@@ -1320,7 +1354,7 @@ test("the card is headless: no tag, no open button inside it", () => {
   render(<Body item={running} live={false} />);
   const row = screen.getByTestId("subagent-row");
   expect(within(row).queryByTestId("subagent-tag")).toBeNull();
-  expect(within(row).queryByRole("button", { name: /open transcript/i })).toBeNull();
+  expect(within(row).queryByRole("button", { name: /open conversation/i })).toBeNull();
 });
 
 test("a headless card exposes hidden identity and status, a visible status shape, and a controlled disclosure", async () => {
@@ -1341,8 +1375,10 @@ test("a headless card exposes hidden identity and status, a visible status shape
   );
 
   const row = screen.getByTestId("subagent-row");
-  expect(within(row).getByText("Delegate dlg_accessible")).toBeTruthy();
-  expect(within(row).getByText("Status: done")).toBeTruthy();
+  // The row announces which delegate it is and its status, in words a
+  // screen reader reads (the visible glyph is aria-hidden).
+  expect(announced(row).delegate).toMatch(/\bdlg_accessible$/);
+  expect(announced(row).status).toMatch(/\bdone$/);
   const glyph = within(row).getByTestId("subagent-status-glyph");
   expect(glyph.textContent).not.toBe("");
   expect(glyph.getAttribute("aria-hidden")).toBe("true");
@@ -1351,6 +1387,8 @@ test("a headless card exposes hidden identity and status, a visible status shape
   const regionId = disclosure.getAttribute("aria-controls");
   expect(regionId).toBeTruthy();
   expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+  expect(disclosure.hasAttribute("title")).toBe(false);
+  expect(hoverForTooltip(disclosure).textContent).toBe(disclosure.getAttribute("aria-label"));
   await user.click(disclosure);
   expect(disclosure.getAttribute("aria-expanded")).toBe("true");
   expect(within(row).getByRole("region").id).toBe(regionId);
@@ -1404,7 +1442,7 @@ test("the stats line joins its present segments - never a dangling separator", a
   render(<Body item={running} live={false} />);
 
   const stats = await within(screen.getByTestId("subagent-row")).findByTestId("subagent-stats");
-  await waitFor(() => expect(stats.textContent).toContain("3 calls"));
+  await waitFor(() => expect(stats.dataset.calls).toBe("3"));
   expect(stats.textContent).not.toMatch(/·\s*$/);
 });
 
@@ -1498,8 +1536,8 @@ test("a historical session read hydrates a card's kind, tokens, and clock from t
   // frozen "running" spawn output.
   await waitFor(() => expect(row.dataset.kind).toBe("done"));
   const stats = within(row).getByTestId("subagent-stats");
-  expect(stats.textContent).toContain("↑41.2K ↓6.1K");
-  expect(stats.textContent).toContain("22m00s");
+  expect([stats.dataset.inputTokens, stats.dataset.outputTokens]).toEqual(["41200", "6100"]);
+  expect(stats.dataset.clockMs).toBe("1320000");
 });
 
 // A stored projection can carry the run's duration without its timestamps.
@@ -1532,8 +1570,7 @@ test("a terminal delegate without a parseable run window shows the projection's 
   );
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("done");
-  expect(within(row).getByText("22m00s")).toBeTruthy();
-  expect(within(row).queryByText("3m41s")).toBeNull();
+  expect(within(row).getByTestId("subagent-stats").dataset.clockMs).toBe("1320000");
 });
 
 // --- live-data lessons (2026-08-20): real delegates exposed three fixture-blind

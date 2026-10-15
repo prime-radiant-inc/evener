@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -62,6 +64,47 @@ func TestWarningAndErrorNoticesShowTheirMessage(t *testing.T) {
 	failure := upserted(t, one(t, o.Event(events.New(events.ErrorData{Error: "fail-closed diagnostic"}))))
 	if failure.Item.Text != "fail-closed diagnostic" {
 		t.Fatalf("error text = %q", failure.Item.Text)
+	}
+}
+
+func TestSummaryFailureWarningProjection(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("..", "..", "agent", "testdata", "summaryfailurewire", "events.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Warning events.WarningData `json:"warning"`
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if fixture.Warning.SummaryFailure == nil {
+		t.Fatal("fixture lacks runtime diagnostics")
+	}
+	o := newOverlay()
+	defer o.Close()
+	item := upserted(t, one(t, o.Event(events.New(fixture.Warning)))).Item
+	if item.EventKind != appwire.ThreadItemEventKindWarning || item.Text != fixture.Warning.Message {
+		t.Fatalf("warning not projected: %+v", item)
+	}
+	encoded, err := json.Marshal(item.Raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		Warning map[string]string `json:"warning"`
+	}
+	if err := json.Unmarshal(encoded, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.Warning) != 4 || raw.Warning["code"] != "summary_failure" || raw.Warning["source"] != "provider" || raw.Warning["title"] != fixture.Warning.Title || raw.Warning["hint"] != fixture.Warning.Hint {
+		t.Fatalf("strict warning shape changed: %s", encoded)
+	}
+	for _, identifier := range []string{"openai/summary-model-8af1", "429", "rate_limit"} {
+		if !strings.Contains(item.Text, identifier) {
+			t.Errorf("message lost diagnostic value %s", identifier)
+		}
 	}
 }
 

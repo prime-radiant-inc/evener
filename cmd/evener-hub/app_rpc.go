@@ -982,12 +982,26 @@ func hubLogfFor(cfg hubcore.WebConfig) func(format string, args ...any) {
 // outside a test that asserts the line (which passes cfg.Logf).
 var navigationStatsLogfFor = hubLogfFor
 
+// concurrentForwardedRequest is the ConcurrentRequest policy newHubAppServer
+// installs: requests whose cost is a remote party's leave the connection's
+// serial worker, so a slow remote never head-of-line blocks the browser's
+// socket. forwardedHostRead admits a proxied host read; forwardedDaemonControl
+// admits a daemon retire forwarded to the local daemon, which can wait out the
+// session namer's timeout (#4080, #3921). Each half carries its own
+// order-safety argument where it is defined; the default is to stay inline.
+func concurrentForwardedRequest(method string, params json.RawMessage) (pool string, ok bool) {
+	if pool, ok := forwardedHostRead(method, params); ok {
+		return pool, true
+	}
+	return forwardedDaemonControl(method, params)
+}
+
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	return newHubAppServerWithNavigation(cfg, sources, nil, nil)
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	server, _, _, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _, _, _, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
 	return server
 }
 
@@ -999,7 +1013,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 // server directly, for a caller that never builds through newWebServer
 // (most tests, and any embedder calling this constructor's exported
 // wrappers directly).
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager, *hubNotices, *hubAuthController) {
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, *hubHostManager, *hubNotices, *hubAuthController, *devicePairings) {
 	// One fallback registry when cfg carries no live one, built once here so
 	// every host surface below — attach, management, and the admin proxy —
 	// validates against the same instance: a host added at runtime must be
@@ -1040,7 +1054,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 		RequestAdmissionContext: func(ctx context.Context, message appwire.Message) context.Context {
 			return admitSessionRecovery(ctx, cfg, message)
 		},
-		ConcurrentRequest: forwardedHostRead,
+		ConcurrentRequest: concurrentForwardedRequest,
 		SubscriptionAdmissionResolverV2: func(msg appwire.Message) appserver.SubscriptionAdmissionResolution {
 			notSubscribe := appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionNotSubscribe}
 			if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
@@ -1182,6 +1196,8 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerLaunchHandlers(server, launchController)
 	registerPluginHandlers(server, pluginsController)
 	registerMobilePairingHandler(server, cfg)
+	pairings := newDevicePairings(cfg)
+	registerDevicePairingHandlers(server, pairings)
 	registerNavigationReadHandler(server, navigation)
 	registerArchivedListHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
@@ -1263,7 +1279,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// push) instead of a nil store one of them dereferences.
 	credsStore, credsErr := authController.credentialStore()
 	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg.RemoteHostRegistry, sources, credsStore, credsErr)
-	return server, hostAdmin, hostManage, notices, authController
+	return server, hostAdmin, hostManage, notices, authController, pairings
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
@@ -1302,7 +1318,7 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	readThread := func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		if err := appwire.ValidateThreadReadParams(params); err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
@@ -1477,7 +1493,7 @@ func registerThreadHandlers(
 			}
 		}
 		return resp, nil
-	})
+	}
 	// thread/unsubscribe drops only the calling connection's downstream
 	// subscription — the browser's own read of a thread it is navigating away
 	// from. The relay key is derived by the same helper thread/read's relay
@@ -1518,7 +1534,7 @@ func registerThreadHandlers(
 		appserver.UnsubscribeLifecycle(ctx, relayKey)
 		return appwire.EmptyResponse{}, nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodThreadTurnsList, func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	listThreadTurns := func(ctx context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
 		if err := appwire.ValidateThreadTurnsListParams(params); err != nil {
 			return appwire.ThreadTurnsListResponse{}, err
 		}
@@ -1568,7 +1584,8 @@ func registerThreadHandlers(
 			return appwire.ThreadTurnsListResponse{}, srcErr
 		}
 		return live, liveErr
-	})
+	}
+	appserver.HandleThreadHistory(server.Router(), readThread, listThreadTurns)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSubagentPreview, func(ctx context.Context, params appwire.EvenerSubagentPreviewParams) (appwire.EvenerSubagentPreviewResponse, error) {
 		ref := strings.TrimSpace(params.Ref)
 		if ref == "" {

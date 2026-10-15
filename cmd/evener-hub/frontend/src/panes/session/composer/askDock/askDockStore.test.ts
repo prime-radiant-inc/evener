@@ -9,7 +9,7 @@ import type {
 } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import {
@@ -166,6 +166,11 @@ function ackAskUserCallWith(
 
 beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
+  // The ordinary entry route names its origin client from `location.origin` and
+  // keys transcript storage by `IDBKeyRange`; this suite runs under the node
+  // environment, which has neither browser global.
+  globalThis.IDBKeyRange = IDBKeyRange;
+  globalThis.location = { origin: "http://localhost:3000" } as Location;
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();

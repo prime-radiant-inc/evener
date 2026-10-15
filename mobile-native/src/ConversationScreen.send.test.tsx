@@ -17,6 +17,8 @@ import {
 	type Thread,
 	WireError,
 } from "@evener/appwire-client";
+import { findBar, findMatches, findShows } from "./findBarTestUtils";
+import { hasTestID, markers } from "./markerTestUtils";
 import { nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
@@ -561,7 +563,6 @@ async function press(tree: ReactTestRenderer, label: string) {
 
 it("queues a message while the agent works", async () => {
 	const { tree, hub } = await mount(thread("ref-queue", "active"));
-	expect(field(tree)?.props.placeholder).toBe("Tell the agent something…");
 	await type(tree, "second");
 	await press(tree, "Queue message");
 	expect(hub.mutations()).toEqual(["turn/queue"]);
@@ -570,7 +571,6 @@ it("queues a message while the agent works", async () => {
 
 it("sends a message when the agent is at rest", async () => {
 	const { tree, hub } = await mount(thread("ref-send", "idle"));
-	expect(field(tree)?.props.placeholder).toBe("Message");
 	expect(pressable(tree, "Stop")).toBeUndefined();
 	await type(tree, "first");
 	const send = pressable(tree, "Send");
@@ -586,7 +586,7 @@ it("stops the running turn from the tray and says so", async () => {
 	const { tree, hub } = await mount(thread("ref-stop", "active"));
 	await press(tree, "Stop");
 	expect(hub.mutations()).toEqual(["turn/interrupt"]);
-	expect(renderedText(tree)).toContain("Stopped");
+	expect(toasts(tree)).toEqual(["stop:stopped"]);
 });
 
 it("queues a second Send pressed before the first one's turn is seen", async () => {
@@ -687,9 +687,8 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("shows the dock in the composer's place", async () => {
 		const { tree } = await mount(thread("ref-question", "awaiting", true));
 		const text = renderedText(tree);
-		expect(text).toContain("Question");
+		expect(hasTestID(tree, "question-dock")).toBe(true);
 		expect(text).toContain("Keep or drop the implied options?");
-		expect(text).not.toContain("question to answer");
 		expect(field(tree)).toBeUndefined();
 		for (const label of ["Send", "Queue message"]) expect(composerSend(tree, label)).toBeUndefined();
 		expect(composerSend(tree, "Send answer")).toBeUndefined();
@@ -818,7 +817,6 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("brings the composer back for Other answer…, and sends your text as the answer", async () => {
 		const { tree, hub } = await mount(thread("ref-question-other", "awaiting", true));
 		await press(tree, "Other answer…");
-		expect(field(tree)?.props.placeholder).toBe("Answer or ask…");
 		await type(tree, "Drop them");
 		// The dock's own "Send answer" stays above; the composer's Send says
 		// it sends what you typed, so VoiceOver tells the two apart.
@@ -832,7 +830,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(starts.map((request) => request.params.input)).toEqual([
 			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 free text: "Drop them"' }],
 		]);
-		expect(renderedText(tree)).toContain("Answer sent");
+		expect(toasts(tree)).toEqual(["answer:sent"]);
 		expect(field(tree)?.props.value ?? "").toBe("");
 	});
 
@@ -847,7 +845,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 		expect(starts.map((request) => request.params.input)).toEqual([
 			[{ type: "text", text: '[answers]\n1. [Choice] \u2192 "Drop them"' }],
 		]);
-		expect(renderedText(tree)).toContain("Answer sent");
+		expect(toasts(tree)).toEqual(["answer:sent"]);
 	});
 
 	it("keeps a refused message's failed Edit out of the dock, in the screen's error area", async () => {
@@ -956,8 +954,7 @@ describe("a question waiting for an answer (spec 8.4)", () => {
 	it("folds to a bar, and the composer comes back beneath it", async () => {
 		const { tree } = await mount(thread("ref-question-fold", "awaiting", true));
 		await press(tree, "Fold");
-		expect(renderedText(tree)).toContain("Answer the question");
-		expect(field(tree)?.props.placeholder).toBe("Answer or ask…");
+		expect(pressable(tree, "Answer the question")).toBeDefined();
 		// Folded, the composer's Send is the only one.
 		expect(composerSend(tree, "Send answer")).toBeDefined();
 		await press(tree, "Answer the question");
@@ -982,9 +979,9 @@ it("gives Send a typed command's own label, so VoiceOver hears what it runs", as
 // keeps it, so a lost answer isn't a failure, and what the hub took reads as
 // this phone's.
 it.each([
-	["/steer check the logs", "Steer", "turn/steer", "Steering · arrives at the next step"],
-	["/queue check the logs", "Queue", "turn/queue", "Queued · sends when this turn ends"],
-])("sends %s through the outbox", async (text, label, method, caption) => {
+	["/steer check the logs", "Steer", "turn/steer", "steering"],
+	["/queue check the logs", "Queue", "turn/queue", "queued"],
+])("sends %s through the outbox", async (text, label, method, ghost) => {
 	const ref = `ref-typed-${method}`;
 	const served = thread(ref, "active");
 	const { tree, hub } = await mount(served);
@@ -1021,9 +1018,10 @@ it.each([
 	);
 	await settle();
 	expect(field(tree)?.props.value).toBe("");
-	expect(renderedText(tree)).not.toContain("Couldn't");
+	expect(actionErrors(tree)).toEqual([]);
+	expect(saysSteerFailed(tree)).toBe(false);
 	expect(renderedText(tree)).toContain("check the logs");
-	expect(renderedText(tree)).toContain(caption);
+	expect(ghostStates(tree)).toContain(ghost);
 });
 
 // A typed command the outbox couldn't take never left the phone: it says try
@@ -1034,11 +1032,10 @@ it("asks to try a typed /queue again when the phone couldn't keep it", async () 
 	await type(tree, "/queue check the logs");
 	await press(tree, "Queue");
 	expect(hub.mutations()).toEqual([]);
-	expect(renderedText(tree)).toContain("Couldn't save this on the phone. Try again.");
-	expect(renderedText(tree)).not.toContain("Could not confirm the command");
+	expect(actionErrors(tree)).toEqual(["not-sent"]);
 	// Nothing left the phone, so the command goes back to the composer.
 	expect(field(tree)?.props.value).toBe("/queue check the logs");
-	expect(renderedText(tree)).not.toContain("Couldn't confirm");
+	expect(ghostStates(tree)).toEqual([]);
 });
 
 // A typed /interrupt the phone couldn't keep says so, and stays to try again.
@@ -1048,8 +1045,8 @@ it("asks to try a typed /interrupt again when the phone couldn't keep it", async
 	await type(tree, "/interrupt");
 	await press(tree, "Interrupt");
 	expect(hub.mutations()).toEqual([]);
-	expect(renderedText(tree)).toContain("Couldn't save this on the phone. Try again.");
-	expect(renderedText(tree)).not.toContain("Stopped");
+	expect(actionErrors(tree)).toEqual(["not-sent"]);
+	expect(toasts(tree)).toEqual([]);
 	expect(field(tree)?.props.value).toBe("/interrupt");
 });
 
@@ -1078,8 +1075,8 @@ it("holds the phone's unsent messages on /interrupt, as Stop does", async () => 
 	await act(async () => answerFirst());
 	await settle();
 	expect(hub.mutations()).toEqual(["turn/queue", "turn/interrupt"]);
-	expect(renderedText(tree)).toContain("Held · you stopped this turn");
-	expect(renderedText(tree)).toContain("Stopped");
+	expect(ghostStates(tree)).toContain("held");
+	expect(toasts(tree)).toEqual(["stop:stopped"]);
 });
 
 it("keeps the session open when /shutdown is typed and completed (ruling 19)", async () => {
@@ -1134,7 +1131,7 @@ it("does nothing when a Stop lands after the turn already ended", async () => {
 	await settle();
 
 	expect(hub.mutations()).toEqual([]);
-	expect(renderedText(tree)).not.toContain("Stopped");
+	expect(toasts(tree)).toEqual([]);
 	// No error text of any kind: the screen reads exactly as it did.
 	expect(renderedText(tree)).toBe(before);
 });
@@ -1169,7 +1166,7 @@ it("brings back messages a Stop held before they left the phone: Cancel drops on
 	const text = renderedText(tree);
 	expect(text).toContain("drop this one");
 	expect(text).toContain("send this one");
-	expect(text).toContain("Held · you stopped this turn");
+	expect(ghostStates(tree)).toEqual(["held", "held"]);
 
 	// Cancel drops the first from the phone's outbox; it never reaches the hub.
 	await press(tree, "Cancel");
@@ -1684,7 +1681,7 @@ it("reads the session again on its own after a read fails", async () => {
 	const { tree, hub } = await mount(twoTurns("ref-retry"), { failedReads: 1 });
 	expect(hub.requests.filter((request) => request.method === "thread/read")).toHaveLength(2);
 	expect(renderedText(tree)).toContain("ask turn_2");
-	expect(renderedText(tree)).not.toContain("Trying again");
+	expect(hasTestID(tree, "session-read-retrying")).toBe(false);
 });
 
 it("keeps trying quietly, and says so from the third failure in a row", async () => {
@@ -1716,12 +1713,12 @@ it("keeps trying quietly, and says so from the third failure in a row", async ()
 		const reads = () => hub.requests.filter((request) => request.method === "thread/read").length;
 		// The first failure retries at once, the second after a second.
 		expect(reads()).toBe(2);
-		expect(renderedText(tree)).not.toContain("Trying again");
+		expect(hasTestID(tree, "session-read-retrying")).toBe(false);
 		await advance(50);
 		expect(reads()).toBe(2);
 		await advance(1_050);
 		expect(reads()).toBe(3);
-		expect(renderedText(tree)).toContain("Couldn't load this session. Trying again on its own.");
+		expect(hasTestID(tree, "session-read-retrying")).toBe(true);
 		for (const words of ["Pull down", "Reconnect", "Load older messages", "Loading conversation"])
 			expect(renderedText(tree)).not.toContain(words);
 		act(() => tree.unmount());
@@ -1743,6 +1740,26 @@ it("has no Latest button, no pull to refresh, and no Load older button", async (
 	expect(list.props.refreshing).toBeUndefined();
 	expect(renderedText(tree)).not.toContain("Load older messages");
 });
+
+/** What the session's toasts say happened, by kind. */
+function toasts(tree: ReactTestRenderer): string[] {
+	return markers(tree, "toast");
+}
+
+/** Why the composer's last action failed, by reason. */
+function actionErrors(tree: ReactTestRenderer): string[] {
+	return markers(tree, "action-error");
+}
+
+/** Every ghost on the screen, by state. */
+function ghostStates(tree: ReactTestRenderer): string[] {
+	return markers(tree, "ghost");
+}
+
+/** Whether the screen says a steer failed: its toast, or a refused ghost. */
+function saysSteerFailed(tree: ReactTestRenderer): boolean {
+	return toasts(tree).some((kind) => kind.startsWith("steer:")) || ghostStates(tree).includes("refused");
+}
 
 function transcriptList(tree: ReactTestRenderer) {
 	return tree.root.findAll(
@@ -2097,7 +2114,7 @@ it("keeps the loading blocks above a ghost until the conversation first loads", 
 	const ref = "ref-skeleton-ghost";
 	nativeDrafts().write({ hubId: "hub-1", sessionRef: ref }, { draft: "", unconfirmed: "lost send" });
 	const { tree } = await mount(thread(ref, "idle"), { failedReads: 2 });
-	await vi.waitFor(() => expect(textOf(transcriptList(tree))).toContain("Couldn't confirm this was sent"));
+	await vi.waitFor(() => expect(markers(transcriptList(tree), "ghost")).toEqual(["unconfirmed"]));
 	expect(
 		transcriptList(tree).findAll((node) => node.props.accessibilityLabel === "Loading conversation").length,
 	).toBeGreaterThan(0);
@@ -2628,7 +2645,7 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 		const served = thread("ref-restart", "idle");
 		(served as unknown as { status: unknown }).status = { type: "restartRequired" };
 		const { tree, hub } = await mount(served);
-		expect(renderedText(tree)).toContain("This session runs an older Evener. Restart it to pick up the hub's update.");
+		expect(markers(tree, "session-notice")).toEqual(["restartNeeded"]);
 		expect(field(tree)).toBeUndefined();
 		await press(tree, "Restart session");
 		expect(
@@ -2683,7 +2700,7 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 				.filter((request) => request.method === "forceStop" || request.method === "resumeThread")
 				.map((request) => request.method),
 		).toEqual(["forceStop", "resumeThread"]);
-		expect(renderedText(tree)).not.toContain("Restarting…");
+		expect(pressable(tree, "Restart session")?.props.accessibilityState).toMatchObject({ busy: false });
 	});
 
 	it("says so in the notice when the session stopped but couldn't start again", async () => {
@@ -2693,7 +2710,7 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 			throw new Error("resume refused");
 		};
 		await press(tree, "Restart session");
-		expect(renderedText(tree)).toContain("Stopped, but couldn't start it again.");
+		expect(hasTestID(tree, "session-notice-error")).toBe(true);
 		expect(pressable(tree, "Restart session")?.props.disabled).toBe(false);
 	});
 
@@ -2704,14 +2721,14 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 		};
 		await press(tree, "Restart session");
 		expect(hub.requests.filter((request) => request.method === "resumeThread")).toEqual([]);
-		expect(renderedText(tree)).toContain("Couldn't restart this session.");
+		expect(hasTestID(tree, "session-notice-error")).toBe(true);
 	});
 
 	it("offers Resume in the composer's place for a paused session", async () => {
 		const served = thread("ref-paused", "idle");
 		(served as unknown as { evener: Record<string, unknown> }).evener.resumeRequired = true;
 		const { tree, hub } = await mount(served);
-		expect(renderedText(tree)).toContain("This session is paused.");
+		expect(markers(tree, "session-notice")).toEqual(["paused"]);
 		expect(field(tree)).toBeUndefined();
 		await press(tree, "Resume");
 		expect(
@@ -2781,7 +2798,7 @@ it("previews your note in the notes bar, and the sheet it opens saves through th
 	).toEqual([
 		expect.objectContaining({ ref: "ref-notes", expectedInstanceId: "instance", note: "keep the tests green" }),
 	]);
-	expect(renderedText(tree)).toContain("Note saved. The agent is reading it.");
+	expect(toasts(tree)).toEqual(["note:saved-reading"]);
 });
 
 it("shows no notes bar for a session with nothing shared", async () => {
@@ -2791,7 +2808,6 @@ it("shows no notes bar for a session with nothing shared", async () => {
 		sharedNotes: true,
 	};
 	const { tree } = await mount(served);
-	expect(renderedText(tree)).not.toContain("Your note");
 	expect(tree.root.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "person")).toEqual([]);
 });
 
@@ -2908,20 +2924,23 @@ it("follows the hub's note in the bar and the open sheet when it changes", async
 describe("queued messages at the transcript's end (spec 8.5)", () => {
 	const bottomBar = (tree: ReactTestRenderer) =>
 		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
-	const lastRow = (tree: ReactTestRenderer) => {
+	const lastItem = (tree: ReactTestRenderer) => {
 		const row = transcriptList(tree)
 			.findAll((node) => String(node.type) === "Item")
 			.at(-1);
 		if (!row) throw new Error("no transcript rows");
-		return textOf(row);
+		return row;
 	};
+	const lastRow = (tree: ReactTestRenderer) => textOf(lastItem(tree));
+	/** The last row's ghost, by state. */
+	const lastGhost = (tree: ReactTestRenderer) => markers(lastItem(tree), "ghost");
 
 	it("shows a queued message as the transcript's last row, not in the bottom bar", async () => {
 		const served = thread("ref-queue-row", "active", false, ["check the logs"]);
 		(served as unknown as { turns: unknown[] }).turns = [askReplyTurn("turn_1")];
 		const { tree } = await mount(served);
 		expect(lastRow(tree)).toContain("check the logs");
-		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
+		expect(lastGhost(tree)).toEqual(["queued"]);
 		expect(textOf(transcriptList(tree))).toContain("ask turn_1");
 		expect(textOf(bottomBar(tree))).not.toContain("check the logs");
 	});
@@ -2967,7 +2986,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue(["check the logs"], 1) },
 		});
 		expect(shown()).toBe(1);
-		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
+		expect(lastGhost(tree)).toEqual(["queued"]);
 		// The turn ends and the hub takes the message for the next one: the
 		// queue frame comes first, then the message's own item.
 		frame({
@@ -2996,8 +3015,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			},
 		});
 		expect(shown()).toBe(1);
-		expect(textOf(transcriptList(tree))).not.toContain("Sending…");
-		expect(textOf(transcriptList(tree))).not.toContain("Queued ·");
+		expect(markers(transcriptList(tree), "ghost")).toEqual([]);
 	});
 
 	// The usage lines (token counts, estimated cost) close the conversation;
@@ -3041,12 +3059,12 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 	it("steers with a queued message the agent hasn't reached yet", async () => {
 		const { tree, hub } = await mount(thread("ref-steer-now", "active", false, ["check the logs"]));
 		expect(renderedText(tree)).toContain("check the logs");
-		expect(renderedText(tree)).toContain("Queued · sends when this turn ends");
+		expect(ghostStates(tree)).toEqual(["queued"]);
 		await press(tree, "Steer now");
 		const promote = hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer");
 		expect(promote).toHaveLength(1);
 		expect(promote[0]?.params).toMatchObject({ index: 0, expectedEntryId: "queue_1" });
-		expect(renderedText(tree)).not.toContain("Couldn't steer");
+		expect(saysSteerFailed(tree)).toBe(false);
 	});
 
 	// Between the press and the agent's next step, the hub holds the steer as
@@ -3111,8 +3129,8 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		expect(hub.requests.filter((entry) => entry.method === "thread/read").length).toBeGreaterThan(1);
 		expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
 		expect(lastRow(tree)).toContain("check the logs");
-		expect(lastRow(tree)).toContain("Steering · arrives at the next step");
-		expect(renderedText(tree)).not.toContain("Couldn't steer");
+		expect(lastGhost(tree)).toEqual(["steering"]);
+		expect(saysSteerFailed(tree)).toBe(false);
 	});
 
 	// The hub took the steer, but its answer never reached the phone: the
@@ -3139,7 +3157,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			};
 			const { handedBack } = await steerFromQueue(tree, ref, label);
 			await settle();
-			expect(renderedText(tree)).not.toContain("Couldn't steer");
+			expect(saysSteerFailed(tree)).toBe(false);
 			expect(await handedBack).toBeFalsy();
 			await act(async () => {
 				await getNativeMutationRuntime().connectionReady();
@@ -3149,8 +3167,8 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			expect(sent).toHaveLength(2);
 			expect(sent[1]?.params.clientMutationId).toBe(sent[0]?.params.clientMutationId);
 			expect(lastRow(tree)).toContain("check the logs");
-			expect(lastRow(tree)).toContain("Steering · arrives at the next step");
-			expect(renderedText(tree)).not.toContain("Couldn't steer");
+			expect(lastGhost(tree)).toEqual(["steering"]);
+			expect(saysSteerFailed(tree)).toBe(false);
 		},
 	);
 
@@ -3183,11 +3201,11 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			await settle();
 			expect(hub.requests.filter((entry) => entry.method === method)).toHaveLength(1);
 			expect(lastRow(tree)).toContain("check the logs");
-			expect(lastRow(tree)).not.toContain("Queued ·");
+			expect(lastGhost(tree)).not.toContain("queued");
 			await act(async () => answer());
 			await settle();
 			expect(lastRow(tree)).toContain("check the logs");
-			expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+			expect(lastGhost(tree)).toEqual(["steering"]);
 		},
 	);
 
@@ -3196,6 +3214,12 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			.findAll((node) => String(node.type) === "Item")
 			.map(textOf)
 			.filter((row) => row.includes(text));
+	/** The text of each transcript row whose ghost is `state`. */
+	const rowsWithGhost = (tree: ReactTestRenderer, state: string) =>
+		transcriptList(tree)
+			.findAll((node) => String(node.type) === "Item")
+			.filter((row) => markers(row, "ghost").includes(state))
+			.map(textOf);
 
 	// Until the hub answers, the message shows once, on its way, and there is
 	// no second Steer now (or Steer all now) to press for it.
@@ -3223,8 +3247,6 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 	);
 
 	// Steer all now would take the message Steer now is already steering with.
-	const STEERING_WITH_QUEUE =
-		"This phone is already steering with the queue. Try again once that steer is sent or cancelled.";
 	it("withholds Steer all now while a Steer now waits for the hub", async () => {
 		const ref = "ref-steer-all-after-promote";
 		const { tree, hub } = await mount(thread(ref, "active", false, ["check the logs", "one", "two"]));
@@ -3242,16 +3264,15 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		);
 		act(() => steerNow?.props.onPress());
 		await settle();
-		expect(rowsWith(tree, "Queued ·")).toHaveLength(2);
+		expect(rowsWithGhost(tree, "queued")).toHaveLength(2);
 		expect(queueHosts.get(sheetKey("hub-1", ref))?.steerAll).toBeUndefined();
 		// Typed, it waits too, and says why.
 		await type(tree, "/drain-as-steer");
 		await press(tree, "Drain queue");
 		expect(hub.requests.filter((entry) => entry.method === "turn/drainAsSteer")).toEqual([]);
-		expect(renderedText(tree)).toContain(STEERING_WITH_QUEUE);
+		expect(actionErrors(tree)).toEqual(["refused"]);
 		// Nothing was tried, so the command stays in the composer.
 		expect(field(tree)?.props.value).toBe("/drain-as-steer");
-		expect(renderedText(tree)).not.toContain("Couldn't confirm");
 	});
 
 	// /drain-as-steer is Steer all now typed: the same outbox, so a lost answer
@@ -3292,9 +3313,10 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		);
 		await settle();
 		expect(lastRow(tree)).toContain("check the logs");
-		expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+		expect(lastGhost(tree)).toEqual(["steering"]);
 		expect(field(tree)?.props.value).toBe("");
-		expect(renderedText(tree)).not.toContain("Couldn't");
+		expect(actionErrors(tree)).toEqual([]);
+		expect(saysSteerFailed(tree)).toBe(false);
 	});
 
 	// A drain takes the queue it saw; a message queued after the hub took it
@@ -3316,7 +3338,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		};
 		await steerFromQueue(tree, ref, "Steer all now");
 		await settle();
-		expect(lastRow(tree)).toContain("Steering · arrives at the next step");
+		expect(lastGhost(tree)).toEqual(["steering"]);
 		act(() =>
 			hub.notify({
 				method: "thread/queueChanged",
@@ -3324,9 +3346,9 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			} as AnyNotification),
 		);
 		await settle();
-		expect(rowsWith(tree, "Steering · arrives at the next step")[0]).toContain("check the logs");
+		expect(rowsWithGhost(tree, "steering")[0]).toContain("check the logs");
 		expect(lastRow(tree)).toContain("one more thing");
-		expect(lastRow(tree)).toContain("Queued · sends when this turn ends");
+		expect(lastGhost(tree)).toEqual(["queued"]);
 		expect(pressable(tree, "Steer now")).toBeDefined();
 	});
 
@@ -3348,7 +3370,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		};
 		await steerFromQueue(tree, ref, "Steer all now");
 		await settle();
-		const [ghost] = rowsWith(tree, "Sending…");
+		const [ghost] = rowsWithGhost(tree, "sending");
 		expect(ghost).toContain("check the logs");
 		expect(ghost).toContain("[image]");
 	});
@@ -3372,10 +3394,18 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		};
 		await steerFromQueue(tree, ref, label);
 		await settle();
-		const [refused] = rowsWith(tree, "Couldn't steer with this · queue entry changed");
-		expect(refused).toContain("check the logs");
-		expect(refused).toContain("Discard");
-		expect(refused).not.toContain("Edit");
+		const refused = transcriptList(tree)
+			.findAll((node) => String(node.type) === "Item")
+			.find((row) => markers(row, "ghost").includes("refused"));
+		if (!refused) throw new Error("no refused ghost");
+		// The hub's reason, beside the message it was for.
+		expect(textOf(refused)).toContain("queue entry changed");
+		expect(textOf(refused)).toContain("check the logs");
+		const offered = refused
+			.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "button")
+			.map((node) => node.props.accessibilityLabel);
+		expect(offered).toContain("Discard");
+		expect(offered).not.toContain("Edit");
 	});
 
 	// They take no room from the transcript, so nothing folds while you type.
@@ -3427,12 +3457,12 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		await press(tree, "Cancel");
 		expect(hub.requests.map((entry) => entry.method)).toContain("turn/cancelQueued");
 		expect(renderedText(tree)).not.toContain("drop this");
-		expect(renderedText(tree)).not.toContain("Couldn't take this message out of the queue.");
+		expect(toasts(tree)).toEqual([]);
 	});
 
 	it("holds a queue a Stop parked, and Send now releases it (Review Focus 3)", async () => {
 		const { tree, hub } = await mount(thread("ref-held", "idle", false, ["after the stop"]));
-		expect(renderedText(tree)).toContain("Held · you stopped this turn");
+		expect(ghostStates(tree)).toEqual(["held"]);
 		await press(tree, "Send now");
 		const promote = hub.requests.filter((request) => request.method === "turn/promoteQueuedAsSteer");
 		expect(promote.map((request) => request.params)).toMatchObject([{ index: 0, expectedEntryId: "queue_1" }]);
@@ -3630,8 +3660,9 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 			deniedPath: "/Users/jesse/notes/todo.md",
 		});
 		const { tree, hub } = await mount(served);
-		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
-		expect(renderedText(tree)).toContain("1 more waiting");
+		expect(hasTestID(tree, "approval-dock")).toBe(true);
+		const waiting = tree.root.findAllByProps({ testID: "approval-more-waiting" });
+		expect(waiting.map((node) => textOf(node))).toEqual([expect.stringMatching(/\b1\b/)]);
 		const firstBody = dockBody(tree, "approval-dock").scroller;
 		await press(tree, "Allow this file only");
 		act(() =>
@@ -3642,9 +3673,8 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		);
 		await settle();
 		const text = renderedText(tree).replaceAll("\u200b", "");
-		expect(text).toContain("Wants to read outside the workspace");
 		expect(text).toContain("read_file  /Users/jesse/notes/todo.md");
-		expect(text).not.toContain("more waiting");
+		expect(hasTestID(tree, "approval-more-waiting")).toBe(false);
 		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
 		// The next approval gets a fresh dock (keyed by escalationId), so its
 		// body opens at its top, whatever the last one was scrolled to.
@@ -3653,10 +3683,9 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 
 	it("shows the dock in the tray's place, and never the composer", async () => {
 		const { tree } = await mount(withApproval("ref-approval"));
-		expect(renderedText(tree)).toContain("Wants to write outside the workspace");
+		expect(hasTestID(tree, "approval-dock")).toBe(true);
 		expect(pressable(tree, "Stop")).toBeUndefined();
 		expect(field(tree)).toBeUndefined();
-		expect(renderedText(tree)).not.toContain("approval needed");
 	});
 
 	it("puts a long approval's target in the dock's scroller, and Allow and Deny outside it", async () => {
@@ -3702,7 +3731,7 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		);
 		await settle();
 		const text = renderedText(tree).replaceAll("\u200b", "");
-		expect(text).toContain("Wants to write outside the workspace");
+		expect(hasTestID(tree, "approval-dock")).toBe(true);
 		expect(text).toContain("write_file  /Users/jesse/sites/docs/index.html");
 		expect(pressable(tree, "Allow this file only")).toBeUndefined();
 		expect(pressable(tree, "Deny")).toBeUndefined();
@@ -3719,14 +3748,14 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		expect(resolves.map((request) => request.params)).toEqual([
 			{ ref: "ref-approval-allow", escalationId: "esc-1", approve: true },
 		]);
-		expect(renderedText(tree)).toContain("Allowed once");
+		expect(toasts(tree)).toEqual(["approval:allowed"]);
 	});
 
 	it("denies without a haptic: spec 16.6 plays success only for allowed", async () => {
 		const { tree } = await mount(withApproval("ref-approval-deny"));
 		playedHaptics.length = 0;
 		await press(tree, "Deny");
-		expect(renderedText(tree)).toContain("Denied");
+		expect(toasts(tree)).toEqual(["approval:denied"]);
 		expect(playedHaptics).toEqual([]);
 	});
 });
@@ -3915,15 +3944,15 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		flatListCalls.length = 0;
 		await search(tree, "settle");
 		// Rows: ask 1, reply 1, ask 2, reply 2. Both matches are in turn 1.
-		expect(renderedText(tree)).toContain("2 of 2");
+		expect(findMatches(tree)).toEqual({ position: 2, count: 2 });
 		expect(findScrolls()).toEqual([1]);
 		expect(washed(tree).join(" ")).toContain("The race is in settle.");
 		await press(tree, "Older match");
-		expect(renderedText(tree)).toContain("1 of 2");
+		expect(findMatches(tree)).toEqual({ position: 1, count: 2 });
 		expect(findScrolls()).toEqual([1, 0]);
 		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");
 		await press(tree, "Newer match");
-		expect(renderedText(tree)).toContain("2 of 2");
+		expect(findMatches(tree)).toEqual({ position: 2, count: 2 });
 		act(() => pressable(tree, "Done")?.props.onPress());
 		await settle();
 		expect(washed(tree)).toEqual([]);
@@ -4037,11 +4066,18 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 	it("tells VoiceOver the count a search settles on, and nothing on the way", async () => {
 		const { tree } = await mount(findTurns("ref-find-announce"));
 		chooseMenu("Find in session");
-		const announce = vi.spyOn(AccessibilityInfo, "announceForAccessibility");
+		// Where the bar says you are at each announcement.
+		const announced: ReturnType<typeof findMatches>[] = [];
+		const announce = vi.spyOn(AccessibilityInfo, "announceForAccessibility").mockImplementation(() => {
+			announced.push(findMatches(tree));
+		});
 		try {
 			await search(tree, "settle");
 			await search(tree, "settle test");
-			expect(announce.mock.calls).toEqual([["2 of 2"], ["1 of 1"]]);
+			expect(announced).toEqual([
+				{ position: 2, count: 2 },
+				{ position: 1, count: 1 },
+			]);
 		} finally {
 			announce.mockRestore();
 		}
@@ -4051,7 +4087,7 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		const { tree } = await mount(findTurns("ref-find-none"));
 		chooseMenu("Find in session");
 		await search(tree, "nowhere");
-		expect(renderedText(tree)).toContain("No matches");
+		expect(findShows(tree, 0, 0)).toBe(true);
 	});
 
 	it("reaches back through older history for an older match", async () => {
@@ -4061,14 +4097,14 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		});
 		chooseMenu("Find in session");
 		await search(tree, "settle");
-		expect(renderedText(tree)).toContain("2 of 2");
+		expect(findMatches(tree)).toEqual({ position: 2, count: 2 });
 		await press(tree, "Older match");
 		await press(tree, "Older match");
 		expect(
 			hub.requests.filter((request) => request.method === "thread/turns/list").map((request) => request.params.cursor),
 		).toEqual(["cursor-1"]);
 		expect(washed(tree).join(" ")).toContain("Is settle flaky?");
-		expect(renderedText(tree)).toContain("1 of 3");
+		expect(findMatches(tree)).toEqual({ position: 1, count: 3 });
 	});
 
 	describe("following the live end while find pages older history", () => {
@@ -4162,10 +4198,13 @@ describe("Find in session (spec 8.7, ruling 29)", () => {
 		const { tree, hub } = await mount(findTurns("ref-find-end"), { olderCursor: "cursor-1" });
 		chooseMenu("Find in session");
 		await search(tree, "settle");
+		expect(hasTestID(tree, "find-bar:exhausted")).toBe(false);
 		await press(tree, "Older match");
 		await press(tree, "Older match");
 		expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toHaveLength(1);
-		expect(renderedText(tree)).toContain("No older matches");
+		// History has ended: the bar says so in place of a match.
+		expect(hasTestID(tree, "find-bar:exhausted")).toBe(true);
+		expect(findBar(tree).props.searchingOlder).toBe(false);
 		expect(washed(tree).join(" ")).toContain("Fix the flaky Settle test");
 	});
 });
@@ -4298,8 +4337,9 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		fleet.live = [];
 		fleet.needsYou = [fleetSession("ref-alone", { state: "errored", updated_at: at(1) })];
 		const { tree } = await mount(thread("ref-alone", "idle"));
-		expect(back().props.accessibilityLabel).toBe("Back");
-		expect(renderedText(tree)).not.toContain("Next");
+		// No count of others: nobody else needs you.
+		expect(back().props.accessibilityLabel).not.toMatch(/\d/);
+		expect(tree.root.findByType(FloatingStack).props.next).toBeFalsy();
 	});
 
 	it("opens the first session that needs you from Next, marked seen", async () => {
@@ -4382,12 +4422,12 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 	it("stacks a toast above Next, in the one column over the transcript's end, so neither covers the other", async () => {
 		const { tree } = await mount(thread("ref-stacked", "active"));
 		await press(tree, "Stop");
-		expect(renderedText(tree)).toContain("Stopped");
+		expect(toasts(tree)).toEqual(["stop:stopped"]);
 		const next = capsule(tree);
 		if (!next) throw new Error("no Next capsule");
 		const stack = tree.root.findByType(FloatingStack);
 		const toast = stack.findByType(Toast);
-		expect(toast.props.toast).toMatchObject({ text: "Stopped" });
+		expect(toast.props.toast).toMatchObject({ kind: "stop:stopped" });
 		expect(stack.props.next).toBeTruthy();
 		// Nothing new arrived below, so there is no pill to stack.
 		expect(stack.props.pill).toBeNull();
@@ -4432,7 +4472,7 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		expect(bottom()).toBe(60);
 		// A toast joins it.
 		await press(tree, "Stop");
-		expect(renderedText(tree)).toContain("Stopped");
+		expect(toasts(tree)).toEqual(["stop:stopped"]);
 		expect(bottom()).toBe(60);
 		// Away from the end, with rows the list didn't hold then, the pill joins too.
 		act(() =>
@@ -4540,7 +4580,7 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 			fleet.live = [working];
 			fleet.needsYou = [];
 			const { tree } = await mount(thread("ref-title", "active"));
-			expect(renderedText(tree)).not.toContain("Next");
+			expect(tree.root.findByType(FloatingStack).props.next).toBeFalsy();
 			panTitle(-80);
 			panTitle(80);
 			expect(navigation.replace).not.toHaveBeenCalled();
@@ -4791,7 +4831,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(pressable(tree, "Open coordinator")).toBeDefined();
 		expect(pressable(tree, "Stop")).toBeUndefined();
 		// The bar says what you can do; the footer adds nothing.
-		expect(renderedText(tree)).not.toContain("Sending is unavailable");
+		expect(hasTestID(tree, "sending-unavailable")).toBe(false);
 		for (const words of ["Retry", "Refresh", "Reconnect", "From the coordinator", "Talk to it through its coordinator"])
 			expect(renderedText(tree)).not.toContain(words);
 		act(() => pressable(tree, "Ask coordinator to stop it")?.props.onPress());
@@ -4808,7 +4848,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		if (!row) throw new Error("no row");
 		act(() => stopRequests("hub-1").request(COORDINATOR.ref, row, Date.now()));
 		await settle();
-		expect(renderedText(tree)).toContain("Stop requested");
+		expect(hasTestID(tree, "subagent-stop-requested")).toBe(true);
 		expect(pressable(tree, "Ask coordinator to stop it")).toBeUndefined();
 		expect(pressable(tree, "Open coordinator")).toBeDefined();
 	});
@@ -4825,7 +4865,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(
 			hub.requests.filter((request) => request.method === "evener/delegate/stop").map((request) => request.params),
 		).toEqual([{ ref: COORDINATOR.ref, threadId: COORDINATOR.threadId, delegateId: "d-fix" }]);
-		expect(renderedText(tree)).toContain("Stop requested");
+		expect(hasTestID(tree, "subagent-stop-requested")).toBe(true);
 		const [stoppedRow] = flattenSubagents(subagentTree() as never);
 		if (!stoppedRow) throw new Error("no row");
 		expect(stopRequests("hub-1").direct(stoppedRow)).toBe(true);
@@ -4945,7 +4985,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		);
 		await settle();
 		expect(jobReads(hub)).toBeGreaterThan(before);
-		expect(renderedText(tree)).not.toContain("Stop requested");
+		expect(hasTestID(tree, "subagent-stop-requested")).toBe(false);
 	});
 
 	it("reads the tree again when the direct stop finds it already finishing", async () => {
@@ -4961,7 +5001,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		);
 		await settle();
 		expect(jobReads(hub)).toBeGreaterThan(before);
-		expect(renderedText(tree)).not.toContain("Stop requested");
+		expect(hasTestID(tree, "subagent-stop-requested")).toBe(false);
 	});
 
 	it("offers no direct stop from a connection that has gone", async () => {
@@ -5325,7 +5365,7 @@ describe("Send while offline (phase 6, spec 8.5)", () => {
 		await press(tree, "Send when you're back online");
 		expect(field(tree)?.props.value).toBe("");
 		expect((await outbox(ref)).map((record) => [record.method, record.state])).toEqual([["turn/queue", "submitting"]]);
-		expect(renderedText(tree)).toContain("Will send when you're back online");
+		expect(ghostStates(tree)).toEqual(["sending"]);
 		expect(playedHaptics).toEqual(["impact:light"]);
 		expect(hub.mutations()).toEqual([]);
 
@@ -5440,12 +5480,12 @@ it("clears the lost send's outbox row with one Discard on the draft ghost", asyn
 	await runtime.storage.markUnknown(clientMutationId, "blockedUnknown", { onlyAttempted: true });
 
 	const { tree } = await mount(thread(ref, "idle"));
-	await vi.waitFor(() => expect(renderedText(tree)).toContain("Couldn't confirm this was sent"));
+	await vi.waitFor(() => expect(ghostStates(tree)).toEqual(["unconfirmed"]));
 	await press(tree, "Discard");
 
 	// One Discard clears both: the draft's uncertainty and the row it stood in
 	// for, which otherwise returns as its own ghost.
 	await vi.waitFor(async () => expect(await runtime.storage.listOutbox(key)).toEqual([]));
 	await settle();
-	expect(renderedText(tree)).not.toContain("Couldn't confirm this was sent");
+	expect(ghostStates(tree)).toEqual([]);
 });

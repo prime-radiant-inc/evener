@@ -52,7 +52,12 @@ export interface TranscriptSettleSample {
 
 /** Why readiness is still being withheld, carrying the numbers that decided it. */
 export type TranscriptSettleBlocker =
-  | { kind: "unmounted" }
+  /**
+   * The transcript's scroll element is absent. `during` names the post-settle
+   * wait that lost it mid-pass; the readiness waits omit it, because for them an
+   * absent element is the mount not having happened yet.
+   */
+  | { kind: "unmounted"; during?: string }
   | { kind: "turns"; turns: number; expected: number }
   | { kind: "overflow"; scrollHeight: number; clientHeight: number; required: number }
   | { kind: "moving"; scrollHeight: number; scrollTop: number }
@@ -86,7 +91,9 @@ export interface TranscriptSettleTracker {
 export function describeTranscriptSettleBlocker(blocker: TranscriptSettleBlocker): string {
   switch (blocker.kind) {
     case "unmounted":
-      return "the transcript VirtualList scroll element never mounted";
+      return blocker.during === undefined
+        ? "the transcript VirtualList scroll element never mounted"
+        : `the transcript VirtualList scroll element unmounted during ${blocker.during}`;
     case "turns":
       return `only ${blocker.turns} of ${blocker.expected} scripted turns reached the model`;
     case "overflow":

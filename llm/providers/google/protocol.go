@@ -24,7 +24,7 @@ func init() { llm.RegisterProtocol(DefaultProtocol) }
 // ID implements llm.Protocol.
 func (*Protocol) ID() string { return registry.ProtocolGoogle }
 
-var prunablePaths = []string{"cachedContent", "generationConfig.stopSequences", "generationConfig.temperature", "generationConfig.topP", "labels", "safetySettings", "toolConfig"}
+var prunablePaths = []string{"cachedContent", "generationConfig.stopSequences", "generationConfig.temperature", "generationConfig.thinkingConfig", "generationConfig.topP", "labels", "safetySettings", "toolConfig"}
 
 // PrunablePaths implements llm.Protocol.
 func (*Protocol) PrunablePaths() []string {

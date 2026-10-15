@@ -498,7 +498,7 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 		},
 	}
 	reg := tool.NewRegistry()
-	registerCommunicateTool(reg, deps)
+	_ = registerCommunicateTool(reg, deps)
 	rt := reg.Get("communicate")
 	if rt == nil {
 		t.Fatal("communicate not registered")
@@ -562,7 +562,7 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 	}); err != nil {
 		t.Fatalf("pre-register communicate: %v", err)
 	}
-	registerCommunicateTool(reg, deps)
+	_ = registerCommunicateTool(reg, deps)
 	rt := reg.Get("communicate")
 	if rt == nil {
 		t.Fatal("communicate not registered")

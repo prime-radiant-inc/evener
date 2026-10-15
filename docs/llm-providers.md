@@ -140,7 +140,11 @@ previously healthy live snapshot.
 For facts on a visible ID, the live layer sits between the curated overlay and
 the user config. It supplies `Tools`, `InputModalities`, `ContextWindow`,
 `MaxOutputTokens`, `EffortValues`, `DefaultEffort`, `Cost`, `Reasoning`, plus
-`ThinkingAlwaysOn` (only when OpenRouter's `reasoning.mandatory` is `true`). It
+`ThinkingAlwaysOn` (only when OpenRouter's `reasoning.mandatory` is `true`).
+`InputModalities` comes from OpenRouter's `architecture.input_modalities`, or,
+when that list carries no entry, from a gateway's `capabilities.vision` (an
+advertised vision capability is `["text", "image"]`); the Codex backend states
+the list itself. It
 overrides catalog and curated facts but **never a field the user layer (layer
 4) set**, and it never touches any other wire-shaping cap. Live rows matching
 the non-chat pattern list (`embedding`, `whisper`, `tts`, `dall-e`,
@@ -287,8 +291,11 @@ A model id matching nothing is still resolvable: it's synthesized from
 provider-level caps, matching glob rows, and the provider's surface and
 family. `Warnings` carries `model not in catalog`; the wire id is the
 reference verbatim; the context window is unset, which the agent treats as
-"unknown" — no compaction budget until a live listing or a user row supplies
-one. The anthropic protocol's required `max_tokens` falls back to 32000.
+"unknown" — compaction budgets against a conservative assumed window (128K),
+disclosed once as a warning naming the remedy (declare `context_window` on
+the model's row), until a live listing or a user row supplies the real one.
+Catalog and declared windows keep governing untouched. The anthropic
+protocol's required `max_tokens` falls back to 32000.
 This is how a model released this morning works before the cache refreshes.
 **Exception:** the `oauth-openai-codex` transport enforces a model
 allowlist — an unknown id there is a resolve error, not a synthesized row.
@@ -298,8 +305,9 @@ allowlist — an unknown id there is a resolve error, not a synthesized row.
 `Reasoning = false` empties `ReasoningControls`/`EffortValues`, sends no
 reasoning field on any protocol, and drops replayed thinking from history.
 Otherwise `ReasoningControls` says what the model accepts, `ThinkingShape`
-says how the anthropic protocol spells it, and `ThinkingFormat` says how the
-openai-chat protocol spells it. A row is *effort-capable* when `effort` is
+says how the anthropic and google protocols spell it, and `ThinkingFormat`
+says how the openai-chat protocol spells it.
+A row is *effort-capable* when `effort` is
 in its `ReasoningControls` — every row gets this unless it explicitly lists
 controls without `effort` (a toggle-only or budget-only row).
 
@@ -336,7 +344,7 @@ model cannot 400 a provider that rejects it. Two exemptions keep working:
 `openrouter` passes the requested effort through unconditionally because
 OpenRouter normalizes the level itself and its model listing often omits
 supported efforts; and rows that map the effort to a numeric budget (Anthropic
-`budget_tokens`/`budget+effort`, the Google `thinkingConfig`) still consume the
+`budget_tokens`/`budget+effort`, budget-shaped Google rows) still consume the
 effort even with an empty ladder, because the row declares that control. On
 the Responses protocol the encrypted-reasoning `include` and a configured
 summary survive an unvouched effort: no level is sent, but replay stays intact.
@@ -347,6 +355,23 @@ or an effort is set, plus `output_config.effort` only when the caller set one
 and the ladder vouches for it; `budget` → `thinking: {type: enabled,
 budget_tokens}`, only when an effort is set; `budget+effort` (Opus 4.5, Kimi
 K3) → both. An unset shape sends no thinking object at all.
+
+**google.** Gemini has two thinking wire shapes: `thinkingLevel` (Gemini 3.x
+and later) and `thinkingBudget` (2.5 era); sending one shape to a model that
+takes the other is a wire 400. The registry derives a row's `ThinkingShape`
+from its catalog facts: a row recording `budget_tokens` is `budget`, a row
+whose catalog itself records `effort` is `level`, and anything else — a
+toggle-only row, a reasoning row whose catalog recorded no
+`reasoning_options`, or an uncataloged live listing — has no vouched shape and
+sends no thinking object at all, since the field it would guess at is exactly
+the one such a model may reject. The builder then spells
+`generationConfig.thinkingConfig.thinkingLevel` or `.thinkingBudget` from the
+shape; a ladder on the row gates the spelled level through the vouch rule
+above, and a level row with no ladder spells the requested effort as-is. A
+model row may also set `thinking_shape` directly (a custom level-model needs
+no catalog entry). Either shape carries `includeThoughts: true`. Clearing
+`fields."generationConfig.thinkingConfig"` on a row prunes the object
+entirely, for a model that takes no thinking fields at all.
 
 **Replay.** Prior thinking on the openai-chat protocol writes back to
 whichever field it arrived on — `reasoning_content`, `reasoning`, or
@@ -461,7 +486,12 @@ Load rules, enforced with errors that name the instance and key:
 - `fields` keys must be in the resolved protocol's prunable set (a typo
   guard); `thinking_format`, `thinking_shape`, `max_tokens_field`,
   `cache_control`, `reasoning_field`, `host_rule`, `image_detail` are
-  validated against their vocabularies; `reasoning_controls` entries must be
+  validated against their vocabularies (`image_detail` is the wire detail an
+  image part carries: both builders send the part's own detail, else the row's
+  value — defaulting to `high` on the Responses side — and drop the field
+  outright for `omit`; the Chat Completions builder additionally maps
+  `original` to `high` and drops any value its wire does not accept, because
+  that wire allows only `auto|low|high`); `reasoning_controls` entries must be
   `effort`/`budget_tokens`/`toggle`; `effort_values` entries must be
   non-empty, and `"off"` is rejected. `default_effort` must be one of the six
   tiers or `none` — the clamp passes an unrankable level straight through, so

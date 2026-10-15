@@ -277,6 +277,30 @@ unsandboxed root's `TMPDIR` is not in the tree.
   `<common>/rr-cache`. That is the intended behaviour: the mode runs the
   developer's git, not a blanked-out one.
 
+  **A global `core.excludesFile` or `core.attributesFile` gets no read grant of its
+  own in `restricted`** (accepted limitation, 2026-10-13; recorded in
+  [friction.md's T06](product/friction.md#t06-global-git-excludes-files-in-restricted-mode)
+  and [#4234](https://github.com/prime-radiant-inc/evener/issues/4234)). The grant
+  above is the config FILES, never the files they name, so such a file is readable
+  inside the sandbox only where it already sits under a root the mode grants — the
+  project worktree, `/etc`, `/opt`, `/nix/store` and the other system read roots — and
+  not elsewhere, typically under `$HOME`. Where it is not readable, the effect depends
+  on the host: macOS/Seatbelt reports
+
+      warning: unable to access '<path>': Operation not permitted
+
+  on every command that reads the file, while Linux/bubblewrap hides an ungranted
+  path, so git applies no excludes or attributes file at all and says nothing. This
+  is deliberate, not overlooked. Granting one file the config names means granting a
+  pathname a spawned process resolves by its literal name at every spawn, and six
+  review rounds on that route each closed one way of re-pointing a granted name at
+  another file — a symlink, a `..` the kernel resolves after one, a writable alias, a
+  letter case, a directory in place of the file — while exposing another, with the
+  last one specific to a backend whose code cannot be verified where CI runs. The
+  project's own `.gitignore`, `.gitattributes` and `.git/info/exclude` are unaffected;
+  they live in the worktree. A session that needs global rules elsewhere on the host
+  can run with `--sandbox off`, or the rules can move into the repository.
+
   **git under a sandbox is silent and fast on macOS** (ruled 2026-08-07). It was
   neither: every `git` call emitted two `xcrun_db` cache-write denials to stderr
   and cost seconds. The cause was the shim, not the sandbox. `/usr/bin/git`
@@ -458,10 +482,11 @@ denial is by design, not a bug.
 
 Invariant: a sandboxed session can never poison a cache that a later build consumes.
 
-- `workspace-write` serves the language cache roots (`~/.cache`, and
-  `$XDG_CACHE_HOME` when set, `~/.npm`, `~/.cargo`, the `pkg` directory of your
-  first GOPATH entry and of Go's `$HOME/go` default, and a `GOMODCACHE` or
-  `GOCACHE` you set elsewhere) as a **read-real, write-private overlay** where the
+- `workspace-write` serves the language cache roots (`~/.cache` alongside a set
+  `$XDG_CACHE_HOME`, `~/.npm` and `~/.cargo` alongside a set `$npm_config_cache`
+  or `$CARGO_HOME`, the `pkg` directory of your first GOPATH entry and of Go's
+  `$HOME/go` default, and a `GOMODCACHE` or `GOCACHE` you set elsewhere) as a
+  **read-real, write-private overlay** where the
   host's bubblewrap supports it: builds read warm from the real cache, but writes
   land in a per-session tmpfs that is discarded at session end. The Go settings
   are the host's, resolved once at session start (see the GOPATH note below). A
@@ -478,7 +503,17 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   (a file, a link to an unmounted drive) is overlaid only once it is, one
   whose real location has since moved into the workspace, onto a shared tree,
   or to share storage with a write root is not overlaid, and one inside
-  another is served by the outer overlay. A Go cache the overlay does not
+  another is served by the outer overlay. Whether an overlay can be mounted
+  also depends on each root's filesystem: a root the host refuses as an
+  unprivileged overlay lower (one on an overlayfs root, or a network mount; the
+  kernel returns EINVAL) is probed once per root and left out of the overlay
+  rather than aborting every spawn, and the cache variables naming it —
+  including npm's and cargo's own defaults under it — go to the session scratch.
+  More generally, an npm or cargo cache the overlay does not serve and that no
+  persistent write root covers is redirected into the session scratch, so a
+  child that resolves its own default (a clean environment with no `HOME`) is
+  covered too.
+  A Go cache the overlay does not
   serve (set in the spawn's environment, with `go env -w`, which is read again
   at each spawn as go itself does, or by Go's defaults under the spawn's own
   `HOME`), one at, inside or holding a persistent write root, one whose root

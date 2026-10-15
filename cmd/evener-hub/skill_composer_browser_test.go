@@ -27,7 +27,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -313,11 +312,7 @@ func TestSkillComposerBrowser(t *testing.T) {
 	}
 	// The embedded production frontend must exist — the hub serves it. A
 	// missing dist is a build-prerequisite failure, not a pass.
-	index, err := fs.ReadFile(distFS(), "index.html")
-	if err != nil {
-		t.Fatalf("the production frontend is not built (the hub would serve nothing): run `make build-web` first: %v", err)
-	}
-	_ = index
+	requireFreshDist(t)
 
 	fixture := skillGuardSetup(t)
 
@@ -1099,7 +1094,10 @@ func skillGuardReadMilestones(t *testing.T, path string) []skillGuardMilestone {
 	return out
 }
 
-func skillGuardMilestoneDetail(t *testing.T, milestones []skillGuardMilestone, name string, into any) bool {
+func skillGuardMilestoneDetail(t interface {
+	Helper()
+	Fatalf(string, ...any)
+}, milestones []skillGuardMilestone, name string, into any) bool {
 	t.Helper()
 	for _, m := range milestones {
 		if m.Milestone != name {

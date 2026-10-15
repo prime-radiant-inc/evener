@@ -365,6 +365,10 @@ func (p PluginsForLaunchPanel) hasBlockingSelectionError() bool {
 
 func (p PluginsForLaunchPanel) Done() bool { return p.done }
 
+// PreviewErr is the failure of the latest plugin preview the panel was told
+// about, or nil while its candidates are current.
+func (p PluginsForLaunchPanel) PreviewErr() error { return p.previewErr }
+
 func (p PluginsForLaunchPanel) Result() PluginsForLaunchResult {
 	return PluginsForLaunchResult{Applied: p.applied, Cancelled: p.cancelled, EnabledPlugins: func() *[]string {
 		if !p.applied {

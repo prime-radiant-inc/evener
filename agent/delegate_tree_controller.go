@@ -186,12 +186,22 @@ func (delegateFinalizingError) Error() string        { return errDelegateTargetB
 func (delegateFinalizingError) Is(target error) bool { return target == errDelegateTargetBusy }
 
 type delegateLiveState struct {
-	runtime          *Session
-	binding          *delegateRuntimeBinding
-	pendingSteers    []delegateSteeringAdmission
-	attentionIDs     []string
-	waiters          map[uint64]*delegateInlineWaiter
-	recoveryRequired bool
+	runtime       *Session
+	binding       *delegateRuntimeBinding
+	pendingSteers []delegateSteeringAdmission
+	attentionIDs  []string
+	waiters       map[uint64]*delegateInlineWaiter
+	// intent is the open generation's newest stated tool-call intent,
+	// Excerpt-bounded at the report site. Display-only state: it never moves
+	// any supervision clock, and it clears at both generation boundaries.
+	intent string
+	// intentPublishedAt is when an intent change last published a frame of its
+	// own — the only clock the intent floor (delegateIntentPublishFloor)
+	// measures. A pending change rides other publications without moving it, so
+	// two intent-caused frames are always at least the floor apart while a
+	// quiescent run's first stated line still lands the moment its call starts.
+	intentPublishedAt time.Time
+	recoveryRequired  bool
 	// finalizationRecoveryRequired prevents a failed runner finalizer from
 	// retrying around the stop-only external-state recovery path.
 	finalizationRecoveryRequired bool
@@ -201,7 +211,9 @@ type delegateLiveState struct {
 	activityAt            time.Time
 	productiveActivityAt  time.Time
 	// activityPublishedAt is the activity time ReportActivityPhase last
-	// published a snapshot for; see delegateActivityPublishInterval.
+	// published a snapshot for; the one-second activity coalescer measures it.
+	// The intent channel keeps its own publication clock (intentPublishedAt),
+	// so an intent publication neither waits on this one nor moves it.
 	activityPublishedAt time.Time
 	quietSequence       uint64
 	quietNotified       bool
@@ -254,6 +266,10 @@ type delegateSnapshot struct {
 	pendingStopAt time.Time
 	lastOutcome   *delegatestore.Outcome
 	latestPacket  *delegatestore.TerminalPacket
+	// latestIntent is the row's display line: the live value when non-empty,
+	// else the folded journal value — the read's join, applied here so a frame
+	// and a read agree for every row state.
+	latestIntent string
 }
 
 // stableDelegateWorktreeSnapshot is the process-local read model used by
@@ -1115,8 +1131,27 @@ func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delega
 		if live.productiveActivityAt.After(snapshot.latestProductiveActivityAt) {
 			snapshot.latestProductiveActivityAt = live.productiveActivityAt
 		}
+		// The live line overlays only an open run. A settled generation's
+		// live state is cleared at release, after the non-resumable closure
+		// plan has already captured its terminal rows — an ungated overlay
+		// would resurrect the settled run's intent in that terminal frame
+		// while the read after release shows it cleared.
+		if snapshot.currentRunOpen {
+			snapshot.latestIntent = delegateDisplayIntent(live.intent, snapshot.latestIntent)
+		}
 	}
 	return snapshot
+}
+
+// delegateDisplayIntent is the one join a row's displayed intent reads: the
+// controller's live value when non-empty, else the folded value. The frame
+// builder and the read capture both apply it, so a pushed frame and a read
+// agree for every row state — the restored window included.
+func delegateDisplayIntent(live, folded string) string {
+	if live != "" {
+		return live
+	}
+	return folded
 }
 
 func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapshot {
@@ -1153,6 +1188,7 @@ func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapsho
 		pendingStopAt:              aggregate.PendingStopAt,
 		lastOutcome:                outcome,
 		latestPacket:               cloneStableTerminalPacket(aggregate.LatestPacket),
+		latestIntent:               aggregate.LatestIntent,
 	}
 }
 

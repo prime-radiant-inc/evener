@@ -30,7 +30,7 @@
 // refuses any file whose type is not image/*, and recovery/recoveryDraft.ts
 // only lifts input items of type "image" out of a recovered mutation.
 import { useState } from "react";
-import { Dialog } from "../../../widgets";
+import { Dialog, IconButton, ZoomableMedia } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import type { PendingAttachment } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
@@ -43,10 +43,9 @@ export interface AttachmentTileProps {
 const CLASS = {
   imageTile: requireClass(styles.imageTile, "composer.module.css", "imageTile"),
   imagePending: requireClass(styles.imagePending, "composer.module.css", "imagePending"),
-  imageOpenButton: requireClass(styles.imageOpenButton, "composer.module.css", "imageOpenButton"),
   imageThumbnail: requireClass(styles.imageThumbnail, "composer.module.css", "imageThumbnail"),
   dimensionsOverlay: requireClass(styles.dimensionsOverlay, "composer.module.css", "dimensionsOverlay"),
-  removeImageButton: requireClass(styles.removeImageButton, "composer.module.css", "removeImageButton"),
+  removeSlot: requireClass(styles.removeSlot, "composer.module.css", "removeSlot"),
   lightboxImage: requireClass(styles.lightboxImage, "composer.module.css", "lightboxImage"),
 };
 
@@ -79,16 +78,11 @@ export function AttachmentTile({ item, onRemove }: AttachmentTileProps) {
         // is noise, and the state resolves on its own in a few frames.
         <div className={CLASS.imagePending} role="img" aria-label={`${item.name} (still processing)`} />
       ) : (
-        <button
-          type="button"
-          className={CLASS.imageOpenButton}
-          aria-label={`View ${item.name}`}
-          onClick={() => setLightboxOpen(true)}
-        >
+        <ZoomableMedia label={`View ${item.name}`} onOpen={() => setLightboxOpen(true)} fill>
           {/* Decorative: the button around it already carries the name, and
               a second announcement of the same filename is just noise. */}
           <img className={CLASS.imageThumbnail} src={source} alt="" />
-        </button>
+        </ZoomableMedia>
       )}
       {item.width !== undefined && item.height !== undefined && (
         <div className={CLASS.dimensionsOverlay}>
@@ -96,9 +90,15 @@ export function AttachmentTile({ item, onRemove }: AttachmentTileProps) {
         </div>
       )}
       {/* Last, always, in both states - see this file's header comment. */}
-      <button type="button" className={CLASS.removeImageButton} aria-label={`Remove ${item.name}`} onClick={onRemove}>
-        <RemoveIcon />
-      </button>
+      <span className={CLASS.removeSlot}>
+        <IconButton
+          label={`Remove ${item.name}`}
+          icon={<RemoveIcon />}
+          variant="secondary"
+          size="sm"
+          onClick={onRemove}
+        />
+      </span>
       {source !== undefined && lightboxOpen && (
         <Dialog open onClose={() => setLightboxOpen(false)} title={item.name} size="large">
           <img className={CLASS.lightboxImage} src={source} alt={item.name} />

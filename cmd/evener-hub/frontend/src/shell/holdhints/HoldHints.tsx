@@ -27,7 +27,7 @@ import { useStore } from "zustand";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { KeyHint } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { workspaceStore } from "../workspace";
+import { focusedSessionPaneId, focusedSessionRef } from "../focusedSession";
 import { installHoldHints, useHoldHintsStore } from "./holdHintsController";
 import styles from "./holdhints.module.css";
 import { usePrefersReducedMotion } from "./usePrefersReducedMotion";
@@ -57,21 +57,32 @@ interface AnchorSpec {
 }
 
 // resolveFocusedComposer mirrors composer.focus's own target choice
-// (AppShell.tsx's registerAction: the FOCUSED session pane's ref): in a
-// split workspace several [data-composer] anchors are mounted, and the chip
-// must sit over the one the chord would actually focus (roborev PR #884).
-// Falls back to the first anchor when no session pane is focused (the chord
-// no-ops then, and the pre-change single-composer behavior holds).
-function resolveFocusedComposer(): HTMLElement | null {
-  const state = workspaceStore.getState();
-  const pane = state.panes.find((p) => p.id === state.focusedPaneId);
-  const ref = pane?.type === "session" ? (pane.params as { ref?: unknown } | undefined)?.ref : undefined;
-  if (typeof ref === "string" && ref !== "") {
+// (AppShell.tsx's registerAction: the FOCUSED session's ref AND pane id, read
+// through focusedSession.ts): in a split workspace several [data-composer]
+// anchors are mounted, and the chip must sit over the one the chord would
+// actually focus (roborev PR #884). Reading focusedSessionRef - the action's
+// own reader - keeps the two from diverging: a focused cascade shows its LEAF
+// conversation under the hosting pane, so the resolver names that leaf's
+// composer instead of falling back to the first composer in the document (the
+// neighbouring parent conversation). When the SAME conversation is mounted
+// twice - an ordinary pane and a cascade column's embedded composer - the ref
+// alone is ambiguous, so the anchor's own pane id (data-composer-pane) breaks
+// the tie in favor of the focused pane, matching the chord's seat-scoped
+// address; an anchor without a pane id still matches by ref. Falls back to the
+// first anchor when no session is focused (the chord no-ops then, and the
+// pre-change single-composer behavior holds).
+export function resolveFocusedComposer(): HTMLElement | null {
+  const ref = focusedSessionRef();
+  if (ref !== null) {
     // Dataset equality, not a selector-interpolated ref: no CSS.escape
     // dependency (jsdom has none) and no quoting hazard for odd ref values.
-    const targeted = Array.from(document.querySelectorAll<HTMLElement>("[data-composer]")).find(
-      (el) => el.dataset.composer === ref,
-    );
+    const anchors = Array.from(document.querySelectorAll<HTMLElement>("[data-composer]"));
+    const paneId = focusedSessionPaneId();
+    if (paneId !== null) {
+      const exact = anchors.find((el) => el.dataset.composer === ref && el.dataset.composerPane === paneId);
+      if (exact !== undefined) return exact;
+    }
+    const targeted = anchors.find((el) => el.dataset.composer === ref);
     if (targeted !== undefined) return targeted;
   }
   return document.querySelector("[data-composer]");

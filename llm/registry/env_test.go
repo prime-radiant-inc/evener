@@ -281,7 +281,7 @@ func TestLoadRefusesCommandExpressionsOutsideCredentialFields(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err := Load(WithSnapshot(data), WithEnv(mapEnv(nil)), WithConfigPath(path), WithStateRoot(t.TempDir()))
-			if err == nil || !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "command expressions") {
+			if !errors.Is(err, errCommandExpressionReserved) || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("err = %v; want a command-expression refusal naming %s", err, tt.want)
 			}
 		})

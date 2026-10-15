@@ -29,6 +29,7 @@ const BASE_THREAD = {
   contextUsed: 0,
   contextWindow: 100,
   contextPressure: 0,
+  contextAssumed: false,
   usage: null,
   workMillis: 0,
 } as unknown as Omit<ThreadModel, "turns">;

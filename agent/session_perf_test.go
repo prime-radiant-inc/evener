@@ -466,19 +466,25 @@ func (a *afterActionCapture) AfterAction(ctx context.Context, history []schema.T
 
 func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
 	t.Parallel()
-	// Verify that prompt data reflects the discovered skills.
+	// Verify that prompt data reflects the discovered skills. Memory is bound
+	// and save-capable here so nothing is filtered: a session without the save
+	// tools legitimately drops the gardening-memory entry (see
+	// TestMemoryGardeningSkillGatedBySaveCapability).
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{MemoryStateRoot: t.TempDir(), MemoryProjectID: "fixture-project"})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
 
 	data, _ := sess.buildPromptData(sess.currentEnv())
+	if len(sess.skills.Entries) == 0 {
+		t.Fatal("no skills discovered; the length comparison below would be vacuous")
+	}
 	if got := len(data.Skills); got != len(sess.skills.Entries) {
 		t.Errorf("buildPromptData skills length %d != discovered %d", got, len(sess.skills.Entries))
 	}

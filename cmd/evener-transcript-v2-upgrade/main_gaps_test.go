@@ -2,7 +2,9 @@ package transcriptv2upgrade
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +29,7 @@ func TestUpgradeRootUnsupportedVersion(t *testing.T) {
 	if len(failures) != 1 {
 		t.Fatalf("failures = %v, want 1", failures)
 	}
-	if !strings.Contains(failures[0].Error(), "unsupported") {
+	if !errors.Is(failures[0], errUnsupportedFormatVersion) {
 		t.Fatalf("failure = %v, want unsupported", failures[0])
 	}
 }
@@ -99,29 +101,24 @@ func TestInspectTranscriptHeaderReadError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("inspectTranscriptHeader with oversized line should error")
 	}
-	if !strings.Contains(err.Error(), "record 1") {
-		t.Fatalf("error should mention record 1: %v", err)
+	if !errors.Is(err, transcript.ErrLineTooLong) {
+		t.Fatalf("error = %v, want ErrLineTooLong", err)
 	}
 }
 
 // TestInspectTranscriptHeaderCurrentVersionDecodeError covers the branch where
 // the format version is current but DecodeHeader fails.
 func TestInspectTranscriptHeaderCurrentVersionDecodeError(t *testing.T) {
-	// Write a header with the current format version but missing required fields.
-	// The boundary check passes (kind=header, version=current), but DecodeHeader
-	// may fail if the header is incomplete.
+	// The boundary check passes (kind=header, version=current), but
+	// DecodeHeader's strict decode rejects the unknown field.
 	path := filepath.Join(t.TempDir(), "badcurrent.jsonl")
-	// Use a minimal header with format_version=2 but no session_id — DecodeHeader
-	// should reject it.
-	body := []byte(`{"kind":"header","format_version":2}` + "\n")
+	body := []byte(`{"kind":"header","format_version":2,"unknown_field":true}` + "\n")
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err := inspectTranscriptHeader(path)
-	// DecodeHeader may or may not reject this depending on the schema.
-	// If it does, we cover the error branch.
-	if err != nil && !strings.Contains(err.Error(), "record 1") {
-		t.Fatalf("error should mention record 1: %v", err)
+	if err == nil {
+		t.Fatal("inspectTranscriptHeader accepted a current-version header DecodeHeader rejects")
 	}
 }
 
@@ -155,7 +152,7 @@ func TestPrepareTranscriptEmptyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := prepareTranscript(path)
-	if err == nil || !strings.Contains(err.Error(), "empty transcript") {
+	if !errors.Is(err, errEmptyTranscript) {
 		t.Fatalf("prepareTranscript on empty file err = %v, want empty transcript", err)
 	}
 }
@@ -167,7 +164,7 @@ func TestPrepareTranscriptIncompleteHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := prepareTranscript(path)
-	if err == nil || !strings.Contains(err.Error(), "incomplete") {
+	if !errors.Is(err, errIncompleteHeader) {
 		t.Fatalf("prepareTranscript on incomplete err = %v, want incomplete", err)
 	}
 }
@@ -207,7 +204,7 @@ func TestPrepareTranscriptUnknownRecordKind(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := prepareTranscript(path)
-	if err == nil || !strings.Contains(err.Error(), "unsupported record kind") {
+	if !errors.Is(err, errUnsupportedRecordKind) {
 		t.Fatalf("prepareTranscript with unknown kind err = %v, want unsupported record kind", err)
 	}
 }
@@ -221,7 +218,7 @@ func TestPrepareTranscriptIncompleteFinalRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := prepareTranscript(path)
-	if err == nil || !strings.Contains(err.Error(), "incomplete final record") {
+	if !errors.Is(err, errIncompleteFinalRecord) {
 		t.Fatalf("prepareTranscript with incomplete final err = %v, want incomplete final record", err)
 	}
 }
@@ -235,7 +232,7 @@ func TestPrepareTranscriptDecodeBoundaryError(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := prepareTranscript(path)
-	if err == nil || !strings.Contains(err.Error(), "decode record boundary") {
+	if !errors.As(err, new(*json.SyntaxError)) {
 		t.Fatalf("prepareTranscript with bad boundary err = %v, want decode record boundary", err)
 	}
 }
@@ -243,7 +240,7 @@ func TestPrepareTranscriptDecodeBoundaryError(t *testing.T) {
 // TestConvertHeaderBadJSON covers the json.Unmarshal error path.
 func TestConvertHeaderBadJSON(t *testing.T) {
 	_, err := convertHeader([]byte("not json"))
-	if err == nil || !strings.Contains(err.Error(), "decode transcript header boundary") {
+	if !errors.As(err, new(*json.SyntaxError)) {
 		t.Fatalf("convertHeader with bad JSON err = %v", err)
 	}
 }
@@ -251,7 +248,7 @@ func TestConvertHeaderBadJSON(t *testing.T) {
 // TestConvertHeaderWrongKind covers the wrong-kind path.
 func TestConvertHeaderWrongKind(t *testing.T) {
 	_, err := convertHeader([]byte(`{"kind":"entry","format_version":1}`))
-	if err == nil || !strings.Contains(err.Error(), "require transcript header") {
+	if !errors.Is(err, errNotLegacyHeader) {
 		t.Fatalf("convertHeader with wrong kind err = %v", err)
 	}
 }
@@ -259,7 +256,7 @@ func TestConvertHeaderWrongKind(t *testing.T) {
 // TestConvertHeaderWrongVersion covers the wrong-version path.
 func TestConvertHeaderWrongVersion(t *testing.T) {
 	_, err := convertHeader([]byte(`{"kind":"header","format_version":2}`))
-	if err == nil || !strings.Contains(err.Error(), "require transcript header") {
+	if !errors.Is(err, errNotLegacyHeader) {
 		t.Fatalf("convertHeader with wrong version err = %v", err)
 	}
 }
@@ -302,8 +299,11 @@ func TestReplaceTranscriptRestatError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("replaceTranscript with missing original should error")
 	}
-	if !strings.Contains(err.Error(), "restat") {
-		t.Fatalf("error should mention restat: %v", err)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("error = %v, want the missing original reported", err)
+	}
+	if _, statErr := os.Lstat(path + ".v1.bak"); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Fatalf("a missing original must not leave a backup: %v", statErr)
 	}
 }
 
@@ -336,8 +336,8 @@ func TestRequireUnusedBackupLstatError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("requireUnusedBackup with existing backup should error")
 	}
-	if !strings.Contains(err.Error(), "backup already exists") {
-		t.Fatalf("error should mention backup already exists: %v", err)
+	if !errors.Is(err, errBackupExists) {
+		t.Fatalf("error = %v, want errBackupExists", err)
 	}
 }
 
@@ -352,8 +352,11 @@ func TestRunWithErrors(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("code = %d, want 1; stderr=%s", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "unsupported") {
-		t.Fatalf("stderr should mention unsupported: %s", stderr.String())
+	if !strings.Contains(stdout.String(), "errors=1") {
+		t.Fatalf("summary should count the unsupported transcript as an error: %s", stdout.String())
+	}
+	if stderr.Len() == 0 {
+		t.Fatal("the failing transcript was not reported on stderr")
 	}
 }
 
@@ -393,6 +396,9 @@ func TestUpgradeRootWithExistingBackupError(t *testing.T) {
 	}
 	if len(failures) != 1 {
 		t.Fatalf("failures = %v, want 1", failures)
+	}
+	if !errors.Is(failures[0], errBackupExists) {
+		t.Fatalf("failure = %v, want errBackupExists", failures[0])
 	}
 }
 
@@ -546,6 +552,3 @@ func TestUpgradeRootPrepareError(t *testing.T) {
 		t.Fatalf("errors = %d, want 1", result.errors)
 	}
 }
-
-// Ensure errors import is used.
-var _ = errors.New

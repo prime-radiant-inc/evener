@@ -7,6 +7,7 @@ import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import { playedHaptics, pressable, render, renderedText, swipeableCalls, swipeRowFully } from "../renderNative.testkit";
+import { SwipeRow } from "../board/SwipeRow";
 import { GhostBubble } from "./GhostBubble";
 import { GhostRowContext, GhostRowView } from "./GhostRows";
 import type { Ghost, GhostAction } from "./ghosts";
@@ -322,7 +323,7 @@ describe("swiping a ghost left (spec 8.5)", () => {
 		["held", held],
 	] as const)("cancels a %s message on a full swipe, through the same action as its menu", (_state, ghost) => {
 		const { tree, onAction } = mount([ghost]);
-		expect(renderedText(render(swipeables(tree)[0]?.props.renderRightActions()))).toBe("Cancel");
+		expect(tree.root.findByType(SwipeRow).props.destructive?.key).toBe("cancel");
 		swipeLeft(tree);
 		expect(onAction.mock.calls).toEqual([[ghost, "cancel"]]);
 	});

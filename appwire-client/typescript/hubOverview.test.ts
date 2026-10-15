@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, test } from "vitest";
+import { friendlyErrorMessage, WireError } from "./errors";
 import { createHubOverviewStore, type HubOverviewClient } from "./hubOverview";
 import { FakeClient, failing } from "./testing/fakeClient";
 import type { SettingsOverviewResponse } from "./types.gen";
@@ -43,12 +44,12 @@ describe("store shape", () => {
     expect(second.store.getState()).toMatchObject({ data: null, loading: false, error: null });
 
     await second.store.getState().refresh();
-    expect(second.store.getState().error).toBe("boom");
+    expect(second.store.getState().error).toBe(friendlyErrorMessage(new Error("boom")));
     expect(first.store.getState().error).toBeNull();
 
     first.store.reset();
     expect(first.store.getState().data).toBeNull();
-    expect(second.store.getState().error).toBe("boom");
+    expect(second.store.getState().error).toBe(friendlyErrorMessage(new Error("boom")));
   });
 
   test("getInitialState is the state the store was created with, and setState notifies with new and previous", () => {
@@ -101,14 +102,18 @@ describe("fetch and refresh", () => {
     expect(store.getState().loading).toBe(false);
   });
 
-  test("a failed request keeps the last good data, surfaces the error text, and is retried by the next fetch", async () => {
+  test("a failed request keeps the last good data, surfaces the friendly error, and is retried by the next fetch", async () => {
     const { fake, store } = storeWithFake();
     fake.on(OVERVIEW, () => SAMPLE);
     await store.getState().fetch();
 
     fake.on(OVERVIEW, failing("network down"));
     await store.getState().refresh();
-    expect(store.getState()).toMatchObject({ data: SAMPLE, loading: false, error: "network down" });
+    expect(store.getState()).toMatchObject({
+      data: SAMPLE,
+      loading: false,
+      error: friendlyErrorMessage(new Error("network down")),
+    });
 
     fake.on(OVERVIEW, () => ({ agents: [] }));
     await store.getState().refresh();
@@ -120,12 +125,30 @@ describe("fetch and refresh", () => {
     fake.on(OVERVIEW, failing("boom"));
 
     await store.getState().fetch();
-    expect(store.getState()).toMatchObject({ data: null, error: "boom" });
+    expect(store.getState()).toMatchObject({ data: null, error: friendlyErrorMessage(new Error("boom")) });
 
     fake.on(OVERVIEW, () => SAMPLE);
     await store.getState().fetch();
     expect(fake.calls).toHaveLength(2);
     expect(store.getState().data).toEqual(SAMPLE);
+  });
+
+  // The error is translated while it still has its type: a hub's own WireError
+  // explanation survives, and a client-side failure gets the shared friendly
+  // form instead of its internal text. A host that translated the stored text
+  // later would see only a string and lose the WireError's detail.
+  test.each([
+    ["a hub-reported WireError", new WireError("overview index is rebuilding", -32000)],
+    ["a client-side Error", new Error("AppwireClient internal detail")],
+  ])("a failure stores %s in its friendly form", async (_label, err) => {
+    const { fake, store } = storeWithFake();
+    fake.on(OVERVIEW, () => {
+      throw err;
+    });
+
+    await store.getState().fetch();
+
+    expect(store.getState().error).toBe(friendlyErrorMessage(err));
   });
 
   // The web hands in a port that resolves its connection store's current
@@ -137,7 +160,11 @@ describe("fetch and refresh", () => {
 
     await store.getState().fetch();
 
-    expect(store.getState()).toMatchObject({ data: null, loading: false, error: "no client connected" });
+    expect(store.getState()).toMatchObject({
+      data: null,
+      loading: false,
+      error: friendlyErrorMessage(new Error("no client connected")),
+    });
   });
 });
 

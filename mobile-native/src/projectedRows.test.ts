@@ -8,6 +8,10 @@ import {
 } from "@evener/appwire-client";
 import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import {
+	summaryFailureWireFixture,
+	summaryFailureWireRead,
+} from "@evener/appwire-client/testing/summaryFailureWireFixtures";
+import {
 	memoryContextWireItem,
 	memoryContextWireItems,
 } from "@evener/appwire-client/testing/memoryContextWireFixtures";
@@ -39,7 +43,7 @@ import {
 } from "./projectedRows";
 import type { MobileConversation, MobileTimelineItem } from "./projectedRows";
 import { readerKey } from "./readerPosition";
-import { runSummary, runSummaryText, sessionRows } from "./session/transcriptRows";
+import { runSummary, sessionRows } from "./session/transcriptRows";
 import { stepEvidence } from "./session/evidence";
 import { groupTimeline, isCriticalNotice } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
@@ -103,6 +107,28 @@ function asksFor(callId: string): ReadonlyMap<string, AskQuestionRef[]> {
 }
 
 describe("projectedRow — item entries", () => {
+	it("retains a recorded summary failure at every visibility level", () => {
+		const fixture = summaryFailureWireFixture();
+		const model = hydrateThread(summaryFailureWireRead(), "local:summary-fixture", 0);
+		for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+			const rows = projectTimeline(model, new Map(), makeTranscriptDisplayConfig({ kind: "preset", level }));
+			const warning = rows.find((row) => row.id === fixture.item.id);
+			expect(warning).toMatchObject({
+				kind: "notice",
+				family: "warning",
+				tone: "attention",
+				text: fixture.warning.message,
+				hint: fixture.warning.hint,
+			});
+			if (warning?.kind !== "notice") throw new Error("producer warning lost its notice row");
+			for (const identifier of ["openai/summary-model-8af1", "429", "rate_limit"])
+				expect(warning.text).toContain(identifier);
+			expect(rows.some((row) => row.id === fixture.recovery.id)).toBe(false);
+		}
+		const full = makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { systemEvents: true });
+		expect(projectTimeline(model, new Map(), full).some((row) => row.id === fixture.recovery.id)).toBe(true);
+	});
+
 	it.each(["warning", "systemMessage"])("MCP recovery through %s is quiet full-detail history", (type) => {
 		const warning = { code: WarningCodeMCPReconnected };
 		const model = {
@@ -285,7 +311,7 @@ describe("projectedRow — item entries", () => {
 			type: "commandExecution",
 			toolName: "memory_write",
 			status: "completed",
-			argumentsJSON: JSON.stringify({ scope: "personal", file_path: "page.md", content: "# Page" }),
+			argumentsJSON: JSON.stringify({ scope: "personal", file_path: "page.md", body: "# Page" }),
 		});
 		const shell = item({
 			id: "shell",
@@ -325,7 +351,7 @@ describe("projectedRow — item entries", () => {
 			toolName: "memory_write",
 			status: "failed",
 			error,
-			argumentsJSON: JSON.stringify({ scope: "session", file_path: "notes.md", content: "# Note" }),
+			argumentsJSON: JSON.stringify({ scope: "session", file_path: "notes.md", body: "# Note" }),
 		});
 		const shell = item({
 			id: "shell",
@@ -735,7 +761,7 @@ it("renders recorded memory calls and an ordinary file read through the phone ti
 					recorded(
 						"write",
 						"memory_write",
-						JSON.stringify({ scope: "personal", file_path: "implementation-delegation.md", content: page }),
+						JSON.stringify({ scope: "personal", file_path: "implementation-delegation.md", body: page }),
 					),
 					recorded(
 						"edit",
@@ -779,10 +805,21 @@ it("renders recorded memory calls and an ordinary file read through the phone ti
 	const fileRead = byTool.get("read_file");
 	if (!write || !edit || !search || !fileRead) throw new Error("missing one of the recorded journey steps");
 
-	expect(write.detail.summary).toBe("Wrote memory personal/implementation-delegation.md");
-	expect(edit.detail.summary).toBe("Edited memory project/MEMORY.md · +1 -1");
-	expect(search.detail.summary).toBe('Searched memory for "delegation" in project · 2 hits');
-	expect(runSummaryText(runSummary(run.steps))).toBe("4 steps · updated memory twice, read 1 file");
+	// Each step names the page or pattern it acted on, and what it found or changed.
+	expect(write.detail.words?.target).toBe("personal/implementation-delegation.md");
+	expect(edit.detail.words?.target).toBe("project/MEMORY.md");
+	expect(edit.detail.words?.detail).toMatch(/\+1\b.*-1\b/);
+	expect(search.detail.words?.target).toContain("delegation");
+	expect(search.detail.words?.detail).toMatch(/\b2\b/);
+	// Each says what it did in its own words.
+	expect(new Set([write, edit, search].map((step) => step.detail.words?.verb)).size).toBe(3);
+	// The run counts four steps: three on memory, two of which changed it, and one file read.
+	const summary = runSummary(run.steps);
+	expect(summary.steps).toBe(4);
+	expect(summary.parts).toMatchObject([
+		{ family: "memory", count: 3, changes: 2 },
+		{ family: "read", count: 1 },
+	]);
 
 	expect(stepEvidence(write)).toEqual([
 		{ kind: "markdown", title: "personal/implementation-delegation.md", markdown: page },
@@ -796,7 +833,6 @@ it("renders recorded memory calls and an ordinary file read through the phone ti
 	expect(stepEvidence(fileRead)).toEqual([
 		{ kind: "output", text: "# Testing\n\nDeterministic tests prove behavior.", lines: 3 },
 	]);
-	expect(runSummary(run.steps).parts.map((part) => part.text)).toEqual(["updated memory twice", "read 1 file"]);
 });
 
 describe("noteFromSteer (spec 8.8)", () => {
@@ -2309,7 +2345,7 @@ describe("a streamed reply's key once history records its round", () => {
 							text: wire.text,
 						});
 						if (row?.kind !== "notice") throw new Error("no memory-context notice row");
-						expect(row.label ?? "").toContain("Refreshed my memory");
+						expect(row.label).toBeTruthy();
 						// The decoded observation rides the row only when the payload
 						// validates; the record is never manufactured.
 						expect(row.memoryContext).toEqual(expectedObservation);

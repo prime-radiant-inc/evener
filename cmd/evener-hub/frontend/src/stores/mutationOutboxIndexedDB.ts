@@ -17,6 +17,7 @@ import { createSecureUUID } from "./secureUUID";
 
 type MutationOutboxOperation =
   | "markAttempted"
+  | "unmarkAttempted"
   | "enqueueIntent"
   | "enqueueInterruptAndCancel"
   | "cancelUnattempted"
@@ -54,20 +55,37 @@ export interface MutationOutboxIndexedDBOptions {
 }
 
 const DATABASE_NAME = "evener-mutation-outbox";
-// Version 3 is a compatibility fence, not a schema migration: the upgrade
-// handler below is unchanged and purely additive. The deployed version-2 code
-// reads a canceled row as a non-submitting FIFO head and stalls the ref's
-// queue, so this build must not share a database with it - a version-2 open
-// against this database fails with VersionError, and the old tab fails closed
-// (storage-unavailable errors) instead of silently stalling
+// Version 4 is a compatibility fence, not a schema migration: the upgrade
+// handler below is unchanged and purely additive. The deployed version-3 code
+// shares attempt evidence through the `attempted` flag alone, so its dispatch
+// never counts unresolved attempts and a refusal rollback in this build could
+// erase evidence the older tab's concurrent attempt still needs - this build
+// must not share a database with it. A version-3 open against this database
+// fails with VersionError, and the old tab fails closed (storage-unavailable
+// errors) instead of silently erasing attempt evidence: the safe
+// mixed-version state is a reload, never a silent share
 // (docs/design/stop-cancellation-outbox.md §8).
-const DATABASE_VERSION = 3;
+const DATABASE_VERSION = 4;
 const OUTBOX_STORE = "outbox";
 const OPTIMISTIC_STORE = "optimistic";
 const RECOVERY_STORE = "recovery";
 const SEQUENCE_STORE = "sequences";
 const TARGET_SEQUENCE_INDEX = "byTargetSequence";
 const STORAGE_WAIT_MS = 10_000;
+
+// The unresolved-attempt baseline a record's own metadata proves. A missing
+// count on a pre-count record reads as the one unresolved attempt its
+// attempted boolean claims. A record with neither field is a pre-#936 row,
+// persisted untouched through every later schema version, whose delivery
+// state from that era is unknown - the Stop guard's own rule for these rows
+// - so it keeps one unresolved attempt as its baseline: only an explicit
+// `attempted: false` proves no earlier attempt.
+function priorUnresolvedAttempts(record: { unresolvedAttempts?: number; attempted?: boolean }): number {
+  if (record.unresolvedAttempts !== undefined) return record.unresolvedAttempts;
+  if (record.attempted === undefined) return 1;
+  return record.attempted ? 1 : 0;
+}
+
 // The store scope every enqueue transaction opens: the three active record
 // stores plus the sequence store. All three record stores are locked so the
 // cross-store clientMutationId uniqueness check (#assertMutationIdAvailable)
@@ -246,6 +264,9 @@ export class MutationOutboxIndexedDB {
         createdAt: this.#now(),
         state: canceledByBarrier ? "canceled" : "submitting",
         attempted: false,
+        // The barrier's own read, stored: the refusal rollback's fence
+        // compares the ref's epoch at rollback time against this capture.
+        stopEpochAtEnqueue: stopEpoch,
       };
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
       return record;
@@ -324,6 +345,11 @@ export class MutationOutboxIndexedDB {
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const clientMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, clientMutationId);
+      // The Stop's own interrupt passes no barrier - it IS the click the
+      // epoch records - so its capture is the epoch its Stop just bumped: a
+      // refusal of the interrupt itself redelivers like any transient
+      // refusal instead of fence-canceling the Stop's own row.
+      const stopEpoch = await this.#stopEpochOf(transaction, intent.targetRef);
       const record: MutationOutboxRecord = {
         ...intent,
         payload: { ...intent.payload, clientMutationId },
@@ -334,6 +360,7 @@ export class MutationOutboxIndexedDB {
         createdAt: this.#now(),
         state: "submitting",
         attempted: false,
+        stopEpochAtEnqueue: stopEpoch,
       };
       await requestResult(outbox.add(record));
       return record;
@@ -427,7 +454,13 @@ export class MutationOutboxIndexedDB {
       if (barrier !== undefined && (await this.#stopEpochOf(transaction, record.targetRef)) > barrier.stopEpoch) {
         return false;
       }
-      await requestResult(store.put({ ...record, state: "submitting" }));
+      // The release is the user deliberately sending after a Stop (§4's
+      // exemption), so it re-authorizes the row past the Stop its fence
+      // captured: the capture refreshes to the current epoch, and the row's
+      // next refusal redelivers instead of re-canceling. The barrier above
+      // still fences a Stop newer than this press.
+      const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
+      await requestResult(store.put({ ...record, state: "submitting", stopEpochAtEnqueue: stopEpoch }));
       return true;
     });
   }
@@ -479,6 +512,10 @@ export class MutationOutboxIndexedDB {
         // the whole batch, then one put - the lists are sorted, so order is kept.
         const sequence = await requestResult<TargetSequence | undefined>(sequenceStore.get(toRef));
         let lastSequence = sequence?.lastSequence ?? 0;
+        // The refusal fence compares against the destination ref's own
+        // counter, so a moved row's capture rebases to that counter here -
+        // the source ref's historical epoch must not travel with the row.
+        const toStopEpoch = await this.#stopEpochOf(transaction, toRef);
         // The identity token the daemon's instance fence compares: the same
         // fused reading a fresh send takes (instanceId ?? threadId).
         const instanceToken = identity.instanceId ?? identity.threadId;
@@ -498,6 +535,7 @@ export class MutationOutboxIndexedDB {
               ...("expectedInstanceId" in record.payload ? { expectedInstanceId: instanceToken } : {}),
             },
             intentSequence: lastSequence,
+            ...("stopEpochAtEnqueue" in record ? { stopEpochAtEnqueue: toStopEpoch } : {}),
           };
           await requestResult(store.put(retargeted));
           return retargeted;
@@ -705,14 +743,81 @@ export class MutationOutboxIndexedDB {
   }
 
   // Commit attempt evidence before transport so another tab or a reload cannot
-  // mistake a possibly delivered mutation for an unsent intent.
+  // mistake a possibly delivered mutation for an unsent intent. Each attempt
+  // counts: two tabs may dispatch one row concurrently, and the count is what
+  // lets a refusal roll back its own attempt without erasing the other's. A
+  // record written before the count field existed carries its evidence as
+  // the bare attempted boolean, which reads as one unresolved attempt.
   async markAttempted(clientMutationId: string): Promise<boolean> {
-    return this.#write(OUTBOX_STORE, "markAttempted", async (transaction) => {
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "markAttempted", async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       if (record?.state !== "submitting") return false;
-      await requestResult(store.put({ ...record, attempted: true }));
+      const unresolvedAttempts = priorUnresolvedAttempts(record) + 1;
+      // A row from before the capture field existed (persisted untouched
+      // through every later schema version) proves by survival, at its
+      // first mark, that no Stop's cancel scan has run since its birth -
+      // any bump would have canceled it while unattempted - so the epoch
+      // as it stands IS the epoch it was born at: initialize the capture
+      // here, and the refusal's fence compares against the birth epoch
+      // instead of an inherited zero a historical Stop trips. The
+      // conditional keeps every modern row's request sequence byte
+      // identical (the note editor's tightly-sequenced drain).
+      const stopEpochAtEnqueue =
+        record.stopEpochAtEnqueue === undefined
+          ? await this.#stopEpochOf(transaction, record.targetRef)
+          : record.stopEpochAtEnqueue;
+      await requestResult(store.put({ ...record, attempted: true, unresolvedAttempts, stopEpochAtEnqueue }));
       return true;
+    });
+  }
+
+  // Rolls the refused attempt's pre-transport evidence back after the hub
+  // authoritatively refused the attempt in band (#4342's
+  // connectionBackpressure). Resolves to true only when the row returns to
+  // its never-attempted dispatchable shape: with earlier or concurrent
+  // unresolved attempts remaining, their evidence survives (attempted stays
+  // true) and the row keeps its uncertain treatment; a row parked
+  // blockedUnknown while its only attempt was in flight reopens, because the
+  // refusal is authoritative proof that park's uncertainty resolves, while
+  // one parked with earlier evidence stays parked.
+  async unmarkAttempted(clientMutationId: string): Promise<boolean> {
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "unmarkAttempted", async (transaction) => {
+      const store = transaction.objectStore(OUTBOX_STORE);
+      const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
+      const priorAttempts = record ? priorUnresolvedAttempts(record) : 0;
+      if (record?.state === "submitting") {
+        const unresolvedAttempts = Math.max(0, priorAttempts - 1);
+        if (unresolvedAttempts === 0) {
+          // §4's conservative direction, at the refusal seam: a Stop whose
+          // cancel scan skipped this attempted row bumped the epoch while
+          // the attempt was in flight, and the refusal proves the attempt
+          // never landed - the row holds canceled, released only by an
+          // explicit Retry, never dispatchable ahead of the interrupt.
+          const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
+          if (stopEpoch > (record.stopEpochAtEnqueue ?? 0)) {
+            await requestResult(store.put({ ...record, state: "canceled", attempted: false, unresolvedAttempts: 0 }));
+            return false;
+          }
+        }
+        await requestResult(store.put({ ...record, attempted: unresolvedAttempts > 0, unresolvedAttempts }));
+        return unresolvedAttempts === 0;
+      }
+      if (record?.state === "blockedUnknown") {
+        const unresolvedAttempts = priorAttempts;
+        if (unresolvedAttempts > 1) {
+          await requestResult(store.put({ ...record, unresolvedAttempts: unresolvedAttempts - 1 }));
+          return false;
+        }
+        const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
+        if (stopEpoch > (record.stopEpochAtEnqueue ?? 0)) {
+          await requestResult(store.put({ ...record, state: "canceled", attempted: false, unresolvedAttempts: 0 }));
+          return false;
+        }
+        await requestResult(store.put({ ...record, state: "submitting", attempted: false, unresolvedAttempts: 0 }));
+        return true;
+      }
+      return false;
     });
   }
 
@@ -847,6 +952,11 @@ export class MutationOutboxIndexedDB {
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const nextMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, nextMutationId);
+      // The resend is the user's deliberate post-Stop send (§4's exemption),
+      // so its fresh row captures the target's current epoch like any new
+      // submission: its own refused redeliveries stay transient instead of
+      // fence-canceling against a Stop that predates the resend.
+      const stopEpoch = await this.#stopEpochOf(transaction, intent.targetRef);
       const attachments = intent.attachments.map((attachment) => ({
         ...attachment,
         presentationId: this.#createPresentationId(),
@@ -864,6 +974,7 @@ export class MutationOutboxIndexedDB {
         createdAt: this.#now(),
         state: "submitting",
         attempted: false,
+        stopEpochAtEnqueue: stopEpoch,
       };
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
       await requestResult(recoveryStore.delete(clientMutationId));

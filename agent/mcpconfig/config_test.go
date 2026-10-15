@@ -1,10 +1,12 @@
 package mcpconfig
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,6 +14,36 @@ import (
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/execsupport/valueexpr"
 )
+
+// The mcpServers map ranges in random order, so the servers reached the
+// advertised tool list in a different order on each load. ParseServerMap sorts
+// by name so a session's MCP tools are the same on every build.
+func TestParseServerMapReturnsServersSortedByName(t *testing.T) {
+	t.Parallel()
+	servers := map[string]json.RawMessage{
+		"zeta":  json.RawMessage(`{"command":"z-cmd"}`),
+		"alpha": json.RawMessage(`{"command":"a-cmd"}`),
+		"mid":   json.RawMessage(`{"type":"sse","url":"http://localhost/mid"}`),
+		"delta": json.RawMessage(`{"command":"d-cmd"}`),
+		"omega": json.RawMessage(`{"command":"o-cmd"}`),
+	}
+	want := []string{"alpha", "delta", "mid", "omega", "zeta"}
+	// The map ranges in a different order per call, so ten calls make an
+	// accidental all-sorted pass at HEAD negligible.
+	for range 10 {
+		configs, err := ParseServerMap(servers, "test")
+		if err != nil {
+			t.Fatalf("ParseServerMap: %v", err)
+		}
+		got := make([]string, 0, len(configs))
+		for _, c := range configs {
+			got = append(got, c.Name)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("ParseServerMap order = %v, want %v", got, want)
+		}
+	}
+}
 
 func TestLoadMCPConfigFile_Basic(t *testing.T) {
 	dir := t.TempDir()

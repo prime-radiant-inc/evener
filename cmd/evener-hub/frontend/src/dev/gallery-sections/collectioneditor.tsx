@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { type CollectionAddResult, CollectionEditor } from "../../widgets/collectioneditor";
+import { Input } from "../../widgets/input";
 import { ThemeFlip } from "../ThemeFlip";
 
 interface DirItem {
@@ -30,6 +31,51 @@ function LiveCollectionEditor() {
   );
 }
 
+// renderAddField: the caller supplies only the field (here a name/value pair
+// joined into the widget's draft); the Add button stays the widget's.
+function EnvCollectionEditor() {
+  const [items, setItems] = useState<string[]>(["LOG_LEVEL=debug"]);
+  return (
+    <CollectionEditor<string>
+      label="Environment"
+      items={items}
+      getKey={(item) => item}
+      renderItem={(item) => item}
+      removeLabel={(item) => `Remove ${item}`}
+      onRemove={(item) => setItems((current) => current.filter((i) => i !== item))}
+      emptyMessage="No environment variables."
+      onAdd={(entry) => {
+        if (entry.indexOf("=") <= 0) return { ok: false, error: "Use NAME=value." };
+        setItems((current) => [...current, entry]);
+        return { ok: true };
+      }}
+      renderAddField={({ value, onChange, disabled }) => {
+        const eq = value.indexOf("=");
+        const name = eq === -1 ? value : value.slice(0, eq);
+        const envValue = eq === -1 ? "" : value.slice(eq + 1);
+        return (
+          <>
+            <Input
+              aria-label="Variable name"
+              value={name}
+              onChange={(e) => onChange(`${e.target.value}=${envValue}`)}
+              placeholder="NAME"
+              disabled={disabled}
+            />
+            <Input
+              aria-label="Variable value"
+              value={envValue}
+              onChange={(e) => onChange(`${name}=${e.target.value}`)}
+              placeholder="value"
+              disabled={disabled}
+            />
+          </>
+        );
+      }}
+    />
+  );
+}
+
 export default function CollectionEditorGallerySection() {
   return (
     <section>
@@ -49,6 +95,9 @@ export default function CollectionEditorGallerySection() {
           addPlaceholder="/opt/plugins"
           onAdd={async () => ({ ok: true })}
         />
+      </ThemeFlip>
+      <ThemeFlip>
+        <EnvCollectionEditor />
       </ThemeFlip>
     </section>
   );

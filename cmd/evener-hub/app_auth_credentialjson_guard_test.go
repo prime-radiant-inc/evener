@@ -1,8 +1,8 @@
 package hub
 
 import (
+	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -50,7 +50,7 @@ func TestAuth_CredentialJsonSet_RequiresGCPADCImpliesConnectable(t *testing.T) {
 		if err == nil {
 			t.Fatal("CredentialJsonSet stored a credential JSON for a name nothing owns")
 		}
-		if !strings.Contains(err.Error(), "application-default") {
+		if !errors.Is(err, errNotGCPADCInstance) {
 			t.Fatalf("err = %v; want the requiresGCPADC refusal", err)
 		}
 		assertCredentialJSONNotStored(t, dir, "ghost-provider")

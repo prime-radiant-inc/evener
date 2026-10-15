@@ -15,13 +15,13 @@
 // it.
 
 import type { ItemModel } from "@evener/appwire-client";
-import { clip, parseArgs, str, toolStepSummary } from "@evener/appwire-client";
+import { clip, parseArgs, str } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { CodeBlock, Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { statedIntentOf } from "../ToolRow";
 import { registerToolRenderer, type ToolRenderProps } from "../toolRenderers";
-import { WriteFileBody } from "./bodies";
+import { TOOL_BODY_MAX_CHARS, WriteFileBody } from "./bodies";
 import styles from "./compactcontext.module.css";
 
 const CLASS = {
@@ -29,11 +29,6 @@ const CLASS = {
   label: requireClass(styles.label, "compactcontext.module.css", "label"),
   skills: requireClass(styles.skills, "compactcontext.module.css", "skills"),
 };
-
-// The same clip budget memory_write's content gets (memoryTools.tsx): the
-// note and instructions are authored prose that can run long in a legacy
-// transcript, and Markdown handles the rest.
-const COMPACT_TEXT_MAX_CHARS = 8000;
 
 // The reload_skills selection, or undefined when it renders nothing here:
 // absent and null both mean "no selection" (the tool distinguishes a
@@ -141,9 +136,9 @@ function compactContextParts(item: Pick<ItemModel, "argumentsJSON" | "descriptio
 // One labeled block per request field: the label idiom (meta-table style:
 // sentence-case caption-size sans) is shared, so the blocks cannot drift
 // apart in structure.
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({ label, section, children }: { label: string; section: string; children: ReactNode }) {
   return (
-    <div className={CLASS.field}>
+    <div className={CLASS.field} data-section={section}>
       <div className={CLASS.label}>{label}</div>
       {children}
     </div>
@@ -160,23 +155,25 @@ function CompactContextBody({ item, live }: ToolRenderProps) {
         </section>
       )}
       {noteText !== undefined && (
-        <Field label="Note to self">
-          <Markdown source={clip(noteText, COMPACT_TEXT_MAX_CHARS)} />
+        <Field label="Note to self" section="note">
+          <Markdown source={clip(noteText, TOOL_BODY_MAX_CHARS)} />
         </Field>
       )}
       {instructionsText !== undefined && (
-        <Field label="Compaction instructions">
-          <Markdown source={clip(instructionsText, COMPACT_TEXT_MAX_CHARS)} />
+        <Field label="Compaction instructions" section="instructions">
+          <Markdown source={clip(instructionsText, TOOL_BODY_MAX_CHARS)} />
         </Field>
       )}
       {skills !== undefined && (
-        <Field label="Skills to reload">
-          <div className={CLASS.skills}>{skills.length > 0 ? skills.join(", ") : "None."}</div>
+        <Field label="Skills to reload" section="skills">
+          <div className={CLASS.skills} data-empty={skills.length > 0 ? undefined : "true"}>
+            {skills.length > 0 ? skills.join(", ") : "None."}
+          </div>
         </Field>
       )}
       {intentText !== undefined && (
-        <Field label="Intent">
-          <Markdown source={clip(intentText, COMPACT_TEXT_MAX_CHARS)} />
+        <Field label="Intent" section="intent">
+          <Markdown source={clip(intentText, TOOL_BODY_MAX_CHARS)} />
         </Field>
       )}
       {Object.keys(leftovers).length > 0 && (
@@ -196,9 +193,6 @@ function CompactContextBody({ item, live }: ToolRenderProps) {
 registerToolRenderer({
   match: "compact_context",
   icon: "fold",
-  // The shared housekeeping words (housekeepingSteps.ts) - exactly what the
-  // raw default produced, so web, native and run lines never drift.
-  summary: toolStepSummary,
   body: CompactContextBody,
   // A row whose body would render nothing offers no disclosure that opens
   // to nothing: the live note-clearing call (no fields, no leftovers, no

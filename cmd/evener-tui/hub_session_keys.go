@@ -176,6 +176,22 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.session.refreshViewport()
 					return m, nil
 				}
+				// The selection is the departure moment, not the read's
+				// landing: the picker closes here and the read's window
+				// follows, in which neither the closed picker nor the
+				// unopened viewer holds the automatic completion — a
+				// success landing inside the window would switch sessions
+				// despite the newer selection, and a failed read never
+				// opens the viewer at all to retire the retry. The
+				// navigation generation advances and the pending cycling
+				// target clears with it, so a cycle already in flight
+				// re-establishes the displayed session at its superseded
+				// landing instead of deferring onto the abandoned target
+				// (#4343 round-31 mediums 1 and 2).
+				m.entryRepairRetire()
+				m.liveNavSeq++
+				m.liveNavEntryPendingSeq = 0
+				m.liveNavPendingRef = ""
 				return m, fetchHubTranscript(m.client, target)
 			}
 			m.session.refreshViewport()
@@ -448,7 +464,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, sendHubQueue(m.client, ref, text, draft, attachments, m.detail.InstanceID)
 		}
 		if composerMode == hubComposerModeReadOnly || !m.sessionCanStartTurn() {
-			reason := m.sessionComposerReadOnlyReason()
+			reason := m.sessionComposerReadOnlyReason().text()
 			reason = sessionSendUnavailableReason(reason)
 			m.addActionUnavailableNotice("send", "Send is not available for this session.", reason)
 			return m, nil
@@ -545,7 +561,7 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 		if appwire.IsRestingThreadStatus(m.detail.State) && m.detail.Queue.Depth == 0 && !m.queueRevisionStale {
 			return m, nil
 		}
-		m.addSessionSystem("Force-steer is not available: " + controls.drainReason + ".")
+		m.addSessionSystem("Force-steer is not available: " + controls.drainReason.text() + ".")
 		return m, nil
 	}
 	ref, ok := m.currentRef()

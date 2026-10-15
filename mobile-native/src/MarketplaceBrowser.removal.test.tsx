@@ -23,7 +23,8 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { MarketplaceBrowser, MarketplaceDetail } from "./MarketplaceBrowser";
 import { ErrorMessage } from "./ui";
-import { alertRequests, render, renderedText } from "./renderNative.testkit";
+import { hasTestID } from "./markerTestUtils";
+import { alertRequests, render, renderedText, testIDSuffixes } from "./renderNative.testkit";
 
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
@@ -54,6 +55,16 @@ const NO_FENCES: ReadonlySet<string> = new Set();
 beforeEach(() => {
 	alertRequests.length = 0;
 });
+
+/** Why the marketplace view leads with an error, by problem. */
+function problems(tree: ReturnType<typeof render>): string[] {
+	return testIDSuffixes(tree, "marketplace-problem-");
+}
+
+/** Whether the screen-level warning an applied removal raises is showing. */
+function warns(tree: ReturnType<typeof render>): boolean {
+	return hasTestID(tree, "removal-warning");
+}
 
 /** The guard PluginsScreen wires around the browser, in the minimal shape
  * these browser-level tests need: the names the browser reports applied
@@ -92,7 +103,7 @@ function GuardedBrowser({
 	const [opened, setOpened] = useState<string | null>(null);
 	return (
 		<>
-			<ErrorMessage message={warning} />
+			<ErrorMessage message={warning} testID="removal-warning" />
 			<MarketplaceBrowser
 				client={client}
 				connectionState="ready"
@@ -213,8 +224,8 @@ it("reports an applied removal neutrally and reconciles the list", async () => {
 			}),
 	);
 	const text = renderedText(tree);
-	expect(text).not.toContain("Could not confirm the change");
-	expect(text).not.toContain("clone cleanup failed");
+	expect(problems(tree)).toEqual([]);
+	expect(warns(tree)).toBe(false);
 	// The removal stood but the list read failed, so the browser refetched and
 	// the already-removed answer retired the row.
 	expect(listCalls()).toBe(2);
@@ -232,7 +243,7 @@ it("keeps the clone-litter warning and does not refetch the reconciled list", as
 			}),
 	);
 	const text = renderedText(tree);
-	expect(text).toContain("Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.");
+	expect(warns(tree)).toBe(true);
 	// The store published the rejection's authoritative applied list, so the
 	// live read asks for nothing: the mount's list call is the only one.
 	expect(listCalls()).toBe(1);
@@ -242,7 +253,7 @@ it("keeps the clone-litter warning and does not refetch the reconciled list", as
 it("keeps the retryable write-failed copy for an ordinary failure", async () => {
 	const fake = new FakeClient("ready");
 	const { tree, listCalls } = await removalUnderTest(fake, () => new Error("remove failed"));
-	expect(renderedText(tree)).toContain("Could not confirm the change");
+	expect(problems(tree)).toEqual(["write-failed"]);
 	expect(listCalls()).toBe(1);
 });
 
@@ -277,7 +288,7 @@ it("keeps the write-failed copy when a blocked install press never runs the acti
 	});
 	await act(async () => {});
 	expect(installs).toBe(1);
-	expect(renderedText(tree)).toContain("Could not confirm the change");
+	expect(problems(tree)).toEqual(["write-failed"]);
 
 	// Readiness is lost between the render and the gate's recheck, the
 	// sibling AddMarketplace not-ready test's driving pattern: the press is a
@@ -291,7 +302,7 @@ it("keeps the write-failed copy when a blocked install press never runs the acti
 	act(() => again.props.onPress());
 	await act(async () => {});
 	expect(installs).toBe(1);
-	expect(renderedText(tree)).toContain("Could not confirm the change");
+	expect(problems(tree)).toEqual(["write-failed"]);
 });
 
 it("keeps the write-failed copy when a blocked removal press never runs the action", async () => {
@@ -332,7 +343,7 @@ it("keeps the write-failed copy when a blocked removal press never runs the acti
 	});
 	await act(async () => {});
 	expect(removals).toBe(1);
-	expect(renderedText(tree)).toContain("Could not confirm the change");
+	expect(problems(tree)).toEqual(["write-failed"]);
 
 	// Readiness is lost at the gate's recheck, so the confirm runs nothing
 	// and the removal is a no-op: the write-failed copy from the removal
@@ -351,7 +362,7 @@ it("keeps the write-failed copy when a blocked removal press never runs the acti
 	});
 	await act(async () => {});
 	expect(removals).toBe(1);
-	expect(renderedText(tree)).toContain("Could not confirm the change");
+	expect(problems(tree)).toEqual(["write-failed"]);
 });
 
 it("keeps the cleanup warning when a removal never runs (readiness lost at the gate)", async () => {
@@ -403,9 +414,7 @@ it("keeps the cleanup warning when a removal never runs (readiness lost at the g
 		firstConfirm();
 	});
 	await act(async () => {});
-	expect(renderedText(tree)).toContain(
-		"Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.",
-	);
+	expect(warns(tree)).toBe(true);
 
 	// The fence retired with the reconciliation read, so Remove re-enables.
 	// Press it again, and lose readiness at the gate's recheck: no removal
@@ -424,12 +433,10 @@ it("keeps the cleanup warning when a removal never runs (readiness lost at the g
 	});
 	await act(async () => {});
 	expect(removals).toBe(1);
-	expect(renderedText(tree)).toContain(
-		"Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.",
-	);
+	expect(warns(tree)).toBe(true);
 	// The not-ready outcome is neither a refusal nor a failure, and it left
 	// the retired fence exactly as it was: Remove stays pressable.
-	expect(renderedText(tree)).not.toContain("Could not confirm the change");
+	expect(problems(tree)).toEqual([]);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Remove marketplace" })[0]?.props.disabled).toBe(false);
 });
 
@@ -479,9 +486,7 @@ it("keeps the fence while the outcome's reconciliation read is on the wire", asy
 	// reconciliation read is still on the wire: no publication newer than the
 	// baseline has landed - not even the re-report the recording's own
 	// re-render triggers - so the fence stands under the cleanup warning.
-	expect(renderedText(tree)).toContain(
-		"Marketplace removed; clone cleanup failed. Remove the leftover clone files manually.",
-	);
+	expect(warns(tree)).toBe(true);
 	const fenced = tree.root.findAllByProps({
 		accessibilityLabel: "Remove marketplace",
 	})[0];
@@ -540,5 +545,5 @@ it("does not confirm a removal the guard fenced while the dialog was open", asyn
 	});
 	await act(async () => {});
 	expect(removals).toBe(0);
-	expect(renderedText(tree)).not.toContain("Could not confirm the change");
+	expect(problems(tree)).toEqual([]);
 });

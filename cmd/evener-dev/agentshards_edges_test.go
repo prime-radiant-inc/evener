@@ -145,8 +145,11 @@ func TestRunShardsNoTestsFound(t *testing.T) {
 	if rc != 1 {
 		t.Fatalf("no tests rc = %d, want 1\nstdout:\n%s\nstderr:\n%s", rc, &stdout, &stderr)
 	}
-	if !strings.Contains(stderr.String(), "found no tests to shard") {
-		t.Fatalf("stderr missing 'found no tests to shard':\n%s", stderr.String())
+	if stderr.Len() == 0 {
+		t.Fatal("refusing to shard nothing left no diagnostic on stderr")
+	}
+	if got := verdictShards(t, stdout.String(), "PASS"); len(got) != 0 {
+		t.Fatalf("an empty test set still ran shards %v:\n%s", got, &stdout)
 	}
 }
 

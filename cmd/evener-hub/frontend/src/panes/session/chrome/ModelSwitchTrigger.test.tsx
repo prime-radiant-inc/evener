@@ -410,7 +410,7 @@ test("a refresh that fails keeps the list the picker shows", async () => {
   await waitFor(() => expect(loadCatalog).toHaveBeenLastCalledWith(true));
   await act(async () => {});
   expect(screen.getAllByRole("option")).toHaveLength(2);
-  expect(screen.queryByText(/Couldn't load models/)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 // Spawn changes both at once: a credential or model-list change moves its
@@ -457,12 +457,12 @@ test("a refresh after a failed load replaces the error with the list", async () 
   await user.keyboard("{Escape}");
   failing = true;
   await user.click(screen.getByTestId("trigger"));
-  await screen.findByText(/Couldn't load models/);
+  await screen.findByRole("alert");
 
   failing = false;
   rerender(<ModelSwitchTrigger {...props} refreshKey={1} />);
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
-  expect(screen.queryByText(/Couldn't load models/)).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 // Newer data arriving while the first load is still out cannot keep a list

@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -58,7 +57,7 @@ func readAgentsDoc(path string) (appwire.AgentsDocResponse, error) {
 		return appwire.AgentsDocResponse{Path: path}, nil
 	}
 	if err != nil {
-		return appwire.AgentsDocResponse{}, fmt.Errorf("AGENTS.md: read: %w", err)
+		return appwire.AgentsDocResponse{}, &agentsDocStepError{step: "read", err: err}
 	}
 	return appwire.AgentsDocResponse{Path: path, Exists: true, Content: string(b)}, nil
 }
@@ -88,15 +87,15 @@ func writeAgentsDoc(path, content string) error {
 	case err == nil:
 		target = resolved
 	case !errors.Is(err, fs.ErrNotExist):
-		return fmt.Errorf("AGENTS.md: resolve: %w", err)
+		return &agentsDocStepError{step: "resolve", err: err}
 	}
 	dir := filepath.Dir(target)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("AGENTS.md: mkdir: %w", err)
+		return &agentsDocStepError{step: "mkdir", err: err}
 	}
 	tmp, err := os.CreateTemp(dir, ".AGENTS.md-*.tmp")
 	if err != nil {
-		return fmt.Errorf("AGENTS.md: write: %w", err)
+		return &agentsDocStepError{step: "write", err: err}
 	}
 	// A save that dies partway (ENOSPC, EIO) has already created the temp
 	// file, so clear it too: the real file is untouched either way, and a
@@ -106,13 +105,24 @@ func writeAgentsDoc(path, content string) error {
 	tmpPath := tmp.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
 	if err := writeTempAgentsDoc(tmp, content); err != nil {
-		return fmt.Errorf("AGENTS.md: write: %w", err)
+		return &agentsDocStepError{step: "write", err: err}
 	}
 	if err := os.Rename(tmpPath, target); err != nil {
-		return fmt.Errorf("AGENTS.md: rename: %w", err)
+		return &agentsDocStepError{step: "rename", err: err}
 	}
 	return nil
 }
+
+// agentsDocStepError is a failed read or save of AGENTS.md, naming the step
+// that failed: read, resolve, mkdir, write or rename.
+type agentsDocStepError struct {
+	step string
+	err  error
+}
+
+func (e *agentsDocStepError) Error() string { return "AGENTS.md: " + e.step + ": " + e.err.Error() }
+
+func (e *agentsDocStepError) Unwrap() error { return e.err }
 
 // writeTempAgentsDoc lands the content in the open temp file and closes it,
 // whichever step fails.

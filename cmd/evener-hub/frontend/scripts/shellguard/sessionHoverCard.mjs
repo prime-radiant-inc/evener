@@ -191,9 +191,9 @@ async function desktopJourney(driver, viewport) {
   await driver.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 900, y: 20 });
   await evaluate(
     driver.send,
-    `(() => {
+    `(async () => {
     const state = window.__sessionHoverGuard;
-    state.title.scrollIntoView({ block: 'center' });
+    await state.scrollSettled(() => state.title.scrollIntoView({ block: 'center' }));
     state.before = state.box(state.row);
   })()`,
   );
@@ -244,13 +244,15 @@ async function desktopJourney(driver, viewport) {
 
   await evaluate(
     driver.send,
-    `(() => {
+    `(async () => {
     const state = window.__sessionHoverGuard;
     state.title = Array.from(state.rail.querySelectorAll('[data-testid="rail-row-title"]')).at(-2);
     state.row = state.title.closest('[role="treeitem"]');
-    state.row.scrollIntoView({ block: 'end' });
-    // Keep scroll headroom for the fractional row box on a whole-pixel scroller.
-    state.scroller.scrollTop += 1;
+    await state.scrollSettled(() => {
+      state.row.scrollIntoView({ block: 'end' });
+      // Keep scroll headroom for the fractional row box on a whole-pixel scroller.
+      state.scroller.scrollTop += 1;
+    });
   })()`,
   );
   await driver.waitPage(`window.__sessionHoverGuard.row.getBoundingClientRect().bottom <= innerHeight`, {
@@ -316,6 +318,67 @@ async function touchJourney(driver) {
   return { gap: card.row.top - card.card.bottom, card, compatibilityClick: click.trusted, ordinaryTap: true };
 }
 
+// The page expression that collects a failure witness. The witness runs only
+// when a journey already failed - exactly when the title, row or rail it reads
+// may be absent - so every read is guarded. A witness that threw here would
+// replace the guard's real failure with its own TypeError, losing both the
+// error and the diagnostic (issue #3741). Whatever cannot be read is marked
+// unreadable instead, and `partial` says the evidence is incomplete.
+//
+// It is a named export so a Node test can evaluate the REAL expression, the way
+// the skillguard driver's readiness predicate is pinned without a browser.
+export function hoverWitnessExpr() {
+  return `(() => {
+      const state = window.__sessionHoverGuard;
+      const witness = { partial: false, unreadable: [], errors: window.__shellGuardErrors || [] };
+      if (!state) {
+        // The guard was never installed; only the page error list is reachable.
+        witness.partial = true;
+        witness.unreadable.push('state');
+        return witness;
+      }
+      const read = (name, fn) => {
+        try { witness[name] = fn(); }
+        catch (error) {
+          witness.partial = true;
+          witness.unreadable.push(name);
+          witness[name] = { unreadable: String(error instanceof Error ? error.message : error) };
+        }
+      };
+      read('hoverless', () => matchMedia('(hover: none)').matches);
+      read('title', () => state.title.outerHTML);
+      read('row', () => state.box(state.row));
+      read('sidebar', () => state.box(state.rail));
+      read('card', () => state.card()?.getBoundingClientRect().toJSON() ?? null);
+      read('hit', () => {
+        const r = state.title.getBoundingClientRect();
+        return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.outerHTML ?? null;
+      });
+      read('hovered', () => state.title.matches(':hover'));
+      return witness;
+    })()`;
+}
+
+// The error the guard rethrows when a journey fails: the guard's own message
+// with the witness attached. Collecting the witness must never replace the
+// failure it describes, so a rejected evaluation becomes the note and the
+// original error (and its cause) is still what the operator sees. Extracted so
+// a Node test can drive the same function the catch runs, through a fake CDP
+// send.
+export async function describeHoverFailure(driver, error) {
+  let witness;
+  try {
+    witness = await evaluate(driver.send, hoverWitnessExpr());
+  } catch (witnessError) {
+    witness = {
+      partial: true,
+      unreadable: ["witness"],
+      error: witnessError instanceof Error ? witnessError.message : String(witnessError),
+    };
+  }
+  return new Error(`${error.message}; witness ${JSON.stringify(witness)}`, { cause: error });
+}
+
 async function onPage(cdpEndpoint, vitePort, viewport) {
   const target = await openPage(cdpEndpoint, "about:blank");
   const page = await connectPage(cdpEndpoint, target.id);
@@ -353,33 +416,32 @@ async function onPage(cdpEndpoint, vitePort, viewport) {
       driver.send,
       `(async () => {
       const title = document.querySelector(${JSON.stringify(TITLE)});
-      title.scrollIntoView({ block: 'center' });
       const row = title.closest('[role="treeitem"]');
       const rail = title.closest('[data-testid="rail"]');
       const box = element => element.getBoundingClientRect().toJSON();
       let scroller = row.parentElement;
       while (scroller && !['auto', 'scroll'].includes(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
       if (!scroller) throw new Error('session scroll owner is absent');
-      window.__sessionHoverGuard = { title, row, rail, box, scroller, before: box(row), initialFocus: document.activeElement,
-        card() { return document.getElementById(this.title.getAttribute('aria-describedby')); } };
+      window.__sessionHoverGuard = { title, row, rail, box, scroller, initialFocus: document.activeElement,
+        card() { return document.getElementById(this.title.getAttribute('aria-describedby')); },
+        // A programmatic scroll's event is dispatched on the next rendering
+        // update, not synchronously. Any scroll dismisses a pending card, so a
+        // hover sent before that event lands can arm the card only for the
+        // stale event to cancel it, with the pointer left resting on the title
+        // and no new mouseenter coming. A frame runs its scroll steps before
+        // its animation frame callbacks, so the next callback means every
+        // scroll event this move queued, on any ancestor, has been delivered.
+        async scrollSettled(move) {
+          move();
+          await new Promise(requestAnimationFrame);
+        } };
+      await window.__sessionHoverGuard.scrollSettled(() => title.scrollIntoView({ block: 'center' }));
+      window.__sessionHoverGuard.before = box(row);
     })()`,
     );
     return viewport.touch ? await touchJourney(driver) : await desktopJourney(driver, viewport);
   } catch (error) {
-    const witness = await evaluate(
-      driver.send,
-      `(() => {
-      const state = window.__sessionHoverGuard;
-      if (!state) return { errors: window.__shellGuardErrors || [] };
-      const r = state.title.getBoundingClientRect();
-      return { hoverless: matchMedia('(hover: none)').matches,
-        title: state.title.outerHTML, row: state.box(state.row), sidebar: state.box(state.rail),
-        card: state.card()?.getBoundingClientRect().toJSON(),
-        hit: document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.outerHTML,
-        hovered: state.title.matches(':hover'), errors: window.__shellGuardErrors || [] };
-    })()`,
-    );
-    throw new Error(`${error.message}; witness ${JSON.stringify(witness)}`, { cause: error });
+    throw await describeHoverFailure(driver, error);
   } finally {
     await clearViewportOverride(driver.send);
     page.close();

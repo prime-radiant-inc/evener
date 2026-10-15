@@ -454,6 +454,13 @@ func (m *hubModel) focusDashboardProject(projectKey string) {
 		return
 	}
 	m.mode = hubModeDashboard
+	// Focusing a project is a navigation departure like ctrl+O's dashboard
+	// return (#4343): the pending entry-repair retry and its status retire
+	// with it, and the generation advances so a retry re-read still in
+	// flight lands superseded — its success must not enter the abandoned
+	// session over the project dashboard.
+	m.liveNavSeq++
+	m.entryRepairRetire()
 	m.dashboardFilter.Reset()
 	m.dashboardFilter.Blur()
 	m.dashboardFilterActive = false

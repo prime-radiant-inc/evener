@@ -52,8 +52,8 @@ import {
   expandDetailsByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
-import { Chevron, Loader, Markdown, ToolIcon } from "../../../../widgets";
-import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
+import { Disclosure, Loader, Markdown, ToolIcon } from "../../../../widgets";
+import { disclosureDefault, isDisclosureOpen } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import {
@@ -70,11 +70,9 @@ const CLASS = {
   live: requireClass(styles.live, "thinkblock.module.css", "live"),
   label: requireClass(styles.label, "thinkblock.module.css", "label"),
   icon: requireClass(styles.icon, "thinkblock.module.css", "icon"),
+  summaryIcon: requireClass(styles.summaryIcon, "thinkblock.module.css", "summaryIcon"),
   liveBody: requireClass(styles.liveBody, "thinkblock.module.css", "liveBody"),
-  details: requireClass(styles.details, "thinkblock.module.css", "details"),
-  summary: requireClass(styles.summary, "thinkblock.module.css", "summary"),
   summaryText: requireClass(styles.summaryText, "thinkblock.module.css", "summaryText"),
-  chevron: requireClass(styles.chevron, "thinkblock.module.css", "chevron"),
   body: requireClass(styles.body, "thinkblock.module.css", "body"),
   trace: requireClass(styles.trace, "thinkblock.module.css", "trace"),
   step: requireClass(styles.step, "thinkblock.module.css", "step"),
@@ -85,16 +83,23 @@ const CLASS = {
 // The thought row leads with the same leading-icon grammar the tool rows use
 // (Jesse's review call: "thinking should also have an icon") - the lightbulb
 // kind glyph at the transcript's one icon size, in the row's own quiet ink
-// (the widget strokes currentColor; .label and .summary both set --ink-low).
+// (the widget strokes currentColor in the row's ink). The live eyebrow seats
+// it in the rail; the settled Disclosure summary leads with it in the content
+// column, sized to the glyph alone.
 const thoughtIcon = (
   <span className={CLASS.icon} data-testid="think-block-icon" aria-hidden="true">
+    <ToolIcon kind="thought" />
+  </span>
+);
+const settledThoughtIcon = (
+  <span className={CLASS.summaryIcon} data-testid="think-block-icon" aria-hidden="true">
     <ToolIcon kind="thought" />
   </span>
 );
 
 const THOUGHT_PREVIEW_MAX_LENGTH = 120;
 
-// thoughtLabel never fabricates a duration: `durationMs` is undefined whenever
+// ThoughtLabel never fabricates a duration: `durationMs` is undefined whenever
 // neither the wire pair nor the observed pair is available or valid (see
 // reasoningFormat.ts). Every part joins on the same " · " separator - the
 // draft restyle's "Thought · 12s · preview" grammar (mockup #4), one delimiter
@@ -102,11 +107,27 @@ const THOUGHT_PREVIEW_MAX_LENGTH = 120;
 // plain-text rendering of the final meaningful line, not a second Markdown
 // body; opening the disclosure still reveals the complete source through
 // Markdown.
-function thoughtLabel(durationMs: number | undefined, preview: string): string {
-  const parts = ["Thought"];
-  if (durationMs !== undefined) parts.push(formatThoughtDuration(durationMs));
-  if (preview) parts.push(preview);
-  return parts.join(" · ");
+// Each optional part rides in its own inline span carrying what it stands for
+// (data-duration-ms, data-slot="preview"), so the words stay one line while a
+// reader of the DOM can tell the measured duration and the preview apart.
+function ThoughtLabel({ durationMs, preview }: { durationMs: number | undefined; preview: string }) {
+  return (
+    <>
+      Thought
+      {durationMs !== undefined && (
+        <>
+          {" · "}
+          <span data-duration-ms={durationMs}>{formatThoughtDuration(durationMs)}</span>
+        </>
+      )}
+      {preview && (
+        <>
+          {" · "}
+          <span data-slot="preview">{preview}</span>
+        </>
+      )}
+    </>
+  );
 }
 
 // The live view (mockup #4's draft treatment): a quiet "Thinking…" eyebrow
@@ -171,7 +192,13 @@ function ContentFreeThinkBlock({ item }: { item: ItemModel }) {
   const estimatedTokens = Math.round(characters / 4);
   const label = estimatedTokens > 0 ? `Thinking… · ~${formatTokenCount(estimatedTokens)} tokens` : "Thinking…";
   return (
-    <div className={CLASS.block} data-testid="think-block" data-live="true" data-content-free="true">
+    <div
+      className={CLASS.block}
+      data-testid="think-block"
+      data-live="true"
+      data-content-free="true"
+      data-estimated-tokens={estimatedTokens > 0 ? estimatedTokens : undefined}
+    >
       {/* rail: the grid IS this row's status glyph, so it seats in the icon
        * rail the live and settled rows seat their bulb glyph in (the Loader
        * variant owns the slot geometry and the gutter pull - see
@@ -269,36 +296,21 @@ export const ThinkBlock = memo(function ThinkBlock({
   // with the same item id in another session. Collapsed by default.
   return (
     <div className={CLASS.block} data-testid="think-block" data-live="false">
-      <details className={CLASS.details} open={open}>
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
-        <summary
-          className={CLASS.summary}
-          onClick={(e) => {
-            e.preventDefault();
-            toggleDisclosure(disclosureKey, disclosureFallback);
-          }}
-        >
-          {thoughtIcon}
-          {/* The label text in its own shrinkable span (not bare summary text):
-              as a flex item it can ellipsize under pressure, so the trailing
-              chevron always stays on screen at the end of the words instead of
-              being pushed past the summary's clipped edge. */}
-          <span className={CLASS.summaryText}>
-            {open ? thoughtLabel(durationMs, "") : thoughtLabel(durationMs, preview)}
-          </span>
-          {/* Mockup #4's trailing affordance: the shared widgets/chevron at the
-              tail of the collapsed line, turning 90° when open via the same
-              data-open idiom ToolRow uses (rotation turns the SQUARE svg, so it
-              cannot widen its painted box - see toolcallitem.module.css). */}
-          <span
-            className={CLASS.chevron}
-            aria-hidden="true"
-            data-open={open ? "true" : "false"}
-            data-testid="think-block-chevron"
-          >
-            <Chevron />
-          </span>
-        </summary>
+      <Disclosure
+        variant="quiet"
+        id={disclosureKey}
+        defaultOpen={disclosureFallback}
+        summary={
+          <>
+            {settledThoughtIcon}
+            {/* The label text in its own shrinkable span: it ellipsizes under
+                pressure so the Disclosure's chevron stays on screen. */}
+            <span className={CLASS.summaryText}>
+              <ThoughtLabel durationMs={durationMs} preview={open ? "" : preview} />
+            </span>
+          </>
+        }
+      >
         <div className={CLASS.body}>
           {/* Beautiful UI's Thinking anatomy, ported honestly: a step only
               exists where the text itself already breaks into one via a
@@ -334,7 +346,7 @@ export const ThinkBlock = memo(function ThinkBlock({
             <Markdown source={paragraphs.join("\n\n")} />
           )}
         </div>
-      </details>
+      </Disclosure>
     </div>
   );
 }, thinkBlockPropsEqual);

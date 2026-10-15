@@ -20,9 +20,7 @@ added "- [added](added.md) — opaque-personal-added"
 
 Project memory index lines changed since you last saw it:
 added "- opaque-change-added"
-removed "- opaque-change-removed"
 
 Project memory pages you read that another session changed:
 "opaque-notice-changed.md" changed
-"opaque-notice-removed.md" removed
 </system-notification>

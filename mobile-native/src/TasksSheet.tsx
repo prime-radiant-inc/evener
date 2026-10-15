@@ -157,7 +157,9 @@ export function TaskList({
                 stamps every terminal transition); the "Completed" line
                 stays a done-row fact, matching the web pane's timestamps. */}
 						{task.completedAt && task.status === "done" ? (
-							<Copy muted>{`Completed ${absoluteTime(task.completedAt)}`}</Copy>
+							<View testID="task-completed">
+								<Copy muted>{`Completed ${absoluteTime(task.completedAt)}`}</Copy>
+							</View>
 						) : null}
 						{task.prompt.trim() ? (
 							<>
@@ -206,7 +208,11 @@ export function TaskList({
 			}
 			ListHeaderComponent={
 				<View style={{ gap: 8, paddingTop: 12 }}>
-					{!connected ? <Copy muted>Disconnected. The last loaded tasks are shown.</Copy> : null}
+					{!connected ? (
+						<View testID="tasks-disconnected">
+							<Copy muted>Disconnected. The last loaded tasks are shown.</Copy>
+						</View>
+					) : null}
 					{state.loading ? <ActivityIndicator accessibilityLabel="Loading tasks" color={colors.accent} /> : null}
 					<ErrorMessage message={error} />
 					{error && state.rows ? <Copy muted>Showing the last list that loaded.</Copy> : null}

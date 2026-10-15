@@ -1231,9 +1231,16 @@ test("an expanded summary-less, intent-less row's disclosure trigger still has a
 
 test("a failed summary-less row keeps its failure name on the sibling trigger", () => {
   render(<ToolRow summary="" failed expandable expanded onToggle={() => {}} />);
-  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-label")).toBe("Failed");
-  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+  expectTriggerNamedByFailure();
 });
+
+// The trigger of a failed summary-less row is named by the same failure word
+// its failure glyph carries.
+function expectTriggerNamedByFailure(): void {
+  const glyphName = screen.getByTestId("failure-glyph").getAttribute("aria-label");
+  expect(glyphName).not.toBeNull();
+  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-label")).toBe(glyphName);
+}
 
 test("a status-bearing summary-less row keeps the status name outside the trigger", () => {
   render(
@@ -1250,7 +1257,10 @@ test("a status-bearing summary-less row keeps the status name outside the trigge
       onToggle={() => {}}
     />,
   );
-  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-label")).toBe("Tool call");
+  // The trigger keeps its own bare name rather than taking the status's.
+  const name = screen.getByTestId("tool-row-trigger").getAttribute("aria-label") ?? "";
+  expect(name.trim()).not.toBe("");
+  expect(name).not.toContain("Working");
   expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
 });
 
@@ -1269,8 +1279,7 @@ test("a failed and status-bearing row keeps both names outside the trigger", () 
       onToggle={() => {}}
     />,
   );
-  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-label")).toBe("Failed");
-  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+  expectTriggerNamedByFailure();
   expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
 });
 
@@ -1322,12 +1331,16 @@ test("ToolCallItem threads a descriptor's openTranscriptRef to a working OpenTra
   render(
     <ToolCallItem item={item({ toolName: "trg_opentranscript" })} turn={turn} live={false} sessionRef="local:owner" />,
   );
-  fireEvent.click(screen.getByRole("button", { name: "Open transcript" }));
+  fireEvent.click(screen.getByRole("button", { name: "Open conversation" }));
   const panes = workspaceStore
     .getState()
-    .panes.filter((pane) => pane.type === "transcript" && (pane.params as { ref?: unknown }).ref === "local:child");
+    .panes.filter((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === "local:child");
   expect(panes).toHaveLength(1);
-  expect(panes[0]?.params).toEqual({ ref: "local:child", parentRef: "local:owner" });
+  expect(panes[0]?.params).toEqual({ ref: "local:child" });
+  // The enclosing session ref still reaches the funnel: with no main pane to
+  // destroy, it places the enclosing session in main, so the reader's return
+  // target exists in the workspace.
+  expect(workspaceStore.getState().mainPane()).toMatchObject({ type: "session", params: { ref: "local:owner" } });
 });
 
 test("ToolCallItem renders no transcript button when the descriptor has no openTranscriptRef", () => {
@@ -1337,7 +1350,7 @@ test("ToolCallItem renders no transcript button when the descriptor has no openT
     body: () => <div>b</div>,
   });
   render(<ToolCallItem item={item({ toolName: "trg_no_opentranscript" })} turn={turn} live={false} />);
-  expect(screen.queryByRole("button", { name: "Open transcript" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Open conversation" })).toBeNull();
 });
 
 // --- two-level disclosure: intent button controls summaryOpen, body chevron
@@ -1886,7 +1899,7 @@ test("a collapsed summary's entity trigger opens the existing entity card", () =
       vi.advanceTimersByTime(300);
     });
     const card = screen.getByRole("tooltip");
-    expect(card.textContent).toContain("Job");
+    expect(card.querySelector('[data-entity-kind="job"]')).not.toBeNull();
     expect(card.textContent).toContain("Compile the frontend");
   } finally {
     vi.useRealTimers();

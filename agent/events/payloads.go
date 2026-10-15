@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -598,6 +599,13 @@ const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
 // these warnings by this stable code, never by matching their prose.
 const WarningCodeContextBudget = "context_budget"
 
+// WarningCodeContextWindowAssumed identifies the one-time notice that the
+// session's model has no known context window, so compaction is budgeting
+// against a conservative assumed window instead (issue #4564). Clients show
+// it as a configuration disclosure carrying the remedy — declare
+// context_window on the model's provider row — not as an error.
+const WarningCodeContextWindowAssumed = "context_window_assumed"
+
 // WarningCodePluginCompatibility identifies plugin, skill, and evener-wide
 // command settings that Evener preserves but does not enforce. The affected
 // content remains available, so clients show this advisory only in full
@@ -628,6 +636,9 @@ const WarningCodeDelegateAttentionUndeliverable = "delegate_attention_undelivera
 // codes, clients show it at every level: it is news the user must act on.
 const WarningCodeAttentionPaused = "attention_paused"
 
+// WarningCodeSummaryFailure identifies a failed conversation summarization.
+const WarningCodeSummaryFailure = "summary_failure"
+
 // WarningData is the payload for an EventWarning event.
 type WarningData struct {
 	Message           string `json:"message"`
@@ -647,6 +658,8 @@ type WarningData struct {
 	// the event the matcher was declared under) for a hook-configuration
 	// warning. Carries only the name, no hook payload or secrets.
 	EventName string `json:"event_name,omitempty"`
+	// SummaryFailure carries bounded route and failure metadata, never provider text.
+	SummaryFailure *diagnostic.SummaryFailure `json:"summary_failure,omitempty"`
 }
 
 // ErrorData is the payload for an EventError event.
@@ -766,6 +779,7 @@ type DelegateUpdatedData struct {
 	RunStartedAt        string                `json:"run_started_at,omitempty"`
 	RunEndedAt          string                `json:"run_ended_at,omitempty"`
 	LatestActivityAt    string                `json:"latest_activity_at,omitempty"`
+	LatestIntent        string                `json:"latest_intent,omitempty"`
 	RunningForMS        *int64                `json:"running_for_ms,omitempty"`
 	QuietForMS          *int64                `json:"quiet_for_ms,omitempty"`
 	DurationMS          *int64                `json:"duration_ms,omitempty"`

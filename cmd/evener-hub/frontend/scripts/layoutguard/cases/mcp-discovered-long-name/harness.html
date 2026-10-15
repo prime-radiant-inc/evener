@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=390, initial-scale=1">
+<title>mcp-discovered-long-name layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  * { transition: none !important; animation: none !important; }
+
+  body {
+    margin: 0;
+    background: var(--surface-0);
+    color: var(--ink-hi);
+    font-family: var(--font-sans);
+  }
+
+  .fixtures { display: flex; flex-direction: column; gap: 8px; }
+</style>
+</head>
+<body data-font-size="m">
+<main class="fixtures"></main>
+
+<!-- Settings -> MCP's discovered-server row (panes/settings/sections/mcp.tsx):
+     a read-only ListRow collection row (widgets/listrow/index.tsx renders a
+     <div> holding .heading (.label + .chips) and .meta) whose label is the
+     mcp.module.css .serverName span around the server's name, its status Chip,
+     and the transport as the meta line. -->
+<template id="fixture-template">
+  <section class="fixture">
+    <div class="row collection" data-row>
+      <span class="heading">
+        <span class="label" data-label><span class="serverName"></span></span>
+        <span class="chips"><span class="chip danger">unavailable</span></span>
+      </span>
+      <span class="meta">stdio</span>
+    </div>
+  </section>
+</template>
+
+<script>
+// Spliced by run.mjs from case.json's widthMatrix (see widthMatrix.mjs).
+const WIDTH_MATRIX = __LAYOUTGUARD_WIDTH_MATRIX__;
+
+// A long hyphenated name and an unbroken one: a configured server's name is
+// whatever the user typed into launch settings.
+const NAMES = {
+  hyphenated: "github-enterprise-mcp-server-for-the-platform-infrastructure-team",
+  unbroken: "githubenterprisemcpserverfortheplatforminfrastructureteam",
+};
+
+const FIXTURES = [];
+const main = document.querySelector(".fixtures");
+const template = document.getElementById("fixture-template");
+
+for (const spec of WIDTH_MATRIX) {
+  const root = template.content.firstElementChild.cloneNode(true);
+  root.style.width = `${spec.width}px`;
+  root.querySelector(".serverName").textContent = NAMES[spec.name];
+  main.appendChild(root);
+  FIXTURES.push({ width: spec.width, name: spec.name, root });
+}
+
+function rectOf(element) {
+  const rect = element.getBoundingClientRect();
+  return { top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left, width: rect.width, height: rect.height };
+}
+
+window.measure = () =>
+  FIXTURES.map(({ width, name, root }) => {
+    const row = root.querySelector("[data-row]");
+    const label = root.querySelector("[data-label]");
+    return {
+      width,
+      name,
+      row: { rect: rectOf(row), clientWidth: row.clientWidth, scrollWidth: row.scrollWidth },
+      label: { rect: rectOf(label), clientWidth: label.clientWidth, scrollWidth: label.scrollWidth },
+    };
+  });
+</script>
+</body>
+</html>

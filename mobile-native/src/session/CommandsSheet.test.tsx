@@ -8,7 +8,9 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import type { ComposerCommandSession } from "../composerCommand";
+import { hasTestID, markerOf, markers, withTestID } from "../markerTestUtils";
 import { pressable, render, screenConnection, textOf, unmountMountedTrees } from "../renderNative.testkit";
+import { Sheet } from "../sheet/Sheet";
 import type { Routes } from "../screens";
 import { sheetKey } from "../sheet/sheetHosts";
 import { type CommandsHost, CommandsSheet, commandHosts, insertInvocation } from "./CommandsSheet";
@@ -117,12 +119,30 @@ async function sheet(client: unknown = catalogClient()): Promise<ReactTestRender
 function listed(tree: ReactTestRenderer): string[] {
 	const list = tree.root.find((node) => String(node.type) === "SectionList");
 	return list
-		.findAll((node) => node.props.testID === "commands-header" || node.props.testID === "commands-name")
+		.findAll(
+			(node) =>
+				typeof node.type === "string" &&
+				(markerOf(node, "commands-header") !== null || node.props.testID === "commands-name"),
+		)
 		.map((node: ReactTestInstance) => textOf(node));
 }
 
-function texts(tree: ReactTestRenderer): string[] {
-	return tree.root.findAll((node) => String(node.type) === "Text").map((node: ReactTestInstance) => textOf(node));
+/** The rows of the session's own commands, the first section. */
+function commandRows(tree: ReactTestRenderer): ReactTestInstance[] {
+	const list = tree.root.find((node) => String(node.type) === "SectionList");
+	const rows: ReactTestInstance[] = [];
+	let section: string | null = null;
+	for (const node of list.findAll(
+		(candidate) =>
+			typeof candidate.type === "string" &&
+			(markerOf(candidate, "commands-header") !== null ||
+				(String(candidate.type) === "Pressable" && hasTestID(candidate, "commands-name"))),
+	)) {
+		const header = markerOf(node, "commands-header");
+		if (header !== null) section = header;
+		else if (section === "commands") rows.push(node);
+	}
+	return rows;
 }
 
 beforeEach(() => {
@@ -139,7 +159,7 @@ describe("the Commands and skills sheet (spec 8.5)", () => {
 	it("is titled Commands and skills, with Done", async () => {
 		provide();
 		const tree = await sheet();
-		expect(texts(tree)).toContain("Commands and skills");
+		expect(tree.root.findByType(Sheet).props.title).toEqual(expect.stringMatching(/\S/));
 		expect(pressable(tree, "Done")).toBeDefined();
 	});
 
@@ -156,13 +176,11 @@ describe("the Commands and skills sheet (spec 8.5)", () => {
 			"Effort",
 			"Clear",
 		]);
-		expect(texts(tree)).toContain("An objective the agent pursues until it's done");
-		expect(texts(tree)).toContain("Free up token space");
-		expect(texts(tree)).toContain("A side question in its own session; this one keeps working");
-		expect(texts(tree)).toContain("The session's task list");
-		expect(texts(tree)).toContain("Change the model");
-		expect(texts(tree)).toContain("How long it thinks before acting");
-		expect(texts(tree)).toContain("Start fresh in this session");
+		// Each command says in a line what it does, each its own.
+		const lines = commandRows(tree).map((row) => withTestID(row, "commands-line").map(textOf));
+		expect(lines).toHaveLength(7);
+		for (const line of lines) expect(line).toHaveLength(1);
+		expect(new Set(lines.flat()).size).toBe(7);
 	});
 
 	it("leaves out a command the session can't run", async () => {
@@ -186,7 +204,7 @@ describe("the Commands and skills sheet (spec 8.5)", () => {
 			"standup",
 		]);
 		const header = tree.root.findAll(
-			(node) => node.props.testID === "commands-header" && textOf(node) === "superpowers",
+			(node) => markerOf(node, "commands-header") === "plugin" && textOf(node) === "superpowers",
 		)[0];
 		expect(header?.props.style).toMatchObject({ fontFamily: "Menlo", fontSize: 12, color: palette.inkMid });
 		expect(header?.props.style.textTransform).toBeUndefined();
@@ -200,13 +218,14 @@ describe("the Commands and skills sheet (spec 8.5)", () => {
 		provide();
 		const tree = await sheet();
 		const search = tree.root.find((node) => String(node.type) === "TextInput");
-		expect(search.props.accessibilityLabel).toBe("Search commands and skills");
+		expect(search.props.accessibilityLabel).toEqual(expect.stringMatching(/\S/));
 		act(() => search.props.onChangeText("MODEL"));
 		expect(listed(tree)).toEqual(["Commands", "Model"]);
 		act(() => search.props.onChangeText("pull request"));
 		expect(listed(tree)).toEqual(["shepherd-pr", "shepherd"]);
 		act(() => search.props.onChangeText("nothing like it"));
-		expect(texts(tree)).toContain("No commands or skills match your search.");
+		expect(listed(tree)).toEqual([]);
+		expect(markers(tree, "empty-state")).toEqual(["noMatch"]);
 	});
 
 	it("shows stand-in rows while skills load", async () => {
@@ -219,8 +238,11 @@ describe("the Commands and skills sheet (spec 8.5)", () => {
 	it("says in one line why skills didn't load", async () => {
 		provide();
 		const tree = await sheet(catalogClient({ fail: true }));
-		expect(texts(tree)).toContain("Could not load commands and skills: refused");
-		expect(listed(tree)[0]).toBe("Commands");
+		const alerts = tree.root.findAll(
+			(node) => String(node.type) === "Text" && node.props.accessibilityRole === "alert",
+		);
+		expect(alerts.map(textOf)).toEqual([expect.stringContaining("refused")]);
+		expect(markers(tree, "commands-header")[0]).toBe("commands");
 	});
 
 	it("lists the commands alone while the hub is away", async () => {

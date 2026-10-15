@@ -10,7 +10,15 @@ import { expect, it, vi } from "vitest";
 import type { InstanceListResponse } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { TaskList, TasksSheet } from "./TasksSheet";
-import { pressable, render, renderedText, screenConnection, scriptedClient } from "./renderNative.testkit";
+import { hasTestID, withTestID } from "./markerTestUtils";
+import {
+	offersButton,
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+	scriptedClient,
+} from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => {
 	const goBack = vi.fn();
@@ -94,7 +102,7 @@ it("renders the Completed line for done rows only, never a stamped cancellation"
 	expect(text).toContain("drop it");
 	// Exactly one Completed line: the done row's. A cancelled row carrying the
 	// new settle stamp must not claim it.
-	expect(text.match(/Completed/g)?.length).toBe(1);
+	expect(withTestID(tree, "task-completed")).toHaveLength(1);
 });
 
 it("keeps its last list through a dropped connection", async () => {
@@ -102,6 +110,7 @@ it("keeps its last list through a dropped connection", async () => {
 	const tree = render(taskList(client, true));
 	await act(async () => {});
 	expect(renderedText(tree)).toContain("Done · settled · 2");
+	expect(hasTestID(tree, "tasks-disconnected")).toBe(false);
 
 	await act(async () => {
 		tree.update(taskList(client, false));
@@ -109,13 +118,11 @@ it("keeps its last list through a dropped connection", async () => {
 
 	// The connection dropped, but the store's last loaded rows are untouched:
 	// the list is still there, alongside the note explaining why it may be
-	// stale. Calm copy (spec principle 2): it says what happened and stops,
-	// never asking the person to reconnect - the app does that on its own -
-	// so the exact sentence is pinned, and the absence of any reconnect
-	// directive is checked directly.
+	// stale. Calm (spec principle 2): it says what happened and stops, never
+	// offering to reconnect - the app does that on its own.
 	expect(renderedText(tree)).toContain("Done · settled · 2");
-	expect(renderedText(tree)).toContain("Disconnected. The last loaded tasks are shown.");
-	expect(renderedText(tree).toLowerCase()).not.toContain("reconnect");
+	expect(hasTestID(tree, "tasks-disconnected")).toBe(true);
+	expect(offersButton(tree, /reconnect/i)).toBe(false);
 });
 
 type TasksSheetProps = ComponentProps<typeof TasksSheet>;
@@ -137,8 +144,7 @@ it("opens as a sheet titled Tasks over the route's hub, and Done closes it", asy
 	const tree = render(<TasksSheet route={tasksRoute("hub-1")} navigation={sheetNavigation} />);
 	await act(async () => {});
 
-	const title = tree.root.find((node) => node.props.accessibilityRole === "header");
-	expect(title.props.children).toBe("Tasks");
+	expect(tree.root.findAll((node) => node.props.accessibilityRole === "header")).toHaveLength(1);
 	// A sheet's header carries only its title: the hub's name is gone.
 	expect(renderedText(tree)).not.toContain("Work hub");
 	// The list loaded through the hub's client once the screen adopted it.

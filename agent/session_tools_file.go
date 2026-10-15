@@ -47,8 +47,13 @@ func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 }
 
 func execFileRead(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any, guard readGuard) (any, error) {
-	_ = ctx
-	return execFileReadWith(args, guard, env.ReadFile)
+	read := env.ReadFile
+	if ce, ok := env.(execenv.ContextualFileReader); ok {
+		read = func(path string, offset, limit *int) (string, error) {
+			return ce.ReadFileCtx(ctx, path, offset, limit)
+		}
+	}
+	return execFileReadWith(args, guard, read)
 }
 
 // execFileReadWith is read_file's semantics over read, so a caller can supply
@@ -90,8 +95,13 @@ func execFileWrite(ctx context.Context, env execenv.ExecutionEnvironment, args m
 }
 
 func execFileEdit(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any, guard readGuard) (any, error) {
-	_ = ctx
-	return execFileEditWith(args, guard, env.EditFile)
+	edit := env.EditFile
+	if ce, ok := env.(execenv.ContextualFileReader); ok {
+		edit = func(path, oldString, newString string, replaceAll bool) (string, error) {
+			return ce.EditFileCtx(ctx, path, oldString, newString, replaceAll)
+		}
+	}
+	return execFileEditWith(args, guard, edit)
 }
 
 // execFileEditWith is edit_file's semantics over edit, so a caller can supply

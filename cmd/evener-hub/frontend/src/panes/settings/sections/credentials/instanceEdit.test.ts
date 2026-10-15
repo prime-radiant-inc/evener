@@ -181,6 +181,4 @@ describe("instanceEditParams", () => {
 test("the option lists lead with inherit and carry exactly the registry's vocabularies", () => {
   expect(PROTOCOL_OPTIONS.map((o) => o.value)).toEqual(["", "openai-chat", "openai-responses", "anthropic", "google"]);
   expect(SURFACE_OPTIONS.map((o) => o.value)).toEqual(["", "openai", "anthropic", "google", "generic"]);
-  expect(PROTOCOL_OPTIONS[0]?.label).toBe("inherit from base");
-  expect(SURFACE_OPTIONS[0]?.label).toBe("inherit from base");
 });

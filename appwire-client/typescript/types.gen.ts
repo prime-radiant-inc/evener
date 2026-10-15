@@ -496,6 +496,44 @@ export interface DelegateStopResponse {
 export interface DeletionSkip {
   id: string;
   reason: string;
+  /**
+   * Kind classifies the skip structurally: SkipKindLive, or empty for any
+   * other reason, which Reason then explains.
+   */
+  kind?: string;
+}
+
+export interface DevicePairingApproveParams {
+  invitation: string;
+  publicKey: string;
+}
+
+export interface DevicePairingClaim {
+  publicKey: string;
+  client: string;
+  comparison: string;
+}
+
+export interface DevicePairingCreateParams {
+  origin: string;
+  tailnet: boolean;
+}
+
+export interface DevicePairingInvitation {
+  invitation: string;
+  origin: string;
+  tailnet: boolean;
+  expiresAt: number;
+}
+
+export interface DevicePairingParams {
+  invitation: string;
+}
+
+export interface DevicePairingStatus {
+  state: string;
+  claims: DevicePairingClaim[];
+  approvedKey?: string;
 }
 
 export interface DiagnosticCause {
@@ -591,6 +629,13 @@ export interface EvenerDelegateInfo {
   runStartedAt?: string;
   runEndedAt?: string;
   latestActivityAt?: string;
+  /**
+   * LatestIntent is the open generation's newest stated tool-call intent
+   * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+   * the row's display line, the same Excerpt-bounded value the read
+   * projects. Empty whenever no run is open, and absent from older daemons.
+   */
+  latestIntent?: string;
   runningForMs?: number;
   quietForMs?: number;
   durationMs?: number;
@@ -786,6 +831,7 @@ export interface EvenerThread {
   contextUsed?: number;
   contextWindow?: number;
   contextRemaining?: number;
+  contextAssumed?: boolean;
   capabilities: ThreadCapabilities;
   diagnostics?: EvenerDiagnostics;
   /**
@@ -2569,6 +2615,16 @@ export interface NavigationSessionSummary {
    * has never run, and an offline row that ran must not read as "Not started".
    */
   offline?: boolean;
+  /**
+   * Archived says the rail files the session as archived: its own archive
+   * decision, its project's, or two weeks without activity (S14, the rule
+   * appwire.SearchResult.Archived reports for a live hit). It sits BESIDE Live
+   * rather than replacing it: a session archived while it is still running
+   * stays reachable through a pin, and this flag lets a client suppress the
+   * row's unread dot for it (#4199). Absent when it is not, and from an
+   * older hub.
+   */
+  archived?: boolean;
   updated_at?: string;
   more_subagents?: number;
   /**
@@ -2921,6 +2977,11 @@ export interface ProjectDeleteResponse {
 export interface ProjectDeleteSkip {
   id: string;
   reason: string;
+  /**
+   * Kind classifies the skip structurally: SkipKindLive, or empty for any
+   * other reason, which Reason then explains.
+   */
+  kind?: string;
 }
 
 export interface ProjectsRecentParams {
@@ -3133,11 +3194,36 @@ export interface SearchResult {
    */
   hits?: SearchHit[];
   hitCount?: number;
+  /**
+   * TopLevel names the top-level session this hit groups under when the
+   * hit is a subagent session: its first non-subagent ancestor, then
+   * through fork supersessions to the row the navigation tree would show.
+   * Present only on a Past result whose session is a subagent and whose
+   * ancestry resolves; absent from an older hub and from every Live
+   * result, and ignored by clients that do not group.
+   */
+  topLevel?: SearchTopLevel;
 }
 
 export interface SearchSnippetPart {
   text: string;
   match?: boolean;
+}
+
+export interface SearchTopLevel {
+  id: string;
+  ref: string;
+  title: string;
+  project?: string;
+  state: string;
+  age?: string;
+  /**
+   * AskPending and ApprovalPending carry the flags of the anchor's own
+   * navigation row, so a live anchor renders its real marks. Absent from
+   * an older hub and from an ended anchor.
+   */
+  askPending?: boolean;
+  approvalPending?: boolean;
 }
 
 export interface ServerInfo {
@@ -3327,6 +3413,14 @@ export interface SessionDelegate {
   runStartedAt?: string;
   runEndedAt?: string;
   latestActivityAt?: string;
+  /**
+   * LatestIntent is the open generation's newest stated tool-call intent
+   * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+   * the controller's live value when non-empty, else the folded journal
+   * value — the same join the pushed frame applies, so the read and the
+   * frame agree for every row state. Absent from older daemons.
+   */
+  latestIntent?: string;
   usage?: EvenerUsage;
   worktree?: JobActivityWorktree;
 }
@@ -4082,6 +4176,31 @@ export interface ThreadQueueChangedParams {
 }
 
 export interface ThreadReadParams {
+  /**
+   * IncludeConversation includes user/assistant messages and human steering.
+   */
+  includeConversation?: boolean;
+  /**
+   * IncludeThinking includes reasoning items.
+   */
+  includeThinking?: boolean;
+  /**
+   * IncludeToolCalls includes tool arguments and results together.
+   */
+  includeToolCalls?: boolean;
+  /**
+   * IncludeToolCallIntents includes explicit tool descriptions. Without tool
+   * calls, only their identity, description and lifecycle metadata are sent.
+   */
+  includeToolCallIntents?: boolean;
+  /**
+   * IncludeSystemMessages includes system notices and non-human steering.
+   */
+  includeSystemMessages?: boolean;
+  /**
+   * IncludeDiagnostics includes detailed session diagnostics.
+   */
+  includeDiagnostics?: boolean;
   threadId?: string;
   ref?: string;
   includeTurns: boolean;
@@ -4321,6 +4440,31 @@ export interface ThreadTurnItemsListResponse {
 }
 
 export interface ThreadTurnsListParams {
+  /**
+   * IncludeConversation includes user/assistant messages and human steering.
+   */
+  includeConversation?: boolean;
+  /**
+   * IncludeThinking includes reasoning items.
+   */
+  includeThinking?: boolean;
+  /**
+   * IncludeToolCalls includes tool arguments and results together.
+   */
+  includeToolCalls?: boolean;
+  /**
+   * IncludeToolCallIntents includes explicit tool descriptions. Without tool
+   * calls, only their identity, description and lifecycle metadata are sent.
+   */
+  includeToolCallIntents?: boolean;
+  /**
+   * IncludeSystemMessages includes system notices and non-human steering.
+   */
+  includeSystemMessages?: boolean;
+  /**
+   * IncludeDiagnostics includes detailed session diagnostics.
+   */
+  includeDiagnostics?: boolean;
   threadId?: string;
   ref?: string;
   cursor?: string;
@@ -4683,6 +4827,10 @@ export const METHOD_NAMES = [
   "evener/path/validate",
   "evener/git/head",
   "evener/mobile/pairing",
+  "evener/devicePairing/create",
+  "evener/devicePairing/read",
+  "evener/devicePairing/approve",
+  "evener/devicePairing/cancel",
   "evener/navigation/read",
   "evener/favorite/set",
   "evener/archive/set",
@@ -4993,6 +5141,10 @@ export interface MethodTypes {
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };
   "evener/git/head": { params: GitHeadParams; result: GitHeadResponse };
   "evener/mobile/pairing": { params: MobilePairingParams; result: MobilePairingResponse };
+  "evener/devicePairing/create": { params: DevicePairingCreateParams; result: DevicePairingInvitation };
+  "evener/devicePairing/read": { params: DevicePairingParams; result: DevicePairingStatus };
+  "evener/devicePairing/approve": { params: DevicePairingApproveParams; result: DevicePairingStatus };
+  "evener/devicePairing/cancel": { params: DevicePairingParams; result: DevicePairingStatus };
   "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
   "evener/favorite/set": { params: FavoriteSetParams; result: FavoriteSetResponse };
   "evener/archive/set": { params: ArchiveParams; result: ArchiveResponse };

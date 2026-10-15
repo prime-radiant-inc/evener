@@ -7,8 +7,9 @@
 // that answer it are the same on every host and are what this module carries:
 // serialized dispatch per target ref (a second submission for the same thread
 // waits rather than racing), a receipt reconciled into storage before the next
-// attempt, a refusal turned into a recovery record with the daemon's own
-// reason, and an outcome nobody can vouch for left blockedUnknown — never
+// attempt, a terminal refusal turned into a recovery record with the daemon's
+// own reason, a transient backpressure refusal kept queued for a later event
+// (#4342), and an outcome nobody can vouch for left blockedUnknown — never
 // retried until an authoritative read has settled it (#1116's standing
 // decision).
 //
@@ -36,10 +37,30 @@ import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from
 // answer.
 export type MutationDispatchClientLookup = (targetRef: string, method?: string) => AppwireClientLike | null | undefined;
 
+// Why a storage change notification fired. The transient refusal's rollback
+// reverted only attempt evidence - fields no queue projection carries - so
+// the projected queue is unchanged (`projectedShapeUnchanged`); a fence-held
+// rollback canceled the row, which every projection renders, and a row
+// settled out from under the attempt is gone from view (both changed). A
+// host whose projection refresh would read an identical queue can skip it;
+// native's consumer re-reads regardless, keeping the round-6 contract that
+// the transient branch publishes like every other outcome.
+export interface MutationStorageChangeCause {
+  kind: "transientRefusal";
+  projectedShapeUnchanged: boolean;
+}
+
 export interface MutationDispatcherOptions<A extends MutationAttachmentRef = MutationAttachmentRef> {
   getClient: MutationDispatchClientLookup;
-  onStorageChange?: (targetRefs: string[]) => void;
+  onStorageChange?: (targetRefs: string[], cause?: MutationStorageChangeCause) => void;
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
+  // #4342: fired when the hub refused an attempt in band as transient
+  // backpressure (notAccepted plus an automatic retry disposition) — the
+  // record stays queued and this callback owns surfacing the busy state and
+  // pacing the next attempt. The error is the hub's own refusal, so a host
+  // can show its message; the dispatcher itself stops the loop rather than
+  // spinning on the refusal.
+  onTransientRefusal?: (record: MutationOutboxRecord<A>, error: WireError) => void;
   // May be async: the clear's model publication owns the response's side
   // effects (including any best-effort cleanup the host awaits before
   // publishing), and the attempt does not settle the clear's own record
@@ -56,6 +77,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   readonly #getClient: MutationDispatcherOptions<A>["getClient"];
   readonly #onStorageChange: NonNullable<MutationDispatcherOptions<A>["onStorageChange"]>;
   readonly #onBlockedMutation: NonNullable<MutationDispatcherOptions<A>["onBlockedMutation"]>;
+  readonly #onTransientRefusal: NonNullable<MutationDispatcherOptions<A>["onTransientRefusal"]>;
   readonly #onClearResponse: NonNullable<MutationDispatcherOptions<A>["onClearResponse"]>;
   readonly #prepareHumanNoteResponse: NonNullable<MutationDispatcherOptions<A>["prepareHumanNoteResponse"]>;
   readonly #onHumanNoteReconciled: NonNullable<MutationDispatcherOptions<A>["onHumanNoteReconciled"]>;
@@ -67,6 +89,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     this.#getClient = options.getClient;
     this.#onStorageChange = options.onStorageChange ?? (() => undefined);
     this.#onBlockedMutation = options.onBlockedMutation ?? (() => undefined);
+    this.#onTransientRefusal = options.onTransientRefusal ?? (() => undefined);
     this.#onClearResponse = options.onClearResponse ?? (() => undefined);
     this.#prepareHumanNoteResponse = options.prepareHumanNoteResponse ?? (() => () => undefined);
     this.#onHumanNoteReconciled = options.onHumanNoteReconciled ?? (() => undefined);
@@ -215,6 +238,49 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         }
         return "stop";
       }
+      if (data?.mutationOutcome === "notAccepted" && data.retryDisposition === "automatic") {
+        // #4342: the hub refused the attempt in band without queueing it —
+        // this attempt never reached the queue, so it stays rolled back in
+        // the FIFO while any earlier or concurrent unresolved attempt's
+        // evidence survives. The busy surface and the pacing arm only when
+        // the row comes back to its never-attempted dispatchable shape (so
+        // a reconnect reconcile's onlyAttempted-guarded park skips it and
+        // the ordinary flush rediscovers it): a refusal that leaves
+        // residual evidence — or finds the row already parked or settled
+        // elsewhere — hands the row to its ordinary uncertain treatment
+        // instead. This loop stops rather than spinning on the refusal.
+        // mutationErrorData answers only WireErrors, so the data this branch
+        // matched on proves the error's shape.
+        // The row's pre-rollback state tells the true shapes apart: the
+        // rollback's `true` covers both a clean submitting rollback (the
+        // projected queue unchanged) and a blockedUnknown reopen (the
+        // reconcile parked the row while its request was pending, and the
+        // refusal's proof of non-delivery moves it back where every
+        // projection renders it). A concurrent park in the read-to-rollback
+        // window misclassifies once, and the next notification or
+        // discovery refresh self-heals - the same bounded cross-tab
+        // interleaving the attempt counts already tolerate.
+        const beforeRollback = await this.#storage.getOutbox(record.clientMutationId);
+        const rolledBackClean = await this.#storage.unmarkAttempted(record.clientMutationId);
+        if (rolledBackClean) {
+          this.#onTransientRefusal(record, error as WireError);
+        }
+        // The false outcomes split: a fence-held rollback canceled the row
+        // (every projection renders the state change) while residual
+        // evidence or a concurrent settlement left no projected change at
+        // all. One read classifies - the refusal is a saturation-time
+        // event, so the read costs nothing on the healthy path. The
+        // rollback can still move the row where projections see it, and
+        // hosts whose projections refresh through storage notifications
+        // have no other observer for those transitions.
+        let projectedShapeUnchanged = rolledBackClean && beforeRollback?.state === "submitting";
+        if (!rolledBackClean) {
+          const row = await this.#storage.getOutbox(record.clientMutationId);
+          projectedShapeUnchanged = row !== undefined && row.state !== "canceled";
+        }
+        this.#onStorageChange([record.targetRef], { kind: "transientRefusal", projectedShapeUnchanged });
+        return "stop";
+      }
       if (data?.mutationOutcome === "notAccepted") {
         await this.#storage.transferToRecovery(record.clientMutationId, "rejected", rejectionReason(error, data));
         this.#onStorageChange([record.targetRef]);
@@ -244,7 +310,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
   }
 }
 
-const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
+export const RETRY_SAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
   "turn/start",
   "turn/steer",
   "turn/interrupt",

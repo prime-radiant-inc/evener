@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
@@ -194,7 +193,7 @@ func TestRunFreshIdleSessionsOwnDistinctResumeTargets(t *testing.T) {
 		}
 	}
 	for i, err := range reservationErrors {
-		if err == nil || !strings.Contains(err.Error(), "already running") {
+		if !errors.Is(err, llm.ErrAPILogTargetLocked) {
 			t.Errorf("resume reservation %d error = %v, want already-running refusal", i, err)
 		}
 	}
@@ -268,7 +267,7 @@ func TestServeFreshIdleSessionOwnsResumeTarget(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("serve result = %v, want clean shutdown", err)
 	}
-	if reservationErr == nil || !strings.Contains(reservationErr.Error(), "already running") {
+	if !errors.Is(reservationErr, llm.ErrAPILogTargetLocked) {
 		t.Fatalf("resume reservation error = %v, want already-running refusal", reservationErr)
 	}
 }

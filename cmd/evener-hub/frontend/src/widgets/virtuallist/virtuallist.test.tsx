@@ -241,6 +241,30 @@ describe("dynamic sizing", () => {
       expect((el as HTMLElement).style.height).toBe("");
     }
   });
+
+  // data-measured must mean "the virtualizer currently owns and measured this
+  // row's PRESENT element", not a historical size it remembers for the key.
+  // raw-item-size-paging review: itemSizeCache is delta-gated (resizeItem
+  // writes only when the measured size differs), so a row whose real height
+  // equals the estimate never enters it. Marking from itemSizeCache would read
+  // that measured row as unmeasured. Here every row measures exactly the
+  // estimate (ROW_HEIGHT), the delta-0 case, and each must still be marked.
+  test("dynamic=true marks each row measured even when its height equals the estimate (resizeItem's delta-0 stores nothing)", () => {
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains(styles.root) ? CONTAINER_HEIGHT : ROW_HEIGHT;
+      },
+    });
+    const { container } = render(
+      <VirtualList dynamic count={10} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+    );
+    const rowEls = Array.from(rootOf(container).querySelectorAll("[data-index]")) as HTMLElement[];
+    expect(rowEls.length).toBeGreaterThan(0);
+    for (const el of rowEls) {
+      expect(el.hasAttribute("data-measured")).toBe(true);
+    }
+  });
 });
 
 test("declares no :focus-visible rule of its own (rows are consumer content, not this widget's concern)", () => {
@@ -893,6 +917,49 @@ describe("anchorToEnd", () => {
       }
     },
   );
+
+  // A native backward key knows its direction before any scroll event arrives,
+  // and its smooth scroll can deliver that event after the gesture marker's
+  // frames have expired (#4065). The handle declares the direction directly, so
+  // the rule protects the reading point even though the earlier record was
+  // cleared by the keydown's own cancellation.
+  test("a declared backward movement protects a backward partial shrink after observer idle", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const external = installMeasuredGeometry([1600, 500, 500, 500, 500]);
+    const frames = holdReaderFrames();
+    let layout: ReaderLayout | undefined;
+    try {
+      const { root, current, ref } = renderMeasuredList(true, true, {
+        onLayout: (value) => {
+          layout = value;
+        },
+      });
+      await act(async () => external.notify());
+      await act(async () => current().scrollToIndex(1, { align: "start" }));
+      expect(root.scrollTop).toBe(1600);
+      external.geometry.rowHeights[0] = 700;
+      await act(async () => {
+        root.scrollTop = 100;
+        // The reader intent supersedes the pending capture first; the key's own
+        // direction is declared after it and must survive the cancellation.
+        layout?.cancelPendingScroll();
+        ref.current?.noteBackwardMovement?.();
+      });
+      await act(async () => frames.release());
+      await act(async () => vi.advanceTimersByTime(current().options.isScrollingResetDelay));
+      expect(current().scrollDirection).toBeNull();
+      await act(async () => external.notify((target) => target.dataset.index === "0"));
+      await act(async () => frames.release());
+      expect(root.scrollTop).toBe(100);
+      expect(current().scrollOffset).toBe(100);
+      expect(root.querySelector('[data-index="0"]')?.getBoundingClientRect().top).toBe(-100);
+    } finally {
+      cleanup();
+      external.restore();
+      frames.restore();
+      vi.useRealTimers();
+    }
+  });
 
   test.each([
     { command: "absolute", requested: 300, want: 0, wantTop: 0 },

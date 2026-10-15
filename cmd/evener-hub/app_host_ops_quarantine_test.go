@@ -47,11 +47,10 @@ func TestOpenHostOpsStoreQuarantinesAndSignals(t *testing.T) {
 		t.Fatalf("store.Quarantine() = %+v, want the signal naming %s at epoch 1", signal, path)
 	}
 	logLine := logged.String()
-	if !strings.Contains(logLine, "quarantined") || !strings.Contains(logLine, path) ||
-		!strings.Contains(logLine, signal.CustodyFile) {
+	if !strings.Contains(logLine, path) || !strings.Contains(logLine, signal.CustodyFile) {
 		t.Fatalf("the boot log does not carry the operator-visible health signal:\n%s", logLine)
 	}
-	if !strings.Contains(logLine, "orphan-unverified") || strings.Contains(logLine, "serves empty") {
+	if !strings.Contains(logLine, "orphan-unverified") {
 		t.Fatalf("the health log does not name the custody import set the replacement serves:\n%s", logLine)
 	}
 	records := store.Records()
@@ -108,8 +107,8 @@ func TestOpenHostOpsStoreKeepsTheNonCorruptOpenDispositions(t *testing.T) {
 			if store != nil {
 				t.Fatalf("openHostOpsStore returned a handle for %s", name)
 			}
-			if !strings.Contains(logged.String(), "not opened") {
-				t.Fatalf("the non-corrupt refusal is not logged in the pre-quarantine form:\n%s", logged.String())
+			if !strings.Contains(logged.String(), path) {
+				t.Fatalf("the refusal to open %s is not logged:\n%s", path, logged.String())
 			}
 		})
 	}

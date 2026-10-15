@@ -19,6 +19,14 @@ import (
 // listing or one probe request per instance and protocol.
 const providerNetworkTimeout = 10 * time.Second
 
+// The refusals of `evener providers add` that come before anything is written.
+var (
+	errInvalidInstanceName = errors.New("invalid instance name")
+	errBaseRequired        = errors.New("--base is required: every instance is based on a registry provider (`evener models list --all` names them)")
+	errUnknownBaseProvider = errors.New("unknown base provider")
+	errInstanceExists      = errors.New("already exists")
+)
+
 func printProvidersUsage(w io.Writer) {
 	_, _ = fmt.Fprintf(w, "Usage: evener providers <list|probe|add> [flags]\n\n")
 	_, _ = fmt.Fprintf(w, "Inspect and author provider instances (docs/superpowers/specs/2026-08-28-provider-registry-design.md §11.2).\n\n")
@@ -48,7 +56,7 @@ func runProviders(args []string, _ io.Reader, stdout, stderr io.Writer) error {
 		return nil
 	default:
 		printProvidersUsage(stderr)
-		return fmt.Errorf("unknown providers command %q", args[0])
+		return &unknownSubcommandError{group: "providers", name: args[0]}
 	}
 }
 
@@ -69,7 +77,7 @@ func parseNamedCommand(fs *flag.FlagSet, args []string, usage string) (string, e
 		return "", err
 	}
 	if fs.NArg() != 0 {
-		return "", fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		return "", unexpectedArguments(fs)
 	}
 	return name, nil
 }
@@ -82,7 +90,7 @@ func runProvidersList(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		return unexpectedArguments(fs)
 	}
 	r, store, err := loadCLIRegistryWithNotices(stderr)
 	if err != nil {
@@ -430,10 +438,10 @@ func runProvidersAdd(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if !registry.ValidInstanceName(name) {
-		return fmt.Errorf("invalid instance name %q (lowercase, no slash)", name)
+		return fmt.Errorf("%w %q (lowercase, no slash)", errInvalidInstanceName, name)
 	}
 	if strings.TrimSpace(*base) == "" {
-		return errors.New("--base is required: every instance is based on a registry provider (`evener models list --all` names them)")
+		return errBaseRequired
 	}
 	entry := registry.Provider{
 		ID: name, Base: strings.TrimSpace(*base),
@@ -464,7 +472,7 @@ func runProvidersAdd(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if _, ok := r.Provider(entry.Base); !ok {
-		return fmt.Errorf("unknown base provider %q (`evener models list --all` names them)", entry.Base)
+		return fmt.Errorf("%w %q (`evener models list --all` names them)", errUnknownBaseProvider, entry.Base)
 	}
 	path, noUserLayer := cmdutil.ProvidersConfigPath()
 	if noUserLayer {
@@ -475,7 +483,7 @@ func runProvidersAdd(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if _, exists := l.Providers[name]; exists {
-		return fmt.Errorf("instance %q already exists in %s", name, path)
+		return fmt.Errorf("instance %q %w in %s", name, errInstanceExists, path)
 	}
 	l.Providers[name] = entry
 	if err := registry.WriteConfigFile(path, l); err != nil {

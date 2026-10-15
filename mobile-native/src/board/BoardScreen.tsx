@@ -334,7 +334,7 @@ function Board({
 		() =>
 			new BoardReplay(hold, {
 				stop: (on, ref, guard) => stops.stop(on, ref, guard),
-				toast: (text) => toastNow.current.show({ text }),
+				toast: (message) => toastNow.current.show(message),
 			}),
 	);
 	useEffect(() => () => replay.dispose(), [replay]);
@@ -614,7 +614,7 @@ function Board({
 		if (holdsChange(waitsFor(row.ref, kind), kind !== "stop")) holdRowAction(row, action);
 		else if (action === "pin") navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title });
 		else if (action === "stop" && client)
-			void stops.stop(client, row.ref).then((outcome) => toast.show({ text: stopToast(outcome, row.title) }));
+			void stops.stop(client, row.ref).then((outcome) => toast.show(stopToast(outcome, row.title)));
 		else if (action === "archive" || action === "unarchive") archiveOrHold(row, action === "archive");
 	};
 	/** Archive or Unarchive a row, and its Undo: through the journal, or held
@@ -658,8 +658,8 @@ function Board({
 				if (!on) holdAction({ kind: "shutDown", ref: row.ref, title: row.title, seen: turnSeen(row) });
 				else
 					shutDownSession(on, row.ref).then(
-						() => toast.show({ text: SHUT_DOWN_DONE }),
-						(error: unknown) => toast.show({ text: shutDownFailed(row.title, error) }),
+						() => toast.show(SHUT_DOWN_DONE),
+						(error: unknown) => toast.show(shutDownFailed(row.title, error)),
 					);
 			});
 		else if (action === "rename")
@@ -671,9 +671,9 @@ function Board({
 				}
 				renameSession(on, row.ref, name).then(
 					(renamed) => {
-						if (renamed) toast.show({ text: RENAMED });
+						if (renamed) toast.show(RENAMED);
 					},
-					(error: unknown) => toast.show({ text: renameFailed(row.title, error) }),
+					(error: unknown) => toast.show(renameFailed(row.title, error)),
 				);
 			});
 		else runRowAction(item, action);
@@ -1159,13 +1159,17 @@ function Board({
 		leaveSelect();
 		if (confirmed.length)
 			toast.show({
+				kind: "archive:done",
 				text: sessionCount("Archived", confirmed.length, tried),
 				action: {
 					label: "Undo",
 					run: () =>
 						void archiveEach(confirmed, false).then((undone) => {
 							if (undone.confirmed.length)
-								toast.show({ text: sessionCount("Unarchived", undone.confirmed.length, undone.tried) });
+								toast.show({
+									kind: "unarchive:done",
+									text: sessionCount("Unarchived", undone.confirmed.length, undone.tried),
+								});
 						}),
 				},
 			});
@@ -1178,7 +1182,8 @@ function Board({
 			(actions, row) => actions.assignPin({ sessionRef: row.ref, ...section }),
 		);
 		leaveSelect();
-		if (confirmed.length) toast.show({ text: `${sessionCount("Pinned", confirmed.length, tried)} to ${name}` });
+		if (confirmed.length)
+			toast.show({ kind: "pin:done", text: `${sessionCount("Pinned", confirmed.length, tried)} to ${name}` });
 	};
 
 	let live: ReactNode;
@@ -1468,7 +1473,7 @@ function chooseCategory(
 						const name = (value ?? "").trim();
 						if (!name) return;
 						if (categoryNameTooLong(name)) {
-							toast.show({ text: CATEGORY_NAME_TOO_LONG });
+							toast.show({ kind: "categoryName:tooLong", text: CATEGORY_NAME_TOO_LONG });
 							return;
 						}
 						pin({ sectionName: name }, name);
@@ -2021,6 +2026,7 @@ function IdleFold({
 	const dot = folded && unseen;
 	return (
 		<Pressable
+			testID="idle-fold"
 			accessibilityRole="button"
 			accessibilityLabel={`Idle, ${plural(count, "session")}${dot ? ", unread sessions inside" : ""}`}
 			accessibilityState={{ expanded: !folded }}
@@ -2069,7 +2075,7 @@ function FirstReadFailed() {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ paddingHorizontal: 16, paddingVertical: 32 }}>
+		<View testID="empty-state:firstReadFailed" style={{ paddingHorizontal: 16, paddingVertical: 32 }}>
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkMid, textAlign: "center" }}
@@ -2084,7 +2090,10 @@ function EmptyBoard({ disabled, onNewSession }: { disabled: boolean; onNewSessio
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ paddingHorizontal: 16, paddingVertical: 32, alignItems: "center", rowGap: 16 }}>
+		<View
+			testID="empty-state:noSessions"
+			style={{ paddingHorizontal: 16, paddingVertical: 32, alignItems: "center", rowGap: 16 }}
+		>
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkMid, textAlign: "center" }}

@@ -12,7 +12,7 @@
 // with runStartedAt alone gets no quiet age, not a number the daemon declined
 // to compute. Every live measurement falls back to the snapshot's frozen value
 // only when no anchor parses or the clock is not a finite number.
-import type { ActivityDelegate } from "./activityData";
+import { type ActivityDelegate, isActivityFailure, isFailedDelegateOutcome } from "./activityData";
 import { firstLine } from "./displayFormat";
 import { nonblank } from "./toolCallText";
 
@@ -34,6 +34,47 @@ export interface DelegateTiming {
   durationLive: boolean;
   quietLive: boolean;
   terminal: boolean;
+}
+
+// The fields a dot state reads: the row's own outcome vocabulary plus the
+// timing fields delegateTiming measures the quiet age from. Either wire shape
+// - the activity tree's ActivityDelegate or the thread snapshot's
+// EvenerDelegateInfo - satisfies it.
+export type DelegateDotFields = Pick<ActivityDelegate, "outcome" | "status" | "phase"> & DelegateTimingFields;
+
+/** What a subagent row's leading dot says: fresh work, work gone quiet,
+ * attention owed, a failure, or a settled row that shows no dot at all. */
+export type DelegateDotState = "fresh" | "quiet" | "attention" | "failed" | "idle";
+
+/** How long a running row may stay silent before its dot dims - the same
+ * threshold the why-line's quiet words used. One constant, because every
+ * surface must flip at the same instant. */
+export const DELEGATE_QUIET_AFTER_MS = 20_000;
+
+// The phases that owe a person something, in the wire's own vocabulary.
+const ATTENTION_PHASES = new Set(["awaiting_approval", "awaiting_input", "needs-you"]);
+
+/** A subagent row's dot state, the one rule every surface consumes so the
+ * web sidebar, the web tree and the native list cannot drift. A terminal row
+ * reads by its outcome (failed red, done no dot) over any stale phase it
+ * carries; an open run owing attention is attention over anything else;
+ * an open run whose status reads as failure (its own or the child aggregate
+ * it reports) is failure; otherwise the row is fresh while its quiet age
+ * stays under the threshold and quiet once it passes it, with no quiet
+ * evidence reading fresh - a row the daemon sent no silence for has nothing
+ * that says stalled. */
+export function delegateDotState(delegate: DelegateDotFields, now: number): DelegateDotState {
+  if (delegate.terminal === true) {
+    const failed =
+      delegate.outcome === undefined
+        ? isActivityFailure(undefined, delegate.status)
+        : isFailedDelegateOutcome(delegate.outcome);
+    return failed ? "failed" : "idle";
+  }
+  if (ATTENTION_PHASES.has(delegate.phase ?? "")) return "attention";
+  if (isActivityFailure(undefined, delegate.status)) return "failed";
+  const { quietForMs } = delegateTiming(delegate, now);
+  return quietForMs !== undefined && quietForMs >= DELEGATE_QUIET_AFTER_MS ? "quiet" : "fresh";
 }
 
 function timestamp(value: string | undefined): number | undefined {

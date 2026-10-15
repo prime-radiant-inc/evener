@@ -417,3 +417,11 @@ paragraph, `:663-666`)
 - Every task names exact files, failing-first tests, and commit scope; no
   TBDs. Line anchors are advisory (verified @ f4ec5267); workers re-read
   before editing.
+
+## Revision (2026-10-12): anthropic documents representable (#4209)
+
+The Anthropic request builder now writes a user-message `ContentDocument` as a
+document content block, so `unrepresentableContentKinds` restricts only audio
+for `registry.ProtocolAnthropic`. The plan steps above that listed anthropic as
+document-unrepresentable are superseded; see the design doc's 2026-10-12
+revision.

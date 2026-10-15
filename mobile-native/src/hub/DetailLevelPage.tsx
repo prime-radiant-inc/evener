@@ -118,13 +118,16 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 	const failedChoice =
 		failed && !unsaved && !writeUncertain && !conflict && !state.storageUnavailable && !state.draftUnreadable;
 	const failedAction = failed && !writeUncertain && (conflict || state.draftUnreadable) && !stateErrorShown;
+	const loadFailed = state.error === HUB_UNCONFIRMED_MESSAGE;
 	// What happened to a choice, and what to do about it, reads beneath the
 	// levels it was made in; a page with no levels to show leads with it.
 	const status = (
 		<>
 			{state.draftUnreadable ? (
 				<>
-					<GroupFooter tone="danger">A saved change to this setting couldn't be read on this phone.</GroupFooter>
+					<GroupFooter tone="danger" testID="detail-level-unreadable">
+						A saved change to this setting couldn't be read on this phone.
+					</GroupFooter>
 					<Group>
 						{/* Discarding an unreadable record touches only this phone, so the
 						    hub being away must not hold it - the same rule the keybindings
@@ -138,8 +141,12 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 					</Group>
 				</>
 			) : null}
-			{writeUncertain ? <GroupFooter>Checking the hub's setting…</GroupFooter> : null}
-			{conflict ? <GroupFooter tone="attention">The hub's setting changed while you were choosing.</GroupFooter> : null}
+			{writeUncertain ? <GroupFooter testID="detail-level-checking">Checking the hub's setting…</GroupFooter> : null}
+			{conflict ? (
+				<GroupFooter tone="attention" testID="detail-level-conflict">
+					The hub's setting changed while you were choosing.
+				</GroupFooter>
+			) : null}
 			{conflict && current ? (
 				<>
 					<Group>
@@ -168,14 +175,26 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 				// The store's own messages name its plumbing ("transcript display",
 				// a Check current settings button this page doesn't have), so the
 				// page says what happened in its own words.
-				<GroupFooter tone="danger">{state.error === HUB_UNCONFIRMED_MESSAGE ? NOT_LOADED : NOT_UPDATED}</GroupFooter>
+				<GroupFooter tone="danger" testID={loadFailed ? "detail-level-not-loaded" : "detail-level-not-updated"}>
+					{loadFailed ? NOT_LOADED : NOT_UPDATED}
+				</GroupFooter>
 			) : null}
 			{/* The phone that can't keep a change holds every row, so there is nothing to choose again. */}
-			{failedChoice ? <GroupFooter tone="danger">{NOT_SAVED}</GroupFooter> : null}
-			{failedAction ? <GroupFooter tone="danger">{NOT_DONE}</GroupFooter> : null}
+			{failedChoice ? (
+				<GroupFooter tone="danger" testID="detail-level-not-saved">
+					{NOT_SAVED}
+				</GroupFooter>
+			) : null}
+			{failedAction ? (
+				<GroupFooter tone="danger" testID="detail-level-not-done">
+					{NOT_DONE}
+				</GroupFooter>
+			) : null}
 			{unsaved ? (
 				<>
-					<GroupFooter tone="attention">This change hasn't reached the hub yet.</GroupFooter>
+					<GroupFooter tone="attention" testID="detail-level-unsaved">
+						This change hasn't reached the hub yet.
+					</GroupFooter>
 					<Group>
 						<Row
 							label="Save it"
@@ -192,7 +211,7 @@ export function DetailLevelPage(_props: NativeStackScreenProps<HubRoutes, "Detai
 		<GroupedPage>
 			<SheetStatus />
 			{state.support === "unsupported" ? (
-				<GroupFooter>This hub doesn't keep a default detail level.</GroupFooter>
+				<GroupFooter testID="detail-level-unsupported">This hub doesn't keep a default detail level.</GroupFooter>
 			) : null}
 			{config && state.support === "supported" ? (
 				<>

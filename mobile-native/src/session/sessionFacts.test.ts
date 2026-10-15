@@ -104,7 +104,8 @@ describe("access (S15)", () => {
 			mode: "Read-only",
 			network: "On",
 		});
-		expect(accessFacts({ access: { sandbox: "read-only", network: false } })?.network).toBe("Off");
+		const on = accessFacts({ access: { sandbox: "read-only", network: true } })?.network;
+		expect(accessFacts({ access: { sandbox: "read-only", network: false } })?.network).not.toBe(on);
 	});
 
 	it("says nothing when the hub doesn't report access", () => {
@@ -126,6 +127,7 @@ describe("usage", () => {
 				workMillis: 3 * 3_600_000 + 12 * 60_000,
 				contextUsed: 39_800,
 				contextWindow: 200_000,
+				contextAssumed: false,
 				failedToolCalls: 3,
 			}),
 		).toEqual({
@@ -146,13 +148,39 @@ describe("usage", () => {
 				workMillis: 0,
 				contextUsed: 0,
 				contextWindow: 0,
+				contextAssumed: false,
 				failedToolCalls: undefined,
 			}),
 		).toEqual({});
 		expect(
-			usageFacts({ usage: null, cost: undefined, workMillis: 0, contextUsed: 0, contextWindow: 0, failedToolCalls: 1 })
-				.failedToolCalls,
+			usageFacts({
+				usage: null,
+				cost: undefined,
+				workMillis: 0,
+				contextUsed: 0,
+				contextWindow: 0,
+				contextAssumed: false,
+				failedToolCalls: 1,
+			}).failedToolCalls,
 		).toBe("1 failed tool call");
+	});
+
+	it("marks an assumed window as an estimate, not a stated capacity", () => {
+		const facts = usageFacts({
+			usage: null,
+			cost: null,
+			workMillis: 0,
+			contextUsed: 25_600,
+			contextWindow: 128_000,
+			contextAssumed: true,
+			failedToolCalls: undefined,
+		});
+		// Numeric behavior and the marker's placement — not the prose around it:
+		// the used figure plain, the window figure marked, the fraction exact.
+		expect(facts.context?.fraction).toBe(0.2);
+		expect(facts.context?.text).toContain("25.6K");
+		expect(facts.context?.text).toContain("~128K");
+		expect(facts.context?.text).not.toContain("~25.6K");
 	});
 });
 
@@ -171,7 +199,7 @@ describe("the model chip (spec 8.5)", () => {
 				},
 				catalog,
 			),
-		).toBe("GLM 5.3 Vision · XHigh");
+		).toMatch(new RegExp(`^GLM 5\\.3 Vision .+${effortName("xhigh")}$`));
 	});
 	it("names the model as the hub's session row does while the catalog is away (S17)", () => {
 		// The catalog clears while it reloads, and after a failed load; the
@@ -236,8 +264,12 @@ describe("the vision model row", () => {
 		{ provider: "lunaroute", model: "glm-5.3-vision", displayName: "GLM 5.3 Vision" },
 	];
 	it("reads Off, Session model, or the model as the catalog names it", () => {
-		expect(visionModelLabel("off", catalog)).toBe("Off");
-		expect(visionModelLabel("", catalog)).toBe("Session model");
+		// Off and the session's own model each read their own way, apart from any model.
+		const off = visionModelLabel("off", catalog);
+		const sessionModel = visionModelLabel("", catalog);
+		expect(new Set([off, sessionModel, visionModelLabel("lunaroute/glm-5.3-vision", catalog)]).size).toBe(3);
+		expect(off).not.toBe("");
+		expect(sessionModel).not.toBe("");
 		expect(visionModelLabel("lunaroute/glm-5.3-vision", catalog)).toBe("GLM 5.3 Vision");
 		expect(visionModelLabel("lunaroute/glm-5.3-vision", undefined)).toBe("glm-5.3-vision");
 	});
@@ -250,12 +282,24 @@ describe("the Notes & links row", () => {
 			"Your note · agent note · 3 links",
 		);
 		expect(notesSummary({ humanNote: " ", agentNote: "on it", sessionUrls: [link] })).toBe("agent note · 1 link");
-		expect(notesSummary({ humanNote: "keep it", agentNote: "", sessionUrls: [] })).toBe("Your note");
+		// Your note alone names the first of the parts the whole summary names.
+		const yours = notesSummary({ humanNote: "keep it", agentNote: "", sessionUrls: [] });
+		expect(notesSummary({ humanNote: "keep it", agentNote: "on it", sessionUrls: [link] }).startsWith(yours)).toBe(
+			true,
+		);
+		expect(yours).not.toBe(notesSummary({ humanNote: "", agentNote: "on it", sessionUrls: [] }));
 		expect(notesSummary({ humanNote: "", agentNote: "", sessionUrls: [link, link] })).toBe("2 links");
 	});
 
 	it("says None when nothing is shared", () => {
-		expect(notesSummary({ humanNote: "", agentNote: "", sessionUrls: [] })).toBe("None");
+		const none = notesSummary({ humanNote: "", agentNote: "", sessionUrls: [] });
+		expect(none).not.toBe("");
+		for (const some of [
+			{ humanNote: "keep it", agentNote: "", sessionUrls: [] },
+			{ humanNote: "", agentNote: "on it", sessionUrls: [] },
+			{ humanNote: "", agentNote: "", sessionUrls: [link] },
+		])
+			expect(notesSummary(some)).not.toBe(none);
 	});
 });
 

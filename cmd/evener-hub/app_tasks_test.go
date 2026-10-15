@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -231,7 +230,7 @@ func TestHubTasksList_LiveDialFailureIsNotMaskedByPast(t *testing.T) {
 		t.Fatal("hubTasksList returned nil error, want the dial failure (a live entry exists; the daemon has not exited)")
 	}
 	var wire appwire.WireError
-	if !errors.As(err, &wire) || !strings.Contains(wire.Message, "local daemon unavailable") {
+	if !errors.As(err, &wire) || !wireErrorInfoIs(wire.Data, appwire.ErrorSessionUnavailable) {
 		t.Fatalf("err = %v, want localDaemonDialError's \"local daemon unavailable\" SessionUnavailable (sanity check the reproduction hit the dial path, not something else)", err)
 	}
 	if isDeadSessionError(err) {

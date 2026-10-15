@@ -436,12 +436,14 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const header = (
 		<View style={{ paddingTop: 8, paddingBottom: 14, gap: 4 }}>
 			{document ? (
-				<Text allowFontScaling={allowFontScaling} style={caption}>
+				<Text testID="reader-caption" allowFontScaling={allowFontScaling} style={caption}>
 					{about}
 					{changeNote ? (
 						<>
 							{" · "}
-							<Text style={{ color: palette.accentInk }}>{changeNote}</Text>
+							<Text testID="reader-change-note" style={{ color: palette.accentInk }}>
+								{changeNote}
+							</Text>
 						</>
 					) : null}
 				</Text>
@@ -449,12 +451,15 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				<DocumentSkeleton />
 			)}
 			{document && "truncated" in document && document.truncated ? (
-				<Text allowFontScaling={allowFontScaling} style={caption}>
+				<Text testID="reader-truncation" allowFontScaling={allowFontScaling} style={caption}>
 					{truncationNote(document.truncated)}
 				</Text>
 			) : null}
 			{notice ? (
 				<Text
+					// Why it shows: a read that failed over what's already shown, or
+					// what the read found.
+					testID={`reader-notice:${refreshNotice ? "failed" : document?.kind}`}
 					allowFontScaling={allowFontScaling}
 					style={{ marginTop: 10, color: palette.inkMid, fontSize: 15 * scale, lineHeight: 20 * scale }}
 				>
@@ -528,6 +533,8 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 							<View style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center" }}>
 								<Chevron name="chevron.left" label="Previous change" onPress={() => stepBy(-1)} />
 								<Text
+									// Which change is on show, of how many: `all/2` before stepping, `1/2` on the first.
+									testID={`change-step:${step === null ? "all" : step + 1}/${changed.length}`}
 									allowFontScaling={allowFontScaling}
 									style={{
 										color: palette.inkMid,
@@ -581,7 +588,10 @@ function CommentTip() {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingTop: 8 }}>
+		<View
+			testID="comment-tip"
+			style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingTop: 8 }}
+		>
 			<SymbolView name="bubble.left" size={13} tintColor={palette.inkLow} />
 			<Text
 				allowFontScaling={allowFontScaling}

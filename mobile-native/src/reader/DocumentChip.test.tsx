@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, renderedText, settle, unmountMountedTrees } from "../renderNative.testkit";
 import { palettes } from "../design/tokens";
 import { DocumentChip } from "./DocumentChip";
+import { documentKind } from "./documentSource";
 import { DocumentMemory } from "./documentMemory";
 import { forgetDocumentSummaries } from "./documentSummaries";
 import type { SyncStringStorage } from "../syncStringStorage";
@@ -86,19 +87,35 @@ function chip(props: { updatedAt?: string; onOpen?: () => void; path?: string } 
 const button = (tree: ReactTestRenderer) =>
 	tree.root.findAll((node) => String(node.type) === "Pressable" && node.props.accessibilityRole === "button")[0];
 
+/** What VoiceOver reads for the chip, part by part. */
+const spoken = (tree: ReactTestRenderer) => String(button(tree)?.props.accessibilityLabel).split(", ");
+
+/** The facts on the chip's second line (its length and its age), without the
+ * file name that may lead it. */
+const facts = (tree: ReactTestRenderer) =>
+	(button(tree)?.findAll((node) => String(node.type) === "Text" && node.props.numberOfLines === 1)[1]?.children ?? [])
+		.filter((child) => typeof child === "string")
+		.join("")
+		.split("·")
+		.map((fact) => fact.trim())
+		.filter((fact) => fact !== "" && fact !== "\u00a0");
+
 it("shows the kind and file name at once, then the title, the length and the age", async () => {
 	const updatedAt = new Date(Date.now() - 3 * MINUTE).toISOString();
 	const tree = chip({ updatedAt });
-	expect(renderedText(tree)).toContain("Plan");
+	expect(renderedText(tree)).toContain(documentKind(PATH));
 	expect(renderedText(tree)).toContain("settle-race.md");
 	await settle();
-	const text = renderedText(tree);
-	expect(text).toContain("Fix the settle/drain race");
-	expect(text).toContain("142 lines");
-	expect(text).toContain("3m ago");
-	expect(button(tree)?.props.accessibilityLabel).toBe(
-		"Plan, Fix the settle/drain race, settle-race.md, 142 lines, 3 minutes ago",
-	);
+	expect(renderedText(tree)).toContain("Fix the settle/drain race");
+	const [length, age, ...more] = facts(tree);
+	expect(length).toMatch(/^142\D/);
+	expect(age).toMatch(/^3\D/);
+	expect(more).toEqual([]);
+	const [kind, title, name, spokenLength, spokenAge, ...rest] = spoken(tree);
+	expect([kind, title, name]).toEqual([documentKind(PATH), "Fix the settle/drain race", "settle-race.md"]);
+	expect(spokenLength).toMatch(/^142\D/);
+	expect(spokenAge).toMatch(/^3\D/);
+	expect(rest).toEqual([]);
 	expect(fetchSpy).toHaveBeenCalledWith(
 		"https://hub.test/doc/file?format=raw&session=local%3Afix&path=docs%2Fsuperpowers%2Fplans%2Fsettle-race.md",
 		{ headers: { Authorization: "Bearer secret" } },
@@ -108,7 +125,10 @@ it("shows the kind and file name at once, then the title, the length and the age
 it("shows the file name once before its summary lands", () => {
 	const tree = chip({ updatedAt: new Date(Date.now() - 3 * MINUTE).toISOString() });
 	expect(renderedText(tree).match(/settle-race\.md/g)).toHaveLength(1);
-	expect(button(tree)?.props.accessibilityLabel).toBe("Plan, settle-race.md, 3 minutes ago");
+	const [kind, name, age, ...rest] = spoken(tree);
+	expect([kind, name]).toEqual([documentKind(PATH), "settle-race.md"]);
+	expect(age).toMatch(/^3\D/);
+	expect(rest).toEqual([]);
 });
 
 // The minute clock can lag a write by up to a minute, and a hub clock ahead
@@ -118,15 +138,28 @@ it.each([
 	["ahead of the phone's clock", 5_000],
 ])("says just now for a document written %s", (_name, offset) => {
 	const tree = chip({ updatedAt: new Date(Date.now() + offset).toISOString() });
-	expect(renderedText(tree)).toContain("just now");
-	expect(button(tree)?.props.accessibilityLabel).toBe("Plan, settle-race.md, just now");
+	// No count of minutes or seconds: the age reads as a moment.
+	const [age, ...more] = facts(tree);
+	expect(age).toMatch(/\S/);
+	expect(age).not.toMatch(/\d/);
+	expect(more).toEqual([]);
+	const [kind, name, spokenAge, ...rest] = spoken(tree);
+	expect([kind, name]).toEqual([documentKind(PATH), "settle-race.md"]);
+	expect(spokenAge).toMatch(/\S/);
+	expect(spokenAge).not.toMatch(/\d/);
+	expect(rest).toEqual([]);
 });
 
 it("shows no age for a file the session only named", async () => {
 	const tree = chip();
 	await settle();
-	expect(renderedText(tree)).not.toContain("ago");
-	expect(button(tree)?.props.accessibilityLabel).toBe("Plan, Fix the settle/drain race, settle-race.md, 142 lines");
+	const [length, ...more] = facts(tree);
+	expect(length).toMatch(/^142\D/);
+	expect(more).toEqual([]);
+	const [kind, title, name, spokenLength, ...rest] = spoken(tree);
+	expect([kind, title, name]).toEqual([documentKind(PATH), "Fix the settle/drain race", "settle-race.md"]);
+	expect(spokenLength).toMatch(/^142\D/);
+	expect(rest).toEqual([]);
 });
 
 // A chip that grew when its summary landed would move every row below it,
@@ -142,7 +175,7 @@ it("keeps its two lines from the start, so it never grows when its summary lands
 	// The summary fills the line that was held, rather than adding one.
 	const filled = lines(tree)?.[1];
 	expect(filled).toBe(held);
-	expect(filled?.children.filter((child) => typeof child === "string").join("")).toContain("142 lines");
+	expect(facts(tree)[0]).toMatch(/^142\D/);
 });
 
 it("opens when pressed", async () => {
@@ -217,13 +250,20 @@ describe("since you last read it", () => {
 	// to "ch…" on the chip's one fact line; VoiceOver, which can't see the
 	// dot, still says them.
 	it("shows a blue dot, and says so only to VoiceOver, when the session wrote it after your last read", async () => {
-		read(OLDER);
 		const tree = chip({ updatedAt: NEWER });
 		await settle();
+		const unchanged = { text: renderedText(tree), spoken: spoken(tree) };
+		act(() => {
+			read(OLDER);
+		});
 		expect(dots(tree)).toHaveLength(1);
 		expect(dots(tree)[0]?.props.tintColor).toBe(palettes.light.accent);
-		expect(renderedText(tree)).not.toContain("changed since you last read");
-		expect(button(tree)?.props.accessibilityLabel).toContain("changed since you last read");
+		// On screen the dot alone; VoiceOver hears one more part at the end.
+		expect(renderedText(tree)).toBe(unchanged.text);
+		const [said, ...more] = spoken(tree).slice(unchanged.spoken.length);
+		expect(spoken(tree).slice(0, unchanged.spoken.length)).toEqual(unchanged.spoken);
+		expect(said).toMatch(/\S/);
+		expect(more).toEqual([]);
 	});
 
 	it("takes the dark theme's blue for the dot", async () => {
@@ -242,9 +282,11 @@ describe("since you last read it", () => {
 		const tree = chip({ updatedAt: NEWER });
 		const lines = button(tree)?.findAll((node) => String(node.type) === "Text" && node.props.numberOfLines === 1);
 		expect(lines).toHaveLength(2);
-		const facts = lines?.[1]?.children.filter((child) => typeof child === "string").join("");
-		expect(facts).toMatch(/^\S+ ago$/);
-		expect(button(tree)?.props.accessibilityLabel).toContain("changed since you last read");
+		const [age, ...more] = facts(tree);
+		expect(age).toMatch(/^\d+\D/);
+		expect(more).toEqual([]);
+		// Kind, name, age, and the change VoiceOver says in words.
+		expect(spoken(tree)).toHaveLength(4);
 	});
 
 	it.each([
@@ -255,6 +297,7 @@ describe("since you last read it", () => {
 		const tree = chip({ updatedAt: NEWER });
 		await settle();
 		expect(dots(tree)).toEqual([]);
-		expect(renderedText(tree)).not.toContain("changed since you last read");
+		// Kind, title, name, length and age: nothing about a change.
+		expect(spoken(tree)).toHaveLength(5);
 	});
 });

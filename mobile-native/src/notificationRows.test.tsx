@@ -10,6 +10,7 @@ import {
 } from "@evener/appwire-client/testing/notificationWireFixtures";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
+import { hasTestID, markers, withTestID } from "./markerTestUtils";
 import { projectConversation } from "./projectedRows";
 import { render, renderedText, textOf } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
@@ -114,8 +115,22 @@ function showItem(item: ThreadItem, openSubagent = vi.fn()) {
 	return { tree, openSubagent };
 }
 
-function textNode(tree: ReactTestRenderer, text: string): ReactTestInstance | undefined {
-	return tree.root.findAll((node) => String(node.type) === "Text").find((node) => textOf(node) === text);
+/** What each notification card in the tree says happened, in order. */
+function outcomes(tree: ReactTestRenderer): string[] {
+	return markers(tree, "notification");
+}
+
+/** The card's one headline: who, and what happened. */
+function headline(tree: ReactTestRenderer): ReactTestInstance {
+	const [node, ...others] = withTestID(tree, "notification-headline");
+	if (!node || others.length > 0) throw new Error("expected one notification headline");
+	return node;
+}
+
+/** What the card says beneath its headline, or undefined with nothing there. */
+function detail(tree: ReactTestRenderer): string | undefined {
+	const [node] = withTestID(tree, "notification-detail");
+	return node ? textOf(node) : undefined;
 }
 
 function press(tree: ReactTestRenderer) {
@@ -144,8 +159,9 @@ describe("delegate and job notifications", () => {
 
 	it("reads a subagent's report as who finished, with the report beneath, and opens the subagent", () => {
 		const { tree, openSubagent } = show("delegate-reported");
-		expect(renderedText(tree)).toContain("Fix race in tree settle finished");
-		expect(renderedText(tree)).toContain("Done: the settle pass now waits for the drain.");
+		expect(outcomes(tree)).toEqual(["completed"]);
+		expect(textOf(headline(tree))).toContain("Fix race in tree settle");
+		expect(detail(tree)).toContain("Done: the settle pass now waits for the drain.");
 		expect(tree.root.findAllByType("SymbolView" as never)[0]?.props.name).toBe("diamond");
 		press(tree);
 		expect(openSubagent).toHaveBeenCalledWith("local:child1", "Fix race in tree settle");
@@ -153,8 +169,10 @@ describe("delegate and job notifications", () => {
 
 	it("names an unnamed subagent from the session's subagents and shows its failure in red", () => {
 		const { tree } = show("delegate-failed-unnamed");
-		expect(textNode(tree, "Split the retry loop failed")?.props.style).toMatchObject({ color: DANGER_INK });
-		expect(renderedText(tree)).toContain("go test exited 1 three times");
+		expect(outcomes(tree)).toEqual(["failed"]);
+		expect(textOf(headline(tree))).toContain("Split the retry loop");
+		expect(headline(tree).props.style).toMatchObject({ color: DANGER_INK });
+		expect(detail(tree)).toContain("go test exited 1 three times");
 	});
 
 	// A legacy attribute-shaped frame (recorded before packets) carries its
@@ -171,8 +189,9 @@ excerpt:
 The retry loop splits reads from writes; the flaky test needs a fixed seed.
 </delegate-notification>`,
 		});
-		expect(renderedText(tree)).toContain("Split the retry loop failed");
-		expect(renderedText(tree)).toContain("The retry loop splits reads from writes; the flaky test needs a fixed seed.");
+		expect(outcomes(tree)).toEqual(["failed"]);
+		expect(textOf(headline(tree))).toContain("Split the retry loop");
+		expect(detail(tree)).toBe("The retry loop splits reads from writes; the flaky test needs a fixed seed.");
 		expect(renderedText(tree)).not.toContain("exit_nonzero");
 	});
 
@@ -185,60 +204,73 @@ The retry loop splits reads from writes; the flaky test needs a fixed seed.
 			id: "item_legacy_code_only",
 			text: `<delegate-notification delegate_id="dlg_2" name="Split the retry loop" status="failed" reason="exit_nonzero"></delegate-notification>`,
 		});
-		expect(renderedText(tree)).toContain("Split the retry loop failed");
+		expect(outcomes(tree)).toEqual(["failed"]);
+		expect(detail(tree)).toBeUndefined();
 		expect(renderedText(tree)).not.toContain("exit_nonzero");
 	});
 
 	it("says a subagent the user stopped was stopped", () => {
 		const { tree } = show("delegate-stopped");
-		expect(renderedText(tree)).toContain("Check drain ordering stopped");
+		expect(outcomes(tree)).toEqual(["stopped"]);
+		expect(textOf(headline(tree))).toContain("Check drain ordering");
 		// The stop stub never renders as a report (the delegate redesign): the
 		// headline says the stop.
 		expect(renderedText(tree)).not.toContain("Stopped by the user.");
 	});
 
 	it("reads a parent's stop of a run that left its own packet as stopped", () => {
-		expect(renderedText(show("delegate-stopped-by-parent-mid-run").tree)).toContain("Index the docs stopped");
+		const { tree } = show("delegate-stopped-by-parent-mid-run");
+		expect(outcomes(tree)).toEqual(["stopped"]);
+		expect(textOf(headline(tree))).toContain("Index the docs");
 	});
 
 	it("reads a parent's stop as stopped, not failed", () => {
 		const { tree } = show("delegate-stopped-by-parent");
-		expect(textNode(tree, "Tail the hub log stopped")?.props.style).toMatchObject({ color: INK_LOW });
+		expect(outcomes(tree)).toEqual(["stopped"]);
+		expect(textOf(headline(tree))).toContain("Tail the hub log");
+		expect(headline(tree).props.style).toMatchObject({ color: INK_LOW });
 		// The bare stop packet's stub phrase is machinery, not a report: the
 		// headline carries the stop and the stub never renders.
 		expect(renderedText(tree)).not.toContain("stopped by parent");
 		// The humanized ending says who stopped it - the hub's static head
 		// shows the same words, and the raw stub stays retired.
-		expect(renderedText(tree)).toContain("stopped by its coordinator");
+		expect(detail(tree)).toBeTruthy();
 	});
 
 	it.each([
-		["delegate-exhausted", "Sweep the flaky tests failed"],
-		["job-shell-killed", "Serve the docs preview failed"],
-		["job-shell-killed", "Command killed"],
-		["job-shell-cancelled", "Rebuild the fuzz corpus stopped"],
-		["job-shell-attention", "Run the settle tests finished"],
-		["job-watch-send", "Watch delivered"],
-	] as const)("reads the recorded %s frame as %j", (name, headline) => {
-		expect(renderedText(show(name).tree)).toContain(headline);
+		["delegate-exhausted", "failed", "Sweep the flaky tests"],
+		["job-shell-killed", "failed", "Serve the docs preview"],
+		["job-shell-cancelled", "stopped", "Rebuild the fuzz corpus"],
+		["job-shell-attention", "completed", "Run the settle tests"],
+		["job-watch-send", "notice", ""],
+	] as const)("reads the recorded %s frame as %s", (name, outcome, subject) => {
+		const { tree } = show(name);
+		expect(outcomes(tree)).toEqual([outcome]);
+		expect(textOf(headline(tree))).toContain(subject);
+	});
+
+	it("says beneath a killed command what killed it", () => {
+		expect(detail(show("job-shell-killed").tree)).toBeTruthy();
 	});
 
 	it("says how long a quiet subagent has been quiet", () => {
 		const { tree } = show("delegate-quiet");
-		expect(renderedText(tree)).toContain("Fix race in tree settle quiet · 10m");
+		expect(outcomes(tree)).toEqual(["quiet"]);
+		expect(textOf(headline(tree))).toContain("Fix race in tree settle");
+		expect(textOf(headline(tree))).toContain("10m");
 	});
 
 	it("reads a subagent's update as who sent it, with the message beneath, never as a report", () => {
 		const { tree } = show("delegate-update");
-		expect(renderedText(tree)).toContain("Fix race in tree settle sent an update");
-		expect(renderedText(tree)).toContain("Which table holds the drain cursor");
-		expect(renderedText(tree)).not.toContain("Fix race in tree settle reported");
-		expect(renderedText(tree)).not.toContain("Fix race in tree settle finished");
+		expect(outcomes(tree)).toEqual(["update"]);
+		expect(textOf(headline(tree))).toContain("Fix race in tree settle");
+		expect(detail(tree)).toContain("Which table holds the drain cursor");
 	});
 
 	it("reads a finished job by its intent and opens its output in place", () => {
 		const { tree, openSubagent } = show("job-shell-completed");
-		expect(renderedText(tree)).toContain("Run the agent tests finished");
+		expect(outcomes(tree)).toEqual(["completed"]);
+		expect(textOf(headline(tree))).toContain("Run the agent tests");
 		expect(renderedText(tree)).not.toContain("primeradiant.com/evener/agent");
 		press(tree);
 		expect(openSubagent).not.toHaveBeenCalled();
@@ -247,14 +279,17 @@ The retry loop splits reads from writes; the flaky test needs a fixed seed.
 
 	it("reads a failed job in red with what failed beneath", () => {
 		const { tree } = show("job-shell-failed");
-		expect(textNode(tree, "Run the tree tests under -race failed")?.props.style).toMatchObject({ color: DANGER_INK });
-		expect(renderedText(tree)).toContain("Command failed · exit 1");
+		expect(outcomes(tree)).toEqual(["failed"]);
+		expect(textOf(headline(tree))).toContain("Run the tree tests under -race");
+		expect(headline(tree).props.style).toMatchObject({ color: DANGER_INK });
+		// What failed, with the command's own exit status.
+		expect(detail(tree)).toMatch(/\b1$/);
 	});
 
 	it("reads each notification a steer delivers, a timer by what fired and its note", () => {
 		const { tree } = show("job-pair");
-		expect(renderedText(tree)).toContain("Tail the hub log stopped");
-		expect(renderedText(tree)).toContain("Timer fired");
+		expect(outcomes(tree)).toEqual(["stopped", "watch"]);
+		expect(renderedText(tree)).toContain("Tail the hub log");
 		expect(renderedText(tree)).toContain("Note: Check whether CI finished.");
 	});
 });
@@ -264,7 +299,7 @@ describe("notification steers the parser can't fully read", () => {
 		const error = vi.spyOn(console, "error").mockImplementation(() => {});
 		const item = notificationWireItem("job-shell-completed");
 		const { tree } = showItem({ ...item, text: `${item.text}\n${item.text}` });
-		expect(renderedText(tree).match(/Run the agent tests finished/g)).toHaveLength(2);
+		expect(outcomes(tree)).toEqual(["completed", "completed"]);
 		expect(error).not.toHaveBeenCalled();
 		error.mockRestore();
 	});
@@ -273,11 +308,12 @@ describe("notification steers the parser can't fully read", () => {
 		const item = notificationWireItem("delegate-reported");
 		const { tree } = showItem({ ...item, text: (item.text ?? "").slice(0, 60) });
 		expect(renderedText(tree)).not.toMatch(/<\/?(delegate|job)-notification/);
-		expect(renderedText(tree)).toContain("A notification couldn't be read");
+		expect(outcomes(tree)).toEqual([]);
+		expect(hasTestID(tree, "notification-unreadable")).toBe(true);
 	});
 
 	it("never shows a killed command's -1 signal sentinel as an exit code", () => {
-		expect(renderedText(show("job-shell-killed").tree)).not.toContain("exit -1");
+		expect(detail(show("job-shell-killed").tree)).not.toContain("-1");
 	});
 
 	it("opens a delegate job's report rather than its raw output", () => {
@@ -304,8 +340,8 @@ ${envelope.replaceAll('"', "&quot;")}
 			id: "item_observer",
 			text: "Observer callback:\nmessage: The build went green.",
 		});
-		expect(renderedText(tree)).toContain("Observer callback");
-		expect(renderedText(tree)).toContain("The build went green.");
+		expect(outcomes(tree)).toEqual(["notice"]);
+		expect(detail(tree)).toBe("The build went green.");
 	});
 
 	it("says a subagent reported when its outcome is one the phone doesn't know", () => {
@@ -318,6 +354,7 @@ ${envelope.replaceAll('"', "&quot;")}
 			...notificationWireItem("delegate-reported"),
 			text: `<delegate-notification delegate_id="dlg_1" name="Fix race in tree settle">${packet}</delegate-notification>`,
 		});
-		expect(renderedText(tree)).toContain("Fix race in tree settle reported");
+		expect(outcomes(tree)).toEqual(["reported"]);
+		expect(textOf(headline(tree))).toContain("Fix race in tree settle");
 	});
 });

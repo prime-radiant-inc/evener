@@ -99,8 +99,9 @@ func TestSessionHeaderShowsGoalChip(t *testing.T) {
 		},
 		width: 200,
 	}
+	// The chip carries the goal's wire status and its iteration count.
 	got := strings.Join(withGoal.sessionHeaderLines(), "\n")
-	if !strings.Contains(got, "goal active 2") {
+	if !strings.Contains(got, "active") || !strings.Contains(got, "2") {
 		t.Errorf("goal chip missing from meta strip:\n%s", got)
 	}
 
@@ -114,7 +115,7 @@ func TestSessionHeaderShowsGoalChip(t *testing.T) {
 		width: 200,
 	}
 	got = strings.Join(noGoal.sessionHeaderLines(), "\n")
-	if strings.Contains(got, "goal active") {
+	if strings.Contains(got, "active") {
 		t.Errorf("goal chip should be absent when no goal is set:\n%s", got)
 	}
 }

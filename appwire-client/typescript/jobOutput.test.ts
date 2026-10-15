@@ -158,6 +158,16 @@ describe("job output raw pages", () => {
     expect(decodeJobOutputText(bytes)).toBe("aé😀��b");
   });
 
+  it("stops after the scalar whose callback returns false", () => {
+    const bytes = new Uint8Array([0x61, 0xc3, 0xa9, 0x62, 0x63]);
+    const values: string[] = [];
+    forEachJobOutputScalar(bytes, (value) => {
+      values.push(value);
+      return value !== "é";
+    });
+    expect(values).toEqual(["a", "é"]);
+  });
+
   it.each([
     [[0xc0, 0x80], "��"],
     [[0xed, 0xa0, 0x80], "���"],

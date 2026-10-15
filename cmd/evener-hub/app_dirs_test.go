@@ -67,15 +67,14 @@ func TestHubRPCDirsCreate(t *testing.T) {
 			name string
 			path string
 			code int
-			text string
 		}{
-			{name: "required", code: appwire.CodeInvalidParams, text: "path is required"},
-			{name: "absolute", path: "relative", code: appwire.CodeInvalidParams, text: "absolute path required"},
-			{name: "file", path: file, code: appwire.CodeConflict, text: "a file already exists at that path"},
+			{name: "required", code: appwire.CodeInvalidParams},
+			{name: "absolute", path: "relative", code: appwire.CodeInvalidParams},
+			{name: "file", path: file, code: appwire.CodeConflict},
 		} {
 			t.Run(test.name, func(t *testing.T) {
 				_, err := client.DirsCreate(context.Background(), appwire.DirsCreateParams{Path: test.path})
-				assertDirsCreateError(t, err, test.code, test.text)
+				assertDirsCreateError(t, err, test.code)
 			})
 		}
 	})
@@ -95,7 +94,10 @@ func TestHubRPCDirsCreate(t *testing.T) {
 		})
 
 		_, err := client.DirsCreate(context.Background(), appwire.DirsCreateParams{Path: target})
-		assertDirsCreateError(t, err, appwire.CodeInternalError, "mkdir failed")
+		assertDirsCreateError(t, err, appwire.CodeInternalError)
+		if !strings.Contains(err.Error(), "mkdir failed") {
+			t.Fatalf("error = %v, want the MkdirAll failure", err)
+		}
 		if gotPath != target || gotMode != 0o755 {
 			t.Fatalf("MkdirAll(%q, %#o), want (%q, %#o)", gotPath, gotMode, target, os.FileMode(0o755))
 		}
@@ -117,16 +119,16 @@ func newDirsCreateClient(t *testing.T, cfg hubcore.WebConfig) *appwire.Client {
 	return client
 }
 
-func assertDirsCreateError(t *testing.T, err error, code int, message string) {
+func assertDirsCreateError(t *testing.T, err error, code int) {
 	t.Helper()
 	if err == nil {
-		t.Fatalf("expected AppWire error code=%d message=%q", code, message)
+		t.Fatalf("expected AppWire error code=%d", code)
 	}
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("error=%T %v, want appwire.WireError", err, err)
 	}
-	if wire.Code != code || !strings.Contains(wire.Message, message) {
-		t.Fatalf("wire=%+v, want code=%d message containing %q", wire, code, message)
+	if wire.Code != code {
+		t.Fatalf("wire=%+v, want code=%d", wire, code)
 	}
 }

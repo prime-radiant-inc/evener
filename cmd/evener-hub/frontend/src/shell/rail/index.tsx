@@ -119,7 +119,7 @@ function RailFailureShell({
         title="Couldn't load the sidebar"
         hint={failure}
         action={
-          <span>
+          <>
             <Button size="sm" onClick={retry}>
               Retry
             </Button>
@@ -128,14 +128,11 @@ function RailFailureShell({
                 fix it. The failed retry must itself name a stale hashed
                 asset (the DockRegion chunk-boundary pattern). */}
             {reloadAvailable && isStaleRailHostChunkError(failure) && (
-              <>
-                {" "}
-                <Button size="sm" variant="quiet" onClick={reloadPage}>
-                  Reload page
-                </Button>
-              </>
+              <Button size="sm" variant="quiet" onClick={reloadPage}>
+                Reload page
+              </Button>
             )}
-          </span>
+          </>
         }
       />
     </div>

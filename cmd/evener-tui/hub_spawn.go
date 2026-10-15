@@ -272,6 +272,23 @@ func (m *hubModel) requestSpawnPluginPreviewIfChanged() tea.Cmd {
 	return m.requestSpawnPluginPreview()
 }
 
+// spawnStartUnavailableError refuses a spawn form submission before
+// thread/start: the notice carries the harness, the reason and the next action.
+type spawnStartUnavailableError struct {
+	notice noticePanel
+}
+
+func (e spawnStartUnavailableError) Error() string { return e.notice.Text() }
+
+func (m hubModel) spawnStartUnavailable(reason, nextAction string) spawnStartUnavailableError {
+	return spawnStartUnavailableError{notice: noticePanel{
+		Title:      "Start unavailable",
+		Source:     strings.TrimSpace(m.spawnHarness),
+		Reason:     reason,
+		NextAction: nextAction,
+	}}
+}
+
 func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 	if m.client == nil || m.spawnSubmitting {
 		return m, nil
@@ -279,12 +296,7 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 	prompt := strings.TrimSpace(m.session.input.Value())
 	if prompt == "" {
 		if reason := m.spawnEmptyTaskUnsupportedReason(); reason != "" {
-			m.err = fmt.Errorf("%s", noticePanel{
-				Title:      "Start unavailable",
-				Source:     strings.TrimSpace(m.spawnHarness),
-				Reason:     reason,
-				NextAction: m.spawnEmptyTaskUnsupportedNextAction(),
-			}.Text())
+			m.err = m.spawnStartUnavailable(reason, m.spawnEmptyTaskUnsupportedNextAction())
 			return m, nil
 		}
 	}
@@ -301,12 +313,7 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if reason := m.spawnModelDisabledReason(strings.TrimSpace(m.spawnModel)); reason != "" {
-		m.err = fmt.Errorf("%s", noticePanel{
-			Title:      "Start unavailable",
-			Source:     strings.TrimSpace(m.spawnHarness),
-			Reason:     "selected model is not available: " + reason,
-			NextAction: "choose an enabled model or resolve the provider requirement",
-		}.Text())
+		m.err = m.spawnStartUnavailable("selected model is not available: "+reason, "choose an enabled model or resolve the provider requirement")
 		return m, nil
 	}
 	req := hubSpawnRequest{
@@ -316,8 +323,24 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 		WorkingDir:      strings.TrimSpace(m.spawnDir),
 		LaunchOverrides: m.spawnLaunchOverridesForLaunch(),
 	}
+	// A second submission is newer intent of the same class as the form's
+	// departures: an entry-repair retry armed for a previous launch from
+	// this form retires with its status, and the generation advances so its
+	// in-flight or paced re-read lands superseded instead of entering the
+	// previous session over this launch. The prompt baseline below belongs
+	// to this launch alone.
+	if m.entryRepairRef != (appwire.Ref{}) {
+		m.entryRepairRetire()
+		m.liveNavSeq++
+		m.liveNavEntryPendingSeq = 0
+	}
 	m.err = nil
 	m.spawnSubmitting = true
+	// The submitted prompt, recorded so the entry read's automatic
+	// completion can tell a standing form from an edited one: the form
+	// stays up through the entry read (and its paced retry, #4343), and
+	// the user may keep typing into it. Cleared with the rest of the form.
+	m.spawnSubmittedPrompt = prompt
 	return m, sendHubSpawn(m.client, req)
 }
 
@@ -534,6 +557,12 @@ func (m *hubModel) openSpawnForm() {
 	m.setSpawnDir(dir)
 	m.spawnDirPrefillUntouched = dir != ""
 	m.spawnProject = project
+	// Leaving session entry for the spawn form departs the navigation
+	// intent: a pending entry-repair retry (#4343) retires with its status,
+	// and the generation advances so a pick's read still in flight lands
+	// superseded rather than entering a session over the open form.
+	m.entryRepairRetire()
+	m.liveNavSeq++
 	m.mode = hubModeSpawn
 	m.err = nil
 	m.setSpawnFocus(hubSpawnFieldPrompt)
@@ -541,12 +570,21 @@ func (m *hubModel) openSpawnForm() {
 
 func (m *hubModel) closeSpawnForm() {
 	m.resetSpawnForm()
+	// Esc closing the form is a departure from the spawn surface, the same
+	// departure opening it is (#4343): a pending entry-repair retry retires
+	// with its status, the generation advances so the spawn's read still in
+	// flight lands superseded, and the picked read's pending generation
+	// goes with it.
+	m.entryRepairRetire()
+	m.liveNavSeq++
+	m.liveNavEntryPendingSeq = 0
 	m.mode = hubModeDashboard
 	m.clampSelection()
 }
 
 func (m *hubModel) resetSpawnForm() {
 	m.spawnReturnMode = hubModeDashboard
+	m.spawnSubmittedPrompt = ""
 	m.setSpawnDir("")
 	m.spawnProject = ""
 	m.spawnHarness = "evener"

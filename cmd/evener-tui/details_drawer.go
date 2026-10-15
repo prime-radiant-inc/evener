@@ -121,12 +121,11 @@ func (d detailsDrawer) View() string {
 			}
 			fmt.Fprintf(&b, "Link:   %s\n", label)
 		}
-		empty := detail.HumanNote == "" && detail.AgentNote == "" && len(detail.SessionURLs) == 0
-		if empty && sharedNotesWritable(detail.Live, detail.State, detail.Capabilities.ResumeRequired) {
+		switch sharedNotesEmptyHintFor(detail) {
+		case sharedNotesAddHint:
 			b.WriteString(ghostText("Add a note with /notes"))
 			b.WriteString("\n")
-		}
-		if empty && !sharedNotesWritable(detail.Live, detail.State, detail.Capabilities.ResumeRequired) {
+		case sharedNotesInertHint:
 			b.WriteString(ghostText("No shared notes"))
 			b.WriteString("\n")
 		}
@@ -286,4 +285,27 @@ func capabilityList(caps hubSessionCapabilities) string {
 		out = append(out, "change model")
 	}
 	return strings.Join(out, ", ")
+}
+
+// sharedNotesEmptyHint is the ghost line the drawer's shared-notes section
+// shows in place of notes and links.
+type sharedNotesEmptyHint int
+
+const (
+	// sharedNotesNoHint: the section is hidden or has content to show.
+	sharedNotesNoHint sharedNotesEmptyHint = iota
+	// sharedNotesAddHint: the section is empty and writable, so it invites /notes.
+	sharedNotesAddHint
+	// sharedNotesInertHint: the section is empty and read-only.
+	sharedNotesInertHint
+)
+
+func sharedNotesEmptyHintFor(detail hubSessionDetail) sharedNotesEmptyHint {
+	if !detail.Capabilities.SharedNotes || detail.HumanNote != "" || detail.AgentNote != "" || len(detail.SessionURLs) > 0 {
+		return sharedNotesNoHint
+	}
+	if sharedNotesWritable(detail.Live, detail.State, detail.Capabilities.ResumeRequired) {
+		return sharedNotesAddHint
+	}
+	return sharedNotesInertHint
 }

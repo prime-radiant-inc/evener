@@ -28,6 +28,12 @@ const configFile = (() => {
 })();
 const server = await createServer({
   configFile,
+  // The runner config loader imports the config directly. Vite's default
+  // bundle loader writes a bundled copy under node_modules/.vite-temp, which a
+  // read-only checkout denies and the fleet's shared install must not collect
+  // (issue #4193). browserGuardProcess.test.mjs spawns this wrapper inside
+  // `npm test`'s node --test phase, so that write was in the web gate too.
+  configLoader: "runner",
   server: { host: "127.0.0.1", port: 0, strictPort: true },
 });
 // Vite normalizes port zero to its default in server.listen(). Its HTTP

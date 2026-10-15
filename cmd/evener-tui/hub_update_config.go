@@ -161,8 +161,10 @@ func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResu
 // wireErrorInfo returns the appwire.ErrorInfo discriminator an error carries,
 // or "" when it is not a wire error or carries none. A wire error decoded by
 // the client holds its ErrorData as a map, while one built in-process holds the
-// typed struct, so both shapes are read - the same classification
-// isQueuedDrainPartial performs for its own discriminator.
+// typed struct - plain ErrorData, or HistoryReadErrorData once the read
+// boundary stamped a boot generation onto it - so every shape is read - the
+// same classification isQueuedDrainPartial performs for its own
+// discriminator.
 func wireErrorInfo(err error) appwire.ErrorInfo {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
@@ -171,9 +173,34 @@ func wireErrorInfo(err error) appwire.ErrorInfo {
 	switch data := wire.Data.(type) {
 	case appwire.ErrorData:
 		return data.EvenerErrorInfo
+	case appwire.HistoryReadErrorData:
+		return data.EvenerErrorInfo
 	case map[string]any:
 		if raw, ok := data["evenerErrorInfo"].(string); ok {
 			return appwire.ErrorInfo(raw)
+		}
+	}
+	return ""
+}
+
+// wireMutationOutcome returns the mutation outcome an error's data carries,
+// or "" when it carries none - the same three shapes wireErrorInfo reads: a
+// wire error decoded by the client holds its data as a map, while one built
+// in-process holds the typed struct, plain ErrorData or the read boundary's
+// HistoryReadErrorData stamp.
+func wireMutationOutcome(err error) appwire.MutationOutcome {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return ""
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		return data.MutationOutcome
+	case appwire.HistoryReadErrorData:
+		return data.MutationOutcome
+	case map[string]any:
+		if raw, ok := data["mutationOutcome"].(string); ok {
+			return appwire.MutationOutcome(raw)
 		}
 	}
 	return ""
@@ -550,7 +577,7 @@ func readCredentialFile(path string) (string, error) {
 		return "", credentialPathError(err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", errors.New("credential JSON: the path it was read as is not a regular file")
+		return "", fmt.Errorf("%w: %w", errCredentialJSONUnreadable, errCredentialPathNotRegular)
 	}
 	// One byte past the bound, so a file at exactly the bound still reads and
 	// anything longer is refused however it grew.
@@ -559,7 +586,7 @@ func readCredentialFile(path string) (string, error) {
 		return "", credentialPathError(err)
 	}
 	if len(data) > maxCredentialFileBytes {
-		return "", fmt.Errorf("credential JSON: the file it was read as is too large (over %d bytes)", maxCredentialFileBytes)
+		return "", fmt.Errorf("%w: %w (over %d bytes)", errCredentialJSONUnreadable, errCredentialFileTooLarge, maxCredentialFileBytes)
 	}
 	return string(data), nil
 }
@@ -576,8 +603,19 @@ func credentialPathError(err error) error {
 	if pathErr, ok := errors.AsType[*fs.PathError](err); ok {
 		err = pathErr.Err
 	}
-	return fmt.Errorf("credential JSON: it does not start with %q, and the path it was read as could not be opened: %w", "{", err)
+	return fmt.Errorf("%w: it does not start with %q, and the path it was read as could not be opened: %w", errCredentialJSONUnreadable, "{", err)
 }
+
+var (
+	// errCredentialJSONUnreadable marks a credential JSON submission that
+	// could be read neither as a document nor as a path to one.
+	errCredentialJSONUnreadable = errors.New("credential JSON")
+	// errCredentialPathNotRegular refuses a path that is not a regular file,
+	// before it is read.
+	errCredentialPathNotRegular = errors.New("the path it was read as is not a regular file")
+	// errCredentialFileTooLarge refuses a file past maxCredentialFileBytes.
+	errCredentialFileTooLarge = errors.New("the file it was read as is too large")
+)
 
 func (m hubModel) handleAuthApiKeySetResult(msg launchconfig.AuthApiKeySetResultMsg) (tea.Model, tea.Cmd) {
 	if msg.Err != nil {

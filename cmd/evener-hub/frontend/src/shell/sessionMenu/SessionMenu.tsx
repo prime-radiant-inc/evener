@@ -22,9 +22,8 @@
 
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { type ChangeEvent, useState } from "react";
-import { Button, Dialog, Input } from "../../widgets";
+import { Button, Dialog, FormRow, Input, Menu, type MenuEntry } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { Menu, type MenuEntry } from "../../widgets/menu";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
 import { isTopLevelSession } from "../rail/sessionKind";
 import { ForceStopDialog } from "./ForceStopDialog";
@@ -93,10 +92,6 @@ export interface SessionMenuProps {
 }
 
 const CLASS = {
-  srOnly: requireClass(styles.srOnly, "sessionmenu.module.css", "srOnly"),
-  field: requireClass(styles.field, "sessionmenu.module.css", "field"),
-  label: requireClass(styles.label, "sessionmenu.module.css", "label"),
-  footer: requireClass(styles.footer, "sessionmenu.module.css", "footer"),
   body: requireClass(styles.body, "sessionmenu.module.css", "body"),
 };
 
@@ -236,14 +231,12 @@ export function SessionMenu({
       <Menu
         variant="quiet"
         triggerTabIndex={triggerTabIndex}
-        trigger={
-          <>
-            <span aria-hidden="true" data-session-actions-ref={sessionRef} data-pane-id={paneId}>
-              ⋯
-            </span>
-            <span className={CLASS.srOnly}>{triggerLabel}</span>
-          </>
+        icon={
+          <span data-session-actions-ref={sessionRef} data-pane-id={paneId}>
+            ⋯
+          </span>
         }
+        label={triggerLabel}
         items={items}
       />
 
@@ -252,7 +245,7 @@ export function SessionMenu({
         onClose={() => setRenameOpen(false)}
         title="Rename session"
         footer={
-          <div className={CLASS.footer}>
+          <>
             <Button variant="quiet" onClick={() => setRenameOpen(false)}>
               Cancel
             </Button>
@@ -268,19 +261,16 @@ export function SessionMenu({
             >
               Rename
             </Button>
-          </div>
+          </>
         }
       >
-        <div className={CLASS.field}>
-          <label className={CLASS.label} htmlFor={`session-menu-rename-${sessionRef}`}>
-            Name
-          </label>
+        <FormRow label="Name" htmlFor={`session-menu-rename-${sessionRef}`}>
           <Input
             id={`session-menu-rename-${sessionRef}`}
             value={renameValue}
             onChange={(e: ChangeEvent<HTMLInputElement>) => setRenameValue(e.target.value)}
           />
-        </div>
+        </FormRow>
       </Dialog>
 
       <Dialog
@@ -288,7 +278,7 @@ export function SessionMenu({
         onClose={() => setShutdownOpen(false)}
         title="Shut down this session?"
         footer={
-          <div className={CLASS.footer}>
+          <>
             <Button variant="quiet" onClick={() => setShutdownOpen(false)}>
               Cancel
             </Button>
@@ -299,7 +289,7 @@ export function SessionMenu({
             >
               Shut down
             </Button>
-          </div>
+          </>
         }
       >
         <p className={CLASS.body}>
@@ -316,7 +306,7 @@ export function SessionMenu({
         onClose={() => setDeleteOpen(false)}
         title="Delete session?"
         footer={
-          <div className={CLASS.footer}>
+          <>
             <Button variant="quiet" onClick={() => setDeleteOpen(false)}>
               Cancel
             </Button>
@@ -327,7 +317,7 @@ export function SessionMenu({
             >
               Delete
             </Button>
-          </div>
+          </>
         }
       >
         <p className={CLASS.body}>Permanently delete "{title}"? This removes its transcript and cannot be undone.</p>

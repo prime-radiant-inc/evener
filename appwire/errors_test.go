@@ -3,6 +3,8 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -215,6 +217,94 @@ func TestErrorDataOfReadsPlainAndWrappedData(t *testing.T) {
 	for _, other := range []any{nil, map[string]any{"evenerErrorInfo": "x"}, struct{ Name string }{"x"}} {
 		if data, ok := ErrorDataOf(other); ok {
 			t.Fatalf("ErrorDataOf(%#v) = %+v, want none", other, data)
+		}
+	}
+}
+
+// TestBackpressureRefusalCarriesTheTransientEnvelope pins the wire shape of
+// the hub's high-water backpressure refusal: the unavailable code, the
+// connectionBackpressure discriminant, and the mutation envelope that makes
+// the shared dispatcher treat the refusal as transient — notAccepted plus an
+// automatic retry disposition, which a terminal refusal never pairs. cause
+// names the queue's saturation, the one refusal this discriminant carries.
+func TestBackpressureRefusalCarriesTheTransientEnvelope(t *testing.T) {
+	err := BackpressureRefusal("cmid-7", "the hub's inbound queue is busy and did not accept this message")
+	if err.Code != CodeUnavailable {
+		t.Fatalf("Code = %d, want CodeUnavailable (-32014)", err.Code)
+	}
+	if err.Message != "the hub's inbound queue is busy and did not accept this message" {
+		t.Fatalf("Message = %q", err.Message)
+	}
+	want := ErrorData{
+		EvenerErrorInfo:  ErrorConnectionBackpressure,
+		ClientMutationID: "cmid-7",
+		MutationOutcome:  MutationOutcomeNotAccepted,
+		RetryDisposition: RetryDispositionAutomatic,
+		Cause:            BackpressureCauseQueueSaturated,
+	}
+	data, ok := err.Data.(ErrorData)
+	if !ok || data != want {
+		t.Fatalf("Data = %#v, want %+v", err.Data, want)
+	}
+	encoded, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		t.Fatalf("marshal WireError: %v", marshalErr)
+	}
+	for _, part := range []string{
+		`"evenerErrorInfo":"connectionBackpressure"`,
+		`"clientMutationId":"cmid-7"`,
+		`"mutationOutcome":"notAccepted"`,
+		`"retryDisposition":"automatic"`,
+		`"cause":"queueSaturated"`,
+	} {
+		if !bytes.Contains(encoded, []byte(part)) {
+			t.Fatalf("wire error %s lacks %s", encoded, part)
+		}
+	}
+}
+
+// TestRetrySafeMutationMethodsMatchSharedDispatcher pins the Go retry-safe
+// mutation set against the shared TypeScript dispatcher's set
+// (RETRY_SAFE_MUTATION_METHODS, appwire-client/typescript/state/mutation/
+// dispatcher.ts): the hub refuses only methods both sides agree are safe to
+// resend unchanged, so neither set can drift. thread/start is the known
+// exclusion — it can refuse after the session spawned (#3184) — and ping is
+// a connection method, never a mutation.
+func TestRetrySafeMutationMethodsMatchSharedDispatcher(t *testing.T) {
+	source, err := os.ReadFile("../appwire-client/typescript/state/mutation/dispatcher.ts")
+	if err != nil {
+		t.Fatalf("read dispatcher.ts: %v", err)
+	}
+	literal := regexp.MustCompile(`(?s)RETRY_SAFE_MUTATION_METHODS[^=]*=\s*new Set\(\[(.*?)\]\)`).
+		FindStringSubmatch(string(source))
+	if literal == nil {
+		t.Fatal("RETRY_SAFE_MUTATION_METHODS set literal not found in dispatcher.ts")
+	}
+	dispatcher := map[string]bool{}
+	for _, name := range regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(literal[1], -1) {
+		dispatcher[name[1]] = true
+	}
+	if len(dispatcher) == 0 {
+		t.Fatal("RETRY_SAFE_MUTATION_METHODS set literal parsed empty")
+	}
+	for name := range retrySafeMutationMethods {
+		if !dispatcher[name] {
+			t.Errorf("Go set has %q, the shared dispatcher's set does not", name)
+		}
+	}
+	for name := range dispatcher {
+		if !retrySafeMutationMethods[name] {
+			t.Errorf("the shared dispatcher's set has %q, the Go set does not", name)
+		}
+	}
+	for name := range retrySafeMutationMethods {
+		if !RetrySafeMutationMethod(name) {
+			t.Errorf("RetrySafeMutationMethod(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{MethodThreadStart, MethodPing, "turn/bogus", ""} {
+		if RetrySafeMutationMethod(name) {
+			t.Errorf("RetrySafeMutationMethod(%q) = true, want false", name)
 		}
 	}
 }

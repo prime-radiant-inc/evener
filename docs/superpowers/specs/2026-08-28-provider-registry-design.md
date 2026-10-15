@@ -1010,8 +1010,9 @@ A model id that matches nothing is still resolvable: `Resolved.Model` is
 synthesized from provider-level caps, matching glob rows, the provider's
 `Surface`, and the provider's `Family` (§6.2), `Warnings` carries `model not
 in catalog`, and the wire id is the reference verbatim. Context window is
-unset, which the agent treats as "unknown" (no compaction budget until the
-live listing or a user row supplies one); the anthropic protocol's required
+unset, which the agent treats as "unknown": no window fact, so compaction
+budgets against a conservative assumed window, disclosed to the user, until
+the live listing or a user row supplies one (issue #4564); the anthropic protocol's required
 `max_tokens` falls back to 32000 as today (`anthropic/request.go:16-19`).
 Reasoning follows §7.4's empty-controls rule. The hub shows the warning next
 to the model. This is how a model released this morning works before the

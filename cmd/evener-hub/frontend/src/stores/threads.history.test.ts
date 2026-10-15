@@ -1,3 +1,4 @@
+import { observeProductionEntryForTests } from "./testing/entryProductionHarness";
 // The web store's adoption of the shared reducer's versioned-history contract
 // (task-15-report.md's "Contract for Tasks 16/17"; spec docs/superpowers/specs/
 // 2026-09-25-transcript-read-model-design.md "Reads", "Live history
@@ -10,14 +11,23 @@ import "fake-indexeddb/auto";
 import type {
   AnyNotification,
   ThreadCapabilities,
+  ThreadItem,
   ThreadReadResponse,
   ThreadTurnsListResponse,
 } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "./connection";
-import { resetThreadsStoreForTests, threadsStore } from "./threads";
+import { entryHistoryKey, type TranscriptResolvedIdentity } from "./sessionCacheSchema";
+import { SessionEntryCache } from "./sessionEntryCache";
+import {
+  acquireBackgroundThread,
+  resetThreadsStoreForTests,
+  settleBackgroundTranscriptsForTests,
+  settleEntryTranscriptForTests,
+  threadsStore,
+} from "./threads";
 
 const REF = "ref_h";
 const THREAD_ID = "thr_h";
@@ -176,8 +186,9 @@ describe("versioned history: resync", () => {
       params: { threadId: THREAD_ID, ref: REF, bootGeneration: "1", epoch: 1 },
     } as AnyNotification);
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    // The production entry owner checks durable authorities before publication.
+    // Observe that automatic publication, not a guessed number of event turns.
+    await vi.waitFor(() => expect(modelName()).toBe("after-resync"));
 
     expect(modelName()).toBe("after-resync");
     expect(threadsStore.getState().threads.get(REF)?.history?.epoch).toBe(1);
@@ -294,5 +305,819 @@ describe("versioned history: below-floor held snapshot", () => {
       ?.turns.map((t) => t.id);
     expect(turnIds).not.toContain("turn_old");
     expect(turnIds).toEqual(["turn_recovered"]);
+  });
+});
+
+describe("entry repository: older paging", () => {
+  const SELECTED = "local:entry-paging";
+  const entryIdentity: TranscriptResolvedIdentity = {
+    clientId: location.origin,
+    hostId: "local",
+    sessionId: "sess_h",
+    incarnation: "inc_a",
+  };
+  const entryHistory = entryHistoryKey(entryIdentity);
+
+  function pageItems(entries: number[], turnId: string): ThreadItem[] {
+    return entries.map((entry) => pageItem(entry, turnId));
+  }
+
+  function pageItem(entry: number, turnId: string): ThreadItem {
+    return {
+      type: "agentMessage" as const,
+      id: `item-${entry}`,
+      transcriptKey: `item-${entry}`,
+      turnId,
+      position: { entry, item: 0 },
+      version: entry,
+      text: `row-${entry}`,
+    };
+  }
+
+  function holdOlderWindow() {
+    const original = SessionEntryCache.prototype.getOlderWindow;
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    let markCalled!: () => void;
+    const called = new Promise<void>((resolve) => {
+      markCalled = resolve;
+    });
+    const spy = vi.spyOn(SessionEntryCache.prototype, "getOlderWindow").mockImplementation(function (
+      this: SessionEntryCache,
+      ...args: Parameters<typeof original>
+    ) {
+      markCalled();
+      return gate.then(() => original.apply(this, args));
+    } as typeof original);
+    return {
+      whenCalled: called,
+      release: () => {
+        releaseGate();
+        spy.mockRestore();
+      },
+    };
+  }
+
+  /** Completes the real older-window lookup, then holds before returning it. */
+  function holdOlderWindowAfterRead() {
+    const original = SessionEntryCache.prototype.getOlderWindow;
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    let markRead!: () => void;
+    const read = new Promise<void>((resolve) => {
+      markRead = resolve;
+    });
+    const spy = vi.spyOn(SessionEntryCache.prototype, "getOlderWindow").mockImplementation(function (
+      this: SessionEntryCache,
+      ...args: Parameters<typeof original>
+    ) {
+      return (async () => {
+        const result = await original.apply(this, args);
+        markRead();
+        await gate;
+        return result;
+      })();
+    } as typeof original);
+    return {
+      whenRead: read,
+      release: () => {
+        releaseGate();
+        spy.mockRestore();
+      },
+    };
+  }
+
+  function certifiedPageCoverage(authority: string, serverCursor: string, readId: string, boundary: string) {
+    return {
+      kind: "page" as const,
+      readId,
+      before: { entry: 6, item: 0 },
+      start: { entry: 3, item: 0 },
+      end: { entry: 5, item: 0 },
+      representedSnapshot: 8,
+      serverCursor,
+      requestCursor: "cursor_1",
+      authority,
+      boundary,
+    };
+  }
+
+  function readHandler(authoritative = false) {
+    return (params: { requestGeneration?: number; ref?: string }) => {
+      const response = read("entry-paging-initial", { requestGeneration: params.requestGeneration, length: 8 });
+      response.thread.turns = [
+        {
+          id: "turn_top",
+          itemsView: "full",
+          status: "completed",
+          version: 8,
+          items: pageItems([6, 7, 8], "turn_top"),
+        },
+      ];
+      response.thread.evener.ref = SELECTED;
+      return { ...response, olderCursor: "cursor_1", ...(authoritative ? { authoritative: true } : {}) };
+    };
+  }
+
+  test("a server page is accepted into the repository, persisted, and keeps the captured cursor for the next request", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-int-${crypto.randomUUID()}` });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
+    const fake = connectFakeClient();
+    let pageCalls = 0;
+    const lease = acquireBackgroundThread(SELECTED);
+    try {
+      fake.on("thread/read", (params) => {
+        const response = read("entry-paging-initial", { requestGeneration: params.requestGeneration, length: 8 });
+        response.thread.turns = [
+          {
+            id: "turn_top",
+            itemsView: "full",
+            status: "completed",
+            version: 8,
+            items: pageItems([6, 7, 8], "turn_top"),
+          },
+        ];
+        response.thread.evener.ref = SELECTED;
+        return { ...response, olderCursor: "cursor_1" };
+      });
+      fake.on("thread/turns/list", () => {
+        pageCalls += 1;
+        return {
+          data: [
+            {
+              id: "turn_old",
+              itemsView: "full",
+              status: "completed",
+              version: 8,
+              items: pageItems([3, 4, 5], "turn_old"),
+            },
+          ],
+          nextCursor: "cursor_2",
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+        } as ThreadTurnsListResponse;
+      });
+
+      await lease.ready;
+      expect(fixture.inspect().model).toBeDefined();
+      expect(pageCalls).toBe(0);
+
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(1);
+      await fixture.settled();
+
+      const rows = await entryCache.getLatest(entryHistory, 40);
+      expect(rows.map((row) => row.position.entry).sort((left, right) => left - right)).toEqual([3, 4, 5, 6, 7, 8]);
+
+      const model = threadsStore.getState().threads.get(SELECTED);
+      expect(model?.turns.flatMap((turn) => turn.items).map((item) => item.text)).toEqual(
+        expect.arrayContaining(["row-3", "row-4", "row-5"]),
+      );
+
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(2);
+      const lastPage = fake.calls.filter((call) => call.method === "thread/turns/list").at(-1);
+      expect((lastPage?.params as { cursor?: string } | undefined)?.cursor).toBe("cursor_2");
+    } finally {
+      await lease.release();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("a non-authoritative ambiguity refresh retires the boundary and the next action pages on the new cursor", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-reconcile-${crypto.randomUUID()}` });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
+    const fake = connectFakeClient();
+    let pageCalls = 0;
+    // The first read is the ordinary hydration; the reconciliation read changes
+    // the frontier cursor. Neither carries a wire `authoritative` flag, so only
+    // the reconciliation boundary itself can retire the uncertain baseline.
+    const readCursors = ["cursor_1", "cursor_9"];
+    let readIndex = 0;
+    fake.on("thread/read", (params) => {
+      const response = read("entry-paging-initial", { requestGeneration: params.requestGeneration, length: 8 });
+      response.thread.turns = [
+        {
+          id: "turn_top",
+          itemsView: "full",
+          status: "completed",
+          version: 8,
+          items: pageItems([6, 7, 8], "turn_top"),
+        },
+      ];
+      response.thread.evener.ref = SELECTED;
+      const cursor = readCursors[Math.min(readIndex, readCursors.length - 1)];
+      readIndex += 1;
+      return { ...response, olderCursor: cursor };
+    });
+    fake.on("thread/turns/list", () => {
+      pageCalls += 1;
+      return {
+        data: [
+          {
+            id: "turn_old",
+            itemsView: "full",
+            status: "completed",
+            version: 8,
+            items: pageItems([3, 4, 5], "turn_old"),
+          },
+        ],
+        nextCursor: "cursor_2",
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+      } as ThreadTurnsListResponse;
+    });
+    const lease = acquireBackgroundThread(SELECTED);
+    try {
+      await lease.ready;
+      const baseline = fixture.inspect().baseline;
+      if (!baseline) throw new Error("fixture did not expose a baseline");
+      for (const [cursor, boundary] of [
+        ["CA", "amb-a"],
+        ["CB", "amb-b"],
+      ] as const) {
+        const outcome = await entryCache.commitBatch({
+          historyKey: entryHistory,
+          clearEpoch: 0,
+          items: [],
+          coverage: certifiedPageCoverage(baseline, cursor, "seed", boundary),
+        });
+        expect(outcome.outcome).toBe("committed");
+      }
+
+      // The ambiguous frontier must reconcile, not issue the ordinary cursor request
+      // the server would accept.
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(0);
+      expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThanOrEqual(2);
+      expect(fixture.inspect().baseline).not.toBe(baseline);
+
+      // One refresh retires the uncertain baseline; renewed paging uses the
+      // fresh boundary AND the reconciliation read's changed cursor through the
+      // ordinary request.
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(1);
+      const lastPage = fake.calls.filter((call) => call.method === "thread/turns/list").at(-1);
+      expect((lastPage?.params as { cursor?: string } | undefined)?.cursor).toBe("cursor_9");
+    } finally {
+      await lease.release();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("a successful local cache hit with the reader attached advances the page generation", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-local-gen-${crypto.randomUUID()}` });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
+    const fake = connectFakeClient();
+    fake.on("thread/read", readHandler());
+    try {
+      // ensureThread routes the entry fixture through openEntryTranscriptFixture,
+      // which attaches the reader and its repository subscription. That is the
+      // publication route that reaches the store before loadOlderTurns' guard.
+      await threadsStore.getState().ensureThread(SELECTED);
+      const baseline = fixture.inspect().baseline;
+      if (!baseline) throw new Error("fixture did not expose a baseline");
+      expect(fixture.inspect().olderPageGeneration).toBe(0);
+      expect(threadsStore.getState().threads.get(SELECTED)?.olderCursor).toBe("cursor_1");
+
+      const outcome = await entryCache.commitBatch({
+        historyKey: entryHistory,
+        clearEpoch: 0,
+        items: [3, 4, 5].map((entry) => ({
+          historyKey: entryHistory,
+          transcriptKey: `item-${entry}`,
+          position: { entry, item: 0 },
+          version: entry,
+          item: pageItem(entry, "turn_top"),
+        })),
+        coverage: certifiedPageCoverage(baseline, "cursor_2", "seed", "seed-page"),
+      });
+      expect(outcome.outcome).toBe("committed");
+
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+
+      // The page published through the repository subscription — changing the
+      // frontier cursor to cursor_2 — and the generation advance still happened,
+      // because the guard ran before that publication rather than after it.
+      expect(fixture.inspect().olderPageGeneration).toBe(1);
+      const model = threadsStore.getState().threads.get(SELECTED);
+      expect(model?.olderCursor).toBe("cursor_2");
+      expect((model?.turns ?? []).flatMap((turn) => turn.items).map((item) => item.position?.entry)).toEqual(
+        expect.arrayContaining([3, 4, 5, 6, 7, 8]),
+      );
+    } finally {
+      threadsStore.getState().releaseThread(SELECTED);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("a newer accepted update delivered before the store continuation survives the local page", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-local-race-${crypto.randomUUID()}` });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
+    const fake = connectFakeClient();
+    fake.on("thread/read", readHandler());
+    try {
+      await threadsStore.getState().ensureThread(SELECTED);
+      const baseline = fixture.inspect().baseline;
+      if (!baseline) throw new Error("fixture did not expose a baseline");
+      const outcome = await entryCache.commitBatch({
+        historyKey: entryHistory,
+        clearEpoch: 0,
+        items: [3, 4, 5].map((entry) => ({
+          historyKey: entryHistory,
+          transcriptKey: `item-${entry}`,
+          position: { entry, item: 0 },
+          version: entry,
+          item: pageItem(entry, "turn_top"),
+        })),
+        coverage: certifiedPageCoverage(baseline, "cursor_2", "seed", "seed-page"),
+      });
+      expect(outcome.outcome).toBe("committed");
+
+      // The repository's FIRST local publication reaches the store through this
+      // subscription. Schedule the accepted update as a microtask from inside
+      // that publication, so it runs before the store caller's await resumes
+      // (the continuation the old code wrote its stale snapshot from).
+      let arm = true;
+      const unsubscribe = fixture.subscribeRepository((snapshot) => {
+        if (!arm || snapshot?.olderCursor !== "cursor_2") return;
+        arm = false;
+        queueMicrotask(() => {
+          fake.emitNotification({
+            method: "history/updated",
+            params: {
+              ref: SELECTED,
+              threadId: THREAD_ID,
+              bootGeneration: "1",
+              epoch: 0,
+              snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+              items: [{ ...pageItem(4, "turn_top"), version: 9, text: "newer" }],
+            },
+          } as AnyNotification);
+        });
+      });
+      try {
+        await threadsStore.getState().loadOlderTurns(SELECTED);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      } finally {
+        unsubscribe();
+      }
+
+      // The final store keeps the newer accepted state, not the returned page
+      // snapshot that would have restored item 4 to its page version.
+      const model = threadsStore.getState().threads.get(SELECTED);
+      const item4 = (model?.turns ?? []).flatMap((turn) => turn.items).find((item) => item.position?.entry === 4);
+      expect(item4?.version).toBe(9);
+      expect((model?.turns ?? []).flatMap((turn) => turn.items).map((item) => item.position?.entry)).toEqual(
+        expect.arrayContaining([3, 4, 5, 6, 7, 8]),
+      );
+      expect(fixture.inspect().olderPageGeneration).toBe(1);
+    } finally {
+      threadsStore.getState().releaseThread(SELECTED);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("an already-read local page does not publish across a pending hydration", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-local-pending-${crypto.randomUUID()}` });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
+    const fake = connectFakeClient();
+    fake.on("thread/read", readHandler());
+    try {
+      await threadsStore.getState().ensureThread(SELECTED);
+      const baseline = fixture.inspect().baseline;
+      if (!baseline) throw new Error("fixture did not expose a baseline");
+      const outcome = await entryCache.commitBatch({
+        historyKey: entryHistory,
+        clearEpoch: 0,
+        items: [3, 4, 5].map((entry) => ({
+          historyKey: entryHistory,
+          transcriptKey: `item-${entry}`,
+          position: { entry, item: 0 },
+          version: entry,
+          item: pageItem(entry, "turn_top"),
+        })),
+        coverage: certifiedPageCoverage(baseline, "cursor_2", "seed", "seed-page"),
+      });
+      expect(outcome.outcome).toBe("committed");
+
+      // Hold the local page AFTER the real cache lookup returned its result.
+      const gate = holdOlderWindowAfterRead();
+      const lookup = threadsStore.getState().loadOlderTurns(SELECTED);
+      await gate.whenRead;
+
+      // Start a refresh whose read never resolves: a hydration is pending for
+      // the ref while the held page result is about to merge.
+      let refreshReadStarted = false;
+      fake.on("thread/read", () => {
+        refreshReadStarted = true;
+        return new Promise<ThreadReadResponse>(() => {});
+      });
+      void threadsStore.getState().refreshThread(SELECTED);
+      for (let i = 0; i < 200 && !refreshReadStarted; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      expect(refreshReadStarted).toBe(true);
+
+      gate.release();
+      await lookup;
+
+      // The stale page merged under a pending hydration must not publish or
+      // advance the generation.
+      expect(fixture.inspect().olderPageGeneration).toBe(0);
+      const model = threadsStore.getState().threads.get(SELECTED);
+      expect(model?.olderCursor).toBe("cursor_1");
+      expect((model?.turns ?? []).flatMap((turn) => turn.items).some((item) => item.position?.entry === 3)).toBe(false);
+    } finally {
+      threadsStore.getState().releaseThread(SELECTED);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("an invalidating server page keeps its invalidation at repository and store", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-invalidate-${crypto.randomUUID()}` });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
+    const fake = connectFakeClient();
+    fake.on("thread/read", readHandler());
+    // A newer epoch in the same incarnation: the shared reducer invalidates
+    // history rather than replacing it, and no certificate may be recorded.
+    fake.on(
+      "thread/turns/list",
+      () =>
+        ({
+          data: [
+            {
+              id: "turn_old",
+              itemsView: "full",
+              status: "completed",
+              version: 8,
+              items: pageItems([3, 4, 5], "turn_old"),
+            },
+          ],
+          nextCursor: "cursor_2",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+        }) as ThreadTurnsListResponse,
+    );
+    try {
+      await threadsStore.getState().ensureThread(SELECTED);
+      expect(threadsStore.getState().threads.get(SELECTED)?.history?.invalidatedAtGeneration).toBeUndefined();
+
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+
+      // The certificate was refused, but the invalidation is preserved at the
+      // repository AND published to the store, with no return to the old valid
+      // authority.
+      expect(fixture.inspect().model?.history?.invalidatedAtGeneration).not.toBeUndefined();
+      expect(threadsStore.getState().threads.get(SELECTED)?.history?.invalidatedAtGeneration).not.toBeUndefined();
+
+      // A frame from the old generation must not restore the old valid authority.
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: SELECTED,
+          threadId: THREAD_ID,
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+          items: [{ ...pageItem(6, "turn_top"), version: 9, text: "old-gen" }],
+        },
+      } as AnyNotification);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(threadsStore.getState().threads.get(SELECTED)?.history?.invalidatedAtGeneration).not.toBeUndefined();
+      expect(fixture.inspect().model?.history?.invalidatedAtGeneration).not.toBeUndefined();
+    } finally {
+      threadsStore.getState().releaseThread(SELECTED);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("a last-owner release during a held local lookup leaves the ref absent", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-release-${crypto.randomUUID()}` });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
+    const fake = connectFakeClient();
+    fake.on("thread/read", readHandler());
+    try {
+      await threadsStore.getState().ensureThread(SELECTED);
+      const baseline = fixture.inspect().baseline;
+      if (!baseline) throw new Error("fixture did not expose a baseline");
+      const outcome = await entryCache.commitBatch({
+        historyKey: entryHistory,
+        clearEpoch: 0,
+        items: [3, 4, 5].map((entry) => ({
+          historyKey: entryHistory,
+          transcriptKey: `item-${entry}`,
+          position: { entry, item: 0 },
+          version: entry,
+          item: pageItem(entry, "turn_top"),
+        })),
+        coverage: certifiedPageCoverage(baseline, "cursor_2", "seed", "seed-page"),
+      });
+      expect(outcome.outcome).toBe("committed");
+
+      const gate = holdOlderWindow();
+      const lookup = threadsStore.getState().loadOlderTurns(SELECTED);
+      await gate.whenCalled;
+      threadsStore.getState().releaseThread(SELECTED);
+      gate.release();
+      await lookup;
+      expect(threadsStore.getState().threads.has(SELECTED)).toBe(false);
+    } finally {
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("a same-thread reconnect with unchanged source identifiers retires the outgoing page authority", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-reconnect-${crypto.randomUUID()}` });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
+    const fake = connectFakeClient();
+    let pageCalls = 0;
+    fake.on("thread/read", readHandler());
+    fake.on("thread/turns/list", () => {
+      pageCalls += 1;
+      return {
+        data: [
+          {
+            id: "turn_old",
+            itemsView: "full",
+            status: "completed",
+            version: 8,
+            items: pageItems([3, 4, 5], "turn_old"),
+          },
+        ],
+        nextCursor: "cursor_2",
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+      } as ThreadTurnsListResponse;
+    });
+    const lease = acquireBackgroundThread(SELECTED);
+    try {
+      await lease.ready;
+      const baseline1 = fixture.inspect().baseline;
+      if (!baseline1) throw new Error("fixture did not expose a baseline");
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(1);
+
+      // Reconnect: a new ready client with the SAME boot generation, epoch and
+      // incarnation, and no authoritative flag on the re-read.
+      const replacement = new FakeClient("ready");
+      replacement.on("thread/read", readHandler());
+      replacement.on("thread/turns/list", () => {
+        pageCalls += 1;
+        return {
+          data: [
+            {
+              id: "turn_old",
+              itemsView: "full",
+              status: "completed",
+              version: 8,
+              items: pageItems([3, 4, 5], "turn_old"),
+            },
+          ],
+          nextCursor: "cursor_2",
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+        } as ThreadTurnsListResponse;
+      });
+      connectionStore.getState().connect(replacement);
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await settleBackgroundTranscriptsForTests();
+
+      const baseline2 = fixture.inspect().baseline;
+      expect(baseline2).not.toBe(baseline1);
+
+      // The outgoing page cannot certify the new interval: the next older-page
+      // request is an ordinary server continuation, not a local serve.
+      const beforeCalls = pageCalls;
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(beforeCalls + 1);
+    } finally {
+      await lease.release();
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("a same-connection close/reopen retains the cached older pages and their usable boundary, and the next older request carries the stored boundary cursor", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-reopen-${crypto.randomUUID()}` });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
+    const fake = connectFakeClient();
+    const pageCursors: (string | undefined)[] = [];
+    let pageCalls = 0;
+    fake.on("thread/read", readHandler());
+    fake.on("thread/turns/list", (params) => {
+      pageCalls += 1;
+      const cursor = (params as { cursor?: string }).cursor;
+      pageCursors.push(cursor);
+      if (cursor === "cursor_1") {
+        return {
+          data: [
+            {
+              id: "turn_mid",
+              itemsView: "full",
+              status: "completed",
+              version: 8,
+              items: pageItems([3, 4, 5], "turn_mid"),
+            },
+          ],
+          nextCursor: "cursor_2",
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+        } as ThreadTurnsListResponse;
+      }
+      if (cursor === "cursor_2") {
+        return {
+          data: [
+            {
+              id: "turn_old",
+              itemsView: "full",
+              status: "completed",
+              version: 8,
+              items: pageItems([1, 2], "turn_old"),
+            },
+          ],
+          nextCursor: "cursor_3",
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+        } as ThreadTurnsListResponse;
+      }
+      return {
+        data: [],
+        nextCursor: undefined,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: entryIdentity.incarnation, length: 8 },
+      } as ThreadTurnsListResponse;
+    });
+    try {
+      await threadsStore.getState().ensureThread(SELECTED);
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(2);
+      expect(pageCursors).toEqual(["cursor_1", "cursor_2"]);
+      await fixture.settled();
+
+      // Close and reopen on the SAME connection/binding: the reader is disposed
+      // and re-attached. This fixture route bypasses the production local-promotion
+      // (promote) and cached-shell paths, so ensureThread first hydrates a latest
+      // window; the cached older pages and their usable boundary are then retained
+      // from the fixture repository. This test therefore does NOT prove a read-free
+      // reopen. That production property is established by the residency-route tests
+      // (threads.background.test.ts:3772, :861) and Task 1's browser evidence.
+      const pageCallsBeforeReopen = pageCalls;
+      threadsStore.getState().releaseThread(SELECTED);
+      await threadsStore.getState().ensureThread(SELECTED);
+      const reopenedEntries = (threadsStore.getState().threads.get(SELECTED)?.turns ?? [])
+        .flatMap((turn) => turn.items)
+        .map((item) => item.position?.entry);
+      // Exact order and full uniqueness: the retained pages are restored in
+      // document order, every row exactly once.
+      expect(reopenedEntries).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      // The reopen issued no older-page request: the cached older pages and their
+      // boundary were retained, so the next request continues on the stored cursor.
+      expect(pageCalls).toBe(pageCallsBeforeReopen);
+
+      // Continue paging across the join: the next older request is a real
+      // supported thread/turns/list issued on the stored boundary cursor.
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(3);
+      expect(pageCursors.at(-1)).toBe("cursor_3");
+    } finally {
+      threadsStore.getState().releaseThread(SELECTED);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
+  });
+
+  test("a same-connection refresh preserves paged history and a missed-event reconnect pages afresh from the returned cursor", async () => {
+    const entryCache = new SessionEntryCache({ databaseName: `entry-paging-refresh-reconnect-${crypto.randomUUID()}` });
+    const fixture = observeProductionEntryForTests(entryCache, SELECTED);
+    const fake = connectFakeClient();
+    const pageCursors: (string | undefined)[] = [];
+    let pageCalls = 0;
+    const pageResponse = (id: string, entries: number[], nextCursor: string, length = 8) =>
+      ({
+        data: [
+          {
+            id,
+            itemsView: "full",
+            status: "completed",
+            version: 8,
+            items: pageItems(entries, id),
+          },
+        ],
+        nextCursor,
+        bootGeneration: "1",
+        epoch: 0,
+        snapshot: { incarnation: entryIdentity.incarnation, length },
+      }) as ThreadTurnsListResponse;
+    const turnsList = (params: { cursor?: string }) => {
+      pageCalls += 1;
+      pageCursors.push(params.cursor);
+      if (params.cursor === "cursor_1") return pageResponse("turn_mid", [3, 4, 5], "cursor_2");
+      if (params.cursor === "cursor_2") return pageResponse("turn_old", [1, 2], "cursor_3");
+      if (params.cursor === "cursor_fresh") return pageResponse("turn_fresh", [4, 5, 6], "cursor_fresh2", 10);
+      return pageResponse("turn_old", [1, 2], "cursor_fresh3", 10);
+    };
+    fake.on("thread/read", readHandler());
+    fake.on("thread/turns/list", turnsList);
+    const modelEntries = () =>
+      (threadsStore.getState().threads.get(SELECTED)?.turns ?? [])
+        .flatMap((turn) => turn.items)
+        .map((item) => item.position?.entry);
+    try {
+      await threadsStore.getState().ensureThread(SELECTED);
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(2);
+      expect(pageCursors).toEqual(["cursor_1", "cursor_2"]);
+      // The identifiable later-page row held before the reconnect.
+      expect(modelEntries()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(modelEntries().filter((entry) => entry === 1)).toHaveLength(1);
+
+      // A same-connection refresh must preserve the compatible paged history.
+      await threadsStore.getState().refreshThread(SELECTED);
+      expect(modelEntries()).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(pageCalls).toBe(2);
+
+      // Reconnect with a missed event: a new client reports the same source
+      // identifiers but a fresh latest boundary that excludes the old rows.
+      const replacement = new FakeClient("ready");
+      replacement.on("thread/read", (params) => {
+        const response = read("entry-paging-reconnected", {
+          requestGeneration: params.requestGeneration,
+          length: 10,
+        });
+        response.thread.turns = [
+          {
+            id: "turn_reconnect",
+            itemsView: "full",
+            status: "completed",
+            version: 10,
+            items: pageItems([7, 8, 9], "turn_reconnect"),
+          },
+        ];
+        response.thread.evener.ref = SELECTED;
+        return { ...response, olderCursor: "cursor_fresh" };
+      });
+      replacement.on("thread/turns/list", turnsList);
+      connectionStore.getState().connect(replacement);
+      // Reconnect hydrates asynchronously before publishing the fresh baseline.
+      // The background drain does not join that hydration; wait for it explicitly.
+      await settleEntryTranscriptForTests(SELECTED);
+      // No paging was issued just by reconnecting.
+      expect(pageCalls).toBe(2);
+      // The fresh replacement drops the pre-gap rows entirely: they cannot
+      // certify the missed interval.
+      expect(modelEntries()).not.toContain(1);
+      expect(modelEntries()).not.toContain(5);
+      expect(modelEntries()).toEqual(expect.arrayContaining([7, 8, 9]));
+
+      // Renewed paging: the old cached rows may NOT certify the missed interval,
+      // so the next older request is a real server page on the fresh cursor.
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(3);
+      expect(pageCursors.at(-1)).toBe("cursor_fresh");
+      // The previously held later-page row is recoverable through a further
+      // renewed page from the fresh coverage.
+      await threadsStore.getState().loadOlderTurns(SELECTED);
+      expect(pageCalls).toBe(4);
+      expect(pageCursors.at(-1)).toBe("cursor_fresh2");
+      expect(pageCursors).toEqual(["cursor_1", "cursor_2", "cursor_fresh", "cursor_fresh2"]);
+      expect(modelEntries()).toContain(1);
+      expect(modelEntries().filter((entry) => entry === 1)).toHaveLength(1);
+    } finally {
+      threadsStore.getState().releaseThread(SELECTED);
+      await settleBackgroundTranscriptsForTests();
+      fixture.dispose();
+      entryCache.close();
+    }
   });
 });

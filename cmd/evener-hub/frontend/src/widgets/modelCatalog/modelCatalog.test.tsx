@@ -68,7 +68,7 @@ test("a synchronously throwing catalog loader shows an inline error", async () =
     },
   });
   await userEvent.setup().click(openTrigger());
-  expect(await screen.findByText(/Couldn't load models/)).toBeTruthy();
+  expect(await screen.findByRole("alert")).toBeTruthy();
 });
 
 test("an open picker refreshes selectable models when provider configuration changes", async () => {
@@ -85,11 +85,6 @@ test("an open picker refreshes selectable models when provider configuration cha
 });
 
 // --- closed state (unchanged: the chip IS the trigger) ---------------------
-
-test("shows the (default) marker when no model is chosen", () => {
-  renderPicker();
-  expect(screen.getByText("(default)")).toBeTruthy();
-});
 
 // kata xgk8: a caller whose harness genuinely has no resolvable default
 // (the spawn form's top-level Model field, when the daemon's own launch

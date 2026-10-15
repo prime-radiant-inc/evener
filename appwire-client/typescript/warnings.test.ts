@@ -13,6 +13,7 @@ import {
   attentionWarningNotice,
   isInformationalWarning,
   WarningCodeContextBudget,
+  WarningCodeContextWindowAssumed,
   WarningCodeDelegateAttentionRestore,
   WarningCodeMCPReconnected,
   WarningCodePluginCompatibility,
@@ -40,6 +41,10 @@ describe("the informational codes are bound to agent/events/payloads.go", () => 
 
   test("the delegate-attention restore code is the daemon's own constant", () => {
     expect(WarningCodeDelegateAttentionRestore).toBe(goWarningCode("WarningCodeDelegateAttentionRestore"));
+  });
+
+  test("the context-window-assumed code is the daemon's own constant", () => {
+    expect(WarningCodeContextWindowAssumed).toBe(goWarningCode("WarningCodeContextWindowAssumed"));
   });
 });
 
@@ -97,6 +102,15 @@ describe("isInformationalWarning", () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  // The one-time unknown-window disclosure: a configuration advisory, not an
+  // error (issue #4564).
+  test.each(["warning", "systemMessage"])("an assumed-window disclosure is informational through %s", (type) => {
+    const warning = { code: WarningCodeContextWindowAssumed };
+    const notice = warningItem({ type, eventKind: "warning", warning, raw: { warning } });
+    expect(isInformationalWarning(notice)).toBe(true);
+    expect(attentionWarningNotice(notice)).toBeNull();
   });
 
   test("false for an uncoded warning notice, and for a coded notice of another kind", () => {

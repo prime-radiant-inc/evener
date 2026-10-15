@@ -3,6 +3,7 @@ import {
   ACTIONS,
   type Binding,
   CHARACTER_KEY_TRIGGER_BINDING_ID,
+  friendlyErrorMessage,
   registerDefaultBindings,
   serializeChord,
   WireError,
@@ -129,7 +130,7 @@ describe("keybindings store: startup", () => {
     });
     await wireClient(client, true);
 
-    expect(keybindingsStore.getState().hubError).toBe("socket went away");
+    expect(keybindingsStore.getState().hubError).toBe(friendlyErrorMessage(new Error("socket went away")));
     expect(bindingsFor(ACTIONS.paletteOpen)).toHaveLength(2);
   });
 

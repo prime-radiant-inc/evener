@@ -67,12 +67,44 @@ change it, edit the catalog and/or the prose template
    reconnect. The web client also self-heals a long silent stall by
    re-subscribing.
 
+## History content selection
+
+`thread/read` and `thread/turns/list` accept `includeConversation`,
+`includeThinking`, `includeToolCalls`, `includeToolCallIntents`,
+`includeSystemMessages`, and `includeDiagnostics`. Each defaults to true.
+Tool calls include arguments and results together; intents can be requested
+without that payload. Selection applies before the public page count and byte
+limits, and to the read's downstream subscription. Shared upstream feeds stay
+complete. Cursors and opaque snapshot incarnations distinguish normalized
+selections; changing selection requires a fresh latest read. Status, capability,
+mutation and recovery metadata are always retained.
+Metadata-only reads and mutation relay setup preserve an existing subscription's
+history selection; an `includeTurns: true` read establishes or changes that view.
+
+See [the history content contract](product/history-content.md) for item mapping,
+intent representation, selected paging and reconnect behavior.
+
 ## Error model
 
 Errors use JSON-RPC codes in `error.code` with a human `error.message`.
 `error.data.evenerErrorInfo` carries a structured evener-specific detail string
 when present. Common cases: method-not-found, invalid-params (params failed to
-unmarshal), invalid-request (e.g. a request before `initialize`).
+unmarshal), invalid-request (e.g. a request before `initialize`). A history
+read whose transcript index needs a rebuild the server has taken ownership of
+in the background answers `transcriptIndexRebuilding` with
+`data.retryDisposition: "automatic"`: retrying is the right response, and the
+read that follows the repair's commit succeeds; a read that met the index's
+lock in ordinary contention — a writer mid-extension or a foreign rebuild,
+with no server repair in flight — answers its sibling
+`transcriptIndexLocked` with the same automatic retry disposition; their
+terminal sibling `transcriptHistoryFailed` names the last entry the failed
+history had recorded.
+A retry-safe mutation arriving on a connection whose inbound request queue is
+at high-water depth is refused in band as `connectionBackpressure` with
+`data.cause "queueSaturated"`, `mutationOutcome "notAccepted"` and
+`retryDisposition "automatic"`: the mutation was never queued and never
+started, so an identical retry is safe. The message states what happened on
+the hub and promises nothing about what a client will do.
 
 ## Explicit skill and command input
 
@@ -176,6 +208,10 @@ no router (reserved).
 | `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `evener/git/head` | hub | `GitHeadParams` | `GitHeadResponse` | Reads a working directory's git HEAD, and its sanitized origin remote URL when requested. |
 | `evener/mobile/pairing` | hub | `MobilePairingParams` | `MobilePairingResponse` | Creates a validated mobile pairing URL for the authenticated web application. |
+| `evener/devicePairing/create` | hub | `DevicePairingCreateParams` | `DevicePairingInvitation` | Creates a short-lived device pairing invitation. |
+| `evener/devicePairing/read` | hub | `DevicePairingParams` | `DevicePairingStatus` | Lists pending device claims for explicit comparison. |
+| `evener/devicePairing/approve` | hub | `DevicePairingApproveParams` | `DevicePairingStatus` | Approves one device key for encrypted credential delivery. |
+| `evener/devicePairing/cancel` | hub | `DevicePairingParams` | `DevicePairingStatus` | Revokes a device pairing invitation. |
 | `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource as a normalized v3 snapshot or delta, optionally conditional on its exact base. |
 | `evener/favorite/set` | hub | `FavoriteSetParams` | `FavoriteSetResponse` | Sets or clears a project favorite and returns the committed navigation invalidation targets. |
 | `evener/archive/set` | hub | `ArchiveParams` | `ArchiveResponse` | Sets or clears an explicit project or session archive decision and returns its committed navigation receipt. |
@@ -186,7 +222,7 @@ no router (reserved).
 | `evener/session-pin/assign` | hub | `SessionPinAssignParams` | `SessionPinAssignResponse` | Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt. |
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
 | `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a hub or daemon timestamp the client showed (a row's turn end, or a session's last-moved time), or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen and seen_through from the hub's marker. |
-| `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. |
+| `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. Each matching subagent names the top-level session it renders under, so clients group it there. |
 | `evener/archived/list` | hub | `ArchivedListParams` | `ArchivedListResponse` | Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries. Each response carries the whole list's revision; a first-page read naming the revision it holds is answered unchanged, with no rows, while the list has not changed. The list has no invalidation of its own. |
 | `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time, the newest tool intent and when the tree last moved, of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | `EmptyParams` | `NoticesListResponse` | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
@@ -665,6 +701,48 @@ _(no fields)_
 | `outcome` | `appwire.DelegateStopOutcome` |  |  |
 
 
+### `DevicePairingApproveParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `invitation` | `string` |  |  |
+| `publicKey` | `string` |  |  |
+
+
+### `DevicePairingCreateParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `origin` | `string` |  |  |
+| `tailnet` | `bool` |  |  |
+
+
+### `DevicePairingInvitation`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `invitation` | `string` |  |  |
+| `origin` | `string` |  |  |
+| `tailnet` | `bool` |  |  |
+| `expiresAt` | `int64` |  |  |
+
+
+### `DevicePairingParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `invitation` | `string` |  |  |
+
+
+### `DevicePairingStatus`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `state` | `string` |  |  |
+| `claims` | `[]appwire.DevicePairingClaim` |  |  |
+| `approvedKey` | `string` | yes |  |
+
+
 ### `DirsCreateParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -739,6 +817,7 @@ _(no fields)_
 | `runStartedAt` | `string` | yes |  |
 | `runEndedAt` | `string` | yes |  |
 | `latestActivityAt` | `string` | yes |  |
+| `latestIntent` | `string` | yes |  |
 | `runningForMs` | `*int64` | yes |  |
 | `quietForMs` | `*int64` | yes |  |
 | `durationMs` | `*int64` | yes |  |
@@ -2281,6 +2360,7 @@ _(no fields)_
 | `archived` | `bool` | yes |  |
 | `hits` | `[]appwire.SearchHit` | yes |  |
 | `hitCount` | `int` | yes |  |
+| `topLevel` | `*appwire.SearchTopLevel` | yes |  |
 
 
 ### `SearchSnippetPart`
@@ -2289,6 +2369,20 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `text` | `string` |  |  |
 | `match` | `bool` | yes |  |
+
+
+### `SearchTopLevel`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `ref` | `string` |  |  |
+| `title` | `string` |  |  |
+| `project` | `string` | yes |  |
+| `state` | `string` |  |  |
+| `age` | `string` | yes |  |
+| `askPending` | `bool` | yes |  |
+| `approvalPending` | `bool` | yes |  |
 
 
 ### `SessionActivityAncestor`
@@ -2417,6 +2511,7 @@ _(no fields)_
 | `runStartedAt` | `string` | yes |  |
 | `runEndedAt` | `string` | yes |  |
 | `latestActivityAt` | `string` | yes |  |
+| `latestIntent` | `string` | yes |  |
 | `usage` | `*appwire.EvenerUsage` | yes |  |
 | `worktree` | `*appwire.JobActivityWorktree` | yes |  |
 
@@ -2798,6 +2893,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `ThreadContentParams` | `appwire.ThreadContentParams` |  | yes |
 | `threadId` | `string` | yes |  |
 | `ref` | `string` | yes |  |
 | `includeTurns` | `bool` |  |  |
@@ -2956,6 +3052,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
+| `ThreadContentParams` | `appwire.ThreadContentParams` |  | yes |
 | `threadId` | `string` | yes |  |
 | `ref` | `string` | yes |  |
 | `cursor` | `string` | yes |  |

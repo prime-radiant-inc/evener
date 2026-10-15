@@ -98,6 +98,11 @@ test("an id prop passes through for external <label htmlFor> association", () =>
   expect(screen.getByRole("textbox").id).toBe("name-field");
 });
 
+test("aria-label names a field that has no visible label", () => {
+  render(<Input value="" onChange={() => {}} placeholder="Filter settings" aria-label="Filter settings" />);
+  expect(screen.getByRole("textbox", { name: "Filter settings" })).toBeTruthy();
+});
+
 test("aria-describedby passes through only when supplied", () => {
   const { rerender } = render(<Input value="" onChange={() => {}} aria-describedby="name-error" />);
   expect(screen.getByRole("textbox").getAttribute("aria-describedby")).toBe("name-error");

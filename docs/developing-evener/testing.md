@@ -59,6 +59,67 @@ Exact text assertions are allowed only when the text is itself a machine or API
 contract value, such as a JSON field name, enum token, error code, or CLI flag.
 Prefer asserting such values through their structured representation.
 
+### Copy Is Not a Test Oracle
+
+The same rule holds for every human-readable string, not only prompts: UI copy,
+labels, empty-state and usage text, toast and error messages, log lines, and Go
+error strings. A test that passes because a string came out the same as it went
+in proves nothing and breaks on every wording change. Never write:
+
+- an assertion that rendered or returned text equals, contains, or matches a
+  hardcoded phrase (`findByText("Use: name command [args...]")`,
+  `strings.Contains(err.Error(), "not found")`);
+- an assertion that output equals a constant imported from the code under test
+  (`findByText(USAGE_MESSAGE)`): the test only re-reads the source, so it
+  cannot fail for a behavioral reason;
+- a test whose whole claim is that some copy exists.
+
+Assert what the copy is for instead:
+
+- **Frontend:** that the state changed. A refusal raises `role="alert"`, the
+  list did not grow, the request was never sent, focus moved, a control became
+  disabled, a callback fired with the right structured value. Locate elements
+  by role, and by accessible name only to pick the right control, never as the
+  thing being verified. Use `data-testid` when no role and name is stable.
+- **Go:** that the error is the right error. Match a sentinel with
+  `errors.Is`, a type with `errors.As`, or a structured field or code, and
+  assert the side effects that did or did not happen.
+
+When the text really is the contract (an enum token, a wire field, a CLI flag,
+a file format), assert it through its structured form, as above. When it is
+copy a person reads, review it in the diff and test the behavior around it.
+
+Two audits enforce the rule against tests whose whole claim is that some copy
+exists. Each fails on a test whose name says it shows, renders or says
+something and whose every check compares output with production copy:
+
+- `copyonly_audit_test.go` (part of `go test`) runs `internal/devtool/copyonly`
+  over every tracked Go test. Its allowlist is
+  `internal/devtool/copyonly/allowlist.tsv`.
+- `cmd/evener-hub/frontend/src/dev/copyonly/copyonlyAudit.test.ts` (part of
+  `make test-web`) reads every tracked TypeScript test in the frontend,
+  `mobile-native`, `mobile/src` and `appwire-client/typescript` with the
+  TypeScript compiler. Its allowlist is
+  `cmd/evener-hub/frontend/src/dev/copyonly/allowlist.tsv`.
+
+Both skip expected errors, counts, attribute and state reads, spy assertions,
+role queries, machine-contract tokens, and text the test supplied itself. When
+an audit flags your test, assert the behavior instead. If the copy must stay
+the oracle (model-facing text whose conversion is deferred, or a false
+positive), add a row to that language's allowlist: the file, the test name,
+and the reason it is kept, tab-separated. Rows are keyed by file and test name,
+not line. Each audit also fails on a row whose test is no longer flagged, so
+remove the row when you convert, delete or rename the test.
+
+To find what is left to convert, `go run ./cmd/evener-dev/bin dev copy-oracle`
+inventories every assertion whose oracle is production copy, per package and
+category, using the same two scanners. `--hits FILE` writes each one as TSV,
+`--copy-only FILE` lists the copy-only tests instead, and `--path PREFIX` and
+`--only ts|go` narrow the scan. The TypeScript half runs under `node` with the
+frontend's install, so run `make web-preflight` first, or pass `--only go`.
+After converting a test, `tools/copy-oracle/mutate.sh` breaks the behavior it
+now checks and confirms the test fails.
+
 ## Flakes and Timeouts
 
 Two standing rules (Jesse, 2026-07-20/21), both absolute:
@@ -890,26 +951,31 @@ link, but `mobile-native/.gitignore` uses `node_modules/`, which does not
 match a symlink: that link shows as untracked in `git status`, so keep it
 out of commits by path, not by ignore.
 
-The gate's `vitest run` writes nothing under `node_modules` or `dist/`:
+The web gate - `evener-dev dev web-checks`: typecheck, test, lint - writes
+nothing under `cmd/evener-hub/frontend`, so it runs in a checkout whose
+frontend directory denies writes. (`make test-web` as a whole is not
+read-only: its own prerequisites write `./evener-dev` and may `npm ci`.)
 `vitest_run_args` selects `--configLoader runner` (Vite's default loader
-writes a bundled config under `node_modules/.vite-temp`), and the plugin
-that restores `dist/PLACEHOLDER` applies to builds only. The whole gate is
-not read-only yet. Vitest still writes its dependency cache to the
-checkout's `.vite-cache`. `npm test`'s `node --test scripts/*.test.mjs`
-phase loads Vite configs with the default loader in
-`viteDepCache.test.mjs`, `browserguard-vite-config.test.mjs` and
-`editorial-preview.test.mjs`, which still write `node_modules/.vite-temp`
-(issue #4193). So a read-only lane still needs a scratch config for focused
-experiments: run
-it with `--configLoader runner --cache=false`, and give the scratch-rooted
-Vite config a `server.fs.allow` that names the checkout, the AppWire
-package and the dependency realpath, or external setup imports fail as
-`Cannot find module '/@fs/…/src/testSetup.ts'` before any test runs. Keep
-the custom config, test files, cacheDir and dependency symlink in scratch,
-reuse the frontend's resolve aliases and test setup, and keep at least two
-workers (the vmThreads isolation floor explained below). These runs are
-probes; canonical verdicts stay with `make test-web`, which cannot run in
-a read-only lane until those writes are gone.
+writes a bundled config under `node_modules/.vite-temp`), the plugin that
+restores `dist/PLACEHOLDER` applies to builds only, and `webCheckSpec` points
+`EVENER_FRONTEND_VITE_CACHE_DIR` at each check's private scratch root, so
+Vitest's dependency cache never lands in the checkout's `.vite-cache` (issue
+#4193). The other `npm test` phases match: `check-package-tests` passes
+`--configLoader runner` to its own Vitest spawns, and the
+`node --test scripts/*.test.mjs` phase loads its configs with the runner
+loader (`viteDepCache.test.mjs`, `browserguard-vite-config.test.mjs`,
+`distPlaceholderPlugin.test.mjs`, and `browserguard-vite.mjs`, which that
+phase spawns; `editorial-preview.test.mjs` does the same and keeps its loads
+inside its own temporary copy).
+
+A focused run in a read-only lane needs those same two things by hand, with
+the real config - no scratch config is needed:
+`EVENER_FRONTEND_VITE_CACHE_DIR=<absolute scratch path outside the checkout>
+npx vitest run <file> --configLoader runner --maxWorkers=2`. The value has to
+be absolute: a relative one resolves against the config root and lands back in
+the checkout (the gate passes an absolute path). Keep a test-file filter, keep
+at least two workers (the vmThreads isolation floor explained below), and
+discard the scratch cache directory afterward.
 
 The frontend unit gate sizes Vitest from the machine's spare capacity through
 `scripts/lib/load-aware-workers.sh`: worker count is the CPUs the process may
@@ -931,15 +997,17 @@ count could not see. Both are start-time readings of a lagging metric, not
 admission control: runs that begin together can still stack. Neither lever
 widens a timeout or replaces an awaitable completion with polling.
 
-One in-band check does not share that protection: the flush-scope hygiene
-meta-test (src/testFlushScopeHygiene.test.ts) parses every test file under
-the frontend's `src/` with the TypeScript compiler inside a single vitest
-test bounded only
-by the default 5000ms, so its runtime grows with the tree and with CPU
-contention (issue #3966). `make test-web` run beside another heavy lane can
-time that one test out with everything else green. Run the heavy local
-gates — `make test-web`, `make vet`, `make lint` — one at a time, and rerun
-the gate alone before diagnosing that timeout as a regression.
+One in-band check used to be the exception: the flush-scope hygiene meta-test
+(src/testFlushScopeHygiene.test.ts) parsed every test file under the frontend's
+`src/` with the TypeScript compiler inside a single vitest test bounded only by
+the default 5000ms, so its runtime grew with the tree and with CPU contention
+and breached the per-test ceiling the timing ratchet enforces
+(`perTestCeilingSeconds` in testing-budget.json, enforced per test class and
+warn-only for a test in no class — #4601) (issue #3966). It now parses
+only the files that can name the
+flush, so its runtime does not scale with the tree. The heavy local gates still
+compete for CPU, so run `make test-web`, `make vet` and `make lint` one at a
+time where you can.
 
 `LOAD_AWARE_LOAD1` replaces the measured load average for every budget the
 helper sizes. The CI `tests` lanes set it to 0, because a fresh runner's own
@@ -1167,25 +1235,99 @@ ubuntu runner, or a Mac with `gtimeout` — and by the CI step's own
 aggregate for the frontend, against the checked-in `testing-budget.json`. It
 exists so a timing regression cannot silently erode the runtime wins
 `docs/superpowers/specs/2026-08-01-test-gate-runtime-design.md` recorded: it
-fails at 1.5x a package's checked-in budget, warns at 1.1x, and applies a flat
-per-test ceiling regardless of package (`testing-budget.json`'s
-`perTestCeilingSeconds`, currently 3s) (kata b6rv). It reuses
+fails at 1.5x a package's checked-in budget and warns at 1.1x. It also applies a
+per-test ceiling, segmented by test class (#4601, below). It reuses
 `gate-surface-lib.sh`, so it measures the same surface `ROOT_FULL=1 make test`
 proves.
 
-Enforcement of the ratios is conditional. A local run only warns. A package over 1.5x its
-budget, or any per-test ceiling breach, is nonzero only under `CHECK=1` in a
-CI-shaped environment (`$CI` set, or `--strict`). A missing or empty
-`testing-budget.json` is an explicit warn state, so `CHECK=1` exits zero until
-`make test-rebaseline` lands a measured baseline. The checked-in baseline
+### Per-Test Ceilings Are Segmented by Test Class
+
+A per-test ceiling checks a test's own wall time, independent of its package's
+budget: one runaway test is a defect on its own. It is not one flat number.
+`testing-budget.json`'s `perTestCeilingClasses` maps each class to a ceiling and
+to the tests that belong to it, by test name (a subtest inherits the class of the
+test it is under). The ceiling is the union of the
+class's largest CI observations across two CI runs + 25%, rounded up to a
+multiple of five seconds (#4601, Jesse's ruling 2026-10-13): the names come from
+the breaches that ruling recorded, so a class holding a 48-second test is not
+held to a 3-second number, and a class member that doubles still trips its
+ceiling.
+
+| class | ceiling | what it covers |
+| --- | --- | --- |
+| delegate-attention & idle | 40s | delegate attention and idle lifecycles |
+| deploy-host integration | 30s | host deploy and remote-host attach |
+| session-activity | 30s | session-activity tree capture |
+| retirement | 30s | daemon retirement lifecycles |
+| eval harness | 20s | memory and prompt evals |
+| plugin-git integration | 15s | plugin materialization over real git |
+| live-stack E2E | 15s | hub and TUI end-to-end suites |
+
+Four classes were removed on 2026-10-14 (Jesse's ruling, issue #4615):
+**dev-tool compile/CLI**, **install**, **transcript large-fixture** and
+**gate-runner integration**. A wall ceiling on these classes measures how busy
+the runner is, not the code, so a strict breach there fails a test that is merely
+waiting on a loaded host. The sighting was #4615: on PR #4497's head
+`TestCrossCompileWindows` was reported at 52.26s against its 15s `dev-tool
+compile/CLI` ceiling — 3.5x, so no margin derived from observations would have
+held — while the same test passed at the previous head, whose 67-line diff was in
+`internal/transcriptindex`, nothing that can add 37 seconds to a Windows
+cross-compile. Their members now fall back to the flat `perTestCeilingSeconds`
+and warn-only in every mode, exactly like the rest of the unclassified backlog.
+
+Two further classes are deliberately absent. **bounded-wait unit** has no ceiling of its
+own yet: a wall ceiling on a test whose whole job is to sit out a wait mostly
+measures the runner, so its members stay unclassified on the flat number below.
+The **web repo-audit** test (`no new copy-only TypeScript tests`) was a class of
+one — a class with one member is a smell — so #4608 split it into one case per
+slice of the tracked TypeScript test files rather than blessing it; its cases
+stay unclassified on the flat number.
+
+A test named in a class is compared **strictly**: a breach is nonzero under
+`CHECK=1` in a CI-shaped environment. A test in **no** class keeps the flat
+`perTestCeilingSeconds` (currently 3s; 2s when a budget file names none) and is
+**warn-only in every mode**, `CHECK=1` included, so the unclassified backlog
+cannot red the gate; give the test a class to enforce it. A test may be named in
+exactly one class: a name matched by two classes, or a class spec that is not an
+object naming a finite, float-convertible `ceilingSeconds` and a non-empty list
+of string test names, is a config error. A class `ceilingSeconds` that cannot
+serve as seconds (a string, bool, null, `1e309`/Infinity/NaN, or an integer too
+large to convert to a float) is a broken config on the every-mode list below,
+naming the class and the field (#4629); a huge but finite value is a legitimate
+ceiling that simply disables that class. The `tests`-list and non-object faults
+FAIL naming the class and drop it, leaving its members on the flat warn-only
+ceiling.
+
+Enforcement of the ratios is conditional. A local run only warns. A package over
+1.5x its budget is nonzero only under `CHECK=1` in a CI-shaped environment (`$CI`
+set, or `--strict`). A per-test ceiling is enforced by class: a test named in a
+class is compared strictly against that class's ceiling (a breach is nonzero
+under `CHECK=1`), while a test in no class keeps the flat number and is
+warn-only in every mode, `CHECK=1` included (#4601, below). A `testing-budget.json`
+that is missing, or whose `packages` map is empty, is an explicit warn state, so
+`CHECK=1` exits zero until `make test-rebaseline` lands a measured baseline; a
+budget file whose top level is not an object, one that cannot be parsed (invalid
+JSON), a `packages` value that is present but not an object, a package budget
+value that is not a finite number, a `perTestCeilingSeconds` that is present but
+not a finite number, a `perTestCeilingClasses` that is present but not an
+object (including `null`), or a class `ceilingSeconds` that is not a finite,
+float-convertible number (including an integer too large to convert), is a broken
+config and fails in every mode, naming the file and the entry (#4609, #4614,
+#4618, #4622, #4629). The checked-in baseline
 predates issue #172's switch to package wall time, so the Go-package ratio check
 stays warn-only even under `CHECK=1` until `make test-rebaseline` rewrites it
 under the new metric (#141): a budget whose Go-package numbers were blessed
 under a different metric is never enforced, and a full rebaseline records the
 metric marker that re-enables enforcement. A narrowed `--modules`/`--no-web`
 rebaseline never adds the marker; it only preserves one a full rebaseline
-already stamped. The `"web"` row and the per-test ceiling keep the metrics
-issue #172 did not change, so both stay enforced either way.
+already stamped. The `"web"` row warns with them: its metric did not change, but
+the checked-in number was blessed on a quiet workstation and a four-core CI
+runner measures the same suite 2.6x to 3.9x higher (356.45s over a 90.77s budget
+on one run), so it is no more comparable to a CI run than the Go numbers are.
+While the file carries no wall-time marker, every ratio failure — Go packages and
+`web` alike — is reported with its numbers and does not fail the run; a budget
+that does carry the marker is enforced as before, and an unclassified per-test
+ceiling breach is warn-only as above.
 
 A broken measurement is not conditional. `go list` or `go test` exiting
 nonzero, or a package `go list` reported that the `go test -json` stream never
@@ -1197,19 +1339,22 @@ package it measured and preserves the rest of the file, so a narrowed run
 (`--modules`, `--no-web`, or a frontend that is not checked out) refreshes
 part of the file instead of deleting the entries it did not measure.
 
-It is deliberately not part of `make merge-approval-gate`, and it is not
-required CI: measuring durations means a second full non-fuzz
-`go test -json` run, which would double the very gate runtime this ratchet
-exists to protect. Wiring real enforcement into CI needs the durations sourced
-from the gate's own run instead of a second one. Deciding how to do that is an
-open follow-up (kata b6rv).
+Enforcement reads the gate's own run, not a second one. When
+`EVENER_GATE_TIMING_TSV` names a file, `make test`'s runner captures the
+ratchet's rows from the tests it already runs — plain modules through
+`go test -json`, a sharded package from its shards' own `-test.v` logs, the
+frontend from the vitest JSON reporter — and writes them there on a green run
+(issue #144). `make merge-approval-gate` passes that file to
+`--check --measured`, so the budget is enforced there without a second non-fuzz
+run; CI's two Go test lanes and its web lane each check the rows their own
+scope produced. A run that writes no file fails the check rather than passing
+silently.
 
 ## The Browser Guards
 
 jsdom evaluates no cascade and reports zero for every box, so an entire class
-of frontend defect is structurally invisible to `vitest`. Real cross-tab
-coordination also needs browser coverage beyond injected channels and fake
-IndexedDB. The guards in `cmd/evener-hub/frontend` cover different contracts:
+of frontend defect is structurally invisible to `vitest`. The guards in
+`cmd/evener-hub/frontend` cover different contracts:
 
 - **`npm run layoutguard`** measures HAND-AUTHORED markup against the real
   `tokens.css` and component stylesheets, in headless Chrome. Cheap — static
@@ -1219,7 +1364,10 @@ IndexedDB. The guards in `cmd/evener-hub/frontend` cover different contracts:
 - **`npm run shellguard`** renders the production AppShell (rail + workspace)
   with a scripted tall sidebar tree and asserts the PAGE never grows taller
   than the viewport — the rail's own body is the scroll container, not the
-  document. The floating fixture waits for the restored workspace before opening
+  document. The Overview sweep also opens the Tasks tab over a scripted
+  task list taller than any swept viewport and asserts the tab's own
+  scroller owns that list while the document stays at the viewport height.
+  The floating fixture waits for the restored workspace before opening
   Settings. A held lazy DockHost request verifies that it captures no pane ID
   before restoration, then proves real placement, overhang, native input and
   resize after the request resumes. Workspace restoration and Dockview stay real.
@@ -1233,16 +1381,9 @@ IndexedDB. The guards in `cmd/evener-hub/frontend` cover different contracts:
   scroll port itself shrinks (the pane header growing). Paged-open readiness
   waits through asynchronous cache/read admission until the actual scroll port
   mounts and its geometry settles. An explicitly deferred read exercises those
-  pre-mount frames without a fixed delay or a wider readiness deadline.
-- **`node scripts/sessioncacheguard/run.mjs`** drives TWO REAL TABS through the
-  real session-cache store, native BroadcastChannel and IndexedDB, with only
-  AppWire scripted. It proves sibling deletion suppression and refusal to
-  resurrect, clear-epoch suppression before the receiving tab does storage I/O,
-  and version/source-id filtering. A same-source message is ignored by its
-  owner but accepted by the other tab. Successful writes without deletion or
-  clear are the controls. Native message-delivery barriers bound the negative
-  filtering checks without fixed sleeps. It does not cover display-settings
-  synchronization, hub/daemon behavior, or native/mobile contexts.
+  pre-mount frames without a fixed delay or a wider readiness deadline. A pane
+  that unmounts under any post-settle wait must report it by name ("unmounted
+  during the scroll-away wait"), never as the harness's own mount error.
 
 The first covers static geometry; the next three cover the Session pane, the
 AppShell, and the Spawn pane, each with its own responsive layout and failure
@@ -1922,7 +2063,7 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | Command | Summary | What it proves | Trigger | Requires | Fails when |
 | --- | --- | --- | --- | --- | --- |
 | `make test-web` | The frontend's single gate entry point: typecheck, unit tests, then lint, run concurrently. | jsdom/unit-level frontend behavior, type safety, and source lint. | Local pre-merge; required CI web job. | The Go toolchain (the gate is the prebuilt evener-dev) and the installed Node dependencies; deterministic after those. Each check owns a private process home plus temporary/XDG roots and disables Node's compile cache; no real browser, provider, or network service. | Any of the three streams is nonzero; a missing or unhealthy frontend install fails preflight. |
-| `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard, transcriptscrollguard, sessioncacheguard, retirementguard, mermaidguard) plus the full-stack `web-skillguard` (TestSkillComposerBrowser behind the `browserguard` tag) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, the real Spawn staging/breakpoint path, the real transcript scroll/jump-to-latest path, session-cache deletion healing, clear-epoch suppression and envelope filtering across two real tabs with native BroadcastChannel and IndexedDB, and the real selected-thread recovery contract when its daemon retires and is replaced; the skill guard additionally drives the production composer through a REAL hub and two REAL `evener serve` daemons with only the LLM provider scripted. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium and the Go toolchain (the gate is the prebuilt evener-dev); each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. retirementguard also needs the Go toolchain: its npm script runs the isolated TestRetirementBrowser fixture, which starts the Hub and drives the guard against it. The skill guard also needs the Go toolchain and the built frontend, which this target builds first (`build-web`); the gate still builds one when the dist is missing. | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
+| `make test-web-browser` | The real browser-only frontend guards (layoutguard, overflowguard, shellguard, spawnguard, transcriptscrollguard, retirementguard, mermaidguard) plus the full-stack `web-skillguard` (TestSkillComposerBrowser behind the `browserguard` tag) that jsdom cannot evaluate. | Headless Chrome evaluates real CSS geometry, the real Session reducer/tree, the real Spawn staging/breakpoint path, the real transcript scroll/jump-to-latest path, and the real selected-thread recovery contract when its daemon retires and is replaced; the skill guard additionally drives the production composer through a REAL hub and two REAL `evener serve` daemons with only the LLM provider scripted. | Required CI web job; local pre-merge on a Chrome-capable host. | Chrome/Chromium and the Go toolchain (the gate is the prebuilt evener-dev); each guard gets a private process home, temporary/XDG roots, and a private browser profile. No WebKit/Safari runner. retirementguard also needs the Go toolchain: its npm script runs the isolated TestRetirementBrowser fixture, which starts the Hub and drives the guard against it. The skill guard also needs the Go toolchain and the built frontend, which this target builds first (`build-web`); the gate still builds one when the dist is missing. | Any guard error, Vite failure, cleanup failure, or missing Chrome/Chromium is nonzero. |
 | `make test-native` | The native iPhone app and its shared session core gate. | Metro bundles the real iOS entry point, the native and shared-session Vitest suites plus strict native TypeScript compilation pass against the checked-in Expo/React Native sources, the `mobile-native/src` and `mobile/src` sources match the native Biome formatter config (`mobile-native/biome.jsonc`, the `npm run lint` step), and the hand-run scripts/*.mts tools still resolve their module graph under tsx. | Native CI; local pre-merge when native or shared mobile sources change. | Node 22.13+ and an already-installed mobile-native dependency tree; does not contact a hub or provider - script resolution is checked without loading anything, since every one of those scripts opens a socket the moment its body runs. | Bundling, native tests, shared-session tests, native typechecking, formatting, or script module resolution fail. |
 | `make native-preflight` | Ensure the mobile-native dependency install is present, real, and lockfile-compatible before any native target runs. | mobile-native/node_modules exists as a real directory, matches package-lock.json, and holds an executable .bin/expo, so Metro bundles with the pinned Expo instead of whatever `npx` finds on PATH. | Setup prerequisite for the native gates. | Node 22.13+; never installs, refusing instead with the command to run. | node_modules is missing, is a symlink (the bundler resolves no module through one, whatever the lockfiles say), is older than package-lock.json, or has no executable .bin/expo; the message names `cd mobile-native && npm ci`. |
 | `make test-native-bundle` | The native app's Metro bundling gate. | Metro resolves every specifier the real iOS entry point reaches — the app's own sources, the shared mobile/ and frontend sources its resolveRequest redirects, and the AppWire client wherever that package lives — and the export writes an iOS bundle. | Native CI (via make test-native); local pre-merge when native sources or metro.config.js change. | Node 22.13+ and an already-installed mobile-native dependency tree; no device, simulator, packager, hub, or provider. Runs with a private process home plus temporary and XDG roots and passes --clear, so the verdict never comes from a warm Metro cache. ~10s on a developer Mac, bounded by `timeout 900` where coreutils provides it (the ubuntu runner, or a Mac with gtimeout); without it the run is unbounded and the CI step's timeout-minutes is the backstop. | Metro cannot resolve a module, the export fails, or the export writes no iOS bundle. |
@@ -1930,10 +2071,10 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | `make api-package-preflight` | Ensure the appwire-client/typescript dependency install is present and healthy before the qualification runner starts. | node_modules carries the pinned tsc and the ws the qualification runner imports, or is repaired with npm ci. | Setup prerequisite for test-api-package. | Node 22+; never runs npm ci through a symlinked node_modules. | node_modules is missing and npm ci fails, is a mismatched symlink, or lacks a working tsc / ws; on a real install the message names `cd appwire-client/typescript && npm ci`, and on a symlinked one it names the shared install instead. |
 | `make test-api-package` | The independently consumable AppWire package qualification gate. | A packed package installs outside the checkout, exposes ESM and CommonJS runtime/type entry points, and executes its shipped read-only example against a scripted local WebSocket server. | Package CI; local pre-merge when protocol sources change. | Node 22+ and the protocol package's installed development dependencies (installed by api-package-preflight); qualification makes no external network requests. | Build, pack, outside-checkout install, runtime import/require, declaration checking, example protocol exchange or output validation fails. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. TEST_SCOPE picks the Go modules: all (default), root (the root module alone) or nonroot (every other module); CI runs root and nonroot on separate runners. | Any module, frontend stream, or setup failure is nonzero. |
-| `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
+| `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, full tests, and native/package qualification. | make lint, make build, ROOT_FULL=1 make test, the timing budget checked against the rows that same test run produced, make test-native and make test-api-package all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. The timing check reads the gate's own run (EVENER_GATE_TIMING_TSV), so no test executes twice; it is strict where the ratchet's own policy is (CI) and warn-only on a local run; a blessed-class per-test ceiling breach is nonzero there, while an unclassified test over the flat ceiling only warns (#4601). | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
 | `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0 and AGENT_PARALLEL=6 to cap test concurrency under -race's ~10x slowdown, while cmd/evener-hub and cmd/evener stay sharded (12 hub shards, no cost survey: under -race the survey costs as much as the run). RACE_SCOPE defaults to all; CI uses the explicit root scope plus agent and nonagent on separate runners. The two new scopes derive from GO_MODULES; nonroot remains the local aggregate. RACE_ROOT_PART (root scope only) splits the root module across runners: all (default), hub (only cmd/evener-hub's shards), or rest (everything else in the root module). | Any race report, test failure, or setup failure is nonzero. |
 | `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
-| `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. While the budget file's metric marker is absent (the checked-in pre-#172 baseline, until a rebaseline rewrites it under package wall time), the Go-package ratio check is suspended to a warning; the frontend ("web") row and the per-test ceiling keep their unchanged metrics and stay enforced. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A narrowed bless refreshes the packages it measured and preserves the rest of the file instead of deleting entries it did not measure; a full rebaseline also drops entries go list no longer reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x its budget is nonzero once the budget file carries the wall-time metric marker; while the marker is absent those ratios are warnings. The "web" row and any per-test ceiling breach are metric-independent and nonzero regardless, and a missing or empty budget file always exits zero. |
+| `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a per-test ceiling segmented by test class: a test named in a class is compared strictly against that class's ceiling (a breach is nonzero under CHECK=1 in a CI-shaped environment), while a test in no class keeps the flat perTestCeilingSeconds and is warn-only in every mode, CHECK=1 included, so the unclassified backlog cannot red the gate (#4601). While the budget file's metric marker is absent (the checked-in pre-#172 baseline, until a rebaseline rewrites it under package wall time), the Go-package ratio check is suspended to a warning; the frontend ("web") row warns with them: its metric did not change, but the checked-in number was blessed on a quiet workstation and a four-core CI runner measures the same suite 2.6x-3.9x higher, so it is not comparable to a CI run either. While the file carries no wall-time marker every ratio warns with its numbers. | Local/on-demand. merge-approval-gate runs the check through --measured over the rows its own ROOT_FULL=1 make test run captured, so enforcing the budget no longer needs a second full test run (issue #144); invoked bare it still measures by running the suite itself. CHECK=1 enforces the ratios; bare invocation only measures and prints them, except for a broken measurement, which is nonzero either way. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | A broken measurement — go list or go test exiting nonzero, or a go list package with no terminal event in the stream — is nonzero in every mode, and --bless refuses it. A narrowed bless refreshes the packages it measured and preserves the rest of the file instead of deleting entries it did not measure; a full rebaseline also drops entries go list no longer reports. Under CHECK=1 in a CI-shaped environment a Go package over 1.5x its budget is nonzero once the budget file carries the wall-time metric marker; while the marker is absent those ratios warn, the "web" row among them. A blessed-class per-test ceiling breach is nonzero under CHECK=1; an unclassified test over the flat ceiling is reported and named but nonzero in no mode. A missing budget file, or one whose packages map is empty, always exits zero; a malformed budget file (a top-level value that is not an object, invalid JSON, a packages value that is present but not an object, a package budget value that is not a finite number, a perTestCeilingSeconds that is present but not a finite number, a perTestCeilingClasses that is present but not an object, or a class ceilingSeconds that is not a finite, float-convertible number including an integer too large to convert) is a broken config and is nonzero in every mode, naming the file and the entry (#4609, #4614, #4618, #4622, #4629). |
 
 ### Other targets
 

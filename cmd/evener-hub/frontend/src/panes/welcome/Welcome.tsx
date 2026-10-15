@@ -29,6 +29,7 @@ export default function Welcome({ params, focused }: PaneProps<WelcomePaneParams
       <EmptyState
         title="No session open"
         hint={params.note}
+        reason="no-session"
         size="display"
         action={<WelcomeContent showNewSession showHints />}
       />

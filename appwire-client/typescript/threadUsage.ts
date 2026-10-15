@@ -107,7 +107,10 @@ export function sessionTokens(model: ThreadModel): SessionTokens | null {
 // visible behaviour change (D18 B3), not this move.
 export type UsageSummary = Readonly<
   EvenerUsage &
-    Pick<EvenerThread, "cost" | "contextUsed" | "contextWindow" | "contextRemaining" | "contextPressure"> & {
+    Pick<
+      EvenerThread,
+      "cost" | "contextUsed" | "contextWindow" | "contextRemaining" | "contextPressure" | "contextAssumed"
+    > & {
       durationMs?: number;
     }
 >;
@@ -122,6 +125,7 @@ export function threadUsageSummary(evener: EvenerThread): UsageSummary {
     contextWindow: evener.contextWindow,
     contextRemaining: evener.contextRemaining,
     contextPressure: evener.contextPressure,
+    contextAssumed: evener.contextAssumed,
     durationMs: evener.workMillis,
   };
 }

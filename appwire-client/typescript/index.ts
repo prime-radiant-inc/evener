@@ -154,12 +154,16 @@ export {
   unconfiguredLabel,
 } from "./credentialLabels";
 export type {
+  DelegateDotFields,
+  DelegateDotState,
   DelegateEndingFields,
   DelegateModelFields,
   DelegateTiming,
   DelegateTimingFields,
 } from "./delegateDetails";
 export {
+  DELEGATE_QUIET_AFTER_MS,
+  delegateDotState,
   delegateEndingText,
   delegateModel,
   delegateNotResumableText,
@@ -218,6 +222,8 @@ export {
   ErrorInvalidHostField,
   ErrorMarketplaceRemoveApplied,
   ErrorTranscriptHistoryFailed,
+  ErrorTranscriptIndexLocked,
+  ErrorTranscriptIndexRebuilding,
   ErrorUpgradeRequired,
   errorKind,
   errorText,
@@ -233,11 +239,15 @@ export {
   isMethodNotFound,
   isStaleCursorError,
   isTranscriptHistoryFailedError,
+  isTranscriptIndexLockedError,
+  isTranscriptIndexRebuildingError,
   isUpgradeRequiredError,
   mutationErrorData,
   RequestTimeoutError,
+  StoreMessageError,
   sessionActionError,
   sessionActionHeadline,
+  storeErrorText,
   WireError,
   wireRejectionPayload,
 } from "./errors";
@@ -427,6 +437,7 @@ export {
   memoryProgress,
   memoryReadSummary,
   memorySearchSummary,
+  memoryWritePage,
   memoryWriteSummary,
 } from "./memorySteps";
 export type {
@@ -463,7 +474,11 @@ export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
 export type {
   CachedSessionHistory,
+  CachedSessionItem,
   CachedSessionRecord,
+  CurrentTranscriptAdmission,
+  CurrentTranscriptFields,
+  CurrentTranscriptState,
   NotificationRoutingKey,
   OlderItemPageMerge,
   TurnHistoryFoldDetail,
@@ -472,12 +487,17 @@ export type {
 export {
   applyHistoryReadFailure,
   applyNotification,
+  applyOverlayEndForTranscriptHandoff,
   applyReadModel,
   applyReadResponse,
   cachedSessionRecord,
   collectAuthoritativeMutationIds,
   comparePositions,
   copyItemTextPresence,
+  currentTranscriptState,
+  decodeCurrentTranscriptState,
+  decodeTranscriptItem,
+  encodeTranscriptItem,
   foldWarningParams,
   hydrateThread,
   imageSessionRouteForSession,
@@ -494,16 +514,23 @@ export {
   mergeOlderItemPage,
   mergeOlderItemPageWithFolds,
   mergeTailTurns,
+  mergeTranscriptItemVersioned,
+  mergeTranscriptReaderWindow,
+  mergeTranscriptTurnVersioned,
   mergeTurnHistory,
   mergeTurnHistoryWithFolds,
   notificationRoutingKey,
   notificationTargetsThread,
   prependOlderTurns,
+  pruneBackgroundHistoryBodies,
   readDisposition,
   readWindowBounds,
   resolvePendingEscalation,
   threadModelFromCache,
+  threadModelFromCurrentState,
 } from "./reducer";
+export type { GroupedSearch, GroupedSearchRow } from "./searchGrouping";
+export { countSearchMatches, groupSearchResults } from "./searchGrouping";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export type { QuietState } from "./sessionActivity";
@@ -551,11 +578,12 @@ export {
 export type { AdvancedFieldValue, AdvancedValues, ChipScalars } from "./spawnSchema";
 export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from "./spawnSchema";
 export type { StableDelegateState } from "./stableDelegate";
-export { stableDelegateDisplayStatus } from "./stableDelegate";
+export { delegateStatedIntent, delegateWorkText, stableDelegateDisplayStatus } from "./stableDelegate";
 export {
   isParentSteer,
   isSuppressedSteeringKind,
   type LabelledSteeringKind,
+  labelledSteeringKind,
   STEERING_KIND_LABELS,
   steeringLabel,
 } from "./steeringLabels";
@@ -780,7 +808,6 @@ export {
 } from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
-
 export type * from "./types.gen";
 export {
   HOST_REQUEST_METHODS,

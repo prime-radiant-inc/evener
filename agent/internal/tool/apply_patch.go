@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -15,13 +16,19 @@ import (
 // race-safe fd-anchored enforcement). This is a best-effort implementation
 // intended for local agent loops.
 func ApplyPatch(fm execenv.FileMutator, patch string) (string, error) {
+	return ApplyPatchCtx(context.Background(), fm, patch)
+}
+
+// ApplyPatchCtx is ApplyPatch with the caller's context threaded to each op's
+// read, so a cancelled call ends a read parked on a stream.
+func ApplyPatchCtx(ctx context.Context, fm execenv.FileMutator, patch string) (string, error) {
 	ops, err := parseV4APatch(patch)
 	if err != nil {
 		return "", err
 	}
 	var touched []string
 	for _, op := range ops {
-		paths, err := op.apply(fm)
+		paths, err := op.apply(ctx, fm)
 		if err != nil {
 			return "", err
 		}
@@ -34,7 +41,18 @@ func ApplyPatch(fm execenv.FileMutator, patch string) (string, error) {
 }
 
 type patchOp interface {
-	apply(fm execenv.FileMutator) ([]string, error)
+	apply(ctx context.Context, fm execenv.FileMutator) ([]string, error)
+}
+
+// readFileRawCtx reads path through fm with the caller's context when fm
+// carries it, else through the ctx-less entry — the optional-capability
+// fallback the other seams use, so a FileMutator without the capability is
+// unaffected.
+func readFileRawCtx(ctx context.Context, fm execenv.FileMutator, path string) ([]byte, error) {
+	if cf, ok := fm.(execenv.ContextualFileMutator); ok {
+		return cf.ReadFileRawCtx(ctx, path)
+	}
+	return fm.ReadFileRaw(path)
 }
 
 type addFileOp struct {
@@ -42,7 +60,7 @@ type addFileOp struct {
 	lines []string
 }
 
-func (o addFileOp) apply(fm execenv.FileMutator) ([]string, error) {
+func (o addFileOp) apply(_ context.Context, fm execenv.FileMutator) ([]string, error) {
 	content := strings.Join(o.lines, "\n")
 	if !strings.HasSuffix(content, "\n") {
 		content += "\n"
@@ -57,7 +75,7 @@ type deleteFileOp struct {
 	path string
 }
 
-func (o deleteFileOp) apply(fm execenv.FileMutator) ([]string, error) {
+func (o deleteFileOp) apply(_ context.Context, fm execenv.FileMutator) ([]string, error) {
 	if err := fm.RemovePath(o.path); err != nil {
 		return nil, err
 	}
@@ -70,8 +88,8 @@ type updateFileOp struct {
 	hunks  [][]string // diff lines per hunk (may include leading @@ hint line)
 }
 
-func (o updateFileOp) apply(fm execenv.FileMutator) ([]string, error) {
-	origBytes, err := fm.ReadFileRaw(o.path)
+func (o updateFileOp) apply(ctx context.Context, fm execenv.FileMutator) ([]string, error) {
+	origBytes, err := readFileRawCtx(ctx, fm, o.path)
 	if err != nil {
 		return nil, err
 	}

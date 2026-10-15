@@ -386,6 +386,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] message search: %v\n", err)
 	} else {
 		defer func() { _ = messageSearch.Close() }()
+		// A transcript whose index refused a refresh read asks the repair
+		// registry's single lane for the shared repair.
+		messageSearch.SetRepairAsker(transcriptIndexRepairs.askFromRefresher)
 	}
 	providersConfigPath, noUserLayer := cmdutil.ProvidersConfigPath()
 	credentialsPath := cmdutil.CredentialsPath()
@@ -827,6 +830,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	startBackground := func(fn func()) {
 		background.Go(fn)
 	}
+	// Transcript-index repairs are detached on purpose: a multi-minute rebuild
+	// must not hold hub exit, so the repair goroutine deliberately escapes
+	// this awaited group and only the context gates starting one.
+	transcriptIndexRepairs.wire(ctx)
 	sessionCredentials.start(ctx, startBackground)
 	// Populate the roster before serving so the first sidebar request can't hit
 	// an empty roster (the "flash of no sessions" right after a restart). Probes

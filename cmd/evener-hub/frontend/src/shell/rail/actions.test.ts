@@ -1,18 +1,21 @@
-// @vitest-environment node
+// @vitest-environment jsdom
 
 import { type SessionDeleteResponse, WireError } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { IDBFactory } from "fake-indexeddb";
+import { capability, completeSession, manifest, wireSnapshot } from "@evener/appwire-client/testing/navigation";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { archivedListKey, archivedListStore, resetArchivedListStoreForTests } from "../../stores/archivedList";
 import { connectionStore } from "../../stores/connection";
-import { SessionCacheIndexedDB } from "../../stores/sessionCacheIndexedDB";
-import { holdNextWriteTransaction } from "../../stores/testing/stalledIndexedDB";
+import { navigationStore } from "../../stores/navigation/store";
+import { SessionEntryCache } from "../../stores/sessionEntryCache";
+import { holdNextTransaction } from "../../stores/testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
   setCacheChannelFactoryForTests,
-  setSessionCacheAdapterForTests,
+  setProductionEntryCacheForTests,
   threadsStore,
 } from "../../stores/threads";
 import {
@@ -173,6 +176,51 @@ describe("setFavorite", () => {
 });
 
 describe("setArchived", () => {
+  test("archive converges visible navigation when a hidden Live page fails", async () => {
+    const client = new FakeClient("ready");
+    let revision = 1;
+    client.on("evener/archive/set", () => {
+      revision = 2;
+      return {
+        ok: true,
+        navigation: { generation_id: "generation_test", targets: [{ kind: "section", section: "live", revision }] },
+      };
+    });
+    client.on("evener/navigation/read", (params) => {
+      if (params.resource === "manifest") return wireSnapshot(params, manifest());
+      if (params.resource === "section" && params.offset === 0)
+        return wireSnapshot(
+          params,
+          { sessions: [completeSession({ ref: "live-001", live: true })], remaining: 5, truncated: true },
+          `"visible-${revision}"`,
+          revision,
+        );
+      if (params.resource === "section" && params.offset === 4) throw new Error("hidden page unavailable");
+      throw new Error(`unexpected navigation read ${JSON.stringify(params)}`);
+    });
+    connectionStore.getState().connect(client);
+    navigationStore.init(client, capability());
+    const background = navigationStore.acquireBackgroundLivePages();
+    try {
+      await navigationStore.getState().loadSection("live", 0, 2);
+      const hiddenPage = await background.load(4, 2);
+      expect(hiddenPage.error).toBeInstanceOf(Error);
+
+      const receipt = await setArchived("session", "live-001", true);
+      await navigationStore.getState().applyNavigationMutation(receipt.navigation);
+
+      expect(receipt.failedSources).toEqual([]);
+      expect(
+        navigationStore.getState().resources.get(keyID({ kind: "section", section: "live", offset: 0, limit: 2 }))
+          ?.loadedRevision,
+      ).toBe(2);
+    } finally {
+      background.release();
+      navigationStore.reset();
+      client.close();
+    }
+  });
+
   test("sends the typed AppWire request for a session and returns its receipt", async () => {
     const response = { ok: true, navigation: { generation_id: "g1", targets: [] } };
     const client = new FakeClient();
@@ -300,9 +348,13 @@ describe("delete response fences", () => {
       // Keep the real cache lookup's deadline still while its IndexedDB completion
       // is held. The transport and browser event gates determine the ordering.
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      const adapter = new SessionCacheIndexedDB({ indexedDB: new IDBFactory() });
-      setSessionCacheAdapterForTests(adapter);
-      const lookup = holdNextWriteTransaction(["records", "meta"]);
+      const adapter = new SessionEntryCache({
+        indexedDB: new IDBFactory(),
+        keyRange: IDBKeyRange,
+        databaseName: `actions-${crypto.randomUUID()}`,
+      });
+      setProductionEntryCacheForTests(adapter);
+      const lookup = holdNextTransaction(["transcriptMeta"], "readonly");
       const postMessage = vi.fn();
       setCacheChannelFactoryForTests(
         () => Object.assign(new EventTarget(), { postMessage, close() {} }) as unknown as BroadcastChannel,

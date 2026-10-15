@@ -192,6 +192,11 @@ func validateCandidates(candidates []TranscriptItemCandidate) error {
 }
 
 func comparePosition(a, b appwire.ThreadItemPosition) int {
+	return ComparePosition(a, b)
+}
+
+// ComparePosition orders every part of an atomic transcript item position.
+func ComparePosition(a, b appwire.ThreadItemPosition) int {
 	return cmp.Or(cmp.Compare(a.Entry, b.Entry), cmp.Compare(a.Item, b.Item), cmp.Compare(a.Sub, b.Sub))
 }
 

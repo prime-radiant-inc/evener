@@ -106,7 +106,8 @@ describe("PinSectionPicker", () => {
     );
 
     const first = render(<PinSectionPicker {...props()} />);
-    expect(screen.getByRole("status").textContent).toMatch(/loading sections/i);
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Pin sections" })).toBeNull();
     expect(fn).toHaveBeenCalledTimes(1);
     // Re-seed with just [CLIENT] so the resolved catalog shows one section.
     seedPinCatalog([CLIENT]);
@@ -186,7 +187,7 @@ describe("PinSectionPicker", () => {
   });
 
   test("preserves entered text and shows the server error inline after rejection", async () => {
-    const onAssign = vi.fn().mockRejectedValue(new Error("section name already exists"));
+    const onAssign = vi.fn().mockRejectedValue(new WireError("section name already exists", -32602));
     render(<PinSectionPicker {...props({ onAssign })} />);
     const user = userEvent.setup();
 
@@ -199,20 +200,64 @@ describe("PinSectionPicker", () => {
     expect(input.value).toBe("Research");
   });
 
+  // A plain JS exception's message was never written for a person, so it
+  // must not reach the user on any of the picker's request paths.
+  const rawException = "TypeError: cyclic object value";
   test.each([
-    ["only whitespace", "   ", "Section name is required"],
-    ["81 Unicode code points", "界".repeat(81), "Section names must be 80 characters or fewer"],
-  ])("rejects %s before assigning", async (_case, value, message) => {
+    [
+      "loading the sections",
+      async () => {
+        const fn = navigationStore.getState().loadPinCatalogPages as ReturnType<typeof vi.fn<LoadPinCatalogPages>>;
+        fn.mockRejectedValueOnce(new Error(rawException));
+        render(<PinSectionPicker {...props()} />);
+      },
+    ],
+    [
+      "pinning to an existing section",
+      async () => {
+        render(<PinSectionPicker {...props({ onAssign: vi.fn().mockRejectedValue(new Error(rawException)) })} />);
+        await userEvent.setup().click(await screen.findByRole("button", { name: "Client" }));
+      },
+    ],
+    [
+      "pinning to a new section",
+      async () => {
+        render(<PinSectionPicker {...props({ onAssign: vi.fn().mockRejectedValue(new Error(rawException)) })} />);
+        const user = userEvent.setup();
+        await user.click(await screen.findByRole("button", { name: "New section…" }));
+        await user.type(screen.getByRole("textbox", { name: "Section name" }), "Research");
+        await user.click(screen.getByRole("button", { name: "Create and pin" }));
+      },
+    ],
+  ])("reports a plain exception while %s without its raw text", async (_case, fail) => {
+    await fail();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent?.trim()).not.toBe("");
+    expect(alert.textContent).not.toContain(rawException);
+  });
+
+  test.each([
+    ["only whitespace", "   "],
+    ["81 Unicode code points", "界".repeat(81)],
+  ])("rejects %s with an alert the name field describes, before assigning", async (_case, value) => {
     const onAssign = vi.fn().mockResolvedValue(undefined);
     render(<PinSectionPicker {...props({ onAssign })} />);
     const user = userEvent.setup();
 
     await user.click(await screen.findByRole("button", { name: "New section…" }));
-    await user.type(screen.getByRole("textbox", { name: "Section name" }), value);
+    const input = screen.getByRole("textbox", { name: "Section name" }) as HTMLInputElement;
+    await user.type(input, value);
     await user.click(screen.getByRole("button", { name: "Create and pin" }));
 
-    expect(screen.getByRole("alert").textContent).toBe(message);
+    const alert = screen.getByRole("alert");
+    expect(input.getAttribute("aria-describedby")).toBe(alert.id);
     expect(onAssign).not.toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Section name" })).toBe(input);
+    expect(input.value).toBe(value);
+    await user.type(input, "x");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(input.hasAttribute("aria-describedby")).toBe(false);
   });
 
   test("Cancel closes and Dialog restores focus to the opener", async () => {

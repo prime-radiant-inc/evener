@@ -206,8 +206,8 @@ up to 4,096 Unicode code points, including the ellipsis when truncated;
 reports have no preview. Terminal errors retain their separate reason and error
 fields. The browser's expanded delegate activity detail presents a non-empty
 preview as a compact message from the delegate's name, with the name resolving
-through the standard delegate entity card and transcript-open control. Opening
-the child transcript remains the path to the full conversation.
+through the standard delegate entity card and its open-conversation control.
+Opening the row loads the child's conversation pane directly.
 
 A delegate that reports and then runs more turns in its finalization drain
 settles on its latest report, so `reportPreview` shows the newer one while the
@@ -219,6 +219,46 @@ to `reportPreview`. Each reaches its owner's transcript as its own
 `<delegate-notification kind="update">` row, which the browser renders as a
 "Delegate update" card and the phone as "<name> sent an update", with the
 delegate's message beneath.
+
+A running delegate's row carries `latestIntent`, the intent line of its newest
+in-flight tool call: the child session states the line when it launches the
+call, the owner's controller journals it per run generation, and the row
+shows it while the run is open. The read and the frame apply the same
+200-code-point excerpt treatment as `name`, flattening whitespace and keeping
+an ellipsis when truncated. Run settlement clears it; a resumed run starts
+with none until its child states one; a restored tree shows the journaled
+value until the child's next report. The controller publishes the line on the
+delegate update notification at most once every five seconds, so a burst of
+tool calls costs at most one frame per window while the standing line is
+never dropped.
+
+Clients show the line in place of the status word only while the row is
+non-terminal and the line is non-empty; every other row state keeps today's
+status text on the web, and the status word stays reachable — the sidebar
+row's dot label and title, the activity tree's row description, and the
+phone's accessibility label keep reading it. The merge rides the existing bounded
+preview gate: a client that has not advertised it keeps the read path alone,
+and an absent, over-long or malformed value applies as omitted rather than
+dropping the row. Older daemons never send the field, and their rows keep
+today's status word everywhere.
+
+A subagent row's leading mark is the session status dot on every surface, with
+one state the session vocabulary does not have: quiet. An open run shows the
+alive dot while fresh, dims it to quiet ink once its latest activity passes
+the shared twenty-second threshold, reads amber for attention and red for
+failure (a diamond on the web, so failure never depends on hue alone), and
+shows no mark once settled, a settled failure excepted: its red mark is its
+outcome. One shared client rule computes the state and the
+threshold, so the web sidebar, the web activity tree's delegate rows and the
+phone's list read the same dot and flip at the same instant: the sidebar times
+one threshold wake per running row, the tree's live tick covers its rows, and
+the phone reuses its existing quiet wake. Quiet stays truthful, moving from
+the word to the dot: the phone's why line shows the intent, else the running
+command, else the subagents it waits on, and otherwise stays empty while the
+dot alone speaks, its failed xmark and done checkmark retired beside the band
+headers that already carry those states. Shell-job rows keep their own marks
+and status words everywhere; the timeline, tray and board keep their own
+quiet-word contracts.
 
 Both the delegate list and transcript roster carry the authoritative
 `runGeneration`. The phone joins a report only when owner, delegate identity and
@@ -237,7 +277,7 @@ continuation cursor.
 A thread's transcript roster lists the delegates in its session's subtree: a
 root's whole tree, or everything below a subagent. Every row still names the
 root as its owner. `evener/delegate/updated` reaches the root's thread and the
-thread of each live ancestor subagent, so an open subagent transcript keeps its
+thread of each live ancestor subagent, so an open subagent conversation keeps its
 rows current. A released ancestor gets no live updates; its next thread read
 lists the rows afresh. The [status roster](../../agent/status.go) and the
 [update routing](../../agent/delegate_runtime.go) define this boundary.
@@ -414,7 +454,7 @@ authority. Loaded descendants whose parents have not arrived remain visible
 with incomplete relationship evidence. Rendering keys qualify resource IDs with
 their authoritative refs. Actions keep the raw logical ID: job output uses the
 returned job owner ref, delegate stopping addresses its controller root, and a
-child transcript opens the returned child ref. A rendering key never becomes an
+child conversation opens the returned child ref. A rendering key never becomes an
 action argument. The [delegate stop handler](../../server/appwire_runtime.go)
 checks that root mutation boundary. Optional usage fields stay absent when unknown.
 Job output panes keep the logical job ID as their title when descriptive
@@ -467,6 +507,8 @@ Output no longer retained has a separate notice; useful cached text below the
 new floor remains readable. UTF-8 and ANSI state join only across contiguous
 bytes, with bounded decoder carry across known eviction. A gap starts an
 independent decoding range. Long lines render as bounded source-byte fragments.
+A page, a trim or a window join decodes only the bytes whose rows it changes;
+settled rows carry over, so per-page cost tracks the page rather than the window.
 
 Each open pane permits one output read at a time. A visible running pane reads
 the latest output every second while serving visible history demand between
@@ -525,9 +567,9 @@ require separate qualification.
 
 ## Automatic agent cascade
 
-On desktop, activating a delegate row in Agents opens or reuses a read-only
-agent cascade in the secondary pane group. The originating session or transcript
-keeps its ordinary panel, tab, group and lifetime. A main center source remains
+On desktop, activating a delegate row in Agents opens or reuses the agent
+cascade in the secondary pane group. The originating session keeps its ordinary
+panel, tab, group and lifetime. A main center source remains
 mounted with its composer and reader. A secondary source follows the group's
 normal inactive-tab mounting rules while retaining its work.
 
@@ -564,8 +606,16 @@ inspection is open. A retained source in an existing in-place cascade keeps
 that demand even while collapsed. Another same-ref reader cannot adopt or cancel
 it. Ordinary navigation can adopt a genuinely disposed predecessor's pending
 demand. The inspector's footer and shared sidebar stay scoped to the selected
-leaf, including while the reader selects text in a parent. Each ordinary pane's
-footer remains bound to its own conversation.
+leaf, including while the reader selects text in a parent. Opening Overview
+from an embedded column's own chrome holds that column's scope explicitly —
+the sidebar describes that conversation, its checkmarks mark it, and its
+breadcrumbs show its own ancestry — until the workspace scope moves, Overview
+closes, or another open request names a different scope, and the cascade keeps
+focus even when an ordinary pane for that conversation exists. A focus-based
+open request (a footer chip, an ordinary pane's Overview) releases the held
+scope and leaves the sidebar, its preference saves and its checkmarks with the
+focused conversation. Each ordinary pane's footer remains bound to its own
+conversation.
 
 Columns and spines expose Agents, Jobs, Watches and Tasks peeks, including empty
 Tasks. A column's activity controls render below its transcript content, with
@@ -608,8 +658,7 @@ Inspection preserves source draft, selected skills and commands, text-owned
 UTF-16 mention locations, staged attachments, pending encodes, queued inputs and
 mutation identity. Opening and closing inspection preserve the visible source
 row across viewport width and height changes, including later composer-height
-settlement. Ordinary session, read-only transcript and cascade browser readers
-retain the visible entry. A width change keeps approximate progress through its
+settlement. Ordinary session and cascade browser readers retain the visible entry. A width change keeps approximate progress through its
 usable reading depth, and an entry whose tail is showing keeps that tail in
 place; a height-only change keeps the reading line where it was. The existing
 transcript registration owns that intent;
@@ -644,8 +693,8 @@ or active recovery identity. Already durable input still belongs to the existing
 mutation dispatcher; retiring its editor does not cancel accepted work.
 
 Saved workspace intent contains the selected ref, validated ordered edges and
-read-only source descriptor. New inspectors also carry a validated origin
-locator with the source pane ID, type and ref. The
+the conversation source descriptor. New inspectors also carry a validated origin
+locator with the source pane ID and ref. The
 [origin owner](../../cmd/evener-hub/frontend/src/panes/zoom/inspectionOrigin.ts)
 binds that locator to an exact surviving pane lifetime only during successful
 workspace restore, before publishing restored panels. Missing or invalid origins
@@ -665,10 +714,20 @@ may finish in either order. A different route takes precedence; later pathname
 changes retain the ordinary route-placement and companion-focus rules.
 Processed image bytes and pending encodes belong to the original pane lifetime;
 they are excluded from layout JSON and localStorage and are not restored by a
-page reload. Phones keep the ordinary Agents transcript action. A saved cascade
-restored on desktop and shown at phone width exposes the selected read-only
-transcript and Return without desktop columns or spines. Return closes a new
-inspector and leaves its original source useful.
+page reload. Phones keep the ordinary Agents row action, which opens the
+conversation. A saved cascade
+restored on desktop and shown at phone width exposes the selected
+conversation and Return without desktop columns or spines. Return closes a new
+inspector and leaves its original source useful. The phone's cascade chrome
+stays single-layer: the mobile top bar carries the selected conversation's
+name, the column's own title stays desktop-only, and the column's runtime
+state and Open-conversation action sit in the column's bottom bar with its
+activity controls. The pane footer's status bar and scope crumbs are
+desktop-only on the cascade: the column's own controls below the transcript
+carry the activity, so the phone never stacks a second chips row at the pane
+bottom.
+The column's own activity controls reserve the home-indicator band on the
+phone, with the same safe-area clearance the composer dock uses.
 
 The [real-stack cascade guard](../../cmd/evener-hub/frontend/scripts/cascadeguard/README.md)
 and [design-system geometry](../web-ui/design-system.md#agent-cascade)
@@ -717,8 +776,10 @@ Same-session pane menus carry their explicit owning pane
 identity, so opening Overview preserves that instance.
 The [application shell](../../cmd/evener-hub/frontend/src/shell/AppShell.tsx)
 ends route deferral when the resolved location confirms an already placed
-session. Opening its read-only child then preserves child focus and the parent
-URL, rather than reapplying the parent route.
+session. Opening its child conversation then preserves child focus and the parent
+URL, rather than reapplying the parent route. A nested conversation's job log
+keeps that focus on the settled parent route too, following the conversation
+context the child opened under rather than the transcript-type pane walk.
 
 The [activity sidebar view store](../../cmd/evener-hub/frontend/src/shell/activitybar/activitySidebarStore.ts)
 retains open/category choices and a semantic row anchor per public session ref
@@ -801,7 +862,7 @@ are not part of that number. The sidebar's Agents, Jobs, Watches and Tasks tabs 
 reads on both viewports; About uses the shared session model. The Agents count
 is the exception: the footer chip, the sidebar's Agents tab label, each
 cascade scope's Agents chip, the Overview and Activity action counts and the
-transcript's liveness line all count subagents at every depth, from the subtree
+conversation's liveness line all count subagents at every depth, from the subtree
 summary
 ([`useSubagentCounts`](../../cmd/evener-hub/frontend/src/stores/sessionActivity.ts)),
 while the Agents tab lists the session's own. The count and an open Activity
@@ -826,7 +887,9 @@ failures, under its existing per-session Inactive folds. Counts include every
 entry grouped there. Opening a fold reveals rows in their original order with
 details collapsed by default. Active descendants and the ancestors needed to
 reach them remain outside the folds, regardless of an ancestor's settled outcome.
-Settled row glyphs and status text use ordinary quiet ink. True outcomes remain
+Settled jobs keep their glyphs and status text in ordinary quiet ink; a settled
+delegate shows the dot's settled vocabulary instead - no mark done, the red
+diamond failed. True outcomes remain
 available to assistive technology even when duration replaces visible status;
 live questions, approvals and current errors retain their attention treatment.
 Detail, action and read failures remain recovery information, not settled outcomes.
@@ -837,7 +900,7 @@ and native retain their separate history groups and own-session error priority.
 The [panel view store](../../cmd/evener-hub/frontend/src/stores/activityPanel.ts)
 retains sheet visibility, disclosure choices and each collection's last loaded
 row identity by session ref for the lifetime of its retained workspace panes.
-Opening a child transcript releases the hidden subtree read demand. Back acquires
+Opening a child conversation releases the hidden subtree read demand. Back acquires
 fresh demand through the shared binding and restores the inspected extent using
 the existing page boundary, yielding 100 ms between pages. Delegates, jobs and
 watches restore independently until their saved identity arrives or an
@@ -848,21 +911,16 @@ Explicitly closing the sheet clears extent restoration and keeps the sheet close
 across navigation. A changed resolved session clears the former session's extent
 and disclosure choices. Closing the last retaining pane evicts this view state.
 
-The [read-only child transcript](../../cmd/evener-hub/frontend/src/panes/transcript/Transcript.tsx)
-shows the same proven scope hierarchy above its content while preserving its
-chosen transcript title. Its existing session binding supplies summary context;
-direct links and restored panes obtain the same context without requiring a Back
-target. The Back target alone is not ancestry evidence, and no parent transcript
-is read to obtain a name. Root sessions omit redundant ancestry.
-
-Activity delegate rows use the shared transcript opener, which retains the
-enclosing conversation and canonicalizes restored variants of the same child
-pane before focusing it. Nested drills keep the child’s parent context so an
-unchanged root URL does not steal focus. Ancestor buttons reuse an already open
-read-only transcript with its exact pane identity and parent context; an existing
-live owner regains focus even when its URL is unchanged. The session rail and
-Open session actions request the live session route and composer, including when
-a read-only transcript of that session is already open.
+Activity delegate rows use the shared opener, which requests the child's
+conversation pane — reusing an already open one for that session — and keeps
+the child's parent context so an unchanged root URL does not steal focus; a
+fresh phone host's Back returns along that recorded context to the retained
+parent pane before falling to welcome.
+Ancestor buttons reuse an already open conversation pane for the scope. The
+opener names the view it opens: the conversation for a session ref, the
+transcript for a job log. Saved layouts restore a legacy session-ref
+transcript pane as its conversation pane; job-log transcript panes keep
+their pane.
 
 The [native binding](../../mobile-native/src/subagents/subagentTree.ts) projects
 subtree activity through the same shared store. Summary holders and collection

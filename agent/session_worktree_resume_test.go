@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -38,6 +39,11 @@ import (
 //   - TestResumeWorktreeReentry_ManagedForeignBareLockUnknownOwnerNotice — the
 //     real --porcelain shape of a reasonless `git worktree lock`
 //   - TestInitInside_ForeignBareLockUnknownOwnerWarns — same reasonless lock shape
+//   - TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot —
+//     same bare-lock shape with the snapshot reporting not-a-repo (#4132)
+//   - TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe —
+//     the same bare-lock shape with the git probe starved past its deadline
+//     (#4132)
 //   - TestInitInside_SymlinkSpelledCwdCanonicalizesStoredPathAndLockKey — the lock
 //     key must match git's canonical porcelain entry for the lane
 
@@ -886,24 +892,23 @@ func TestInitInside_NonLocalEnvNoOp(t *testing.T) {
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
 	r.s.mu.Unlock()
 
-	r.s.applyInitInsideWorktreeLock(true)
+	r.s.applyInitInsideWorktreeLock()
 
 	if got := r.s.Meta().WorktreePath; got != "" {
 		t.Errorf("Meta().WorktreePath = %q, want empty (non-local env must no-op)", got)
 	}
 }
 
-// TestInitInside_UnresolvableMainRootNoOp: isGitRepo is the caller's
-// already-computed snapshotGit result; when it says true but the launch cwd
-// genuinely is not part of any repository, ResolveMainRepoRoot legitimately
-// returns "" and the function must no-op rather than panic or guess.
+// TestInitInside_UnresolvableMainRootNoOp: when the launch cwd genuinely is
+// not part of any repository, ResolveProjectWith legitimately reports no Git
+// project and the function must no-op rather than panic or guess.
 func TestInitInside_UnresolvableMainRootNoOp(t *testing.T) {
 	t.Parallel()
 	r := newScriptedLaneRepo(t)
 	notARepo := scriptedCanonicalDir(t, t.TempDir())
 	sess := r.launchInside(t, notARepo).s
 
-	sess.applyInitInsideWorktreeLock(true)
+	sess.applyInitInsideWorktreeLock()
 
 	if got := sess.Meta().WorktreePath; got != "" {
 		t.Errorf("Meta().WorktreePath = %q, want empty (unresolvable main root must no-op)", got)
@@ -936,7 +941,7 @@ func TestInitInside_LockStateUnverifiableWarns(t *testing.T) {
 		return next(args...)
 	})
 
-	sess.applyInitInsideWorktreeLock(true)
+	sess.applyInitInsideWorktreeLock()
 
 	msgs := pendingTranscriptWarningMessages(sess)
 	if !anyContainsAll(msgs, path, "could not inspect the lock") {
@@ -970,7 +975,7 @@ func TestInitInside_RelockFailsWarns(t *testing.T) {
 	fail, _ := second.failLockRunner()
 	fail.Store(true)
 
-	sess.applyInitInsideWorktreeLock(true)
+	sess.applyInitInsideWorktreeLock()
 
 	msgs := pendingTranscriptWarningMessages(sess)
 	if !anyContainsAll(msgs, path, "failed to lock worktree") {
@@ -981,15 +986,13 @@ func TestInitInside_RelockFailsWarns(t *testing.T) {
 	}
 }
 
-// TestInitInside_ForeignBareLockUnknownOwnerWarns: a bare `git worktree lock`
-// (no --reason) is a reasonless, unparseable lock — Foreign with an empty
-// reason — so the co-occupying warning must fall back to "an unknown owner"
-// rather than naming an empty occupant.
-//
-// REAL git: only real git emits the reasonless `locked` porcelain line the empty
-// occupant is parsed from.
-func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
-	t.Parallel()
+// newForeignBareLockedLane creates a managed lane and leaves it held by a bare
+// `git worktree lock` (no --reason): a reasonless, unparseable lock — Foreign
+// with an empty reason — that the co-occupying notice must fall back to
+// "an unknown owner" for. REAL git: only real git emits the reasonless `locked`
+// porcelain line the empty occupant is parsed from.
+func newForeignBareLockedLane(t *testing.T) (*wtRepo, string) {
+	t.Helper()
 	r := newWorktreeRepo(t)
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
@@ -998,9 +1001,19 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 	path := res["path"].(string)
 	wtGit(t, r.mainRoot, "worktree", "unlock", path)
 	wtGit(t, r.mainRoot, "worktree", "lock", path) // bare lock: no --reason
+	return r, path
+}
 
-	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
-
+// assertCoOccupyingUnknownOwnerTracked asserts a co-occupying session: it warned
+// about the foreign bare lock naming an unknown owner (the notice is the
+// behavior the bare-lock cases exist to check), kept tracking the lane, and
+// left the foreign lock itself alone rather than relocking over another
+// owner's.
+func assertCoOccupyingUnknownOwnerTracked(t *testing.T, r *wtRepo, sess *Session, path string) {
+	t.Helper()
+	if entry := r.porcelainEntry(t, path); !entry.Locked || entry.LockReason != "" {
+		t.Errorf("porcelain entry for %s = locked=%v reason=%q, want the foreign bare lock preserved (locked=true, empty reason)", path, entry.Locked, entry.LockReason)
+	}
 	msgs := warningMessages(sess)
 	if !anyContainsAll(msgs, path, "an unknown owner", "co-occupying") {
 		t.Errorf("no co-occupying notice naming an unknown owner: %v", msgs)
@@ -1008,6 +1021,58 @@ func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 	if got := sess.Meta().WorktreePath; got != path {
 		t.Errorf("Meta().WorktreePath = %q, want %q (co-occupying still tracked)", got, path)
 	}
+}
+
+// TestInitInside_ForeignBareLockUnknownOwnerWarns: a foreign bare lock warns
+// and the session continues co-occupying it.
+func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
+	t.Parallel()
+	r, path := newForeignBareLockedLane(t)
+	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	assertCoOccupyingUnknownOwnerTracked(t, r, sess, path)
+}
+
+// TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot: the
+// snapshot reporting not-a-repo (withoutGitSnapshot) must not disable the
+// occupancy lock on a real, foreign-bare-locked managed lane.
+func TestInitInside_ForeignBareLockUnknownOwnerWarnsDespiteNotARepoSnapshot(t *testing.T) {
+	t.Parallel()
+	r, path := newForeignBareLockedLane(t)
+	sess := newSession(t, withDir(path), withoutGitSnapshot(),
+		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	assertCoOccupyingUnknownOwnerTracked(t, r, sess, path)
+}
+
+// TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe reproduces
+// #4132: it drives the REAL session-start git probe past its deadline
+// (gitExecTimeout), so snapshotGit reports the launch cwd as "not a repo" while
+// the cwd really is a foreign-bare-locked managed lane. Before the fix the
+// session silently neither warned nor tracked.
+//
+// Not parallel: it shrinks the package-wide gitExecTimeout for one session's
+// construction, and a test that changes a package-level var stays serial
+// (docs/developing-evener/testing.md). A one-nanosecond deadline fails every
+// probe exec deterministically, so no load is produced.
+func TestInitInside_ForeignBareLockUnknownOwnerWarnsWithStarvedGitProbe(t *testing.T) {
+	r, path := newForeignBareLockedLane(t)
+
+	orig := gitExecTimeout
+	gitExecTimeout = time.Nanosecond
+	// Register the restore BEFORE newSession: a fatal inside it would otherwise
+	// leave the starved deadline in place for the rest of the package run.
+	t.Cleanup(func() { gitExecTimeout = orig })
+	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	// Restore as soon as construction ends so this session's own Close runs with
+	// the real deadline; the cleanup above is idempotent.
+	gitExecTimeout = orig
+
+	// The probe really starved: without this, a probe that completed before its
+	// expired deadline was observed would let the test pass on a healthy
+	// snapshot, silently ceasing to reproduce #4132.
+	if sess.envInfo.IsGitRepo {
+		t.Fatal("the session-start git probe reported a repository; the starved-probe condition was not exercised")
+	}
+	assertCoOccupyingUnknownOwnerTracked(t, r, sess, path)
 }
 
 // TestInitInside_SymlinkSpelledCwdCanonicalizesStoredPathAndLockKey: a session

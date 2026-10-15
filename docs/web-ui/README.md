@@ -58,6 +58,24 @@ its group, preserving the mounted transcript and its native scroll position.
 Selecting a different tab still activates that panel. Transcript scroll and
 history recovery remain owned by the existing reader and virtual viewport.
 
+## Browser transcript cache
+
+The browser loads a session's transcript from the entry-backed repository, which
+is the source of truth for what it holds. The server transcript stays
+authoritative, and the [transcript repository](../../cmd/evener-hub/frontend/src/stores/transcriptRepository.ts)
+is the browser's single owner of recorded-history ingestion and persistence; it
+writes keyed item, turn and coverage rows to the existing `evener-session-cache`
+IndexedDB. A local open with complete cached coverage paints without an
+activation read, and one without it reconciles from the server through the
+existing bounded recovery. The legacy client-side cache is not migrated: old
+cached transcripts are discarded on upgrade and rebuilt from the server. Active
+unfinished output stays in memory and may exceed the background budget, and
+charged ended-body overage is an accepted exception. Clear from Settings
+suppresses persistence for the existing cache lifetime; a new explicit
+foreground acquisition and authoritative read, or a new browser lifetime, can
+then establish a fresh one. The affected surfaces are the session transcript
+pane and its older-history reader; the settings storage row owns Clear.
+
 DockHost retains saved tab labels while an inactive pane's session name is
 unavailable. Loaded navigation or live thread metadata updates the label when
 it recovers. Changing the pane's type or session ref retires the old title hint.

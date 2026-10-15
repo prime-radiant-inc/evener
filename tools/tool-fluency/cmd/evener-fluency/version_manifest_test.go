@@ -335,17 +335,28 @@ func TestRunMatrixCommandBuildsFromVersionManifest(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("ran %d configurations, want 2", len(got))
 	}
+	// Each run writes to <out>/<label>/<model>, so the label is the first
+	// element of outDir relative to out. Matching a label as a substring of
+	// the absolute path misreads a temp root that happens to contain it.
 	bins := map[string]string{}
 	for _, cfg := range got {
-		if strings.Contains(cfg.outDir, "v0") {
-			bins["v0"] = cfg.evenerBin
-		} else {
-			bins["v1-A"] = cfg.evenerBin
+		rel, err := filepath.Rel(out, cfg.outDir)
+		if err != nil {
+			t.Fatalf("outDir %q is not under %q: %v", cfg.outDir, out, err)
+		}
+		label, _, _ := strings.Cut(rel, string(filepath.Separator))
+		bins[label] = cfg.evenerBin
+	}
+	// main is at the second commit and other at the first; the cache keys
+	// each build by its commit.
+	cache := filepath.Join(out, "cache")
+	want := map[string]string{"v0": secondSHA, "v1-A": firstSHA}
+	if len(bins) != len(want) {
+		t.Fatalf("bins = %+v, want one binary per label in %v", bins, want)
+	}
+	for label, sha := range want {
+		if !strings.HasPrefix(bins[label], filepath.Join(cache, sha)+string(filepath.Separator)) {
+			t.Errorf("%s bin = %q, want a build of %s under %s", label, bins[label], sha, cache)
 		}
 	}
-	if bins["v0"] == "" || bins["v1-A"] == "" || bins["v0"] == bins["v1-A"] {
-		t.Fatalf("bins = %+v, want two distinct built binaries", bins)
-	}
-	_ = firstSHA
-	_ = secondSHA
 }

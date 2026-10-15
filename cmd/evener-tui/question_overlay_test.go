@@ -391,8 +391,14 @@ func TestQuestionOverlay_ReviewStepListsAnswersAndWarnsOnUnanswered(t *testing.T
 	if !strings.Contains(view, `[Naming] → skipped (no answer)`) {
 		t.Fatalf("review view missing the unanswered line:\n%s", view)
 	}
-	if !strings.Contains(view, "submit with 1 unanswered → it resolves as skipped") {
-		t.Fatalf("review view missing the unanswered warning:\n%s", view)
+	if o.questions[1].Resolution != nil {
+		t.Fatalf("the skipped question gained a resolution: %#v", o.questions[1].Resolution)
+	}
+	answered := o
+	answered.questions = append([]askQuestion(nil), o.questions...)
+	answered.questions[1].Resolution = &askResolution{Kind: askResolutionOption, Labels: []string{"A"}}
+	if renderedLineCount(view) <= renderedLineCount(answered.View()) {
+		t.Fatalf("review view carries no unanswered warning beyond the fully answered review:\n%s", view)
 	}
 
 	o = sendKey(o, tea.KeyMsg{Type: tea.KeyEnter})
@@ -490,11 +496,9 @@ func TestReturnToDashboard_DefersLiveQuestionOverlay(t *testing.T) {
 	if got := topmostOverlayName(m); got == "question-overlay" {
 		t.Fatalf("questionOverlay re-trapped keys after ctrl+o + re-entering the session with no fresh ctrl+q")
 	}
-	// "question 1/1" is the overlay's own title text (questionView), unlike
-	// "Which datastore?" which also appears in the always-expanded in-
-	// transcript question card and so can't distinguish overlay-visible
-	// from overlay-deferred.
-	if strings.Contains(m.sessionView(), "question 1/1") {
+	// The overlay's own view, unlike the always-expanded in-transcript
+	// question card, distinguishes overlay-visible from overlay-deferred.
+	if _, overlay, _ := m.sessionChromeText(); strings.Contains(overlay, m.questionOverlay.View()) {
 		t.Fatalf("questionOverlay rendered over the session re-entry with no fresh ctrl+q")
 	}
 
@@ -545,7 +549,7 @@ func TestReturnToDashboard_DeferredOverlayDoesNotHauntADifferentSession(t *testi
 	if got := topmostOverlayName(m); got == "question-overlay" {
 		t.Fatalf("session A's overlay trapped keys over session B after returnToDashboard + switching sessions")
 	}
-	if strings.Contains(m.sessionView(), "question 1/1") {
+	if _, overlay, _ := m.sessionChromeText(); strings.Contains(overlay, m.questionOverlay.View()) {
 		t.Fatalf("session A's question rendered over session B")
 	}
 }

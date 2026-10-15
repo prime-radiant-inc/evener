@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -91,7 +90,7 @@ func TestPluginSelectionBeforeSpawn(t *testing.T) {
 			EnabledPlugins: &selected,
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+	if !errors.Is(err, plugins.ErrSelectionUnavailable) {
 		t.Fatalf("ThreadStart error = %v, want invalid selection", err)
 	}
 	if got := len(spawner.Spawns()); got != 0 {
@@ -244,7 +243,7 @@ func TestThreadStartRefusesACancelledRequestWithNoPluginSelection(t *testing.T) 
 		CWD:   t.TempDir(),
 		Model: "openai/gpt-5",
 	})
-	if err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ThreadStart error = %v, want the launch refused for the cancellation", err)
 	}
 	assertHubLaunchError(t, err)
@@ -276,7 +275,7 @@ func TestThreadStartRefusesARequestCancelledDuringValidation(t *testing.T) {
 		CWD:   t.TempDir(),
 		Model: "openai/gpt-5",
 	})
-	if err == nil || !strings.Contains(err.Error(), context.Canceled.Error()) {
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("ThreadStart error = %v, want the launch refused for the cancellation", err)
 	}
 	assertHubLaunchError(t, err)

@@ -1,0 +1,67 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 40rem;
+}
+
+.root > button {
+  align-self: flex-start;
+}
+
+.root > h3,
+.root > p {
+  margin: 0;
+}
+
+.root > p,
+.claim > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.soundOption {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
+.soundOption > p {
+  margin: 0;
+}
+
+.controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.help {
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.comparison {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-body);
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+
+.progress {
+  width: 100%;
+  accent-color: var(--ink-hi);
+}
+
+.claim {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 100%;
+}

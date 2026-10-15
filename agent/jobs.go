@@ -103,6 +103,17 @@ type jobManager struct {
 	// one send and race a re-appended pending behind its own Delivered marker
 	// (#327). Guarded by jm.mu.
 	deliveringWatchSends map[string]struct{}
+	// supersededWatchSends holds the claimed delivery IDs a coalesced frame
+	// replaced mid-delivery. Their receipts are released when the claim is,
+	// whichever way the deliverer exits. Guarded by mu.
+	supersededWatchSends map[string]struct{}
+	// unsettledWatchSends holds the stable frames the receiver took whose
+	// acknowledgement failed, until the frame settles or its receipt is
+	// otherwise released. While one stays pending the next drain redelivers
+	// it; once a coalesced frame replaces it, no redelivery will come, so the
+	// replacement (or the release of a claim held across it) hands it to the
+	// settlement retry. Guarded by mu.
+	unsettledWatchSends map[string]pendingWatchSendDelivery
 	// watchesLostAtRestore holds the durable records of the watches this restore
 	// ended (clearUnrestoredActiveWatches), owed a callback-cancellation or send
 	// end notice by noticeUnrestoredWatchEnds. Written once at construction, read
@@ -179,7 +190,11 @@ type jobManager struct {
 	// stable-watch receipt. Nil in production; lock-order tests use it to prove
 	// the job manager released its local persistence lock first.
 	watchReceiptBoundary func()
-	clock                clock.Clock
+	// stableWatchArmFailure, when set, fails arming a stable watch frame's
+	// attention after the receiver took it, as a cold receiver's arm can.
+	// Nil in production.
+	stableWatchArmFailure func(attentionID string) error
+	clock                 clock.Clock
 	// closeGrace bounds how long closeRuntimeState waits for each still-running
 	// job to finalize before abandoning it. Seeded from defaultCloseGrace at
 	// construction so tests can shrink the graceful-shutdown window.

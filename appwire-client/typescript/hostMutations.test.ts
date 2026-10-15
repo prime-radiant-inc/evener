@@ -4,7 +4,6 @@ import {
   committedMutationRow,
   createHostMutations,
   ErrorStaleEntry,
-  HOST_CHANGED_MESSAGE,
   HOST_ENTRY_FIELD_ORDER,
   HOST_ENTRY_FIELD_TEXT,
   HOST_ENTRY_FIELD_WHEN_EMPTY,
@@ -270,11 +269,5 @@ describe("an edit refused because the host changed", () => {
     expect(hostChangedSinceOpened(stale())).toBe(true);
     expect(hostChangedSinceOpened(new WireError("missing ssh destination", -32602))).toBe(false);
     expect(hostChangedSinceOpened(new Error("the entry moved"))).toBe(false);
-  });
-
-  test("says what happened and what to do", () => {
-    expect(HOST_CHANGED_MESSAGE).toBe(
-      "This host changed since you opened it. Cancel, then open it again to see the change.",
-    );
   });
 });

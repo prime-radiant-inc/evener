@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/envvars"
 )
@@ -93,16 +94,32 @@ func TestFileSizeHumanUnits(t *testing.T) {
 	}
 }
 
-// TestFileAgeHumanJustNow covers the "just now" branch (d < 2m).
+// TestFileAgeHumanJustNow covers the "just now" branch (d < 2m): every age
+// under two minutes reads the same, and one past it reads differently and
+// counts its minutes.
 func TestFileAgeHumanJustNow(t *testing.T) {
 	dir := t.TempDir()
-	f := filepath.Join(dir, "recent")
-	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
+	aged := func(name string, age time.Duration) string {
+		t.Helper()
+		f := filepath.Join(dir, name)
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().Add(-age)
+		if err := os.Chtimes(f, at, at); err != nil {
+			t.Fatal(err)
+		}
+		return f
 	}
-	got := fileAgeHuman(f)
-	if got != "just now" {
-		t.Fatalf("fileAgeHuman(recent) = %q, want 'just now'", got)
+	recent := fileAgeHuman(aged("recent", 0))
+	if recent == "" {
+		t.Fatal("fileAgeHuman(recent) is empty, want an age")
+	}
+	if got := fileAgeHuman(aged("a-minute-old", time.Minute)); got != recent {
+		t.Fatalf("fileAgeHuman(1m) = %q, want the same %q as a file just written", got, recent)
+	}
+	if got := fileAgeHuman(aged("five-minutes-old", 5*time.Minute)); got == recent || !strings.Contains(got, "5") {
+		t.Fatalf("fileAgeHuman(5m) = %q, want a minute count distinct from %q", got, recent)
 	}
 }
 

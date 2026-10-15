@@ -28,7 +28,7 @@ import { keybindingsRegistry } from "../../../../keybindings/appRegistry";
 import { installKeybindings } from "../../../../shell/installKeybindings";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { workspaceStore } from "../../../../shell/workspace";
-import type { VirtualListHandle } from "../../../../widgets/virtuallist";
+import type { VirtualListHandle } from "../../../../widgets";
 
 /** One line-scroll step in pixels (≈ one transcript row's text line). */
 export const TRANSCRIPT_LINE_SCROLL_PX = 40;
@@ -37,8 +37,12 @@ export const TRANSCRIPT_LINE_SCROLL_PX = 40;
 export const TRANSCRIPT_PAGE_SCROLL_RATIO = 0.9;
 
 export interface UseTranscriptScrollKeysOptions {
-  /** The workspace pane this Session instance is mounted as. */
-  paneId: string;
+  /** The workspace pane this Session instance is mounted as, or null when
+   * this seat never owns keyboard scroll (the cascade's non-leaf columns:
+   * same-action handlers run in registration order until one accepts, so a
+   * second registration under the host pane's id would hand every scroll key
+   * to whichever column mounted first). */
+  paneId: string | null;
   listRef: RefObject<VirtualListHandle | null>;
   /** useTranscriptScroll's jumpToBottom (error-anchor aware, pill clearing). */
   jumpToBottom: () => void;
@@ -90,7 +94,7 @@ export function useTranscriptScrollKeys({
   positioningCommandRef.current = onPositioningCommand;
 
   useEffect(() => {
-    if (isMobile) return undefined;
+    if (isMobile || paneId === null) return undefined;
     installKeybindings();
     const registry = keybindingsRegistry.getState();
     const focused = () => workspaceStore.getState().focusedPaneId === paneId;

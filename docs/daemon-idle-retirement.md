@@ -136,8 +136,13 @@ Controls:
   (which names a new session in the background) is the only work in flight,
   the daemon waits for it to finish, up to its 15-second timeout, and then
   retires; a namer still running after that refuses the retire as above. The
-  wait looks only at work in flight: an open question or an active goal beside
-  the namer is reported once the namer settles, not at once. While the daemon
+  wait looks only at work in flight, and work that holds no lease shuts it off:
+  an open question, a pending job notification, an active goal between goal
+  turns, or the shared tree's in-memory owner state beside the namer is
+  reported at once, not once the namer settles. Evidence whose read has to
+  block (a running job, a watch, the job journal, or the attention registry) is
+  not pre-checked, so a retire beside only that work still waits the namer out.
+  While the daemon
   waits, the session stays usable from the Hub, and a resume, force stop,
   deletion or archive can overlap the retire: a force stop cancels it and stops
   the daemon, a deletion skips the still-running session, and a resume or an

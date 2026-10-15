@@ -31,6 +31,7 @@
 import {
   isParentSteer,
   isSuppressedSteeringKind,
+  labelledSteeringKind,
   steeringLabel,
   steeringNotificationFragments,
   stripSystemReminder,
@@ -57,7 +58,13 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   if (item.steeringKind === "human-note") {
     if (!item.text) return null; // no text, no images path here - nothing to show
     return (
-      <SteeringDivider id={item.id} label={steeringLabel("human-note")} text={item.text} sessionRef={sessionRef} />
+      <SteeringDivider
+        id={item.id}
+        label={steeringLabel("human-note")}
+        kind="human-note"
+        text={item.text}
+        sessionRef={sessionRef}
+      />
     );
   }
   // opensExchange={false}: a steer the human typed lands MID-turn, interrupting
@@ -71,6 +78,9 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   // markup, which cannot false-positive, so a steer projected before the kind
   // field existed still renders its cards.
   const label = steeringLabel(item.steeringKind, item.source);
+  // What the label names: the parent speaking, or the kind it labels (none
+  // for a kind this build has no label for).
+  const kind = isParentSteer(item.source) ? "parent" : labelledSteeringKind(item.steeringKind);
   if (fragments) {
     return (
       <>
@@ -110,6 +120,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
               key={index}
               id={`${item.id}:${index}`}
               label={label}
+              kind={kind}
               text={fragment.text}
               sessionRef={sessionRef}
             />
@@ -120,7 +131,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   }
 
   const text = isParentSteer(item.source) ? item.text : stripSystemReminder(item.text);
-  return <SteeringDivider id={item.id} label={label} text={text} sessionRef={sessionRef} />;
+  return <SteeringDivider id={item.id} label={label} kind={kind} text={text} sessionRef={sessionRef} />;
 }, ignoringTurn);
 
 registerItemRenderer("steering", SteeringItem);

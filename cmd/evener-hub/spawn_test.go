@@ -454,7 +454,7 @@ exit 42
 	if err == nil {
 		t.Fatal("expected spawn error")
 	}
-	if !strings.Contains(err.Error(), "exited before rendezvous") {
+	if !errors.Is(err, errExitedBeforeRendezvous) {
 		t.Fatalf("error=%v", err)
 	}
 	if !strings.Contains(err.Error(), "plugin initialization: resolving plugin dir") {
@@ -486,55 +486,46 @@ sleep 30
 `
 	launches := []struct {
 		name string
-		// The action every one of its failures must open by naming, so an
-		// operator reading a bare message knows which launch it came from.
-		action string
-		call   func(ctx context.Context, evenerBinary, runDir string, timeout time.Duration) error
+		call func(ctx context.Context, evenerBinary, runDir string, timeout time.Duration) error
 	}{
 		{
-			name:   "spawn",
-			action: "daemon spawn",
+			name: "spawn",
 			call: func(ctx context.Context, evenerBinary, runDir string, timeout time.Duration) error {
 				_, err := SpawnDaemon(ctx, evenerBinary, runDir, hubcore.SpawnRequest{}, timeout)
 				return err
 			},
 		},
 		{
-			name:   "resume",
-			action: "resume",
+			name: "resume",
 			call: func(ctx context.Context, evenerBinary, runDir string, timeout time.Duration) error {
 				_, err := ResumeDaemon(ctx, evenerBinary, runDir, hubcore.ResumeRequest{SessionID: "sess_old"}, timeout)
 				return err
 			},
 		},
 	}
+	// The outcomes a launch can end in. Each case names the one it must
+	// report; the others must not be reported alongside it.
+	launchOutcomes := []error{errExitedBeforeRendezvous, errRendezvousCanceled, errRendezvousTimeout}
 	outcomes := []struct {
-		name   string
-		script string
-		// The word that follows the action, naming what stopped this launch.
-		label   string
+		name    string
+		script  string
 		timeout time.Duration
 		// The context the hub hands the launch. Nil is an ordinary caller that
 		// stays for the answer.
-		callerCtx   func() context.Context
-		wantContain []string
-		wantAbsent  []string
+		callerCtx func() context.Context
+		want      error
+		// The child's own account of why, from its stderr.
+		wantDetail string
 	}{
 		{
 			// The wait returns as soon as the child exits, so the generous
 			// timeout below is never reached — reaching it would itself be the
 			// bug this case is about.
-			name:    "child exits before rendezvous",
-			script:  exitsImmediately,
-			label:   "failed",
-			timeout: 60 * time.Second,
-			wantContain: []string{
-				"process exited before rendezvous",
-				"exit status 1",
-				// the child's own account of why, from its stderr
-				"is already running",
-			},
-			wantAbsent: []string{"timed out", "timeout"},
+			name:       "child exits before rendezvous",
+			script:     exitsImmediately,
+			timeout:    60 * time.Second,
+			want:       errExitedBeforeRendezvous,
+			wantDetail: "is already running",
 		},
 		{
 			// The caller's context is a live request context on both hub paths
@@ -544,24 +535,21 @@ sleep 30
 			// being slow, and the generous timeout below is never reached.
 			name:    "caller abandons the request",
 			script:  neverRegisters,
-			label:   "canceled",
 			timeout: 60 * time.Second,
 			callerCtx: func() context.Context {
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
 				return ctx
 			},
-			wantContain: []string{"request canceled before rendezvous"},
-			wantAbsent:  []string{"timed out", "timeout"},
+			want: errRendezvousCanceled,
 		},
 		{
 			// A child that starts and never registers is the real timeout, and
 			// it must keep saying so.
-			name:        "child never registers",
-			script:      neverRegisters,
-			label:       "timed out",
-			timeout:     20 * time.Millisecond,
-			wantContain: []string{"timeout waiting for rendezvous"},
+			name:    "child never registers",
+			script:  neverRegisters,
+			timeout: 20 * time.Millisecond,
+			want:    errRendezvousTimeout,
 		},
 	}
 
@@ -581,18 +569,13 @@ sleep 30
 				if err == nil {
 					t.Fatal("launch succeeded, want a failure")
 				}
-				if wantPrefix := launch.action + " " + tc.label + ": "; !strings.HasPrefix(err.Error(), wantPrefix) {
-					t.Fatalf("failure does not open with %q:\n%v", wantPrefix, err)
-				}
-				for _, want := range tc.wantContain {
-					if !strings.Contains(err.Error(), want) {
-						t.Fatalf("failure is missing %q:\n%v", want, err)
+				for _, outcome := range launchOutcomes {
+					if errors.Is(err, outcome) != errors.Is(tc.want, outcome) {
+						t.Fatalf("failure reports %v as %v, want only %v:\n%v", outcome, errors.Is(err, outcome), tc.want, err)
 					}
 				}
-				for _, absent := range tc.wantAbsent {
-					if strings.Contains(err.Error(), absent) {
-						t.Fatalf("failure should not contain %q:\n%v", absent, err)
-					}
+				if tc.wantDetail != "" && !strings.Contains(err.Error(), tc.wantDetail) {
+					t.Fatalf("failure is missing the child's stderr %q:\n%v", tc.wantDetail, err)
 				}
 				if got := diagnostic.Classify(err.Error()).Source; got != diagnostic.SourceHub {
 					t.Fatalf("diagnostic source=%q, want %q:\n%v", got, diagnostic.SourceHub, err)
@@ -915,9 +898,8 @@ exit 2
 		// The context the hub hands the check. Every hub path that reaches one
 		// passes a live request context: r.Context() on the REST resume, the
 		// websocket connection's ctx on the RPC one.
-		callerCtx   func(t *testing.T) context.Context
-		wantContain string
-		wantAbsent  []string
+		callerCtx func(t *testing.T) context.Context
+		want      error
 	}{
 		{
 			// A browser that navigates away, a dropped connection, or a
@@ -931,8 +913,7 @@ exit 2
 				t.Cleanup(cancel)
 				return ctx
 			},
-			wantContain: "evener launch-check canceled",
-			wantAbsent:  []string{"timed out", "timeout"},
+			want: errLaunchCheckCanceled,
 		},
 		{
 			// A check that starts and never answers is the real timeout, and it
@@ -947,19 +928,18 @@ exit 2
 				t.Cleanup(cancel)
 				return ctx
 			},
-			wantContain: "evener launch-check timed out",
-			wantAbsent:  []string{"canceled"},
+			want: errLaunchCheckTimedOut,
 		},
 		{
 			// The control: a check that ran, answered, and refused the launch is
 			// neither of the above, and none of the three may borrow another's
 			// label.
-			name:        "the check refuses the launch",
-			script:      rejectsTheLaunch,
-			wantContain: "evener launch-check failed",
-			wantAbsent:  []string{"timed out", "timeout", "canceled"},
+			name:   "the check refuses the launch",
+			script: rejectsTheLaunch,
+			want:   errLaunchCheckFailed,
 		},
 	}
+	checkOutcomes := []error{errLaunchCheckCanceled, errLaunchCheckTimedOut, errLaunchCheckFailed}
 
 	for _, check := range checks {
 		for _, tc := range outcomes {
@@ -974,12 +954,9 @@ exit 2
 				}
 				err := check.call(ctx, evenerBinary)
 				assertHubLaunchError(t, err)
-				if !strings.Contains(err.Error(), tc.wantContain) {
-					t.Fatalf("failure is missing %q:\n%v", tc.wantContain, err)
-				}
-				for _, absent := range tc.wantAbsent {
-					if strings.Contains(err.Error(), absent) {
-						t.Fatalf("failure should not contain %q:\n%v", absent, err)
+				for _, outcome := range checkOutcomes {
+					if errors.Is(err, outcome) != errors.Is(tc.want, outcome) {
+						t.Fatalf("failure reports %v as %v, want only %v:\n%v", outcome, errors.Is(err, outcome), tc.want, err)
 					}
 				}
 			})
@@ -994,7 +971,7 @@ func TestValidateEvenerLaunchContractRejectsUnsupportedProvider(t *testing.T) {
 	writeFakeEvener(t, bin, "#!/bin/sh\necho 'unknown provider: openrouter' >&2\nexit 2\n")
 	err := validateEvenerLaunchContract(context.Background(), bin, "openrouter/free", envFromMap(map[string]string{}))
 	assertHubLaunchError(t, err)
-	if !strings.Contains(err.Error(), "evener launch-check") {
+	if !errors.Is(err, errLaunchCheckFailed) {
 		t.Fatalf("error=%v", err)
 	}
 }
@@ -1002,7 +979,7 @@ func TestValidateEvenerLaunchContractRejectsUnsupportedProvider(t *testing.T) {
 func TestValidateEvenerLaunchContractMissingBinaryReturnsStructuredDiagnostic(t *testing.T) {
 	err := validateEvenerLaunchContract(context.Background(), filepath.Join(t.TempDir(), "missing-evener"), "openai/gpt-5", envFromMap(map[string]string{}))
 	assertHubLaunchError(t, err)
-	if !strings.Contains(err.Error(), "evener launch-check failed") {
+	if !errors.Is(err, errLaunchCheckFailed) {
 		t.Fatalf("error=%v", err)
 	}
 }
@@ -1220,8 +1197,8 @@ func TestValidateProviderCredentials_CodexInstanceOAuth(t *testing.T) {
 				return
 			}
 			assertHubLaunchError(t, err)
-			if !strings.Contains(err.Error(), "evener openai login --instance work") {
-				t.Fatalf("the refusal names the login command: %v", err)
+			if refusal, ok := errors.AsType[*launchCredentialError](err); !ok || refusal.target != "work" || refusal.scheme != registry.AuthOAuthOpenAICodex {
+				t.Fatalf("the refusal judges work's Codex sign-in: %v", err)
 			}
 		})
 	}
@@ -1312,7 +1289,7 @@ func TestValidateProviderCredentials_ResolvedKeyPasses(t *testing.T) {
 			err := validateProviderCredentials("work", "", reg)
 			if tt.wantErr {
 				assertHubLaunchError(t, err)
-				if !strings.Contains(err.Error(), "work") {
+				if refusal, ok := errors.AsType[*launchCredentialError](err); !ok || refusal.target != "work" {
 					t.Fatalf("the refusal names the instance: %v", err)
 				}
 				return
@@ -1334,7 +1311,7 @@ func TestValidateProviderCredentials_EndpointStop(t *testing.T) {
 	})
 	err := validateProviderCredentials("gateway", "", reg)
 	assertHubLaunchError(t, err)
-	if !strings.Contains(err.Error(), "gateway") {
+	if refusal, ok := errors.AsType[*launchCredentialError](err); !ok || refusal.target != "gateway" {
 		t.Fatalf("the refusal names the gateway instance: %v", err)
 	}
 }
@@ -1347,22 +1324,20 @@ func TestValidateProviderCredentials_EndpointStop(t *testing.T) {
 // "export one of" its empty api_key_env list is advice that cannot work.
 func TestValidateProviderCredentials_CuratedImplicitWithoutCredential(t *testing.T) {
 	for _, tt := range []struct {
-		provider string
-		want     string
-		notWant  string
+		provider   string
+		want       launchRemedy
+		wantKeyEnv []string
 	}{
-		{provider: "groq", want: "GROQ_API_KEY"},
-		{provider: "openai-codex", want: "evener openai login --instance openai-codex", notWant: "export one of"},
+		{provider: "groq", want: remedyAPIKey, wantKeyEnv: []string{"GROQ_API_KEY"}},
+		{provider: "openai-codex", want: remedyCodexLogin},
 	} {
 		t.Run(tt.provider, func(t *testing.T) {
 			reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
 			err := validateProviderCredentials(tt.provider, "", reg)
 			assertHubLaunchError(t, err)
-			if !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("the refusal names the way in (%q): %v", tt.want, err)
-			}
-			if tt.notWant != "" && strings.Contains(err.Error(), tt.notWant) {
-				t.Fatalf("the refusal gives advice that cannot work (%q): %v", tt.notWant, err)
+			refusal, ok := errors.AsType[*launchCredentialError](err)
+			if !ok || refusal.target != tt.provider || refusal.remedy != tt.want || !slices.Equal(refusal.keyEnv, tt.wantKeyEnv) {
+				t.Fatalf("the refusal names the way in (remedy %v, key variables %v): %v", tt.want, tt.wantKeyEnv, err)
 			}
 		})
 	}
@@ -1374,7 +1349,7 @@ func TestValidateProviderCredentials_UnknownInstance(t *testing.T) {
 	reg := newSpawnGateRegistry(t, t.TempDir(), nil, nil)
 	err := validateProviderCredentials("nowhere", "", reg)
 	assertHubLaunchError(t, err)
-	if !strings.Contains(err.Error(), "[providers.nowhere]") {
+	if refusal, ok := errors.AsType[*launchCredentialError](err); !ok || refusal.target != "nowhere" || refusal.remedy != remedyDeclareInstance {
 		t.Fatalf("the refusal says how to declare the instance: %v", err)
 	}
 }
@@ -1505,7 +1480,7 @@ exit 2
 	if err == nil {
 		t.Fatal("Resume succeeded behind a gate the instance view vouched for; the persisted model's own row resolves no credential")
 	}
-	if !strings.Contains(err.Error(), "gw/bare-model") {
+	if refusal, ok := errors.AsType[*launchCredentialError](err); !ok || refusal.target != "gw/bare-model" {
 		t.Fatalf("Resume err = %v; want the refusal to name the persisted model", err)
 	}
 }

@@ -9,7 +9,7 @@ import (
 
 // MemoryIndexGenerated is the refusal of a write, edit or delete of MEMORY.md
 // at a memory scope's root, which Evener generates from the pages.
-const MemoryIndexGenerated = "MEMORY.md is generated from each page's frontmatter; edit a page's description or tags instead"
+const MemoryIndexGenerated = "MEMORY.md is generated from each page's frontmatter; edit a page's when line or tags instead"
 
 // MemoryDefinition preserves the ordinary tool schema and adds trusted-scope
 // selection. Its path parameter is described as relative to the scope root,
@@ -45,6 +45,24 @@ func DefMemoryDelete() llm.ToolDefinition {
 			"required":   []string{"file_path"},
 		},
 	}, "memory_delete")
+}
+
+// DefMemoryWrite is memory_write: the page's when line and body. Evener writes
+// the frontmatter from when.
+func DefMemoryWrite() llm.ToolDefinition {
+	return MemoryDefinition(llm.ToolDefinition{
+		Description: "Write one memory page. Evener writes the page's frontmatter from when, followed by body, and replaces the whole page when it already exists.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"file_path": map[string]any{"type": "string"},
+				"when":      map[string]any{"type": "string", "description": "One line saying when a future session needs the page: the moments it would otherwise get this wrong, at the level that covers all of them (\"When a log line could include a customer's street address\"). If those moments call for different facts, the page holds several facts, so give each its own page, even facts your partner told you in one breath."},
+				"body":      map[string]any{"type": "string", "description": "The page's Markdown, without frontmatter: a first heading naming what the page is about, such as \"Customer addresses in logs\" rather than the rule itself; then one durable fact, led by the fact or rule, a one-line **Why:** (with where the fact came from, when that matters) and a one-line **How to apply:** saying when it bears on work, with absolute dates."},
+			},
+			"required": []string{"file_path", "when", "body"},
+		},
+	}, "memory_write")
 }
 
 func DefReadFile() llm.ToolDefinition {
@@ -90,7 +108,7 @@ func DefListDir() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"path":   map[string]any{"type": "string", "description": "Directory to list; blank means the working root."},
-				"depth":  map[string]any{"type": "integer", "description": "Recursion depth; 1 lists only this directory (default)."},
+				"depth":  map[string]any{"type": "integer", "description": "Recursion depth; 1 lists only this directory (default). Values above 16 are clamped to 16."},
 				"offset": map[string]any{"type": "integer", "description": "Index of the first entry to return (default 0). Use with limit to page a large directory."},
 				"limit":  map[string]any{"type": "integer", "description": "Maximum entries to return (default 1000; a page-size budget may return fewer)."},
 			},
@@ -133,7 +151,7 @@ func DefShell() llm.ToolDefinition {
 				"mode": map[string]any{
 					"type":        "string",
 					"enum":        []any{"foreground", "background", "detached"},
-					"description": "foreground waits for the command to finish before continuing; background runs a session-owned job in the background and Evener stops it when the session ends; detached is the only mode that lets a process survive after this Evener session stops — a detached process is not a job: its output is discarded (redirect to a file if you need it) and it sends no completion notification.",
+					"description": "foreground waits for the command to finish before continuing; background runs a session-owned job in the background and Evener stops it when the session ends; detached is the only mode that lets a process survive after this Evener session stops — a detached process is not a job: its output is discarded (redirect it to an absolute path the process may write) and it sends no completion notification. A detached command gets no session scratch: $EVENER_SCRATCH_DIR is unset there, so no path it reads or writes may be built from it.",
 				},
 				"cwd": map[string]any{"type": "string", "description": "Optional working directory for the command. Relative paths resolve against your current working directory. With sandbox off, paths may be outside it; confined policies require paths inside it. Must already exist. Default: your current working directory."},
 			},
@@ -531,7 +549,7 @@ func DefJobStop() llm.ToolDefinition {
 func DefGrep() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "grep",
-		Description: "Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files. Dotfiles/dirs and gitignored paths are always excluded from the search.",
+		Description: "Search file contents using regex patterns. `glob_filter` accepts *, ?, [], **, and bounded brace alternatives such as *.{go,md}; malformed braces are rejected. This is the direct tool for requests to grep, search text, find tokens, find definitions, find references, and find recurring patterns across files. Dotfiles/dirs and gitignored paths are always excluded from the search. Files larger than the read cap are left out of directory searches; name one directly as the path to search it.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -793,6 +811,15 @@ func WithCommunicateDelegateUpdates(def llm.ToolDefinition) llm.ToolDefinition {
 	}
 	def.Description = communicateDelegateDescription
 	def.Parameters = params
+	return def
+}
+
+// WithCommunicateDelegatePointer returns a copy of a communicate definition
+// that also points to delegate_send, for a session that can message its own
+// delegates. communicate only reaches a human partner or a parent, so without
+// the pointer a model answering its delegate's question reaches for it.
+func WithCommunicateDelegatePointer(def llm.ToolDefinition) llm.ToolDefinition {
+	def.Description += " To message one of your delegates, use `delegate_send`."
 	return def
 }
 

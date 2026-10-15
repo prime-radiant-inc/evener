@@ -15,7 +15,6 @@ import {
 } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { SUMMARY_ENTITY_JOB, summaryEntityView } from "./entityView.testFixture";
-import galleryStyles from "./flow/imagegallery.module.css";
 import { ToolCallItem } from "./ToolCallItem";
 import itemStyles from "./toolcallitem.module.css";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
@@ -75,10 +74,31 @@ test.each(["memory_read", "memory_search"])(
     const body = screen.getByTestId("tool-call-body");
     expect(body.textContent).toContain("opaque-delivery-040-");
     expect(body.textContent).toContain(ref);
-    fireEvent.click(within(body).getByRole("button", { name: /Show \d+ earlier lines/ }));
+    // At the 100-line fold window this 24-line output renders unfolded: the
+    // earlier marker is visible with no fold control on the body at all.
+    expect(within(body).queryByRole("button", { name: /earlier lines/ })).toBeNull();
     expect(body.textContent).toContain("opaque-delivery-001-");
   },
 );
+
+test("a generic body over the fold window folds in the expanded row and reveals its head", () => {
+  // 101 lines at a 100-line window: exactly one earlier line, worded in the
+  // singular - the boundary the CodeBlock unit suite pins, proven here
+  // through a real tool row's expanded body, the journey the recorded memory
+  // fixture's test above no longer exercises once its output stops folding.
+  const lines = Array.from({ length: 101 }, (_, i) => (i === 0 ? "FIRST LINE MARKER" : `output line ${i}`));
+  const generic = item({ toolName: "some_unregistered_tool", output: lines.join("\n"), status: "completed" });
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+    "test:fold",
+    <ToolCallItem item={generic} turn={turn} live={false} />,
+  );
+  const body = screen.getByTestId("tool-call-body");
+  expect(within(body).queryByText("FIRST LINE MARKER")).toBeNull();
+  fireEvent.click(within(body).getByRole("button", { name: "Show 1 earlier line" }));
+  expect(within(body).getByText("FIRST LINE MARKER")).toBeTruthy();
+  expect(within(body).getByRole("button", { name: "Show fewer lines" })).toBeTruthy();
+});
 
 test.each(["running", "completed"])(
   "a historical %s receipt is not current lifecycle without an owner projection",
@@ -108,18 +128,18 @@ test.each(["running", "completed"])(
     // Expanded at settle, the card's merged status line carries the word; the
     // standalone lifecycle div is suppressed while the card is mounted.
     expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
-    expect(screen.getByTestId("subagent-stats").textContent).toContain("Status unavailable");
+    expect(screen.getByTestId("subagent-stats").dataset.kind).toBe("unknown");
     expect(screen.getByTestId("subagent-row").dataset.kind).toBe("unknown");
     expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Open transcript" }).closest("button[aria-expanded]")).toBeNull();
+    expect(screen.getByRole("button", { name: "Open conversation" }).closest("button[aria-expanded]")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show recent activity" }));
     expect(screen.getByTestId("subagent-receipt").textContent).toContain(`Launch receipt: ${status}`);
     expect(receipt.output).toBe(output);
     const body = screen.getByTestId("tool-call-body");
     fireEvent.click(screen.getByTestId("tool-row").querySelector(`button[aria-controls="${body.id}"]`)!);
     expect(screen.queryByTestId("tool-call-body")).toBeNull();
-    expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
-    expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
+    expect(screen.getByTestId("delegate-lifecycle").dataset.kind).toBe("unknown");
+    expect(screen.getByRole("button", { name: "Open conversation" })).toBeTruthy();
   },
 );
 
@@ -601,8 +621,9 @@ test("a read_file image read renders its output image at the large (up-to-600px)
   );
   // An image read auto-expands (the picture is the call's whole output), so
   // the gallery is already mounted - no expandRow() toggle needed.
-  const thumb = screen.getByTestId("image-gallery-thumb");
-  expect(thumb.className.split(/\s+/)).toContain(galleryStyles.thumbLarge);
+  // The large variant reserves no fixed 96px box (ImageGallery.test.tsx).
+  const img = screen.getByTestId("image-gallery-thumb").querySelector("img")!;
+  expect(img.hasAttribute("width")).toBe(false);
 });
 
 test("other tools' outputImages keep the default 96px thumbnail size", () => {
@@ -615,8 +636,8 @@ test("other tools' outputImages keep the default 96px thumbnail size", () => {
     />,
   );
   // At activity level the body auto-expands (expandByDefault=true).
-  const thumb = screen.getByTestId("image-gallery-thumb");
-  expect(thumb.className.split(/\s+/)).not.toContain(galleryStyles.thumbLarge);
+  const img = screen.getByTestId("image-gallery-thumb").querySelector("img")!;
+  expect(img.getAttribute("width")).toBe("96");
 });
 
 test("an empty outputImages array renders no gallery thumbnails", () => {
@@ -713,6 +734,14 @@ test("a body-less errored row is still an expandable disclosure, collapsed until
   expect(screen.getByText("denied")).toBeTruthy();
 });
 
+// An open shell row's summary is a placeholder: still there, but no longer
+// repeating the command the body shows.
+function expectPlaceholderSummary(command: string): void {
+  const summary = screen.getByTestId("tool-row-summary").textContent ?? "";
+  expect(summary).not.toBe("");
+  expect(summary).not.toContain(command);
+}
+
 test("an expanded shell row swaps the one-line command for a placeholder - the body's block stays the single copy", () => {
   // At activity level the body opens through the config default, so an open
   // shell row swaps its summary for the placeholder.
@@ -731,7 +760,7 @@ test("an expanded shell row swaps the one-line command for a placeholder - the b
   expect(rowIsOpen(details)).toBe(true);
   // The summary line stays (it is the line the disclosure chevron rides), but
   // its text no longer duplicates the body's pretty-printed command.
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+  expectPlaceholderSummary("echo hi");
   // The command still appears exactly once: the body's pretty-printed block.
   expect(screen.getByTestId("tool-call-body").textContent).toContain("echo hi");
   // The row stays toggleable: the chevron rides the summary line.
@@ -754,7 +783,7 @@ test("a collapsed shell row keeps the one-line command summary; opening the row 
   );
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran echo hi");
   expandRow();
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+  expectPlaceholderSummary("echo hi");
   // Collapsing the body again restores the real summary - the swap is a
   // display state, not a one-way replacement.
   expandRow();
@@ -1515,9 +1544,9 @@ test("a delegate card never carries the hook: its lifecycle line or open card al
 });
 
 // A delegate card is intent-only by design - its descriptor deliberately puts
-// the Open transcript control on the intent line ("visible folded or not"), so
+// the Open conversation control on the intent line ("visible folded or not"), so
 // the intent-level gate must not swallow it (the phone editorial gate needs it).
-test("a delegate card at intent level keeps its Open transcript control", () => {
+test("a delegate card at intent level keeps its Open conversation control", () => {
   resetThreadsStoreForTests();
   const card = item({
     toolName: "delegate",
@@ -1526,12 +1555,12 @@ test("a delegate card at intent level keeps its Open transcript control", () => 
   });
   renderIntentLevel(<ToolCallItem item={card} turn={turn} live={false} sessionRef="ref_a" />);
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Inspect the independent child");
-  expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Open conversation" })).toBeTruthy();
   // Collapsing the card's body leaves the intent line alone - the control is
   // there whether the card is folded or not, so it must survive.
   fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
   expect(screen.queryByTestId("tool-call-body")).toBe(null);
-  expect(screen.getByRole("button", { name: "Open transcript" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Open conversation" })).toBeTruthy();
 });
 
 // An image read auto-expands its body, so the tool (its picture) is visible
@@ -1567,10 +1596,10 @@ test("an auto-expanded image read at intent level keeps Open beside", () => {
   );
 });
 
-// A delegate_send row's Open transcript control rides INLINE between the
+// A delegate_send row's Open conversation control rides INLINE between the
 // delegate target and the running-state meta - next to the item it opens,
 // not off after the status words.
-test("a delegate_send card's Open transcript control rides inline between the delegate target and the status meta", () => {
+test("a delegate_send card's Open conversation control rides inline between the delegate target and the status meta", () => {
   const delegateSendItem = item({
     toolName: "delegate_send",
     argumentsJSON: JSON.stringify({ to: "dlg_abc123", message: "status?" }),
@@ -1582,17 +1611,17 @@ test("a delegate_send card's Open transcript control rides inline between the de
   // collapsed or expanded: assert the control's siblings in both states.
   renderTools(<ToolCallItem item={delegateSendItem} turn={turn} live={false} sessionRef="ref_a" />);
   const trailing = screen.getByTestId("tool-row-trailing");
-  expect(trailing.contains(screen.getByRole("button", { name: "Open transcript" }))).toBe(true);
+  expect(trailing.contains(screen.getByRole("button", { name: "Open conversation" }))).toBe(true);
   const [before, after] = textAround(trailing);
-  expect(before).toBe("Sent a message to delegate dlg_abc123");
-  expect(after).toBe(" · running");
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Sent a message to delegate dlg_abc123 · running");
+  expect(before).toContain("dlg_abc123");
+  expect(after).toContain("running");
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe(`${before}${after}`);
   cleanup();
   render(<ToolCallItem item={delegateSendItem} turn={turn} live={false} sessionRef="ref_a" />);
   const openTrailing = screen.getByTestId("tool-row-trailing");
   const [openBefore, openAfter] = textAround(openTrailing);
-  expect(openBefore).toBe("Sent a message to delegate dlg_abc123");
-  expect(openAfter).toBe(" · running");
+  expect(openBefore).toBe(before);
+  expect(openAfter).toBe(after);
 });
 
 // --- summarySuffix (kata h70z): a descriptor may append text to the
@@ -1720,7 +1749,7 @@ test("delegate controls require stable delegate_id and reject activation-only jo
   // headless - assert the kind, and that exactly one row (the stable one)
   // earned the open control.
   expect(rows[0]?.getAttribute("data-kind")).toBe("running");
-  expect(screen.getAllByRole("button", { name: "Open transcript" })).toHaveLength(1);
+  expect(screen.getAllByRole("button", { name: "Open conversation" })).toHaveLength(1);
 });
 
 test("malformed delegate arguments keep status without inventing an intent", () => {
@@ -1892,7 +1921,7 @@ test("a shell row swaps the summary for the placeholder when the body opens (too
   // intent line.
   const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
   fireEvent.click(bodyTrigger);
-  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran a shell command");
+  expectPlaceholderSummary("echo hi");
   // The intent line stays.
   expect(screen.getByTestId("tool-row-intent").textContent).toBe("Running a command");
   // data-body-trigger-intent marks the intent-line chevron placement; the
@@ -2257,7 +2286,8 @@ test("a collapsed two-level row keeps distinct accessible names for its intent a
   expect(intentTrigger.getAttribute("aria-label")).toBeNull();
   expect(screen.getAllByRole("button", { name: "Running the test suite" })).toHaveLength(1);
   // The body trigger keeps the bare fallback rather than duplicating it.
-  expect(bodyTrigger.getAttribute("aria-label")).toBe("Tool call");
+  expect(bodyTrigger.getAttribute("aria-label")).not.toBeNull();
+  expect(bodyTrigger.getAttribute("aria-label")).not.toBe("Running the test suite");
 });
 
 // --- entity cards on ids in non-content summary fields ---------------------

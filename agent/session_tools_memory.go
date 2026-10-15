@@ -20,7 +20,7 @@ func registerMemoryTools(reg *tool.Registry, s *Session) error {
 	}
 	tools := []tool.RegisteredTool{
 		{Definition: tool.DefMemoryRead(), ReadOnly: true, Exec: s.execMemoryRead},
-		{Definition: tool.MemoryDefinition(tool.DefWriteFile(), "memory_write"), Exec: s.execMemoryWrite},
+		{Definition: tool.DefMemoryWrite(), Exec: s.execMemoryWrite},
 		{Definition: tool.MemoryDefinition(tool.DefEditFile(), "memory_edit"), Exec: s.execMemoryEdit},
 		{Definition: tool.MemoryDefinition(tool.DefGrep(), "memory_search"), ReadOnly: true, Exec: s.execMemorySearch},
 		{Definition: tool.DefMemoryDelete(), Exec: s.execMemoryDelete},
@@ -178,8 +178,8 @@ func isMemoryIndexPath(file string) bool {
 }
 
 const (
-	memoryMissingDescriptionNote    = "\n\nThis page has no description in its frontmatter, so its index line falls back to its first heading. Add description: <one line> to the frontmatter."
-	memoryUnreadableFrontmatterNote = "\n\nThis page's frontmatter is not valid YAML, so its index line falls back to its first heading. Fix the frontmatter; quote a description that contains a colon."
+	memoryMissingWhenNote           = "\n\nThis page has no when line in its frontmatter. Add when: <one line> saying when a future session needs this page: the moments it would otherwise get this wrong, at the level that covers all of them."
+	memoryUnreadableFrontmatterNote = "\n\nThis page's frontmatter is not valid YAML, so its index line falls back to its first heading. Fix the frontmatter; quote a value that contains a colon."
 )
 
 // stampMemoryPage is raw, the bytes a tool is about to write to the file at
@@ -202,8 +202,8 @@ func (s *Session) stampMemoryPage(rel string, raw []byte) (stamped []byte, notes
 	switch page := parseMemoryPage(rel, stamped, time.Time{}); {
 	case page.Unreadable:
 		notes = memoryUnreadableFrontmatterNote
-	case !page.HasDescription:
-		notes = memoryMissingDescriptionNote
+	case page.When == "":
+		notes = memoryMissingWhenNote
 	}
 	return stamped, notes
 }
@@ -263,8 +263,12 @@ func (s *Session) execOwnMemoryWrite(args map[string]any, operation string, writ
 }
 
 func (s *Session) execMemoryWrite(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+	page, err := memoryPageFromFields(args)
+	if err != nil {
+		return nil, err
+	}
 	return s.execOwnMemoryWrite(args, "write", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error) {
-		forwarded["content"] = string(stamp([]byte(fmt.Sprint(forwarded["content"]))))
+		forwarded["content"] = string(stamp([]byte(page)))
 		return execFileWrite(ctx, env, forwarded, s.fileReadGuard(env))
 	})
 }
@@ -289,11 +293,11 @@ func memoryPageSizeNote(size int, withSkill bool) string {
 // with the save tools, which no delegate has), use_skill is callable and the
 // skill is advertised to the model.
 func (s *Session) memoryGardeningSkillAvailable() bool {
-	if !s.memorySaveInstructionsEnabled() || !s.canInstructTool("use_skill") {
+	if !s.skillAvailableToSession(gardeningMemorySkillName) || !s.canInstructTool("use_skill") {
 		return false
 	}
 	for _, descriptor := range s.skills.ModelEntries() {
-		if descriptor.CatalogName == "gardening-memory" {
+		if descriptor.CatalogName == gardeningMemorySkillName {
 			return true
 		}
 	}
@@ -309,7 +313,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 	defer release()
 	if isMemoryIndexPath(file) {
 		var rendered memoryProjection
-		if err := s.renderMemoryScope(env, &rendered); err != nil {
+		if err := s.renderMemoryScope(ctx, env, &rendered); err != nil {
 			return nil, err
 		}
 		if rendered.Status == "missing" {
@@ -322,7 +326,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 	// read, which therefore records the whole page as of that read.
 	var raw []byte
 	out, err := execFileReadWith(forwarded, s.fileReadGuard(env), func(path string, offset, limit *int) (string, error) {
-		text, loaded, err := env.ReadFileAndBytes(path, offset, limit)
+		text, loaded, err := env.ReadFileAndBytesCtx(ctx, path, offset, limit)
 		raw = loaded
 		return text, err
 	})
@@ -349,7 +353,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "edit", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error) {
 		return execFileEditWith(forwarded, s.fileReadGuard(env), func(path, oldString, newString string, replaceAll bool) (string, error) {
-			return env.EditFileWith(path, oldString, newString, replaceAll, stamp)
+			return env.EditFileWithCtx(ctx, path, oldString, newString, replaceAll, stamp)
 		})
 	})
 }

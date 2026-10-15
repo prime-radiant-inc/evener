@@ -279,11 +279,13 @@ func TestWatches_SelfLoopsEmptyMessageIsUnambiguous(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := RenderWatches(r)
-	if strings.Contains(out, "no watches recorded") {
-		t.Errorf("a no-runaway --self-loops result should not say 'no watches recorded':\n%s", out)
+	if len(r.Watches) != 0 {
+		t.Fatalf("w1 never fired the fuse, so --self-loops should drop it; got %d watches", len(r.Watches))
 	}
-	if !strings.Contains(out, "runaway fuse fired") {
-		t.Errorf("expected the runaway-fuse empty message:\n%s", out)
+	if r.Filtered != "self-loops,watch:w1" {
+		t.Errorf("Filtered = %q, want the self-loops filter named so the empty result reads as filtered", r.Filtered)
+	}
+	if RenderWatches(r) == RenderWatches(WatchReport{SessionID: r.SessionID, JobsPath: r.JobsPath}) {
+		t.Error("an empty --self-loops result must not render like a session with no watches")
 	}
 }

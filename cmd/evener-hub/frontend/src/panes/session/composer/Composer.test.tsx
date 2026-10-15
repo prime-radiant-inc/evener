@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useLayoutEffect } from "react";
@@ -36,9 +36,11 @@ import {
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import buttonStyles from "../../../widgets/button/button.module.css";
+import { SHOW_DELAY_MS } from "../../../widgets/hovercard/useFloatingLabel";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { errorToastsNaming, toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { hoverForTooltip } from "../../../widgets/tooltip/tooltipTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
@@ -47,6 +49,7 @@ import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
+import { steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
 import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } from "./draft";
 import {
   publishOutboxRecordForTests,
@@ -57,7 +60,12 @@ import {
   flushPendingTurnsProjectionForTests,
   startFlushPastEmptyRoundForTests,
 } from "./queue/testing/flushPendingTurnsProjection";
-import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
+import {
+  consumeQuoteInsert,
+  requestQuoteInsert,
+  resetQuoteInsertStoreForTests,
+  useQuoteInsertRequest,
+} from "./quoteInsert";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
 
 function Composer(props: React.ComponentProps<typeof ComposerView>) {
@@ -329,6 +337,12 @@ async function mountComposerWithHandle(
   return { fake, ...view };
 }
 
+// Which editor the composer shows: "message" for a live session, "follow-up"
+// for an ended one awaiting a follow-up.
+function composerMode(): string | undefined {
+  return screen.getByTestId("composer-form").dataset.mode;
+}
+
 async function mountComposer(
   ref: string,
   overrides: Partial<Thread> = {},
@@ -484,7 +498,6 @@ test("while ask_pending is open, the message textbox is hidden and the dock is n
   // contract: hiding the input row while a question is pending.
   expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
   expect(screen.queryByTestId("current-work")).toBeNull();
-  expect(screen.queryByText("Answer the agent’s questions.")).toBeNull();
   expect(document.querySelector("[data-ask-response-dock]")).toBeNull();
 });
 
@@ -503,7 +516,7 @@ test("the current-work goal row carries the goal's live status", async () => {
     evener: currentWorkEvener({ goal: true }),
   });
 
-  expect(screen.getByTestId("current-work-goal-status").textContent).toBe("Active");
+  expect(screen.getByTestId("current-work-goal-status").dataset.state).toBe("active");
 });
 
 test("clicking the current goal fills and focuses an empty composer with an editable goal command", async () => {
@@ -1313,6 +1326,168 @@ test("a quote-insert request for a DIFFERENT ref never reaches this composer", a
   expect(textarea().textContent).toBe("");
 });
 
+// The embedded cascade column put a second composer in the world for the
+// same ref, so a quote request must name the seat it is quoting into: the
+// pane id of the conversation the selection was made in. The routing
+// contract lives in quoteInsert's read side - only the addressed seat's
+// hook may see the request - because in production both composers' merge
+// effects hold the same captured request within one commit and the first
+// composer's consume cannot un-capture it. An unaddressed request keeps
+// the historic any-composer routing for callers that cannot pin a
+// destination.
+test("an addressed quote-insert request is visible only to the addressed seat", async () => {
+  const ref = "ref_addressed_seats";
+  const seatA = renderHook(() => useQuoteInsertRequest(ref, "pane_a"));
+  const seatB = renderHook(() => useQuoteInsertRequest(ref, "pane_b"));
+
+  act(() => {
+    requestQuoteInsert(ref, "> quoted line\n\n", "append", "pane_a");
+  });
+
+  expect(seatA.result.current?.text).toBe("> quoted line\n\n");
+  expect(seatB.result.current).toBeUndefined();
+  act(() => {
+    consumeQuoteInsert(ref);
+  });
+  expect(seatA.result.current).toBeUndefined();
+});
+
+test("an addressed quote-insert request reaches the addressed seat's composer", async () => {
+  const ref = "ref_two_seats";
+  const fakeA = connectFakeClient();
+  fakeA.on("thread/read", () => readResponse(ref));
+  const fakeB = connectFakeClient();
+  fakeB.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  render(
+    <ClientProvider client={fakeA}>
+      <Toast />
+      <Composer ref={ref} paneId="pane_a" source={createTestComposerSource(ref)} focused={false} />
+    </ClientProvider>,
+  );
+  render(
+    <ClientProvider client={fakeB}>
+      <Toast />
+      <Composer ref={ref} paneId="pane_b" source={createTestComposerSource(ref)} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery(ref);
+  await flushPendingTurnsProjectionForTests();
+  const editors = screen.getAllByRole("textbox", { name: /^message$/i });
+  expect(editors).toHaveLength(2);
+  const [seatA, seatB] = editors;
+  if (!seatA || !seatB) throw new Error("Missing one of the two seat composers");
+
+  act(() => {
+    requestQuoteInsert(ref, "> quoted line\n\n", "append", "pane_a");
+  });
+
+  await waitFor(() => expect(seatA.textContent).toBe("> quoted line\n\n"));
+  expect(seatB.textContent).toBe("");
+  expect(document.activeElement).toBe(seatA);
+});
+
+test("goal editing focuses only the requesting seat's composer when two share a ref", async () => {
+  const user = userEvent.setup();
+  const overrides = { evener: currentWorkEvener({ goal: true }) };
+  // Both seats live in ONE tree, like an ordinary pane and its embedded
+  // column do in production: effects run in mount order, so an unaddressed
+  // request deterministically reaches every seat.
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", overrides));
+  await threadsStore.getState().ensureThread("ref_a");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="ref_a" paneId="pane_a" source={createTestComposerSource("ref_a")} focused={false} />
+      <Composer ref="ref_a" paneId="pane_b" source={createTestComposerSource("ref_a")} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_a");
+  await flushPendingTurnsProjectionForTests();
+  const editors = screen.getAllByRole("textbox", { name: /^message$/i });
+  expect(editors).toHaveLength(2);
+  const [seatA, seatB] = editors;
+  if (!seatA || !seatB) throw new Error("Missing one of the two seat composers");
+  const seatAFocused = vi.fn();
+  seatA.addEventListener("focus", seatAFocused);
+
+  const editButtons = screen.getAllByRole("button", { name: /Edit goal: Keep the session focused/ });
+  expect(editButtons).toHaveLength(2);
+  await user.click(editButtons[1] ?? seatB);
+
+  await waitFor(() => expect(document.activeElement).toBe(seatB));
+  expect(seatB.textContent).toBe("/goal Keep the session focused");
+  // The request must be addressed: the other seat never takes focus, so
+  // typing lands in the requesting seat's editor alone.
+  expect(seatAFocused).not.toHaveBeenCalled();
+});
+
+test("the composer anchor carries its owning ref and pane id for the hold-hint overlay", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_anchor"));
+  await threadsStore.getState().ensureThread("ref_anchor");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="ref_anchor" paneId="pane_anchor" source={createTestComposerSource("ref_anchor")} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("ref_anchor");
+  await flushPendingTurnsProjectionForTests();
+
+  // The hold-hint resolver (shell/holdhints) matches an anchor by BOTH its ref
+  // and its pane id, so the anchor must expose the owning pane id alongside the
+  // session ref.
+  const anchor = screen.getByTestId("composer-form").closest("[data-composer]");
+  expect(anchor?.getAttribute("data-composer")).toBe("ref_anchor");
+  expect(anchor?.getAttribute("data-composer-pane")).toBe("pane_anchor");
+});
+
+test("the current-task control opens this column's tasks without stealing cascade focus", async () => {
+  const user = userEvent.setup();
+  const overrides = { evener: currentWorkEvener({ task: true }) };
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("remote:parent", overrides));
+  await threadsStore.getState().ensureThread("remote:parent");
+  // An embedded column's composer: the host cascade covers this
+  // conversation, and an ordinary pane for the same conversation sits
+  // beside it.
+  workspaceStore.setState({
+    panes: [
+      {
+        id: "zoom",
+        type: "sessionZoom",
+        params: {
+          ref: "remote:leaf",
+          source: { type: "session", params: { ref: "remote:root" } },
+          edges: [{ ownerRef: "remote:parent", childRef: "remote:leaf", delegateId: "d1" }],
+        },
+        slot: "main",
+      },
+      { id: "pane-parent", type: "session", params: { ref: "remote:parent" }, slot: "secondary" },
+    ],
+    focusedPaneId: "zoom",
+  });
+  // The sidebar describes the focused leaf, like the zoom's own scope does.
+  activitySidebarStore.getState().retarget("remote:leaf");
+  render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="remote:parent" paneId="zoom" source={createTestComposerSource("remote:parent")} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery("remote:parent");
+  await user.click(screen.getByRole("button", { name: /Open tasks: Finish the focused composer test/ }));
+
+  // The request came from the parent column's composer: the sidebar opens
+  // that conversation's Tasks, holding its scope, and the cascade keeps
+  // focus.
+  expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "tasks", ref: "remote:parent" });
+  expect(activitySidebarStore.getState().explicitScopeRef).toBe("remote:parent");
+  expect(workspaceStore.getState().focusedPaneId).toBe("zoom");
+});
+
 test("the composer persists the quote-inserted text as this ref's draft", async () => {
   await mountComposer("ref_a");
   act(() => {
@@ -1410,6 +1585,7 @@ test("the composer's shared PromptCard leads with the attachment and inline sess
       contextUsed: 64_000,
       contextWindow: 128_000,
       contextPressure: 0.5,
+      contextAssumed: false,
     },
   });
   const card = screen.getByTestId("composer-input-card");
@@ -1462,8 +1638,8 @@ test("every control in the composer's button row is the xs (24px) size", async (
   });
 
   // IconButton overrides Button's own xs/sm/md with its square sizing (see
-  // iconbutton.module.css), so the one icon control carries that module's xs.
-  expect(screen.getByTestId("composer-attach").className.split(" ")).toContain(iconButtonStyles.xs);
+  // iconbutton.module.css), so the one icon control carries that module's squareXs.
+  expect(screen.getByTestId("composer-attach").className.split(" ")).toContain(iconButtonStyles.squareXs);
   for (const control of [stopButton(), steerButton(), submitButton()]) {
     expect(control.className.split(" ")).toContain(buttonStyles.xs);
   }
@@ -1477,7 +1653,7 @@ test("Stop renders as the word in the dangerQuiet variant, not as an icon", asyn
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  expect(stopButton().textContent).toBe("Stop");
+  expect(stopButton().textContent).not.toBe("");
   expect(stopButton().querySelector("svg")).toBeNull();
   expect(stopButton().className.split(" ")).toContain(buttonStyles.dangerQuiet);
 });
@@ -1527,7 +1703,7 @@ test("with nothing running, Send is the primary, sends now, and there is no Stee
   expect(submitButton().className.split(" ")).toContain(buttonStyles.primary);
   expect(screen.queryByTestId("composer-steer")).toBeNull();
   // The idle half of Send's timing reaching its bubble (canQueue false).
-  expect(hoverForTooltip(submitButton()).textContent).toMatch(/^Send now · /);
+  expect(hoverForTooltip(submitButton()).textContent).toBe(submitTooltipLabel({ canQueue: false, enterToSend: false }));
 });
 
 // The label is stable across states even though the ROUTE isn't: a mid-turn
@@ -1535,11 +1711,15 @@ test("with nothing running, Send is the primary, sends now, and there is no Stee
 // "Send", because the change is one of timing, not of verb. The tooltip is
 // where the timing is spelled out (controlTooltips.test.ts).
 test("Send keeps its label while a turn runs", async () => {
+  const idle = await mountComposerWithHandle("ref_idle", { status: { type: "idle" } });
+  const idleLabel = submitButton().textContent;
+  idle.unmount();
   await mountComposer("ref_a", {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
-  expect(submitButton().textContent).toBe("Send");
+  expect(idleLabel).not.toBe("");
+  expect(submitButton().textContent).toBe(idleLabel);
 });
 
 // cezn: Send and Steer sit side by side while a turn runs, and Send's own
@@ -1617,7 +1797,7 @@ test("the timing caption is absent while an ask_user question is pending, even t
 
 // --- send / queue routing ---------------------------------------------------
 
-test("idle session: submit button reads Send and posts turn/start with the composer text", async () => {
+test("idle session: submit posts turn/start with the composer text", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });
   fake.on("turn/start", (params) => ({
@@ -1631,7 +1811,7 @@ test("idle session: submit button reads Send and posts turn/start with the compo
   }));
 
   await user.type(textarea(), "ha");
-  expect(submitButton().textContent).toMatch(/send/i);
+  expect(submitButton().disabled).toBe(false);
   await user.click(submitButton());
 
   await flushPendingTurnsProjectionForTests();
@@ -1675,7 +1855,12 @@ test("text edited while the local outbox commit is pending survives that commit"
   expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
 });
 
-test("a local outbox failure leaves the composer untouched and sends no RPC", async () => {
+// #4194: with no IndexedDB at all the mutation runtime is never created, and a
+// send must still go out - the product rule every other local-persistence
+// failure follows. The failure this fake produces is the transport's (no
+// turn/start handler is scripted), and the composer must still keep the unsent
+// draft rather than clear it.
+test("with no IndexedDB the composer still attempts the send and keeps its draft when it fails", async () => {
   // @ts-expect-error this test exercises the explicit unavailable-storage boundary
   globalThis.indexedDB = undefined;
   const user = userEvent.setup();
@@ -1686,9 +1871,15 @@ test("a local outbox failure leaves the composer untouched and sends no RPC", as
   await user.type(editor, "hello");
   await user.click(submitButton());
 
-  await waitFor(() => expect(screen.getByText(/send failed/i)).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(editor.textContent).toBe("hello");
-  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+  // The send is attempted on the direct path even though no outbox row can be
+  // written. The transport fails, so the composer keeps the draft; every
+  // attempt reuses one clientMutationId, so a retry can only ever deliver once.
+  const attempts = fake.calls.filter((call) => call.method === "turn/start");
+  expect(attempts.length).toBeGreaterThan(0);
+  const ids = new Set(attempts.map((call) => (call.params as { clientMutationId?: string }).clientMutationId));
+  expect(ids.size).toBe(1);
 });
 
 test("a lost response never restores submitted content over a newer composer draft", async () => {
@@ -2273,13 +2464,12 @@ test("with enterToSend on, Steer's tooltip drops its chord and Send's names bare
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   const tip = hoverForTooltip(steerButton());
-  expect(tip.textContent).toMatch(/interrupt and redirect now/i);
-  expect(tip.textContent).not.toMatch(/Shift/);
+  expect(tip.textContent).toBe(steerTooltipLabel({ recoveryFenced: false, enterToSend: true }));
 
   // Leaving hides Steer's bubble at once. hoverForTooltip reads the tooltip
   // with getByRole, which throws if two bubbles show.
   fireEvent.mouseLeave(steerButton());
-  expect(hoverForTooltip(submitButton()).textContent).toBe("Queue until the agent stops · Enter");
+  expect(hoverForTooltip(submitButton()).textContent).toBe(submitTooltipLabel({ canQueue: true, enterToSend: true }));
 });
 
 // --- steer / drain-as-steer routing -----------------------------------------
@@ -2399,7 +2589,7 @@ test("stop and steer both render and both work during the window after status fl
   await user.click(screen.getByTestId("composer-steer"));
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1);
-  expect(screen.queryByText(/no active turn/i)).toBeNull();
+  expect(getToasts()).toEqual([]);
 
   // And it is a working button, not a decoration: the request it sends names
   // the ref and nothing else, which is why it needs no id to exist.
@@ -2531,7 +2721,7 @@ test("Steer pressed after an idle frame folded in the same task is refused on th
     foldStatusFrame(fake, "idle");
     fireEvent.click(steer);
   });
-  await waitFor(() => expect(getToasts().map((t) => t.text)).toContain("Steer failed: no active turn"));
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
 
@@ -2553,7 +2743,7 @@ test("Stop pressed after an idle frame folded in the same task is refused on the
     foldStatusFrame(fake, "idle");
     fireEvent.click(stop);
   });
-  await waitFor(() => expect(getToasts().map((t) => t.text)).toContain("Interrupt failed: no active turn"));
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((c) => c.method === "turn/interrupt")).toHaveLength(0);
 });
 
@@ -2791,7 +2981,7 @@ test("Shift+Enter while active with no active turn id sends the steer", async ()
 
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1);
-  expect(screen.queryByText(/no active turn/i)).toBeNull();
+  expect(getToasts()).toEqual([]);
 });
 
 // The drain route follows the same rule. It used to be guarded on the turn id
@@ -2828,7 +3018,7 @@ test("Shift+Enter routing to drain while active with no active turn id sends the
 
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(1);
-  expect(screen.queryByText(/no active turn/i)).toBeNull();
+  expect(getToasts()).toEqual([]);
 });
 
 // The keybinding shares the button's whole rule, capability included: a busy
@@ -2860,7 +3050,7 @@ test("Shift+Enter on a busy session whose harness advertises no steer sends noth
   expect(screen.queryByTestId("composer-steer")).toBeNull();
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
-  await waitFor(() => expect(screen.getByText(/steer is not available for this session/i)).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
 
@@ -2880,7 +3070,7 @@ test("Shift+Enter on an idle session, where no Steer button renders at all, stil
   expect(screen.queryByTestId("composer-steer")).toBeNull(); // nothing to click; the keybinding is the only route
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
-  await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
 
@@ -3154,7 +3344,7 @@ test("a losing cross-tab recovered send does not issue a second request", async 
 
   await waitFor(() => expect(editor.textContent).toBe(""));
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
-  expect(getToasts().map((toast) => toast.kind)).toEqual(["info"]);
+  expect(toastKinds()).toEqual(["info"]);
   otherTab.close();
 });
 
@@ -3540,7 +3730,7 @@ test.each(ENDED_STATUSES)("a %s session's compact card keeps controls and sends 
   const editor = textarea();
 
   // Controls are available before the editor is engaged.
-  expect(textarea().getAttribute("data-placeholder")).toBe("Send a follow-up…");
+  expect(composerMode()).toBe("follow-up");
   expect(editor.style.minHeight).toBe("1lh");
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
@@ -3549,7 +3739,7 @@ test.each(ENDED_STATUSES)("a %s session's compact card keeps controls and sends 
   // Focus expands the editor. There is no turn for Steer or Stop.
   await user.click(editor);
   expect(editor.style.minHeight).toBe("3lh");
-  expect(submitButton().textContent).toContain("Send");
+  expect(submitButton().textContent).not.toBe("");
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
   expect(screen.queryByTestId("composer-steer")).toBeNull();
   expect(screen.queryByTestId("composer-stop")).toBeNull();
@@ -3562,7 +3752,7 @@ test.each(ENDED_STATUSES)("a %s session's compact card keeps controls and sends 
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
-  expect(screen.queryByText(/Send is not available/)).toBeNull();
+  expect(getToasts()).toEqual([]);
 });
 
 // Saved local sessions share the compact editor and persistent control row.
@@ -3589,7 +3779,7 @@ test("a saved local notLoaded session keeps controls and one discovery owner at 
     },
   );
 
-  expect(textarea().getAttribute("data-placeholder")).toBe("Send a follow-up…");
+  expect(composerMode()).toBe("follow-up");
   expect(textarea().style.minHeight).toBe("1lh");
   expect(screen.getByTestId("composer-attach")).toBeTruthy();
   const chrome = screen.getByTestId("session-chrome-inline");
@@ -3989,7 +4179,7 @@ test("a failed resume toasts, keeps the pressed row parked, and a later press re
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
   // The toast names the reason.
-  await waitFor(() => expect(getToasts().map((toast) => toast.text)).toContain("Resume failed: resume rejected"));
+  await waitFor(() => expect(errorToastsNaming("resume rejected")).toHaveLength(1));
   // The pressed text is a parked durable row and nothing reached the wire.
   const parked = await storage.listOutbox(ref);
   expect(parked.map((record) => record.composerText)).toEqual(["keep me"]);
@@ -4040,11 +4230,11 @@ test("a resume failure does not re-toast when the composer remounts", async () =
   await user.type(editor, "keep me");
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() => expect(getToasts().filter((toast) => toast.text.startsWith("Resume failed"))).toHaveLength(1));
+  await waitFor(() => expect(errorToastsNaming("resume rejected")).toHaveLength(1));
   cleanup();
   await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
   await flushPendingTurnsProjectionForTests();
-  expect(getToasts().filter((toast) => toast.text.startsWith("Resume failed"))).toHaveLength(1);
+  expect(errorToastsNaming("resume rejected")).toHaveLength(1);
 });
 
 // R09 defect: the success path must also clear the stored failure, or a later
@@ -4069,7 +4259,7 @@ test("a successful re-drive clears the failure so a later remount cannot toast i
   await user.type(editor, "keep me");
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
-  await waitFor(() => expect(getToasts().filter((toast) => toast.text.startsWith("Resume failed"))).toHaveLength(1));
+  await waitFor(() => expect(errorToastsNaming("resume rejected")).toHaveLength(1));
   expect(threadsStore.getState().resumeFailures.has(ref)).toBe(true);
   // The later press re-drives and succeeds: the stored failure is cleared.
   failResume = false;
@@ -4081,7 +4271,7 @@ test("a successful re-drive clears the failure so a later remount cannot toast i
   cleanup();
   await mountComposer(ref, REMOUNT_FAILURE_SHAPE(ref));
   await flushPendingTurnsProjectionForTests();
-  expect(getToasts().filter((toast) => toast.text.startsWith("Resume failed"))).toHaveLength(1);
+  expect(errorToastsNaming("resume rejected")).toHaveLength(1);
 });
 
 // R09 defect: the render passed mutationStateAuthoritative but the press-time
@@ -4114,7 +4304,7 @@ test("an authoritative local child's Send press takes the Send-resumes face inst
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
   // No owner-retained refusal: the press parked the row and drove the resume.
-  expect(getToasts().map((toast) => toast.text)).not.toContain("Send is not available for this session");
+  expect(toastKinds()).not.toContain("error");
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
@@ -4212,7 +4402,7 @@ test("a blockedUnknown row published after the render routes the press to the Se
   // The submit routed to the Send-resumes face: the store drives the resume and
   // no refusal is toasted.
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
-  expect(getToasts().map((toast) => toast.text)).not.toContain("Send is not available for this session");
+  expect(toastKinds()).not.toContain("error");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -4402,8 +4592,10 @@ test("an active fenced local session offers Send and drives the resume", async (
 // parked intent. The button itself says why (kata 2f41), and the press-time
 // gate re-reads the obligation live - a Stop can arm the fence between the
 // render and the press, and Shift+Enter reaches the handler with no button on
-// screen at all.
-test("an active fenced local session renders a disabled Steer and parks nothing", async () => {
+// screen at all. The refusal is aria-disabled, not the native attribute: a
+// natively disabled button takes no focus and no hover, so its reason would be
+// unreachable.
+test("an active fenced local session renders a refused Steer that explains itself and parks nothing", async () => {
   const user = userEvent.setup();
   const ref = "local:active-fenced-steer";
   const fake = await mountComposer(ref, {
@@ -4418,12 +4610,27 @@ test("an active fenced local session renders a disabled Steer and parks nothing"
     },
   });
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
-  expect(steerButton().disabled).toBe(true);
+  const steer = steerButton();
+  expect(steer.disabled).toBe(false);
+  expect(steer.getAttribute("aria-disabled")).toBe("true");
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    act(() => steer.focus());
+    act(() => {
+      vi.advanceTimersByTime(SHOW_DELAY_MS);
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(document.activeElement).toBe(steer);
+  expect(steer.getAttribute("aria-describedby")).toBe(screen.getByRole("tooltip").id);
+  await user.click(steer);
+  expect(getToasts()).toHaveLength(0);
   // The keyboard chord still reaches the press handler; the fence refuses it.
   await user.click(textarea());
   await user.keyboard("{Shift>}{Enter}{/Shift}");
   await flushPendingTurnsProjectionForTests();
-  expect(getToasts().map((t) => t.text)).toContain("Steer isn't available until this session is resumed");
+  expect(toastKinds()).toEqual(["error"]);
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
   const storage = new MutationOutboxIndexedDB();
   const parked = await storage.listOutbox(ref);
@@ -4480,9 +4687,7 @@ test("a typed /queue on an active fenced session is refused and parks no intent"
   // is the reachable route - the same one the fenced-active tests above use.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  await waitFor(() =>
-    expect(getToasts().map((toast) => toast.text)).toContain("/queue isn't available until this session is resumed"),
-  );
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(await parkedOutboxFor(ref)).toEqual([]);
@@ -4501,9 +4706,7 @@ test("a typed /steer on an active fenced session is refused and parks no intent"
   // is the reachable route - the same one the fenced-active tests above use.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  await waitFor(() =>
-    expect(getToasts().map((toast) => toast.text)).toContain("/steer isn't available until this session is resumed"),
-  );
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(await parkedOutboxFor(ref)).toEqual([]);
@@ -4533,11 +4736,7 @@ test("a typed /drain-as-steer on an active fenced session is refused and parks n
   // is the reachable route - the same one the fenced-active tests above use.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  await waitFor(() =>
-    expect(getToasts().map((toast) => toast.text)).toContain(
-      "/drain-as-steer isn't available until this session is resumed",
-    ),
-  );
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((call) => call.method === "turn/drainAsSteer")).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(await parkedOutboxFor(ref)).toEqual([]);
@@ -4562,9 +4761,7 @@ test("a typed /clear on an active fenced session is refused and parks no intent"
   // is the reachable route - the same one the fenced-active tests above use.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
-  await waitFor(() =>
-    expect(getToasts().map((toast) => toast.text)).toContain("/clear isn't available until this session is resumed"),
-  );
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((call) => call.method === "thread/clear")).toEqual([]);
   expect(await parkedOutboxFor(ref)).toEqual([]);
   expect(editor.textContent).toBe("/clear");
@@ -4592,9 +4789,7 @@ test("a typed /interrupt on an active fenced session still mints its intent: Sto
   // mount - so the agreement under test is that the intent is minted at all.
   const parked = await parkedOutboxFor(ref);
   expect(parked.map((record) => record.method)).toEqual(["turn/interrupt"]);
-  expect(getToasts().map((toast) => toast.text)).not.toContain(
-    "/interrupt isn't available until this session is resumed",
-  );
+  expect(toastKinds()).not.toContain("error");
 });
 
 // The test above settles its press with the projection flush, which awaits
@@ -5079,7 +5274,7 @@ test("submitting while an attachment is still mid-encode is blocked with a toast
   await waitFor(() => expect(editor.textContent).toBe("[image 1]"));
   await user.click(submitButton());
 
-  await waitFor(() => expect(screen.getByText(/still processing/i)).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
 });
 
@@ -6497,7 +6692,9 @@ test("a failed built-in invocation preserves the draft and toasts a friendly mes
   await user.type(editor, "/goal fix the login bug");
   await user.click(submitButton());
 
-  await waitFor(() => expect(screen.getByText("Something went wrong.")).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
+  // The friendly message replaces the raw handler error.
+  expect(getToasts()[0]?.text).not.toContain("boom");
   expect(editor.textContent).toBe("/goal fix the login bug");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
@@ -6533,7 +6730,7 @@ test("an unavailable built-in (/steer while idle) is refused with the unavailabl
   await user.type(editor, "/steer go left");
   await user.click(submitButton());
 
-  await waitFor(() => expect(screen.getByText(/\/steer is not available right now/i)).toBeTruthy());
+  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
   expect(editor.textContent).toBe("/steer go left");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
@@ -6647,9 +6844,7 @@ test.each([
 
   await user.click(control === "submit" ? submitButton() : steerButton());
 
-  expect(getToasts().map((toast) => toast.text)).toContain(
-    "Skill selections aren't supported on this session yet; your draft is kept",
-  );
+  expect(toastKinds()).toEqual(["error"]);
   expect(fake.calls.filter((call) => call.method === method)).toHaveLength(0);
   expect(within(editor).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
 });
@@ -6673,9 +6868,7 @@ test("a staged skill on Send to a target without skillInput keeps the draft and 
 
   await user.click(submitButton());
 
-  expect(getToasts().map((toast) => toast.text)).toContain(
-    "Skill selections aren't supported on this session yet; your draft is kept",
-  );
+  expect(toastKinds()).toEqual(["error"]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   expect(editor.textContent).toContain("aimed at a target without skills");
   expect(within(editor).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");

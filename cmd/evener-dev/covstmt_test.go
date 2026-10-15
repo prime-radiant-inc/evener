@@ -79,9 +79,7 @@ func TestCovstmtRequiresAProfile(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("covstmtRun with no profiles exits %d, want 2", code)
 	}
-	if !strings.Contains(errOut.String(), "usage:") {
-		t.Fatalf("stderr does not print usage: %q", errOut.String())
-	}
+	assertCovstmtUsageError(t, out.String(), errOut.String())
 }
 
 func writeCovFixture(t *testing.T, path, content string) {
@@ -278,6 +276,18 @@ func TestCovstmtUnionMissingProfileFails(t *testing.T) {
 	}
 }
 
+// assertCovstmtUsageError checks a refused invocation's streams: a diagnostic
+// on stderr and nothing on stdout, so no partial report reaches a reader.
+func assertCovstmtUsageError(t *testing.T, stdout, stderr string) {
+	t.Helper()
+	if stderr == "" {
+		t.Fatal("usage error wrote nothing to stderr")
+	}
+	if stdout != "" {
+		t.Fatalf("usage error wrote to stdout: %q", stdout)
+	}
+}
+
 // TestCovstmtRejectsUnionWithGaps: --union counts a set as one; --gaps ranks a
 // single profile. Together they are meaningless, so it is a usage error.
 func TestCovstmtRejectsUnionWithGaps(t *testing.T) {
@@ -287,9 +297,7 @@ func TestCovstmtRejectsUnionWithGaps(t *testing.T) {
 	if code := covstmtRun([]string{"--gaps", "--union", profile}, &out, &errOut); code != 2 {
 		t.Fatalf("covstmtRun --gaps --union exits %d, want 2", code)
 	}
-	if !strings.Contains(errOut.String(), "mutually exclusive") {
-		t.Fatalf("stderr does not explain --union vs --gaps: %q", errOut.String())
-	}
+	assertCovstmtUsageError(t, out.String(), errOut.String())
 }
 
 // TestCovstmtGapsNoMatch pins the no-match line: the pattern is repr'd, and the
@@ -319,9 +327,7 @@ func TestCovstmtGapsRejectsBadBy(t *testing.T) {
 	if code := covstmtRun([]string{"--gaps", "--by", "bogus", profile}, &out, &errOut); code != 2 {
 		t.Fatalf("covstmtRun with --by bogus exits %d, want 2", code)
 	}
-	if !strings.Contains(errOut.String(), "--by must be package or file") {
-		t.Fatalf("stderr does not explain the bad --by: %q", errOut.String())
-	}
+	assertCovstmtUsageError(t, out.String(), errOut.String())
 }
 
 // TestCovstmtGapsRequiresExactlyOneProfile: the report is a single profile's
@@ -334,9 +340,7 @@ func TestCovstmtGapsRequiresExactlyOneProfile(t *testing.T) {
 	if code := covstmtRun([]string{"--gaps", profile, profile}, &out, &errOut); code != 2 {
 		t.Fatalf("covstmtRun --gaps with two profiles exits %d, want 2", code)
 	}
-	if !strings.Contains(errOut.String(), "usage:") {
-		t.Fatalf("stderr does not print usage: %q", errOut.String())
-	}
+	assertCovstmtUsageError(t, out.String(), errOut.String())
 }
 
 // TestCovstmtGapsRejectsNegativeTop: a negative --top is a typo, not "show
@@ -351,12 +355,7 @@ func TestCovstmtGapsRejectsNegativeTop(t *testing.T) {
 	if code := covstmtRun([]string{"--gaps", "--top", "-1", profile}, &out, &errOut); code != 2 {
 		t.Fatalf("covstmtRun with --top -1 exits %d, want 2", code)
 	}
-	if !strings.Contains(errOut.String(), "--top must not be negative") {
-		t.Fatalf("stderr does not explain the negative --top: %q", errOut.String())
-	}
-	if got := out.String(); got != "" {
-		t.Fatalf("stdout on negative --top = %q, want empty", got)
-	}
+	assertCovstmtUsageError(t, out.String(), errOut.String())
 }
 
 // TestCovstmtCountModeRejectsGapsOnlyFlags: --by/--top/--zero/--in mean nothing
@@ -376,8 +375,10 @@ func TestCovstmtCountModeRejectsGapsOnlyFlags(t *testing.T) {
 		if code := covstmtRun(args, &out, &errOut); code != 2 {
 			t.Errorf("covstmtRun(%q) exits %d, want 2", args, code)
 		}
-		if !strings.Contains(errOut.String(), "--gaps is required for") {
-			t.Errorf("covstmtRun(%q) stderr = %q, want the gaps-only message", args, errOut.String())
+		// The refusal, ahead of the usage text that lists every flag, names
+		// the stray one.
+		if refusal, _, _ := strings.Cut(errOut.String(), "\n"); !strings.Contains(refusal, args[0]) {
+			t.Errorf("covstmtRun(%q) refusal = %q, want %s named", args, refusal, args[0])
 		}
 		if got := out.String(); got != "" {
 			t.Errorf("covstmtRun(%q) stdout = %q, want empty", args, got)

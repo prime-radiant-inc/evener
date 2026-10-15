@@ -7,15 +7,20 @@ import type { ComponentProps } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { AnyNotification } from "@evener/appwire-client";
-import {
-	ENDPOINT_CHANGED_TEST_MESSAGE,
-	ErrorEndpointConflict,
-	FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
-	WireError,
-} from "@evener/appwire-client";
+import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { ProvidersStack as ProvidersPage } from "./providersPageTestUtils";
-import { render, renderedText, screenConnection, unmountMountedTrees } from "../renderNative.testkit";
+import { render, screenConnection, testIDSuffixes, unmountMountedTrees } from "../renderNative.testkit";
+
+/** Why the provider page, or its open paste sheet, reports an action didn't land, by reason. */
+function problems(tree: ReactTestRenderer): string[] {
+	return [...testIDSuffixes(tree, "provider-problem-"), ...testIDSuffixes(tree, "form-error-")];
+}
+
+/** What the provider page warns about, by reason. */
+function warnings(tree: ReactTestRenderer): string[] {
+	return testIDSuffixes(tree, "provider-warning-");
+}
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -136,7 +141,7 @@ it("does not surface a late probe error on the provider selected after it", asyn
 	pressRow(tree, "beta");
 	probe.reject(new WireError("conflict", -32013, { evenerErrorInfo: "conflict" }));
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain(ENDPOINT_CHANGED_TEST_MESSAGE);
+	expect(problems(tree)).not.toContain("test-endpoint-changed");
 });
 
 it("reports a superseded instance write as unconfirmed, not as success", async () => {
@@ -161,7 +166,7 @@ it("reports a superseded instance write as unconfirmed, not as success", async (
 	});
 	write.resolve(listing);
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("didn't confirm the change");
+	expect(problems(tree)).toContain("unconfirmed");
 });
 
 it("refuses a credential save for a destination the hub cannot fingerprint", async () => {
@@ -185,7 +190,7 @@ it("refuses a credential save for a destination the hub cannot fingerprint", asy
 	pressLabel(tree, "Save");
 	await act(async () => {});
 	expect(scripted.methods).not.toContain("evener/auth/apiKey/set");
-	expect(renderedText(tree)).toContain("so nothing was saved");
+	expect(problems(tree)).toContain("uncheckable-credential");
 });
 
 it("refuses a credential-JSON save for a destination the hub cannot fingerprint", async () => {
@@ -205,7 +210,7 @@ it("refuses a credential-JSON save for a destination the hub cannot fingerprint"
 	await act(async () => {});
 	pressLabel(tree, "Save");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("so nothing was saved");
+	expect(problems(tree)).toContain("uncheckable-credential");
 	expect(scripted.methods).not.toContain("evener/auth/credentialJson/set");
 });
 
@@ -224,8 +229,8 @@ it("does not report a destination change for a conflict on a non-asserting write
 	pressRow(tree, "alpha");
 	pressLabel(tree, "Make default");
 	await act(async () => {});
-	expect(renderedText(tree)).not.toContain("now points somewhere else");
-	expect(renderedText(tree)).toContain("didn't confirm the change");
+	expect(warnings(tree)).not.toContain("endpoint-changed");
+	expect(problems(tree)).toContain("unconfirmed");
 });
 
 it("refuses endpoint-sensitive destructive actions without a fingerprint, with a reason", async () => {
@@ -245,7 +250,7 @@ it("refuses endpoint-sensitive destructive actions without a fingerprint, with a
 		// Not silently greyed out: pressing says why it cannot proceed.
 		pressLabel(tree, label);
 		await act(async () => {});
-		expect(renderedText(tree)).toContain("so nothing was changed");
+		expect(problems(tree)).toContain("uncheckable-action");
 		// The guard returns before the confirmation, so no write can go out.
 		expect(alerts.alert).not.toHaveBeenCalled();
 		expect(scripted.methods).not.toContain("evener/instance/remove");
@@ -267,7 +272,7 @@ it("refuses a probe for a row the hub cannot fingerprint", async () => {
 	pressRow(tree, "alpha");
 	pressLabel(tree, "Test connection");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
+	expect(problems(tree)).toContain("uncheckable-test");
 	expect(scripted.methods).not.toContain("evener/auth/test");
 });
 
@@ -361,11 +366,11 @@ it("clears a stale probe error when a new probe starts", async () => {
 	pressRow(tree, "alpha");
 	pressLabel(tree, "Test connection");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain(ENDPOINT_CHANGED_TEST_MESSAGE);
+	expect(problems(tree)).toContain("test-endpoint-changed");
 	pressLabel(tree, "Test connection");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("Works");
-	expect(renderedText(tree)).not.toContain(ENDPOINT_CHANGED_TEST_MESSAGE);
+	expect(testIDSuffixes(tree, "provider-test-")).toEqual(["success"]);
+	expect(problems(tree)).not.toContain("test-endpoint-changed");
 });
 
 it("re-anchors the credential editor when the endpoint moves under it", async () => {
@@ -444,7 +449,7 @@ it("names a changed endpoint and re-reads when a credential save is refused", as
 	const listsBefore = lists;
 	pressLabel(tree, "Save");
 	await act(async () => {});
-	expect(renderedText(tree)).toContain("now points somewhere else");
+	expect(warnings(tree)).toContain("endpoint-changed");
 	expect(lists).toBeGreaterThan(listsBefore);
 });
 

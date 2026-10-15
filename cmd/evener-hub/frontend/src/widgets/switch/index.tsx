@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { type ReactNode, useId } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./switch.module.css";
 
@@ -18,6 +18,10 @@ export interface SwitchProps {
   /** Always-visible text, and the switch's sole accessible name (via
    * aria-labelledby) - kept required so an unlabeled switch can't ship. */
   label: string;
+  /** Secondary text set under the label (help, or a row's metadata), wired to
+   * the switch via aria-describedby. Not a click target: only the label
+   * mirrors a native <label>. */
+  description?: ReactNode;
 }
 
 const BASE_CLASS = {
@@ -26,6 +30,7 @@ const BASE_CLASS = {
   track: requireClass(styles.track, "switch.module.css", "track"),
   thumb: requireClass(styles.thumb, "switch.module.css", "thumb"),
   label: requireClass(styles.label, "switch.module.css", "label"),
+  description: requireClass(styles.description, "switch.module.css", "description"),
 };
 
 /**
@@ -41,8 +46,9 @@ const BASE_CLASS = {
  * attribute (inert, out of the tab order). A control whose OWN activation made
  * it unavailable is the first; everything else is the second.
  */
-export function Switch({ checked, onChange, pending = false, disabled = false, label }: SwitchProps) {
+export function Switch({ checked, onChange, pending = false, disabled = false, label, description }: SwitchProps) {
   const labelId = useId();
+  const descriptionId = useId();
   const refused = pending || disabled;
 
   // Both states block activation here: `pending` has no native attribute to
@@ -61,6 +67,7 @@ export function Switch({ checked, onChange, pending = false, disabled = false, l
         role="switch"
         aria-checked={checked}
         aria-labelledby={labelId}
+        aria-describedby={description !== undefined ? descriptionId : undefined}
         aria-disabled={pending || undefined}
         disabled={disabled}
         className={BASE_CLASS.control}
@@ -81,6 +88,11 @@ export function Switch({ checked, onChange, pending = false, disabled = false, l
       <span id={labelId} className={BASE_CLASS.label} onClick={toggle}>
         {label}
       </span>
+      {description !== undefined && (
+        <span id={descriptionId} className={BASE_CLASS.description}>
+          {description}
+        </span>
+      )}
     </span>
   );
 }

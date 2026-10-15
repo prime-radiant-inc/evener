@@ -556,7 +556,9 @@ func (r *Registry) Register(t RegisteredTool) error {
 	return nil
 }
 
-// Definitions returns the tool definitions for all registered tools.
+// Definitions returns the tool definitions for all registered tools, sorted by
+// name so the registry's contribution to the advertised tool list is stable
+// across sessions built from the same configuration.
 func (r *Registry) Definitions() []llm.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -564,6 +566,7 @@ func (r *Registry) Definitions() []llm.ToolDefinition {
 	for _, t := range r.tools {
 		out = append(out, t.Definition)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 

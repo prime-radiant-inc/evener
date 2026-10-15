@@ -11,6 +11,18 @@ type deriveInput struct {
 	Synthesized     bool
 	ProviderSurface string
 	ProviderFamily  string
+	// Aliased marks a row seeded from an alias target. AliasTargetProtocol is
+	// the protocol that target resolved under. A same-protocol alias inherits
+	// the target's settled ThinkingShape verdict (even when the verdict was
+	// "no shape") and never re-derives one. A cross-protocol alias carries no
+	// verdict — the shape belongs to the target's protocol — and derives from
+	// whatever its own replay leaves. AliasControlsRecorded says the target's
+	// own catalog row recorded the effort control (not derivation), so the
+	// inherited control counts as evidence even though it arrived tagged
+	// "alias".
+	Aliased               bool
+	AliasTargetProtocol   string
+	AliasControlsRecorded bool
 }
 
 const provDerived = "derived"
@@ -29,8 +41,11 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 		}
 	}
 
-	// 1. Effort control pass-through.
+	// 1. Effort control pass-through. Capture the pre-augmentation state:
+	// the google shape check below must not mistake an effort control this
+	// pass-through invented for catalog evidence.
 	controlsWereEmpty := len(c.ReasoningControls) == 0
+	effortWasPresent := slices.Contains(c.ReasoningControls, "effort")
 	if !reasoningOff {
 		if controlsWereEmpty {
 			c.ReasoningControls = []string{"effort"}
@@ -57,6 +72,58 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 			m.Surface = SurfaceGeneric
 		}
 		prov["Surface"] = provDerived
+	}
+
+	// Google's thinking shape mirrors the anthropic rule at its one decision:
+	// a cataloged row (not synthesized) that records budget_tokens is
+	// budget-shaped (the 2.5 family), and a cataloged row whose catalog
+	// itself records effort is level-shaped (3.x and later). An effort control
+	// that derivation added for an empty list is not evidence — the catalog
+	// recorded no reasoning_options, and a 2.5-era row in that state rejects
+	// the level field — so it, a toggle-only row, and a synthesized or
+	// live-only row all leave the shape unset rather than guess a spelling
+	// the model may reject. An alias inherits its target's vouched shape, so
+	// a same-protocol alias never re-derives one from the copied controls; a
+	// cross-protocol alias carries no verdict (its target's protocol has no
+	// shape) and derives from the inherited catalog controls like any
+	// directly named row.
+	// A same-protocol alias inherits the target's settled verdict only while
+	// its controls remain purely inherited; the alias's own layers restating
+	// the controls means the verdict is stale and derivation must run.
+	// When the verdict is stale and the shape arrived through the alias (not
+	// an explicit override), clear it so derivation can re-derive from the
+	// alias's own evidence.
+	shapeSettledByAlias := in.Aliased && in.AliasTargetProtocol == ProtocolGoogle && prov["ReasoningControls"] == provAlias
+	if in.Aliased && !shapeSettledByAlias && prov["ThinkingShape"] == provAlias {
+		c.ThinkingShape = nil
+	}
+	if in.Protocol == ProtocolGoogle && !reasoningOff && c.ThinkingShape == nil && !in.Synthesized && !shapeSettledByAlias {
+		var shape string
+		switch {
+		case slices.Contains(c.ReasoningControls, "budget_tokens"):
+			shape = "budget"
+		case slices.Contains(c.ReasoningControls, "effort") && !controlsWereEmpty && effortWasPresent:
+			// The effort control must be recorded evidence: one derivation
+			// invented for an empty list (here or on the alias's target) or
+			// the pass-through above appended for a ladder says nothing about
+			// what the model accepts. After the full replay, the provenance
+			// tag is final: "alias" means the controls were inherited from
+			// the target. Cross-protocol inherited controls are never
+			// evidence for the shape — a third-party gateway's
+			// OpenAI-compatible shim may record effort for a budget-shaped
+			// model (nano-gpt's gemini-2.5-pro), and only google-protocol
+			// evidence or an explicit override vouches for the level shape.
+			// Any non-alias tag means a real layer on this side restated
+			// the control.
+			aliasInherited := in.Aliased && prov["ReasoningControls"] == provAlias
+			if !aliasInherited {
+				shape = "level"
+			}
+		}
+		if shape != "" {
+			c.ThinkingShape = &shape
+			prov["ThinkingShape"] = provDerived
+		}
 	}
 
 	if in.Protocol != ProtocolAnthropic || reasoningOff {

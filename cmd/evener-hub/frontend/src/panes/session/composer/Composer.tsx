@@ -93,6 +93,7 @@ import {
   SendIcon,
   Tooltip,
   useToasts,
+  VisuallyHidden,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SessionChrome, type SessionChromeProps } from "../chrome/SessionChrome";
@@ -148,7 +149,6 @@ const CLASS = {
   storageStatus: requireClass(styles.storageStatus, "composer.module.css", "storageStatus"),
   attachments: requireClass(styles.attachments, "composer.module.css", "attachments"),
   leading: requireClass(styles.leading, "composer.module.css", "leading"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
 };
@@ -340,7 +340,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // row's provenance is a built-in, plugin, project or user command. The model
   // is keyed by ref, so loading a different target never borrows old/global rows.
   const visibleSlashCatalog = model?.diagnostics?.commands ?? [];
-  const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session" });
+  const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session", sessionPaneId: paneId ?? null });
   const slashMenuCatalog = mergeSlashCommands(sessionBuiltins, visibleSlashCatalog, model?.skills ?? []);
   // The menu is only ever open when a token matched AND the merged catalog
   // has at least one fuzzy label hit for it - a matched-but-empty token (e.g.
@@ -418,7 +418,10 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const command = `/goal ${objective}`;
     textEditor.write(command, command.length);
     setPendingGoalReplacement(null);
-    requestComposerFocus(ref);
+    // The request carries this seat's pane: with an ordinary pane and an
+    // embedded column sharing the ref, only the composer the goal row was
+    // clicked in takes focus, so typing lands in its editor alone.
+    requestComposerFocus(ref, paneId ?? null);
   };
 
   const editGoal = (objective: string): void => {
@@ -440,7 +443,13 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     // Tasks tab; on mobile there is no sidebar, so the per-session Sheet
     // keeps its behavior.
     if (isMobile) tasksPanelRef.current?.open();
-    else activitySidebarStore.getState().openWith("tasks");
+    else {
+      // The owning pane rides along, like every other embedded-column
+      // request: the sidebar opens THIS conversation's Tasks and holds its
+      // scope, keeping the cascade focused even when an ordinary pane for
+      // the same conversation exists.
+      activitySidebarStore.getState().openFor(ref, "tasks", undefined, paneId);
+    }
   };
 
   useEffect(() => {
@@ -615,7 +624,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // for a prefix - the user's own existing draft sits AFTER the cursor in
   // that case, so jumping to the very end would land past it instead of
   // where they'd actually want to keep typing (e.g. a command's arguments).
-  const quoteInsertRequest = useQuoteInsertRequest(ref);
+  const quoteInsertRequest = useQuoteInsertRequest(ref, paneId);
   const consumedQuoteInsertIdRef = useRef<number | null>(null);
   useEffect(() => {
     if (!quoteInsertRequest || quoteInsertRequest.id === consumedQuoteInsertIdRef.current) return;
@@ -633,7 +642,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // monotonic id so consuming a request from a previous mount under the SAME
   // still-pending request never replays it, and consumeComposerFocus() below
   // makes it one-shot.
-  const composerFocusRequest = useComposerFocusRequest(ref);
+  const composerFocusRequest = useComposerFocusRequest(ref, paneId);
   const consumedComposerFocusIdRef = useRef<number | null>(null);
   useEffect(() => {
     if (!composerFocusRequest || composerFocusRequest.id === consumedComposerFocusIdRef.current) return;
@@ -896,7 +905,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   //
   // `attachments` is accepted for signature symmetry but never restored: a
   // queued entry's edit keeps image attachments out of the composer per
-  // parity (contracts-composer-queue-pending.md:70, parity-m5-
+  // parity (contracts-composer-queue-pending.md:122, parity-m5-
   // composer.md:102) - dropped image attachments surface via QueueStrip's
   // own durable queue state. `skillNames` restores the entry's selections
   // as chips (union with the current draft's chips, deduped by name): a
@@ -1178,6 +1187,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     setBusyAction("submit");
     const ctx: PaletteRunContext = {
       sessionRef: ref,
+      sessionPaneId: paneId ?? null,
       onPage: "session",
       toasts,
       // Neither method is reachable here: both belong to app-global palette
@@ -1470,9 +1480,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
           the textarea itself is visibly back, there is nothing left for a
           permanent "ready" line to usefully say (honest-liveness: only
           announce a real transition, never a static claim). */}
-      <div className={CLASS.visuallyHidden} role="status" aria-live="polite">
-        {readyAnnouncement}
-      </div>
+      <VisuallyHidden>
+        <span role="status" aria-live="polite" data-testid="composer-ready-announcement">
+          {readyAnnouncement}
+        </span>
+      </VisuallyHidden>
       {/* T3: queue strip - the queue preview (model.queue) above the input
           row; getComposerText/onRestoreToComposer/onDrainSuccess are this
           integration's own seam implementations, see each one's own doc
@@ -1529,9 +1541,11 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       {(!ended || showFollowUpCard) && (
         // data-composer is the hold-hints overlay's anchor (shell/holdhints):
         // the composer.focus chip positions itself above this wrapper. The
-        // value carries this pane's session ref so the overlay can anchor to
-        // the FOCUSED pane's composer when several are mounted.
-        <div className={CLASS.formAnchor} data-composer={ref}>
+        // value carries this pane's session ref, and data-composer-pane its
+        // owning pane id, so the overlay can anchor to the FOCUSED pane's
+        // composer when several are mounted - including an ordinary pane and a
+        // cascade column showing the same conversation.
+        <div className={CLASS.formAnchor} data-composer={ref} data-composer-pane={paneId}>
           {/* Anchored above the control row inside the card below, opening
               upward - see slashcompletionmenu.module.css's header comment
               for the anchored-float recipe. Mounted only
@@ -1545,7 +1559,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
               onSelect={commitSlashCompletion}
             />
           )}
-          <form ref={formRef} onSubmit={handleFormSubmit}>
+          <form
+            ref={formRef}
+            onSubmit={handleFormSubmit}
+            data-testid="composer-form"
+            data-mode={ended ? "follow-up" : "message"}
+          >
             <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
               <PromptCard
                 data-testid="composer-input-card"
@@ -1678,8 +1697,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                           // already gate this control's existence. The recovery
                           // fence gates the press the same way the Send button's
                           // does, and the tooltip says why (kata 2f41) instead of
-                          // describing an action the fence refuses.
-                          disabled={actionPending || steerRecoveryFenced}
+                          // describing an action the fence refuses. The fence is
+                          // an aria-disabled refusal, not the native attribute, so
+                          // the button keeps focus and hover and that reason
+                          // stays reachable.
+                          aria-disabled={steerRecoveryFenced || undefined}
+                          disabled={actionPending}
                         >
                           Steer
                         </Button>

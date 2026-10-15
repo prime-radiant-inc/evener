@@ -51,6 +51,8 @@ const (
 // hidden-but-user-invocable skills require user activation, skills whose both
 // flags block ordinary routes are unavailable, permanently present preloads
 // are labeled separately, and content already retained is already present.
+// An entry the session cannot load at all (a save-less session's
+// gardening-memory) is retained but marked unavailable, never reloadable.
 // Both provenances are represented when a name holds preload and ordinary
 // state. The full list is kept — one diagnostic is reported per source that
 // cannot be read, and nothing is trimmed.
@@ -135,6 +137,13 @@ func (s *Session) skillInventorySummary(ctx context.Context) ([]schema.SkillInve
 			default:
 				summary.Availability = skillAvailabilityReloadable
 			}
+		}
+		// A skill this session cannot follow is never offered as reloadable: a
+		// session that loses the memory save tools on resume must not be told to
+		// reload gardening-memory through use_skill, which now refuses it.
+		if !s.skillAvailableToSession(name) &&
+			(summary.Availability == skillAvailabilityReloadable || summary.Availability == skillAvailabilityRequiresUserActivation) {
+			summary.Availability = skillAvailabilityUnavailable
 		}
 		summaries = append(summaries, summary)
 	}

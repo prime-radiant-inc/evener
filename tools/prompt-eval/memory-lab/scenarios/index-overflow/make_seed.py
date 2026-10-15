@@ -108,7 +108,7 @@ def main():
                 {"name": "tests pass", "run": "go test ./..."},
                 {"name": "held-out largest coupon only", "run": heldout},
                 {"name": "new pages reuse seeded tags", "run": f"{memcheck} --tags-subset-of {','.join(seed_tags)}"},
-                {"name": "new pages have a description", "run": f"{memcheck} --require-description"},
+                {"name": "new pages have a when line", "run": f"{memcheck} --require-when"},
             ],
             "trace": [
                 {"name": "read the coupon page", "tool": "memory_read", "regex": "coupon"},

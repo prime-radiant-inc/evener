@@ -26,16 +26,33 @@ describe("changes since you last read (spec 10.2, ruling 13)", () => {
 
 	it("says when you read it by this phone's calendar", () => {
 		const now = new Date(2026, 8, 26, 9, 30).getTime();
-		expect(whenYouRead(new Date(2026, 8, 26, 0, 5).getTime(), now)).toBe("earlier today");
-		expect(whenYouRead(new Date(2026, 8, 25, 23, 50).getTime(), now)).toBe("yesterday");
-		expect(whenYouRead(new Date(2026, 8, 23, 12, 0).getTime(), now)).toBe("on Wednesday");
-		expect(whenYouRead(new Date(2026, 8, 18, 12, 0).getTime(), now)).toBe("on Sep 18");
-		expect(whenYouRead(new Date(2026, 8, 26, 11, 0).getTime(), now)).toBe("earlier today");
-		expect(changesCaption(3, new Date(2026, 8, 25, 18, 0).getTime(), now)).toBe(
-			"3 changes since you read it yesterday",
+		const readOn = (day: number, hour: number, minute = 0) =>
+			whenYouRead(new Date(2026, 8, day, hour, minute).getTime(), now);
+		const today = readOn(26, 0, 5);
+		// Any time today is today, even one ahead of the phone's clock.
+		expect(readOn(26, 11)).toBe(today);
+		const yesterday = readOn(25, 23, 50);
+		// Yesterday reads the same whatever day it was.
+		expect(whenYouRead(new Date(2026, 8, 22, 23, 50).getTime(), new Date(2026, 8, 23, 9, 30).getTime())).toBe(
+			yesterday,
 		);
-		expect(changesCaption(1, new Date(2026, 8, 25, 18, 0).getTime(), now)).toBe("1 change since you read it yesterday");
-		expect(changesCaption(0, new Date(2026, 8, 25, 18, 0).getTime(), now)).toBeNull();
+		const thisWeek = readOn(23, 12);
+		const earlier = readOn(18, 12);
+		expect(new Set([today, yesterday, thisWeek, earlier]).size).toBe(4);
+		// Within the week it names the weekday, so another day reads differently;
+		// from a week back it names the date.
+		expect(readOn(22, 12)).not.toBe(thisWeek);
+		expect(readOn(20, 12)).not.toMatch(/\d/);
+		expect(readOn(19, 12)).toContain("19");
+		expect(earlier).toContain("18");
+		const readYesterday = new Date(2026, 8, 25, 18, 0).getTime();
+		const three = changesCaption(3, readYesterday, now);
+		const one = changesCaption(1, readYesterday, now);
+		expect(three).toContain("3");
+		expect(three?.endsWith(whenYouRead(readYesterday, now))).toBe(true);
+		// One change reads in the singular.
+		expect(one?.replace("1", "#")).not.toBe(three?.replace("3", "#"));
+		expect(changesCaption(0, readYesterday, now)).toBeNull();
 	});
 });
 

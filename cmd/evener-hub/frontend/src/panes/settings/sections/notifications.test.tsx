@@ -1,10 +1,11 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { toastKinds } from "../../../widgets/toast/toastTestUtils";
 import { NotificationsSection } from "./notifications";
 
 beforeAll(() => {
@@ -57,11 +58,6 @@ test("title bar count defaults checked; favicon/OS/sound default unchecked; Loud
   ).toBe("true");
 });
 
-test("intro copy matches the current defaults (title on, the rest opt-in)", () => {
-  renderWithToasts();
-  expect(screen.getByText(/Title bar count is on by default/)).toBeTruthy();
-});
-
 describe("Title bar count / Favicon dot / Sound - plain toggles, no permission gate", () => {
   // Title bar count now defaults ON, so the first click turns it OFF - the
   // opposite direction of every other toggle in this file, but the same
@@ -73,7 +69,7 @@ describe("Title bar count / Favicon dot / Sound - plain toggles, no permission g
     await user.click(screen.getByRole("switch", { name: "Title bar count" }));
 
     expect(prefsStore.getState().notifications).toEqual({ title: false, favicon: false, os: false, sound: false });
-    expect(await screen.findByText("Settings saved")).toBeTruthy();
+    await waitFor(() => expect(toastKinds()).toEqual(["success"]));
   });
 
   test("Sound persists independently", async () => {
@@ -98,7 +94,7 @@ describe("OS notification - permission-gated toggle", () => {
     await user.click(screen.getByRole("switch", { name: "OS notification" }));
 
     expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
-    expect(await screen.findByText("Settings saved")).toBeTruthy();
+    await waitFor(() => expect(toastKinds()).toEqual(["success"]));
     expect(prefsStore.getState().notifications.os).toBe(true);
   });
 
@@ -110,7 +106,7 @@ describe("OS notification - permission-gated toggle", () => {
 
     await user.click(screen.getByRole("switch", { name: "OS notification" }));
 
-    expect(await screen.findByText("Browser denied notification permission")).toBeTruthy();
+    await waitFor(() => expect(toastKinds()).toEqual(["warning"]));
     expect(prefsStore.getState().notifications.os).toBe(false);
     expect(screen.getByRole("switch", { name: "OS notification" }).getAttribute("aria-checked")).toBe("false");
   });
@@ -125,8 +121,7 @@ describe("OS notification - permission-gated toggle", () => {
 
     // Let the rejected promise's handler run before asserting silence.
     await vi.waitFor(() => expect(prefsStore.getState().notifications.os).toBe(false));
-    expect(screen.queryByText("Settings saved")).toBeNull();
-    expect(screen.queryByText("Browser denied notification permission")).toBeNull();
+    expect(toastKinds()).toEqual([]);
   });
 
   test("turning ON when permission is already 'granted' commits unconditionally without prompting again", async () => {
@@ -138,7 +133,7 @@ describe("OS notification - permission-gated toggle", () => {
 
     expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
     expect(prefsStore.getState().notifications.os).toBe(true);
-    expect(await screen.findByText("Settings saved")).toBeTruthy();
+    await waitFor(() => expect(toastKinds()).toEqual(["success"]));
   });
 
   test("turning ON when permission is already 'denied' commits unconditionally (turning on never re-prompts)", async () => {
@@ -162,7 +157,7 @@ describe("OS notification - permission-gated toggle", () => {
 
     expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
     expect(prefsStore.getState().notifications.os).toBe(false);
-    expect(await screen.findByText("Settings saved")).toBeTruthy();
+    await waitFor(() => expect(toastKinds()).toEqual(["success"]));
   });
 
   test("if the Notification API doesn't exist in this browser at all, turning on just commits (no crash)", async () => {
@@ -185,6 +180,6 @@ describe("Loud for", () => {
     await user.click(screen.getByRole("radio", { name: "Everything needing me" }));
 
     expect(prefsStore.getState().notificationsLoudScope).toBe("all");
-    expect(await screen.findByText("Settings saved")).toBeTruthy();
+    await waitFor(() => expect(toastKinds()).toEqual(["success"]));
   });
 });

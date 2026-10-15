@@ -35,6 +35,7 @@ vi.mock("expo-status-bar", () => ({}));
 vi.mock("expo-camera", () => ({}));
 vi.mock("expo-clipboard", () => ({}));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "app-root-uuid" }));
+vi.mock("expo/fetch", () => ({}));
 vi.mock("expo-sqlite", () => ({}));
 // nativeLocation.ts takes the default export; the rest name Storage.
 vi.mock("expo-sqlite/kv-store", () => ({ default: {}, Storage: {} }));

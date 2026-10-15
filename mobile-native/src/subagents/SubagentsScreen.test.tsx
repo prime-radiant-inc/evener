@@ -10,7 +10,17 @@ import type { ReactElement } from "react";
 import { FlatList } from "react-native";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
-import { playedHaptics, pressable, render, renderedText, screenConnection, settle } from "../renderNative.testkit";
+import { markers, withTestID } from "../markerTestUtils";
+import {
+	offersButton,
+	playedHaptics,
+	pressable,
+	render,
+	renderedText,
+	screenConnection,
+	settle,
+	textOf,
+} from "../renderNative.testkit";
 import { Toast } from "../Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 import { flattenSubagents } from "./subagentModel";
@@ -169,6 +179,13 @@ function headerTitle(): string {
 
 /** The list's text, in order: section headers, rows' titles, folds. */
 const text = (tree: ReactTestRenderer) => renderedText(tree);
+/** What each subagent row's why line reports, in list order. */
+const whys = (tree: ReactTestRenderer) => markers(tree, "subagent-why");
+/** Why the list shows a notice instead of rows, if it does. */
+const notices = (tree: ReactTestRenderer) => markers(tree, "activity-notice");
+/** A row's leading dot tint, found by its delegate id. */
+const dotTint = (tree: ReactTestRenderer, id: string) =>
+	tree.root.find((node) => node.props.row?.id === id).findByProps({ name: "circle.fill" }).props.tintColor;
 
 it("titles itself with the count over the coordinator's title", async () => {
 	await mount();
@@ -217,10 +234,12 @@ it("keeps a terminal parent's running child and stop identity reachable with his
 	});
 	expect(stopOffer({ row: parent, requested: false, direct: "no" })).toBe("ask");
 	const marks = tree.root.findAll(
-		(node) => String(node.type) === "SymbolView" && node.props.name === "xmark.octagon.fill",
+		(node) =>
+			String(node.type) === "SymbolView" &&
+			node.props.name === "circle.fill" &&
+			node.props.tintColor === paletteFor("light").danger,
 	);
 	expect(marks).toHaveLength(2);
-	expect(marks.every((node) => node.props.tintColor === paletteFor("light").inkLow)).toBe(true);
 	const failedWords = tree.root.findAll((node) => String(node.type) === "Text" && node.props.children === "Failed");
 	expect(failedWords).toHaveLength(2);
 	expect(failedWords.every((node) => node.props.style.color === paletteFor("light").inkMid)).toBe(true);
@@ -376,7 +395,7 @@ it("says there is nothing yet when the session has no subagents or shell jobs", 
 	client = hub(() => ({ revision: 1, root: session("local:coord", COORDINATOR.title, []) }));
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	expect(text(tree)).toContain("No subagents or shell jobs yet.");
+	expect(notices(tree)).toEqual(["empty"]);
 	expect(headerTitle()).toBe("Activity · 0 Get PR 2138 Test Clean");
 });
 
@@ -433,7 +452,7 @@ it("opens delegate and job histories independently, then Done reveals both", asy
 it("searches past eight subagents, filtering rows and section counts while the chips keep the whole", async () => {
 	const tree = await mount();
 	const field = tree.root.find((node) => String(node.type) === "TextInput");
-	expect(field.props.placeholder).toBe("Filter activity");
+	expect(field.props.placeholder).toMatch(/\S/);
 	act(() => field.props.onChangeText("race"));
 	const shown = text(tree);
 	expect(shown).toContain("Done · 1");
@@ -460,11 +479,16 @@ it("reads a quiet failure, a nested subagent, another model, a branch and a fini
 	expect(shown).not.toContain("310K tokens");
 	expect(pressable(tree, "Fix race in tree settle, Failed, go test exited 1 (3 times), 6 minutes")).toBeDefined();
 	expect(shown).toContain("6m");
+	// The done checkmark retires with the dot: the band header carries the
+	// state, and a settled run shows no mark at all.
+	expect(
+		tree.root.findAll((node) => String(node.type) === "SymbolView" && node.props.name === "checkmark"),
+	).toHaveLength(0);
 });
 
-// The list runs no clock, but a running subagent's row still turns Quiet
-// when its silence crosses the threshold, with no new tree to re-render it.
-it("turns a silent subagent's row Quiet on its own", async () => {
+// The list runs no clock, but a running subagent's dot still dims when its
+// silence crosses the threshold, with no new tree to re-render it.
+it("dims a silent running subagent's dot on its own", async () => {
 	// On fake timers, so the first read can take as long as it takes without
 	// crossing the threshold before the list shows the row. It flushes the
 	// read itself: settle() waits on a setTimeout that never fires
@@ -483,18 +507,60 @@ it("turns a silent subagent's row Quiet on its own", async () => {
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(0);
 		});
-		expect(text(tree)).toContain("Working");
+		// The line has nothing to say while the dot alone speaks its clock.
+		expect(whys(tree)).toEqual([]);
+		expect(dotTint(tree, "hush")).toBe(paletteFor("light").alive);
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(99);
 		});
-		expect(text(tree)).toContain("Working");
+		expect(dotTint(tree, "hush")).toBe(paletteFor("light").alive);
 		await act(async () => {
 			await vi.advanceTimersByTimeAsync(1);
 		});
-		expect(text(tree)).toContain("Quiet 20s");
+		expect(dotTint(tree, "hush")).toBe(paletteFor("light").inkLow);
+		// The row's corner keeps its own clock: time in state, not silence.
+		expect(text(tree)).toContain("4m");
 	} finally {
 		vi.useRealTimers();
 	}
+});
+
+// A subagent waiting on its human reads amber, the shared rule's attention
+// state - the same dot vocabulary the web sidebar shows.
+it("tints an attention subagent's dot amber", async () => {
+	client = hub(() => ({
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [
+			runningOne("approval", "Ask before merging", { phase: "awaiting_approval" }),
+		]),
+	}));
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(dotTint(tree, "approval")).toBe(paletteFor("light").attention);
+	// Attention is spoken too: a human being needed is the one state a
+	// screen reader must never miss.
+	expect(pressable(tree, "Ask before merging, Running, Needs you, 4 minutes")).toBeDefined();
+});
+
+// The why line shows the subagent's stated intent, while the accessible label
+// keeps the state word and the intent together.
+it("shows a running subagent's stated intent as its row's why line", async () => {
+	client = hub(() => ({
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [
+			runningOne("intent", "Inspect the cache", { latestIntent: "Reading the board's row tests." }),
+		]),
+	}));
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	const shown = text(tree);
+	expect(shown).toContain("Reading the board's row tests.");
+	expect(shown).not.toContain("Working");
+	// The label speaks the dot's state word beside the state word, so the
+	// fresh-versus-quiet distinction stays reachable without the visible line.
+	expect(
+		pressable(tree, "Inspect the cache, Running, Working, Reading the board's row tests., 4 minutes"),
+	).toBeDefined();
 });
 
 // A subagent's screen is its session (ruling 30), over this list.
@@ -600,7 +666,7 @@ it("says the count is partial and whose subagents are missing when a later page 
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
 	expect(headerTitle()).toBe("Activity · … Get PR 2138 Test Clean");
-	expect(text(tree)).not.toContain("No subagents or shell jobs yet.");
+	expect(notices(tree)).toEqual([]);
 	expect(tree.root.findByType("FlatList" as never).props.onEndReached).toBeTypeOf("function");
 });
 
@@ -626,33 +692,37 @@ it("names whose activity isn't listed by title", async () => {
 		),
 	}));
 	harness.connection = screenConnection(client, "ready");
-	const shown = text(await mount());
-	expect(shown).toContain(`Some activity under “${COORDINATOR.title}” isn't listed.`);
-	expect(shown).toContain("Some activity under “Only one” isn't listed.");
-	expect(shown).toContain("Some activity isn't listed.");
-	expect(shown).not.toContain("local:");
+	const tree = await mount();
+	const missing = withTestID(tree, "activity-missing").map(textOf);
+	expect(missing).toHaveLength(3);
+	expect(missing.filter((line) => line.includes(COORDINATOR.title))).toHaveLength(1);
+	expect(missing.filter((line) => line.includes("Only one"))).toHaveLength(1);
+	// The branch no loaded row names goes unnamed.
+	expect(missing.filter((line) => !line.includes(COORDINATOR.title) && !line.includes("Only one"))).toHaveLength(1);
+	expect(missing.join(" ")).not.toContain("Unlisted");
+	expect(text(tree)).not.toContain("local:");
 });
 
 it.each([
 	[
 		"can't list its activity",
 		new WireError("unavailable", -32603, { evenerErrorInfo: "actionUnavailable" }),
-		"This session can't list its activity.",
+		"unsupported",
 	],
 	[
 		"is shut down",
 		new WireError("thread not found: coord", -32603, { evenerErrorInfo: "sessionUnavailable" }),
-		"This session can't list its activity.",
+		"unsupported",
 	],
-])("says so when the session %s, and offers nothing to press", async (_name, error, words) => {
+])("says so when the session %s, and offers nothing to press", async (_name, error, reason) => {
 	client = new FakeClient("ready");
 	installActivityFixture(client, () => Promise.reject(error));
 	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "", status: { type: "active" } } }) as never);
 	client.on("model/list", () => ({ data: [] }) as never);
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	expect(text(tree)).toContain(words);
-	for (const word of ["Retry", "Refresh", "Reconnect"]) expect(text(tree)).not.toContain(word);
+	expect(notices(tree)).toEqual([reason]);
+	expect(offersButton(tree, /\b(Retry|Refresh|Reconnect)\b/)).toBe(false);
 });
 
 it("keeps the search field while it has words, even once the list shrinks", async () => {
@@ -679,7 +749,7 @@ it("says why it can't list them when the read fails", async () => {
 	client.on("model/list", () => ({ data: [] }) as never);
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	expect(text(tree)).toContain("The activity couldn't be listed right now.");
+	expect(notices(tree)).toEqual(["failed"]);
 });
 
 it("says a stop you asked for is pending, then that it stopped, with the toast once", async () => {
@@ -701,12 +771,12 @@ it("says a stop you asked for is pending, then that it stopped, with the toast o
 	if (!race) throw new Error("no race row");
 	act(() => stopRequests("hub-1").request(COORDINATOR.ref, race, Date.now()));
 	await settle();
-	expect(text(tree)).toContain("Stop requested from the coordinator");
+	expect(whys(tree)).toContain("stop-requested");
 	stopped = true;
 	await treeUpdatedAndRead(client);
 	// Failure and cancellation both belong to the same still-open history.
 	expect(pressable(tree, "Done · 23")?.props.accessibilityState).toEqual({ expanded: true });
-	expect(text(tree)).toContain("Stopped at your request");
+	expect(whys(tree)).toContain("stop-settled");
 	const toasts = () => tree.root.findAllByType(Toast).map((toast) => toast.props.toast?.text);
 	expect(toasts()).toEqual(["“Fix race in tree settle” stopped"]);
 });
@@ -717,8 +787,8 @@ it("says a stop you sent directly is pending without naming the coordinator (S6)
 	if (!drain) throw new Error("no running row");
 	act(() => stopRequests("hub-1").request(COORDINATOR.ref, drain, Date.now(), { direct: true }));
 	await settle();
-	expect(text(tree)).toContain("Stop requested");
-	expect(text(tree)).not.toContain("Stop requested from the coordinator");
+	expect(whys(tree)).toContain("stop-requested-direct");
+	expect(whys(tree)).not.toContain("stop-requested");
 });
 
 it("toasts a stop recorded after the tree already shows it", async () => {

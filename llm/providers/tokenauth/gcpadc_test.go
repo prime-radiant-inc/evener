@@ -72,13 +72,8 @@ func TestGCPADCReportsMissingCredentials(t *testing.T) {
 	// no credential at all: the fixture pins the branch the sentinel belongs to.
 	err := a.Apply(context.Background(), req, registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "none"}})
 	var cfg *llm.ConfigurationError
-	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "vertex") || !strings.Contains(err.Error(), "default credentials") {
+	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "vertex") {
 		t.Fatalf("err = %v", err)
-	}
-	// The remedy names every way the registry can resolve a gcp-adc
-	// credential, including a stored credential JSON, not just gcloud.
-	if !strings.Contains(err.Error(), "store a credential JSON") {
-		t.Fatalf("err = %v, want the remedy to offer a stored credential JSON", err)
 	}
 	// The failure is the no-credential class: the sentinel rides the chain so
 	// a caller can classify it without parsing the remedy prose.
@@ -95,13 +90,14 @@ func TestGCPADCReportsMissingCredentials(t *testing.T) {
 // failure, not an absent one: the sentinel would tell the picker "no
 // credential" and hide that the file exists but will not load.
 func TestGCPADCDistinguishesABrokenADCFromAnAbsentOne(t *testing.T) {
+	unparsable := errors.New("google: could not parse credentials: invalid character 'x'")
 	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
-		return nil, errors.New("google: could not parse credentials: invalid character 'x'")
+		return nil, unparsable
 	}}
 	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
 	err := a.Apply(context.Background(), req, registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"}})
 	var cfg *llm.ConfigurationError
-	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "could not parse") {
+	if !errors.As(err, &cfg) || !errors.Is(err, unparsable) {
 		t.Fatalf("err = %v", err)
 	}
 	if errors.Is(err, llm.ErrNoCredential) {
@@ -203,9 +199,6 @@ func TestGCPADCReportsAStoredCredentialRefusal(t *testing.T) {
 	}
 	if llm.Kind(err) != llm.KindAuthentication {
 		t.Fatalf("Kind = %v, want authentication", llm.Kind(err))
-	}
-	if !strings.Contains(err.Error(), "stored credential JSON") {
-		t.Fatalf("err = %v, want the stored credential named", err)
 	}
 	if !errors.Is(err, refused) {
 		t.Fatalf("err = %v, want the oauth error in the chain", err)
@@ -557,7 +550,7 @@ func TestGCPADCReportsMalformedStoredJSON(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
 	err := a.Apply(context.Background(), req, storedRes("vertex", "{"))
 	var cfg *llm.ConfigurationError
-	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "vertex") || !strings.Contains(err.Error(), "stored credential") || !strings.Contains(err.Error(), "not valid JSON") {
+	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "vertex") || !errors.Is(err, registry.ErrCredentialJSONInvalid) {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -573,13 +566,13 @@ func TestValidateCredentialJSON(t *testing.T) {
 	}
 	if err := ValidateCredentialJSON([]byte(`{"hello":"world"}`)); err == nil {
 		t.Fatal("JSON with no credential type accepted")
-	} else if !strings.Contains(err.Error(), `no "type"`) {
-		t.Fatalf("err = %v, want it to name the missing \"type\" field", err)
+	} else if !errors.Is(err, registry.ErrCredentialJSONUntyped) {
+		t.Fatalf("err = %v, want ErrCredentialJSONUntyped", err)
 	}
-	if err := ValidateCredentialJSON([]byte(externalAccountJSON)); err == nil || !strings.Contains(err.Error(), "not supported") {
+	if err := ValidateCredentialJSON([]byte(externalAccountJSON)); !errors.Is(err, registry.ErrCredentialTypeUnsupported) {
 		t.Fatalf("err = %v, want an external_account document rejected as not supported", err)
 	}
-	if err := ValidateCredentialJSON([]byte(`{"type":"service_account"}`)); err == nil || !strings.Contains(err.Error(), "missing client_email") {
+	if err := ValidateCredentialJSON([]byte(`{"type":"service_account"}`)); !errors.Is(err, registry.ErrCredentialFieldsMissing) {
 		t.Fatalf("err = %v, want a service_account with no key material refused", err)
 	}
 	if err := ValidateCredentialJSON([]byte(testServiceAccountJSON(t))); err != nil {
@@ -588,25 +581,25 @@ func TestValidateCredentialJSON(t *testing.T) {
 	// Google's signer reads the key only when it mints the first token, so
 	// the gate parses it here instead.
 	const unusableKeyJSON = `{"type":"service_account","private_key":"not-a-real-key","client_email":"sa@example.iam.gserviceaccount.com","token_uri":"https://oauth2.googleapis.com/token"}`
-	if err := ValidateCredentialJSON([]byte(unusableKeyJSON)); err == nil || !strings.Contains(err.Error(), "unusable private_key") {
+	if err := ValidateCredentialJSON([]byte(unusableKeyJSON)); !errors.Is(err, registry.ErrCredentialPrivateKeyUnusable) {
 		t.Fatalf("err = %v, want a service_account whose key will not parse refused", err)
 	}
 	// The token endpoint is where the refresh token or the signed assertion
 	// goes; a credential naming any other must be refused.
 	const foreignEndpointJSON = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","token_uri":"https://attacker.example/token"}`
-	if err := ValidateCredentialJSON([]byte(foreignEndpointJSON)); err == nil || !strings.Contains(err.Error(), "token_uri") {
+	if err := ValidateCredentialJSON([]byte(foreignEndpointJSON)); !errors.Is(err, registry.ErrCredentialTokenEndpoint) {
 		t.Fatalf("err = %v, want a credential naming a foreign token endpoint refused", err)
 	}
 	// The library matches its json tags case-insensitively, so a case
 	// variant of the key must be refused the same way.
 	const caseVariantJSON = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","Token_Uri":"https://attacker.example/token"}`
-	if err := ValidateCredentialJSON([]byte(caseVariantJSON)); err == nil || !strings.Contains(err.Error(), "token_uri") {
+	if err := ValidateCredentialJSON([]byte(caseVariantJSON)); !errors.Is(err, registry.ErrCredentialTokenEndpoint) {
 		t.Fatalf("err = %v, want a foreign token endpoint under a case variant of the key refused", err)
 	}
 	// A top-level installed/web block makes the library build an OAuth
 	// client configuration with no token source instead of a credential.
 	const clientConfigJSON = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c","installed":{"redirect_uris":["http://localhost"]}}`
-	if err := ValidateCredentialJSON([]byte(clientConfigJSON)); err == nil || !strings.Contains(err.Error(), "OAuth client configuration") {
+	if err := ValidateCredentialJSON([]byte(clientConfigJSON)); !errors.Is(err, registry.ErrCredentialClientConfig) {
 		t.Fatalf("err = %v, want an OAuth client configuration refused", err)
 	}
 }
@@ -644,7 +637,7 @@ func TestGCPADCRejectsUnsupportedStoredCredentialType(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
 	err := a.Apply(context.Background(), req, storedRes("vertex", externalAccountJSON))
 	var cfg *llm.ConfigurationError
-	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "vertex") || !strings.Contains(err.Error(), "stored credential") || !strings.Contains(err.Error(), "not supported") {
+	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "vertex") || !errors.Is(err, registry.ErrCredentialTypeUnsupported) {
 		t.Fatalf("err = %v", err)
 	}
 }

@@ -121,6 +121,33 @@ export function isTranscriptHistoryFailedError(err: unknown): boolean {
   return err instanceof WireError && err.evenerErrorInfo === ErrorTranscriptHistoryFailed;
 }
 
+// ErrorTranscriptIndexRebuilding is the hub's discriminator for a history read
+// whose transcript index needs a rebuild the hub has taken ownership of in the
+// background (appwire.ErrorTranscriptIndexRebuilding, appwire/errors.go): one
+// repair runs off the read path, and the read that follows its commit
+// succeeds. A client that recognizes it keeps the history it holds and
+// retries; the data carries no snapshot identity, so nothing is adopted from
+// it. The binding test (errors.test.ts) reads the Go constant.
+export const ErrorTranscriptIndexRebuilding = "transcriptIndexRebuilding";
+
+export function isTranscriptIndexRebuildingError(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorTranscriptIndexRebuilding;
+}
+
+// ErrorTranscriptIndexLocked is the hub's discriminator for a history read
+// that met the transcript index's lock in ordinary contention — a writer
+// mid-extension or a foreign rebuild, with no hub repair in flight
+// (appwire.ErrorTranscriptIndexLocked, appwire/errors.go): retrying is the
+// right response, and the hub has registered nothing for it. The tracked
+// hydration retry converges it like any error; the code lets a client that
+// wants to distinguish a running repair from ordinary contention do so. The
+// binding test (errors.test.ts) reads the Go constant.
+export const ErrorTranscriptIndexLocked = "transcriptIndexLocked";
+
+export function isTranscriptIndexLockedError(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorTranscriptIndexLocked;
+}
+
 // ErrorUpgradeRequired is the hub's discriminator for initialize refusing a
 // client that announced an older AppWire protocol (appwire.ErrorUpgradeRequired,
 // appwire/errors.go). Retrying cannot help; the client itself must update. The
@@ -330,6 +357,21 @@ export function friendlyErrorMessage(error: unknown): string {
   }
   if (isClientUnreachableError(error)) return HUB_UNREACHABLE_MESSAGE;
   return GENERIC_ERROR_MESSAGE;
+}
+
+// StoreMessageError is a failure a store throws itself with a message written
+// for the user (a malformed hub reply), so storeErrorText keeps its text.
+export class StoreMessageError extends Error {}
+
+// storeErrorText is the stored failure text for a store whose catch sees both
+// request rejections and StoreMessageErrors it threw itself. A
+// StoreMessageError keeps its message; everything else - a hub WireError, the
+// client's own timeout, closed or lost socket, any other exception - takes
+// friendlyErrorMessage's form, so the client's wiring text never reaches the
+// screen. A store whose catch sees only request rejections stores
+// friendlyErrorMessage(err) instead.
+export function storeErrorText(error: unknown): string {
+  return error instanceof StoreMessageError ? error.message : friendlyErrorMessage(error);
 }
 
 // DAEMON_MISSING_MESSAGE is what friendlyLaunchErrorMessage shows for the

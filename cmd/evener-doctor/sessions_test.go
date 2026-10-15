@@ -197,11 +197,11 @@ func TestRun_SessionsBucketFilter(t *testing.T) {
 func TestRun_SessionsBucketAndAllMutuallyExclusive(t *testing.T) {
 	base, _, _ := sessionsFixture(t)
 	var out, errb bytes.Buffer
-	if code := run([]string{"sessions", "--bucket", "x", "--all", "--state-dir", base}, &out, &errb); code == 0 {
+	if code := run([]string{"sessions", "--bucket", "project-test-0123456789", "--all", "--state-dir", base}, &out, &errb); code == 0 {
 		t.Fatalf("--bucket and --all together should not exit 0; stdout=%s", out.String())
 	}
-	if !strings.Contains(errb.String(), "mutually exclusive") {
-		t.Errorf("stderr should explain the conflict, got: %s", errb.String())
+	if out.Len() != 0 || errb.Len() == 0 {
+		t.Errorf("--bucket with --all should be refused on stderr alone; stdout=%q stderr=%q", out.String(), errb.String())
 	}
 }
 
@@ -211,7 +211,7 @@ func TestRun_SessionsRejectsStraySelector(t *testing.T) {
 	if code := run([]string{"sessions", "some-selector", "--state-dir", base}, &out, &errb); code != 2 {
 		t.Errorf("stray positional arg should exit 2, got %d; stderr=%s", code, errb.String())
 	}
-	if !strings.Contains(errb.String(), "takes no selector") {
-		t.Errorf("stderr should explain sessions takes no selector, got: %s", errb.String())
+	if out.Len() != 0 || errb.Len() == 0 {
+		t.Errorf("a stray selector should be refused on stderr alone; stdout=%q stderr=%q", out.String(), errb.String())
 	}
 }

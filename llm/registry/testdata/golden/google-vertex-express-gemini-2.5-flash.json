@@ -55,11 +55,13 @@
       "cachedContent": false,
       "generationConfig.stopSequences": true,
       "generationConfig.temperature": true,
+      "generationConfig.thinkingConfig": true,
       "generationConfig.topP": true,
       "labels": false,
       "safetySettings": true,
       "toolConfig": true
     },
+    "thinking_shape": "budget",
     "web_search": true
   },
   "provenance": {
@@ -73,6 +75,7 @@
     "ReasoningControls": "snapshot/row",
     "StructuredOutput": "snapshot/row",
     "Surface": "snapshot/row",
+    "ThinkingShape": "derived",
     "Tools": "snapshot/row",
     "WebSearch": "overlay/provider",
     "model": "row:gemini-2.5-flash"

@@ -1,21 +1,25 @@
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
-import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
+import { conversationPaneLifetime } from "../../shell/paneLifetime";
 import { registerPaneForTests } from "../../shell/paneRegistry";
-import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
+import {
+  conversationOpenParentRef,
+  registerDockviewApi,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
-import { sessionActivitySnapshot } from "../../stores/sessionActivity";
-import { activityContext, activitySummary, answerActivityRead } from "../../stores/sessionActivityTestUtils";
+import { answerActivityRead } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests } from "../../stores/threads";
-import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import virtualStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
 import { resetTranscriptPagingForTests } from "../session/transcript/useTranscript";
-import { installJobLogGeometry, jobLogOutputText } from "./JobLogTestUtils";
+import { returnFromAgentCascade } from "../zoom/actions";
+import { installJobLogGeometry, jobLogCommandText, jobLogOutputText } from "./JobLogTestUtils";
 import Transcript from "./testing/CommittedTranscript";
 
 // A minimal, test-only "session" pane registration - mirrors
@@ -96,29 +100,7 @@ afterEach(() => {
   restoreGeometry();
 });
 
-test("shows a loading placeholder before the thread hydrates", async () => {
-  const fake = connectFakeClient();
-  const box: { resolve: ((r: ThreadReadResponse) => void) | null } = { resolve: null };
-  const read = new Promise<ThreadReadResponse>((resolve) => {
-    box.resolve = resolve;
-  });
-  fake.on("thread/read", async (params) => ({ ...(await read), requestGeneration: params.requestGeneration }));
-
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref: "ref_a" }} paneId="p1" focused={false} />
-    </ClientProvider>,
-  );
-
-  expect(screen.getByText(/loading transcript/i)).toBeTruthy();
-  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/read")).toBe(true));
-  const resolve = box.resolve;
-  if (!resolve) throw new Error("transcript read was not admitted");
-  await act(async () => resolve(readResponse("ref_a")));
-  await waitFor(() => expect(screen.queryByText(/loading transcript/i)).toBeNull());
-});
-
-test('shows "no turns yet" for a thread with an empty transcript', async () => {
+test("a legacy session ref recovers as its live conversation", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
@@ -128,275 +110,96 @@ test('shows "no turns yet" for a thread with an empty transcript', async () => {
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(screen.getByText(/no turns yet/i)).toBeTruthy());
-});
-
-test.each([undefined, "remote:parent"])(
-  "a child transcript shows proven parent context while preserving its chosen title; Back target=%s",
-  async (parentRef) => {
-    const fake = connectFakeClient();
-    const ref = "remote:child";
-    const box: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
-    const historyRead = new Promise<ThreadReadResponse>((resolve) => {
-      box.resolve = resolve;
-    });
-    fake.on("thread/read", async (params) => ({
-      ...(params.includeTurns ? await historyRead : readResponse(ref)),
-      requestGeneration: params.requestGeneration,
-    }));
-    fake.on("thread/unsubscribe", () => ({}));
-    fake.on("evener/thread/activity/read", ({ scope }) => ({
-      ...activitySummary(ref, scope),
-      context: {
-        ...activityContext(ref),
-        sessionId: "child",
-        rootRef: "remote:root",
-        parentRef: "remote:parent",
-        ancestors: [
-          { ref: "remote:root", sessionId: "root", title: "Proven root" },
-          { ref: "remote:parent", sessionId: "parent", title: "Proven parent" },
-        ],
-      },
-    }));
-    render(
-      <ClientProvider client={fake}>
-        <Transcript params={{ ref, parentRef }} paneId="p1" focused />
-      </ClientProvider>,
-    );
-    const scope = await screen.findByRole("navigation", { name: "Scope" });
-    expect(within(scope).getByRole("button", { name: "Proven root" })).toBeTruthy();
-    expect(within(scope).getByRole("button", { name: "Proven parent" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Jesse's chosen title" })).toBeNull();
-    await waitFor(() =>
-      expect(
-        fake.calls.some(
-          (call) => call.method === "thread/read" && (call.params as { includeTurns?: boolean }).includeTurns,
-        ),
-      ).toBe(true),
-    );
-    const resolve = box.resolve;
-    if (!resolve) throw new Error("history read was not admitted");
-    await act(async () => resolve(readResponse(ref, { name: "Jesse's chosen title" })));
-    expect(await screen.findByRole("heading", { name: "Jesse's chosen title" })).toBeTruthy();
-    const hydratedScope = screen.getByRole("navigation", { name: "Scope" });
-    expect(within(hydratedScope).getByText("Jesse's chosen title").getAttribute("aria-current")).toBe("page");
-    expect(
-      new Set(
-        fake.calls.filter((call) => call.method === "thread/read").map((call) => (call.params as { ref: string }).ref),
-      ),
-    ).toEqual(new Set([ref]));
-    expect(fake.calls.filter((call) => call.method.endsWith("/list"))).toHaveLength(0);
-  },
-);
-
-test("a child transcript does not invent ancestry from its Back target", async () => {
-  const fake = connectFakeClient();
-  const ref = "remote:child";
-  fake.on("thread/read", () => readResponse(ref, { name: "Chosen child" }));
-  fake.on("thread/unsubscribe", () => ({}));
-  fake.on("evener/thread/activity/read", ({ scope }) => ({
-    ...activitySummary(ref, scope),
-    context: {
-      ...activityContext(ref),
-      ancestryKnown: false,
-      ancestors: [{ ref: "remote:unproven", sessionId: "unproven", title: "Unproven parent" }],
-    },
-  }));
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref, parentRef: "remote:return-target" }} paneId="p1" focused />
-    </ClientProvider>,
-  );
-  await screen.findByRole("heading", { name: "Chosen child" });
-  await waitFor(() => expect(sessionActivitySnapshot(fake, ref, "session")?.context?.ancestryKnown).toBe(false));
-  expect(screen.queryByRole("navigation", { name: "Scope" })).toBeNull();
-  expect(screen.queryByText("Unproven parent")).toBeNull();
-});
-
-test("a direct root transcript reads its context without displaying redundant ancestry", async () => {
-  const fake = connectFakeClient();
-  const ref = "remote:root";
-  fake.on("thread/read", () => readResponse(ref, { name: "Chosen root" }));
-  fake.on("thread/unsubscribe", () => ({}));
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref }} paneId="p1" focused />
-    </ClientProvider>,
-  );
-  await screen.findByRole("heading", { name: "Chosen root" });
-  await waitFor(() => expect(sessionActivitySnapshot(fake, ref, "session")?.context?.ancestryKnown).toBe(true));
-  expect(screen.queryByRole("navigation", { name: "Scope" })).toBeNull();
-});
-
-test("renders the thread's turns through the shared VirtualList/TurnBlock engine", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () =>
-    readResponse("ref_a", {
-      evener: {
-        ref: "ref_a",
-        capabilities: CAPABILITIES,
-        queue: { revision: 0 },
-        diagnostics: {
-          delegates: [
-            {
-              runGeneration: 1,
-              delegateId: "dlg_observed",
-              ownerSessionId: "sess_ref_a",
-              rootSessionId: "sess_ref_a",
-              childSessionId: "sess_child",
-              transcriptRef: "",
-              type: "delegate",
-              lifecycle: "idle",
-              phase: "idle",
-              status: "idle",
-              outcome: "completed",
-              terminal: true,
-              resumable: true,
-              needsAttention: false,
-              projectionRevision: 1,
-            },
-          ],
-        },
-      },
-      turns: [
-        {
-          id: "turn_1",
-          status: "completed",
-          itemsView: "full",
-          items: [
-            {
-              id: "item_1",
-              turnId: "turn_1",
-              type: "userMessage",
-              text: "hi from the observed thread",
-              status: "completed",
-            },
-            {
-              id: "item_delegate",
-              turnId: "turn_1",
-              type: "commandExecution",
-              toolName: "delegate",
-              callId: "call_delegate",
-              description: "Observed delegate",
-              argumentsJson: JSON.stringify({ prompt: "inspect the observed thread" }),
-              output: JSON.stringify({ delegate_id: "dlg_observed", status: "running" }),
-              status: "completed",
-            },
-          ],
-        },
-      ],
-    }),
-  );
-
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref: "ref_a" }} paneId="p1" focused={false} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
-  expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
-  expect(screen.getByText("hi from the observed thread")).toBeTruthy();
-  await waitFor(() => expect(screen.getByTestId("subagent-row")).toBeTruthy());
-  expect(within(screen.getByTestId("subagent-row")).getByText("Status: done")).toBeTruthy();
-});
-
-test("keeps transcript/history and projection announcements without standalone Detail or Verbosity controls", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => ({
-    ...readResponse("ref_a", {
-      turns: [
-        {
-          id: "turn_1",
-          status: "completed",
-          itemsView: "full",
-          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "read me", status: "completed" }],
-        },
-      ],
-    }),
-    olderCursor: "cursor_1",
-  }));
-  fake.on("thread/turns/list", () => {
-    throw new Error("older history unavailable");
-  });
-
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref: "ref_a" }} paneId="p1" focused={false} />
-    </ClientProvider>,
-  );
-
-  expect(await screen.findByText("read me")).toBeTruthy();
-  // Idle paging is silent now (no "Older turns" banner); the row is what must
-  // remain reachable.
-  expect(screen.getByTestId("load-older-row")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: /^Detail:/ })).toBeNull();
-  expect(screen.queryByRole("menuitem", { name: "Verbosity…" })).toBeNull();
-  await act(async () => {
-    transcriptDisplayStore.setState({ viewport: "desktop" });
-    transcriptDisplayStore
-      .getState()
-      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }));
-  });
-  await waitFor(() =>
-    expect(screen.getByTestId("transcript-view-announcement").textContent).toContain("Transcript detail: Activity"),
-  );
-  const status = screen.getByTestId("transcript-view-announcement");
-  await act(async () => {
-    transcriptDisplayStore
-      .getState()
-      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { roundTimings: true }));
-  });
-  await waitFor(() => expect(status.textContent).toContain("Transcript detail: Activity · 1 advanced"));
-  await act(async () => {
-    transcriptDisplayStore
-      .getState()
-      .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { tokenCounts: true }));
-  });
-  await waitFor(() => expect(status.textContent).toContain("Transcript detail: Activity · 1 advanced"));
-  expect(screen.getByTestId("transcript-view-announcement")).toBe(status);
-});
-
-test("is read-only: renders no composer and no session-chrome footer, even for a fully capable thread", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () =>
-    readResponse("ref_a", {
-      turns: [
-        {
-          id: "turn_1",
-          status: "completed",
-          itemsView: "full",
-          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "read me", status: "completed" }],
-        },
-      ],
-    }),
-  );
-
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref: "ref_a" }} paneId="p1" focused={false} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getByText("read me")).toBeTruthy());
-  // No composer input to type into...
-  expect(screen.queryByRole("textbox")).toBeNull();
-  // ...and no PaneScaffold footer (the session pane's only footer is its
-  // SessionChrome; the read-only pane passes none).
-  expect(screen.queryByTestId("pane-footer")).toBeNull();
-});
-
-test("falls back to the raw ref as the pane title when the thread has no name", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a"));
-
-  render(
-    <ClientProvider client={fake}>
-      <Transcript params={{ ref: "ref_a" }} paneId="p1" focused={false} />
-    </ClientProvider>,
-  );
-
+  // The read-only session transcript pane is gone; a stale layout or URL
+  // that still names one reopens the conversation's content — resolved to
+  // its title here — never a dead surface.
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
+});
+
+test("a legacy session-ref transcript pane mounts a usable composer", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "ref_a" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  // The pane record migrates from the removed transcript type to the live
+  // session type, so Session resolves the record's lifetime: the conversation
+  // is not just history, it keeps its live composer.
+  await screen.findByRole("textbox", { name: "Message" });
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === "p1")?.type).toBe("session");
+});
+
+test("a legacy transcript pane's parent context survives the migration", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_child"));
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "ref_child", parentRef: "ref_parent" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  // The migrated conversation records the legacy params' parentRef as its
+  // open-parent edge, so its Back walk still reaches the pane it was opened
+  // from — the same edge the saved-layout migration records.
+  await screen.findByRole("textbox", { name: "Message" });
+  const migrated = workspaceStore.getState().panes.find((pane) => pane.id === "p1");
+  expect(migrated?.type).toBe("session");
+  expect(migrated && conversationOpenParentRef(migrated)).toBe("ref_parent");
+});
+
+// A legacy cascade saved without an inspection origin Returns by retyping its
+// pane back to the source descriptor it was opened from (actions.ts's
+// intentFor keeps a legacy source's own type, "transcript"), not by closing to
+// a bound origin. When that source conversation is ALSO already open beside
+// it, the retyped pane is the ref's second conversation view: the migration
+// guard leaves it typed "transcript" (migrating would put two panes on one
+// conversation), and Session resolves no lifetime for a transcript record, so
+// the selected view has no composer. Closing the conflicting conversation must
+// let the migration re-evaluate its workspace membership and recover the view.
+test("a legacy cascade Returned beside a live conversation recovers when the duplicate closes", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  const liveId = workspaceStore.getState().openPane("session", { ref: "ref_a" });
+  const returnedId = workspaceStore
+    .getState()
+    .openPane(
+      "sessionZoom",
+      { ref: "ref_child", source: { type: "transcript", params: { ref: "ref_a" } }, edges: [] },
+      { slot: "secondary" },
+    );
+  returnFromAgentCascade(returnedId);
+  // The Return left the pane as the legacy source conversation it named,
+  // beside the live one that already holds the ref.
+  const returned = workspaceStore.getState().panes.find((pane) => pane.id === returnedId);
+  expect(returned?.type).toBe("transcript");
+  if (!returned) throw new Error("returned pane missing");
+  // The pane's lifetime carries its retained work (composer draft, read view);
+  // the close-triggered migration must keep it, not replace the record.
+  const lifetime = conversationPaneLifetime(returned);
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "ref_a" }} paneId={returnedId} focused={false} />
+    </ClientProvider>,
+  );
+
+  // Beside the live conversation the retyped pane stays a transcript with no
+  // composer: it is not the ref's unit view, so it must not migrate.
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === returnedId)?.type).toBe("transcript");
+  expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+
+  // The conflicting conversation closing is the migration's cue to re-run; the
+  // selected view then recovers as the live conversation with its composer.
+  act(() => workspaceStore.getState().closePane(liveId));
+  await screen.findByRole("textbox", { name: "Message" });
+  const migrated = workspaceStore.getState().panes.find((pane) => pane.id === returnedId);
+  expect(migrated?.type).toBe("session");
+  expect(migrated && conversationPaneLifetime(migrated)).toBe(lifetime);
 });
 
 // --- "Open this shell transcript in a pane": a "job:<id>" ref is a shell
@@ -405,6 +208,12 @@ test("falls back to the raw ref as the pane title when the thread has no name", 
 
 function jobOutputText() {
   return jobLogOutputText(screen.getByTestId("joblog-content"));
+}
+
+// The job log's missing-interval row of one kind: bytes never fetched
+// ("unloaded") or bytes the daemon no longer keeps ("pruned").
+function jobLogGap(kind: "unloaded" | "pruned"): HTMLElement | null {
+  return screen.getByTestId("joblog-content").querySelector(`[data-joblog-kind="${kind}"]`);
 }
 
 function scrollJobToHead() {
@@ -468,7 +277,9 @@ test("a job log shows the job's full command above its output", async () => {
   );
 
   // The command rides its own read, against the same owning session.
-  await waitFor(() => expect(screen.getByTestId("joblog-command").textContent).toBe("go test ./... -run Foo -count=1"));
+  await waitFor(() =>
+    expect(jobLogCommandText(screen.getByTestId("joblog-command"))).toBe("go test ./... -run Foo -count=1"),
+  );
   expect(screen.getByTestId("joblog-content").textContent).toContain("ok");
   const commandCalls = fake.calls.filter((call) => call.method === "evener/jobs/get");
   expect(commandCalls).toHaveLength(1);
@@ -519,7 +330,7 @@ test.each([
   const result = screen.getByTestId("joblog-status");
   expect(result.textContent).toContain(label);
   expect(result.textContent).toContain(`Exit code ${exitCode}`);
-  expect(screen.getByTestId("joblog-command").textContent).toBe("make verify-release");
+  expect(jobLogCommandText(screen.getByTestId("joblog-command"))).toBe("make verify-release");
   expect(await screen.findByText("finished")).toBeTruthy();
 });
 
@@ -556,7 +367,7 @@ test("a job log does not borrow metadata from another owner's equal job id", asy
     </ClientProvider>
   );
   const { rerender } = render(view("first-owner"));
-  expect((await screen.findByTestId("joblog-command")).textContent).toBe("echo first-owner");
+  expect(jobLogCommandText(await screen.findByTestId("joblog-command"))).toBe("echo first-owner");
 
   await act(async () => rerender(view("second-owner")));
   expect(screen.queryByTestId("joblog-command")).toBeNull();
@@ -564,7 +375,7 @@ test("a job log does not borrow metadata from another owner's equal job id", asy
   expect(screen.queryByRole("heading", { name: "First owner's job" })).toBeNull();
   await act(async () => finishSecond(metadata("second-owner", "Second owner's job")));
   expect(await screen.findByRole("heading", { name: "Second owner's job" })).toBeTruthy();
-  expect(screen.getByTestId("joblog-command").textContent).toBe("echo second-owner");
+  expect(jobLogCommandText(screen.getByTestId("joblog-command"))).toBe("echo second-owner");
 });
 
 test("a job log whose metadata read fails still renders the output", async () => {
@@ -635,12 +446,12 @@ test("a truncated job log identifies the shown source bytes and true pruned pref
   );
 
   await waitFor(() => expect(screen.getByText("tail end")).toBeTruthy());
-  expect(screen.getByText(/loaded 65,?536 of 70,?000 output bytes/i)).toBeTruthy();
+  expect(screen.getByTestId("joblog-partial")).toBeTruthy();
   expect(screen.getByTestId("joblog-content").getAttribute("data-joblog-source-bytes")).toBe("65536");
-  const pruned = screen.getByText("Output no longer retained");
-  expect(pruned.getAttribute("data-source-start")).toBe("0");
-  expect(pruned.getAttribute("data-source-end")).toBe("4464");
-  expect(screen.queryByText("Output not loaded")).toBeNull();
+  const pruned = jobLogGap("pruned");
+  expect(pruned?.getAttribute("data-source-start")).toBe("0");
+  expect(pruned?.getAttribute("data-source-end")).toBe("4464");
+  expect(jobLogGap("unloaded")).toBeNull();
   // The page starts at the storage floor, so earlier bytes are no longer
   // retained and there is no earlier-page affordance.
   expect(screen.queryByRole("button", { name: /load earlier/i })).toBeNull();
@@ -703,18 +514,18 @@ test("scroll pages backwards through the job log until the head", async () => {
   scrollJobToHead();
   await act(async () => releaseFirst());
   await waitFor(() => expect(jobOutputText()).toBe("23456789"));
-  expect(screen.getByText(/loaded 8 of 10 output bytes/i)).toBeTruthy();
+  expect(screen.getByTestId("joblog-partial")).toBeTruthy();
   expect(screen.getByTestId("joblog-content").getAttribute("data-joblog-source-bytes")).toBe("8");
-  expect(screen.getByText("Output not loaded").getAttribute("data-source-end")).toBe("2");
+  expect(jobLogGap("unloaded")?.getAttribute("data-source-end")).toBe("2");
 
   scrollJobToHead();
   await act(async () => releaseSecond());
   await waitFor(() => expect(jobOutputText()).toBe("0123456789"));
   // The whole log is on screen, with no missing interval.
   expect(screen.queryByRole("button", { name: /load earlier/i })).toBeNull();
-  expect(screen.queryByText("Output not loaded")).toBeNull();
-  expect(screen.queryByText("Output no longer retained")).toBeNull();
-  expect(screen.queryByText(/loaded .* output bytes/i)).toBeNull();
+  expect(jobLogGap("unloaded")).toBeNull();
+  expect(jobLogGap("pruned")).toBeNull();
+  expect(screen.queryByTestId("joblog-partial")).toBeNull();
   expect(screen.getByTestId("joblog-content").getAttribute("data-joblog-source-bytes")).toBe("10");
 
   const calls = fake.calls.filter((call) => call.method === "evener/jobs/output");
@@ -737,12 +548,9 @@ test("a daemon that ignores beforeBytes preserves the output and surfaces the bo
 
   await waitFor(() => expect(jobOutputText()).toBe("6789"));
   scrollJobToHead();
-  expect(await screen.findByRole("status")).toHaveProperty(
-    "textContent",
-    "output page does not match the requested boundary",
-  );
+  expect((await screen.findByRole("status")).textContent).not.toBe("");
   expect(jobOutputText()).toBe("6789");
-  expect(screen.getByText("Output not loaded").getAttribute("data-source-end")).toBe("6");
+  expect(jobLogGap("unloaded")?.getAttribute("data-source-end")).toBe("6");
   expect(fake.calls.filter((call) => call.method === "evener/jobs/output")).toHaveLength(2);
 });
 

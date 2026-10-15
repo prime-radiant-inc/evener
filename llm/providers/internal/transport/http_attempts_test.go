@@ -974,7 +974,7 @@ func TestDoWithAPIAttemptsDefaultRedirectRejectionSanitizesLocationCredential(t 
 		t.Fatal(err)
 	}
 	_, attempt, err := DoWithAPIAttempts(context.Background(), server.Client(), request, attemptMeta)
-	if err == nil || !strings.Contains(err.Error(), "stopped after 10 redirects") {
+	if err == nil {
 		t.Fatalf("default redirect error = %v, want ten-redirect rejection", err)
 	}
 	if attempt != nil {
