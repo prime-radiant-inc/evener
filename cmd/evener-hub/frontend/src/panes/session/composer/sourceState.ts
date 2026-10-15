@@ -80,6 +80,12 @@ export interface ComposerSourceSnapshot {
   freshRecoveryRef: string | null;
   restoreEpoch: number;
   submittedAttachmentRetirementPending: boolean;
+  // True from construction until the durable draft load settles (success or
+  // failure). The synchronous initial value can only read the runtime/local
+  // projection, so a remounted composer cannot know whether a durable row is
+  // about to arrive; the composer reads this to say "restoring your draft"
+  // during that window rather than presenting an empty editor as a fresh one.
+  hydrating: boolean;
 }
 
 export interface ComposerSourceState {
@@ -237,6 +243,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     freshRecoveryRef: null,
     restoreEpoch: 0,
     submittedAttachmentRetirementPending: false,
+    hydrating: true,
   }));
   const continuity: ComposerSourceState["continuity"] = {
     textRef: { current: initial.text },
@@ -457,6 +464,13 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
   function scheduleDrain(): void {
     drainPromise = drainPromise.then(() => drainAccepted()).catch(() => undefined);
   }
+  // The durable load has settled for this attempt (published a row, found no
+  // row, or failed): the composer may stop saying "restoring your draft". A
+  // later deliberate retry after a failure reruns ready() but the window is
+  // already honestly closed - the user has a real answer of "no draft".
+  function markHydrationSettled(): void {
+    if (!disposed && state.getState().hydrating) state.setState({ hydrating: false });
+  }
   function ready(): Promise<void> {
     readyPromise ??= (async () => {
       // Captured before ANY await: explicit work accepted before ready started
@@ -508,12 +522,18 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       // twice or out of order.
       scheduleDrain();
       await drainPromise;
-    })().catch((error) => {
-      // Keep the retained source and accepted edits, but let a later deliberate
-      // attempt rerun transfer/load instead of awaiting a cached failure.
-      readyPromise = null;
-      throw error;
-    });
+    })()
+      .then((value) => {
+        markHydrationSettled();
+        return value;
+      })
+      .catch((error) => {
+        // Keep the retained source and accepted edits, but let a later deliberate
+        // attempt rerun transfer/load instead of awaiting a cached failure.
+        readyPromise = null;
+        markHydrationSettled();
+        throw error;
+      });
     return readyPromise;
   }
   // A restore adopts the latest draft into this editor, and the durable row

@@ -43,6 +43,14 @@ export interface SkillEditorProps {
   onFocus?: HTMLAttributes<HTMLDivElement>["onFocus"];
   onBlur?: HTMLAttributes<HTMLDivElement>["onBlur"];
   placeholder?: string;
+  /**
+   * The composer's draft-hydration state, surfaced verbatim as the editor's
+   * data-draft-state so callers and tests read the state itself rather than
+   * the human-readable placeholder copy. "restoring" while a durable draft is
+   * still hydrating over an empty editor, "staged" once any draft text exists,
+   * "fresh" once hydration has settled with nothing to restore.
+   */
+  draftState?: "restoring" | "fresh" | "staged";
   minLines?: number;
   /**
    * Bumped by the caller whenever the incoming value is authoritative - a draft
@@ -384,6 +392,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         ...(props["aria-controls"] ? { "aria-controls": props["aria-controls"] } : {}),
         ...(props["aria-activedescendant"] ? { "aria-activedescendant": props["aria-activedescendant"] } : {}),
         "data-placeholder": props.placeholder ?? "",
+        "data-draft-state": props.draftState ?? "",
         "data-empty": String(view.state.doc.content.size === 0),
       },
     });

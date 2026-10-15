@@ -172,6 +172,24 @@ async function durableSource(
   return source;
 }
 
+// The composer's own hydration window (issue #4652): the synchronous initial
+// snapshot can only read the runtime/local projection, so a remounted source
+// cannot know yet whether a durable row is about to arrive. `hydrating` stays
+// true until the durable load settles, and the composer reads it to say
+// "restoring your draft" instead of presenting an empty editor as fresh.
+test("the snapshot reports hydrating until the durable load settles", async () => {
+  const fixture = sourceFixture("source-state-hydrating");
+  await fixture.repository.seedDraft(fixture.key, { text: "staged before remount", skillNames: [] });
+  const source = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  // Synchronously, before the load has settled, hydration is honestly pending.
+  expect(source.getSnapshot().hydrating).toBe(true);
+  await source.ready();
+  expect(source.getSnapshot().hydrating).toBe(false);
+  expect(source.getSnapshot().text).toBe("staged before remount");
+});
+
 test("source restoration retains mixed atom identity and inert prose", async () => {
   const text = "🙂 /same /same /same";
   const commandOffset = text.indexOf("/same");
