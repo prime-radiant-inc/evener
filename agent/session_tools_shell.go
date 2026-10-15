@@ -327,13 +327,12 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	_ = reg.Register(tool.RegisteredTool{
 		Definition: tool.DefApplyPatch(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
 			patch := fmt.Sprint(args["patch"])
 			fm, ok := env.(execenv.FileMutator)
 			if !ok {
 				return "", errors.New("apply_patch: execution environment does not support file mutation")
 			}
-			return tool.ApplyPatch(fm, patch)
+			return tool.ApplyPatchCtx(ctx, fm, patch)
 		},
 	})
 

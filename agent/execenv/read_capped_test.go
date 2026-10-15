@@ -2,14 +2,16 @@ package execenv
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-// readAllCapped is the shared bound under every whole-file read; these tests pin
-// its contract directly, at small limits, against synthetic inputs.
+// readBounded is the single bounded read under every whole-file read; these
+// tests pin its byte-cap contract directly, at small limits, against synthetic
+// inputs.
 
 // endlessReader never ends, the shape a device (/dev/zero) or an oversized
 // procfs regular presents as.
@@ -30,58 +32,57 @@ type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, errTestRead }
 
-func TestReadAllCappedStopsAtLimit(t *testing.T) {
+func TestReadBoundedReportsPastLimit(t *testing.T) {
 	t.Parallel()
 	const limit = 1 << 10
-	got, err := readAllCapped(endlessReader{}, limit)
-	if err == nil {
-		t.Fatalf("readAllCapped(endless) = %d bytes, nil; want the read-limit refusal", len(got))
+	got, over, err := readBounded(context.Background(), endlessReader{}, nil, limit)
+	if err != nil {
+		t.Fatalf("readBounded(endless): %v", err)
 	}
-	rle, capped := errors.AsType[*ReadLimitError](err)
-	if !capped {
-		t.Fatalf("readAllCapped(endless) err = %v, want a *ReadLimitError", err)
-	}
-	if rle.Limit != limit {
-		t.Fatalf("ReadLimitError.Limit = %d, want %d", rle.Limit, limit)
-	}
-	if got != nil {
-		t.Fatalf("readAllCapped(endless) returned %d bytes alongside the refusal", len(got))
+	if !over {
+		t.Fatalf("readBounded(endless) read %d bytes without reporting the cap", len(got))
 	}
 }
 
-func TestReadAllCappedReadsUnderLimit(t *testing.T) {
+func TestReadBoundedReadsUnderLimit(t *testing.T) {
 	t.Parallel()
 	want := []byte("payload well under the cap\n")
-	got, err := readAllCapped(bytes.NewReader(want), 1<<10)
+	got, over, err := readBounded(context.Background(), bytes.NewReader(want), nil, 1<<10)
 	if err != nil {
-		t.Fatalf("readAllCapped(under cap): %v", err)
+		t.Fatalf("readBounded(under cap): %v", err)
+	}
+	if over {
+		t.Fatal("readBounded(under cap) reported the cap")
 	}
 	if !bytes.Equal(got, want) {
-		t.Fatalf("readAllCapped(under cap) = %q, want %q", got, want)
+		t.Fatalf("readBounded(under cap) = %q, want %q", got, want)
 	}
 }
 
-func TestReadAllCappedAcceptsExactlyLimit(t *testing.T) {
+func TestReadBoundedAcceptsExactlyLimit(t *testing.T) {
 	t.Parallel()
 	const limit = 4
 	want := bytes.Repeat([]byte("a"), limit)
-	got, err := readAllCapped(bytes.NewReader(want), limit)
+	got, over, err := readBounded(context.Background(), bytes.NewReader(want), nil, limit)
 	if err != nil {
-		t.Fatalf("readAllCapped(exactly the cap): %v", err)
+		t.Fatalf("readBounded(exactly the cap): %v", err)
+	}
+	if over {
+		t.Fatal("readBounded(exactly the cap) reported the cap")
 	}
 	if !bytes.Equal(got, want) {
-		t.Fatalf("readAllCapped(exactly the cap) = %q, want %q", got, want)
+		t.Fatalf("readBounded(exactly the cap) = %q, want %q", got, want)
 	}
 }
 
-func TestReadAllCappedPropagatesReadError(t *testing.T) {
+func TestReadBoundedPropagatesReadError(t *testing.T) {
 	t.Parallel()
-	_, err := readAllCapped(errReader{}, 1<<10)
+	_, over, err := readBounded(context.Background(), errReader{}, nil, 1<<10)
 	if !errors.Is(err, errTestRead) {
-		t.Fatalf("readAllCapped(failing reader) err = %v, want the reader's own error", err)
+		t.Fatalf("readBounded(failing reader) err = %v, want the reader's own error", err)
 	}
-	if _, capped := errors.AsType[*ReadLimitError](err); capped {
-		t.Fatal("readAllCapped(failing reader) reported the cap for a genuine read failure")
+	if over {
+		t.Fatal("readBounded(failing reader) reported the cap for a genuine read failure")
 	}
 }
 

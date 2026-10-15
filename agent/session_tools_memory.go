@@ -313,7 +313,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 	defer release()
 	if isMemoryIndexPath(file) {
 		var rendered memoryProjection
-		if err := s.renderMemoryScope(env, &rendered); err != nil {
+		if err := s.renderMemoryScope(ctx, env, &rendered); err != nil {
 			return nil, err
 		}
 		if rendered.Status == "missing" {
@@ -326,7 +326,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 	// read, which therefore records the whole page as of that read.
 	var raw []byte
 	out, err := execFileReadWith(forwarded, s.fileReadGuard(env), func(path string, offset, limit *int) (string, error) {
-		text, loaded, err := env.ReadFileAndBytes(path, offset, limit)
+		text, loaded, err := env.ReadFileAndBytesCtx(ctx, path, offset, limit)
 		raw = loaded
 		return text, err
 	})
@@ -353,7 +353,7 @@ func (s *Session) execMemoryRead(ctx context.Context, _ execenv.ExecutionEnviron
 func (s *Session) execMemoryEdit(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 	return s.execOwnMemoryWrite(args, "edit", func(env *execenv.LocalExecutionEnvironment, forwarded map[string]any, stamp func([]byte) []byte) (any, error) {
 		return execFileEditWith(forwarded, s.fileReadGuard(env), func(path, oldString, newString string, replaceAll bool) (string, error) {
-			return env.EditFileWith(path, oldString, newString, replaceAll, stamp)
+			return env.EditFileWithCtx(ctx, path, oldString, newString, replaceAll, stamp)
 		})
 	})
 }

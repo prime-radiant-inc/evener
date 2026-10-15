@@ -1658,11 +1658,12 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	ei := s.snapshotEnvironmentInfo(env)
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
 	if !s.cfg.testOnly.skipGitSnapshot {
-		if inRepo, branch, mod, untracked, commits := snapshotGit(s.sessionContext(), env, ei.WorkingDir); inRepo {
+		if inRepo, branch, mod, untracked, commits, statusKnown := snapshotGit(s.sessionContext(), env, ei.WorkingDir); inRepo {
 			ei.IsGitRepo = true
 			ei.GitBranch = branch
 			ei.GitModifiedFiles = mod
 			ei.GitUntrackedFiles = untracked
+			ei.GitStatusUnknown = !statusKnown
 			ei.GitRecentCommitTitles = commits
 			ei.GitOriginURL = gitOriginURL(s.sessionContext(), env, ei.WorkingDir)
 		}

@@ -68,8 +68,12 @@ type promptData struct {
 	Capabilities []string
 
 	// Git
-	GitModifiedFiles      int
-	GitUntrackedFiles     int
+	GitModifiedFiles  int
+	GitUntrackedFiles int
+	// GitStatusUnknown is true when the session-start status read was truncated
+	// or failed, so the two counts above are not a claim about the working tree;
+	// the template omits them rather than render a clean-repo number.
+	GitStatusUnknown      bool
 	GitRecentCommitTitles []string
 
 	// Workspace

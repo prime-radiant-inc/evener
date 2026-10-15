@@ -75,15 +75,17 @@ type LocalExecutionEnvironment struct {
 	mainRoots   *gitRootCache // stable main repo root per cwd (ResolveMainRepoRoot)
 	fs          afero.Fs      // filesystem backing ReadFile/WriteFile/EditFile; defaults to the OS
 
-	// commandFactory, inheritedEnv, lookPath, sandboxTmpBase, and terminationGrace
-	// are instance-local test seams. Nil/empty values retain production os/exec,
-	// os.Environ, exec.LookPath, os.TempDir, and terminateGrace behavior. Keeping
-	// them on the environment avoids global swaps in deterministic fuzzers.
+	// commandFactory, inheritedEnv, lookPath, sandboxTmpBase, terminationGrace,
+	// and outputCaptureCap are instance-local test seams. Nil/empty values retain
+	// production os/exec, os.Environ, exec.LookPath, os.TempDir, terminateGrace,
+	// and maxCapturedOutputBytes behavior. Keeping them on the environment avoids
+	// global swaps in deterministic fuzzers.
 	commandFactory   commandRuntimeFactory
 	inheritedEnv     func() []string
 	lookPath         func(string) (string, error)
 	sandboxTmpBase   string
 	terminationGrace *time.Duration
+	outputCaptureCap *int
 
 	// Sandbox is the resolved sandbox policy for this environment, or nil for the
 	// default (off) — exactly today's behavior. M2 consults it in the FILE tools
@@ -466,6 +468,7 @@ func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path string) Exec
 		lookPath:         e.lookPath,
 		sandboxTmpBase:   e.sandboxTmpBase,
 		terminationGrace: e.terminationGrace,
+		outputCaptureCap: e.outputCaptureCap,
 		LoginPATH:        e.LoginPATH,
 		Sandbox:          e.Sandbox,
 		Wrapper:          e.Wrapper,
@@ -1146,6 +1149,7 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 		lookPath:         e.lookPath,
 		sandboxTmpBase:   e.sandboxTmpBase,
 		terminationGrace: e.terminationGrace,
+		outputCaptureCap: e.outputCaptureCap,
 		LoginPATH:        e.LoginPATH,
 	}
 	if e.Sandbox != nil {
@@ -1246,6 +1250,15 @@ func (e *LocalExecutionEnvironment) terminationGraceDuration() time.Duration {
 		return *e.terminationGrace
 	}
 	return terminateGrace
+}
+
+// outputCaptureCapBytes is the per-stream capture bound for buffered commands:
+// the seam's value when a test sets one, else maxCapturedOutputBytes.
+func (e *LocalExecutionEnvironment) outputCaptureCapBytes() int {
+	if e.outputCaptureCap != nil && *e.outputCaptureCap > 0 {
+		return *e.outputCaptureCap
+	}
+	return maxCapturedOutputBytes
 }
 
 // Cleanup terminates any tracked processes by sending SIGTERM to each process
@@ -1459,7 +1472,13 @@ func resolveOSVersion() string {
 // and limited to limitLines lines (default 2000); CRLF line endings are
 // normalized to LF.
 func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
-	out, _, err := e.ReadFileAndBytes(path, offsetLine, limitLines)
+	return e.ReadFileCtx(context.Background(), path, offsetLine, limitLines)
+}
+
+// ReadFileCtx is ReadFile with the caller's context threaded to the read, so a
+// cancelled call ends a read parked on a stream instead of waiting it out.
+func (e *LocalExecutionEnvironment) ReadFileCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, error) {
+	out, _, err := e.ReadFileAndBytesCtx(ctx, path, offsetLine, limitLines)
 	return out, err
 }
 
@@ -1468,6 +1487,12 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 // saw. The bytes are the complete file even when offset and limit select only
 // some of its lines; on error they are nil.
 func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *int, limitLines *int) (string, []byte, error) {
+	return e.ReadFileAndBytesCtx(context.Background(), path, offsetLine, limitLines)
+}
+
+// ReadFileAndBytesCtx is ReadFileAndBytes with the caller's context threaded to
+// the read (see ReadFileCtx).
+func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, []byte, error) {
 	abs := e.resolve(path)
 	var b []byte
 	var err error
@@ -1481,9 +1506,9 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 		// (symlink-refusing, root/denylist-checked).
 		// The image/PDF/binary/line-numbering contract below is applied identically
 		// to the returned bytes, so the output is unchanged from the off path.
-		b, err = sfs.readFile("read_file", abs)
+		b, err = sfs.readFileCtx(ctx, "read_file", abs)
 	} else {
-		b, err = readFileCapped(e.filesystem(), abs)
+		b, err = readFileCappedCtx(ctx, e.filesystem(), abs)
 	}
 	if err != nil {
 		// Best-effort "did you mean" suggestion for a genuine missing-file miss
@@ -1662,6 +1687,19 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 // EditFileWith is EditFile, except that finish, when not nil, turns the
 // edited bytes into the bytes written, inside the same read and write.
 func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
+	return e.EditFileWithCtx(context.Background(), path, oldString, newString, replaceAll, finish)
+}
+
+// EditFileCtx is EditFile with the caller's context threaded to its read, so a
+// cancelled edit ends a read parked on a stream. It is the interface-visible
+// entry of ContextualFileReader.
+func (e *LocalExecutionEnvironment) EditFileCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool) (string, error) {
+	return e.EditFileWithCtx(ctx, path, oldString, newString, replaceAll, nil)
+}
+
+// EditFileWithCtx is EditFileWith with the caller's context threaded to its
+// read, so a cancelled edit ends a read parked on a stream.
+func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
 	sfs := e.sandbox()
 	var abs string
 	var b []byte
@@ -1680,13 +1718,13 @@ func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, 
 		if derr := sfs.checkWritable("edit_file", abs); derr != nil {
 			return "", derr
 		}
-		b, err = sfs.readFile("edit_file", abs)
+		b, err = sfs.readFileCtx(ctx, "edit_file", abs)
 	} else {
 		abs, err = e.resolveWrite(path)
 		if err != nil {
 			return "", err
 		}
-		b, err = readFileCapped(e.filesystem(), abs)
+		b, err = readFileCappedCtx(ctx, e.filesystem(), abs)
 	}
 	if err != nil {
 		return "", err
@@ -2294,15 +2332,47 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	// "%VAR%" therefore stayed live there. Portable and shell-free beats
 	// platform-specific quoting: with argv in hand there is nothing to
 	// escape on any platform.
-	res, err := e.ExecArgv(ctx, rg, args, 10_000, e.RootDir, nil)
+	filesOnly := outputMode == "files_with_matches"
+	oneFile := grepTargetsOneFile(dir)
+	// Bound ripgrep's stdout at the capture itself, then parse the bounded bytes
+	// with the same formatter the native arm's lines go through, so the result
+	// keeps ripgrep's own exclusion rules by construction (rgCapture).
+	capture := newRgCapture(dir, filesOnly, grepRetainedBytes)
+	res, err := e.execPreparedCommandStdout(ctx, e.commands().Argv(rg, args...), 10_000, e.RootDir, nil, capture)
 	if err == nil {
 		// Keep the first maxResults lines. In content mode that counts context
 		// lines and "--" separators too, which is what the grep tool's
 		// max_results promises ("lines, file paths, or count entries by output
 		// mode", tool.DefGrep) and what grepAccum.feedContent counts, so with
 		// context_lines a cut can fall inside a match's context.
-		lines := ripgrepOutputLines(res.Stdout, dir, grepTargetsOneFile(dir), outputMode == "files_with_matches")
+		view := capture.view(filesOnly)
+		// A capture that left nothing out holds the stream in two pieces: the
+		// head, and the tail's records, which are the stream's own final ones
+		// whenever the cap fell on a record boundary (wholeStream). Parsing them
+		// together keeps a record the cap landed on whole instead of losing it to
+		// the tail note it does not need — nothing was omitted.
+		source := view.head
+		if whole := view.wholeStream(); whole != "" {
+			source = whole
+		}
+		lines := ripgrepOutputLines(source, dir, oneFile, filesOnly)
 		var notes []string
+		if view.omitted > 0 {
+			// The capture left bytes out; the note discloses that exactly as the
+			// native arm's retained-output budget does, and the stream's last
+			// records ride in the same note so the model still sees how the
+			// matches end — never as rows past maxResults.
+			notes = append(notes, grepRetainedTruncationNote())
+		}
+		// The tail is shown whenever the cap did something to the stream: it left
+		// bytes out, or it cut a tail record at its slot. Gating on the omission
+		// alone lost the tail of a boundary-ending cap that omitted nothing, with
+		// no disclosure at all.
+		if view.omitted > 0 || view.cut > 0 {
+			if tail := rgTailNote(view); tail != "" {
+				notes = append(notes, tail)
+			}
+		}
 		if len(lines) > maxResults {
 			notes = append(notes, grepTruncationNote(maxResults))
 		}
@@ -2350,7 +2420,9 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		}
 		return "", nil
 	}
-	return res.Stdout + res.Stderr, err
+	// The capture consumed rg's stdout, so a failed search's diagnostic shows the
+	// bounded prefix it kept beside rg's stderr.
+	return capture.diagnostics() + res.Stderr, err
 }
 
 // grepRgOversizeCount reports how many candidate files ripgrep leaves out of
@@ -2770,13 +2842,14 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 	}
 
 	start := time.Now()
-	var stdout, stderr bytes.Buffer
+	stdout := newCappedOutputBuffer(e.outputCaptureCapBytes())
+	stderr := newCappedOutputBuffer(e.outputCaptureCapBytes())
 	env := injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir})
 	config := commandRuntimeConfig{
 		Dir:              dir,
 		Env:              env,
-		Stdout:           &stdout,
-		Stderr:           &stderr,
+		Stdout:           stdout,
+		Stderr:           stderr,
 		Wrapper:          e.Wrapper,
 		TerminationGrace: e.terminationGraceDuration(),
 	}
@@ -2860,11 +2933,13 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 	}
 
 	return ExecResult{
-		Stdout:     stdout.String(),
-		Stderr:     stderr.String(),
-		ExitCode:   exitCode,
-		TimedOut:   timedOut,
-		DurationMS: time.Since(start).Milliseconds(),
+		Stdout:          stdout.String(),
+		Stderr:          stderr.String(),
+		ExitCode:        exitCode,
+		TimedOut:        timedOut,
+		DurationMS:      time.Since(start).Milliseconds(),
+		StdoutTruncated: stdout.truncated(),
+		StderrTruncated: stderr.truncated(),
 	}, waitErr
 }
 

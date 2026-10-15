@@ -413,6 +413,7 @@ native:agent:.:FuzzFc2OutputWindowStatus
 native:agent:.:FuzzFc2ToolStartDescription
 native:agent:./execenv:FuzzFc2BuildRipgrepArgs
 native:agent:./execenv:FuzzFc2ResolveGrepDir
+native:agent:./execenv:FuzzRgCapture
 native:agent:./internal/jobstore:FuzzFc2Reconcile
 rapid:agent:.:TestJobsFc2DescendantMergeSeqFuzz
 native:agent:.:FuzzMcClassifyModelError
