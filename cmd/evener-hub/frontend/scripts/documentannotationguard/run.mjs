@@ -851,6 +851,14 @@ async function assertUnchangedReopen(retained) {
   // observer so a later gesture still has fresh pointer/selection records.
   await installPassiveInputObservation();
   await driver.openSession(fixture.rootRef);
+  // The merged world produces the reloaded transcript's entries in the
+  // background: the file link appears when production publishes it, so wait
+  // for the Open-beside control the way the first open does instead of
+  // racing it.
+  await driver.waitPage(
+    `(() => document.querySelector('button[aria-label="Open beside: NOTES.md"]') !== null ? true : null)()`,
+    { label: "the reopened transcript's file link" },
+  );
   await driver.click('button[aria-label="Open beside: NOTES.md"]');
   await driver.waitPage(firstParagraphExpr, { label: "the unchanged source reopens after reload" });
   const fresh = await waitForFreshDocumentRead(previousReads);

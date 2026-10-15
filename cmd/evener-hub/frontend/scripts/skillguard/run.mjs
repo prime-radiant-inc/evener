@@ -2009,6 +2009,17 @@ async function runScenarios(driver) {
   const bState = await driver.composerState(driver.sessionB);
   check(bState.text === "", `session B composer not fresh: ${JSON.stringify(bState)}`);
   await driver.openSession(driver.sessionA);
+  // The merged world produces the reloaded transcript's entries in the
+  // background, and that production can overlap the durable draft's
+  // hydration: the staged draft restores when hydration publishes, which can
+  // land after the editor is already visible. Wait for the restoration
+  // instead of sampling the instant openSession returns — the same fix the
+  // rail's atLeast wait made for its first-render race. The durable row
+  // itself is asserted by the draft-remounted milestone below.
+  await driver.waitPage(
+    `(() => { const state = ${driver.composerStateExpr(driver.sessionA)}; return state && state.text === ${JSON.stringify(inlineText(PROSE.draft))} && state.chips.some((c) => c.includes(${JSON.stringify(SKILL_NAME)})) ? true : null; })()`,
+    { label: "the switched-back composer restores its durable draft" },
+  );
   state = await driver.composerState(driver.sessionA);
   check(state.text === inlineText(PROSE.draft), `draft text did not survive the switch: ${JSON.stringify(state)}`);
   check(state.chips.some((c) => c.includes(SKILL_NAME)), `draft chips did not survive the switch: ${JSON.stringify(state)}`);
