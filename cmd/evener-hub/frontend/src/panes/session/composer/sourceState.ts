@@ -40,6 +40,7 @@ import {
   refreshPendingTurnsProjection,
   subscribeComposerSubmissionCommitted,
 } from "./queue/pendingTurnsStore";
+import { recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { parseSkillDocument, patchSelectionText, type SkillEditorValue, serializeSkillDocument } from "./skillDocument";
 
 type RevisionRef<T> = { current: T };
@@ -273,6 +274,20 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
   let recoveryEdits = 0;
   let refreshVersion = 0;
   let persistenceScheduled = false;
+  // The record value a preparation's attachment reconciliation last published,
+  // set only when the staged set actually diverged. The store change wakes the
+  // detached subscriber and the mounted persistence effect, and their echo
+  // would write this exact value back - advancing the shared revision for a
+  // value the record already holds. persistRecoveryEffect skips that echo;
+  // any differing persistence clears it.
+  let reconciledRecovery: {
+    id: string;
+    text: string;
+    skillNames: readonly string[];
+    commandNames?: readonly string[];
+    mentions?: readonly ComposerMention[];
+    items: PendingAttachment[];
+  } | null = null;
   const sourceId = createSecureUUID();
   let repository = deps?.repository;
   let draftKey = deps?.key;
@@ -668,7 +683,28 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       if (!record) return null;
       if (disposed || localGeneration !== generation || !sameBacking(runtimeBacking, backing)) return null;
       if (pendingRecoveryWrite?.id === recoveryId || operations.hasPending) return null;
-      publishValue(recoveryValue(record), { restores: true });
+      const value = recoveryValue(record);
+      publishValue(value, { restores: true });
+      // The record's images are part of the restored value. A staged set from
+      // an earlier restore goes stale once another tab adds or replaces the
+      // record's image, and the mounted persistence effect would write those
+      // old bytes back under the newly adopted token. Reconcile the staged
+      // set with the record - the same merge the mounted restore performs -
+      // only when it actually diverges, and remember the reconciled value so
+      // the persistence this store change triggers cannot advance the
+      // revision: the record already holds exactly that value.
+      const recovered = recoveryComposerDraft(record);
+      if (!samePendingAttachments(operations.items, recovered.attachments)) {
+        reconciledRecovery = {
+          id: recoveryId,
+          text: value.text,
+          skillNames: value.skillNames,
+          ...(value.commandNames ? { commandNames: value.commandNames } : {}),
+          ...(value.mentions ? { mentions: value.mentions } : {}),
+          items: recovered.attachments.map((attachment) => ({ ...attachment })),
+        };
+        operations.replaceWithSettled(recovered.attachments);
+      }
       draftToken = row.token;
       return {
         key: { namespace: { ...k.namespace }, sessionRef: k.sessionRef },
@@ -1193,6 +1229,23 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     mentions: readonly ComposerMention[] | undefined = selectionMetaRef.current.mentions,
   ): Promise<void> {
     if (pendingRetirement) return Promise.resolve();
+    // A preparation's attachment reconciliation republishes the record's own
+    // value; the store change wakes this persistence through the detached
+    // subscriber and the mounted effect, and writing that same value back
+    // would advance the shared revision for nothing. Skip the echo while the
+    // value still matches; any differing value falls through and persists.
+    const reconciled = reconciledRecovery;
+    if (
+      reconciled &&
+      reconciled.id === id &&
+      reconciled.text === text &&
+      sameSkillSelections(reconciled.skillNames, names) &&
+      sameSkillSelections(reconciled.commandNames ?? [], commands ?? []) &&
+      sameMentions(reconciled.mentions, mentions) &&
+      samePendingAttachments(operations.items, reconciled.items)
+    )
+      return Promise.resolve();
+    reconciledRecovery = null;
     const attempted = retirementPersistenceAttempt;
     const items = operations.items;
     if (
@@ -1235,6 +1288,8 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     onPersisted?: (guard: RecoveryWriteGuard) => void,
   ): Promise<void> {
     if (disposed) return Promise.resolve();
+    // An explicit persistence is real work: the preparation echo window ends.
+    reconciledRecovery = null;
     // Capture the accepted value and metadata NOW, before any queued yield: a
     // caller that mutates its arrays afterwards must not change what is written.
     const acceptedText = nextText;
@@ -1403,6 +1458,22 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       if (a.kind !== b.kind || a.name !== b.name || a.offset !== b.offset) return false;
     }
     return true;
+  }
+  function samePendingAttachments(left: readonly PendingAttachment[], right: readonly PendingAttachment[]): boolean {
+    if (left.length !== right.length) return false;
+    return left.every((item, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        item.marker === other.marker &&
+        item.name === other.name &&
+        item.mediaType === other.mediaType &&
+        item.data === other.data &&
+        item.width === other.width &&
+        item.height === other.height &&
+        item.pending === other.pending
+      );
+    });
   }
   function sameSubmittedFullValue(submitted: SubmittedDraft): boolean {
     return (

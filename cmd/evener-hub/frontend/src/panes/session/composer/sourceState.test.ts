@@ -2967,6 +2967,105 @@ test.each(["aborted", "refused"] as const)(
   },
 );
 
+// RoboRev round 38 high: the recovery preparation restored the record's text
+// and mentions and adopted the durable token, but left the local attachment
+// store untouched. Another tab replacing the recovery's image left the new
+// marker in the restored text paired with THIS tab's old staged bytes, and the
+// mounted persistence effect then wrote those stale bytes back under the
+// newly adopted token - silently reverting the other tab's image. The
+// preparation must reconcile the staged set with the record before the token
+// is adopted, so persistence and resend preserve the record's images.
+test("recovery preparation reconciles the record's replaced image before adopting its token", async () => {
+  const { fixture, source, original } = await arrangeSelectedRecovery("recovery-preparation-reconciles-attachments");
+  const observer = fixture.secondRepository();
+  const recoveryObserver = new MutationOutboxIndexedDB({
+    indexedDB: fixture.factory,
+    databaseName: fixture.databaseName,
+  });
+  sourceCleanups.push(() => recoveryObserver.close());
+  const originalImage = {
+    marker: 1,
+    name: "original.png",
+    mediaType: "image/png",
+    data: "AA==",
+    pending: false,
+  } satisfies PendingAttachment;
+  // The record takes the original image, and then ANOTHER tab replaces it.
+  const mentions = [{ kind: "command" as const, name: "same", offset: 16 }];
+  await trackOperation(
+    source.queueRecoveryPersistence(
+      original.clientMutationId,
+      "recovery edited /same",
+      [originalImage],
+      [],
+      ["same"],
+      mentions,
+    ),
+  );
+  const replacement = {
+    marker: 1,
+    name: "replaced.png",
+    mediaType: "image/png",
+    data: "AQID",
+    pending: false,
+  } satisfies PendingAttachment;
+  await trackOperation(
+    source.queueRecoveryPersistence(
+      original.clientMutationId,
+      "recovery edited /same",
+      [replacement],
+      [],
+      ["same"],
+      mentions,
+    ),
+  );
+  const probed = await recoveryObserver.getRecovery(original.clientMutationId);
+  expect(probed?.attachments[0]?.name).toBe("replaced.png");
+
+  // This tab's staged set still holds the restore's older image. It is staged
+  // BEFORE the recovery is selected: a detached source's store subscriber
+  // persists staged items into the recovery, which would rewrite the record
+  // this test needs to keep the other tab's replacement.
+  const other = fixture.track(
+    createComposerSourceState("root", { repository: observer, key: fixture.key, outbox: fixture.outbox }),
+  );
+  await other.ready();
+  other.attachments.setState({ items: [originalImage] });
+  other.setActiveRecoveryId(original.clientMutationId);
+
+  // This tab performs the annotation handoff: the preparation restores the
+  // record's value and adopts the latest durable token.
+  expect(await other.prepareAnnotation()).not.toBeNull();
+  expect(other.getRuntimeBacking()).toEqual({ kind: "recovery", recoveryId: original.clientMutationId });
+  expect(other.attachments.getState().items.map((attachment) => attachment.name)).toEqual(["replaced.png"]);
+
+  // The mounted persistence effect writes a later edit with the STORE's
+  // staged items through its own input conversion, exactly as Composer does.
+  const staged = other.attachments
+    .getState()
+    .items.filter((item): item is PendingAttachment & { data: string } => item.data !== undefined)
+    .map((item) => ({ marker: item.marker, mediaType: item.mediaType, data: item.data, name: item.name }));
+  await trackOperation(
+    other.queueRecoveryPersistence(
+      original.clientMutationId,
+      "recovery edited more /same",
+      staged,
+      [],
+      ["same"],
+      [{ kind: "command" as const, name: "same", offset: 21 }],
+    ),
+  );
+
+  // The record keeps the other tab's replaced image, not this tab's stale one.
+  const persisted = await recoveryObserver.getRecovery(original.clientMutationId);
+  const attachment = persisted?.attachments[0];
+  if (!attachment) throw new Error("persisted recovery attachment missing");
+  expect(attachment).toMatchObject({ marker: 1, name: "replaced.png", mediaType: "image/png" });
+  const payload = persisted?.payload as { input?: Array<{ type: string; data?: string }> };
+  const image = (payload.input ?? []).find((item) => item.type === "image");
+  expect(image?.data).toBe("AQID");
+});
+
 test.each(["sender mention edit", "sender replacement attachment", "other source replacement attachment"] as const)(
   "recovery preservation: accepted broadcast retains a later %s",
   async (change) => {
