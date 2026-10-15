@@ -1245,7 +1245,10 @@ export function bindDocumentMap(root: HTMLElement, map: DocumentRenderMap): Boun
           if (included && start < 0) start = i;
           if (!included && start >= 0) {
             if (!splitSurrogate(node.data, start) && !splitSurrogate(node.data, i)) {
-              const r = document.createRange();
+              // The range belongs to the content's own document: a popped-out
+              // document's nodes must not carry opener-realm ranges, whose
+              // geometry and realm checks misbehave in the second window.
+              const r = root.ownerDocument.createRange();
               r.setStart(node, start);
               r.setEnd(node, i);
               result.push(r);

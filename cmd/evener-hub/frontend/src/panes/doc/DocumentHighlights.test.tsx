@@ -1023,6 +1023,49 @@ test("reveals a saved band by hover and click coordinates when the pointer targe
   second.view.unmount();
 });
 
+// A popped-out document renders in its OWN window, whose MouseEvent and Node
+// are different constructors from this module's globals. The coordinate
+// reveal must still work there: an instanceof check against the global
+// constructors sees a foreign-realm event as nothing, and hovering the prose
+// beneath a band could never reveal the note.
+test("reveals a saved band by hover coordinates inside a popped-out document's own window", () => {
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  onUnmount(() => frame.remove());
+  const owner = frame.contentDocument;
+  const ownerWindow = frame.contentWindow;
+  if (!owner || !ownerWindow) throw new Error("missing iframe document");
+  expect(ownerWindow.MouseEvent).not.toBe(MouseEvent);
+  geometry.installWindow(ownerWindow);
+
+  const host = owner.createElement("div");
+  owner.body.append(host);
+  const mapRef: { current: BoundDocumentMap | null } = { current: null };
+  const view = render(<Reader source={SOURCE} annotations={single} mapRef={mapRef} />, { container: host });
+  onUnmount(() => view.unmount());
+  const scroll = host.querySelector('[data-testid="scroll"]');
+  // Realm-safe: the scroll owner belongs to the iframe's document, so the
+  // global HTMLElement cannot see it.
+  if (!(scroll instanceof ownerWindow.HTMLElement)) throw new Error("missing scroll owner");
+  geometry.setElementRect(scroll, SCROLL_RECT);
+  const map = mapRef.current;
+  if (!map) throw new Error("map not bound");
+  geometry.configure(map, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(scroll);
+  const prose = scroll.firstElementChild;
+  if (!(prose instanceof ownerWindow.HTMLElement)) throw new Error("missing prose root");
+  geometry.setElementRect(bandFor(scroll, "op-1"), { left: 10, top: 10, right: 50, bottom: 30 });
+
+  expect(noteTexts(scroll)).toEqual([]);
+  act(() => {
+    prose.dispatchEvent(
+      new ownerWindow.MouseEvent("mouseover", { bubbles: true, cancelable: true, clientX: 30, clientY: 20 }),
+    );
+  });
+  expect(noteTexts(scroll)).toEqual(["note"]);
+  view.unmount();
+});
+
 // ---------------------------------------------------------------------------
 // Discriminating diagnostics for the REJECTED candidate's new pointer and wheel
 // arbitration. These are SYNTHETIC jsdom cases and TESTS-AFTER, not the missing

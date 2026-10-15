@@ -67,6 +67,16 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
   });
 
   useEffect(() => {
+    // Realm-safe constructors: a popped-out document renders in another window,
+    // whose MouseEvent/Element/Node are DIFFERENT constructors from this
+    // module's globals. Every instanceof check on events and targets reaching
+    // this overlay must use the scroll owner's own realm, or hover and click
+    // coordinates from the second window resolve to nothing.
+    const ownerDocument = scrollElement.ownerDocument;
+    const view = ownerDocument.defaultView;
+    const ElementCtor = view?.Element ?? Element;
+    const MouseEventCtor = view?.MouseEvent ?? MouseEvent;
+    const NodeCtor = view?.Node ?? Node;
     const setActive = (operationId: string | null): void => {
       activeOperationIdRef.current = operationId;
       setActiveOperationId(operationId);
@@ -100,12 +110,12 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
       // copyable pending reference) belongs to that surface: it never
       // reveals, switches or dismisses, so the reference's selection and
       // copy path stay usable.
-      if (target instanceof Node && notesRef.current?.contains(target) === true) return;
+      if (target instanceof NodeCtor && notesRef.current?.contains(target) === true) return;
       let operationId =
-        target instanceof Element
+        target instanceof ElementCtor
           ? (target.closest("[data-document-highlight]")?.getAttribute("data-operation-id") ?? null)
           : null;
-      if (!operationId && event instanceof MouseEvent) {
+      if (!operationId && event instanceof MouseEventCtor) {
         const hover = (event.type === "mouseover" || event.type === "mousemove") && event.buttons === 0;
         if (hover || event.type === "click") operationId = bandAtPoint(event.clientX, event.clientY);
       }
@@ -120,10 +130,10 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
         // adjustments, and the trailing click of such a press carries the
         // same modifier - extending a text selection across a band must
         // neither reveal nor dismiss the note it crosses.
-        if (event instanceof MouseEvent && event.shiftKey) return;
+        if (event instanceof MouseEventCtor && event.shiftKey) return;
         const handledTap = gestureRef.current.handledTap;
         if (
-          event instanceof MouseEvent &&
+          event instanceof MouseEventCtor &&
           handledTap !== null &&
           Math.abs(event.clientX - handledTap.x) < 5 &&
           Math.abs(event.clientY - handledTap.y) < 5 &&
@@ -161,7 +171,7 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
       gesture.moved = false;
       // A press on the note's own interactive surface never arms a reveal or
       // a dismissal: its release and trailing click belong to that surface.
-      gesture.inNotes = event.target instanceof Node && notesRef.current?.contains(event.target) === true;
+      gesture.inNotes = event.target instanceof NodeCtor && notesRef.current?.contains(event.target) === true;
       gesture.operationId = gesture.inNotes ? null : bandAtPoint(event.clientX, event.clientY);
     };
     const onPointerMove = (event: PointerEvent): void => {
@@ -205,7 +215,7 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
     const onFocusOut = (event: FocusEvent): void => {
       const next = event.relatedTarget;
       if (
-        next instanceof Element &&
+        next instanceof ElementCtor &&
         (next.closest("[data-document-highlight]") !== null || notesRef.current?.contains(next) === true)
       ) {
         return;
@@ -223,7 +233,7 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
       // for itself) must keep a wheel it can consume natively: only forward a
       // wheel that targets the non-hit-testable stack region, never one that
       // targets an interactive descendant of the stack.
-      if (event.target instanceof Node && notes.contains(event.target)) return;
+      if (event.target instanceof NodeCtor && notes.contains(event.target)) return;
       const rect = notes.getBoundingClientRect();
       if (
         event.clientX < rect.left ||
@@ -237,8 +247,6 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
       if (notes.scrollTop !== before) event.preventDefault();
     };
 
-    const ownerDocument = scrollElement.ownerDocument;
-    const view = ownerDocument.defaultView;
     const fonts = (ownerDocument as unknown as { fonts?: FontFaceSet }).fonts;
     const visualViewport = view?.visualViewport ?? null;
     const onScroll = (): void => measure();
