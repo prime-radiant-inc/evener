@@ -1142,12 +1142,17 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   }
 
   // Complete retained pending expiry fences first, then visit persisted pending
-  // handoffs once in session save order. A pass that cannot complete a fence
-  // rejects rather than reporting recovery. Other sessions and namespaces never
-  // block one session's FIFO; terminal receipts and duplicate handling stay in
-  // the real handoff path, so an applied operation is never recaptured here.
+  // handoffs once in session save order. A document-specific fence failure
+  // (say, insufficient quota for a large replacement snapshot) must not hold
+  // every other document's pending annotations hostage: each failed fence is
+  // retained and the pass continues, and the first retained fault is re-thrown
+  // AFTER the pass so the runtime keeps exactly the retry-needed signal a
+  // throwing pass always carried. Other sessions and namespaces never block one
+  // session's FIFO; terminal receipts and duplicate handling stay in the real
+  // handoff path, so an applied operation is never recaptured here.
   async retryPending(reason: AnnotationRetryReason): Promise<void> {
     void reason;
+    const retainedFaults: unknown[] = [];
     for (const [identity, record] of [...this.#pendingExpiries]) {
       try {
         await this.#fence(record.ticketKey, record.namespaceIncarnation, record.expiredEpoch, record.content);
@@ -1156,13 +1161,14 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         if (error instanceof SupersededFenceError) {
           // Another fence already replaced this epoch: the retained work is done.
           this.#pendingExpiries.delete(identity);
-          continue;
+        } else {
+          retainedFaults.push(error);
         }
-        throw error;
       }
     }
-    await this.#sweepUnfinishedExpiries();
+    retainedFaults.push(...(await this.#sweepUnfinishedExpiries()));
     await this.#retryPersistedPending();
+    if (retainedFaults.length > 0) throw retainedFaults[0];
   }
 
   // Complete persisted unfinished expiry receipts: a fence's deletion can
@@ -1170,15 +1176,24 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // adopted the replacement epoch, or the deletion transaction itself
   // faulted), so every retry pass sweeps the receipt rows that are not yet
   // terminal. finishExpiry is idempotent and incarnation-guarded, so a
-  // receipt from before a namespace reset no-ops here.
-  async #sweepUnfinishedExpiries(): Promise<void> {
+  // receipt from before a namespace reset no-ops here. A faulting deletion is
+  // the same isolation case as a failed retained fence: the non-terminal
+  // receipt is swept again on the next trigger while the pass continues to the
+  // persisted handoffs.
+  async #sweepUnfinishedExpiries(): Promise<unknown[]> {
     const rows = await this.#transaction([ANNOTATION_EXPIRY_STORE], "readonly", async (transaction) =>
       requestResult<AnnotationExpiryRow[]>(transaction.objectStore(ANNOTATION_EXPIRY_STORE).getAll()),
     );
+    const faults: unknown[] = [];
     for (const row of rows) {
       if (row.receipt.phase === "deleted") continue;
-      await this.finishExpiry(row.receipt);
+      try {
+        await this.finishExpiry(row.receipt);
+      } catch (error) {
+        faults.push(error);
+      }
     }
+    return faults;
   }
 
   // Read the persisted pending operations once, then hand each off using its
