@@ -28,8 +28,9 @@ import (
 var ErrWorkingDirectoryUnavailable = errors.New("working directory unavailable")
 
 // requireLiveWorkingDirForRelative refuses a relative-path mutation when the
-// environment's working directory no longer exists, so a write cannot silently
-// recreate a deleted directory and land outside any checkout (issue #4671). It
+// environment's working directory is not an existing directory, so a write
+// cannot silently recreate a deleted directory and land outside any checkout
+// (issue #4671). It
 // is called only on the plain, unrestricted mutation arm — the one that
 // joins the working directory and `MkdirAll`s parents — because that is the
 // path that recreates a deleted directory. The sandbox and scratch arms resolve

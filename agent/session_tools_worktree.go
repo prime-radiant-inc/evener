@@ -778,17 +778,19 @@ func (s *Session) worktreeControlEnv(mainRepoRoot string) (execenv.ExecutionEnvi
 	return control, nil
 }
 
-// worktreeStateSnapshot implements worktreeGuard.state() (spec §7). It reads the
-// mutable occupancy fields under s.mu, then resolves the canonical Project and
-// worktree root OUTSIDE the lock (project resolution may fork git; s.mu must
-// never be held across a subprocess — spec §7).
+// worktreeStateSnapshot implements worktreeGuard.state() (spec §7): the session
+// occupancy snapshot with the strict anchor policy that refuses a dead anchor
+// rather than falling back. See worktreeStateSnapshotWith.
 func (s *Session) worktreeStateSnapshot() worktreeState {
 	return s.worktreeStateSnapshotWith(false)
 }
 
 // worktreeStateSnapshotWith is worktreeStateSnapshot with an explicit
-// dead-anchor policy. When the session's active working directory no longer
-// exists, a snapshot that does not allow a fallback carries the named
+// dead-anchor policy. It reads the mutable occupancy fields under s.mu, then
+// resolves the canonical Project and worktree root OUTSIDE the lock (project
+// resolution may fork git; s.mu must never be held across a subprocess — spec
+// §7). When the session's active working directory is not an existing
+// directory, a snapshot that does not allow a fallback carries the named
 // worktreeAnchorGoneError, so every caller fails honestly instead of leaking
 // the bare resolve-project lstat (issue #4671). allowAnchorFallback is set only
 // by `list`, which resolves the project from the live restore root so the lanes

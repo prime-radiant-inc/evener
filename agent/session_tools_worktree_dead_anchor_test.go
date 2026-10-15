@@ -53,32 +53,29 @@ func TestWorktreeDeadAnchor_ListEnumeratesLiveLanes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("worktreeList with a dead anchor = %v, want no error", err)
 	}
-	found := false
-	deadListed := false
-	deadLocked := false
-	for _, e := range entries {
-		if filepath.Clean(e.Path) == filepath.Clean(live) {
-			found = true
-		}
-		if filepath.Clean(e.Path) == filepath.Clean(dead) {
-			deadListed = true
-			deadLocked = e.Locked
-		}
-	}
-	if !found {
+	if _, ok := worktreeEntryByPath(entries, live); !ok {
 		t.Fatalf("list did not report the live lane %q; entries = %+v", live, entries)
 	}
 	// The lane whose directory was removed with a bare delete stays in git's
-	// registry, so list reports it rather than dropping it silently.
-	if !deadListed {
+	// registry, so list reports it rather than dropping it silently, still
+	// carrying this session's lock (git does not mark a locked worktree prunable).
+	deadEntry, ok := worktreeEntryByPath(entries, dead)
+	if !ok {
 		t.Fatalf("list dropped the deleted lane %q entirely; entries = %+v", dead, entries)
 	}
-	// git keeps a locked worktree registered even when its directory is gone, so
-	// the deleted lane still appears, still carrying this session's lock (it is
-	// not marked prunable while locked).
-	if !deadLocked {
+	if !deadEntry.Locked {
 		t.Fatalf("deleted lane %q reported unlocked; entries = %+v", dead, entries)
 	}
+}
+
+// worktreeEntryByPath finds the listed entry for path (cleaned comparison).
+func worktreeEntryByPath(entries []WorktreeListEntry, path string) (WorktreeListEntry, bool) {
+	for _, e := range entries {
+		if filepath.Clean(e.Path) == filepath.Clean(path) {
+			return e, true
+		}
+	}
+	return WorktreeListEntry{}, false
 }
 
 // The other mutating operations refuse with the same named error rather than
@@ -183,13 +180,7 @@ func TestWorktreeDeadAnchor_LiveAnchorListStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("worktreeList with a live anchor = %v, want no error", err)
 	}
-	found := false
-	for _, e := range entries {
-		if filepath.Clean(e.Path) == filepath.Clean(path) {
-			found = true
-		}
-	}
-	if !found {
+	if _, ok := worktreeEntryByPath(entries, path); !ok {
 		t.Fatalf("list did not report the created lane %q; entries = %+v", path, entries)
 	}
 }
