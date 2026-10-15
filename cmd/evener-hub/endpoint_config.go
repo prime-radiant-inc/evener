@@ -35,6 +35,16 @@ func (e *EndpointMigrationError) Error() string {
 	return fmt.Sprintf("%s is retired; use %s instead (HTTP(S) origin for a client URL)", e.Retired, e.Replacement)
 }
 
+// EndpointValidationError identifies the setting layer that supplied an invalid
+// endpoint while leaving the parser's typed validation error accessible.
+type EndpointValidationError struct {
+	Source string
+	Err    error
+}
+
+func (e *EndpointValidationError) Error() string { return e.Source + " " + e.Err.Error() }
+func (e *EndpointValidationError) Unwrap() error { return e.Err }
+
 // resolveEndpointConfig chooses by presence before parsing the winning value.
 func resolveEndpointConfig(flagValue, envValue, configValue EndpointInput, publicURL string) (EndpointConfig, error) {
 	selected, source := EndpointInput{Value: DefaultConfig().Addr, Present: true}, "default"
@@ -49,13 +59,13 @@ func resolveEndpointConfig(flagValue, envValue, configValue EndpointInput, publi
 	}
 	listen, err := hubendpoint.ParseListenAddr(selected.Value)
 	if err != nil {
-		return EndpointConfig{}, fmt.Errorf("%s listener: %w", source, err)
+		return EndpointConfig{}, &EndpointValidationError{Source: source, Err: fmt.Errorf("listener: %w", err)}
 	}
 	result := EndpointConfig{ListenAddr: listen, ListenSource: source}
 	if publicURL != "" {
 		origin, err := hubendpoint.ParseOrigin(publicURL)
 		if err != nil {
-			return EndpointConfig{}, fmt.Errorf("public_url: %w", err)
+			return EndpointConfig{}, &EndpointValidationError{Source: "config", Err: fmt.Errorf("public_url: %w", err)}
 		}
 		result.PublicURL = &origin
 	}

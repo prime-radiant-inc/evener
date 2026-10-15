@@ -451,6 +451,9 @@ func loadConfig(path string, explicit bool) (Config, error) {
 func decodeConfig(name, data string) (Config, error) {
 	cfg := DefaultConfig()
 	metadata, decodeErr := toml.Decode(data, &cfg)
+	if decodeErr != nil {
+		return cfg, fmt.Errorf("parse config %s: %w", name, decodeErr)
+	}
 	if metadata.IsDefined("mobile_base_url") {
 		return cfg, &EndpointMigrationError{Retired: "mobile_base_url", Replacement: "public_url"}
 	}
@@ -458,9 +461,6 @@ func decodeConfig(name, data string) (Config, error) {
 		if metadata.IsDefined(key) {
 			return cfg, fmt.Errorf("config section %q is no longer supported because Codex agent integration has been removed; remove it from hub.toml", key)
 		}
-	}
-	if decodeErr != nil {
-		return cfg, fmt.Errorf("parse config %s: %w", name, decodeErr)
 	}
 	cfg.addrPresent = metadata.IsDefined("addr")
 	// The retired crash-fencing bootstrap keys decode into HostRecord's retired
@@ -588,7 +588,7 @@ func decodeConfig(name, data string) (Config, error) {
 		}
 	}
 	if err := validatePublicURL(cfg.PublicURL); err != nil {
-		return cfg, fmt.Errorf("validate public_url: %w", err)
+		return cfg, &EndpointValidationError{Source: "config", Err: fmt.Errorf("validate public_url: %w", err)}
 	}
 	return cfg, nil
 }

@@ -59,6 +59,43 @@ func TestEndpointConfigExplicitEmpty(t *testing.T) {
 	}
 }
 
+func TestEndpointConfigValidationErrorSources(t *testing.T) {
+	bad := "https://user:sentinel-secret@localhost"
+	for _, tc := range []struct {
+		name              string
+		flag, env, config EndpointInput
+		publicURL         string
+		source, field     string
+	}{
+		{"flag", EndpointInput{bad, true}, EndpointInput{"localhost:9230", true}, EndpointInput{"localhost:9240", true}, "", "flag", "listen_addr"},
+		{"env", EndpointInput{}, EndpointInput{bad, true}, EndpointInput{"localhost:9240", true}, "", "env", "listen_addr"},
+		{"config", EndpointInput{}, EndpointInput{}, EndpointInput{bad, true}, "", "config", "listen_addr"},
+		{"public URL", EndpointInput{"localhost:9230", true}, EndpointInput{}, EndpointInput{}, bad, "config", "userinfo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := resolveEndpointConfig(tc.flag, tc.env, tc.config, tc.publicURL)
+			assertEndpointErrorSource(t, err, tc.source, tc.field)
+		})
+	}
+}
+
+func TestEndpointConfigLoadedPublicURLValidationSource(t *testing.T) {
+	_, err := decodeConfig("hub.toml", "public_url = \"https://user:sentinel-secret@localhost\"\n")
+	assertEndpointErrorSource(t, err, "config", "userinfo")
+}
+
+func assertEndpointErrorSource(t *testing.T, err error, wantSource, wantField string) {
+	t.Helper()
+	var sourced *EndpointValidationError
+	var invalid *hubendpoint.ValidationError
+	if !errors.As(err, &sourced) || sourced.Source != wantSource || !errors.As(err, &invalid) || invalid.Field != wantField {
+		t.Fatalf("error = %T %v, want typed source %q and validation field %q", err, err, wantSource, wantField)
+	}
+	if strings.Contains(err.Error(), "sentinel-secret") {
+		t.Fatal("validation error leaked supplied credential")
+	}
+}
+
 func TestEndpointConfigLoadedInputsAndMetadata(t *testing.T) {
 	t.Setenv("EVENER_HUB_ADDR", "")
 	if err := os.Unsetenv("EVENER_HUB_ADDR"); err != nil {
@@ -176,6 +213,14 @@ func TestEndpointConfigRetiredSettings(t *testing.T) {
 				t.Fatal("migration error leaked supplied credential")
 			}
 		})
+	}
+}
+
+func TestEndpointConfigRetiredKeyDoesNotHideTypeError(t *testing.T) {
+	_, err := decodeConfig("hub.toml", "mobile_base_url = \"https://example.test\"\naddr = 42\n")
+	var migration *EndpointMigrationError
+	if err == nil || errors.As(err, &migration) || errors.Unwrap(err) == nil {
+		t.Fatalf("decode error = %T %v, want wrapped TOML type failure, not migration", err, err)
 	}
 }
 
