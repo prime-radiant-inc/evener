@@ -37,9 +37,22 @@ import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from
 // answer.
 export type MutationDispatchClientLookup = (targetRef: string, method?: string) => AppwireClientLike | null | undefined;
 
+// Why a storage change notification fired. The transient refusal's rollback
+// reverted only attempt evidence - fields no queue projection carries - so
+// the projected queue is unchanged (`projectedShapeUnchanged`); a fence-held
+// rollback canceled the row, which every projection renders, and a row
+// settled out from under the attempt is gone from view (both changed). A
+// host whose projection refresh would read an identical queue can skip it;
+// native's consumer re-reads regardless, keeping the round-6 contract that
+// the transient branch publishes like every other outcome.
+export interface MutationStorageChangeCause {
+  kind: "transientRefusal";
+  projectedShapeUnchanged: boolean;
+}
+
 export interface MutationDispatcherOptions<A extends MutationAttachmentRef = MutationAttachmentRef> {
   getClient: MutationDispatchClientLookup;
-  onStorageChange?: (targetRefs: string[]) => void;
+  onStorageChange?: (targetRefs: string[], cause?: MutationStorageChangeCause) => void;
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
   // #4342: fired when the hub refused an attempt in band as transient
   // backpressure (notAccepted plus an automatic retry disposition) — the
@@ -238,14 +251,24 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
         // instead. This loop stops rather than spinning on the refusal.
         // mutationErrorData answers only WireErrors, so the data this branch
         // matched on proves the error's shape.
-        if (await this.#storage.unmarkAttempted(record.clientMutationId)) {
+        const rolledBackClean = await this.#storage.unmarkAttempted(record.clientMutationId);
+        if (rolledBackClean) {
           this.#onTransientRefusal(record, error as WireError);
         }
-        // The rollback can move the row - back to submitting, or to canceled
-        // when a Stop interrupted the attempt - and hosts whose projections
-        // refresh through storage notifications have no other observer for
-        // those transitions.
-        this.#onStorageChange([record.targetRef]);
+        // The false outcomes split: a fence-held rollback canceled the row
+        // (every projection renders the state change) while residual
+        // evidence or a concurrent settlement left no projected change at
+        // all. One read classifies - the refusal is a saturation-time
+        // event, so the read costs nothing on the healthy path. The
+        // rollback can still move the row where projections see it, and
+        // hosts whose projections refresh through storage notifications
+        // have no other observer for those transitions.
+        let projectedShapeUnchanged = rolledBackClean;
+        if (!rolledBackClean) {
+          const row = await this.#storage.getOutbox(record.clientMutationId);
+          projectedShapeUnchanged = row !== undefined && row.state !== "canceled";
+        }
+        this.#onStorageChange([record.targetRef], { kind: "transientRefusal", projectedShapeUnchanged });
         return "stop";
       }
       if (data?.mutationOutcome === "notAccepted") {

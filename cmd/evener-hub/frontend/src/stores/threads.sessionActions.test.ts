@@ -10105,6 +10105,73 @@ test("a refusal's storage notification does not itself redispatch the refused ro
   restoreScheduler();
 });
 
+// #4342 (round-11 review): a refusal that rolls back to residual evidence -
+// the two-tab case the count exists for: another tab's concurrent attempt
+// marked the row while this attempt was in flight - keeps the row submitting
+// under its uncertain treatment: no busy marker, no paced timer, the
+// ordinary discovery cadence as its only re-drive. That refusal's
+// notification must not redispatch the row either: the rollback changed
+// only attempt evidence, which no queue projection carries, so a projection
+// refresh would read an identical queue and hand readiness straight back
+// to the dispatcher - the same tight loop the clean refusal ran before
+// round 10.
+test("a refusal rolling back to residual evidence does not redispatch the row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  let firstRefused = false;
+  const inFlight = deferred<TurnStartResponse>();
+  fake.on("turn/start", (params) => {
+    if (!firstRefused) return inFlight.promise;
+    throw new WireError(HUB_REFUSAL_MESSAGE, -32014, {
+      evenerErrorInfo: "connectionBackpressure",
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "automatic",
+      cause: "queueSaturated",
+    });
+  });
+  const restoreScheduler = installBackpressureRetrySchedulerForTests(() => () => {});
+
+  await threadsStore.getState().ensureThread("ref_a");
+  await threadsStore.getState().send("ref_a", "refused with a concurrent attempt aboard");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  const [row] = await storage.listOutbox("ref_a");
+  if (!row) throw new Error("expected the in-flight attempt's row to stay durable");
+
+  // The other tab's concurrent attempt, committed while this attempt holds
+  // the wire: the refusal rolls back only its own, leaving the row with
+  // residual evidence, no busy marker, and no timer - the uncertain
+  // treatment.
+  await expect(storage.markAttempted(row.clientMutationId)).resolves.toBe(true);
+  firstRefused = true;
+  inFlight.reject(
+    new WireError(HUB_REFUSAL_MESSAGE, -32014, {
+      evenerErrorInfo: "connectionBackpressure",
+      clientMutationId: row.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "automatic",
+      cause: "queueSaturated",
+    }),
+  );
+  await flushIndexedDBUntil(async () => (await storage.listOutbox("ref_a"))[0]?.unresolvedAttempts === 1);
+  const [residual] = await storage.listOutbox("ref_a");
+  if (!residual) throw new Error("expected the refused row to stay durable");
+  expect(residual.state).toBe("submitting");
+  expect(residual.unresolvedAttempts).toBe(1);
+  expect(threadsStore.getState().transientRefusalPaces.get("ref_a")).toBeUndefined();
+
+  // The same bounded drain as the clean-refusal test: nothing may redispatch
+  // the row before the ordinary discovery cadence gets its turn.
+  for (let round = 0; round < 3; round++) {
+    await Promise.race([settleProjectionWorkForTests(), new Promise((resolve) => setTimeout(resolve, 100))]);
+  }
+
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  restoreScheduler();
+});
+
 // #4342: the dispatcher's attempted-marker rollback is what keeps a
 // refused row out of the browser's own reconnect reconcile park — the
 // non-authoritative first read marks submitting+attempted rows

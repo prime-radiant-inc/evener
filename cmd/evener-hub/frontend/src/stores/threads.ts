@@ -2436,18 +2436,6 @@ export function notifyReadyForMutationDispatch(refs: Iterable<string>): void {
   scheduleMutationDispatch(runtime, refs);
 }
 
-// True while the ref's last in-band refusal keeps its paced retry armed:
-// that timer owns the re-drive of the ref's refused row. A projection
-// refresh's newly-loaded hand-off must not wake the dispatcher for such a
-// ref - the refusal's own storage notification triggers exactly that
-// refresh, so the wake would redeliver the refused row immediately and
-// repeat per refusal in a tight loop (#4342 round-9 review: observed 222
-// requests in ~350ms under the withheld-scheduler drain). Discovery and
-// the timer itself still re-drive the row at their own cadence.
-export function transientRefusalPaceArmed(targetRef: string): boolean {
-  return threadsStore.getState().transientRefusalPaces.has(targetRef);
-}
-
 function handleDiscoveredMutations(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
   if (!isCurrentMutationRuntime(runtime)) return;
   const state = threadsStore.getState();
@@ -2559,13 +2547,25 @@ function getMutationRuntime(): MutationRuntime | null {
     isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef, method) : null;
   const dispatcher = new MutationDispatcher(storage, {
     getClient,
-    onStorageChange: (targetRefs) => {
+    onStorageChange: (targetRefs, cause) => {
       // The dispatcher's own state changes - a settle, a recovery transfer, a
       // blocked reclassification - invalidate in-flight reads for every ref it
       // names, on the rule noteMutationStateChange states.
       for (const targetRef of targetRefs) noteMutationStateChange(targetRef);
       if (isCurrentMutationRuntime(runtime)) {
-        notifyMutationPersistence(targetRefs);
+        // #4342 (round-11 review): the transient refusal's rollback
+        // reverted only attempt evidence - fields no queue projection
+        // carries - so the browser's projection refresh would read an
+        // identical queue, and its newly-loaded hand-off would immediately
+        // redispatch the refused row (observed 222 requests in ~350ms for
+        // a clean rollback, 169 in ~370ms with residual evidence). Skip the
+        // refresh for the unchanged shape; the fence-held cancellation
+        // still refreshes, every non-refusal notification refreshes as
+        // before, and native's own consumer ignores the cause and re-reads
+        // regardless.
+        if (cause?.kind !== "transientRefusal" || !cause.projectedShapeUnchanged) {
+          notifyMutationPersistence(targetRefs);
+        }
         void pruneSettledTransientRefusals(runtime, targetRefs);
       }
     },

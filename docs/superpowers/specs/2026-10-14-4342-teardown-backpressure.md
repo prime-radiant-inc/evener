@@ -562,12 +562,23 @@ fixtures, and an injectable transport/observer where needed.
   refusal's storage change refreshes the ref's projection, the refresh
   re-marks the ref newly loaded, and the newly-loaded hand-off called
   the dispatch scheduler directly - an immediate redelivery per refusal
-  (222 requests in ~350ms in the red test), a far tighter hammer than
-  the discovery cadence the two-clause construction rules. The hand-off
-  now skips refs whose paced retry is armed - the timer owns their
-  refused row's re-drive - so the notification still refreshes
-  projections and the busy surfaces, but never wakes the dispatcher
-  itself; discovery and the timer remain the only redrivers.
+  (222 requests in ~350ms clean, 169 in ~370ms with residual evidence,
+  both in the red tests), a far tighter hammer than the discovery
+  cadence the two-clause construction rules. The first cut keyed the
+  suppression on the busy marker, and the next review caught both of its
+  blind spots: residual-evidence refusals arm no marker at all, and the
+  marker outlives the timer whose fire it should track, stranding a
+  parked resume-only send whose projection read completed while the
+  marker stood. The final mechanism lives at the notification itself:
+  the transient branch passes a cause naming whether the rollback
+  changed anything a projection renders (a fence-held cancellation or a
+  concurrent settlement did; a clean or residual rollback changed only
+  attempt evidence, which no queue projection carries), and the
+  browser's consumer skips its projection refresh for the unchanged
+  shape - the marker-keyed filter is reverted whole. Native's consumer
+  ignores the cause and re-reads on every notification, keeping the
+  round-6 contract; the marker, its timer, and the paced ladder are
+  untouched, and discovery and the timer remain the only redrivers.
 - The busy surface's visible copy is pinned structurally, not verbatim
   (round-4 review, low): the queue row's reason span carries a
   data-busy-reason hook asserted non-empty, the ghost's caption stage and
