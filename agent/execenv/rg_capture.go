@@ -98,6 +98,18 @@ type rgCaptureView struct {
 	tail     []string
 	retained int
 	omitted  int
+	capped   bool
+}
+
+// wholeStream is the head and the tail as one stream when the capture holds every
+// byte of it and no slot was cut, else "". Nothing was left out, so a caller
+// parses it as a complete result: the tail's records are the stream's own final
+// ones, and there is no omission to disclose.
+func (v rgCaptureView) wholeStream() string {
+	if v.omitted != 0 || v.capped {
+		return ""
+	}
+	return v.head + strings.Join(v.tail, "")
 }
 
 // view cuts the capture into the bytes a search can present, using the record
@@ -107,17 +119,29 @@ type rgCaptureView struct {
 func (c *rgCapture) view(dir string, filesOnly bool) rgCaptureView {
 	prefix := []byte(strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator))
 	head := c.head
+	// atBoundary is the head's own framing proving the cap fell exactly at a
+	// record end. The window then opens on a whole record, and dropping its first
+	// record as a fragment would lose one the capture holds entire.
+	atBoundary := true
 	if c.over {
-		head = head[:lastRecordEnd(head, prefix, filesOnly)]
+		end := lastRecordEnd(head, prefix, filesOnly)
+		atBoundary = end == len(head)
+		head = head[:end]
 	}
-	tail, tailBytes := tailRecords(c.window, prefix, filesOnly)
+	tail, tailBytes, capped := tailRecords(c.window, prefix, filesOnly, atBoundary)
 	// A capped slot carries synthetic omission text, which is not stream bytes:
 	// counting the slots instead of their records understates the omission, and
 	// once the slots' text outweighs what was really dropped the count goes
 	// NEGATIVE — which the caller reads as "nothing was left out" and suppresses
 	// the disclosure entirely.
 	retained := len(head) + tailBytes
-	return rgCaptureView{head: string(head), tail: tail, retained: retained, omitted: c.total - retained}
+	return rgCaptureView{
+		head:     string(head),
+		tail:     tail,
+		retained: retained,
+		omitted:  c.total - retained,
+		capped:   capped,
+	}
 }
 
 // rgRecordEnds is the end offset of every complete record in b, in the framing
@@ -167,15 +191,18 @@ func lastRecordEnd(b, prefix []byte, filesOnly bool) int {
 }
 
 // tailRecords is the last rgTailRecords complete records in b, in stream order,
-// each bounded by capTailSlot, with the SOURCE bytes those records occupy. b
-// opens wherever the cap tripped, inside a record, so it is resynchronized first:
-// the bytes before its first genuine record boundary are a fragment of a record
-// that started earlier and are left out.
-func tailRecords(b, prefix []byte, filesOnly bool) ([]string, int) {
-	b = b[resync(b, filesOnly):]
+// each bounded by capTailSlot, with the SOURCE bytes those records occupy and
+// whether any record was cut to its slot. b opens wherever the cap tripped, so
+// unless the head proved the cap fell on a record boundary (atBoundary) it is
+// resynchronized first: the bytes before its first genuine record boundary are a
+// fragment of a record that started earlier and are left out.
+func tailRecords(b, prefix []byte, filesOnly, atBoundary bool) (slots []string, source int, capped bool) {
+	if !atBoundary {
+		b = b[resync(b, filesOnly):]
+	}
 	ends := rgRecordEnds(b, prefix, filesOnly)
 	if len(ends) == 0 {
-		return nil, 0
+		return nil, 0, false
 	}
 	var recs [][]byte
 	for i, end := range ends {
@@ -188,13 +215,14 @@ func tailRecords(b, prefix []byte, filesOnly bool) ([]string, int) {
 	if len(recs) > rgTailRecords {
 		recs = recs[len(recs)-rgTailRecords:]
 	}
-	out := make([]string, 0, len(recs))
-	source := 0
+	slots = make([]string, 0, len(recs))
 	for _, rec := range recs {
 		source += len(rec)
-		out = append(out, capTailSlot(rec))
+		slot := capTailSlot(rec)
+		capped = capped || len(slot) != len(rec)
+		slots = append(slots, slot)
 	}
-	return out, source
+	return slots, source, capped
 }
 
 // resync drops the bytes of a window that opens inside a record, returning the

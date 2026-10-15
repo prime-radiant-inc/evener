@@ -2346,7 +2346,16 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 		// mode", tool.DefGrep) and what grepAccum.feedContent counts, so with
 		// context_lines a cut can fall inside a match's context.
 		view := capture.view(dir, filesOnly)
-		lines := ripgrepOutputLines(view.head, dir, oneFile, filesOnly)
+		// A capture that left nothing out holds the stream in two pieces: the
+		// head, and the tail's records, which are the stream's own final ones
+		// whenever the cap fell on a record boundary (wholeStream). Parsing them
+		// together keeps a record the cap landed on whole instead of losing it to
+		// the tail note it does not need — nothing was omitted.
+		source := view.head
+		if whole := view.wholeStream(); whole != "" {
+			source = whole
+		}
+		lines := ripgrepOutputLines(source, dir, oneFile, filesOnly)
 		var notes []string
 		if view.omitted > 0 {
 			// The capture left bytes out; the note discloses that exactly as the

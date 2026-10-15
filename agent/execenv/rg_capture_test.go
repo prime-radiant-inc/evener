@@ -431,6 +431,74 @@ func TestRgCaptureTailDropsANewlineBearingPathFragment(t *testing.T) {
 	}
 }
 
+// TestRgCaptureKeepsTheRecordAfterACaptureEndingOnABoundary is round 11's
+// finding: the resync dropped the window's first record unconditionally, so a cap
+// that fell exactly at a record end — where the head's own framing proves the
+// next record is whole — still lost it.
+func TestRgCaptureKeepsTheRecordAfterACaptureEndingOnABoundary(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	c := newRgCapture(len("1:a\n")) // the cap ends exactly at the first record's end
+	if _, err := c.Write([]byte("1:a\n2:b\n")); err != nil {
+		t.Fatal(err)
+	}
+	view := c.view(dir, false)
+	if len(view.tail) != 1 || view.tail[0] != "2:b\n" {
+		t.Fatalf("a cap that ended at a record boundary lost the record after it: %q", view.tail)
+	}
+	if view.omitted != 0 {
+		t.Fatalf("nothing was left out, but the view reports %d omitted bytes", view.omitted)
+	}
+	if whole := view.wholeStream(); whole != "1:a\n2:b\n" {
+		t.Fatalf("the head and the tail are not the stream: %q", whole)
+	}
+}
+
+// TestRgCaptureKeepsEveryRecordAfterACaptureEndingOnANulBoundary is the same
+// property in the files_with_matches framing, whose records end at their NUL.
+func TestRgCaptureKeepsEveryRecordAfterACaptureEndingOnANulBoundary(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	stream := []byte(dir + "/a.txt\x00" + dir + "/b.txt\x00" + dir + "/c.txt\x00")
+	c := newRgCapture(len(dir) + len("/a.txt\x00"))
+	if _, err := c.Write(stream); err != nil {
+		t.Fatal(err)
+	}
+	view := c.view(dir, true)
+	want := []string{dir + "/b.txt\x00", dir + "/c.txt\x00"}
+	if !slices.Equal(view.tail, want) {
+		t.Fatalf("a cap that ended at a NUL boundary lost the records after it:\n got  = %q\n want = %q", view.tail, want)
+	}
+	if view.omitted != 0 {
+		t.Fatalf("nothing was left out, but the view reports %d omitted bytes", view.omitted)
+	}
+}
+
+// TestGrepRgShowsTheRecordAfterACaptureEndingOnABoundary is that finding as the
+// model sees it: the record after the cap is retained whole, so the result must
+// carry it and must not disclose a truncation that did not happen.
+func TestGrepRgShowsTheRecordAfterACaptureEndingOnABoundary(t *testing.T) {
+	// Not parallel: shrinks the package-wide byte budget.
+	stubGrepRetainedBytes(t, len("1:a\n"))
+	root := t.TempDir()
+	file := filepath.Join(root, "big.txt")
+	if err := os.WriteFile(file, []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := rgFakeRgEnv(t, root, rgStreamFixture(t, t.TempDir(), "rg", []byte("1:a\n2:b\n")))
+
+	got, err := env.Grep(context.Background(), "a", file, "", false, 100, "content")
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	if !strings.Contains(got, "2:b") {
+		t.Fatalf("the record after a cap that ended on a boundary was lost: %q", got)
+	}
+	if strings.Contains(got, "retained-output cap") {
+		t.Fatalf("a capture that left nothing out disclosed truncation: %q", got)
+	}
+}
+
 // FuzzRgCapture drives the capture with arbitrary bytes: whatever the stream and
 // the cap, the object stays inside its bound, its view accounts for every byte
 // it did not keep, and chunking the writes cannot change the view.
