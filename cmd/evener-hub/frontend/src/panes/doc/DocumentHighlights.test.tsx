@@ -1056,6 +1056,7 @@ function pinScrollable(element: HTMLElement, initial = 0): void {
 
 interface PinnedReader {
   view: ReturnType<typeof render>;
+  mapRef: { current: BoundDocumentMap | null };
   scroll: HTMLDivElement;
   prose: HTMLElement;
   band: HTMLElement;
@@ -1064,14 +1065,14 @@ interface PinnedReader {
 // A fresh reader whose band rectangle is pinned and whose pointer target is the
 // prose beneath it.
 function pinnedProseReader(): PinnedReader {
-  const { view, map, scroll } = renderReader(single);
+  const { view, mapRef, map, scroll } = renderReader(single);
   geometry.configure(map, FIRST, [[FIRST_RECT]]);
   fireEvent.scroll(scroll);
   const prose = scroll.firstElementChild;
   if (!(prose instanceof HTMLElement)) throw new Error("missing prose root");
   const band = bandFor(scroll, "op-1");
   geometry.setElementRect(band, { left: 10, top: 10, right: 50, bottom: 30 });
-  return { view, scroll, prose, band };
+  return { view, mapRef, scroll, prose, band };
 }
 
 test("isolates matching pointer-up reveal from cancel, unrelated pointer, Shift and drag (synthetic, tests-after)", () => {
@@ -1204,6 +1205,36 @@ test("a selection drag's trailing click neither reveals nor dismisses a note", (
     expect(noteTexts(scroll)).toEqual(["note"]);
     view.unmount();
   }
+});
+
+// RoboRev round 36 low: the overlay's gesture state lived inside the effect
+// that rebinds on every map or annotations change, so a revalidation landing
+// mid-drag - a peer annotation arriving while the user selects - rebound the
+// pointer handlers over empty gesture state. The fresh handlers ignored the
+// armed drag's release, recorded no consumed click, and the browser's trailing
+// click at the release point toggled the note it happened to land on. The
+// gesture must survive the rebind: the drag keeps its armed pointer, its
+// movement marks it a selection, and its trailing click is consumed.
+test("a mid-drag revalidation keeps the armed drag so its trailing click reveals nothing", () => {
+  const { view, mapRef, scroll, prose } = pinnedProseReader();
+  expect(noteTexts(scroll)).toEqual([]);
+  act(() => {
+    pointerEvent("pointerdown", prose, { pointerId: 99, clientX: 30, clientY: 20 });
+  });
+  // A revalidation lands mid-drag: the annotations prop changes identity and
+  // the overlay effect rebinds its handlers while the pointer is still down.
+  act(() => {
+    view.rerender(<Reader source={SOURCE} annotations={[annotationView("op-1", FIRST, "note")]} mapRef={mapRef} />);
+  });
+  // The drag moves past the tap threshold and releases over the band; the
+  // browser fires its compatibility click at the release point.
+  act(() => {
+    pointerEvent("pointermove", prose, { pointerId: 99, clientX: 38, clientY: 20, buttons: 1 });
+    pointerEvent("pointerup", prose, { pointerId: 99, clientX: 38, clientY: 20, buttons: 0 });
+    fireEvent.click(prose, { clientX: 38, clientY: 20 });
+  });
+  expect(noteTexts(scroll)).toEqual([]);
+  view.unmount();
 });
 
 // A reader displaying a revealed pending reference whose stack is pinned and
