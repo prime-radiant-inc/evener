@@ -167,6 +167,13 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
           setActive(tapOperationId === activeOperationIdRef.current ? null : tapOperationId);
         }
         handledTap = { x: event.clientX, y: event.clientY, at: Date.now() };
+      } else if (tapMoved && !event.shiftKey) {
+        // A drag is a selection gesture: it reveals nothing here, and the
+        // compatibility click the browser fires at the release point must not
+        // reach activate and toggle the note it happened to land on. Consume
+        // it exactly like a tap's trailing click; keyboard-activated clicks
+        // have no preceding pointer press and keep the full toggle path.
+        handledTap = { x: event.clientX, y: event.clientY, at: Date.now() };
       }
       tapPointerId = null;
       tapStart = null;

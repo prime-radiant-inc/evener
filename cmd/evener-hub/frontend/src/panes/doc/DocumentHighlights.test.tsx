@@ -1168,6 +1168,44 @@ test("a Shift-click extends the selection without revealing or dismissing a note
   }
 });
 
+// RoboRev round 34 low: a selection drag reveals nothing, but the browser
+// fires a compatibility click at the drag's release point after pointerup.
+// That trailing click reached activate and toggled the note it landed on,
+// bypassing the movement guard - the synthetic drag tests omitted it. A drag
+// consumes its own trailing click the way a tap does; keyboard-activated
+// clicks keep the full toggle path.
+test("a selection drag's trailing click neither reveals nor dismisses a note", () => {
+  // A drag across an unrevealed band reveals nothing, even though its
+  // release lands on the band and the browser clicks there.
+  {
+    const { view, scroll, prose } = pinnedProseReader();
+    expect(noteTexts(scroll)).toEqual([]);
+    act(() => {
+      pointerEvent("pointerdown", prose, { pointerId: 97, clientX: 30, clientY: 20 });
+      pointerEvent("pointermove", prose, { pointerId: 97, clientX: 38, clientY: 20, buttons: 1 });
+      pointerEvent("pointerup", prose, { pointerId: 97, clientX: 38, clientY: 20, buttons: 0 });
+      fireEvent.click(prose, { clientX: 38, clientY: 20 });
+    });
+    expect(noteTexts(scroll)).toEqual([]);
+    view.unmount();
+  }
+  // A drag across a revealed note's band leaves the note visible: the drag
+  // is a selection gesture, and its trailing click cannot dismiss either.
+  {
+    const { view, scroll, prose, band } = pinnedProseReader();
+    fireEvent.click(band);
+    expect(noteTexts(scroll)).toEqual(["note"]);
+    act(() => {
+      pointerEvent("pointerdown", prose, { pointerId: 98, clientX: 30, clientY: 20 });
+      pointerEvent("pointermove", prose, { pointerId: 98, clientX: 38, clientY: 20, buttons: 1 });
+      pointerEvent("pointerup", prose, { pointerId: 98, clientX: 38, clientY: 20, buttons: 0 });
+      fireEvent.click(prose, { clientX: 38, clientY: 20 });
+    });
+    expect(noteTexts(scroll)).toEqual(["note"]);
+    view.unmount();
+  }
+});
+
 // A reader displaying a revealed pending reference whose stack is pinned and
 // scrollable, so the wheel arbitration can be observed without a live browser.
 function pendingReferenceReader(): {
