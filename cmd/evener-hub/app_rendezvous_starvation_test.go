@@ -277,12 +277,8 @@ exit 2
 	readParams := appwire.ThreadReadParams{Ref: stormRef, IncludeTurns: true, ItemLimit: 40}
 	readIDs := make([]int64, 0, queuedReads)
 	for i := range queuedReads {
-		id := int64(2 + i)
-		send(id, appwire.MethodThreadRead, readParams)
-		readIDs = append(readIDs, id)
+		readIDs = append(readIDs, int64(2+i))
 	}
-	resumeRequest := int64(2 + queuedReads)
-	resumeSent := time.Now()
 
 	// drainRead receives id's answer without failing the test on a
 	// transport error. The cleanup drain below runs on failure exits where
@@ -315,8 +311,10 @@ exit 2
 	// see; an answer still outstanding at cleanup is a handler whose arm has
 	// not landed — a repair the join would never count, running past the
 	// accounting restore and the fixture removal. The drain rides a defer so
-	// no Fatalf exit can skip it; it is idempotent through the received map,
-	// so the green path's explicit receives make it a no-op.
+	// no Fatalf exit can skip it — registered before the first read is
+	// sent, so even a send failure mid-storm leaves every already-sent read
+	// covered. It is idempotent through the received map, so the green
+	// path's explicit receives make it a no-op.
 	defer func() {
 		for _, id := range readIDs {
 			if err := drainRead(id); err != nil {
@@ -325,6 +323,11 @@ exit 2
 			}
 		}
 	}()
+	for _, id := range readIDs {
+		send(id, appwire.MethodThreadRead, readParams)
+	}
+	resumeRequest := int64(2 + queuedReads)
+	resumeSent := time.Now()
 	send(resumeRequest, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: localAppRef(resumeID)})
 	resumeMessage := receive(resumeRequest)
 	window := time.Since(resumeSent)
