@@ -1751,22 +1751,6 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 	return renderCheckpointConversation(partner), summarized
 }
 
-// summarizerInputLimits is summarizerInputLimit for each route a summary may
-// take whose window or input cap is known: the configured cheap model and the
-// session model it falls back to.
-func summarizerInputLimits(prof *provider.Profile) []int {
-	var limits []int
-	for _, route := range [][2]int{
-		{prof.ContextWindowSize(), prof.MaxInputTokens()},
-		{prof.CheapContextWindowSize(), prof.CheapMaxInputTokens()},
-	} {
-		if input := summarizerInputLimit(route[0], route[1]); input > 0 {
-			limits = append(limits, input)
-		}
-	}
-	return limits
-}
-
 // minSummarizingWindow is the smallest context window compaction summarizes
 // on. A 50,000-token window leaves a summarizer request about 36,000 tokens
 // of input (a quarter of the window for the reply, then the client's safety
@@ -1785,8 +1769,12 @@ func summarizingWindowUsable(prof *provider.Profile) bool {
 		return true
 	}
 	least := summarizerInputLimit(minSummarizingWindow, 0)
-	for _, input := range summarizerInputLimits(prof) {
-		if input < least {
+	// The session model and the configured cheap model it falls back from.
+	for _, route := range [][2]int{
+		{prof.ContextWindowSize(), prof.MaxInputTokens()},
+		{prof.CheapContextWindowSize(), prof.CheapMaxInputTokens()},
+	} {
+		if input := summarizerInputLimit(route[0], route[1]); input > 0 && input < least {
 			return false
 		}
 	}
