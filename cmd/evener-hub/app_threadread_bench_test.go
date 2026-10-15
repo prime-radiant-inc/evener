@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
 
@@ -115,13 +116,21 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 	sessionID := "02wMz5Txv47YP64RR3B9YJ"
 	path := seedSyntheticPastSession(tb, stateDir, sessionID, "/tmp/project", rounds)
 	// Post-#4343 a cold read refuses a session with no transcript-index
-	// sidecar: it opens the refusing cache, gets ErrRebuildRequired, and the
-	// read answers the retryable rebuilding state while a repair builds the
-	// very first index (#4654). The bench's subject is the *healthy* cold read
-	// — the full-transcript derived scans and the latest-40 projection — so the
-	// fixture builds the sidecar up front, exactly as a completed repair leaves
-	// it, and benchmarks the read that runs against it.
+	// sidecar: it opens the refusing cache, gets ErrRebuildRequired, and arms a
+	// repair only through a wired registry. The bench wires none, so its read
+	// answered history-failed at entry 0 and fataled (#4654) rather than the
+	// retryable rebuilding state a hub's wired registry would answer. The
+	// bench's subject is the *healthy* cold read — the full-transcript derived
+	// scans and the latest-40 projection — so the fixture builds the sidecar up
+	// front, exactly as a completed repair leaves it, and benchmarks the read
+	// that runs against it. Assert the sidecar committed, as the
+	// rendezvous-storm fixture does (app_rendezvous_starvation_test.go), so a
+	// fixture that silently failed to build one cannot quietly restore the
+	// refusal the bench exists to avoid.
 	indexPastTranscriptForTest(tb, stateDir, sessionID)
+	if _, err := os.Stat(filepath.Join(transcriptindex.DirFor(path), "CURRENT")); err != nil {
+		tb.Fatalf("bench fixture sidecar did not build: %v", err)
+	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := idx.Rebuild(); err != nil {
 		tb.Fatal(err)
