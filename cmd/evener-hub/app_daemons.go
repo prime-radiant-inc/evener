@@ -3,6 +3,7 @@ package hub
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -91,6 +92,60 @@ func registerDaemonHandlers(server *appserver.Server, cfg hubcore.WebConfig, sou
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerDaemonRetire, func(ctx context.Context, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
 		return retireDaemon(ctx, cfg, sources, params)
 	})
+}
+
+// daemonRetireRef is the local ref a retire request addresses, or the refusal
+// it earns. forwardedDaemonControl (the dispatch predicate) and retireDaemon
+// share it, so the retires the hub forwards off the connection's serial worker
+// are exactly the ones retireDaemon serves: a drift between the two would
+// either admit a retire the handler refuses (answered out of order) or leave a
+// retire the handler forwards on the serial worker (the #4080 stall, silently).
+func daemonRetireRef(params appwire.DaemonRetireParams) (appwire.Ref, error) {
+	ref, err := appwire.ParseRef(params.Identity.Ref)
+	if err != nil || ref.SourceID != "local" {
+		return appwire.Ref{}, appwire.InvalidParams("daemon retire requires a local session ref")
+	}
+	return ref, nil
+}
+
+// forwardedDaemonControl reports an evener/daemon/retire that forwards to the
+// local daemon, which the RPC server runs off the connection's serial worker
+// (appserver.ServerConfig.ConcurrentRequest, composed by
+// concurrentForwardedRequest). The retire's cost is the daemon's: since #3921
+// it can wait up to the session namer's timeout (15s) for a namer to settle,
+// and inline that parks every later read, mutation and relayed frame the
+// client sends on the connection that issued the retire (#4080) — the web
+// Settings > Residents panel sends retire on its shared connection
+// (cmd/evener-hub/frontend/src/stores/daemonResidents.ts). Safe out of order: the retire's
+// own order-sensitive phase is serialized by the session alias resume locks
+// retireDaemon takes, not by the connection (a resume, clear or force stop
+// from another connection already overlaps a forwarded retire, #4052), and
+// the daemon re-proves exact ownership before and after its claim, so a
+// thread/clear that lands under an uncommitted claim aborts it. Its answer can
+// now arrive after a request sent later; responses pair to their request id,
+// and the panel fences a stale list answer by generation
+// (daemonResidents.ts latestGeneration, refreshAfterInflight). A retire is
+// retry-safe — the daemon re-proves exact ownership and answers a retryable
+// lifecycle when a claim is already preparing — so the pool's Unavailable
+// refusal at its cap is one a client can simply retry.
+func forwardedDaemonControl(method string, params json.RawMessage) (pool string, ok bool) {
+	if method != appwire.MethodEvenerDaemonRetire {
+		return "", false
+	}
+	var retire appwire.DaemonRetireParams
+	if json.Unmarshal(params, &retire) != nil {
+		return "", false
+	}
+	// daemonRetireRef is retireDaemon's own first check: params that do not
+	// parse, or a ref that is not a local ref, stay inline and are refused in
+	// the order the client sent them.
+	ref, err := daemonRetireRef(retire)
+	if err != nil {
+		return "", false
+	}
+	// The canonical ref is the pool, so one target's waiting retire never
+	// refuses a retire aimed at another.
+	return ref.String(), true
 }
 
 // listDaemons renders the resident inventory from the configured roster
@@ -225,9 +280,9 @@ func listDaemons(_ context.Context, cfg hubcore.WebConfig) (appwire.DaemonListRe
 // The daemon's answer passes through verbatim: a fresh blocker refusal or
 // Accepted with the current lifecycle; acceptance is never reported as exit.
 func retireDaemon(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error) {
-	ref, err := appwire.ParseRef(params.Identity.Ref)
-	if err != nil || ref.SourceID != "local" {
-		return appwire.DaemonRetireResponse{}, appwire.InvalidParams("daemon retire requires a local session ref")
+	ref, err := daemonRetireRef(params)
+	if err != nil {
+		return appwire.DaemonRetireResponse{}, err
 	}
 	if cfg.RunDir == "" || cfg.ResumeLocks == nil {
 		return appwire.DaemonRetireResponse{}, appwire.Unavailable("local session ownership is not configured")

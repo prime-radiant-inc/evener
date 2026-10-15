@@ -91,7 +91,7 @@
   block-size: 32px;
 }
 
-@media (max-width: 899px) {
+@media (max-width: 899px), (any-pointer: coarse) {
   .option {
     min-block-size: var(--tap-min);
   }

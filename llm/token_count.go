@@ -232,7 +232,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 			if p.ToolResult != nil {
 				chars += len(p.ToolResult.ToolCallID)
 				chars += len(p.ToolResult.Name)
-				if !t.dropsToolResultImages && (len(p.ToolResult.ImageData) > 0 || p.ToolResult.ImageMediaType != "") {
+				if t.billsToolResultMedia(p.ToolResult) {
 					tokens += estimateImageTokens(t, &ImageData{Data: p.ToolResult.ImageData, MediaType: p.ToolResult.ImageMediaType})
 				}
 				switch x := p.ToolResult.Content.(type) {
@@ -576,6 +576,85 @@ func dropsToolResultImages(res registry.Resolved) bool {
 	}
 }
 
+// billsToolResultMedia reports whether the target's adapter puts this tool
+// result's bytes on the wire, so the estimate prices only media the request
+// carries. Image media follows the image rule (dropsToolResultImages). A
+// non-image media type rides inline only where the builder writes the claimed
+// type verbatim, which today is Google's function-response inlineData; the
+// Anthropic and Responses builders write image media only (a document media
+// type in an image block is rejected, #4209) and chat drops tool-result media
+// entirely, so billing their document media as an image overcounts bytes the
+// request never sends. An unknown protocol (a name-based target) cannot be
+// ruled out, so it bills like the permissive default.
+func (t targetInfo) billsToolResultMedia(tr *ToolResultData) bool {
+	if len(tr.ImageData) == 0 && tr.ImageMediaType == "" {
+		return false
+	}
+	mt := strings.ToLower(strings.TrimSpace(tr.ImageMediaType))
+	if mt == "" || strings.HasPrefix(mt, "image/") {
+		return !t.dropsToolResultImages
+	}
+	if t.protocol == registry.ProtocolAnthropic || t.protocol == registry.ProtocolOpenAIResponses {
+		return false
+	}
+	return !t.dropsToolResultImages
+}
+
+// DeliversToolResultImages reports whether the resolved row's adapter puts
+// tool-result image bytes on the wire. It answers whether a session model
+// receives tool-result images natively, so consumers deciding between inline
+// vision and an out-of-band description share one truth with token
+// estimation.
+func DeliversToolResultImages(res registry.Resolved) bool {
+	return !dropsToolResultImages(res)
+}
+
+// DeliversToolResultMedia reports whether the row's adapter delivers
+// tool-result bytes of this media type in a form the model can consume. The
+// predicate is deliberately image-only: the Responses builder gates
+// tool-result images on image/* (image_input.go) and the Anthropic builder
+// writes inline bytes for image media only (anthropic/request.go; an image
+// block carrying a document media type is rejected, #4209), while Google's
+// functionResponse inlineData carries whatever media type the result claims.
+// Keep the gate image-only: treating a written document as delivered would
+// send PDFs down the inline path instead of the side-channel that describes
+// them. An empty media type reads as the image default the tool layer
+// applies.
+func DeliversToolResultMedia(res registry.Resolved, mediaType string) bool {
+	mt := strings.ToLower(strings.TrimSpace(mediaType))
+	if mt == "" || strings.HasPrefix(mt, "image/") {
+		return DeliversToolResultImages(res)
+	}
+	return false
+}
+
+// DeliversUserMessageDocuments reports whether the row's adapter represents a
+// document part in a user message in a form the model can consume. The OpenAI
+// Responses builder writes input_file (responses/input.go) and the Anthropic
+// builder writes a document content block (anthropic/request.go; the Messages
+// API accepts base64 application/pdf user messages with no beta header, #4209);
+// the Google builder rejects the kind outright, and the chat builder silently
+// strips it. This is a different position from DeliversToolResultMedia: an
+// Anthropic or Responses row can take a user-message document while its
+// protocol still drops tool-result documents.
+func DeliversUserMessageDocuments(res registry.Resolved) bool {
+	switch res.Protocol {
+	case registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses:
+		return true
+	default:
+		return false
+	}
+}
+
+// RowSeesToolResultMedia reports whether a resolved row's advertised facts let
+// the model receive tool-result bytes of this media type inline: the row
+// declares image input and its adapter delivers tool-result media of this
+// type. Facts depth only, so a caller that resolved the row without
+// materializing credentials can still answer the native-vision question.
+func RowSeesToolResultMedia(res registry.Resolved, mediaType string) bool {
+	return res.Caps.AcceptsModality("image") && DeliversToolResultMedia(res, mediaType)
+}
+
 // unsignedThinkingReplayed reports whether the adapter the resolved target
 // selects replays a ContentThinking part that carries text and no replay
 // metadata:
@@ -648,7 +727,7 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 		return 0
 	}
 	family := t.mediaFamily()
-	detail := effectiveImageDetail(t, img)
+	detail := imageDetail(t.protocol, img.Detail, t.imageDetail)
 	if family == "openai" && strings.EqualFold(strings.TrimSpace(detail), "low") {
 		// OpenAI bills a low-detail image a fixed 85 tokens without reading its
 		// dimensions, so an image whose dimensions cannot be decoded locally (a
@@ -670,21 +749,6 @@ func estimateImageTokens(t targetInfo, img *ImageData) int {
 	default:
 		return fallbackMediaTokens + len(img.MediaType)/4 + len(img.Detail)/4
 	}
-}
-
-// effectiveImageDetail is the detail the target's adapter puts on the wire for
-// the image: the image's own detail when it carries one, and otherwise the row's
-// configured image_detail for the one builder that injects it. Only the Responses
-// builder applies the row's detail (and a "high" default when the row sets none);
-// the chat builder sends the image's own detail or nothing at all
-// (chatcompletions/messages.go), so a chat row's image_detail never reaches the
-// wire.
-func effectiveImageDetail(t targetInfo, img *ImageData) string {
-	detail := img.Detail
-	if strings.TrimSpace(detail) == "" && t.protocol == registry.ProtocolOpenAIResponses {
-		detail = t.imageDetail
-	}
-	return detail
 }
 
 func imageDimensions(img *ImageData) (int, int, bool) {

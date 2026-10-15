@@ -26,19 +26,20 @@ import {
   askUserSummary,
   parseAskUserQuestions,
 } from "@evener/appwire-client";
+import { Card, Eyebrow } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import styles from "./askuser.module.css";
 
 const CLASS = {
-  card: requireClass(styles.card, "askuser.module.css", "card"),
+  questions: requireClass(styles.questions, "askuser.module.css", "questions"),
+  content: requireClass(styles.content, "askuser.module.css", "content"),
   question: requireClass(styles.question, "askuser.module.css", "question"),
   options: requireClass(styles.options, "askuser.module.css", "options"),
   option: requireClass(styles.option, "askuser.module.css", "option"),
   label: requireClass(styles.label, "askuser.module.css", "label"),
   detail: requireClass(styles.detail, "askuser.module.css", "detail"),
-  recommended: requireClass(styles.recommended, "askuser.module.css", "recommended"),
   note: requireClass(styles.note, "askuser.module.css", "note"),
   footer: requireClass(styles.footer, "askuser.module.css", "footer"),
   fallback: requireClass(styles.fallback, "askuser.module.css", "fallback"),
@@ -64,21 +65,37 @@ function isMalformedArgumentsJSON(argumentsJSON: string | undefined): boolean {
 
 function QuestionCard({ q }: { q: AskUserQuestion }) {
   return (
-    <div className={CLASS.card}>
-      <div className={CLASS.question}>{q.question}</div>
-      <ul className={CLASS.options}>
-        {q.options.map((opt) => (
-          <li key={opt.label} className={CLASS.option}>
-            <span className={CLASS.label}>{opt.label}</span>
-            <span className={CLASS.detail}>{opt.detail}</span>
-            {opt.recommended && <span className={CLASS.recommended}>recommended</span>}
-          </li>
-        ))}
-      </ul>
-      {q.multiSelect && <div className={CLASS.note}>Select multiple.</div>}
-      {q.why && <div className={CLASS.note}>{q.why}</div>}
-      {q.ifUnanswered && <div className={CLASS.note}>If unanswered: {q.ifUnanswered}</div>}
-    </div>
+    <Card variant="outlined" data-testid="ask-user-question">
+      <div className={CLASS.content}>
+        <div className={CLASS.question} data-slot="question">
+          {q.question}
+        </div>
+        <ul className={CLASS.options}>
+          {q.options.map((opt) => (
+            <li key={opt.label} className={CLASS.option} data-recommended={opt.recommended ? "true" : undefined}>
+              <span className={CLASS.label}>{opt.label}</span>
+              <span className={CLASS.detail}>{opt.detail}</span>
+              {opt.recommended && <Eyebrow as="span">Recommended</Eyebrow>}
+            </li>
+          ))}
+        </ul>
+        {q.multiSelect && (
+          <div className={CLASS.note} data-note="multi-select">
+            Select multiple.
+          </div>
+        )}
+        {q.why && (
+          <div className={CLASS.note} data-note="why">
+            {q.why}
+          </div>
+        )}
+        {q.ifUnanswered && (
+          <div className={CLASS.note} data-note="if-unanswered">
+            If unanswered: {q.ifUnanswered}
+          </div>
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -89,16 +106,19 @@ function AskUserBody({ item }: ToolRenderProps) {
     // in it) is the common case - e.g. a genuinely argless item - and must
     // not be described as malformed; a genuine JSON syntax error keeps its
     // own, distinct wording.
+    const malformed = isMalformedArgumentsJSON(item.argumentsJSON);
     return (
-      <div className={CLASS.fallback}>
-        {isMalformedArgumentsJSON(item.argumentsJSON)
-          ? "Couldn't read this question - the data looks malformed."
-          : "Question data unavailable."}
+      <div
+        className={CLASS.fallback}
+        data-testid="ask-user-fallback"
+        data-reason={malformed ? "malformed" : "unavailable"}
+      >
+        {malformed ? "Couldn't read this question - the data looks malformed." : "Question data unavailable."}
       </div>
     );
   }
   return (
-    <div>
+    <div className={CLASS.questions}>
       {questions.map((q, i) => (
         // questions has no id field of its own (see AskUserQuestion above)
         // and is re-parsed fresh from one tool call's fixed argumentsJSON
@@ -106,7 +126,9 @@ function AskUserBody({ item }: ToolRenderProps) {
         // biome-ignore lint/suspicious/noArrayIndexKey: derived fresh from a fixed, immutable source each render, see above
         <QuestionCard key={i} q={q} />
       ))}
-      <div className={CLASS.footer}>Answer in the composer (wave 5).</div>
+      <div className={CLASS.footer} data-testid="ask-user-answer-hint">
+        Answer in the composer (wave 5).
+      </div>
     </div>
   );
 }

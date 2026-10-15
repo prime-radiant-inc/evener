@@ -30,11 +30,18 @@ export interface QuoteInsertRequest {
   id: number;
   text: string;
   placement: QuoteInsertPlacement;
+  // The pane id of the seat the quote is meant for: the conversation the
+  // selection was made in. The embedded cascade column means one ref can
+  // have two mounted composers, and in production both merge effects hold
+  // the same captured request within one commit - the first composer's
+  // consume cannot un-capture the other's. Null keeps the historic
+  // any-composer routing for callers that cannot pin a destination.
+  target: string | null;
 }
 
 interface QuoteInsertState {
   requests: Map<string, QuoteInsertRequest>;
-  requestQuoteInsert(ref: string, text: string, placement: QuoteInsertPlacement): void;
+  requestQuoteInsert(ref: string, text: string, placement: QuoteInsertPlacement, target: string | null): void;
   consumeQuoteInsert(ref: string): void;
 }
 
@@ -42,10 +49,10 @@ let nextId = 1;
 
 const store = createStore<QuoteInsertState>((set) => ({
   requests: new Map(),
-  requestQuoteInsert: (ref, text, placement) =>
+  requestQuoteInsert: (ref, text, placement, target) =>
     set((state) => {
       const requests = new Map(state.requests);
-      requests.set(ref, { id: nextId++, text, placement });
+      requests.set(ref, { id: nextId++, text, placement, target });
       return { requests };
     }),
   consumeQuoteInsert: (ref) =>
@@ -58,8 +65,13 @@ const store = createStore<QuoteInsertState>((set) => ({
 }));
 
 /** SelectionQuote's write side: records a quote block waiting for `ref`'s Composer. */
-export function requestQuoteInsert(ref: string, text: string, placement: QuoteInsertPlacement = "append"): void {
-  store.getState().requestQuoteInsert(ref, text, placement);
+export function requestQuoteInsert(
+  ref: string,
+  text: string,
+  placement: QuoteInsertPlacement = "append",
+  target: string | null = null,
+): void {
+  store.getState().requestQuoteInsert(ref, text, placement, target);
 }
 
 /** Composer's write side: clears a request once it has been merged into the draft. */
@@ -67,9 +79,18 @@ export function consumeQuoteInsert(ref: string): void {
   store.getState().consumeQuoteInsert(ref);
 }
 
-/** Composer's read side: the pending request for `ref`, if any. */
-export function useQuoteInsertRequest(ref: string): QuoteInsertRequest | undefined {
-  return useStore(store, (s) => s.requests.get(ref));
+/** Composer's read side: the pending request for `ref` that belongs to this
+ * seat, if any. A request names the pane id it was quoted from; a composer
+ * under any other pane id must not see it, and a read with no pane id at
+ * all sees everything for `ref` (the tests' and any future caller's
+ * unaddressed view). */
+export function useQuoteInsertRequest(ref: string, paneId?: string): QuoteInsertRequest | undefined {
+  return useStore(store, (s) => {
+    const request = s.requests.get(ref);
+    if (!request) return undefined;
+    if (paneId === undefined || request.target === null || request.target === paneId) return request;
+    return undefined;
+  });
 }
 
 /** Test-only: clears every pending request, mirroring this pane's other

@@ -54,28 +54,36 @@ func TestMemoryGenericDelivery(t *testing.T) {
 	}
 }
 
-// memoryContextWireItem returns one recorded case from the memory-context
-// corpus, which agent.TestMemoryContextWireFixtures produces from the real
-// refresh producer and projector.
-func memoryContextWireItem(t *testing.T, name string) appwire.ThreadItem {
+// recordedWireItem returns one named case from a recorded wire corpus under
+// agent/testdata (file is relative to it), which the agent package's fixture
+// tests produce from the real frame producers and projector. A corpus is a
+// list of cases, bare or under an "items" key.
+func recordedWireItem(t *testing.T, file, name string) appwire.ThreadItem {
 	t.Helper()
-	raw, err := os.ReadFile("../../agent/testdata/memorycontextwire/events.json")
+	raw, err := os.ReadFile("../../agent/testdata/" + file)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cases []struct {
+	type recordedCase struct {
 		Case string             `json:"case"`
 		Item appwire.ThreadItem `json:"item"`
 	}
+	var cases []recordedCase
 	if err := json.Unmarshal(raw, &cases); err != nil {
-		t.Fatal(err)
+		var wrapped struct {
+			Items []recordedCase `json:"items"`
+		}
+		if err := json.Unmarshal(raw, &wrapped); err != nil {
+			t.Fatal(err)
+		}
+		cases = wrapped.Items
 	}
 	for _, c := range cases {
 		if c.Case == name {
 			return c.Item
 		}
 	}
-	t.Fatalf("no %s case in the memory-context corpus", name)
+	t.Fatalf("no %s case in %s", name, file)
 	return appwire.ThreadItem{}
 }
 
@@ -108,12 +116,16 @@ func renderDeliveredSystemItems(t *testing.T, items ...appwire.ThreadItem) []str
 	return rendered
 }
 
-// An index change section reads as the changed lines it carries, not as a full
-// index: the unchanged line it leaves out stays out.
+// An index change section reads as the added lines it carries, not as a full
+// index: the unchanged line it leaves out stays out, and a line another
+// session removed is not reported.
 func TestMemoryContextIndexChangeRendersChangedLines(t *testing.T) {
-	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "index-change-project"))
-	if !strings.Contains(rendered, "opaque-change-added") || !strings.Contains(rendered, "opaque-change-removed") {
-		t.Fatalf("index change lost its changed lines: %s", rendered)
+	rendered := renderDeliveredSystemItem(t, recordedWireItem(t, "memorycontextwire/events.json", "index-change-project"))
+	if !strings.Contains(rendered, "opaque-change-added") {
+		t.Fatalf("index change lost its added line: %s", rendered)
+	}
+	if strings.Contains(rendered, "opaque-change-removed") {
+		t.Fatalf("index change reported a removed line: %s", rendered)
 	}
 	if strings.Contains(rendered, "opaque-change-kept") {
 		t.Fatalf("index change rendered the unchanged line, as a full index would: %s", rendered)
@@ -122,7 +134,7 @@ func TestMemoryContextIndexChangeRendersChangedLines(t *testing.T) {
 
 // A truncated index refresh renders its quoted index.
 func TestMemoryContextTruncatedIndexRendersItsIndex(t *testing.T) {
-	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "truncated-project"))
+	rendered := renderDeliveredSystemItem(t, recordedWireItem(t, "memorycontextwire/events.json", "truncated-project"))
 	if !strings.Contains(rendered, strings.Repeat("x", 64)) {
 		t.Fatalf("truncated-project lost its quoted index: %.200s", rendered)
 	}
@@ -138,7 +150,7 @@ func TestMemoryContextCombinedMessageRendersEverySection(t *testing.T) {
 	}
 	var items []appwire.ThreadItem
 	for _, c := range cases {
-		items = append(items, memoryContextWireItem(t, c.name))
+		items = append(items, recordedWireItem(t, "memorycontextwire/events.json", c.name))
 	}
 	rendered := renderDeliveredSystemItems(t, items...)
 	if len(rendered) != len(cases) {
@@ -153,17 +165,23 @@ func TestMemoryContextCombinedMessageRendersEverySection(t *testing.T) {
 
 // A partial index refresh shows the line counting the pages it leaves out.
 func TestMemoryContextPartialIndexRendersNotShownLine(t *testing.T) {
-	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "truncated-project"))
-	if !strings.Contains(rendered, "Not shown: ") || !strings.Contains(rendered, "untagged") {
+	rendered := renderDeliveredSystemItem(t, recordedWireItem(t, "memorycontextwire/events.json", "truncated-project"))
+	// The renderer wraps at word boundaries, which can fall inside the line.
+	flat := strings.Join(strings.Fields(rendered), " ")
+	if !strings.Contains(flat, "Not shown: ") || !strings.Contains(flat, "untagged") {
 		t.Fatalf("partial index lost its Not shown line: %.400s", rendered)
 	}
 }
 
-// A read-page notice reads as the pages it names.
+// A read-page notice reads as the changed pages it names; a page another
+// session removed is not named.
 func TestMemoryContextPageNoticeRendersPageNames(t *testing.T) {
-	rendered := renderDeliveredSystemItem(t, memoryContextWireItem(t, "page-notice-project"))
-	if !strings.Contains(rendered, "opaque-notice-changed.md") || !strings.Contains(rendered, "opaque-notice-removed.md") {
+	rendered := renderDeliveredSystemItem(t, recordedWireItem(t, "memorycontextwire/events.json", "page-notice-project"))
+	if !strings.Contains(rendered, "opaque-notice-changed.md") {
 		t.Fatalf("page notice lost a page name: %s", rendered)
+	}
+	if strings.Contains(rendered, "opaque-notice-removed.md") {
+		t.Fatalf("page notice named a removed page: %s", rendered)
 	}
 }
 

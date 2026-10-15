@@ -192,27 +192,17 @@ func TestAskUser_InvisibleForSubagent(t *testing.T) {
 // ask_user.
 func TestAskUser_RestoredSubagentStaysInvisible(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
-	meta := schema.SessionMeta{
+	// restoreBareResumeSubagent leaves the spawn carrier zero (the empty-carrier
+	// case) and asserts that shape, so this test exercises the persisted-flag
+	// fallback rather than a live spawn carrier.
+	restored := restoreBareResumeSubagent(t, schema.SessionMeta{
 		ID:         "restored-subagent",
 		ProfileID:  "openai",
 		Model:      "gpt-5.2",
 		IsSubagent: true,
 		Config:     (SessionConfig{}).toSnapshot(),
-	}
-	// restoreCfg.spawn intentionally left zero: the empty-carrier case.
-	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{})
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
-	}
-	defer restored.Close()
+	}, RestoreSessionConfig{})
 
-	if restored.cfg.spawn.parentSessionID != "" {
-		t.Fatalf("test setup: spawn carrier not empty (%q) — the case under test requires it empty", restored.cfg.spawn.parentSessionID)
-	}
 	if hasToolDef(restored.ToolDefinitions(), "ask_user") {
 		t.Fatal("ask_user advertised in a restored bare-resume subagent session")
 	}
@@ -836,7 +826,10 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
 			func(req llm.Request) llm.Response { return finalResponse("thanks, going with Postgres") },
-			func(req llm.Request) llm.Response { return finalResponse("delegate completion ack") },
+			func(req llm.Request) llm.Response {
+				t.Error("the reply turn already showed the model the attention; no notification turn should run (#4247)")
+				return finalResponse("delegate completion ack")
+			},
 		},
 	}
 	sess := newSession(t,
@@ -884,11 +877,14 @@ func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T
 		t.Fatalf("reply ProcessInput: %v", err)
 	}
 	requests := f.Requests()
-	if got := len(requests); got != 3 {
-		t.Fatalf("requests after reply = %d, want 3 (reply turn + root attention turn)", got)
+	// #4247: the attention was armed before the reply turn and the reply
+	// turn's request presented it, so that turn consumes it and no separate
+	// notification turn runs.
+	if got := len(requests); got != 2 {
+		t.Fatalf("requests after reply = %d, want 2 (the reply turn presents the attention)", got)
 	}
-	if !requestContainsText(requests[2], firstContent) {
-		t.Error("root attention turn did not deliver the delegate notification to the model")
+	if !requestContainsText(requests[1], firstContent) {
+		t.Error("reply turn did not deliver the delegate notification to the model")
 	}
 	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, sess.ID()), sess.ID())
 	if err != nil {
@@ -2749,7 +2745,7 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 	if !isAskRound || len(pending) != 1 {
 		t.Fatalf("deriveRestoredAskPending with journal provenance = pending=%#v isAskRound=%v, want ask1 still pending", pending, isAskRound)
 	}
-	if state := deriveRestoredState(history, 0, origins); state != SessionAwaiting {
+	if state := deriveRestoredState(history, 0, origins, nil); state != SessionAwaiting {
 		t.Fatalf("deriveRestoredState with journal provenance = %q, want %q", state, SessionAwaiting)
 	}
 
@@ -2764,7 +2760,7 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 	if isAskRound || len(pending) != 0 {
 		t.Fatalf("deriveRestoredAskPending without journal provenance = pending=%#v isAskRound=%v, want the kindless turn to resolve the ask as an ordinary answering steer", pending, isAskRound)
 	}
-	if state := deriveRestoredState(history, 0, nil); state != SessionIdle {
+	if state := deriveRestoredState(history, 0, nil, nil); state != SessionIdle {
 		t.Fatalf("deriveRestoredState without journal provenance = %q, want %q", state, SessionIdle)
 	}
 }
@@ -2825,7 +2821,7 @@ func TestAskUser_RestoreClassifiesAKindlessProvenancelessHumanNoteByItsTextShape
 	if !isAskRound || len(pending) != 1 {
 		t.Fatalf("deriveRestoredAskPending for an inherited kindless note = pending=%#v isAskRound=%v, want ask1 still pending", pending, isAskRound)
 	}
-	if state := deriveRestoredState(history, divergenceTurn, origins); state != SessionAwaiting {
+	if state := deriveRestoredState(history, divergenceTurn, origins, nil); state != SessionAwaiting {
 		t.Fatalf("deriveRestoredState for an inherited kindless note = %q, want %q", state, SessionAwaiting)
 	}
 }

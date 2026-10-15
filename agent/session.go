@@ -641,6 +641,10 @@ type Session struct {
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
+	// latestReport is the most recent terminal communicate this session
+	// accepted. Unlike comm it survives the next input's reset, so a drain
+	// can restore the report that input erased.
+	latestReport communicateResult
 	// restMu makes a needs_response rest's transition and its STATUS_SETTLED
 	// emit atomic against a turn advancing restGeneration: either the turn
 	// starts first and the rest stays idle, or the announcement reaches the
@@ -1054,12 +1058,11 @@ type Session struct {
 	// or filtered round never credits an item the model saw in no settled
 	// call. Every request build re-stages it.
 	attentionStagedIDs map[string]struct{}
-	// attentionPreTurnIDs snapshots rootAttentionWakeIDs at turn start
-	// (resetAttentionCoverage). Marking consults it to separate the root's
-	// deliveries armed mid-turn from attention already owed a dedicated
-	// notification turn. A delegate session arms no root wakes, so for it
-	// the snapshot is empty.
-	attentionPreTurnIDs map[string]struct{}
+	// attentionAcceptedID is the trigger of an accepted attention generation
+	// that no settled request has presented yet. The accept resolves the
+	// trigger as consumed first, so only this latch tells a fold to keep its
+	// turn; promoteStagedAttentionCoverage clears it. Guarded by attentionMu.
+	attentionAcceptedID string
 
 	// turnNameRetryMu guards turnNameRetry alone. The paced wake it schedules
 	// runs while the session goroutine is mid-stand-down, so it must not queue
@@ -1698,19 +1701,32 @@ func (s *Session) SetModel(model string) error {
 	// expensive models; the marker just warns.
 	contextWarningPct := 0
 	contextWarning := false
+	contextWindowAssumed := false
+	assumedWindowTokens := 0
 	if s.contextMgr != nil {
-		pressure := s.contextMgr.EstimatePressure(s.history, len(s.cachedSystemPrompt))
-		if pressure >= s.contextMgr.CheckpointThreshold {
-			contextWarning = true
-			contextWarningPct = int(pressure*100 + 0.5)
+		// One EstimateUsage read carries the pressure AND whether the window it
+		// is measured against is the unknown-window assumption, so the marker
+		// can name the assumption instead of presenting a percentage of 128K as
+		// a fact about the new model's real window (#4598 follow-up).
+		usage := s.contextMgr.EstimateUsage(s.history, len(s.cachedSystemPrompt))
+		if usage.Window > 0 {
+			pressure := float64(usage.Used) / float64(usage.Window)
+			if pressure >= s.contextMgr.CheckpointThreshold {
+				contextWarning = true
+				contextWarningPct = int(pressure*100 + 0.5)
+				contextWindowAssumed = usage.Assumed
+				assumedWindowTokens = usage.Window
+			}
 		}
 	}
 	markerText := buildModelSwitchMarkerText(modelSwitchMarkerParams{
-		oldProfile:        oldProfile,
-		nextProfile:       nextProfile,
-		contextWarning:    contextWarning,
-		contextWarningPct: contextWarningPct,
-		droppedFallbacks:  s.lastDroppedModelFallbacks,
+		oldProfile:           oldProfile,
+		nextProfile:          nextProfile,
+		contextWarning:       contextWarning,
+		contextWarningPct:    contextWarningPct,
+		contextWindowAssumed: contextWindowAssumed,
+		assumedWindowTokens:  assumedWindowTokens,
+		droppedFallbacks:     s.lastDroppedModelFallbacks,
 	})
 	s.mu.Unlock()
 	s.reportPromptRenderFailure(promptWarning)
@@ -1821,6 +1837,10 @@ func (s *Session) VisionModel() string {
 // profile's compaction threshold and/or the switch dropped now-invalid
 // cfg.ModelFallbacks entries (N5, decision rows "Transcript marker" /
 // "Context-window shrink" / "Model-fallbacks after a switch").
+// When the new profile's window is unknown the warning percentage is measured
+// against contextmgr.AssumedContextWindow, so that warning names the assumed
+// window (the "~" the clients mark an assumed window figure with) rather than
+// reading as a fact about the model's real size.
 // modelSwitchMarkerParams collects the inputs to buildModelSwitchMarkerText so
 // the call site names each field rather than relying on positional order.
 type modelSwitchMarkerParams struct {
@@ -1828,13 +1848,22 @@ type modelSwitchMarkerParams struct {
 	nextProfile       *provider.Profile
 	contextWarning    bool
 	contextWarningPct int
-	droppedFallbacks  []string
+	// contextWindowAssumed and assumedWindowTokens describe the window the
+	// warning percentage is measured against when it is the unknown-window
+	// assumption, not a size anything vouches for.
+	contextWindowAssumed bool
+	assumedWindowTokens  int
+	droppedFallbacks     []string
 }
 
 func buildModelSwitchMarkerText(p modelSwitchMarkerParams) string {
 	lines := []string{fmt.Sprintf("Switched model: %s/%s → %s/%s", p.oldProfile.ID(), p.oldProfile.Model(), p.nextProfile.ID(), p.nextProfile.Model())}
 	if p.contextWarning {
-		lines = append(lines, fmt.Sprintf("Warning: context usage is at ~%d%% of %s's context window, over the compaction threshold.", p.contextWarningPct, p.nextProfile.ID()))
+		if p.contextWindowAssumed {
+			lines = append(lines, fmt.Sprintf("Warning: context usage is at ~%d%% of %s's assumed context window (~%d tokens), over the compaction threshold.", p.contextWarningPct, p.nextProfile.ID(), p.assumedWindowTokens))
+		} else {
+			lines = append(lines, fmt.Sprintf("Warning: context usage is at ~%d%% of %s's context window, over the compaction threshold.", p.contextWarningPct, p.nextProfile.ID()))
+		}
 	}
 	if len(p.droppedFallbacks) > 0 {
 		lines = append(lines, fmt.Sprintf("Warning: dropped model fallbacks no longer valid for %s: %s", p.nextProfile.ID(), strings.Join(p.droppedFallbacks, ", ")))
@@ -1931,6 +1960,14 @@ func (s *Session) CommunicateStructured() any {
 	return s.comm.structured
 }
 
+// communicatedReply returns the reply of the terminal communicate the current
+// input accepted, and whether it accepted one.
+func (s *Session) communicatedReply() (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.comm.reply, s.comm.called
+}
+
 func (s *Session) communicateStructuredResult() (any, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1967,6 +2004,7 @@ func (s *Session) acceptCommunicateTerminal(ctx context.Context, message, reply,
 		structured: structured,
 		endReason:  endReason,
 	}
+	s.latestReport = s.comm
 	s.mu.Unlock()
 	lease, stableRun := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
 	if stableRun && s.delegateController != nil {

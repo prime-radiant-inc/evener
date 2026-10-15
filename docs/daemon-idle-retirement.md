@@ -70,6 +70,14 @@ calls, subscriptions and polling a mounted Settings → Hub section never extend
 residency. A long-lived subscription receives closure when retirement commits;
 it does not pin the daemon.
 
+Delegate attention a Stop parked does not count. A Stop parks the root's
+delegate attention until you send your next message; nothing in the process
+can deliver it before then, and both the attention and the park are saved, so
+the daemon retires and the resumed session comes back with the same attention
+waiting. Your next message releases the park and the attention is delivered
+after your own turn. Messages a Stop left queued and steering it parked are
+still accepted input and keep the daemon resident.
+
 Questions and watches **can** pin the daemon indefinitely. An unanswered
 `ask_user` question is a human-decision blocker, and an active watch is a watch
 blocker; neither is a timeout that expires on its own. That is deliberate: the
@@ -128,8 +136,13 @@ Controls:
   (which names a new session in the background) is the only work in flight,
   the daemon waits for it to finish, up to its 15-second timeout, and then
   retires; a namer still running after that refuses the retire as above. The
-  wait looks only at work in flight: an open question or an active goal beside
-  the namer is reported once the namer settles, not at once. While the daemon
+  wait looks only at work in flight, and work that holds no lease shuts it off:
+  an open question, a pending job notification, an active goal between goal
+  turns, or the shared tree's in-memory owner state beside the namer is
+  reported at once, not once the namer settles. Evidence whose read has to
+  block (a running job, a watch, the job journal, or the attention registry) is
+  not pre-checked, so a retire beside only that work still waits the namer out.
+  While the daemon
   waits, the session stays usable from the Hub, and a resume, force stop,
   deletion or archive can overlap the retire: a force stop cancels it and stops
   the daemon, a deletion skips the still-running session, and a resume or an

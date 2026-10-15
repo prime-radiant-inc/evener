@@ -24,9 +24,10 @@ export interface CodeBlockProps {
    * source line without its separator and its zero-based source line index. */
   renderLine?: (line: string, lineNumber: number) => ReactNode;
   /** Fold long content to its tail behind a "Show N earlier lines" control
-   * (the default, 67zh). A caller whose content is the PRIMARY thing the
-   * reader opened - not a supporting dump - opts out: the block always
-   * renders every line, with no fold control at all. */
+   * (the default: a 100-line tail window, Jesse's 2026-10-11 call). A caller
+   * whose content is the PRIMARY thing the reader opened - not a supporting
+   * dump - opts out: the block always renders every line, with no fold
+   * control at all. */
   fold?: boolean;
 }
 
@@ -43,17 +44,17 @@ const CLASS = {
   fold: requireClass(styles.fold, "codeblock.module.css", "fold"),
 };
 
-// 67zh: a raw tool-output block (a pytest traceback, a shell dump) with no
-// cap fills an entire narrow viewport, forcing a reader to scroll THROUGH it
-// rather than past it. Past TAIL_VISIBLE_LINES lines, the block folds to its
-// tail by default - mirroring protocol/toolCallText.ts's tailFold,
+// The reader expanded this tool result on purpose, so the window before any
+// fold is a substantial read - 100 lines, Jesse's 2026-10-11 call - not a
+// viewport-height teaser. Past TAIL_VISIBLE_LINES lines, the block folds to
+// its tail by default - mirroring protocol/toolCallText.ts's tailFold,
 // used project-wide for the exact same content (settled shell/read output):
 // keep the tail, elide the head, and say honestly how much was elided. The
 // tail, not the head, is kept because the informative part of a long dump
 // (pytest's FAILURES section, a command's final error) is almost always at
 // the end - a fold that hid the tail instead would hide the one thing a
 // reader who scrolled this far actually came for.
-const TAIL_VISIBLE_LINES = 14;
+const TAIL_VISIBLE_LINES = 100;
 
 /**
  * A block of source/tool-output text: mono font, an optional language label

@@ -135,6 +135,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		Capabilities:             capabilityPreambleLines(capabilityFactsFromEnv(env, s.capabilities)),
 		GitModifiedFiles:         s.envInfo.GitModifiedFiles,
 		GitUntrackedFiles:        s.envInfo.GitUntrackedFiles,
+		GitStatusUnknown:         s.envInfo.GitStatusUnknown,
 		GitRecentCommitTitles:    s.envInfo.GitRecentCommitTitles,
 		WorkspaceTree:            s.envInfo.Workspace.Tree,
 		BuildInfo:                s.envInfo.Workspace.BuildInfo,
@@ -150,8 +151,12 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 		sources = append(sources, *roleSource)
 	}
 
-	// Skills
+	// Skills. A skill this session cannot follow is left out, so the catalog
+	// only offers usable skills.
 	for _, descriptor := range s.skills.ModelEntries() {
+		if !s.skillAvailableToSession(descriptor.CatalogName) {
+			continue
+		}
 		skillName, sm := descriptor.CatalogName, descriptor.Meta
 		data.Skills = append(data.Skills, skillEntry{
 			Name: sm.Name, CatalogName: skillName, Description: sm.Description,

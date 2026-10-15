@@ -78,17 +78,6 @@
   font-size: var(--font-size-caption);
 }
 
-.error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  background: var(--surface-inset);
-  padding: var(--space-2) var(--space-3);
-  color: var(--ink-hi);
-  font-size: var(--font-size-caption);
-}
-
 @media (max-width: 899px) {
   .heading {
     align-items: flex-start;

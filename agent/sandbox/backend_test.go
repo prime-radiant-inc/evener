@@ -1,7 +1,9 @@
 package sandbox
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"testing"
 )
@@ -145,5 +147,90 @@ func TestConfineTrustedInfraNilIsIdentity(t *testing.T) {
 	w.ConfineTrustedInfra(cmd, "/somewhere")
 	if !slices.Equal(cmd.Args, want) || cmd.Dir != "" {
 		t.Errorf("nil wrapper must be identity, got args=%v dir=%q", cmd.Args, cmd.Dir)
+	}
+}
+
+// A cache root that only becomes a directory after session start (an unmounted
+// drive) is judged by the overlay probe when it appears, so a root on a
+// filesystem that refuses the overlay is still left out rather than aborting the
+// first spawn that makes it servable (#4220).
+func TestServableCacheRootProbesARootThatAppearsLate(t *testing.T) {
+	dir := overlayFixtureDir(t)
+	drive := filepath.Join(dir, "unmounted", "drive")
+	link := filepath.Join(dir, "modcache")
+	if err := os.Symlink(drive, link); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{
+		CacheStrategy: CacheOverlay, CacheRoots: []string{link},
+		resolveHost: HostFacts{OS: "linux", Home: dir, OverlayLowerOK: func(string) bool { return false }},
+	}
+	if servableCacheRoot(rp, link) {
+		t.Fatal("a dangling cache root must not be served")
+	}
+	if err := os.MkdirAll(drive, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if servableCacheRoot(rp, link) {
+		t.Errorf("a root the overlay cannot mount must stay unserved once it appears")
+	}
+	// Control: the same root on a host that can overlay it is served once it appears.
+	rp.resolveHost.OverlayLowerOK = func(string) bool { return true }
+	if !servableCacheRoot(rp, link) {
+		t.Errorf("an overlayable cache root that appears must be served")
+	}
+}
+
+// The session scratch is allocated after Resolve, so the wrapper drops any
+// cache root sharing storage with it (scratch kept under ~/.cache): an overlay
+// there would discard the scratch files between commands.
+func TestNewWrapperDropsACacheRootHoldingTheSessionScratch(t *testing.T) {
+	cache := t.TempDir()
+	scratch := filepath.Join(cache, "evener", "scratch")
+	if err := os.MkdirAll(scratch, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{Backend: BackendBwrap, CacheStrategy: CacheOverlay, CacheRoots: []string{cache}}
+	w, err := NewWrapper(rp, "/usr/bin/bwrap", scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(w.Policy().CacheRoots, cache) {
+		t.Errorf("a cache root holding the session scratch must not be overlaid: %v", w.Policy().CacheRoots)
+	}
+}
+
+// Each spawn applies the sharing rule again: a write root whose link has been
+// retargeted into a cache since resolution keeps that cache from being
+// overlaid at the next spawn, and the cache is served again once it points
+// elsewhere.
+func TestServableCacheRootJudgesSharingAtEachSpawn(t *testing.T) {
+	cache, elsewhere := t.TempDir(), t.TempDir()
+	link := filepath.Join(t.TempDir(), "library")
+	if err := os.Symlink(elsewhere, link); err != nil {
+		t.Fatal(err)
+	}
+	rp := ResolvedPolicy{CacheStrategy: CacheOverlay, CacheRoots: []string{cache}}
+	rp.Spawned.WriteRoots = []string{link}
+	if !servableCacheRoot(rp, cache) {
+		t.Fatalf("fixture: the cache must be served while the write root points elsewhere")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(cache, link); err != nil {
+		t.Fatal(err)
+	}
+	if servableCacheRoot(rp, cache) {
+		t.Errorf("a cache a write root now lands in must not be overlaid")
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, link); err != nil {
+		t.Fatal(err)
+	}
+	if !servableCacheRoot(rp, cache) {
+		t.Errorf("the cache must be served again once the write root points elsewhere")
 	}
 }

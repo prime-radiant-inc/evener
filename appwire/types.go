@@ -36,57 +36,62 @@ const ProtocolVersion = "evener-appwire-v7"
 const ThreadStatusRestartRequired = "restartRequired"
 
 const (
-	MethodInitialize                     = "initialize"
-	MethodInitialized                    = "initialized"
-	MethodPing                           = "ping"
-	MethodThreadList                     = "thread/list"
-	MethodThreadRead                     = "thread/read"
-	MethodThreadUnsubscribe              = "thread/unsubscribe"
-	MethodThreadTurnsList                = "thread/turns/list"
-	MethodThreadTurnItemsList            = "thread/turns/items/list"
-	MethodThreadStart                    = "thread/start"
-	MethodThreadResume                   = "thread/resume"
-	MethodThreadFork                     = "thread/fork"
-	MethodThreadClear                    = "thread/clear"
-	MethodThreadModelSet                 = "thread/model/set"
-	MethodThreadReasoningEffortSet       = "thread/reasoning-effort/set"
-	MethodThreadVisionModelSet           = "thread/vision-model/set"
-	MethodThreadCompactStart             = "thread/compact/start"
-	MethodThreadShutdown                 = "thread/shutdown"
-	MethodEvenerThreadForceStop          = "evener/thread/forceStop"
-	MethodTurnStart                      = "turn/start"
-	MethodTurnSteer                      = "turn/steer"
-	MethodTurnInterrupt                  = "turn/interrupt"
-	MethodTurnQueue                      = "turn/queue"
-	MethodTurnDrainAsSteer               = "turn/drainAsSteer"
-	MethodTurnPromoteQueuedAsSteer       = "turn/promoteQueuedAsSteer"
-	MethodTurnCancelQueued               = "turn/cancelQueued"
-	MethodGoalSet                        = "goal/set"
-	MethodNotesHumanSet                  = "notes/human/set"
-	MethodNotesAgentSet                  = "notes/agent/set"
-	MethodUrlsAdd                        = "urls/add"
-	MethodUrlsRemove                     = "urls/remove"
-	MethodEvenerTasksList                = "evener/tasks/list"
-	MethodEvenerJobsList                 = "evener/jobs/list"
-	MethodEvenerJobsOutput               = "evener/jobs/output"
-	MethodEvenerJobsGet                  = "evener/jobs/get"
-	MethodEvenerDaemonList               = "evener/daemon/list"
-	MethodEvenerDaemonRetire             = "evener/daemon/retire"
-	MethodEvenerDaemonStatus             = "evener/daemon/status"
-	MethodEvenerDaemonIdleTimeoutSet     = "evener/daemon/idle-timeout/set"
-	MethodEvenerThreadNameSet            = "evener/thread/name/set"
-	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
-	MethodEvenerThreadActivityRead       = "evener/thread/activity/read"
-	MethodEvenerThreadDelegatesList      = "evener/thread/delegates/list"
-	MethodEvenerThreadJobsList           = "evener/thread/jobs/list"
-	MethodEvenerThreadWatchesList        = "evener/thread/watches/list"
-	MethodEvenerSubagentPreview          = "evener/subagentPreview"
-	MethodEvenerPathsComplete            = "evener/paths/complete"
-	MethodEvenerDirsCreate               = "evener/dirs/create"
-	MethodEvenerProjectsRecent           = "evener/projects/recent"
-	MethodEvenerPathValidate             = "evener/path/validate"
-	MethodEvenerGitHead                  = "evener/git/head"
-	MethodEvenerMobilePairing            = "evener/mobile/pairing"
+	MethodInitialize                  = "initialize"
+	MethodInitialized                 = "initialized"
+	MethodPing                        = "ping"
+	MethodThreadList                  = "thread/list"
+	MethodThreadRead                  = "thread/read"
+	MethodThreadUnsubscribe           = "thread/unsubscribe"
+	MethodThreadTurnsList             = "thread/turns/list"
+	MethodThreadTurnItemsList         = "thread/turns/items/list"
+	MethodThreadStart                 = "thread/start"
+	MethodThreadResume                = "thread/resume"
+	MethodThreadFork                  = "thread/fork"
+	MethodThreadClear                 = "thread/clear"
+	MethodThreadModelSet              = "thread/model/set"
+	MethodThreadReasoningEffortSet    = "thread/reasoning-effort/set"
+	MethodThreadVisionModelSet        = "thread/vision-model/set"
+	MethodThreadCompactStart          = "thread/compact/start"
+	MethodThreadShutdown              = "thread/shutdown"
+	MethodEvenerThreadForceStop       = "evener/thread/forceStop"
+	MethodTurnStart                   = "turn/start"
+	MethodTurnSteer                   = "turn/steer"
+	MethodTurnInterrupt               = "turn/interrupt"
+	MethodTurnQueue                   = "turn/queue"
+	MethodTurnDrainAsSteer            = "turn/drainAsSteer"
+	MethodTurnPromoteQueuedAsSteer    = "turn/promoteQueuedAsSteer"
+	MethodTurnCancelQueued            = "turn/cancelQueued"
+	MethodGoalSet                     = "goal/set"
+	MethodNotesHumanSet               = "notes/human/set"
+	MethodNotesAgentSet               = "notes/agent/set"
+	MethodUrlsAdd                     = "urls/add"
+	MethodUrlsRemove                  = "urls/remove"
+	MethodEvenerTasksList             = "evener/tasks/list"
+	MethodEvenerJobsList              = "evener/jobs/list"
+	MethodEvenerJobsOutput            = "evener/jobs/output"
+	MethodEvenerJobsGet               = "evener/jobs/get"
+	MethodEvenerDaemonList            = "evener/daemon/list"
+	MethodEvenerDaemonRetire          = "evener/daemon/retire"
+	MethodEvenerDaemonStatus          = "evener/daemon/status"
+	MethodEvenerDaemonIdleTimeoutSet  = "evener/daemon/idle-timeout/set"
+	MethodEvenerThreadNameSet         = "evener/thread/name/set"
+	MethodEvenerThreadTranscriptsList = "evener/thread/transcripts/list"
+	MethodEvenerThreadActivityRead    = "evener/thread/activity/read"
+	MethodEvenerThreadDelegatesList   = "evener/thread/delegates/list"
+	MethodEvenerThreadJobsList        = "evener/thread/jobs/list"
+	MethodEvenerThreadWatchesList     = "evener/thread/watches/list"
+	MethodEvenerSubagentPreview       = "evener/subagentPreview"
+	MethodEvenerPathsComplete         = "evener/paths/complete"
+	MethodEvenerDirsCreate            = "evener/dirs/create"
+	MethodEvenerProjectsRecent        = "evener/projects/recent"
+	MethodEvenerPathValidate          = "evener/path/validate"
+	MethodEvenerGitHead               = "evener/git/head"
+	MethodEvenerMobilePairing         = "evener/mobile/pairing"
+	MethodEvenerDevicePairingCreate   = "evener/devicePairing/create"
+	MethodEvenerDevicePairingRead     = "evener/devicePairing/read"
+	MethodEvenerDevicePairingApprove  = "evener/devicePairing/approve"
+	MethodEvenerDevicePairingCancel   = "evener/devicePairing/cancel"
+
 	MethodEvenerNavigationRead           = "evener/navigation/read"
 	MethodEvenerFavoriteSet              = "evener/favorite/set"
 	MethodEvenerArchiveSet               = "evener/archive/set"
@@ -556,6 +561,9 @@ type ProjectDeleteParams struct {
 type ProjectDeleteSkip struct {
 	ID     string `json:"id"`
 	Reason string `json:"reason"`
+	// Kind classifies the skip structurally: SkipKindLive, or empty for any
+	// other reason, which Reason then explains.
+	Kind string `json:"kind,omitempty"`
 }
 
 // ProjectDeleteResponse reports exactly which project sessions were removed or
@@ -584,7 +592,15 @@ type SessionDeleteParams struct {
 type DeletionSkip struct {
 	ID     string `json:"id"`
 	Reason string `json:"reason"`
+	// Kind classifies the skip structurally: SkipKindLive, or empty for any
+	// other reason, which Reason then explains.
+	Kind string `json:"kind,omitempty"`
 }
+
+// SkipKindLive is the Kind of a ProjectDeleteSkip or DeletionSkip whose
+// session a live daemon owns, or whose API log another process holds: the
+// session was left in place and its owner keeps running.
+const SkipKindLive = "live"
 
 // SessionDeleteResponse reports the committed single-session deletion outcome
 // and the navigation mutation clients must converge before clearing overlays.
@@ -778,6 +794,32 @@ type SearchResult struct {
 	// carries them (S14).
 	Hits     []SearchHit `json:"hits,omitempty"`
 	HitCount int         `json:"hitCount,omitempty"`
+	// TopLevel names the top-level session this hit groups under when the
+	// hit is a subagent session: its first non-subagent ancestor, then
+	// through fork supersessions to the row the navigation tree would show.
+	// Present only on a Past result whose session is a subagent and whose
+	// ancestry resolves; absent from an older hub and from every Live
+	// result, and ignored by clients that do not group.
+	TopLevel *SearchTopLevel `json:"topLevel,omitempty"`
+}
+
+// SearchTopLevel describes the top-level session a matching subagent groups
+// under: the fields of its own search result a client needs to render the
+// group's anchor row, including when the session itself has no row in the
+// response. The hub owns lineage resolution; clients only group by Ref. ID,
+// Ref, Title and State always carry values; Project and Age may be empty.
+type SearchTopLevel struct {
+	ID      string `json:"id"`
+	Ref     string `json:"ref"`
+	Title   string `json:"title"`
+	Project string `json:"project,omitempty"`
+	State   string `json:"state"`
+	Age     string `json:"age,omitempty"`
+	// AskPending and ApprovalPending carry the flags of the anchor's own
+	// navigation row, so a live anchor renders its real marks. Absent from
+	// an older hub and from an ended anchor.
+	AskPending      bool `json:"askPending,omitempty"`
+	ApprovalPending bool `json:"approvalPending,omitempty"`
 }
 
 // SearchHit is one message that matches a search (S14).
@@ -1014,6 +1056,7 @@ type EvenerThread struct {
 	ContextUsed      int                `json:"contextUsed,omitempty"`
 	ContextWindow    int                `json:"contextWindow,omitempty"`
 	ContextRemaining int                `json:"contextRemaining,omitempty"`
+	ContextAssumed   bool               `json:"contextAssumed,omitempty"`
 	Capabilities     ThreadCapabilities `json:"capabilities"`
 	Diagnostics      *EvenerDiagnostics `json:"diagnostics,omitempty"`
 	// Queue carries authoritative queue depth + preview for the per-session
@@ -1726,39 +1769,44 @@ type EvenerDelegateInfo struct {
 	// Unicode code points including an ellipsis when truncated. Absent while the
 	// run is open, for an error-only or unreported outcome, and for a prior
 	// generation once a new run has started.
-	ReportPreview          string               `json:"reportPreview,omitempty"`
-	ReportPreviewTruncated bool                 `json:"reportPreviewTruncated,omitempty"`
-	Task                   string               `json:"task,omitempty"`
-	Description            string               `json:"description,omitempty"`
-	AgentType              string               `json:"agentType,omitempty"`
-	RequestedModel         string               `json:"requestedModel,omitempty"`
-	ResolvedProfileID      string               `json:"resolvedProfileId,omitempty"`
-	ResolvedModel          string               `json:"resolvedModel,omitempty"`
-	Model                  string               `json:"model,omitempty"`
-	ReasoningEffort        string               `json:"reasoningEffort,omitempty"`
-	OriginTurnID           string               `json:"originTurnId,omitempty"`
-	OriginToolCallID       string               `json:"originToolCallId,omitempty"`
-	OriginItemID           string               `json:"originItemId,omitempty"`
-	RunStartedAt           string               `json:"runStartedAt,omitempty"`
-	RunEndedAt             string               `json:"runEndedAt,omitempty"`
-	LatestActivityAt       string               `json:"latestActivityAt,omitempty"`
-	RunningForMS           *int64               `json:"runningForMs,omitempty"`
-	QuietForMS             *int64               `json:"quietForMs,omitempty"`
-	DurationMS             *int64               `json:"durationMs,omitempty"`
-	PacketKind             string               `json:"packetKind,omitempty"`
-	Message                json.RawMessage      `json:"message,omitempty"`
-	StructuredResult       json.RawMessage      `json:"structuredResult,omitempty"`
-	StructuredValid        *bool                `json:"structuredResultValid,omitempty"`
-	StructuredReason       string               `json:"structuredResultReason,omitempty"`
-	Warnings               []string             `json:"warnings,omitempty"`
-	Diagnostics            []string             `json:"diagnostics,omitempty"`
-	ExhaustionBudget       string               `json:"exhaustionBudget,omitempty"`
-	ExhaustionLimit        int                  `json:"exhaustionLimit,omitempty"`
-	ExhaustionResumable    *bool                `json:"exhaustionResumable,omitempty"`
-	DelegationAllowance    int                  `json:"delegationAllowance,omitempty"`
-	ParentWatchGranted     bool                 `json:"parentWatchGranted,omitempty"`
-	Usage                  *EvenerUsage         `json:"usage,omitempty"`
-	Worktree               *JobActivityWorktree `json:"worktree,omitempty"`
+	ReportPreview          string `json:"reportPreview,omitempty"`
+	ReportPreviewTruncated bool   `json:"reportPreviewTruncated,omitempty"`
+	Task                   string `json:"task,omitempty"`
+	Description            string `json:"description,omitempty"`
+	AgentType              string `json:"agentType,omitempty"`
+	RequestedModel         string `json:"requestedModel,omitempty"`
+	ResolvedProfileID      string `json:"resolvedProfileId,omitempty"`
+	ResolvedModel          string `json:"resolvedModel,omitempty"`
+	Model                  string `json:"model,omitempty"`
+	ReasoningEffort        string `json:"reasoningEffort,omitempty"`
+	OriginTurnID           string `json:"originTurnId,omitempty"`
+	OriginToolCallID       string `json:"originToolCallId,omitempty"`
+	OriginItemID           string `json:"originItemId,omitempty"`
+	RunStartedAt           string `json:"runStartedAt,omitempty"`
+	RunEndedAt             string `json:"runEndedAt,omitempty"`
+	LatestActivityAt       string `json:"latestActivityAt,omitempty"`
+	// LatestIntent is the open generation's newest stated tool-call intent
+	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
+	// the row's display line, the same Excerpt-bounded value the read
+	// projects. Empty whenever no run is open, and absent from older daemons.
+	LatestIntent        string               `json:"latestIntent,omitempty"`
+	RunningForMS        *int64               `json:"runningForMs,omitempty"`
+	QuietForMS          *int64               `json:"quietForMs,omitempty"`
+	DurationMS          *int64               `json:"durationMs,omitempty"`
+	PacketKind          string               `json:"packetKind,omitempty"`
+	Message             json.RawMessage      `json:"message,omitempty"`
+	StructuredResult    json.RawMessage      `json:"structuredResult,omitempty"`
+	StructuredValid     *bool                `json:"structuredResultValid,omitempty"`
+	StructuredReason    string               `json:"structuredResultReason,omitempty"`
+	Warnings            []string             `json:"warnings,omitempty"`
+	Diagnostics         []string             `json:"diagnostics,omitempty"`
+	ExhaustionBudget    string               `json:"exhaustionBudget,omitempty"`
+	ExhaustionLimit     int                  `json:"exhaustionLimit,omitempty"`
+	ExhaustionResumable *bool                `json:"exhaustionResumable,omitempty"`
+	DelegationAllowance int                  `json:"delegationAllowance,omitempty"`
+	ParentWatchGranted  bool                 `json:"parentWatchGranted,omitempty"`
+	Usage               *EvenerUsage         `json:"usage,omitempty"`
+	Worktree            *JobActivityWorktree `json:"worktree,omitempty"`
 }
 
 type EvenerDelegateParams struct {
@@ -2106,6 +2154,7 @@ type ThreadListResponse struct {
 }
 
 type ThreadReadParams struct {
+	ThreadContentParams
 	ThreadID            string `json:"threadId,omitempty"`
 	Ref                 string `json:"ref,omitempty"`
 	IncludeTurns        bool   `json:"includeTurns"`
@@ -2289,6 +2338,7 @@ type ThreadUnsubscribeParams struct {
 }
 
 type ThreadTurnsListParams struct {
+	ThreadContentParams
 	ThreadID  string `json:"threadId,omitempty"`
 	Ref       string `json:"ref,omitempty"`
 	Cursor    string `json:"cursor,omitempty"`

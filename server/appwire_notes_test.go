@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"unicode"
 
@@ -184,10 +183,10 @@ func TestServerAppWireUrlsRemoveUnknownIDErrorCannotDriveATerminal(t *testing.T)
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("resp=%v, want the unknown-id error", resp.Kind())
 	}
-	message := resp.Error.Error.Message
-	if !strings.Contains(message, "no URL entry with id") {
-		t.Fatalf("unknown-id error = %q, want the unknown-id message", message)
+	if resp.Error.Error.Code != appwire.CodeInvalidParams {
+		t.Fatalf("unknown-id error = %+v, want InvalidParams", resp.Error.Error)
 	}
+	message := resp.Error.Error.Message
 	for _, r := range message {
 		if unicode.IsControl(r) {
 			t.Fatalf("unknown-id error = %q carries control rune %U", message, r)

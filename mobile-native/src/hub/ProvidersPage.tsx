@@ -67,6 +67,26 @@ import {
 // most this many switches at once and offers a search to reach the rest (issue
 // #3279); the web sheet caps at the same number.
 const MODEL_LIST_CAP = 50;
+
+/** Why an action on a provider didn't land, and what the page says about it. */
+const PROVIDER_PROBLEMS = {
+	unconfirmed: UNCONFIRMED_CHANGE,
+	"unconfirmed-credential": UNCONFIRMED_CREDENTIAL,
+	"connection-replaced": CONNECTION_REPLACED_ERROR,
+	"uncheckable-credential": FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE,
+	"uncheckable-action": FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE,
+	"uncheckable-test": FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+	"test-endpoint-changed": ENDPOINT_CHANGED_TEST_MESSAGE,
+} as const;
+type ProviderProblem = keyof typeof PROVIDER_PROBLEMS;
+
+/** Something the page warns about after an action, and why. */
+interface ProviderWarning {
+	reason: "gone-while-editing" | "applied-removed" | "applied-renamed" | "endpoint-changed";
+	message: string;
+}
+
+const ENDPOINT_CHANGED: ProviderWarning = { reason: "endpoint-changed", message: ENDPOINT_CHANGED_WARNING };
 export function ProvidersPage(props: NativeStackScreenProps<HubRoutes, "Providers">) {
 	return <ProvidersPageBody key={props.route.params.hubId} {...props} />;
 }
@@ -249,8 +269,8 @@ function Providers({
 		fingerprint?: string;
 	} | null>(null);
 	const [key, setKey] = useState("");
-	const [actionError, setActionError] = useState<string | null>(null);
-	const [actionWarning, setActionWarning] = useState<string | null>(null);
+	const [actionError, setActionError] = useState<ProviderProblem | null>(null);
+	const [actionWarning, setActionWarning] = useState<ProviderWarning | null>(null);
 	const instance = core.instances.find((item) => item.name === selected);
 	// A Google provider's stored credential is a JSON file, not a key.
 	const json = instance?.auth === "gcp-adc";
@@ -279,7 +299,8 @@ function Providers({
 			// An edit open on a provider that left the hub had nothing left to be
 			// saved to: say so rather than drop the draft silently.
 			if (configuration === "edit") {
-				if (selected !== null) setActionWarning(providerGoneWhileEditing(selected));
+				if (selected !== null)
+					setActionWarning({ reason: "gone-while-editing", message: providerGoneWhileEditing(selected) });
 				setConfiguration(null);
 			}
 			setSelected(null);
@@ -318,7 +339,7 @@ function Providers({
 		// before knowing whether the request could even be sent would lose input
 		// act() is about to refuse to send.
 		if (fingerprintUnavailable(instance)) {
-			setActionError(FINGERPRINT_UNAVAILABLE_CREDENTIAL_MESSAGE);
+			setActionError("uncheckable-credential");
 			return;
 		}
 		const value = key.trim();
@@ -396,7 +417,7 @@ function Providers({
 			// cannot confirm it, so it does not report success. The surface that
 			// issued the write owns the recovery read.
 			if (applied === false) {
-				setActionError(UNCONFIRMED_CHANGE);
+				setActionError("unconfirmed");
 				return;
 			}
 			setEditingCredential(null);
@@ -409,7 +430,7 @@ function Providers({
 			// changed and re-read so the action is retryable against the rows now on
 			// screen.
 			if (isStaleListingRefusal(err)) {
-				setActionError(CONNECTION_REPLACED_ERROR);
+				setActionError("connection-replaced");
 				surface.refresh();
 				return;
 			}
@@ -423,7 +444,11 @@ function Providers({
 				// for the passive evener/auth/updated notification, and warn with our
 				// own sentence rather than the rejection's text.
 				close();
-				setActionWarning(appliedButFailed(applied === "remove" ? "removed" : "renamed"));
+				setActionWarning(
+					applied === "remove"
+						? { reason: "applied-removed", message: appliedButFailed("removed") }
+						: { reason: "applied-renamed", message: appliedButFailed("renamed") },
+				);
 				surface.refresh();
 				return;
 			}
@@ -438,13 +463,13 @@ function Providers({
 				// destination now on screen, and warn in our own words - the
 				// rejection's text can echo submitted values and is never shown.
 				close();
-				setActionWarning(ENDPOINT_CHANGED_WARNING);
+				setActionWarning(ENDPOINT_CHANGED);
 				surface.refresh();
 				return;
 			}
 			// Provider/transport errors may echo submitted credentials. Keep the
 			// editor's error independent of upstream response text.
-			setActionError(secret ? UNCONFIRMED_CREDENTIAL : UNCONFIRMED_CHANGE);
+			setActionError(secret ? "unconfirmed-credential" : "unconfirmed");
 		}
 	}
 	/** Asks before a destructive action, naming the provider and the hub, with
@@ -471,7 +496,7 @@ function Providers({
 		setActionError(null);
 		const row = core.instances.find((item) => item.name === name);
 		if (fingerprintUnavailable(row)) {
-			setActionError(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
+			setActionError("uncheckable-test");
 			return;
 		}
 		// The error belongs to the provider the user is looking at when it lands:
@@ -480,7 +505,7 @@ function Providers({
 		const visit = detailVisitId.current;
 		void surface.testCredentials(name, row?.endpointFingerprint).catch((err) => {
 			if (visit !== detailVisitId.current) return;
-			if (isEndpointConflict(err)) setActionError(ENDPOINT_CHANGED_TEST_MESSAGE);
+			if (isEndpointConflict(err)) setActionError("test-endpoint-changed");
 		});
 	}
 
@@ -547,7 +572,7 @@ function Providers({
 							// the provider list so a retry asserts the destination now
 							// on screen, and warn in this client's own words.
 							showSaved(name);
-							setActionWarning(ENDPOINT_CHANGED_WARNING);
+							setActionWarning(ENDPOINT_CHANGED);
 							surface.refresh();
 						}}
 						onCancel={dismiss}
@@ -624,14 +649,24 @@ function Providers({
 			</Group>
 			{surface.credentialTest?.provider === instance.name && surface.credentialTest.result ? (
 				surface.credentialTest.result.status === "success" ? (
-					<GroupFooter>Works</GroupFooter>
+					<GroupFooter testID="provider-test-success">Works</GroupFooter>
 				) : (
-					<GroupFooter tone="danger">{surface.credentialTest.result.message}</GroupFooter>
+					<GroupFooter tone="danger" testID="provider-test-failure">
+						{surface.credentialTest.result.message}
+					</GroupFooter>
 				)
 			) : null}
 			{/* An open paste sheet says its own save's error. */}
-			{actionError && !editingCredential ? <GroupFooter tone="danger">{actionError}</GroupFooter> : null}
-			{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
+			{actionError && !editingCredential ? (
+				<GroupFooter tone="danger" testID={`provider-problem-${actionError}`}>
+					{PROVIDER_PROBLEMS[actionError]}
+				</GroupFooter>
+			) : null}
+			{actionWarning ? (
+				<GroupFooter tone="attention" testID={`provider-warning-${actionWarning.reason}`}>
+					{actionWarning.message}
+				</GroupFooter>
+			) : null}
 			{surface.busy && <Spinner label="Updating provider" />}
 			<Group label="Manage">
 				<Row
@@ -660,7 +695,7 @@ function Providers({
 							// no endpoint to assert: refuse with a reason
 							// rather than grey the control out silently.
 							if (fingerprintUnavailable(instance)) {
-								setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
+								setActionError("uncheckable-action");
 								return;
 							}
 							confirm(
@@ -679,7 +714,7 @@ function Providers({
 						disabled={surface.busy || stale || !ready}
 						onPress={() => {
 							if (fingerprintUnavailable(instance)) {
-								setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
+								setActionError("uncheckable-action");
 								return;
 							}
 							confirm(
@@ -698,7 +733,7 @@ function Providers({
 						disabled={writeHeld}
 						onPress={() => {
 							if (fingerprintUnavailable(instance)) {
-								setActionError(FINGERPRINT_UNAVAILABLE_ACTION_MESSAGE);
+								setActionError("uncheckable-action");
 								return;
 							}
 							confirm("Remove provider?", "Remove", () => surface.remove(instance.name, instance.endpointFingerprint), {
@@ -717,7 +752,8 @@ function Providers({
 					onChangeText={setKey}
 					busy={surface.busy}
 					canSave={!stale && !!key.trim() && ready}
-					error={actionError}
+					error={actionError ? PROVIDER_PROBLEMS[actionError] : null}
+					errorReason={actionError ?? undefined}
 					onSave={saveCredential}
 					onCancel={() =>
 						leaveKey(() => {
@@ -742,8 +778,16 @@ function Providers({
 			<GroupedPage>
 				<SheetStatus />
 				{core.listingEstablished ? null : <FirstLoad hubName={hubName} label="Loading providers" />}
-				{loadError ? <GroupFooter tone="danger">{loadError}</GroupFooter> : null}
-				{actionWarning ? <GroupFooter tone="attention">{actionWarning}</GroupFooter> : null}
+				{loadError ? (
+					<GroupFooter tone="danger" testID="providers-load-failed">
+						{loadError}
+					</GroupFooter>
+				) : null}
+				{actionWarning ? (
+					<GroupFooter tone="attention" testID={`provider-warning-${actionWarning.reason}`}>
+						{actionWarning.message}
+					</GroupFooter>
+				) : null}
 				{core.listingEstablished ? (
 					<>
 						{core.instances.length > 0 ? (
@@ -772,7 +816,7 @@ function Providers({
 								})}
 							</Group>
 						) : (
-							<GroupFooter>No providers yet. Add one to start sessions.</GroupFooter>
+							<GroupFooter testID="providers-empty">No providers yet. Add one to start sessions.</GroupFooter>
 						)}
 						{core.diagnostics.map((message) => (
 							<GroupFooter key={message}>{message}</GroupFooter>
@@ -861,6 +905,7 @@ function ProviderFacts({
 						<Row
 							key={layer.source}
 							label={layer.source === "store" ? "Also stored" : "Also in the environment"}
+							testID={layer.source === "store" ? "credential-layer-store" : "credential-layer-env"}
 							sub={layer.label}
 							value="Not used"
 						/>
@@ -898,12 +943,18 @@ function ProviderFacts({
 					onPress={onCheckModels}
 				/>
 			</Group>
-			{models.length === 0 ? <GroupFooter>No models listed.</GroupFooter> : null}
-			{modelQuery !== "" && matchingModels.length === 0 ? <GroupFooter>No matching models.</GroupFooter> : null}
+			{models.length === 0 ? <GroupFooter testID="models-empty-none">No models listed.</GroupFooter> : null}
+			{modelQuery !== "" && matchingModels.length === 0 ? (
+				<GroupFooter testID="models-empty-filtered">No matching models.</GroupFooter>
+			) : null}
 			{shownModels.length < matchingModels.length ? (
 				<GroupFooter>{`Showing ${shownModels.length} of ${matchingModels.length} models — search to narrow.`}</GroupFooter>
 			) : null}
-			{checkFailed ? <GroupFooter tone="danger">{MODELS_NOT_CHECKED}</GroupFooter> : null}
+			{checkFailed ? (
+				<GroupFooter tone="danger" testID="models-check-failed">
+					{MODELS_NOT_CHECKED}
+				</GroupFooter>
+			) : null}
 		</>
 	);
 }

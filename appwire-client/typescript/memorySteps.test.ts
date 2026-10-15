@@ -10,6 +10,7 @@ import {
   memoryProgress,
   memoryReadSummary,
   memorySearchSummary,
+  memoryWritePage,
   memoryWriteSummary,
 } from "./memorySteps";
 
@@ -123,6 +124,15 @@ test("targets a memory step's scope and path from parsed arguments", () => {
   expect(memoryFileTarget({ scope: "personal", file_path: "page.md" })).toBe("personal/page.md");
   expect(memoryFileTarget({ file_path: "bare.md" })).toBe("bare.md");
   expect(memoryFileTarget({ scope: "personal" })).toBeUndefined();
+});
+
+test("a written page shows its body under its when line, and nothing without a body", () => {
+  expect(memoryWritePage({ when: "When pricing", body: "# Cart\nfact" })).toBe(
+    "**When:** When pricing\n\n# Cart\nfact",
+  );
+  expect(memoryWritePage({ body: "# Cart" })).toBe("# Cart");
+  expect(memoryWritePage({ when: "When pricing" })).toBeUndefined();
+  expect(memoryWritePage({ when: "When pricing", body: "" })).toBeUndefined();
 });
 
 test("counts logical lines when a read without a limit returns unterminated output", () => {

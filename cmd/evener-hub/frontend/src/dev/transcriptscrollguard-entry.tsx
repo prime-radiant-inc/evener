@@ -48,6 +48,7 @@ import {
 } from "./transcriptSettle";
 import "../styles/tokens.css";
 import "../styles/global.css";
+import { mulberry32 } from "./mulberry32";
 
 window.addEventListener("error", (event) => {
   const target = window as typeof window & { __tsgErrors?: string[] };
@@ -73,18 +74,9 @@ const REF =
     : "local:transcriptscrollguard";
 const THREAD_ID = "thr_transcriptscrollguard";
 
-// Deterministic PRNG (mulberry32): the transcript's row heights must be
-// variable AND identical on every run - a guard whose geometry depends on
-// Math.random() cannot be bisected or reproduced.
-function mulberry32(seed: number): () => number {
-  let state = seed;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+// The transcript's row heights must be variable AND identical on every run -
+// a guard whose geometry depends on Math.random() cannot be bisected or
+// reproduced.
 const rand = mulberry32(0x5eed);
 
 const WORDS = [
@@ -148,9 +140,11 @@ const initialTurns: Turn[] = Array.from({ length: INITIAL_TURN_COUNT }, (_, i) =
 
 // ?paged=1: the read answers with a page plus an olderCursor, so the paging row
 // mounts - the open-with-history shape the other passes lack.
-// ?readonly=1: render the READ-ONLY transcript pane instead of the live Session.
-// It runs the same useTranscriptScroll coordinator (#2963), so its paging and
-// landing must behave identically - the pass the guard lacked.
+// ?readonly=1: render the transcript pane for a session ref instead of the
+// live Session. The read-only surface is gone from the product, so it
+// recovers as the live conversation - the same ConversationBody and
+// useTranscriptScroll coordinator (#2963) - and its paging and landing must
+// behave identically, with the conversation's pane footer rendered.
 const PAGED = new URLSearchParams(window.location.search).get("paged") === "1";
 const DOCK = new URLSearchParams(window.location.search).get("dock") === "1";
 const READONLY = new URLSearchParams(window.location.search).get("readonly") === "1";
@@ -284,7 +278,8 @@ else
     focusedPaneId: "transcriptscrollguard",
   });
 
-createRoot(rootEl).render(
+const root = createRoot(rootEl);
+root.render(
   <ClientProvider client={fake}>
     <div id="transcriptscrollguard-pane" style={{ height: "100%" }}>
       {DOCK ? (
@@ -334,9 +329,29 @@ function findScrollElement(): HTMLElement | null {
   return el instanceof HTMLElement ? el : null;
 }
 
-function scrollElement(): HTMLElement {
+// The machine-checkable identity of the state a post-settle wait reports when
+// the pane under it unmounts mid-pass: unlike the message, these fields are not
+// wording, so the browser guard can assert the state without pinning prose
+// (docs/developing-evener/testing.md, "Copy Is Not a Test Oracle").
+const UNMOUNTED_CODE = "transcript-scroll-unmounted";
+
+// A post-settle wait reads the scroll element through this pair. When the pane
+// under it unmounts mid-pass, the wait names itself ("unmounted during the
+// scroll-away wait") instead of throwing the internal "not mounted" that the
+// reads used to - over CDP that internal error reads as a harness crash rather
+// than the state this guard exists to report.
+function unmountedError(wait: string): Error {
+  const error = new Error(
+    `transcript harness: ${describeTranscriptSettleBlocker({ kind: "unmounted", during: wait })}`,
+  ) as Error & { code: string; wait: string };
+  error.code = UNMOUNTED_CODE;
+  error.wait = wait;
+  return error;
+}
+
+function requireScrollElement(wait: string): HTMLElement {
   const el = findScrollElement();
-  if (el === null) throw new Error("transcript VirtualList scroll element is not mounted");
+  if (el === null) throw unmountedError(wait);
   return el;
 }
 
@@ -371,17 +386,18 @@ interface TranscriptScrollMetrics extends TranscriptGeometry {
    */
   pagingRow: boolean;
   /**
-   * Whether the live Session's pane-footer (its SessionChrome slot) is mounted.
-   * The read-only Transcript pane passes no footer, so this distinguishes the
-   * two surfaces from the DOM itself: a pass that claims to exercise the
-   * read-only pane while the live Session rendered would read `true` here.
+   * Whether the live conversation's pane-footer (its SessionChrome slot) is
+   * mounted. The read-only surface is gone, so both entries - the live
+   * Session and the session-ref transcript pane recovered as the conversation -
+   * render it: a pass that lands on a footer-less view is exercising the
+   * wrong surface.
    */
   paneFooter: boolean;
   errors: string[];
 }
 
-function metrics(): TranscriptScrollMetrics {
-  const geometry = geometryOf(scrollElement());
+function metricsFrom(el: HTMLElement): TranscriptScrollMetrics {
+  const geometry = geometryOf(el);
   const pill = pillElement();
   return {
     ...geometry,
@@ -396,6 +412,22 @@ function metrics(): TranscriptScrollMetrics {
     paneFooter: document.querySelector('[data-testid="pane-footer"]') !== null,
     errors: pageErrors(),
   };
+}
+
+// The exported probe (window.transcriptScrollMetrics) and the two readiness
+// waits read through this. The readiness waits have already seen the mount in
+// the same frame, so an absent element there means the mount never happened; a
+// caller of the raw probe has no wait to name, so it keeps this message.
+function metrics(): TranscriptScrollMetrics {
+  const el = findScrollElement();
+  if (el === null) throw new Error("transcript VirtualList scroll element is not mounted");
+  return metricsFrom(el);
+}
+
+// A post-settle wait's frame read: an absent element names the wait that lost
+// the list instead of throwing the internal error above.
+function metricsFor(wait: string): TranscriptScrollMetrics {
+  return metricsFrom(requireScrollElement(wait));
 }
 
 function nextFrame(): Promise<void> {
@@ -493,20 +525,27 @@ async function waitForTranscriptSettled(): Promise<TranscriptScrollMetrics> {
 // with no yank still in flight.
 const SCROLL_AWAY_HELD_FRAMES = 6;
 async function scrollAwayAndWaitForPill(): Promise<TranscriptScrollMetrics> {
-  const el = scrollElement();
+  const wait = "the scroll-away wait";
   const deadline = performance.now() + 10_000;
   let heldFrames = 0;
   for (;;) {
+    const el = requireScrollElement(wait);
     el.scrollTop = 0;
     await nextFrame();
+    // The element's own liveness is checked before the page-error check: when the
+    // pane unmounts during that frame, the wait's own state is the finding, not
+    // whatever error the unmount raised. Reading it off the element already in
+    // hand costs no second DOM query.
+    if (!el.isConnected) throw unmountedError(wait);
     throwOnPageErrors("scroll away");
     const away = el.scrollTop < el.scrollHeight - el.clientHeight - 4;
     if (pillElement() !== null && away) heldFrames++;
     else heldFrames = 0;
-    if (heldFrames >= SCROLL_AWAY_HELD_FRAMES) return metrics();
+    if (heldFrames >= SCROLL_AWAY_HELD_FRAMES) return metricsFor(wait);
     if (performance.now() > deadline) {
       throw new Error(
-        `transcript harness: pill never appeared and held after a real scroll to the top (10s); ${JSON.stringify(metrics())}`,
+        `transcript harness: pill never appeared and held after a real scroll to the top (10s); ` +
+          `${JSON.stringify(metricsFor(wait))}`,
       );
     }
   }
@@ -517,8 +556,9 @@ async function scrollAwayAndWaitForPill(): Promise<TranscriptScrollMetrics> {
 // is scrolled away. Resolves once the model and the DOM both carry the
 // appends.
 async function appendLargeTurns(): Promise<TranscriptScrollMetrics> {
+  const wait = "the append wait";
   const before = modelTurnCount;
-  const beforeScrollHeight = scrollElement().scrollHeight;
+  const beforeScrollHeight = requireScrollElement(wait).scrollHeight;
   for (let k = 0; k < APPEND_TURN_COUNT; k++) {
     const id = `turn_append_${k + 1}`;
     const turn = wireTurn(
@@ -542,12 +582,13 @@ async function appendLargeTurns(): Promise<TranscriptScrollMetrics> {
   const deadline = performance.now() + 8_000;
   for (;;) {
     await nextFrame();
+    const el = requireScrollElement(wait);
     throwOnPageErrors("appending turns");
-    if (modelTurnCount === before + APPEND_TURN_COUNT && scrollElement().scrollHeight > beforeScrollHeight) {
-      return metrics();
+    if (modelTurnCount === before + APPEND_TURN_COUNT && el.scrollHeight > beforeScrollHeight) {
+      return metricsFor(wait);
     }
     if (performance.now() > deadline) {
-      throw new Error(`transcript harness: appended turns never landed (8s); ${JSON.stringify(metrics())}`);
+      throw new Error(`transcript harness: appended turns never landed (8s); ${JSON.stringify(metricsFor(wait))}`);
     }
   }
 }
@@ -564,6 +605,7 @@ const SETTLED_FRAMES = 30;
 async function clickPillAndSettle(): Promise<
   { settled: boolean; tail: TranscriptScrollMetrics[] } & TranscriptScrollMetrics
 > {
+  const wait = "the pill-click wait";
   const pill = pillElement();
   if (!pill) throw new Error("transcript harness: no pill to click");
   pill.click();
@@ -572,8 +614,8 @@ async function clickPillAndSettle(): Promise<
   const tail: TranscriptScrollMetrics[] = [];
   for (;;) {
     await nextFrame();
+    const m = metricsFor(wait);
     throwOnPageErrors("jump to bottom");
-    const m = metrics();
     tail.push(m);
     if (tail.length > SETTLED_FRAMES) tail.shift();
     if (!m.pill && Math.abs(m.bottomGap) <= 1) stableFrames++;
@@ -607,7 +649,8 @@ async function growContentAndSettle(): Promise<
     beforeScrollHeight: number;
   } & TranscriptScrollMetrics
 > {
-  const el = scrollElement();
+  const wait = "the content-growth wait";
+  const el = requireScrollElement(wait);
   const before = geometryOf(el);
   const sizer = el.firstElementChild;
   if (!(sizer instanceof HTMLElement)) throw new Error("transcript harness: the scroll content is not mounted");
@@ -622,8 +665,8 @@ async function growContentAndSettle(): Promise<
   const tail: TranscriptScrollMetrics[] = [];
   for (;;) {
     await nextFrame();
+    const m = metricsFor(wait);
     throwOnPageErrors("post-mount content growth");
-    const m = metrics();
     tail.push(m);
     if (tail.length > GROWTH_SETTLE_FRAMES) tail.shift();
     if (!m.pill && Math.abs(m.bottomGap) <= 1) stableFrames++;
@@ -654,7 +697,8 @@ const SHRINK_TRIPWIRE_MS = 8_000;
 async function shrinkPortAndSettle(): Promise<
   { settled: boolean; tail: TranscriptScrollMetrics[]; beforeClientHeight: number } & TranscriptScrollMetrics
 > {
-  const el = scrollElement();
+  const wait = "the scroll-port-shrink wait";
+  const el = requireScrollElement(wait);
   const before = geometryOf(el);
   const slot = document.querySelector<HTMLElement>('[data-testid="pane-cadence-slot"]');
   if (!slot) throw new Error("transcript harness: the pane header's cadence slot is not mounted");
@@ -666,8 +710,8 @@ async function shrinkPortAndSettle(): Promise<
   const tail: TranscriptScrollMetrics[] = [];
   for (;;) {
     await nextFrame();
+    const m = metricsFor(wait);
     throwOnPageErrors("scroll port shrink");
-    const m = metrics();
     tail.push(m);
     if (tail.length > SHRINK_SETTLE_FRAMES) tail.shift();
     const shrunk = m.clientHeight < before.clientHeight;
@@ -682,6 +726,7 @@ async function shrinkPortAndSettle(): Promise<
 declare global {
   interface Window {
     releaseTranscriptRead: () => void;
+    unmountTranscriptScrollGuardPane: () => void;
     waitForTranscriptSettled: typeof waitForTranscriptSettled;
     waitForPagedOpenSettled: typeof waitForPagedOpenSettled;
     transcriptScrollMetrics: typeof metrics;
@@ -696,6 +741,10 @@ declare global {
 window.releaseTranscriptRead = () => {
   releaseRead?.();
 };
+// Runner-only probe hook: the non-DOCK harness renders the pane directly rather
+// than through workspaceStore, so this is the only way to take the pane down
+// mid-pass and prove the waits below report it by name.
+window.unmountTranscriptScrollGuardPane = () => root.unmount();
 window.waitForTranscriptSettled = waitForTranscriptSettled;
 window.waitForPagedOpenSettled = waitForPagedOpenSettled;
 window.transcriptScrollMetrics = metrics;

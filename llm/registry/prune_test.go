@@ -28,7 +28,8 @@ func TestPrunableTable_MatchesSpec(t *testing.T) {
 		},
 		ProtocolGoogle: {
 			"generationConfig.temperature": true, "generationConfig.topP": true, "generationConfig.stopSequences": true,
-			"toolConfig": true, "safetySettings": true, "cachedContent": false, "labels": false,
+			"generationConfig.thinkingConfig": true,
+			"toolConfig":                      true, "safetySettings": true, "cachedContent": false, "labels": false,
 		},
 	}
 	for proto, table := range want {
@@ -52,6 +53,11 @@ func TestPrunableTable_MatchesSpec(t *testing.T) {
 
 func TestValidateFields(t *testing.T) {
 	if err := ValidateFields(map[string]bool{"store": true, "text.verbosity": false}, ProtocolOpenAIResponses, "providers.x"); err != nil {
+		t.Fatal(err)
+	}
+	// A user or catalog row may suppress a model's thinking entirely by
+	// clearing the whole thinkingConfig object.
+	if err := ValidateFields(map[string]bool{"generationConfig.thinkingConfig": false}, ProtocolGoogle, "providers.vertex-arc.models.gemini-4-argon"); err != nil {
 		t.Fatal(err)
 	}
 	err := ValidateFields(map[string]bool{"stream_options": false}, ProtocolOpenAIResponses, "providers.x")
@@ -109,6 +115,24 @@ func TestPrune_RemovesOnlyFalsePaths(t *testing.T) {
 		if got := Prune(body, allTrue); len(got) != 0 {
 			t.Errorf("%s: nothing should be pruned, got %v", proto, got)
 		}
+	}
+}
+
+// Clearing generationConfig.thinkingConfig drops the object and leaves the
+// rest of generationConfig standing; it is how a row declares a model that
+// takes no thinking fields at all.
+func TestPrune_GoogleThinkingConfig(t *testing.T) {
+	body := map[string]any{"generationConfig": map[string]any{"temperature": 0.2, "thinkingConfig": map[string]any{"thinkingLevel": "high"}}}
+	pruned := Prune(body, Caps{Fields: map[string]bool{"generationConfig.thinkingConfig": false}})
+	if !reflect.DeepEqual(pruned, []string{"generationConfig.thinkingConfig"}) {
+		t.Fatalf("pruned = %v", pruned)
+	}
+	gen := body["generationConfig"].(map[string]any)
+	if _, ok := gen["thinkingConfig"]; ok {
+		t.Fatalf("thinkingConfig survived the prune: %v", gen)
+	}
+	if _, ok := gen["temperature"]; !ok {
+		t.Fatalf("sibling fields must survive: %v", gen)
 	}
 }
 

@@ -1281,10 +1281,13 @@ try {
     assert(before.receipts.some(event => event.type === "wheel" && event.trusted), "trusted wheel receipt");
     assert(before.position.rect.width > 300 && before.position.rect.height > 300 && before.position.usefulText.length > 100,
       "source has useful visible real content and scroll geometry");
-    assert.deepEqual(before.source.params, journey.child ? { ref: journey.ref, parentRef: process.env.DOCUMENT_FILE_LINKS_REF } : { ref: journey.ref });
-    assert.equal(before.source.type, journey.child ? "transcript" : "session");
+    assert.deepEqual(before.source.params, { ref: journey.ref });
+    assert.equal(before.source.type, "session");
     assert.equal(before.source.slot, journey.child ? "secondary" : "main");
-    assert.equal(before.position.composerCount, journey.child ? 0 : 1);
+    // The child source is the child's own live conversation pane - the same
+    // session pane the product's openTranscript opens - so its composer is
+    // mounted beside the parent's.
+    assert.equal(before.position.composerCount, 1);
     assert.equal(before.draft.stored.text, journey.draft);
     assert.deepEqual(before.draft.stored, parentDraft.stored);
     if (!journey.child) assert.equal(before.draft.editor, journey.draft);

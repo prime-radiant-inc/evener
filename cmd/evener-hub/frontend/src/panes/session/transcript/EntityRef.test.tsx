@@ -1,7 +1,14 @@
 import type { ActivityJob, ActivityTree, ItemModel, TurnModel } from "@evener/appwire-client";
-import { buildEntityView, type EntityView, findEntityView } from "@evener/appwire-client";
+import {
+  buildEntityView,
+  type EntityView,
+  findEntityView,
+  formatByteCount,
+  jobStatusDisplay,
+} from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { accessibleName } from "../../../accessibleNameTestUtils";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { navigationStore } from "../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
@@ -110,6 +117,17 @@ function watchView(
   return view;
 }
 
+// A card's fact value by its field, or null when the card omits it. The
+// field marks the value, which sits in its row's dd beside the row's dt.
+function cardField(card: HTMLElement, field: string): HTMLElement | null {
+  return card.querySelector(`[data-field="${field}"]`);
+}
+
+// The open card's status word.
+function cardStatus(): HTMLElement | null {
+  return screen.getByRole("tooltip").querySelector('[class*="status"]');
+}
+
 function focusCard() {
   fireEvent.focus(screen.getByTestId("entity-trigger"));
   advance(300);
@@ -172,7 +190,7 @@ test("triggerOnly keeps the resolved hover-card trigger and omits its OpenButton
 
   expect(screen.getByTestId("entity-trigger").tabIndex).toBe(0);
   expect(screen.queryByRole("button")).toBeNull();
-  expect(focusCard().textContent).toContain("Delegate");
+  expect(focusCard().querySelector('[data-entity-kind="delegate"]')).not.toBeNull();
 });
 
 test("embedded keeps the resolved hover card while omitting the trigger tab stop", () => {
@@ -184,7 +202,7 @@ test("embedded keeps the resolved hover card while omitting the trigger tab stop
   expect(screen.queryByRole("button")).toBeNull();
   fireEvent.mouseEnter(trigger);
   advance(300);
-  expect(screen.getByRole("tooltip").textContent).toContain("Watch");
+  expect(screen.getByRole("tooltip").querySelector('[data-entity-kind="watch"]')).not.toBeNull();
 });
 
 test("the id trigger does not navigate", () => {
@@ -192,6 +210,32 @@ test("the id trigger does not navigate", () => {
 
   fireEvent.click(screen.getByTestId("entity-trigger"));
   expect(workspaceStore.getState().panes).toEqual([]);
+});
+
+// data-entity-kind is invisible to a screen reader: the card's kind label is
+// what tells it a job from a delegate from a watch.
+test("each entity card reads its kind aloud, distinctly", () => {
+  vi.useFakeTimers();
+  const views = [
+    { view: jobView("job_k", "Kind check"), id: "job_k" },
+    { view: delegateView(), id: "dlg_x" },
+    { view: watchView(), id: "watch_x" },
+  ];
+  const labels = views.map(({ view, id }) => {
+    const { unmount } = render(<EntityRef view={view} id={id} />);
+    const card = focusCard();
+    // The kind label (an Eyebrow) leads the card's head row.
+    const kind = card.querySelector("[data-entity-kind]")?.firstElementChild?.firstElementChild;
+    if (!kind) throw new Error("card has no kind label");
+    // The label is plain content, so it is heard as part of the tooltip's
+    // computed name: hidden or display:none label text drops out of it.
+    const label = kind.textContent?.trim() ?? "";
+    expect(label).not.toBe("");
+    expect(accessibleName(card)).toContain(label);
+    unmount();
+    return label;
+  });
+  expect(new Set(labels).size).toBe(labels.length);
 });
 
 test("watch renders a card trigger with no OpenButton", () => {
@@ -226,11 +270,14 @@ test("watch card renders a trigger and its note separately", () => {
   const card = focusCard();
   // The card words its trigger through the shared composer, so a pattern reads
   // exactly as it does in a watch list row: quoted, with no label of its own.
-  expect(card.textContent).toContain("“ready”");
-  expect(card.textContent).not.toContain("output matching");
-  const noteLabel = within(card).getByText("Note");
-  expect(noteLabel.tagName).toBe("DT");
-  expect(noteLabel.nextElementSibling?.textContent).toBe("Preserve the release context");
+  // The summary is the pattern itself in one pair of quotes: no label, no grammar.
+  const summary = card.querySelector('[data-entity-kind="watch"] > [class*="summary"]')?.textContent ?? "";
+  expect(summary.slice(1, -1)).toBe("ready");
+  expect(summary.at(0)).toMatch(/\W/);
+  expect(summary.at(-1)).toMatch(/\W/);
+  const note = cardField(card, "note");
+  expect(note?.closest("dd")?.parentElement?.querySelector("dt")).not.toBeNull();
+  expect(note?.textContent).toBe("Preserve the release context");
 });
 
 test("note-only watch card renders note content without raw condition grammar", () => {
@@ -347,9 +394,10 @@ test("job card states an exited-nonzero run as Command failed", () => {
   fireEvent.focus(screen.getByTestId("entity-trigger"));
   advance(300);
 
-  const card = screen.getByRole("tooltip");
-  expect(card.textContent).toContain("Command failed");
-  expect(card.textContent).not.toContain("command_exited_nonzero");
+  const status = cardStatus();
+  expect(status?.getAttribute("data-state")).toBe("failed");
+  expect(status?.textContent).toBe(jobStatusDisplay("command_exited_nonzero"));
+  expect(status?.textContent).not.toBe("command_exited_nonzero");
 });
 
 test("job card states a signal-killed run as Command killed", () => {
@@ -368,9 +416,10 @@ test("job card states a signal-killed run as Command killed", () => {
   fireEvent.focus(screen.getByTestId("entity-trigger"));
   advance(300);
 
-  const card = screen.getByRole("tooltip");
-  expect(card.textContent).toContain("Command killed");
-  expect(card.textContent).not.toContain("command_killed");
+  const status = cardStatus();
+  expect(status?.getAttribute("data-state")).toBe("failed");
+  expect(status?.textContent).toBe(jobStatusDisplay("command_killed"));
+  expect(status?.textContent).not.toBe("command_killed");
 });
 
 test("job card joins a legacy failed record to the display word by its reason", () => {
@@ -391,7 +440,9 @@ test("job card joins a legacy failed record to the display word by its reason", 
   fireEvent.focus(screen.getByTestId("entity-trigger"));
   advance(300);
 
-  expect(screen.getByRole("tooltip").textContent).toContain("Command failed");
+  // The reason picks the word, not the bare "failed" status.
+  expect(cardStatus()?.textContent).toBe(jobStatusDisplay("failed", "exit_nonzero"));
+  expect(cardStatus()?.textContent).not.toBe(jobStatusDisplay("failed"));
 });
 
 test("falls back to the shared render-context entity map", () => {
@@ -426,13 +477,14 @@ test("job card carries normalized detail plus a stale caption", () => {
   vi.useFakeTimers();
   render(<EntityRef view={jobView("job_old", "Archived compile", { stale: true })} id="job_old" />);
 
-  const text = focusCard().textContent;
+  const card = focusCard();
+  const text = card.textContent;
   expect(text).toContain("completed");
   expect(text).toContain("shell");
   expect(text).toContain("npm run build");
   expect(text).toContain("1s");
-  expect(text).toContain("exit 0");
-  expect(text).toContain("12 bytes");
+  expect(cardField(card, "exit")?.textContent).toMatch(/\b0\b/);
+  expect(cardField(card, "output")?.textContent).toBe(formatByteCount(12));
   expect(text).toContain("stale");
 });
 
@@ -527,9 +579,7 @@ test.each([
   vi.useFakeTimers();
   render(<EntityRef view={watchView("watch_missing", raw)} id="watch_missing" />);
 
-  const text = focusCard().textContent;
-  expect(text).not.toContain("Source");
-  expect(text).not.toContain("this session");
+  expect(cardField(focusCard(), "source")).toBeNull();
 });
 
 test("partial supplied usage renders without inventing absent counters", () => {

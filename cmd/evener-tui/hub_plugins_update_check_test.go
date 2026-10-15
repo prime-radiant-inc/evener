@@ -4,7 +4,6 @@ import (
 	"context"
 	"reflect"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 
@@ -65,17 +64,24 @@ func openCommandMessages(t *testing.T, cmd tea.Cmd) []tea.Msg {
 	return slices.Concat(parts...)
 }
 
-// installedTabView renders m's plugins panel on its Installed tab.
-func installedTabView(t *testing.T, m hubModel) string {
+// installedPlugins is m's plugins panel's Installed list, failing the test
+// when the panel is not open or its list read failed.
+func installedPlugins(t *testing.T, m hubModel) []appwire.PluginEntry {
 	t.Helper()
 	if m.pluginsPanel == nil {
 		t.Fatal("/plugins did not open the panel")
 	}
-	var panel tea.Model = *m.pluginsPanel
-	for range 2 {
-		panel, _ = panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	plugins, loading, err := m.pluginsPanel.PluginListState()
+	if loading || err != nil {
+		t.Fatalf("plugin list loading=%v err=%v, want it landed", loading, err)
 	}
-	return panel.View()
+	return plugins
+}
+
+// pluginFlaggedForUpdate reports whether the named plugin is listed with an
+// update available.
+func pluginFlaggedForUpdate(plugins []appwire.PluginEntry, name string) bool {
+	return slices.ContainsFunc(plugins, func(p appwire.PluginEntry) bool { return p.Plugin == name && p.UpdateAvailable })
 }
 
 // Opening the plugins panel asks the hub which plugins have updates, as the
@@ -105,8 +111,8 @@ func TestPluginsPanelOpenChecksForUpdates(t *testing.T) {
 	defer cleanup()
 
 	m := runPluginsOpen(t, hubModel{client: client})
-	if v := installedTabView(t, m); !strings.Contains(v, "UPDATE AVAILABLE") {
-		t.Fatalf("panel after opening does not show the checked update:\n%s", v)
+	if plugins := installedPlugins(t, m); !pluginFlaggedForUpdate(plugins, "widget") {
+		t.Fatalf("panel after opening does not show the checked update: %+v", plugins)
 	}
 }
 
@@ -125,9 +131,9 @@ func TestPluginsPanelOpenKeepsTheListWhenTheUpdateCheckFails(t *testing.T) {
 	defer cleanup()
 
 	m := runPluginsOpen(t, hubModel{client: client})
-	v := installedTabView(t, m)
-	if !strings.Contains(v, "widget") || strings.Contains(v, "Error") || strings.Contains(v, "UPDATE AVAILABLE") {
-		t.Fatalf("a failed update check changed the panel:\n%s", v)
+	plugins := installedPlugins(t, m)
+	if len(plugins) != 1 || plugins[0].Plugin != "widget" || plugins[0].UpdateAvailable {
+		t.Fatalf("a failed update check changed the panel: %+v", plugins)
 	}
 }
 
@@ -184,8 +190,8 @@ func TestPluginsPanelReconnectChecksForUpdatesAgain(t *testing.T) {
 	if ran != 1 {
 		t.Fatalf("update checks after reconnect = %d, want 1", ran)
 	}
-	if v := installedTabView(t, m); !strings.Contains(v, "UPDATE AVAILABLE") {
-		t.Fatalf("panel after reconnect does not show the checked update:\n%s", v)
+	if plugins := installedPlugins(t, m); !pluginFlaggedForUpdate(plugins, "widget") {
+		t.Fatalf("panel after reconnect does not show the checked update: %+v", plugins)
 	}
 }
 

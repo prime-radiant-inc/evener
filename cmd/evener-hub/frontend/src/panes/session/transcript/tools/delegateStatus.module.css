@@ -2,8 +2,7 @@
    Follows the design system (docs/web-ui/design-system.md): all colors,
    spacing, radii, and fonts use var(--token) from tokens.css. The 4px
    space grid (--space-1..4) sizes all gaps and padding. Section eyebrows
-   use the eyebrow pattern (caption size, --font-weight-medium,
-   --ink-mid, uppercase, --tracking-eyebrow). Mono (--font-mono) is reserved
+   are the Eyebrow widget. Mono (--font-mono) is reserved
    for machine text (delegate ID, paths, model, sandbox mode, tool chips,
    transcript ref). The four attention hues carry their designated meanings:
    --alive for running, --attention for needs-human, --danger for failure. */
@@ -67,18 +66,15 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* --- Section eyebrow (micro-label pattern, design system §6) --- */
-.eyebrow {
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  color: var(--ink-mid);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
-  margin-bottom: var(--space-1);
-}
-
 /* --- Mandate --- */
-.mandate {
+/* Mandate, Environment and Available tools each stack an Eyebrow over their
+   body, a --space-1 step apart. */
+.mandate,
+.env,
+.tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--edge);
 }
@@ -97,22 +93,7 @@
   border-top: 1px solid var(--edge);
 }
 
-.diagnosticBody {
-  font-size: var(--font-size-ui);
-  line-height: var(--line-height-body);
-  color: var(--ink-hi);
-}
-
-.dangerText {
-  color: var(--danger-ink);
-}
-
 /* --- Environment: meta table idiom (design system §10) --- */
-.env {
-  padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--edge);
-}
-
 .envRows {
   display: flex;
   flex-direction: column;
@@ -154,11 +135,6 @@
 }
 
 /* --- Available tools --- */
-.tools {
-  padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--edge);
-}
-
 .toolsChips {
   display: flex;
   flex-wrap: wrap;

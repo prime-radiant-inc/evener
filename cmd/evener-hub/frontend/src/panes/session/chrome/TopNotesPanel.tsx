@@ -3,7 +3,7 @@ import { canReadSharedNotes } from "@evener/appwire-client";
 import { useEffect, useRef } from "react";
 import { canWriteHumanNote, syncHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "../../../stores/topNotes";
-import { Chevron, ToolIcon } from "../../../widgets";
+import { Chevron, Eyebrow, ToolIcon } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { hasNoteText, NotesPanelBody } from "./NotesPanel";
 import styles from "./topnotespanel.module.css";
@@ -17,7 +17,6 @@ const CLASS = {
   clampedText: requireClass(styles.clampedText, "topnotespanel.module.css", "clampedText"),
   placeholder: requireClass(styles.placeholder, "topnotespanel.module.css", "placeholder"),
   expandedHeader: requireClass(styles.expandedHeader, "topnotespanel.module.css", "expandedHeader"),
-  expandedTitle: requireClass(styles.expandedTitle, "topnotespanel.module.css", "expandedTitle"),
   expandedBody: requireClass(styles.expandedBody, "topnotespanel.module.css", "expandedBody"),
 };
 
@@ -70,11 +69,11 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
     if (pendingRequest.originReadOnly) {
       const active = document.activeElement;
       if (active !== null && active !== document.body) {
-        topNotesStore.getState().takePendingFocus(sessionRef);
+        topNotesStore.getState().takePendingFocus(sessionRef, sourcePaneId);
         return;
       }
     }
-    if (!topNotesStore.getState().takePendingFocus(sessionRef)) return;
+    if (!topNotesStore.getState().takePendingFocus(sessionRef, sourcePaneId)) return;
     // The pane can be reused for another session between the take and the
     // frame, and React hands the successor the same DOM editor, so the
     // element alone cannot say whose request it carries: only the session
@@ -83,7 +82,7 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
     requestAnimationFrame(() => {
       if (latestSessionRef.current === requestedRef) editorRef.current?.focus();
     });
-  }, [sessionRef, canWrite, expanded, pendingRequest]);
+  }, [sessionRef, canWrite, expanded, pendingRequest, sourcePaneId]);
 
   if (!readable) return null;
 
@@ -145,7 +144,7 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
             <Chevron size={16} />
           </span>
           {expanded ? (
-            <span className={CLASS.expandedTitle}>Session Notes</span>
+            <Eyebrow as="span">Session notes</Eyebrow>
           ) : (
             <>
               {sourceIconKind && (
@@ -153,7 +152,12 @@ export function TopNotesPanel({ sessionRef, model, sourcePaneId }: TopNotesPanel
                   <ToolIcon kind={sourceIconKind} size={14} />
                 </span>
               )}
-              <span className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}>{summaryText}</span>
+              <span
+                className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}
+                data-reason={isPlaceholder ? (canWrite ? "empty" : "read-only") : undefined}
+              >
+                {summaryText}
+              </span>
             </>
           )}
         </span>

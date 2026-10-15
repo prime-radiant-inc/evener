@@ -28,6 +28,14 @@ const (
 // on this to fall back to the browser/redirect flow.
 var ErrDeviceCodeNotEnabled = errors.New("device-code login is not enabled for this OpenAI client")
 
+// Device-flow failures callers do not branch on, named so each is
+// recognizable without reading its message.
+var (
+	errDeviceCodeIncomplete = errors.New("device usercode response missing device_auth_id or user_code")
+	errDevicePollIncomplete = errors.New("device poll response missing authorization_code or code_verifier")
+	errDeviceAuthTimedOut   = errors.New("device auth timed out after 15 minutes")
+)
+
 // DeviceCode is the public handle returned by RequestDeviceCode. It carries
 // what the CLI needs to display to the user as well as the opaque values that
 // PollDeviceAuth needs to drive the polling loop.
@@ -147,7 +155,7 @@ func RequestDeviceCode(ctx context.Context, client *http.Client, cfg Config) (De
 		return DeviceCode{}, fmt.Errorf("decode device usercode response: %w", err)
 	}
 	if strings.TrimSpace(payload.DeviceAuthID) == "" || strings.TrimSpace(payload.UserCode) == "" {
-		return DeviceCode{}, errors.New("device usercode response missing device_auth_id or user_code")
+		return DeviceCode{}, errDeviceCodeIncomplete
 	}
 
 	interval := time.Duration(payload.Interval) * time.Second
@@ -194,7 +202,7 @@ func PollDeviceAuthOnce(ctx context.Context, client *http.Client, cfg Config, dc
 			return DeviceCodeSuccess{}, false, fmt.Errorf("decode device poll response: %w", err)
 		}
 		if payload.AuthorizationCode == "" || payload.CodeVerifier == "" {
-			return DeviceCodeSuccess{}, false, errors.New("device poll response missing authorization_code or code_verifier")
+			return DeviceCodeSuccess{}, false, errDevicePollIncomplete
 		}
 		return DeviceCodeSuccess(payload), false, nil
 	}
@@ -262,7 +270,7 @@ func pollDeviceAuth(ctx context.Context, client *http.Client, cfg Config, dc Dev
 
 		elapsed := now().Sub(start)
 		if elapsed >= maxWait {
-			return DeviceCodeSuccess{}, errors.New("device auth timed out after 15 minutes")
+			return DeviceCodeSuccess{}, errDeviceAuthTimedOut
 		}
 		wait := interval
 		if remaining := maxWait - elapsed; wait > remaining {

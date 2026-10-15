@@ -2,6 +2,7 @@ package selfupdate
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -163,7 +164,7 @@ func TestCheckReleaseEmptyTagNameErrors(t *testing.T) {
 func TestCheckEmptyCommitSHAErrors(t *testing.T) {
 	server, _, _ := fakeGitHub(t, "", "", http.StatusOK)
 	_, err := Check(t.Context(), CheckOptions{Channel: "snapshot", CurrentSHA: "abc", RepoURL: fakeRepoURL(server)})
-	if err == nil || !strings.Contains(err.Error(), "names no commit") {
+	if !errors.Is(err, errSnapshotNamesNoCommit) {
 		t.Fatalf("error = %v", err)
 	}
 }

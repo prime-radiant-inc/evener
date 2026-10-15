@@ -65,6 +65,26 @@ function readResponse(ref: string): ThreadReadResponse {
   };
 }
 
+// The footer's answered-of-total count.
+function answeredCount(): { answered: string | undefined; total: string | undefined } {
+  const count = screen.getByTestId("ask-dock-count");
+  return { answered: count.dataset.answered, total: count.dataset.total };
+}
+
+// The answered-of-total count the live region last announced.
+function announcedCount(): { answered: string | undefined; total: string | undefined } {
+  const region = screen.getByTestId("ask-dock-announcements");
+  return { answered: region.dataset.answered, total: region.dataset.total };
+}
+
+// The live region announces a "prompt" when a pending set activates and
+// "progress" when the answered count moves.
+function expectAnnouncement(kind: "prompt" | "progress"): void {
+  const region = screen.getByTestId("ask-dock-announcements");
+  expect(region.dataset.kind).toBe(kind);
+  expect(region.textContent).not.toBe("");
+}
+
 function connectFakeClient(state: ConnectionState = "ready"): FakeClient {
   const fake = new FakeClient(state);
   connectionStore.getState().connect(fake);
@@ -120,21 +140,6 @@ test("renders nothing when there is no pending ask for this ref", async () => {
   expect(container.firstChild).toBeNull();
 });
 
-// Dark-theme legibility (UX fix): the amber envelope's default --attention-bg/
-// -edge (15%/40% mixes, tokens.css) barely reads as amber against dark
-// surfaces. This file is already on the semantic-hue exception list
-// (token-contract.test.ts's SEMANTIC_PATH_EXCEPTIONS), so it strengthens the
-// mix locally rather than changing the global token (which every OTHER
-// --attention consumer also reads).
-test("the batch envelope strengthens the amber mix locally, past the token default, for dark-theme legibility", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
-  const batchRule = css.match(/\.batch\s*\{([^}]*)\}/);
-  expect(batchRule, "askdock.module.css must declare a .batch rule").not.toBeNull();
-  const body = batchRule![1]!;
-  expect(body).toMatch(/background:\s*color-mix\(in oklab,\s*var\(--attention\)\s*24%,\s*var\(--surface-1\)\)/);
-  expect(body).toMatch(/border:\s*1px solid color-mix\(in oklab,\s*var\(--attention\)\s*55%,\s*var\(--edge\)\)/);
-});
-
 // Touch target (UX fix): the tab strip's own buttons are dense (kata 99yf's
 // question-switcher), so a coarse pointer (phone/tablet touch) needs the
 // platform's 44px tap floor - the same --tap-min button.module.css's own
@@ -142,8 +147,8 @@ test("the batch envelope strengthens the amber mix locally, past the token defau
 // coarse) media feature since this is a plain <button>, not that widget.
 test("the tab strip buttons reach the tap floor on a coarse pointer", () => {
   const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "askdock.module.css"), "utf8");
-  const coarse = css.match(/@media \(pointer: coarse\) \{([\s\S]*?)\n\}/);
-  expect(coarse, "askdock.module.css must have a (pointer: coarse) media block").not.toBeNull();
+  const coarse = css.match(/@media \(any-pointer: coarse\) \{([\s\S]*?)\n\}/);
+  expect(coarse, "askdock.module.css must have a (any-pointer: coarse) media block").not.toBeNull();
   const rule = coarse![1]!.match(/\.tab\s*\{([^}]*)\}/);
   expect(rule, "the coarse-pointer block must override .tab").not.toBeNull();
   expect(rule![1]).toContain("min-height: var(--tap-min)");
@@ -207,9 +212,9 @@ test("shows an N of M answered footer count that updates as questions are answer
 
   render(<AskDock ref="ref_a" />);
 
-  expect(screen.getByText(/0 of 2 questions answered/i)).toBeTruthy();
+  expect(answeredCount()).toEqual({ answered: "0", total: "2" });
   await user.click(screen.getByRole("radio", { name: "a" }));
-  expect(screen.getByText(/1 of 2 questions answered/i)).toBeTruthy();
+  expect(answeredCount()).toEqual({ answered: "1", total: "2" });
 });
 
 test("Send is enabled even with nothing answered - an unresolved question composes as skip", async () => {
@@ -408,10 +413,13 @@ test("a one-click answer auto-advances to the next unanswered question and check
 
   expect(screen.queryByText("q1")).toBeNull();
   expect(screen.getByText("q2")).toBeTruthy();
-  // The answered tab keeps its place but gains the answered marker (a
-  // visually-hidden "(answered)" for AT, a check glyph on screen).
-  expect(screen.getByRole("tab", { name: /1\. First \(answered\)/ })).toBeTruthy();
-  expect(screen.getByText(/1 of 2 questions answered/i)).toBeTruthy();
+  // The answered tab keeps its place but gains the answered marker (an
+  // aria-label carrying the state for AT, a check glyph on screen).
+  const [firstTab, secondTab] = screen.getAllByRole("tab");
+  expect(firstTab?.dataset.state).toBe("answered");
+  expect(firstTab?.getAttribute("aria-label")).not.toBeNull();
+  expect(secondTab?.dataset.state).toBe("open");
+  expect(answeredCount()).toEqual({ answered: "1", total: "2" });
 });
 
 test("a multi-select answer does not auto-advance - more boxes may follow", async () => {
@@ -969,6 +977,52 @@ test("activation while off-screen steals no focus; becoming visible focuses the 
   }
 });
 
+// One conversation can now be mounted in two seats at once (an ordinary
+// pane and a cascade column embedding it), so a ref can have two docks
+// on screen. Both install a visibility callback that captured
+// pendingGreeted=false before either ran; when a question activates only
+// ONE seat may claim the shared activation and take focus - the second
+// must not steal keyboard focus from the first.
+test("of two visible docks sharing a ref, only one claims the activation and focuses", async () => {
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
+  vi.stubGlobal("IntersectionObserver", ControlledIntersectionObserver);
+  try {
+    render(
+      <>
+        <AskDock ref="ref_a" paneId="pane_a" />
+        <AskDock ref="ref_a" paneId="pane_b" />
+      </>,
+    );
+    const [first, second] = ControlledIntersectionObserver.instances;
+    if (!first || !second) throw new Error("both docks must install an IntersectionObserver");
+
+    // The race the finding names: both callbacks fire before either store
+    // update re-renders the pair, so both closures still see the old
+    // pendingGreeted. The claim must be re-checked inside the callback.
+    act(() => {
+      first.report(true);
+      second.report(true);
+    });
+
+    const docks = Array.from(document.querySelectorAll<HTMLElement>("[data-ask-response-dock]"));
+    expect(docks).toHaveLength(2);
+    const [dockA, dockB] = docks;
+    if (!dockA || !dockB) throw new Error("expected two mounted docks");
+    // Exactly one seat received the activation auto-focus...
+    expect(focusSpy).toHaveBeenCalledTimes(1);
+    // ...and it is the first claimant, so the second seat did not steal it.
+    expect(dockA.contains(document.activeElement)).toBe(true);
+    expect(dockB.contains(document.activeElement)).toBe(false);
+    expect(askDockStore.getState().byRef.get("ref_a")?.pendingGreeted).toBe(true);
+  } finally {
+    focusSpy.mockRestore();
+    vi.unstubAllGlobals();
+    ControlledIntersectionObserver.instances = [];
+  }
+});
+
 // The dock's row is virtualized: any aria-live region inside it re-inserts
 // on every scroll-away/scroll-back remount and re-announces unchanged text.
 // The row's own text (the prompt caption, the answered count) is visual
@@ -992,7 +1046,7 @@ describe("AskDockAnnouncements (the one live region, mounted outside the virtual
     await hydrateWithOneAsk(fake);
     render(<AskDockAnnouncements ref="ref_a" />);
 
-    expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("Answer the agent’s questions.");
+    expectAnnouncement("prompt");
 
     await act(async () => {
       const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
@@ -1000,23 +1054,39 @@ describe("AskDockAnnouncements (the one live region, mounted outside the virtual
       await askDockStore.sendBatch("ref_a", batchId);
     });
     await waitFor(() => expect(screen.getByTestId("ask-dock-announcements").textContent).toBe(""));
+    expect(screen.getByTestId("ask-dock-announcements").dataset.kind).toBeUndefined();
   });
 
   test("announces answered-count transitions while pending", async () => {
     const fake = connectFakeClient();
     await hydrateWithTwoAsk(fake);
     render(<AskDockAnnouncements ref="ref_a" />);
-    expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("Answer the agent’s questions.");
+    expectAnnouncement("prompt");
+    const prompt = screen.getByTestId("ask-dock-announcements").textContent;
 
-    const firstKey = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.questions[0]?.key;
-    if (firstKey === undefined) throw new Error("batch did not reconcile");
+    const [firstKey, secondKey] =
+      askDockStore
+        .getState()
+        .byRef.get("ref_a")
+        ?.batches[0]?.questions.map((question) => question.key) ?? [];
+    if (firstKey === undefined || secondKey === undefined) throw new Error("batch did not reconcile");
     act(() => {
       askDockStore.setAnswer("ref_a", firstKey, { kind: "option", labels: ["a"] });
     });
 
-    await waitFor(() =>
-      expect(screen.getByTestId("ask-dock-announcements").textContent).toBe("1 of 2 questions answered"),
-    );
+    await waitFor(() => expectAnnouncement("progress"));
+    expect(announcedCount()).toEqual({ answered: "1", total: "2" });
+    const firstProgress = screen.getByTestId("ask-dock-announcements").textContent;
+    expect(firstProgress).not.toBe(prompt);
+
+    // A second answer moves the count again while the kind stays progress.
+    act(() => {
+      askDockStore.setAnswer("ref_a", secondKey, { kind: "option", labels: ["c"] });
+    });
+
+    await waitFor(() => expect(announcedCount()).toEqual({ answered: "2", total: "2" }));
+    expectAnnouncement("progress");
+    expect(screen.getByTestId("ask-dock-announcements").textContent).not.toBe(firstProgress);
   });
 
   test("a dock row remount never re-announces: the announcements component owns the only live region", async () => {
@@ -1029,7 +1099,7 @@ describe("AskDockAnnouncements (the one live region, mounted outside the virtual
       </>,
     );
     const region = screen.getByTestId("ask-dock-announcements");
-    expect(region.textContent).toBe("Answer the agent’s questions.");
+    expectAnnouncement("prompt");
     // The region's content is stable across anything the row does - the row
     // holds no live region at all (the sibling test above pins that), so a
     // virtualized remount has nothing to re-announce with.
@@ -1049,14 +1119,16 @@ test("a session ref change re-announces the new session's pending prompt", async
   const { rerender } = render(<AskDockAnnouncements ref="ref_a" />);
   const region = screen.getByTestId("ask-dock-announcements");
   const firstNode = region.firstChild;
-  expect(region.textContent).toBe("Answer the agent’s questions.");
+  expectAnnouncement("prompt");
+  const prompt = region.textContent;
 
   rerender(<AskDockAnnouncements ref="ref_b" />);
 
   // Identical text, but a NEW announcement node: a live region announces
   // content mutations, and unchanged text is no mutation - the transition
   // must remount the content to be heard at all.
-  expect(region.textContent).toBe("Answer the agent’s questions.");
+  expectAnnouncement("prompt");
+  expect(region.textContent).toBe(prompt);
   expect(region.firstChild).not.toBe(firstNode);
 });
 
@@ -1071,7 +1143,7 @@ test("an atomic pending-set replacement with an identical count re-announces the
   render(<AskDockAnnouncements ref="ref_a" />);
   const region = screen.getByTestId("ask-dock-announcements");
   const firstNode = region.firstChild;
-  expect(region.textContent).toBe("Answer the agent’s questions.");
+  expectAnnouncement("prompt");
 
   // One snapshot resync: call_1 answered (user message after it), call_2
   // pending after that message - one reconcile swaps the batch set.
@@ -1112,7 +1184,7 @@ test("an atomic pending-set replacement with an identical count re-announces the
     putThreadModel("ref_a", hydrateThread({ thread } as never, "ref_a", Date.now()));
   });
 
-  await waitFor(() => expect(region.textContent).toBe("Answer the agent’s questions."));
+  await waitFor(() => expectAnnouncement("prompt"));
   expect(region.firstChild).not.toBe(firstNode);
 });
 
@@ -1292,6 +1364,44 @@ test("a send that empties the dock requests composer focus", async () => {
   await persisted;
 
   await waitFor(() => expect(screen.getByText("requested")).toBeTruthy());
+});
+
+test("a send that empties the dock requests focus only at the dock's own seat", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  await hydrateWithOneAsk(fake);
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_2", status: "inProgress", itemsView: "" },
+  }));
+  // Two seats share the ref, like an ordinary pane and an embedded column:
+  // the completed ask's focus request belongs to the dock's own seat alone.
+  function SeatProbe(props: { paneId: string }) {
+    return (
+      <span data-testid={`focus-probe-${props.paneId}`}>
+        {useComposerFocusRequest("ref_a", props.paneId) ? "requested" : "none"}
+      </span>
+    );
+  }
+  render(
+    <>
+      <AskDock ref="ref_a" paneId="pane_b" />
+      <SeatProbe paneId="pane_a" />
+      <SeatProbe paneId="pane_b" />
+    </>,
+  );
+
+  const persisted = nextMutationPersistence("ref_a");
+  await user.click(screen.getByRole("button", { name: /send answers/i }));
+  await persisted;
+
+  await waitFor(() => expect(screen.getByTestId("focus-probe-pane_b").textContent).toBe("requested"));
+  expect(screen.getByTestId("focus-probe-pane_a").textContent).toBe("none");
 });
 
 test("post-send focus lands on the first NON-sending remaining batch when several sends are in flight", async () => {

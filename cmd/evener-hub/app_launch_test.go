@@ -133,7 +133,7 @@ func TestLaunchController_SetLayer_RejectsEnabledPlugins(t *testing.T) {
 		CWD: cwd, Layer: "global",
 		Config: appwire.LaunchConfigLayer{EnabledPlugins: &empty},
 	})
-	if err == nil || err.Error() != "enabledPlugins is per-launch only" {
+	if !errors.Is(err, errEnabledPluginsPerLaunch) {
 		t.Fatalf("SetLayer error = %v, want persistence rejection", err)
 	}
 	paths, pathErr := launchconfig.PathsFor(stateRoot, cwd)

@@ -1,18 +1,15 @@
 import { asJsonObject, type SessionActivityContext } from "@evener/appwire-client";
 import type { SessionPaneParams } from "../session/Session";
-import type { TranscriptParams } from "../transcript/Transcript";
 
 export interface DelegateEdgeIntent {
   ownerRef: string;
   childRef: string;
   delegateId: string;
 }
-export type ConversationReturnDescriptor =
-  | { type: "session"; params: SessionPaneParams }
-  | { type: "transcript"; params: TranscriptParams };
+export type ConversationReturnDescriptor = { type: "session"; params: SessionPaneParams };
 export interface CascadeReturnOrigin {
   paneId: string;
-  type: "session" | "transcript";
+  type: "session";
   ref: string;
 }
 export interface SessionZoomParams {
@@ -73,7 +70,9 @@ function inspectionOrigin(value: unknown, sourceRef: string): CascadeReturnOrigi
     raw.ref !== sourceRef
   )
     return null;
-  return { paneId: raw.paneId, type: raw.type, ref: raw.ref };
+  // A legacy origin may name a read-only transcript pane; those restored as
+  // conversation panes keep their pane id, so the origin reads as session.
+  return { paneId: raw.paneId, type: "session", ref: raw.ref };
 }
 
 export function parseZoomParams(value: unknown): SessionZoomParams | null {
@@ -82,21 +81,16 @@ export function parseZoomParams(value: unknown): SessionZoomParams | null {
   const source = object(raw.source);
   const params = object(source?.params);
   if (!source || !params || !sessionRef(params.ref)) return null;
-  let descriptor: ConversationReturnDescriptor;
-  if (source.type === "session") descriptor = { type: "session", params: { ref: params.ref } };
-  else if (source.type === "transcript") {
-    if (params.parentRef !== undefined && (typeof params.parentRef !== "string" || params.parentRef.trim() === ""))
-      return null;
-    descriptor = {
-      type: "transcript",
-      params: { ref: params.ref, ...(params.parentRef === undefined ? {} : { parentRef: params.parentRef }) },
-    };
-  } else return null;
+  // Every zoom source is a session ref (sessionRef rejects job refs), so a
+  // legacy source naming a read-only transcript reads as the session it
+  // always was — the session pane is the only thread view.
+  if (source.type !== "session" && source.type !== "transcript") return null;
+  const descriptor: ConversationReturnDescriptor = { type: "session", params: { ref: params.ref } };
   const edges = edgeSegment(raw.edges, raw.ref);
   if (!Object.hasOwn(raw, "inspection")) return { ref: raw.ref, source: descriptor, edges };
   return {
     ref: raw.ref,
-    source: { type: "transcript", params: descriptor.params },
+    source: descriptor,
     edges,
     inspection: { origin: inspectionOrigin(raw.inspection, descriptor.params.ref) },
   };
@@ -133,14 +127,34 @@ export function deriveCascadePath(params: SessionZoomParams, context: SessionAct
   return { ancestryKnown: true, scopes };
 }
 
-/** The index of the first readable scope in the cascade track. The leaf and
- * its immediate parent are readable, except when that parent is the cascade's
- * live origin conversation: its pane is already on screen, so the cascade does
- * not repeat it and the leaf stays the only readable scope. */
+/** The scopes rendered in the cascade track. A live origin conversation never
+ * renders — its pane is already on screen — so both its readable column and
+ * its spine are removed from the track. Without a live origin every scope
+ * renders. */
+export function renderedScopes(scopes: CascadeScope[], originRef: string | null): CascadeScope[] {
+  // The early return is an identity-preserving fast path: with no live origin
+  // the caller keeps the same array reference, not a filtered copy.
+  if (originRef === null) return scopes;
+  return scopes.filter((scope) => scope.requestedRef !== originRef);
+}
+
+/** The index of the first readable scope in the cascade track, over the full
+ * path. The leaf and its immediate parent are readable, except when that
+ * parent is the cascade's live origin conversation: it never renders, so the
+ * leaf stays the only readable scope. */
 export function firstReadableIndex(scopes: CascadeScope[], originRef: string | null): number {
   const parent = scopes[scopes.length - 2];
   const duplicateOrigin = originRef !== null && parent !== undefined && parent.requestedRef === originRef;
   return duplicateOrigin ? scopes.length - 1 : Math.max(0, scopes.length - 2);
+}
+
+/** The scopes the phone renders: the selected leaf alone. When the removed
+ * live origin is that leaf — its identity replacement popped the selection
+ * onto the never-rendering origin — the phone keeps the Return path instead
+ * of an ancestor column the selected conversation's title does not describe. */
+export function phoneScopes(scopes: CascadeScope[], rendered: CascadeScope[]): CascadeScope[] {
+  const leaf = scopes[scopes.length - 1];
+  return leaf !== undefined && rendered.includes(leaf) ? rendered.slice(-1) : [];
 }
 
 export function drillZoomIntent(params: SessionZoomParams, edge: DelegateEdgeIntent): SessionZoomParams {

@@ -41,7 +41,19 @@ jobs:
           kind: web-unit
 
       - name: Typecheck, unit tests, and lint
+        env:
+          EVENER_WEB_VITEST_JSON: /tmp/gate-web-vitest.json
         run: make test-web
+
+      # The frontend's durations come from the same vitest run above (issue
+      # #144): the JSON reporter it wrote is turned into the ratchet's rows and
+      # the "web" budget entry is enforced. This lane owns the frontend scope,
+      # so it enforces exactly the duration its own run measured.
+      - name: Timing budget (web row from the same vitest run)
+        run: |
+          . scripts/lib/timing-tsv-lib.sh
+          vitest_json_to_tsv /tmp/gate-web-vitest.json > /tmp/gate-web-timing.tsv
+          scripts/gate/test-timing-budget.sh --check --measured /tmp/gate-web-timing.tsv
 
       - uses: ./.github/actions/go-cache-save
 
@@ -402,7 +414,15 @@ jobs:
       - name: Deterministic tests (full root suite; frontend covered by web job)
         env:
           LOAD_AWARE_LOAD1: "0"
+          EVENER_GATE_TIMING_TSV: /tmp/gate-timing-${{ matrix.scope }}.tsv
         run: ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }}
+
+      # The timing ratchet's rows come from the test run above (issue #144), so
+      # the budget is enforced without a second full pass. Each lane checks its
+      # own scope: the rows name only the packages this lane measured, and a
+      # missing file fails the check rather than passing silently.
+      - name: Timing budget (rows from the same test run)
+        run: scripts/gate/test-timing-budget.sh --check --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
 
       - uses: ./.github/actions/go-cache-save
 

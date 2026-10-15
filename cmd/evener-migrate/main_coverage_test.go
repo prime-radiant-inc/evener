@@ -165,8 +165,11 @@ func TestRemoveEmptyHomeRootVerbose(t *testing.T) {
 	}
 	var stdout bytes.Buffer
 	removeEmptyHomeRoot(dir, true, &stdout)
-	if !strings.Contains(stdout.String(), "removed empty") {
-		t.Fatalf("verbose output missing 'removed empty': %q", stdout.String())
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("empty home root %s should be removed: %v", dir, err)
+	}
+	if !strings.Contains(stdout.String(), dir) {
+		t.Fatalf("verbose output = %q, want the removed %s named", stdout.String(), dir)
 	}
 }
 
@@ -210,8 +213,9 @@ func TestExecuteDryRunReport(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("execute dry-run code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout.String(), "dry-run report:") {
-		t.Fatalf("stdout missing dry-run report: %s", stdout.String())
+	got := reportCounts(t, stdout.String(), "would_move")
+	if _, ok := got["moved"]; ok {
+		t.Fatalf("report = %v, a dry run must not report moved", got)
 	}
 }
 
@@ -229,8 +233,9 @@ func TestExecuteRealRunReport(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("execute code = %d, want 0", code)
 	}
-	if !strings.Contains(stdout.String(), "migration report:") {
-		t.Fatalf("stdout missing migration report: %s", stdout.String())
+	got := reportCounts(t, stdout.String(), "moved")
+	if _, ok := got["would_move"]; ok {
+		t.Fatalf("report = %v, a real run must not report would_move", got)
 	}
 }
 

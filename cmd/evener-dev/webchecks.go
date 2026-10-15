@@ -27,11 +27,24 @@ func newWebChecksGate() *webGate {
 }
 
 // webCheckSpec runs check in the frontend with private HOME, TMPDIR and XDG
-// roots under root, its own scratch directory, and Node's compile cache off.
+// roots under root, its own scratch directory, Vite's dep cache inside that
+// root, and Node's compile cache off.
 func webCheckSpec(check, root string) guardSpec {
+	argv := []string{"npm", "run", check}
+	// The timing ratchet reads the frontend's durations from the same vitest
+	// run the gate already pays for (issue #144): EVENER_WEB_VITEST_JSON names
+	// a file to receive vitest's JSON reporter, while the default reporter
+	// keeps the human log. `npm run test -- ...` forwards the flags to vitest
+	// (the script hands "$@" through), and the test check's own package.json
+	// script only ever adds them to vitest, never to the node helper tests.
+	if check == "test" {
+		if out := os.Getenv("EVENER_WEB_VITEST_JSON"); out != "" {
+			argv = append(argv, "--", "--reporter=default", "--reporter=json", "--outputFile.json="+out)
+		}
+	}
 	return guardSpec{
 		name: check,
-		argv: []string{"npm", "run", check},
+		argv: argv,
 		dir:  frontendDir,
 		env: []string{
 			"HOME=" + filepath.Join(root, "home"),
@@ -39,6 +52,11 @@ func webCheckSpec(check, root string) guardSpec {
 			"XDG_CONFIG_HOME=" + filepath.Join(root, "xdg-config"),
 			"XDG_CACHE_HOME=" + filepath.Join(root, "xdg-cache"),
 			"XDG_STATE_HOME=" + filepath.Join(root, "xdg-state"),
+			// Vite's dep-optimizer cache would otherwise land in the checkout's
+			// .vite-cache, which a read-only checkout denies (issue #4193). The
+			// root already holds a "vite-cache" dir (guardDirs); the browser
+			// guards set BROWSER_GUARD_VITE_CACHE_DIR the same way.
+			"EVENER_FRONTEND_VITE_CACHE_DIR=" + filepath.Join(root, "vite-cache"),
 			"NODE_DISABLE_COMPILE_CACHE=1",
 		},
 		// npm exits on TERM without stopping the script's children (tsc,

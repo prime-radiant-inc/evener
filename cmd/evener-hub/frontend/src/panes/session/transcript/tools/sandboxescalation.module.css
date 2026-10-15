@@ -1,17 +1,11 @@
-/* Amber envelope (topic 16 / kata crcf's own pattern, see token-contract.
- * test.ts's SEMANTIC_PATH_EXCEPTIONS): a blocking sandbox approval is the
- * app's SECOND "a human is needed right now" moment, alongside askDock's
- * batch envelope - the tool-exec goroutine is parked waiting on this exact
- * card, so it needs the same container tint askDock's .batch uses, not the
- * neutral surface a passive Card gives everything else. */
-.card {
+/* The approval's layout inside its Card tone="attention" envelope (the same
+ * one askDock's batch uses): a blocking sandbox approval is the app's SECOND
+ * "a human is needed right now" moment - the tool-exec goroutine is parked
+ * waiting on this exact card. */
+.content {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--attention-edge);
-  border-radius: var(--radius-pane);
-  background: var(--attention-bg);
 }
 
 /* The rail is a sibling above VirtualList's own scroller (Session.tsx), not

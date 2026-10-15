@@ -1051,10 +1051,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
 	var repairInsertions []int
+	// Where each reopened turn's latest attempt begins in resumeHistory: the
+	// restored state reads an end reason from that attempt alone.
+	var attemptStarts map[string]int
 	if restoreCfg.resumeHistory != nil {
 		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
 	} else if len(transcriptEntries) > 0 {
 		resumeHistory, repairInsertions = resumeHistoryIndexed(transcriptEntries)
+		attemptStarts = latestAttemptStarts(transcriptEntries, repairInsertions)
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -1568,7 +1572,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// alone, so a forked child's inherited prefix is never decided by a
 	// reused client mutation id in the child's OWN journal.
 	steeringProvenance := s.clientMutations.steeringOrigins()
-	restoredState := deriveRestoredState(s.history, divergenceTurn, steeringProvenance)
+	restoredState := deriveRestoredState(s.history, divergenceTurn, steeringProvenance, attemptStarts)
 	// Rebuild the pending-ask SET alongside the state (ask-attention-tiering
 	// spec §2): deriveRestoredState alone only re-derives that the session
 	// rests awaiting, but every hold keyed on askPending itself — the entry
@@ -1591,7 +1595,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.mu.Unlock()
 	// Settle before the session start announces the state.
 	if !restoreCfg.deferRestoreSideEffects {
-		s.recomputeRestoredState(divergenceTurn)
+		s.recomputeRestoredState(divergenceTurn, attemptStarts)
 	}
 
 	s.emitSessionStartEnvelope(events.SessionStartData{
@@ -1654,11 +1658,12 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	ei := s.snapshotEnvironmentInfo(env)
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
 	if !s.cfg.testOnly.skipGitSnapshot {
-		if inRepo, branch, mod, untracked, commits := snapshotGit(s.sessionContext(), env, ei.WorkingDir); inRepo {
+		if inRepo, branch, mod, untracked, commits, statusKnown := snapshotGit(s.sessionContext(), env, ei.WorkingDir); inRepo {
 			ei.IsGitRepo = true
 			ei.GitBranch = branch
 			ei.GitModifiedFiles = mod
 			ei.GitUntrackedFiles = untracked
+			ei.GitStatusUnknown = !statusKnown
 			ei.GitRecentCommitTitles = commits
 			ei.GitOriginURL = gitOriginURL(s.sessionContext(), env, ei.WorkingDir)
 		}
@@ -1677,8 +1682,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	// (native worktree tools spec §5 occupancy locks / §5 table row "session
 	// init, launch cwd inside a managed worktree"): apply the idempotent
 	// occupancy-lock rule. A no-op when resumeWorktreeReentry already
-	// established occupancy tracking above.
-	s.applyInitInsideWorktreeLock(ei.IsGitRepo)
+	// established occupancy tracking above. The function decides repo-ness
+	// structurally, not from ei.IsGitRepo (#4132).
+	s.applyInitInsideWorktreeLock()
 
 	// Load the core built-in agents first. Configured plugin agents are merged in
 	// during plugin initialization below.
@@ -2374,8 +2380,8 @@ func (s *Session) logSessionStartHookDispatch(kind plugin.SessionStartKind, deli
 //
 // The turn count is conversation only, excluding hook execution records and the
 // harness-injected context turns — environment context saved before the user's
-// first input and shared-notes context projected at turn start — that no user
-// or model utterance produced. It answers
+// first input and the shared-notes and memory projections delivered at a turn
+// boundary — that no user or model utterance produced. It answers
 // "does this session already carry a conversation?" — the question the detector asks — with a number no hook
 // dispatch or context projection can inflate. modelResponses is guarded by the
 // same mutex (see the field's documentation on Session), and the detector
@@ -2389,7 +2395,7 @@ func (s *Session) conversationSignals() (historyTurns, modelResponses int) {
 	defer s.mu.Unlock()
 	for _, t := range s.history {
 		switch t.Kind {
-		case schema.TurnHookCompleted, schema.TurnEnvironment, schema.TurnNotesContext:
+		case schema.TurnHookCompleted, schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
 			continue
 		}
 		if t.Kind.TranscriptOnly() {

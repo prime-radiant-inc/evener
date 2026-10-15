@@ -304,6 +304,19 @@ func releaseURL(repoURL, release, asset string) string {
 // bomb tests can prove the cap with a small archive.
 var maxExtractedBytes = int64(512 << 20)
 
+// Reasons Upgrade refuses a release. Each error carries one so a caller can
+// tell which guarantee a release failed, while the message keeps naming the
+// asset and limit involved.
+var (
+	errSnapshotNamesNoCommit  = errors.New("names no commit")
+	errChecksumMissing        = errors.New("checksums.txt has no entry")
+	errChecksumAmbiguous      = errors.New("checksums.txt has more than one entry")
+	errArchiveTooLarge        = errors.New("refusing a response that would exhaust the disk")
+	errDecompressionBomb      = errors.New("refusing a decompression bomb")
+	errArchiveEntryNotRegular = errors.New("is not a regular file")
+	errArchiveMissingBinary   = errors.New("release archive did not contain")
+)
+
 // ctxReader returns a reader that stops the copy when ctx expires, so a
 // single large entry cannot outlive the overall upgrade deadline.
 func ctxReader(ctx context.Context, r io.Reader) io.Reader {
@@ -361,11 +374,11 @@ func verifyArchiveChecksum(ctx context.Context, client *http.Client, repoURL, re
 	}
 	switch len(matches) {
 	case 0:
-		return fmt.Errorf("checksums.txt has no entry for %s; refusing to install an unverified archive", asset)
+		return fmt.Errorf("%w for %s; refusing to install an unverified archive", errChecksumMissing, asset)
 	case 1:
 		// The one vouched digest; compare below.
 	default:
-		return fmt.Errorf("checksums.txt has more than one entry for %s; refusing to install an ambiguous archive", asset)
+		return fmt.Errorf("%w for %s; refusing to install an ambiguous archive", errChecksumAmbiguous, asset)
 	}
 	return verifyChecksumFile(archivePath, "", asset, matches[0])
 }
@@ -384,13 +397,13 @@ func verifyChecksumFile(archivePath, checksumsPath, asset, want string) error {
 		for line := range strings.SplitSeq(string(body), "\n") {
 			if sum := parseChecksumEntry(line, asset); sum != "" {
 				if want != "" {
-					return fmt.Errorf("checksums.txt has more than one entry for %s; refusing to install an ambiguous archive", asset)
+					return fmt.Errorf("%w for %s; refusing to install an ambiguous archive", errChecksumAmbiguous, asset)
 				}
 				want = sum
 			}
 		}
 		if want == "" {
-			return fmt.Errorf("checksums.txt has no entry for %s; refusing to install an unverified archive", asset)
+			return fmt.Errorf("%w for %s; refusing to install an unverified archive", errChecksumMissing, asset)
 		}
 	}
 	file, err := os.Open(archivePath)
@@ -463,7 +476,7 @@ func download(ctx context.Context, client *http.Client, url, dest string) error 
 		return err
 	} else if info.Size() > defaultMaxArchiveBytes {
 		_ = os.Remove(dest)
-		return fmt.Errorf("download %s: archive larger than %d bytes, refusing a response that would exhaust the disk", url, defaultMaxArchiveBytes)
+		return fmt.Errorf("download %s: archive larger than %d bytes, %w", url, defaultMaxArchiveBytes, errArchiveTooLarge)
 	}
 	return nil
 }
@@ -475,7 +488,7 @@ func download(ctx context.Context, client *http.Client, url, dest string) error 
 func chargeExtractionBudget(total *int64, n int64) error {
 	*total += n
 	if *total > maxExtractedBytes {
-		return fmt.Errorf("release archive expands past %d bytes, refusing a decompression bomb", maxExtractedBytes)
+		return fmt.Errorf("release archive expands past %d bytes, %w", maxExtractedBytes, errDecompressionBomb)
 	}
 	return nil
 }
@@ -536,7 +549,7 @@ func extractReleaseArchive(ctx context.Context, archivePath, root, destRoot stri
 			continue
 		}
 		if header.Typeflag != tar.TypeReg {
-			return fmt.Errorf("release archive entry %s is not a regular file", header.Name)
+			return fmt.Errorf("release archive entry %s %w", header.Name, errArchiveEntryNotRegular)
 		}
 		out := filepath.Join(destRoot, bin)
 		file, err := os.OpenFile(out, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
@@ -562,7 +575,7 @@ func extractReleaseArchive(ctx context.Context, archivePath, root, destRoot stri
 	}
 	for _, bin := range installBinaries {
 		if !seen[bin] {
-			return fmt.Errorf("release archive did not contain %s", bin)
+			return fmt.Errorf("%w %s", errArchiveMissingBinary, bin)
 		}
 	}
 	return nil

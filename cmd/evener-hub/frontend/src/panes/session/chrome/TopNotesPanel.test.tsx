@@ -53,6 +53,7 @@ function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     contextUsed: 0,
     contextWindow: 0,
     contextPressure: 0,
+    contextAssumed: false,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],
@@ -61,6 +62,11 @@ function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     jobsTreeRevision,
     ...rest,
   };
+}
+
+// Why the collapsed summary shows a placeholder (null when it previews content).
+function summaryPlaceholderReason(): string | null | undefined {
+  return screen.getByTestId("top-notes-summary").querySelector("[data-reason]")?.getAttribute("data-reason");
 }
 
 beforeEach(() => {
@@ -143,7 +149,7 @@ test("collapsed default shows empty placeholder when no notes or links exist", (
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  expect(screen.getByText("Add a note…")).toBeTruthy();
+  expect(summaryPlaceholderReason()).toBe("empty");
   expect(screen.queryByTestId("top-notes-icon-person")).toBeNull();
   expect(screen.queryByTestId("top-notes-icon-skill")).toBeNull();
   expect(screen.queryByTestId("top-notes-icon-globe")).toBeNull();
@@ -157,7 +163,7 @@ test("collapsed summary treats a whitespace-only note as empty", () => {
   });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  expect(screen.getByText("Add a note…")).toBeTruthy();
+  expect(summaryPlaceholderReason()).toBe("empty");
   expect(screen.queryByTestId("top-notes-icon-person")).toBeNull();
   expect(screen.queryByTestId("top-notes-icon-skill")).toBeNull();
 });
@@ -235,6 +241,17 @@ test("expanded view displays human note editor, agent note, and links with remov
   expect(removeURLSpy).toHaveBeenCalledWith(model.ref, "u1");
 });
 
+test("the read-only placeholder does not reuse the writable session's invitation", () => {
+  const empty = { humanNote: "", agentNote: "", sessionUrls: [] };
+  const writable = makeModel(empty);
+  render(<TopNotesPanel sessionRef={writable.ref} model={writable} />);
+  const invitation = screen.getByTestId("top-notes-summary").textContent;
+  cleanup();
+  const readOnly = makeModel({ ...empty, status: { type: "ended" } });
+  render(<TopNotesPanel sessionRef={readOnly.ref} model={readOnly} />);
+  expect(screen.getByTestId("top-notes-summary").textContent).not.toBe(invitation);
+});
+
 test("read-only sessions show a view-only empty state instead of a write invitation", async () => {
   const user = userEvent.setup();
   const model = makeModel({
@@ -246,8 +263,7 @@ test("read-only sessions show a view-only empty state instead of a write invitat
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
   const summary = screen.getByTestId("top-notes-summary");
-  expect(screen.getByText("No notes yet")).toBeTruthy();
-  expect(screen.queryByText("Add a note…")).toBeNull();
+  expect(summaryPlaceholderReason()).toBe("read-only");
   // The visible preview IS the accessible name - a generic label would hide
   // the content from screen readers. No hint text rides along in any state,
   // so there is no describedby either.

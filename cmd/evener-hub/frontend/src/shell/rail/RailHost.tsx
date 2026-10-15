@@ -3,10 +3,10 @@
 // persisted BOOLEAN — hidden or docked. There is no mode system: the old
 // tri-state sidebarMode (auto/pane/rail) with its overlay-drawer "Collapsed"
 // mode was removed 2026-07-24 at Jesse's direction; hiding now just removes
-// the docked rail and leaves a top-left ☰ chip that docks it right back.
-// ⌘B (or Ctrl+B outside editable fields) toggles the same boolean; the ☰
-// button in the rail header hides it - the same glyph both directions, so
-// one icon owns the sidebar toggle. Mobile is untouched: StackHost's
+// the docked rail and leaves a top-left Show sidebar button that docks it
+// right back. ⌘B (or Ctrl+B outside editable fields) toggles the same
+// boolean; the rail header's Hide sidebar button hides it - both draw
+// SidebarIcon, so one glyph owns the sidebar toggle. Mobile is untouched: StackHost's
 // TreeDrawer sheet hosts the same full-chrome Rail, and the hidden pref is
 // desktop-only (the drawer is mobile's own show/hide).
 //
@@ -19,17 +19,17 @@ import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { selectNeedsYouCount } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { prefsStore, usePrefsStore } from "../../stores/prefs";
-import { Badge } from "../../widgets";
+import { IconButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { installKeybindings } from "../installKeybindings";
 import { useIsMobile } from "../useIsMobile";
 import { Rail } from "./Rail";
 import styles from "./RailHost.module.css";
 import { setRailRevealHandler } from "./railController";
+import { SidebarIcon } from "./railIcons";
 
 const CLASS = {
   chipBar: requireClass(styles.chipBar, "RailHost.module.css", "chipBar"),
-  chip: requireClass(styles.chip, "RailHost.module.css", "chip"),
 };
 
 export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
@@ -74,16 +74,14 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
     const label = needsYou > 0 ? `Show sidebar (${needsYou} need attention)` : "Show sidebar";
     return (
       <div className={CLASS.chipBar}>
-        <button
-          type="button"
-          className={CLASS.chip}
+        <IconButton
           data-rail-toggle=""
-          aria-label={label}
+          label={label}
+          icon={<SidebarIcon />}
+          variant="secondary"
+          badge={needsYou > 0 ? { count: needsYou, tone: "attention" } : undefined}
           onClick={() => prefsStore.getState().setSidebarHidden(false)}
-        >
-          <span aria-hidden="true">{"☰"}</span>
-          {needsYou > 0 && <Badge count={needsYou} tone="attention" />}
-        </button>
+        />
       </div>
     );
   }

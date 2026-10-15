@@ -4,16 +4,19 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
-    "panes/session/composer/composer.module.css"
+    "panes/session/composer/composer.module.css",
+    "widgets/button/button.module.css",
+    "widgets/iconbutton/iconbutton.module.css"
   ],
+  "viewport": { "width": 1280, "height": 800 },
   "forcePseudoStates": [
     { "selector": "#hovered-tile", "pseudoClasses": ["hover"] },
     { "selector": "#focused-remove", "pseudoClasses": ["focus-visible"] }
   ],
   "mutation": {
-    "declaration": "composer.module.css: .removeImageButton:focus-visible { opacity: 1; outline: ... } (rule deleted entirely)",
-    "verified": "2026-08-17",
+    "declaration": "composer.module.css: .removeSlot:has(:focus-visible) { opacity: 1 } (rule deleted entirely)",
+    "verified": "2026-10-11",
     "expect": "fail",
-    "note": "Re-verified after the case picked up styles/global.css (kata e4sh) - its measurement came back byte-identical, but the field attests to a rendering configuration, and that configuration changed. Still fails: the remove button under :focus-visible is opacity 0, not 1."
+    "note": "Re-verified after the remove control became an IconButton in a .removeSlot positioner. Fails: the remove button under :focus-visible is opacity 0, not 1."
   }
 }

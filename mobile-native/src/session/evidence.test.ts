@@ -556,15 +556,21 @@ describe("memory step evidence", () => {
 	it("shows a written memory page as markdown and keeps its images", () => {
 		const content = "# Memory\n\n![trace](https://example.com/trace.png)";
 		expect(
-			stepEvidence(memory("memory_write", JSON.stringify({ scope: "personal", file_path: "notes.md", content }))),
+			stepEvidence(memory("memory_write", JSON.stringify({ scope: "personal", file_path: "notes.md", body: content }))),
 		).toEqual([{ kind: "markdown", title: "personal/notes.md", markdown: content }]);
+	});
+
+	it("shows a written page's when line above its body", () => {
+		expect(
+			stepEvidence(memory("memory_write", JSON.stringify({ file_path: "p.md", when: "When pricing", body: "# Cart" }))),
+		).toEqual([{ kind: "markdown", title: "p.md", markdown: "**When:** When pricing\n\n# Cart" }]);
 	});
 
 	it("shows a rejected session-memory write's error", () => {
 		const error = "session memory belongs to the root session; report this to your parent instead";
 		const rejectedWrite = memory(
 			"memory_write",
-			JSON.stringify({ scope: "session", file_path: "notes.md", content: "# Note" }),
+			JSON.stringify({ scope: "session", file_path: "notes.md", body: "# Note" }),
 			"",
 		);
 		rejectedWrite.state = "failed";
@@ -574,10 +580,10 @@ describe("memory step evidence", () => {
 	});
 
 	it("falls back from scope/path to the bare path, then Memory page", () => {
-		expect(stepEvidence(memory("memory_write", JSON.stringify({ file_path: "bare.md", content: "page" })))).toEqual([
+		expect(stepEvidence(memory("memory_write", JSON.stringify({ file_path: "bare.md", body: "page" })))).toEqual([
 			{ kind: "markdown", title: "bare.md", markdown: "page" },
 		]);
-		expect(stepEvidence(memory("memory_write", JSON.stringify({ content: "page" })))).toEqual([
+		expect(stepEvidence(memory("memory_write", JSON.stringify({ body: "page" })))).toEqual([
 			{ kind: "markdown", title: "Memory page", markdown: "page" },
 		]);
 	});
@@ -604,8 +610,8 @@ describe("memory step evidence", () => {
 	it.each([
 		["unparseable JSON", "{", ["output", "output"]],
 		["non-object JSON", "[]", ["json", "output"]],
-		["content with the wrong type", JSON.stringify({ content: 7 }), ["json", "output"]],
-		["empty content", JSON.stringify({ content: "" }), ["json", "output"]],
+		["body with the wrong type", JSON.stringify({ body: 7 }), ["json", "output"]],
+		["empty body", JSON.stringify({ body: "" }), ["json", "output"]],
 	])("falls back safely for %s write arguments", (_case, argumentsJSON, kinds) => {
 		const evidence = stepEvidence(memory("memory_write", argumentsJSON));
 		expect(evidence.map((entry) => entry.kind)).toEqual(kinds);

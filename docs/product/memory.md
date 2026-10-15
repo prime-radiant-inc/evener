@@ -116,9 +116,11 @@ Finishing guidance repeats the check for what the partner told and for project
 or environment facts the repository doesn't show; the result tool carries no
 save reminder. Pages that
 contradict what the agent observes are corrected in the same turn. Saving
-sessions are also told the shape of a useful page (one durable fact with its reason and
-when it bears on work, with a frontmatter description that says what the page
-holds and topic tags that reuse the index's) and to keep run details that go
+sessions are also told that `memory_write` takes each part of a page as its own
+field (the parameter descriptions carry the guidance on what each holds: a
+`when` line saying when a future session needs the page, and a body with one
+durable fact, its reason and when it bears on work), that the index is built
+from each page's path and `when` line, and to keep run details that go
 stale within days (commit SHAs, branch names, ids, scratch paths, test counts)
 out of memory. A changed fact is rewritten in place. When the
 agent reads a page that has turned into a log, it repairs that page before it
@@ -147,10 +149,14 @@ the index in full. A scope with a baseline is read only at the first
 model call of each turn (each input the session processes: a user message
 or a notification wake), never on that turn's later rounds. When another
 session changed a known index, that read adds one change section for the
-scope instead of the full index: the quoted page lines added and removed since the
-baseline (the tag header and the not-shown line are never listed). A change whose section would pass 2 KiB is reported as counts of
-added and removed lines. The new index becomes the baseline, so an unchanged
-turn appends nothing.
+scope instead of the full index: the quoted page lines added since the
+baseline (the tag header and the not-shown line are never listed). A change
+whose section would pass 2 KiB is reported as a count of added lines. Removed
+lines are never reported, so a page another session deleted adds nothing, and a
+changed `when` arrives as its new line only. A changed description on a page
+with a `when` changes no line and reports nothing. The new index becomes the
+baseline even when nothing is reported, so an unchanged turn or a removal-only
+change appends nothing and a removal is never reported later.
 
 The session also keeps a record (a content digest, or absence) of each page it
 read with `memory_read`, other than `MEMORY.md`. The record is taken from the
@@ -158,8 +164,9 @@ bytes that read loaded, so a change another session makes right after it is
 noticed; an `offset` or `limit` read loads the whole page too, so it records
 the whole page as of that read. Its own write, edit or delete of such a page
 updates the record from a read-back of the file. The same first-model-call read rechecks
-those pages, and when another session changed or removed one, adds one
-notice section per scope naming each such page as changed or removed. A notice
+those pages, and when another session changed one, adds one notice section per
+scope naming each such page. A page another session removed is not reported;
+its record still advances, so a page that returns is reported as changed. A notice
 never carries page contents and never names a page the
 session has not read. The session tracks at most the 32 pages per scope it
 most recently read with `memory_read`; reading a 33rd stops tracking the least
@@ -212,18 +219,24 @@ memory updates can join a Responses continuation delta after a valid active
 anchor. Compaction without a new valid anchor still requires full history;
 unsafe content and the other continuation eligibility checks remain unchanged.
 
-Pages carry frontmatter (`description`, optional `tags` and `evidence`; Evener
-adds `updated` and `by`). A page without a description still appears, under its
+Pages carry frontmatter. `memory_write` writes `when`, and Evener adds `updated`
+and `by`; older pages may also carry `description`, `tags` and `evidence`, and keep
+rendering. A page without a `when` or a description still appears, under its
 fallback description. Other content has no required schema, extension or link
 rule. An optional `log.md` is ordinary model-authored content, not a
 runtime-maintained change log.
 
 The bundled `gardening-memory` skill is explicitly activated through
 `use_skill`. It supports small editorial passes: check evidence, correct
-contradictions, remove duplicates, split sprawling pages, fix descriptions and
+contradictions, remove duplicates, split sprawling pages, fix `when` lines and
 tags, merge pages that share tags, delete stale pages, and remove recorded
 approvals, plan status and progress while keeping any durable fact on the same
-page. It does not activate automatically or run background work.
+page. It does not activate automatically or run background work. It is
+advertised in a session's skill catalog, and loads, only while the session can
+save memory: a delegate, a `--disable-memory` session, or a root whose profile
+denies a save tool does not list it in its skill catalog and cannot activate
+it, and a refusal fails visibly instead of delivering instructions the session
+cannot follow.
 
 ## Generated index
 
@@ -251,18 +264,22 @@ saved with CRLF line endings keeps its frontmatter:
 
 ```markdown
 ---
-description: Money is integer cents, never floats
-tags: [money, formatting]
-evidence: file:shop/price.go:Format
+when: When code stores, computes or prints a money amount
 updated: 2026-10-08
 by: <session id>
 ---
-# Integer cents
+
+# Money is integer cents
 Prices are stored and computed as integer cents...
 ```
 
-`description` is one line; newlines collapse to spaces when it is rendered, and
-a value that is not a YAML string counts as missing. `tags` is a YAML list (a
+`when` is one line saying when a future session needs the page: the moments it
+would otherwise get this wrong, at the level that covers all of them. The index
+line shows it. A non-string or empty value counts as missing. A page written
+before `memory_write` took fields may also carry `description`, one line whose
+newlines collapse to spaces when it is rendered; a value that is not a YAML
+string counts as missing. The index line shows a page's `description` only when
+it has no `when`. `tags` is a YAML list (a
 single string is one tag); each tag is trimmed and lowercased, runs of
 whitespace become `-`, and empty and duplicate tags are dropped. Tags are plain:
 there is no primary tag, reserved tag or type field. `evidence` is free-form and
@@ -272,7 +289,9 @@ kept untouched and ignored.
 **Fallback description.** When `description` is missing or empty, the line
 uses the page's first Markdown heading, else its first non-blank body line, cut
 to 120 characters and followed by `(no description)`. Whitespace runs in the
-heading or line collapse to one space. A page whose frontmatter
+heading or line collapse to one space. A page that has a `when` is never marked
+`(no description)`, in the index or in any listing of pages:
+its `when` stands in for the description. A page whose frontmatter
 does not parse is still a page; it renders as
 `<fallback> (no description) (frontmatter unreadable)`.
 
@@ -280,8 +299,8 @@ does not parse is still a page; it renders as
 
 ```text
 Tags: formatting (3), money (2), vitest (6)
-- [Integer cents](cents.md) — Money is integer cents, never floats [money, formatting] (updated 2026-10-08)
-- [Vitest read-only loader](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)
+- [cents.md](cents.md) — Formatting or storing a price [money, formatting] (updated 2026-10-08)
+- [vitest/loader.md](vitest/loader.md) — read-only Vitest needs --configLoader runner [vitest] (updated 2026-10-07)
 ```
 
 The `Tags:` header lists every tag with its page count, alphabetically, and is
@@ -291,15 +310,15 @@ omitted when no page has tags. Lines run newest `updated` first. A page with no
 Ties order by path. Pages whose frontmatter is unreadable come after every
 other page, ordered by path: a broken page's file date says nothing about what
 it holds, so a freshly touched one never crowds the newest pages out of the
-projection. The title is the page's first heading (whitespace runs
-collapsed, as in the fallback), else its filename without extension; `[tags]` and `(updated …)` are left out when empty. A `]`
-or `\` in a title is backslash-escaped. A path holding whitespace, a
+projection. The link text is the page's path, so a heading change never
+changes a line; `[tags]` and `(updated …)` are left out when empty. A `]`
+or `\` in the path is backslash-escaped in the link text. A path holding whitespace, a
 parenthesis or a backslash, or starting with `<`, is written in angle brackets
-(`[Old notes](<my notes (old).md>)`), with `\`, `<` and `>` inside escaped, so
+(`[my notes (old).md](<my notes (old).md>)`), with `\`, `<` and `>` inside escaped, so
 the link names the whole path. A file whose name holds an ASCII control
 character other than tab, which `memory_write` refuses but a file can still
 have, gets no link. Its line is the path as a JSON string, then a note, with no
-title, description, tags or date: `- "bad\nname.md" — (no link: the name holds
+link text, description, tags or date: `- "bad\nname.md" — (no link: the name holds
 a control character, shown JSON-escaped; read or delete it, and save its
 content under another name)`. A name that also holds invalid UTF-8, which no JSON
 string or tool call can carry, is quoted with `\x` escapes instead, and its note
@@ -328,7 +347,7 @@ its result cap ends, after a blank line, with a note saying so and how to see
 the rest. `memory_write`,
 `memory_edit` and `memory_delete` of `MEMORY.md` at the scope root are refused:
 "MEMORY.md is generated from each page's
-frontmatter; edit a page's description or tags instead". `sub/MEMORY.md` is an
+frontmatter; edit a page's when line or tags instead". `sub/MEMORY.md` is an
 ordinary page. `memory_write` and `memory_edit` of a path holding an ASCII
 control character other than tab, such as a newline, are refused too: "memory
 path holds a control character, such as a newline; choose a name without one".
@@ -337,6 +356,18 @@ file named that way outside the tools can be removed. Deleting a page needs no
 index repair; its line is gone from the next rendering. No memory tool removes a
 directory, so `memory_delete` also removes the directories a deletion leaves
 empty, up to the scope root.
+
+**Writing a page.** `memory_write` takes `scope`, `file_path`, `when` (a
+required, non-blank line) and `body` (the page's Markdown), and no other
+property. Evener writes a frontmatter block holding `when`, stamps the page
+(below), then writes the body.
+Writing a path that exists replaces the page whole. Two calls are refused and
+write nothing: a blank or missing `when` ("memory_write needs a when: one line
+saying when a future session needs the page"), and a `body` that opens with a
+frontmatter block ("body starts with a frontmatter block; put the when line in
+its own field and pass only the page's Markdown as body"). `memory_edit` stays
+a plain string edit, so a session changes a page's `when` by editing its
+frontmatter line or by rewriting the page with `memory_write`.
 
 **Stamps.** When `memory_write` or `memory_edit` writes a `.md` file that
 counts as a page, Evener sets `updated: YYYY-MM-DD` (UTC, written unquoted so
@@ -347,13 +378,15 @@ keeping every other byte, except that a stamped page's line endings become
 unstamped. The stamps land in the tool's one write, never a second
 read-modify-write, so a stamp cannot undo another session's later write or
 delete of the page. A failed write writes nothing. Before stamping, a
-top-level `description` or `evidence` value YAML can't read as written, such
+top-level `description`, `when` or `evidence` value YAML can't read as written, such
 as an unquoted scalar holding `: ` or ending in `:`
 (``description: like `shop: add Count` ``), is written as a quoted
 YAML string, when that makes the frontmatter parse, so the model needs no
-second call to fix it. A written page with no description gets a note asking
-for one, and a page whose frontmatter still does not parse is left as written
-and gets its own note asking to fix the YAML.
+second call to fix it. A page left without a `when` (an edit removed it, or
+it never had one) gets a note asking for a `when`, whether or not it has a
+description. A page whose frontmatter still does not parse is left as written
+and gets its own note asking to fix the YAML. `memory_write` of a page writes a
+`when` by construction, so its result carries no note.
 
 **Migration.** The first time a session with `memory_write`, `memory_edit` and
 `memory_delete` (so never a delegate) renders a scope that still has a real `MEMORY.md` at its root,
@@ -457,8 +490,9 @@ deletion. Reopening the same project identity sees its surviving files.
 `--disable-memory` defaults to false on `evener` and `evener serve`. Disabled
 sessions expose no native memory tools, add no automatic memory guidance or
 index context, and perform no native wiki I/O. Ordinary tools, skills and
-session notes remain available. Loading `gardening-memory` does not grant a
-disabled session memory capability.
+session notes remain available; `gardening-memory` is not among them, because a
+disabled session cannot save memory and so neither sees it in its catalog nor
+loads it, exactly like a delegate or a root whose profile denies a save tool.
 
 The choice is sticky across resume and compaction. Omitting the flag on resume
 preserves it; passing the flag can additionally disable an enabled session.

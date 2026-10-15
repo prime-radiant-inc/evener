@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
@@ -86,8 +87,14 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 	if s.cfg.testOnly.modelCallContextWindowFunc != nil {
 		cw = s.cfg.testOnly.modelCallContextWindowFunc(profile)
 	}
+	// An unknown window warns against the same conservative assumption the
+	// context manager budgets compaction against (issue #4564), so a session
+	// filling a model nothing vouches for still hears about it — framed as an
+	// estimate, never as a fact about the model.
+	assumed := false
 	if cw <= 0 {
-		return false
+		cw = contextmgr.AssumedContextWindow
+		assumed = true
 	}
 
 	count := llm.EstimateInputTokensForResolved(profile.Resolved(), req)
@@ -97,6 +104,13 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 	}
 
 	msg := fmt.Sprintf("Context usage at ~%d%% of context window", pct)
+	title := "Context budget"
+	hint := "The conversation is nearing the model's context window; compaction will manage it. No action needed."
+	if assumed {
+		msg = fmt.Sprintf("Context usage at ~%d%% of an assumed %dK-token context window (the model's real window is unknown)", pct, cw/1000)
+		title = "Context budget (estimated)"
+		hint = "The model's context window is unknown; usage is measured against a conservative assumed window. Declare context_window in the provider's model row to warn against the real size."
+	}
 	s.emit(events.EventWarning, events.WarningData{
 		Message: msg,
 		// Same reasoning as warnOutputReduction: an informational context
@@ -104,8 +118,8 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 		// fallback cannot stamp its generic "Evener error" title and
 		// session-log hint onto it.
 		Source:            string(diagnostic.SourceEvener),
-		Title:             "Context budget",
-		Hint:              "The conversation is nearing the model's context window; compaction will manage it. No action needed.",
+		Title:             title,
+		Hint:              hint,
 		Code:              events.WarningCodeContextBudget,
 		ApproxTokens:      approxTokens,
 		ContextWindowSize: cw,
@@ -427,8 +441,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	rebuildForAppendedSkillTurns := func() (bool, error) {
 		s.mu.Lock()
 		var appended []schema.Turn
-		if len(s.history) > len(historyTurns) {
-			appended = append(appended, s.history[len(historyTurns):]...)
+		// Measure against the snapshot this request projected (presentedTurns),
+		// not the round snapshot (historyTurns): a leased delegate round
+		// projects the controller's later snapshot, which can already hold the
+		// turns that landed in between and would otherwise be appended again.
+		if len(s.history) > len(presentedTurns) {
+			appended = append(appended, s.history[len(presentedTurns):]...)
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
@@ -746,8 +764,9 @@ func responsesContinuationDeltaMessages(base []llm.Message, deltaTurns []schema.
 		messages = append(messages, msg)
 	}
 	// Responses-continuation delta path (openai target): the Responses builder
-	// keeps its own reasoning guard, so expansion filters nothing here.
-	messages = append(messages, expandHistory(deltaTurns, replayScope{})...)
+	// keeps its own reasoning guard, and selectResponsesContinuationAnchorCandidate
+	// already filtered self-echo TurnNotesContext turns against the full history.
+	messages = append(messages, expandHistory(deltaTurns, replayScope{notesSelfEchoFiltered: true})...)
 	return messages
 }
 
@@ -1064,6 +1083,15 @@ func (s *Session) providerWebSearchEnabled(profile *provider.Profile) bool {
 		return sandbox.ProviderWebAllowedUnderNetOff(profile.ProviderID())
 	}
 	return true
+}
+
+// protocolInjectsNativeWebSearch reports whether the wire protocol adds its
+// provider's own web_search tool to a request with req.WebSearch set. The
+// anthropic and OpenAI Responses builders do (llm/providers/anthropic and
+// llm/providers/responses); chat completions injects nothing, so the name stays
+// free there.
+func protocolInjectsNativeWebSearch(protocol string) bool {
+	return protocol == registry.ProtocolAnthropic || protocol == registry.ProtocolOpenAIResponses
 }
 
 // buildModelRequest assembles the llm.Request for one round: it lays out the
@@ -1578,6 +1606,9 @@ type replayScope struct {
 	// canonicalModel canonicalizes a model id for the ResponseModel fallback
 	// comparison. Nil ⇒ raw (trimmed) string comparison.
 	canonicalModel func(string) string
+	// notesSelfEchoFiltered marks a delta slice whose self-echo TurnNotesContext
+	// turns were already filtered against the full history slice.
+	notesSelfEchoFiltered bool
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
@@ -1739,6 +1770,9 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 				history = append(history, t.Message)
 			}
 		case schema.TurnEnvironment, schema.TurnNotesContext, schema.TurnMemoryContext:
+			if t.Kind == schema.TurnNotesContext && !scope.notesSelfEchoFiltered && isNotesSelfEchoTurn(historyTurns, i) {
+				continue
+			}
 			// Turn-boundary context only ever lands at a turn boundary, so no
 			// mid-tool-round deferral: pass the message straight through.
 			history = append(history, t.Message)

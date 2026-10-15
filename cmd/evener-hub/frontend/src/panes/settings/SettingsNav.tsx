@@ -1,5 +1,5 @@
-import { useId, useState } from "react";
-import { Chevron, Input } from "../../widgets";
+import { useState } from "react";
+import { Chevron, Eyebrow, Input } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { SETTINGS_CLUSTERS, SETTINGS_SECTIONS, type SettingsSection } from "./sections";
 import styles from "./settings.module.css";
@@ -14,7 +14,6 @@ export interface SettingsNavProps {
 const CLASS = {
   nav: requireClass(styles.nav, "settings.module.css", "nav"),
   filterRow: requireClass(styles.filterRow, "settings.module.css", "filterRow"),
-  visuallyHidden: requireClass(styles.visuallyHidden, "settings.module.css", "visuallyHidden"),
   clusterHeader: requireClass(styles.clusterHeader, "settings.module.css", "clusterHeader"),
   link: requireClass(styles.link, "settings.module.css", "link"),
   linkActive: requireClass(styles.linkActive, "settings.module.css", "linkActive"),
@@ -59,19 +58,15 @@ function NavLink({
  */
 export function SettingsNav({ activeId, onNavigate }: SettingsNavProps) {
   const [filter, setFilter] = useState("");
-  const filterId = useId();
 
   const ungrouped = SETTINGS_SECTIONS.filter((s) => s.cluster === undefined && matchesFilter(s.label, filter));
 
   return (
     <nav aria-label="Settings sections" className={CLASS.nav}>
       <div className={CLASS.filterRow}>
-        <label className={CLASS.visuallyHidden} htmlFor={filterId}>
-          Filter settings
-        </label>
         <Input
-          id={filterId}
           type="search"
+          aria-label="Filter settings"
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
           placeholder="Filter settings…"
@@ -85,7 +80,9 @@ export function SettingsNav({ activeId, onNavigate }: SettingsNavProps) {
         if (sections.length === 0) return null;
         return (
           <div key={cluster.id}>
-            <div className={CLASS.clusterHeader}>{cluster.label}</div>
+            <div className={CLASS.clusterHeader} data-section={cluster.id}>
+              <Eyebrow>{cluster.label}</Eyebrow>
+            </div>
             {sections.map((section) => (
               <NavLink key={section.id} section={section} active={section.id === activeId} onNavigate={onNavigate} />
             ))}

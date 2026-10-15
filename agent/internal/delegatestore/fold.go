@@ -178,6 +178,8 @@ func applyEvent(state State, event Event) error {
 		return applyAttentionChanged(state, event)
 	case EventDelegateUpdatePosted:
 		return applyUpdatePosted(state, event)
+	case EventDelegateIntentStated:
+		return applyIntentStated(state, event)
 	default:
 		return fmt.Errorf("unknown delegate event kind %q", event.Kind)
 	}
@@ -238,6 +240,10 @@ func applyRunStarted(state State, event Event) error {
 	aggregate.PreparedTerminal = nil
 	aggregate.RunStartedAt = payload.StartedAt
 	aggregate.LatestActivityAt = payload.StartedAt
+	// A new generation starts with an empty line; the words of the run that
+	// just ended never carry into the resumed run (the spec's per-generation
+	// discipline).
+	aggregate.LatestIntent = ""
 	return nil
 }
 
@@ -326,6 +332,9 @@ func applyRunFinished(state State, event Event) error {
 	}
 	aggregate.CurrentRunOpen = false
 	aggregate.LatestActivityAt = payload.Outcome.EndedAt
+	// The generation settled: retire its intent with the outcome, so the
+	// frame field and the read field agree on a settled row.
+	aggregate.LatestIntent = ""
 	aggregate.LatestPacket = cloneTerminalPacket(packet)
 	return nil
 }
@@ -485,6 +494,23 @@ func applyUpdatePosted(state State, event Event) error {
 		&TerminalPacket{Kind: PacketUpdate, Message: message})
 }
 
+// applyIntentStated records a running generation's newest tool-call intent.
+// It mirrors applyUpdatePosted's open-run guard with one deliberate
+// divergence: an empty Intent folds as the turn-start clear, where
+// applyUpdatePosted rejects empty payloads.
+func applyIntentStated(state State, event Event) error {
+	payload := event.IntentStated
+	aggregate, err := requireExactOpenRun(state, event.DelegateID, payload.Generation)
+	if err != nil {
+		return err
+	}
+	if aggregate.Phase != PhaseRunning {
+		return fmt.Errorf("delegate %q phase %q cannot state intent", event.DelegateID, aggregate.Phase)
+	}
+	aggregate.LatestIntent = payload.Intent
+	return nil
+}
+
 // UpdateDeliveryID names the pending delivery a delegate_update_posted event
 // queues. The event's journal sequence is unique for the life of the journal,
 // so the receiver's attention id for an update never repeats.
@@ -521,6 +547,7 @@ func validateEventEnvelope(event Event) error {
 		event.DeliveryAcknowledged != nil,
 		event.AttentionChanged != nil,
 		event.UpdatePosted != nil,
+		event.IntentStated != nil,
 	}
 	count := 0
 	for _, present := range payloads {
@@ -550,6 +577,8 @@ func validateEventEnvelope(event Event) error {
 		matching = event.AttentionChanged != nil
 	case EventDelegateUpdatePosted:
 		matching = event.UpdatePosted != nil
+	case EventDelegateIntentStated:
+		matching = event.IntentStated != nil
 	default:
 		return fmt.Errorf("unknown delegate event kind %q", event.Kind)
 	}
@@ -817,6 +846,7 @@ type publicProjection struct {
 	NotResumableReason string
 	NeedsAttention     bool
 	LatestActivityAt   string
+	LatestIntent       string
 	LatestOutcome      *Outcome
 }
 
@@ -828,6 +858,7 @@ func (aggregate *Aggregate) publicProjection() publicProjection {
 		NotResumableReason: aggregate.NotResumableReason,
 		NeedsAttention:     aggregate.NeedsAttention,
 		LatestActivityAt:   aggregate.LatestActivityAt.UTC().Format("2006-01-02T15:04:05.999999999Z07:00"),
+		LatestIntent:       aggregate.LatestIntent,
 		LatestOutcome:      cloneOutcome(aggregate.LatestOutcome),
 	}
 }

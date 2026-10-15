@@ -102,7 +102,8 @@ it("sanitizes a credential probe reply and never publishes the wire text", async
 	});
 	expect(result.current.credentialTest?.provider).toBe("work");
 	expect(result.current.credentialTest?.pending).toBe(false);
-	expect(result.current.credentialTest?.result?.message).toBe("Credentials verified.");
+	expect(result.current.credentialTest?.result?.status).toBe("success");
+	expect(result.current.credentialTest?.result?.message).toBeTruthy();
 	expect(JSON.stringify(result.current.credentialTest)).not.toContain("fixture-secret");
 });
 

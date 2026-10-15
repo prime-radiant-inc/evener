@@ -2,12 +2,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
-  NavigationInvalidatedPayload,
   NavigationManifest,
   NavigationProjectResource,
   NavigationSessionSummary,
   NavigationSnapshot,
 } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import {
   keyID,
   type NormalizedResource,
@@ -19,6 +19,8 @@ import {
   type ResourceState,
 } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
+import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { lazy } from "react";
@@ -33,13 +35,7 @@ import {
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
-import { SessionCacheIndexedDB } from "../../stores/sessionCacheIndexedDB";
-import {
-  resetThreadsStoreForTests,
-  setCacheChannelFactoryForTests,
-  setSessionCacheAdapterForTests,
-  threadsStore,
-} from "../../stores/threads";
+import { resetThreadsStoreForTests, setCacheChannelFactoryForTests, threadsStore } from "../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
@@ -114,6 +110,7 @@ function installState(resources: ResourceState[] = [], m = manifest()) {
     clientGenerationID: "g1",
     manifest: resource({ kind: "manifest" }, m) as ResourceState<NavigationManifest>,
     resources: new Map(resources.map((entry) => [keyID(entry.key), entry])),
+    visibleResourceKeys: new Set(resources.map((entry) => keyID(entry.key))),
     expanded: new Map(),
     attention: { changed: [], summary: m.attentionSummary },
     loadManifest: vi.fn(),
@@ -305,14 +302,16 @@ describe("resource-backed Rail", () => {
       ),
     ]);
     render(<Rail />);
-    for (const label of ["Live", "Projects"]) {
-      expect(screen.getByRole("heading", { name: label }).className).toMatch(/staticSectionLabel/);
+    // A static label is set in the Eyebrow inside its disclosure; an authored
+    // pin name is the disclosure's own bare text, so it keeps its casing.
+    for (const label of ["Live", "Projects", "Archived sessions"]) {
+      const disclosure = within(screen.getByRole("heading", { name: new RegExp(label) })).getByRole("button");
+      expect(disclosure.firstChild?.nodeType).toBe(Node.ELEMENT_NODE);
+      expect(disclosure.firstChild?.contains(disclosure.querySelector("svg"))).toBe(false);
     }
-    expect(screen.getByRole("heading", { name: /Archived sessions/ }).className).toMatch(/staticSectionLabel/);
     const authored = screen.getByRole("heading", { name });
     const disclosure = within(authored).getByRole("button", { name });
-    expect(authored.className).not.toMatch(/staticSectionLabel/);
-    expect(disclosure.className).not.toMatch(/staticSectionLabel/);
+    expect(disclosure.firstChild?.nodeType).toBe(Node.TEXT_NODE);
     expect(disclosure.textContent).toContain(name);
     const expanded = disclosure.getAttribute("aria-expanded");
     disclosure.focus();
@@ -320,21 +319,11 @@ describe("resource-backed Rail", () => {
     expect(disclosure.getAttribute("aria-expanded")).not.toBe(expanded);
     expect(document.activeElement).toBe(disclosure);
 
-    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8").replace(
-      /\/\*[\s\S]*?\*\//g,
-      "",
-    );
-    const recipe = css.match(/\.staticSectionLabel\s*\{([^}]*)\}/)?.[1];
-    expect(recipe).toBeDefined();
-    for (const declaration of [
-      "font-size: var(--font-size-caption)",
-      "font-weight: var(--font-weight-medium)",
-      "color: var(--ink-mid)",
-      "text-transform: uppercase",
-      "letter-spacing: var(--tracking-eyebrow)",
-    ])
-      expect(recipe).toContain(declaration);
-    for (const shared of ["sectionTitle", "sectionDisclosure"]) {
+    const css = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "../../widgets/disclosureheading/disclosureheading.module.css"),
+      "utf8",
+    ).replace(/\/\*[\s\S]*?\*\//g, "");
+    for (const shared of ["headingTitle", "headingToggle"]) {
       const rule = css.match(new RegExp(`\\.${shared}\\s*\\{([^}]*)\\}`))?.[1];
       expect(rule).toBeDefined();
       expect(rule).not.toContain("text-transform: uppercase");
@@ -463,7 +452,8 @@ describe("resource-backed Rail", () => {
       const disclosure = sectionDisclosure(name);
       const chevron = disclosure.querySelector("svg");
       expect(chevron).toBeTruthy();
-      expect(disclosure.firstChild?.nodeType).toBe(Node.TEXT_NODE);
+      expect(disclosure.firstChild).not.toBe(chevron);
+      expect(disclosure.firstChild?.contains(chevron)).toBe(false);
       expect(disclosure.lastElementChild).toBe(chevron);
     }
   });
@@ -1283,7 +1273,7 @@ describe("resource-backed Rail", () => {
           { generation_id: "g1", revision: 2, sessions: [row], remaining: 0, truncated: false },
         );
         resources.set(keyID(loaded.key), loaded);
-        return { resources };
+        return { resources, visibleResourceKeys: new Set([...state.visibleResourceKeys, keyID(loaded.key)]) };
       });
     });
     installState([
@@ -1522,7 +1512,7 @@ describe("resource-backed Rail", () => {
         [keyID(live.key), live],
       ]);
       await act(async () => {
-        navigationStore.setState({ resources: nextResources });
+        navigationStore.setState({ resources: nextResources, visibleResourceKeys: new Set([...nextResources.keys()]) });
       });
       await act(async () => {
         navigationStore.setState({ attention: { changed: [], summary: { needsYou: 0, error: 0, working: 0 } } });
@@ -2128,9 +2118,6 @@ describe("resource-backed Rail", () => {
     resetThreadsStoreForTests();
     const convergence = deferred<void>();
     const applyNavigationMutation = vi.fn(() => convergence.promise);
-    const adapter = new SessionCacheIndexedDB();
-    const deleteRecords = vi.spyOn(adapter, "deleteRecords").mockResolvedValue(true);
-    setSessionCacheAdapterForTests(adapter);
     const postMessage = vi.fn();
     setCacheChannelFactoryForTests(
       () => Object.assign(new EventTarget(), { postMessage, close() {} }) as unknown as BroadcastChannel,
@@ -2158,7 +2145,6 @@ describe("resource-backed Rail", () => {
       await act(async () => undefined);
       expect(applyNavigationMutation).toHaveBeenCalledTimes(1);
       expect([...threadsStore.getState().deletedRefs]).toEqual(["local:a", "local:b"]);
-      expect(deleteRecords).toHaveBeenCalledExactlyOnceWith(["local:a", "local:b"]);
       expect(postMessage).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ kind: "deletion", refs: ["local:a", "local:b"] }),
       );
@@ -2174,7 +2160,6 @@ describe("resource-backed Rail", () => {
         else convergence.resolve();
       });
       expect([...threadsStore.getState().deletedRefs]).toEqual(["local:a", "local:b"]);
-      expect(deleteRecords).toHaveBeenCalledTimes(1);
       expect(postMessage).toHaveBeenCalledTimes(1);
       if (outcome === "reject")
         expect(getToasts().some((toast) => toast.text.includes("navigation unavailable"))).toBe(true);
@@ -2182,7 +2167,6 @@ describe("resource-backed Rail", () => {
       await act(async () => {
         convergence.resolve();
       });
-      adapter.close();
       resetThreadsStoreForTests();
     }
   });
@@ -2262,59 +2246,114 @@ describe("resource-backed Rail", () => {
     resetThreadsStoreForTests();
   });
   test("keeps AppWire shutdown pending through unrelated invalidation and until relevant target authority", async () => {
-    const event = deferred<NavigationInvalidatedPayload>();
     const targetAuthority = deferred<void>();
-    let invalidationPredicate: ((payload: NavigationInvalidatedPayload) => boolean) | undefined;
-    const awaitNavigationInvalidation = vi.fn((predicate?: (payload: NavigationInvalidatedPayload) => boolean) => {
-      invalidationPredicate = predicate;
-      return { promise: event.promise, cancel: vi.fn() };
+    const targetRefreshStarted = deferred<void>();
+    let projectReads = 0;
+    const client = new FakeClient("ready");
+    client.on("evener/navigation/read", async (params) => {
+      if (params.resource === "manifest")
+        return wireSnapshot(
+          params,
+          manifest({
+            generation_id: "g1",
+            sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+            catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+          }),
+          '"manifest-1"',
+          1,
+          "g1",
+        );
+      if (params.resource === "catalog")
+        return wireSnapshot(
+          params,
+          { projects: [{ key: "p", name: "Project", session_count: 1 }], remaining: 0 },
+          '"catalog-1"',
+          1,
+          "g1",
+        );
+      if (params.resource === "project") {
+        projectReads++;
+        if (projectReads > 1) {
+          targetRefreshStarted.resolve();
+          await targetAuthority.promise;
+          return wireSnapshot(
+            params,
+            {
+              current: { sessions: [], remaining: 0 },
+              recent: { sessions: [], remaining: 0 },
+              archived: { sessions: [], remaining: 0 },
+            },
+            '"project-2"',
+            2,
+            "g1",
+          );
+        }
+        return wireSnapshot(
+          params,
+          {
+            current: { sessions: [summary({ title: "Shutdown me", project: "Project", live: true })], remaining: 0 },
+            recent: { sessions: [], remaining: 0 },
+            archived: { sessions: [], remaining: 0 },
+          },
+          '"project-1"',
+          1,
+          "g1",
+        );
+      }
+      throw new Error(`unexpected navigation read ${JSON.stringify(params)}`);
     });
-    const deliverInvalidation = (payload: NavigationInvalidatedPayload) => {
-      if (invalidationPredicate?.(payload)) event.resolve(payload);
-    };
-    const applyNavigationMutation = vi.fn(() => targetAuthority.promise);
-    const shutdown = vi.fn().mockResolvedValue(undefined);
-    installState([
-      catalogResource([{ key: "p", name: "Project", session_count: 1 }]),
-      projectResource("p", [summary({ title: "Shutdown me", live: true })]),
-    ]);
-    navigationStore.setState({ awaitNavigationInvalidation, applyNavigationMutation });
-    threadsStore.setState({ shutdown });
-    render(<Rail />);
+    client.on("thread/shutdown", () => ({}));
+    connectionStore.setState({ state: "ready", serverInfo: undefined, client });
+    navigationStore.init(client, { version: 1, generationId: "g1", sequence: 1, readVersions: [3] });
+    await act(async () => {
+      await navigationStore.getState().loadCatalog("projects");
+      await navigationStore.getState().loadProject("p");
+    });
+    render(<Rail />, client);
     fireEvent.click(screen.getByText("Project"));
     fireEvent.click(screen.getByRole("button", { name: /actions for shutdown me/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Shut down" }));
     fireEvent.click(screen.getByRole("button", { name: "Shut down" }));
     await act(async () => undefined);
-    expect(awaitNavigationInvalidation).toHaveBeenCalledTimes(1);
-    expect(shutdown).toHaveBeenCalledWith("local:a");
-    deliverInvalidation({
-      generationId: "g1",
-      sequence: 2,
-      targets: [{ kind: "pin_section", sectionId: "other", revision: 2 }],
-    });
+    expect(client.calls.filter((call) => call.method === "thread/shutdown")).toEqual([
+      { method: "thread/shutdown", params: { ref: "local:a" } },
+    ]);
+    act(() =>
+      client.emitNotification(
+        navigationInvalidatedNotification({
+          generationId: "g1",
+          sequence: 2,
+          targets: [{ kind: "pin_section", sectionId: "other", revision: 2 }],
+        }),
+      ),
+    );
     await act(async () => undefined);
-    expect(applyNavigationMutation).not.toHaveBeenCalled();
     expect(screen.getByText("Shut down this session?")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Shut down" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: /actions for shutdown me/i })).toBeTruthy();
 
-    deliverInvalidation({
-      generationId: "g1",
-      sequence: 3,
-      targets: [{ kind: "project", projectKey: "p", revision: 2 }],
-    });
-    await act(async () => undefined);
-    expect(applyNavigationMutation).toHaveBeenCalledWith({
-      generation_id: "g1",
-      targets: [{ kind: "project", projectKey: "p", revision: 2 }],
-    });
+    act(() =>
+      client.emitNotification(
+        navigationInvalidatedNotification({
+          generationId: "g1",
+          sequence: 3,
+          targets: [{ kind: "project", projectKey: "p", revision: 2 }],
+        }),
+      ),
+    );
+    await act(async () => targetRefreshStarted.promise);
     expect(screen.getByText("Shut down this session?")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Shut down" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: /actions for shutdown me/i })).toBeTruthy();
 
     await act(async () => {
       targetAuthority.resolve(undefined);
       await targetAuthority.promise;
     });
     expect(screen.queryByText("Shut down this session?")).toBeNull();
+    expect(screen.queryByRole("button", { name: /actions for shutdown me/i })).toBeNull();
+    act(() => resetNavigationStoreForTests());
+    client.close();
   });
   test("routes pin-section rename and delete dialogs through receipts and durable member count", async () => {
     const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
@@ -2377,6 +2416,33 @@ describe("resource-backed Rail", () => {
       { method: "evener/pin-section/delete", params: { sectionId: "pins" } },
     ]);
     expect(applyNavigationMutation).toHaveBeenCalledTimes(2);
+  });
+  test("refuses an empty pin-section name with an alert the name field describes", async () => {
+    installState([
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        { generation_id: "g1", revision: 1, pin_sections: [{ id: "pins", name: "Pins", count: 1 }], remaining: 0 },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "pins", offset: 0, limit: 50 },
+        { generation_id: "g1", revision: 1, sessions: [summary({ title: "Pinned" })], remaining: 0, truncated: false },
+      ),
+    ]);
+    const client = new FakeClient();
+    render(<Rail />, client);
+    fireEvent.click(screen.getByRole("button", { name: /actions for pins/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox", { name: "Section name" });
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.click(screen.getByRole("button", { name: "Rename section" }));
+    const alert = screen.getByRole("alert");
+    expect(input.getAttribute("aria-describedby")).toBe(alert.id);
+    expect(client.calls).toEqual([]);
+    expect(screen.getByRole("textbox", { name: "Section name" })).toBe(input);
+    expect((input as HTMLInputElement).value).toBe("   ");
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(input.hasAttribute("aria-describedby")).toBe(false);
   });
   test("shows a project root retry while retaining the summary row after a load error", async () => {
     const loadProject = vi.fn().mockRejectedValue(new Error("offline"));
@@ -3306,7 +3372,9 @@ describe("archived rows come from evener/archived/list", () => {
     await act(async () => undefined);
     await act(async () => undefined);
     expect(requests).toBe(2);
-    expect(archivedListStore.getState().lists[archivedListKey("projects", "p")]?.error).toBe("hub down");
+    expect(archivedListStore.getState().lists[archivedListKey("projects", "p")]?.error).toBe(
+      friendlyErrorMessage(new Error("hub down")),
+    );
     restoreScroll();
   });
 

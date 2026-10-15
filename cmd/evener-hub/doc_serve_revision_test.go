@@ -27,11 +27,7 @@ func docRevisionOf(content []byte) string {
 // t.TempDir sits under /var, a symlink to /private/var.
 func docTestRoot(t *testing.T) string {
 	t.Helper()
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return root
+	return canonicalTempDir(t)
 }
 
 func writeDocAt(t *testing.T, path string, content []byte, modified time.Time) {

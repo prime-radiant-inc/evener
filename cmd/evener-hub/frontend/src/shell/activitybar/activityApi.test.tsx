@@ -58,7 +58,7 @@ it("shows incomplete empty as progress then drills the exact stable delegate chi
   const root = workspaceStore.getState().openPane("session", { ref: "remote:owner" });
   const source = workspaceStore.getState().mainPane();
   render(<AgentsTab scope={scope()} />);
-  expect(screen.getByText(/Loading subagents/)).toBeTruthy();
+  expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   expect(screen.queryByText(/No subagents/)).toBeNull();
   await waitFor(() => expect(finish).toBeTypeOf("function"));
   finish?.();
@@ -70,7 +70,7 @@ it("shows incomplete empty as progress then drills the exact stable delegate chi
   expect(cascade?.slot).toBe("secondary");
   expect(cascade?.params).toEqual({
     ref: "other:opaque/child",
-    source: { type: "transcript", params: { ref: "remote:owner" } },
+    source: { type: "session", params: { ref: "remote:owner" } },
     edges: [{ ownerRef: "remote:owner", childRef: "other:opaque/child", delegateId: "raw-id" }],
     inspection: { origin: { paneId: root, type: "session", ref: "remote:owner" } },
   });
@@ -174,7 +174,7 @@ it("definitive unavailable jobs never claim empty or remain a loading promise", 
   render(<JobsTab scope={scope()} />);
   expect(await screen.findByText("Jobs unavailable for this session.")).toBeTruthy();
   expect(screen.queryByText("No jobs at this level.")).toBeNull();
-  expect(screen.queryByText("Loading jobs…")).toBeNull();
+  expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
   expect(screen.queryByRole("button", { name: /retry|repair/i })).toBeNull();
 });
 

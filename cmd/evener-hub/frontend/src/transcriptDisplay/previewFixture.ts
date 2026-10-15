@@ -123,6 +123,7 @@ export function makeTranscriptPreviewModel(): ThreadModel {
     contextUsed: 192,
     contextWindow: 4096,
     contextPressure: 0.047,
+    contextAssumed: false,
     usage: { ...USAGE },
     cost: "0.0125",
     failedToolCalls: 1,

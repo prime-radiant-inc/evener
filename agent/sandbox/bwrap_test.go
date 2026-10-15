@@ -9,9 +9,11 @@
 package sandbox
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -246,6 +248,66 @@ func TestBuildBwrapArgvCacheOverlay(t *testing.T) {
 	}
 }
 
+// A custom GOPATH's pkg tree (its module cache and checksum database) gets the
+// read-real/write-private overlay, not the default $HOME/go/pkg (#4188).
+func TestBuildBwrapArgvOverlaysTheHostGoPath(t *testing.T) {
+	home := t.TempDir()
+	goPkg := filepath.Join(t.TempDir(), "pkg")
+	if err := os.MkdirAll(goPkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoPath: filepath.Dir(goPkg)}
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: &net}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if args := buildBwrapArgv(rp, "/tmp/s", cwd); !hasSeq(args, "--overlay-src", goPkg, "--tmp-overlay", goPkg) {
+		t.Errorf("expected a read-real/write-private overlay for the GOPATH pkg %q: %v", goPkg, args)
+	}
+}
+
+// A cache root whose filesystem refuses an unprivileged overlay lower (an
+// EINVAL that would abort the WHOLE sandbox, failing every spawn) is left out of
+// the argv, while a healthy root keeps its overlay (#4220).
+func TestBuildBwrapArgvLeavesOutAnUnoverlayableCacheRoot(t *testing.T) {
+	home := t.TempDir()
+	good, bad := filepath.Join(home, "gocache"), filepath.Join(home, "modcache")
+	for _, d := range []string{good, bad} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	facts := HostFacts{
+		OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true,
+		GoCache: good, GoModCache: bad,
+		OverlayLowerOK: func(root string) bool { return root != bad },
+	}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, "/tmp/s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(liveCacheRoots(w.Policy()), bad) {
+		t.Fatalf("a cache root the overlay cannot mount must not be served: %v", liveCacheRoots(w.Policy()))
+	}
+	if !slices.Contains(liveCacheRoots(w.Policy()), good) {
+		t.Fatalf("a healthy cache root must still be served: %v", liveCacheRoots(w.Policy()))
+	}
+	args := buildBwrapArgv(w.Policy(), w.SessionTmp(), cwd)
+	if hasSeq(args, "--overlay-src", bad, "--tmp-overlay", bad) {
+		t.Errorf("one unoverlayable root must be left out (its EINVAL aborts every spawn): %v", args)
+	}
+	if !hasSeq(args, "--overlay-src", good, "--tmp-overlay", good) {
+		t.Errorf("a healthy cache root must keep its overlay: %v", args)
+	}
+}
+
 func TestBuildBwrapArgvNoOverlayWhenSessionPrivate(t *testing.T) {
 	// The default fixture host lacks overlay → session-private cache → no overlay
 	// mounts in the argv (the env floor redirects the cache vars instead).
@@ -444,5 +506,689 @@ func TestBuildBwrapArgvScratchTreeFollowsFileToolReads(t *testing.T) {
 				t.Errorf("the session's own scratch must be bound writable after the tree: %v", args)
 			}
 		})
+	}
+}
+
+// A configured Go cache directory that does not exist yet has no lower to
+// overlay, and bwrap cannot create its mount target in the read-only tree. The
+// wrapper creates it (empty, as the go command itself would) so it is overlaid
+// rather than left read-only under a GOMODCACHE still pointing at it.
+func TestNewWrapperCreatesAMissingCacheRootSoItIsOverlaid(t *testing.T) {
+	home := t.TempDir()
+	modCache := filepath.Join(t.TempDir(), "absent", "modcache")
+	facts := HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoModCache: modCache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	if fi, err := os.Stat(modCache); err != nil || !fi.IsDir() {
+		t.Fatalf("the missing cache root must be created: %v", err)
+	}
+	if args := buildBwrapArgv(w.policy, w.sessionTmp, cwd); !hasSeq(args, "--overlay-src", modCache, "--tmp-overlay", modCache) {
+		t.Errorf("the created cache root must be overlaid: %v", args)
+	}
+}
+
+// A configured cache "root" that is a file cannot be overlaid; overlayfs would
+// reject it and abort the sandbox, so it is skipped (and never created over).
+func TestBuildBwrapArgvSkipsANonDirectoryCacheRoot(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "gocache-is-a-file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: file}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	if args := buildBwrapArgv(w.policy, w.sessionTmp, cwd); slices.Contains(args, file) {
+		t.Errorf("a non-directory cache root must not be overlaid: %v", args)
+	}
+}
+
+// A cache root holding a persistent writable location (an extra writable
+// root, existing or not yet created, or a linked worktree's shared git
+// metadata) is not overlaid at all: an overlay would take the spawn's writes
+// there into its discarded layer. The writable location is bound as usual.
+func TestBuildBwrapArgvDoesNotOverlayACacheHoldingAWriteRoot(t *testing.T) {
+	overlayFacts := func(home string) HostFacts {
+		return HostFacts{OS: "linux", Home: home, BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
+	}
+	notOverlaid := func(t *testing.T, args []string, cache string) {
+		t.Helper()
+		if seqIndex(args, "--overlay-src", cache, "--tmp-overlay", cache) >= 0 {
+			t.Errorf("the cache root %q holds a writable root and must not be overlaid: %v", cache, args)
+		}
+	}
+
+	home := t.TempDir()
+	cache := filepath.Join(home, ".cache")
+	library := filepath.Join(cache, "library")
+	if err := os.MkdirAll(library, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, w := range []string{library, filepath.Join(cache, "not-yet")} {
+		rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{w}}, overlayFacts(home), cwd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		args := buildBwrapArgv(rp, t.TempDir(), cwd)
+		notOverlaid(t, args, cache)
+		if w == library && !hasSeq(args, "--bind", library, library) {
+			t.Errorf("the writable root must be bound: %v", args)
+		}
+	}
+
+	linked := MaterializeWorkspace(t, LinkedWorktree)
+	mainRepo := strings.TrimSuffix(linked, "-wt")
+	facts := overlayFacts(t.TempDir())
+	facts.XDGCacheHome = mainRepo
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, linked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notOverlaid(t, buildBwrapArgv(rp, t.TempDir(), linked), mainRepo)
+}
+
+// A cache root removed on the host after the wrapper was built (go clean
+// -modcache outside the sandbox) is recreated at the next spawn and overlaid
+// again, as at wrapper creation.
+func TestWrapRecreatesACacheRootRemovedSinceTheWrapperWasBuilt(t *testing.T) {
+	gocache := filepath.Join(t.TempDir(), "gocache")
+	if err := os.MkdirAll(gocache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: gocache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(gocache); err != nil {
+		t.Fatal(err)
+	}
+	argv := w.Wrap([]string{"/bin/true"}, cwd)
+	if fi, err := os.Stat(gocache); err != nil || !fi.IsDir() {
+		t.Fatalf("the removed cache root must be recreated at spawn: %v", err)
+	}
+	if !hasSeq(argv, "--overlay-src", gocache, "--tmp-overlay", gocache) {
+		t.Errorf("the recreated cache root must be overlaid: %v", argv)
+	}
+}
+
+// A cache root whose symlinked parent was retargeted into the worktree after
+// resolution is not overlaid at the next spawn: its overlay would swallow
+// edits to the workspace there.
+func TestWrapSkipsACacheRootRetargetedIntoTheWorktree(t *testing.T) {
+	base := overlayFixtureDir(t)
+	realDir := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(realDir, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatal(err)
+	}
+	gocache := filepath.Join(link, "cache")
+	facts := HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true, GoCache: gocache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWrapper(rp, facts.BwrapPath, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(w.Policy().CacheRoots, gocache) {
+		t.Fatalf("fixture: the cache root must be served at first: %v", w.Policy().CacheRoots)
+	}
+	inWorktree := filepath.Join(cwd, "sub")
+	if err := os.MkdirAll(filepath.Join(inWorktree, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inWorktree, link); err != nil {
+		t.Fatal(err)
+	}
+	if argv := w.Wrap([]string{"/bin/true"}, cwd); slices.Contains(argv, gocache) {
+		t.Errorf("a cache root now resolving inside the worktree must not be overlaid: %v", argv)
+	}
+}
+
+// overlayFixture resolves a workspace-write policy on an overlay-capable host.
+func overlayFixture(t *testing.T, facts HostFacts) (ResolvedPolicy, string) {
+	t.Helper()
+	facts.OS, facts.BwrapPath, facts.BwrapCapable, facts.OverlaySupported = "linux", "/usr/bin/bwrap", true, true
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rp, cwd
+}
+
+// A cache root whose real location lies inside another's is served by the
+// outer overlay alone at each spawn (a nested overlay is a mountpoint go clean
+// -modcache cannot remove), but one merely spelled under another that links
+// elsewhere (~/.cache/go-build -> /ssd/go-build) keeps its own overlay.
+func TestLiveCacheRootsServeNestedOnesThroughTheOuterOverlay(t *testing.T) {
+	home := overlayFixtureDir(t)
+	modcache := filepath.Join(home, "go", "pkg", "mod")
+	elsewhere := filepath.Join(overlayFixtureDir(t), "go-build")
+	for _, d := range []string{modcache, filepath.Join(home, ".cache"), elsewhere} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gocache := filepath.Join(home, ".cache", "go-build")
+	if err := os.Symlink(elsewhere, gocache); err != nil {
+		t.Fatal(err)
+	}
+	rp, _ := overlayFixture(t, HostFacts{Home: home, GoModCache: modcache, GoCache: gocache})
+	live := liveCacheRoots(rp)
+	if slices.Contains(live, modcache) || !slices.Contains(live, filepath.Join(home, "go", "pkg")) {
+		t.Errorf("a nested GOMODCACHE must be served by its parent's overlay alone: %v", live)
+	}
+	if !slices.Contains(live, gocache) {
+		t.Errorf("a GOCACHE linked out of ~/.cache must keep its own overlay: %v", live)
+	}
+}
+
+// A cache root whose symlinked parent was retargeted after resolution so the
+// root now resolves to a shared tree (a temp root, /) fails the shared-tree
+// guard at the next spawn and is not overlaid.
+func TestLiveCacheRootsReapplyTheSharedTreeGuard(t *testing.T) {
+	base := overlayFixtureDir(t)
+	disk := filepath.Join(base, "disk")
+	if err := os.MkdirAll(filepath.Join(disk, "tmp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "current")
+	if err := os.Symlink(disk, link); err != nil {
+		t.Fatal(err)
+	}
+	gocache := filepath.Join(link, "tmp")
+	rp, _ := overlayFixture(t, HostFacts{Home: t.TempDir(), GoCache: gocache})
+	if !slices.Contains(liveCacheRoots(rp), gocache) {
+		t.Fatalf("fixture: the cache root must be served at first: %v", liveCacheRoots(rp))
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/", link); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(liveCacheRoots(rp), gocache) {
+		t.Errorf("a cache root now resolving to /tmp must not be overlaid: %v", liveCacheRoots(rp))
+	}
+}
+
+// A cache root that could not be made a directory at wrapper creation stays
+// in the policy, so it is served once it becomes available.
+func TestWrapperKeepsACacheRootUnavailableAtCreation(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "volume")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gocache := filepath.Join(blocker, "gocache")
+	rp, _ := overlayFixture(t, HostFacts{Home: t.TempDir(), GoCache: gocache})
+	w, err := NewWrapper(rp, "/usr/bin/bwrap", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(liveCacheRoots(w.Policy()), gocache) {
+		t.Fatalf("an unavailable cache root must not be overlaid")
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(gocache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(liveCacheRoots(w.Policy()), gocache) {
+		t.Errorf("a cache root that became available must be overlaid: %v", w.Policy().CacheRoots)
+	}
+}
+
+// bwrap's private /tmp hides a cache root spelled under /tmp, so such a root
+// cannot serve another cache that merely resolves inside it: that other root
+// keeps its own overlay.
+func TestLiveCacheRootsDoNotNestUnderARootSpelledInTmp(t *testing.T) {
+	store, err := os.MkdirTemp("/var/tmp", "evener-cache-store-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(store) })
+	gocache := filepath.Join(store, "go-build")
+	if err := os.MkdirAll(gocache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "cache-link") // under /tmp in the Linux harness
+	if err := os.Symlink(store, link); err != nil {
+		t.Fatal(err)
+	}
+	if !pathUnder(link, "/tmp") {
+		t.Skip("the test temp dir is not under /tmp here")
+	}
+	rp, _ := overlayFixture(t, HostFacts{Home: t.TempDir(), XDGCacheHome: link, GoCache: gocache})
+	if !slices.Contains(liveCacheRoots(rp), gocache) {
+		t.Errorf("a cache resolving inside a /tmp-spelled root must keep its own overlay: %v", liveCacheRoots(rp))
+	}
+}
+
+// A cache root that was an ordinary directory at resolution but has since been
+// replaced by a link through a private mount is not overlaid at the next
+// spawn: its overlay would no longer sit over the storage it names.
+func TestLiveCacheRootsDropARootLaterLinkedThroughAPrivateMount(t *testing.T) {
+	store := overlayFixtureDir(t)
+	dirInTmp, err := os.MkdirTemp("/tmp", "evener-cache-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dirInTmp) })
+	gocache := filepath.Join(dirInTmp, "gocache")
+	if err := os.MkdirAll(gocache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if linksThroughPrivateMount(gocache) {
+		t.Skip("/tmp is itself a link on this host")
+	}
+	rp, _ := overlayFixture(t, HostFacts{Home: overlayFixtureDir(t), GoCache: gocache})
+	if !slices.Contains(liveCacheRoots(rp), gocache) {
+		t.Fatalf("fixture: the ordinary /tmp cache root must be served at first: %v", liveCacheRoots(rp))
+	}
+	if err := os.Remove(gocache); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(store, gocache); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(liveCacheRoots(rp), gocache) {
+		t.Errorf("a cache root now linked through /tmp must not be overlaid: %v", liveCacheRoots(rp))
+	}
+}
+
+// The plugin store is re-bound read-only after the tmpfs that masks
+// ~/.config/evener, so the carve-out wins over the mask (#4171).
+func TestBuildBwrapArgvRebindsEvenerContentAfterTheMask(t *testing.T) {
+	home := t.TempDir()
+	config := filepath.Join(home, ".config", "evener")
+	store := filepath.Join(config, "plugins")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{store}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			maskIdx := seqIndex(args, "--tmpfs", config)
+			bindIdx := seqIndex(args[maskIdx+1:], "--ro-bind", store, store)
+			if maskIdx < 0 || bindIdx < 0 {
+				t.Fatalf("the store %q must be re-bound read-only after the mask of %q: %v", store, config, args)
+			}
+			if seqIndex(args, "--bind", store, store) >= 0 {
+				t.Errorf("the store must never be bound writable: %v", args)
+			}
+		})
+	}
+}
+
+// Inside the carve-out, an installed copy's .git (where a cloned plugin keeps
+// its remote URL) is masked again after the read-only re-bind.
+func TestBuildBwrapArgvMasksGitInsideEvenerContent(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	gitDir := filepath.Join(cache, "mkt", "plugin", "abc", ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{cache}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			bindIdx := seqIndex(args, "--ro-bind", cache, cache)
+			if bindIdx < 0 || seqIndex(args[bindIdx:], "--tmpfs", gitDir) < 0 {
+				t.Errorf("%q must be masked after the carve-out's re-bind: %v", gitDir, args)
+			}
+		})
+	}
+}
+
+// bwrap masks a .git at any depth inside the carve-out, matching the file
+// tools and Seatbelt. A tree too large to inspect fully at spawn stays masked
+// for spawned processes rather than being re-granted with .git entries unseen.
+func TestBuildBwrapArgvMasksDeepGitAndSkipsUninspectableRoots(t *testing.T) {
+	home := t.TempDir()
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	deepGit := filepath.Join(skills, "a", "b", "c", "d", "e", ".git")
+	if err := os.MkdirAll(deepGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--tmpfs", deepGit) {
+		t.Errorf("a deep .git %q must be masked: %v", deepGit, args)
+	}
+
+	if _, complete := gitDirsUnder(skills, 3); complete {
+		t.Errorf("a tree larger than the walk budget must be reported incomplete, so its root is not re-granted")
+	}
+}
+
+// A subdirectory the walk cannot list may still hide a .git reachable by name,
+// so a root with one is reported incomplete and is not re-granted.
+func TestGitDirsUnderReportsAnUnlistableSubtreeIncomplete(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can list any directory")
+	}
+	root := t.TempDir()
+	hidden := filepath.Join(root, "plugin", "hidden")
+	if err := os.MkdirAll(filepath.Join(hidden, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(hidden, 0o311); err != nil { // search but no read
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(hidden, 0o755) })
+	if _, complete := gitDirsUnder(root, gitWalkBudget); complete {
+		t.Error("a walk that could not list a subdirectory must be reported incomplete")
+	}
+}
+
+// With ~/.config/evener a symlink, the carve-out is listed under both
+// spellings, which resolve to one directory. It is bound once, and its .git
+// masks land after every carve-out bind, so no later bind covers them.
+func TestBuildBwrapArgvMasksGitAfterEveryBindOfASymlinkedCarveOut(t *testing.T) {
+	home := clean(t.TempDir())
+	realConfig := filepath.Join(clean(t.TempDir()), "real-evener")
+	realCache := filepath.Join(realConfig, "plugins", "cache")
+	realGit := filepath.Join(realCache, "mkt", "plugin", "abc", ".git")
+	if err := os.MkdirAll(realGit, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(home, ".config", "evener")); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{filepath.Join(home, ".config", "evener", "plugins", "cache")}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		t.Run(mode.String(), func(t *testing.T) {
+			rp, err := Resolve(SandboxPolicy{Mode: mode, Network: new(true)}, facts, cwd)
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			args := buildBwrapArgv(rp, t.TempDir(), cwd)
+			binds, lastBind := 0, -1
+			for i := 0; i+2 < len(args); i++ {
+				if args[i] == "--ro-bind" && args[i+1] == realCache && args[i+2] == realCache {
+					binds++
+					lastBind = i
+				}
+			}
+			if binds != 1 {
+				t.Errorf("the carve-out must be bound once, got %d binds: %v", binds, args)
+			}
+			if lastBind < 0 || seqIndex(args[lastBind:], "--tmpfs", realGit) < 0 {
+				t.Errorf("%q must be masked after the carve-out's last bind: %v", realGit, args)
+			}
+		})
+	}
+}
+
+// A .git that is a symlink is never masked at its target outside the
+// carve-out (a skill's .git pointing at the workspace's .git, or at /, would
+// hide that instead): one pointing outside leaves the carve-out masked for
+// spawned processes, and one pointing inside is masked at its target.
+func TestGitDirsUnderJudgesSymlinkedGitEntries(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	inside := filepath.Join(root, "store", "real.git")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inside, filepath.Join(root, "a", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	found, complete := gitDirsUnder(root, gitWalkBudget)
+	resolvedInside, _ := filepath.EvalSymlinks(inside)
+	if !complete || !slices.Contains(found, resolvedInside) {
+		t.Errorf("a .git linked inside the carve-out must be masked at its target %q: %v (complete=%v)", resolvedInside, found, complete)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "b", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	if _, complete := gitDirsUnder(root, gitWalkBudget); complete {
+		t.Errorf("a .git linked outside the carve-out must leave it uninspectable, so it stays masked")
+	}
+}
+
+// The walk budget bounds directory reads themselves, not only visited
+// entries, so one huge directory is not read and sorted whole at each spawn.
+func TestGitDirsUnderStopsReadingAHugeDirectoryAtTheBudget(t *testing.T) {
+	root := t.TempDir()
+	for i := range 40 {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%02d", i)), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reads := 0
+	old := gitReadDirChunk
+	gitReadDirChunk = func(f *os.File, n int) ([]os.DirEntry, error) {
+		reads++
+		return f.ReadDir(n)
+	}
+	t.Cleanup(func() { gitReadDirChunk = old })
+	if _, complete := gitDirsUnder(root, 10); complete {
+		t.Fatalf("a directory past the budget must be reported incomplete")
+	}
+	if reads > 2 {
+		t.Errorf("the walk must stop reading once the budget is spent, read %d chunks", reads)
+	}
+}
+
+// In a read-anywhere mode a carve-out's symlinked spelling under /tmp is
+// hidden by the private /tmp, so it is recreated as a link too.
+func TestBuildBwrapArgvRecreatesACarveOutSpellingUnderTmp(t *testing.T) {
+	home, err := os.MkdirTemp("/tmp", "evener-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	realConfig, err := os.MkdirTemp("/var/tmp", "evener-config-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(realConfig) })
+	if err := os.MkdirAll(filepath.Join(realConfig, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(home, ".config", "evener")); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, _ := filepath.EvalSymlinks(skills)
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--symlink", resolved, skills) {
+		t.Errorf("a carve-out spelled under /tmp must be recreated as a link in read-anywhere modes: %v", args)
+	}
+}
+
+// With Evener's config mask removed by the user, the carve-out is still bound
+// (restricted mode needs the read grant) but its .git is not masked: nothing
+// masks that directory any more.
+func TestBuildBwrapArgvLeavesGitUnmaskedWithoutTheConfigMask(t *testing.T) {
+	home := t.TempDir()
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	gitDir := filepath.Join(skills, "mine", ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true), DenylistRemove: []string{".config/evener"}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rp.FileTool.ReadRoots, skills) {
+		t.Errorf("the skills read grant must stay when the config mask is removed: %v", rp.FileTool.ReadRoots)
+	}
+	args := buildBwrapArgv(rp, t.TempDir(), cwd)
+	if !hasSeq(args, "--ro-bind", skills, skills) {
+		t.Errorf("restricted mode must still bind the skills dir: %v", args)
+	}
+	if hasSeq(args, "--tmpfs", gitDir) {
+		t.Errorf("a .git the user unmasked must not be masked: %v", args)
+	}
+}
+
+// A carve-out spelling already exposed by the read-only re-bind of a /tmp cwd
+// gets no link of its own (creating one over the existing path would make
+// bubblewrap fail).
+func TestBuildBwrapArgvSkipsALinkForASpellingTheCwdBindExposes(t *testing.T) {
+	cwd := tmpMainCheckout(t)
+	realConfig, err := os.MkdirTemp("/var/tmp", "evener-config-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(realConfig) })
+	if err := os.MkdirAll(filepath.Join(realConfig, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	xdg := filepath.Join(cwd, ".xdg")
+	if err := os.MkdirAll(xdg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(xdg, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(xdg, "evener", "skills")
+	facts := bwrapFacts(t.TempDir())
+	facts.EvenerConfigRoot = filepath.Join(xdg, "evener")
+	facts.EvenerContentRoots = []string{skills}
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rp.UnmaskedRoots, skills) {
+		t.Skipf("fixture: the skills dir is not carved out here: %v", rp.UnmaskedRoots)
+	}
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); slices.Contains(args, "--symlink") {
+		t.Errorf("a spelling the cwd bind already exposes must get no link: %v", args)
+	}
+}
+
+// With Evener's config mask removed, nothing masks the carve-out's .git, so a
+// tree the walk cannot vouch for (here a .git linked outside it) is still
+// bound: the walk only decides what to mask, and there is nothing to mask.
+func TestBuildBwrapArgvBindsAnUninspectableCarveOutWithoutTheConfigMask(t *testing.T) {
+	home := t.TempDir()
+	skills := filepath.Join(home, ".config", "evener", "skills")
+	if err := os.MkdirAll(filepath.Join(skills, "mine"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(skills, "mine", ".git")); err != nil {
+		t.Fatal(err)
+	}
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true), DenylistRemove: []string{".config/evener"}}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--ro-bind", skills, skills) {
+		t.Errorf("an unmasked carve-out must be bound even when its walk is incomplete: %v", args)
+	}
+}
+
+// The minimal --dev hides /dev/shm as the private tmpfs hides /tmp, so a
+// carve-out spelled there through a link is recreated in read-anywhere modes.
+func TestBuildBwrapArgvRecreatesACarveOutSpellingUnderDevShm(t *testing.T) {
+	xdg, err := os.MkdirTemp("/dev/shm", "evener-xdg-")
+	if err != nil {
+		t.Skipf("no writable /dev/shm: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(xdg) })
+	realConfig, err := os.MkdirTemp("/var/tmp", "evener-config-")
+	if err != nil {
+		t.Skipf("no writable /var/tmp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(realConfig) })
+	if err := os.MkdirAll(filepath.Join(realConfig, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(xdg, "evener")); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(xdg, "evener", "skills")
+	facts := bwrapFacts(t.TempDir())
+	facts.EvenerConfigRoot = filepath.Join(xdg, "evener")
+	facts.EvenerContentRoots = []string{skills}
+	cwd := MaterializeWorkspace(t, MainCheckout)
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, facts, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rp.UnmaskedRoots, skills) {
+		t.Fatalf("fixture: the skills dir is not carved out here: %v", rp.UnmaskedRoots)
+	}
+	resolved, _ := filepath.EvalSymlinks(skills)
+	if args := buildBwrapArgv(rp, t.TempDir(), cwd); !hasSeq(args, "--symlink", resolved, skills) {
+		t.Errorf("a carve-out spelled under /dev/shm must be recreated as a link in read-anywhere modes: %v", args)
 	}
 }

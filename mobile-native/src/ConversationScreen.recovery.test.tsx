@@ -17,6 +17,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
+import { hasTestID, markers } from "./markerTestUtils";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import { render, renderedText, screenConnection, settle } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
@@ -225,8 +226,8 @@ it("shows a refused message as a ghost at the transcript's end, row-conditional 
 			.find((node) => node.props.accessibilityLabel === "Message");
 	expect(composer()).toBeDefined();
 	// A live connection says nothing about itself (spec 14).
-	expect(renderedText(tree)).not.toContain("Connected");
-	expect(renderedText(tree)).not.toContain("Couldn't send this");
+	expect(hasTestID(tree, "connection-status")).toBe(false);
+	expect(markers(tree, "ghost")).toEqual([]);
 	const retired = ["Recovery", "Review status", "Check delivery", "Reconnect", "Review error"];
 	const expectNoRetiredControls = () => {
 		for (const label of retired) {
@@ -256,7 +257,8 @@ it("shows a refused message as a ghost at the transcript's end, row-conditional 
 
 	const text = renderedText(tree);
 	expect(text).toContain("recover this message");
-	expect(text).toContain("Couldn't send this · daemon refused");
+	expect(markers(tree, "ghost")).toEqual(["refused"]);
+	expect(text).toContain("daemon refused");
 	expectNoRetiredControls();
 
 	// PHASE 3 - the #2247 converter gate at screen level. With an empty,
@@ -276,7 +278,7 @@ it("shows a refused message as a ghost at the transcript's end, row-conditional 
 	act(() => composer()?.props.onChangeText("a draft already in progress"));
 	await settle();
 	expect(edit()?.props.accessibilityState).toMatchObject({ disabled: true });
-	expect(renderedText(tree)).toContain("Clear or send your current draft to restore this message.");
+	expect(hasTestID(tree, "ghost-edit-hint")).toBe(true);
 	expect(discard()?.props.accessibilityState).toMatchObject({ disabled: false });
 
 	// PHASE 4 - Discard retires exactly this row, and its ghost goes.

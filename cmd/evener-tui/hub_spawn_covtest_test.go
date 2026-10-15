@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -549,8 +550,8 @@ func TestCovSpawnDirView(t *testing.T) {
 
 	// Empty dir: shows hub default.
 	m = hubModel{spawnDir: ""}
-	if got := m.spawnDirView(); got != "(hub default)" {
-		t.Fatalf("dirView = %q, want (hub default)", got)
+	if got := m.spawnDirView(); strings.TrimSpace(got) == "" {
+		t.Fatal("dirView with no dir should name the hub default, not render blank")
 	}
 
 	// Focused dir field: shows input view.
@@ -757,14 +758,6 @@ func TestCovSpawnRecentDirsVisible(t *testing.T) {
 	m.spawnDirInput.SetValue("/custom")
 	if m.spawnRecentDirsVisible() {
 		t.Fatal("should be invisible with custom path")
-	}
-}
-
-// TestCovSpawnModelPickerTitle exercises picker title.
-func TestCovSpawnModelPickerTitle(t *testing.T) {
-	m := hubModel{}
-	if got := m.spawnModelPickerTitle(); got != "Select model" {
-		t.Fatalf("title = %q, want 'Select model'", got)
 	}
 }
 

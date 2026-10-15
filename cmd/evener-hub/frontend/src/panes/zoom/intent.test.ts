@@ -7,7 +7,9 @@ import {
   drillZoomIntent,
   firstReadableIndex,
   parseZoomParams,
+  phoneScopes,
   popZoomIntent,
+  renderedScopes,
   type SessionZoomParams,
 } from "./intent";
 
@@ -30,15 +32,15 @@ function scopes(refs: string[]): CascadeScope[] {
   return refs.map((requestedRef) => ({ requestedRef, title: requestedRef }));
 }
 
-test("a live origin conversation collapses its duplicate parent column", () => {
+test("a live origin parent renders nowhere readable: only the leaf stays readable", () => {
   expect(firstReadableIndex(scopes(["root", "child"]), "root")).toBe(1);
 });
 
-test("a deeper drill keeps two readable columns beside the origin spine", () => {
+test("a deeper drill keeps two readable columns above the removed origin", () => {
   expect(firstReadableIndex(scopes(["root", "child", "grandchild"]), "root")).toBe(1);
 });
 
-test("any live origin collapses as the immediate parent, not only the root", () => {
+test("any live origin renders unreadable as the immediate parent, not only the root", () => {
   expect(firstReadableIndex(scopes(["root", "child", "grandchild"]), "child")).toBe(2);
 });
 
@@ -46,17 +48,50 @@ test("a cascade without a live origin keeps the readable parent column", () => {
   expect(firstReadableIndex(scopes(["root", "child"]), null)).toBe(0);
 });
 
-test("a popped-to-root cascade keeps the origin conversation readable", () => {
+test("a live origin scope never renders, readable or spine", () => {
+  // A cascade whose only scope is the live origin would render an empty
+  // track; popAgentCascade refuses that pop, so the shape stays unreachable.
   expect(firstReadableIndex(scopes(["root"]), "root")).toBe(0);
+  expect(renderedScopes(scopes(["root"]), "root")).toEqual([]);
+});
+
+test("rendered scopes drop the live origin wherever it sits in the path", () => {
+  expect(renderedScopes(scopes(["root", "child"]), "root")).toEqual(scopes(["child"]));
+  expect(renderedScopes(scopes(["root", "child", "grandchild"]), "root")).toEqual(scopes(["child", "grandchild"]));
+  expect(renderedScopes(scopes(["owner", "child", "grandchild"]), "child")).toEqual(scopes(["owner", "grandchild"]));
+});
+
+test("the phone renders the selected leaf alone", () => {
+  const path = scopes(["root", "child", "grandchild"]);
+  expect(phoneScopes(path, renderedScopes(path, null))).toEqual(scopes(["grandchild"]));
+});
+
+test("the phone keeps only the Return path when the removed origin is the leaf", () => {
+  // An origin replacement can pop the selection onto the never-rendering
+  // origin, leaving the nearest ancestor as the last rendered column: the
+  // phone must not show that non-leaf column under the leaf's title.
+  const path = scopes(["root", "child"]);
+  expect(phoneScopes(path, renderedScopes(path, "child"))).toEqual([]);
+  expect(phoneScopes(scopes(["root"]), renderedScopes(scopes(["root"]), "root"))).toEqual([]);
+});
+
+test("a cascade without a live origin renders every scope", () => {
+  expect(renderedScopes(scopes(["root", "child"]), null)).toEqual(scopes(["root", "child"]));
+  expect(renderedScopes(scopes(["root", "child"]), "unrelated")).toEqual(scopes(["root", "child"]));
 });
 
 test("valid intent retains only requested bindings and exact conversation return params", () => {
   expect(parseZoomParams(deep)).toEqual(deep);
-  const transcript = { ...child, source: { type: "transcript", params: { ref: "root", parentRef: "previous" } } };
-  expect(parseZoomParams(transcript)).toEqual(transcript);
+  // A legacy source naming the read-only transcript reads as the session it
+  // always was: parentRef left the schema with that surface, so parsing keeps
+  // only the conversation ref, whatever parentRef carried.
+  const legacy = { ...child, source: { type: "transcript", params: { ref: "root", parentRef: "previous" } } };
+  expect(parseZoomParams(legacy)).toEqual(child);
+  const junkParent = { ...child, source: { type: "transcript", params: { ref: "root", parentRef: 42 } } };
+  expect(parseZoomParams(junkParent)).toEqual(child);
 });
 
-test("separated inspection retains its locator and owns only a read-only source", () => {
+test("separated inspection retains its locator and owns the conversation source", () => {
   const parsed = parseZoomParams({
     ref: "child",
     source: { type: "session", params: { ref: "root" } },
@@ -65,7 +100,7 @@ test("separated inspection retains its locator and owns only a read-only source"
   });
   expect(parsed).toEqual({
     ref: "child",
-    source: { type: "transcript", params: { ref: "root" } },
+    source: { type: "session", params: { ref: "root" } },
     edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
     inspection: { origin: { paneId: "original-root", type: "session", ref: "root" } },
   });
@@ -85,13 +120,13 @@ test.each([
 ])("separated inspection preserves readable intent with an unusable locator, case %#", (inspection) => {
   expect(parseZoomParams({ ...child, inspection })).toEqual({
     ref: "child",
-    source: { type: "transcript", params: { ref: "root" } },
+    source: { type: "session", params: { ref: "root" } },
     edges: [{ ownerRef: "root", childRef: "child", delegateId: "d1" }],
     inspection: { origin: null },
   });
 });
 
-test("separated inspection retains transcript parent context and locator through drill and pop", () => {
+test("separated inspection retains its conversation source and locator through drill and pop", () => {
   const parsed = parseZoomParams({
     ref: "child",
     source: { type: "transcript", params: { ref: "root", parentRef: "previous" } },
@@ -102,18 +137,18 @@ test("separated inspection retains transcript parent context and locator through
   const drilled = drillZoomIntent(parsed, { ownerRef: "child", childRef: "grandchild", delegateId: "d2" });
   expect(drilled).toEqual({
     ref: "grandchild",
-    source: { type: "transcript", params: { ref: "root", parentRef: "previous" } },
+    source: { type: "session", params: { ref: "root" } },
     edges: [
       { ownerRef: "root", childRef: "child", delegateId: "d1" },
       { ownerRef: "child", childRef: "grandchild", delegateId: "d2" },
     ],
-    inspection: { origin: { paneId: "original-root", type: "transcript", ref: "root" } },
+    inspection: { origin: { paneId: "original-root", type: "session", ref: "root" } },
   });
   expect(popZoomIntent(drilled, "root", deriveCascadePath(drilled, null))).toEqual({
     ref: "root",
-    source: { type: "transcript", params: { ref: "root", parentRef: "previous" } },
+    source: { type: "session", params: { ref: "root" } },
     edges: [],
-    inspection: { origin: { paneId: "original-root", type: "transcript", ref: "root" } },
+    inspection: { origin: { paneId: "original-root", type: "session", ref: "root" } },
   });
 });
 
@@ -128,7 +163,6 @@ test.each([
   { ...child, source: { type: "sessionZoom", params: { ref: "root" } } },
   { ...child, source: { type: "session", params: { ref: "job:output" } } },
   { ...child, source: { type: "session", params: { ref: false } } },
-  { ...child, source: { type: "transcript", params: { ref: "root", parentRef: 42 } } },
 ])("invalid base intent is rejected locally, case %#", (value) => {
   expect(parseZoomParams(value)).toBeNull();
 });

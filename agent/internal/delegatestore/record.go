@@ -158,6 +158,7 @@ type Aggregate struct {
 	NeedsAttention     bool              `json:"needs_attention"`
 	RunStartedAt       time.Time         `json:"run_started_at,omitzero"`
 	LatestActivityAt   time.Time         `json:"latest_activity_at,omitzero"`
+	LatestIntent       string            `json:"latest_intent,omitempty"`
 	LatestOutcome      *Outcome          `json:"latest_outcome,omitempty"`
 	LatestPacket       *TerminalPacket   `json:"latest_packet,omitempty"`
 	PendingDeliveries  []PendingDelivery `json:"pending_deliveries,omitempty"`

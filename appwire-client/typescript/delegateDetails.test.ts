@@ -13,6 +13,8 @@ import subagentsGo from "../../agent/subagents.go?raw";
 import type { ActivityDelegate } from "./activityData";
 import { parseActivityTree } from "./activityData";
 import {
+  DELEGATE_QUIET_AFTER_MS,
+  delegateDotState,
   delegateEndingText,
   delegateModel,
   delegateNotResumableText,
@@ -30,6 +32,63 @@ function delegate(overrides: Partial<ActivityDelegate> = {}): ActivityDelegate {
     ...overrides,
   };
 }
+
+const RUNNING_AT = "2026-09-07T00:00:00Z";
+
+// A row whose whole silence at `now` is the given age: its activity anchor
+// sits at RUNNING_AT, so passing now = RUNNING_AT + age makes quietForMs
+// exactly age.
+function silentSinceStart(): ActivityDelegate {
+  return delegate({
+    runStartedAt: RUNNING_AT,
+    latestActivityAt: RUNNING_AT,
+  });
+}
+
+test("the dot threshold is twenty seconds", () => {
+  expect(DELEGATE_QUIET_AFTER_MS).toBe(20_000);
+});
+
+test("a running row is fresh under the quiet threshold and quiet past it", () => {
+  const start = Date.parse(RUNNING_AT);
+  expect(delegateDotState(silentSinceStart(), start + 5_000)).toBe("fresh");
+  expect(delegateDotState(silentSinceStart(), start + 19_999)).toBe("fresh");
+  expect(delegateDotState(silentSinceStart(), start + 20_000)).toBe("quiet");
+  expect(delegateDotState(silentSinceStart(), start + 4 * 60_000)).toBe("quiet");
+});
+
+test("a running row with no quiet evidence is fresh, and a frozen quiet age reads as quiet", () => {
+  const now = Date.parse("2026-09-07T00:10:00Z");
+  expect(delegateDotState(delegate({ runStartedAt: RUNNING_AT }), now)).toBe("fresh");
+  expect(delegateDotState(delegate({ quietForMs: 30_000 }), now)).toBe("quiet");
+  expect(delegateDotState(delegate({ quietForMs: 5_000 }), now)).toBe("fresh");
+});
+
+test("attention phases read as attention while the run is open", () => {
+  const now = Date.parse(RUNNING_AT) + 5_000;
+  for (const phase of ["awaiting_approval", "awaiting_input", "needs-you"]) {
+    expect(delegateDotState({ ...silentSinceStart(), phase }, now)).toBe("attention");
+  }
+});
+
+test("a terminal row reads by its outcome: failed red, done idle, terminal over attention", () => {
+  const now = Date.parse(RUNNING_AT) + 5_000;
+  expect(delegateDotState({ ...silentSinceStart(), terminal: true, outcome: "failed" }, now)).toBe("failed");
+  expect(delegateDotState({ ...silentSinceStart(), terminal: true, outcome: "exhausted" }, now)).toBe("failed");
+  expect(delegateDotState({ ...silentSinceStart(), terminal: true, status: "failed" }, now)).toBe("failed");
+  expect(delegateDotState({ ...silentSinceStart(), terminal: true, outcome: "completed" }, now)).toBe("idle");
+  // Terminal wins over any stale phase a settled row nonetheless carries.
+  expect(delegateDotState({ ...silentSinceStart(), terminal: true, phase: "needs-you" }, now)).toBe("idle");
+});
+
+test("a running row whose status reads as failure shows the danger dot", () => {
+  const now = Date.parse(RUNNING_AT) + 5_000;
+  expect(delegateDotState({ ...silentSinceStart(), status: "failed" }, now)).toBe("failed");
+  expect(delegateDotState({ ...silentSinceStart(), status: "command_exited_nonzero" }, now)).toBe("failed");
+  // Attention outranks a failure the row carries beside it, as the tree's
+  // glyph rule ordered.
+  expect(delegateDotState({ ...silentSinceStart(), status: "failed", phase: "needs-you" }, now)).toBe("attention");
+});
 
 test("uses live timing for a running delegate and falls back from invalid quiet anchor", () => {
   const result = delegateTiming(

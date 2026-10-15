@@ -362,6 +362,32 @@ func TestRepetitionNudgeText_StatesActualCount(t *testing.T) {
 	}
 }
 
+// IsBreakerNudge is what the compaction summarizer uses to tell the registry's
+// intervention from a search result's own notes (#4223), so it must recognize
+// both nudges at any count and reject the notes a search actually writes.
+func TestIsBreakerNudge(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"the failure nudge", failureNudgeText, true},
+		{"the repetition nudge", repetitionNudgeText(2), true},
+		{"a repetition nudge at a large count", repetitionNudgeText(1000), true},
+		{"a repetition nudge with surrounding whitespace", "  " + repetitionNudgeText(3) + "\n", true},
+		{"a grep truncation note", "[results truncated at 1; narrow the path or glob_filter, or raise max_results]", false},
+		{"a glob exclusion note", "0 matches; 3 dotfile/gitignored path(s) were excluded from the search", false},
+		{"a registry head-count marker", "[200 total lines; showing first 200; 5 lines omitted]", false},
+		{"an empty line", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsBreakerNudge(tc.text); got != tc.want {
+				t.Errorf("IsBreakerNudge(%q) = %v, want %v", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFailureLedger_ConcurrentRecord_BothCountersRaceClean(t *testing.T) {
 	l := newFailureLedger()
 	var wg sync.WaitGroup

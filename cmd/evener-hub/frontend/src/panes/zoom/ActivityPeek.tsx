@@ -1,8 +1,8 @@
 import { type ReactElement, useState } from "react";
 import { ACTIVITY_TABS, activityTabSpec } from "../../shell/activitybar/activityTabs";
-import { SessionStatusIndicator } from "../../shell/SessionStatusIndicator";
+import { SIGNAL_STATES } from "../../shell/sessionStatus";
 import type { ActivityScope, ActivityTab } from "../../shell/statusbar/statusScope";
-import { IconButton, Popover } from "../../widgets";
+import { CloseIcon, IconButton, Popover, StatusDot } from "../../widgets";
 import { DisclosurePersistenceContext } from "../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { cadenceStateForStatus } from "../session/liveness";
@@ -45,7 +45,7 @@ export function ActivityPeek({
           <strong>
             {spec.label} · {scope.leaf.title}
           </strong>
-          <IconButton label="Close activity peek" icon="×" variant="quiet" size="sm" onClick={onClose} />
+          <IconButton label="Close activity peek" icon={<CloseIcon />} variant="quiet" size="sm" onClick={onClose} />
         </header>
         <div className={CLASS.peekBody}>
           <DisclosurePersistenceContext.Provider value={JSON.stringify(["cascade-peek", paneId, scope.leaf.ref, tab])}>
@@ -66,7 +66,7 @@ export function ActivityPeek({
 export function ScopeActivityControls({ paneId, scope }: { paneId: string; scope: ActivityScope }) {
   const [tab, setTab] = useState<ActivityTab | null>(null);
   return (
-    <div className={CLASS.activityControls}>
+    <div className={CLASS.activityControls} data-testid="cascade-activity-controls">
       {ACTIVITY_TABS.filter((spec) => spec.id !== "about").map((spec) => (
         <ActivityPeek
           key={spec.id}
@@ -99,9 +99,15 @@ export function ScopeRuntimeState({ scope, compact = false }: { scope: ActivityS
   const state = scope.activity?.runtime?.status.type;
   const label = state ? state.charAt(0).toUpperCase() + state.slice(1) : "State unknown";
   if (compact) {
+    const signal = cadenceStateForStatus(state ?? "");
+    // The compact spine's own exact runtime label is the single status name
+    // assistive tech should hear: the shared session-list glyph stays for its
+    // shape and motion, but it renders decoratively so a screen reader never
+    // gets its family label (e.g. "Working") in addition to the runtime text
+    // (e.g. "Active"). See docs/web-ui/design-system.md's cascade-spine rules.
     return (
       <span className={CLASS.stateIndicator} data-runtime-state={state ?? "unknown"} title={label}>
-        <SessionStatusIndicator state={cadenceStateForStatus(state ?? "")} />
+        {SIGNAL_STATES.has(signal) && <StatusDot state={signal} decorative />}
         <span className={CLASS.stateLabel} data-runtime-label>
           {label}
         </span>

@@ -93,7 +93,7 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 		completed,
 	}
 
-	if state := deriveRestoredState(history, 0, nil); state != SessionAwaiting {
+	if state := deriveRestoredState(history, 0, nil, nil); state != SessionAwaiting {
 		t.Fatalf("completed ask round restored as %q, want %q", state, SessionAwaiting)
 	}
 	pending, isAskRound := deriveRestoredAskPending(history, 0, nil)
@@ -106,7 +106,7 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 
 	// A later user input resolves the hold regardless of earlier completed asks.
 	history = append(history, schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("answer")})
-	if state := deriveRestoredState(history, 0, nil); state != SessionIdle {
+	if state := deriveRestoredState(history, 0, nil, nil); state != SessionIdle {
 		t.Fatalf("user reply restored as %q, want %q", state, SessionIdle)
 	}
 	if pending, isAskRound := deriveRestoredAskPending(history, 0, nil); isAskRound || len(pending) != 0 {
@@ -120,7 +120,7 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 		assistant,
 		stmToolResultsTurn(stmToolResult("ask-valid", "ask_user", true)),
 	}
-	if state := deriveRestoredState(errorOnly, 0, nil); state != SessionIdle {
+	if state := deriveRestoredState(errorOnly, 0, nil, nil); state != SessionIdle {
 		t.Fatalf("error-only ask round restored as %q, want %q", state, SessionIdle)
 	}
 	if pending, isAskRound := deriveRestoredAskPending(errorOnly, 0, nil); isAskRound || len(pending) != 0 {
@@ -189,7 +189,7 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 			stmAssistantTurn(call("c2", done)), stmToolResultsTurn(stmCommunicateResult("c2", "")),
 		}, SessionIdle},
 	} {
-		if state := deriveRestoredState(tc.turns, 0, nil); state != tc.want {
+		if state := deriveRestoredState(tc.turns, 0, nil, nil); state != tc.want {
 			t.Fatalf("%s: restored as %q, want %q", tc.name, state, tc.want)
 		}
 		if pending, isAskRound := deriveRestoredAskPending(tc.turns, 0, nil); isAskRound || len(pending) != 0 {
@@ -601,7 +601,10 @@ func stmNewSession(t *testing.T, program []byte) (*Session, *agenttest.DenyEnv, 
 		minimalSystemPrompt: true,
 		noSyncJobStore:      true,
 	}
-	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), env, cfg)
+	// The text-only gpt-5.2-codex row: a session model that sees tool-result
+	// images natively skips image descriptions by default, and these
+	// contracts pin the describing call's own behavior.
+	s, err := NewSession(client, NewOpenAIProfile("gpt-5.2-codex"), env, cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

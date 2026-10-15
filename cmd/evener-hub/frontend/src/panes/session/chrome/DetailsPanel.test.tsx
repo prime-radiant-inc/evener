@@ -1,4 +1,5 @@
 import type { ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
+import { tokenUnitLabel } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
@@ -47,6 +48,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     contextUsed: 42_000,
     contextWindow: 100_000,
     contextPressure: 0.42,
+    contextAssumed: false,
     usage: { inputTokens: 100_000, outputTokens: 20_000 },
     cost: "~$1.00",
     workMillis: 4200,
@@ -72,15 +74,10 @@ function panelText(): string {
   return screen.getByRole("dialog", { name: "Session details" }).textContent ?? "";
 }
 
-// The Session section now composes InspectorCard (DetailsPanel.tsx), whose
-// rows carry a shared data-testid ("inspector-row") rather than this
-// panel's own per-field testids - so a Session-section value is found by
-// its label text instead, mirroring how inspectorcard.test.tsx itself reads
-// its own rows.
-function sessionRowValue(label: string): string {
-  const row = screen.getByText(label).closest('[data-testid="inspector-row"]');
-  if (!row) throw new Error(`no inspector row for label "${label}"`);
-  return row.textContent ?? "";
+// The term a row's value is listed under: the testid sits on the value, inside
+// the row's dd, so the term is the dd's sibling dt.
+function rowTerm(value: HTMLElement): string | null | undefined {
+  return value.closest("dd")?.parentElement?.querySelector("dt")?.textContent;
 }
 
 afterEach(() => {
@@ -100,9 +97,8 @@ test("the trigger opens the details sheet", async () => {
 test("a live session's context row shows percent used, used / window, and how much is left", async () => {
   await openPanel(testModel());
   const row = screen.getByTestId("session-details-context");
-  expect(row.textContent).toContain("42% used");
-  expect(row.textContent).toContain("42K / 100K");
-  expect(row.textContent).toContain("58K left");
+  // The figures, not the words around them: 42% of a 100K window, 42K used, 58K left.
+  for (const figure of ["42%", "42K", "100K", "58K"]) expect(row.textContent).toContain(figure);
 });
 
 test("the context row carries a meter at the session's pressure", async () => {
@@ -112,15 +108,38 @@ test("the context row carries a meter at the session's pressure", async () => {
   expect(meter.getAttribute("aria-valuemax")).toBe("100000");
 });
 
+// An assumed window (#4596): the capacity figures - the window, and the
+// remaining headroom derived from it - carry the "~" estimate mark; the used
+// figure stays plain, because usage is measured and only the capacity is
+// assumed. Asserted structurally - figures, values, and the mark's
+// presence/absence - so wording tweaks don't break this while the estimate
+// indicator stays pinned, including its absence once a window something
+// vouches for arrives.
+test("an assumed context window marks only the capacity figures as estimates", async () => {
+  await openPanel(testModel({ contextAssumed: true }));
+  const row = screen.getByTestId("session-details-context");
+  const text = row.textContent ?? "";
+  expect(text).toContain("~100K");
+  expect(text).toContain("~58K");
+  expect(text).not.toContain("~42K");
+  const meter = screen.getByRole("meter", { name: /Context/ });
+  expect(meter.getAttribute("aria-valuenow")).toBe("42000");
+  expect(meter.getAttribute("aria-valuemax")).toBe("100000");
+  expect(meter.getAttribute("aria-label") ?? "").toContain("~100K");
+  cleanup();
+  await openPanel(testModel({ contextAssumed: false }));
+  expect(screen.getByTestId("session-details-context").textContent ?? "").not.toContain("~");
+});
+
 // The gauge's severity comes from the shared contextTone ladder (see
 // statusFormat.ts), which the status row reads too - the same session must
 // never look calm on one surface and alarming on the other. These pin the
 // rendered tone class at each tier, so a drifted threshold shows up here as a
 // wrong class rather than only as a helper-level unit failure.
 const meterToneClass = {
-  neutral: requireClass(rawMeterStyles.neutral, "meter.module.css", "neutral"),
-  attention: requireClass(rawMeterStyles.attention, "meter.module.css", "attention"),
-  danger: requireClass(rawMeterStyles.danger, "meter.module.css", "danger"),
+  neutral: requireClass(rawMeterStyles.fillNeutral, "meter.module.css", "fillNeutral"),
+  attention: requireClass(rawMeterStyles.fillAttention, "meter.module.css", "fillAttention"),
+  danger: requireClass(rawMeterStyles.fillDanger, "meter.module.css", "fillDanger"),
 };
 
 test.each([
@@ -212,14 +231,17 @@ test("a session with no thread-level total falls back to summing the loaded turn
 // must say what it actually counts instead of overstating its scope.
 test("a derived total over a truncated turn window is labelled as covering only the loaded turns", async () => {
   await openPanel(testModel({ usage: null, turns: [usageTurn("t1", 500, 20)], olderCursor: "cursor_1" }));
-  expect(screen.getByTestId("session-details-tokens").textContent).toContain("↑500");
-  expect(panelText()).toContain("tokens (loaded turns)");
+  const row = screen.getByTestId("session-details-tokens");
+  expect(row.textContent).toContain("↑500");
+  expect(row.getAttribute("data-scope")).toBe("loaded");
+  expect(rowTerm(row)).toBe(tokenUnitLabel("loaded"));
 });
 
 test("the thread's own cumulative total is labelled plainly as the session's tokens", async () => {
   await openPanel(testModel({ olderCursor: "cursor_1" }));
-  expect(panelText()).toContain("tokens");
-  expect(panelText()).not.toContain("tokens (loaded turns)");
+  const row = screen.getByTestId("session-details-tokens");
+  expect(row.getAttribute("data-scope")).toBe("session");
+  expect(rowTerm(row)).toBe(tokenUnitLabel("session"));
 });
 
 // --- cost -------------------------------------------------------------------
@@ -252,19 +274,19 @@ test("a derived token total never invents a cost the server did not send", async
 
 test("the model row shows the provider/model label the status row's switch shows", async () => {
   await openPanel(testModel({ modelProvider: "openai", model: "gpt-5.6-luna" }));
-  expect(sessionRowValue("model")).toContain("openai/gpt-5.6-luna");
+  expect(screen.getByTestId("session-details-model").textContent).toContain("openai/gpt-5.6-luna");
 });
 
 test("the status row names the session's current state", async () => {
   await openPanel(testModel({ status: { type: "active" } }));
-  expect(sessionRowValue("state")).toContain("active");
+  expect(screen.getByTestId("session-details-state").textContent).toContain("active");
 });
 
 test("session id, cwd, and branch each render when the wire carried them", async () => {
   await openPanel(
     testModel({ threadId: "033uaztQj6XPP6eF7pS0OW", cwd: "/Users/jesse/evener", gitBranch: "details-empty" }),
   );
-  expect(sessionRowValue("session id")).toContain("033uaztQj6XPP6eF7pS0OW");
+  expect(screen.getByTestId("session-details-id").textContent).toContain("033uaztQj6XPP6eF7pS0OW");
   expect(screen.getByTestId("session-details-cwd").textContent).toContain("/Users/jesse/evener");
   expect(screen.getByTestId("session-details-branch").textContent).toContain("details-empty");
 });
@@ -302,9 +324,7 @@ test("no created/updated rows when the source did not know the instants", async 
 // --- grouping ---------------------------------------------------------------
 
 // The legacy panel grouped its rows under titled sections (Session / Usage /
-// Runtime), which is what keeps a dozen rows scannable. Session is titled by
-// InspectorCard's own header band, now a real <h3> (see inspectorcard's
-// index.tsx), same as Usage and Location's Section/DetailRow's own <h3>.
+// Runtime), which is what keeps a dozen rows scannable.
 test("rows are grouped under titled sections", async () => {
   await openPanel(testModel());
   expect(screen.getByRole("heading", { name: "Session" })).toBeTruthy();
@@ -346,7 +366,7 @@ test("a session with no accounting data at all keeps its identity rows and drops
       updatedAt: undefined,
     }),
   );
-  expect(sessionRowValue("model")).toBeTruthy();
+  expect(screen.getByTestId("session-details-model").textContent).toBeTruthy();
   expect(screen.queryByRole("heading", { name: "Usage" })).toBeNull();
 });
 

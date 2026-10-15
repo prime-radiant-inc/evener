@@ -152,8 +152,9 @@ func TestWebChecksFailureReplaysOnlyTheFailingLog(t *testing.T) {
 }
 
 // Each check is `npm run <check>` in the frontend, contained in private roots
-// under its own scratch directory, with Node's compile cache off. Nothing is
-// built first and nothing needs a private Go home.
+// under its own scratch directory, with Node's compile cache off and Vite's dep
+// cache pointed at that root rather than the checkout. Nothing is built first
+// and nothing needs a private Go home.
 func TestWebChecksLaunchEachCheckContained(t *testing.T) {
 	launcher := newFakeLauncher()
 	tg := startWebChecks(t, launcher)
@@ -183,6 +184,12 @@ func TestWebChecksLaunchEachCheckContained(t *testing.T) {
 				t.Errorf("%s %s = %q, want inside %s", check, name, env[name], root)
 			}
 		}
+		// Vite's dep optimizer would otherwise write the checkout's .vite-cache,
+		// which a read-only checkout denies (issue #4193). The gate points it at
+		// the check's own private root instead.
+		if got, want := env["EVENER_FRONTEND_VITE_CACHE_DIR"], filepath.Join(root, "vite-cache"); got != want {
+			t.Errorf("%s EVENER_FRONTEND_VITE_CACHE_DIR = %q, want %q", check, got, want)
+		}
 	}
 }
 
@@ -202,5 +209,34 @@ func TestLatestSignalPrefersAWaitingSecondSignal(t *testing.T) {
 	signals <- syscall.SIGTERM
 	if got := latestSignal(syscall.SIGINT, signals); got != syscall.SIGTERM {
 		t.Fatalf("with a second signal waiting, latestSignal = %v, want it", got)
+	}
+}
+
+// TestWebCheckSpecAddsTheVitestJSONReporter pins issue #144's frontend seam:
+// with EVENER_WEB_VITEST_JSON set, only the test check carries the extra
+// vitest reporter flags the timing ratchet reads, written per-reporter
+// (--outputFile.json) so the default reporter keeps the human log. typecheck
+// and lint are untouched.
+func TestWebCheckSpecAddsTheVitestJSONReporter(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "report.json")
+	t.Setenv("EVENER_WEB_VITEST_JSON", out)
+	want := []string{"npm", "run", "test", "--", "--reporter=default", "--reporter=json", "--outputFile.json=" + out}
+	if got := webCheckSpec("test", t.TempDir()).argv; !slices.Equal(got, want) {
+		t.Fatalf("test spec argv = %v, want %v", got, want)
+	}
+	for _, check := range []string{"typecheck", "lint"} {
+		if got := webCheckSpec(check, t.TempDir()).argv; !slices.Equal(got, []string{"npm", "run", check}) {
+			t.Fatalf("%s spec argv = %v, want the plain npm run, unchanged", check, got)
+		}
+	}
+}
+
+// TestWebCheckSpecWithoutTheJSONEnvIsUnchanged pins the other half: unset, the
+// test check runs exactly `npm run test`, so a run that captures no durations
+// pays nothing for the seam.
+func TestWebCheckSpecWithoutTheJSONEnvIsUnchanged(t *testing.T) {
+	t.Setenv("EVENER_WEB_VITEST_JSON", "")
+	if got := webCheckSpec("test", t.TempDir()).argv; !slices.Equal(got, []string{"npm", "run", "test"}) {
+		t.Fatalf("test spec argv = %v, want the plain npm run", got)
 	}
 }

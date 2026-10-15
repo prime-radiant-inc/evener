@@ -1,16 +1,77 @@
-// Package mcphttp holds the HTTP client plumbing shared by the MCP connection
-// manager (agent/internal/mcp) and the MCP reachability probe (agent/mcpprobe).
-// Both must apply a server's configured HTTP headers to every request the same
-// way, so they build their clients through ClientWithHeaders instead of each
-// carrying a private copy of the wrapper and drifting apart.
+// Package mcphttp holds the HTTP plumbing the MCP connection manager
+// (agent/internal/mcp) and the MCP reachability probe (agent/mcpprobe) share, so
+// the two cannot drift apart:
+//
+//   - ClientWithHeaders applies a server's configured HTTP headers to every
+//     request for that server's origin, and
+//   - BuildTransport builds the http or sse client transport, through that same
+//     client and with ErrEndpointRequired and ErrUnsupportedTransport for the two
+//     ways a configuration cannot be turned into one.
+//
+// The stdio transport is deliberately not built here: the probe only checks that
+// a configured command is on PATH, while the manager starts the process (see
+// mcpprobe's package doc).
 package mcphttp
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// ErrEndpointRequired and ErrUnsupportedTransport identify BuildTransport's two
+// refusals by identity rather than by message: an http or sse server with no
+// endpoint URL, and a transport type this package does not build.
+var (
+	ErrEndpointRequired     = errors.New("transport requires a url")
+	ErrUnsupportedTransport = errors.New("unknown MCP transport type")
+)
+
+// BuildTransport returns the SDK client transport for an http or sse server
+// endpoint. It is the single construction the MCP connection manager
+// (agent/internal/mcp) and the reachability probe (agent/mcpprobe) share, so
+// their transport policy — which SDK transport a configured type means, the
+// endpoint, whether an empty URL is refused — cannot drift apart (#2396).
+//
+// kind must be "http" or "sse". stdio is deliberately not built here: the two
+// callers need different things from it, because the probe only checks that a
+// configured command is on PATH while the manager starts the process inside the
+// session sandbox (see mcpprobe's package doc for the probe's stated limits).
+//
+// client is the HTTP client the transport sends through, and each caller owns
+// that decision: the probe passes the per-call client it pools and releases
+// (probeHTTPClient, which keeps another component's CloseIdleConnections from
+// breaking a handshake in flight, #1486), and the manager passes nil to keep
+// the SDK's own client. A nil client with no headers leaves the transport on
+// the SDK's client rather than installing an empty wrapper.
+func BuildTransport(kind, endpointURL string, headers map[string]string, client *http.Client) (mcpsdk.Transport, error) {
+	if len(headers) > 0 {
+		client = ClientWithHeaders(client, endpointURL, headers)
+	}
+	switch kind {
+	case "sse":
+		if endpointURL == "" {
+			return nil, fmt.Errorf("%s %w", kind, ErrEndpointRequired)
+		}
+		t := &mcpsdk.SSEClientTransport{Endpoint: endpointURL, HTTPClient: client}
+		return t, nil
+
+	case "http":
+		if endpointURL == "" {
+			return nil, fmt.Errorf("%s %w", kind, ErrEndpointRequired)
+		}
+		t := &mcpsdk.StreamableClientTransport{Endpoint: endpointURL, HTTPClient: client}
+		return t, nil
+
+	default:
+		return nil, fmt.Errorf("%w %q", ErrUnsupportedTransport, kind)
+	}
+}
 
 // HeaderRoundTripper wraps an http.RoundTripper to inject Headers into a
 // request before delegating to Base. Headers are injected only into requests

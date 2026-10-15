@@ -646,7 +646,7 @@ func TestReconstructRejectsResultsCrossingToolRoundBoundaries(t *testing.T) {
 			if err == nil || entries != nil {
 				t.Fatal("accepted a result from an interrupted tool round")
 			}
-			if kind == schema.TurnMemoryContext && !strings.Contains(err.Error(), "crosses a tool-round boundary") {
+			if kind == schema.TurnMemoryContext && !errors.Is(err, errResultCrossesToolRound) {
 				t.Fatalf("memory must reject the crossed tool round, not the turn kind: %v", err)
 			}
 		})

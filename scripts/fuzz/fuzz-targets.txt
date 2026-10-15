@@ -28,6 +28,7 @@ native:.:./appwire:FuzzTranscriptItemLimitNormalization
 native:.:./appwire:FuzzMethodParams
 native:.:./appwire:FuzzWireTypes
 native:.:./internal/appitempaging:FuzzCursorCodec
+native:.:./internal/apphistory:FuzzHistoryContentCursor
 native:.:./internal/transcriptindex:FuzzReadMeta
 native:execsupport:./valueexpr:FuzzValueexprScan
 native:execsupport:./valueexpr:FuzzValueexprTokenExpiry
@@ -412,6 +413,7 @@ native:agent:.:FuzzFc2OutputWindowStatus
 native:agent:.:FuzzFc2ToolStartDescription
 native:agent:./execenv:FuzzFc2BuildRipgrepArgs
 native:agent:./execenv:FuzzFc2ResolveGrepDir
+native:agent:./execenv:FuzzRgCapture
 native:agent:./internal/jobstore:FuzzFc2Reconcile
 rapid:agent:.:TestJobsFc2DescendantMergeSeqFuzz
 native:agent:.:FuzzMcClassifyModelError

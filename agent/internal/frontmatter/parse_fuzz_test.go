@@ -3,6 +3,7 @@ package frontmatter
 import (
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/lineend"
@@ -30,6 +31,9 @@ func FuzzFrontmatterParse(f *testing.F) {
 		"---\n: : : not valid yaml :\n---\nbody",
 		"",
 		"---\n",
+		"\ufeff---\ntitle: hi\n---\nbody text\n",
+		"\ufeffno frontmatter here",
+		"\ufeff",
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -50,19 +54,19 @@ func FuzzFrontmatterParse(f *testing.F) {
 			return
 		}
 
-		// Framing contract: an unframed document is returned with its line
-		// endings normalized and nil Meta; a framed one splits Body exactly at
-		// the inner boundary.
+		// Framing contract: an unframed document is returned normalized — line
+		// endings normalized and a leading UTF-8 byte-order mark dropped — with
+		// nil Meta; a framed one splits Body exactly at the inner boundary.
 		const delim = "---\n"
-		raw = lineend.Normalize(raw)
-		if idx := indexAfter(raw); idx < 0 {
-			if doc.Meta != nil || doc.Body != raw {
-				t.Fatalf("unframed document not returned normalized:\n in  =%q\n meta=%#v\n body=%q", raw, doc.Meta, doc.Body)
+		normalized := strings.TrimPrefix(lineend.Normalize(raw), "\ufeff")
+		if idx := indexAfter(normalized); idx < 0 {
+			if doc.Meta != nil || doc.Body != normalized {
+				t.Fatalf("unframed document not returned normalized:\n in  =%q\n meta=%#v\n body=%q", normalized, doc.Meta, doc.Body)
 			}
 		} else {
-			wantBody := raw[len(delim)+idx+len(delim):]
+			wantBody := normalized[len(delim)+idx+len(delim):]
 			if doc.Body != wantBody {
-				t.Fatalf("framed document body mismatch:\n in  =%q\n want=%q\n got =%q", raw, wantBody, doc.Body)
+				t.Fatalf("framed document body mismatch:\n in  =%q\n want=%q\n got =%q", normalized, wantBody, doc.Body)
 			}
 		}
 
@@ -70,6 +74,8 @@ func FuzzFrontmatterParse(f *testing.F) {
 		// float64 NaN, and reflect.DeepEqual(NaN, NaN) is false even though the
 		// parse is perfectly deterministic — so a plain DeepEqual would
 		// false-flag any input that yields a NaN-valued field.
+		// The same input twice, so the property is Parse(x) == Parse(x), not a
+		// comparison against a normalized copy.
 		doc2, err2 := Parse(raw)
 		if err2 != nil || doc.Body != doc2.Body || !yamlValueEqual(doc.Meta, doc2.Meta) {
 			t.Fatalf("Parse not deterministic for %q", raw)

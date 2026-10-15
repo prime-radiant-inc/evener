@@ -2,7 +2,7 @@ import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { SerializedDockview } from "dockview-core";
 import { lazy } from "react";
@@ -230,7 +230,7 @@ test("shows a loading placeholder instead of a blank pane while a newly-opened p
   render(<DockHost />);
 
   // Before the chunk resolves: a loading placeholder, not silence.
-  expect(await screen.findByTestId("empty-state")).toBeTruthy();
+  expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
   expect(screen.queryByText(/doc pane: ref_slow/)).toBeNull();
 
   await act(async () => {
@@ -258,7 +258,7 @@ test("cancels toggle-open focus when a panel deactivates before its lazy pane mo
     const delayed = await act(
       async () => workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_delayed" }).paneId,
     );
-    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
     expect(screen.queryByText("delayed details body")).toBeNull();
 
     act(() => {
@@ -272,7 +272,7 @@ test("cancels toggle-open focus when a panel deactivates before its lazy pane mo
     act(() => {
       workspaceStore.getState().focusPane(delayed);
     });
-    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
     await act(async () => {
       resolveChunk();
       await pendingChunk;
@@ -304,7 +304,7 @@ test("a host teardown preserves the still-focused pane's pending focus marker", 
     const delayed = await act(
       async () => workspaceStore.getState().togglePane("sessionDetails", { ref: "ref_swap" }).paneId,
     );
-    expect(await screen.findByText("Loading…")).toBeTruthy();
+    expect(await screen.findByRole("status", { name: "Loading" })).toBeTruthy();
     expect(workspaceStore.getState().focusedPaneId).toBe(delayed);
 
     view.unmount();
@@ -574,7 +574,7 @@ test("promoting a real delegate conversation keeps both conversation lifetimes, 
   });
   const workspace = workspaceStore.getState();
   const parentId = workspace.openPane("session", { ref: parentRef });
-  const sourceId = workspace.openPane("transcript", { ref: childRef, parentRef }, { slot: "secondary" });
+  const sourceId = workspace.openPane("session", { ref: childRef }, { slot: "secondary" });
   const parentPane = workspaceStore.getState().panes.find((pane) => pane.id === parentId);
   const childPane = workspaceStore.getState().panes.find((pane) => pane.id === sourceId);
   if (!parentPane || !childPane) throw new Error("conversation pane missing");
@@ -1038,6 +1038,17 @@ const NO_CAPABILITIES: ThreadCapabilities = {
   rename: false,
 };
 
+// The session pane body's own empty state (a fixture thread has no turns).
+// Compact EmptyStates inside lists and sidebars carry the same testid, so the
+// lookup is pinned to the body's reason and must find exactly one.
+function sessionBodyEmptyState(): Promise<Element> {
+  return waitFor(() => {
+    const found = document.querySelectorAll('[data-testid="empty-state"][data-reason="no-turns"]');
+    expect(found).toHaveLength(1);
+    return found[0] as Element;
+  });
+}
+
 function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
   return {
@@ -1063,6 +1074,7 @@ function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): Threa
     contextUsed: 0,
     contextWindow: 0,
     contextPressure: 0,
+    contextAssumed: false,
     usage: null,
     workMillis: 0,
     reasoningEffortLevels: [],
@@ -1087,7 +1099,7 @@ test("a session pane's tab title prefers the live ThreadModel name over the raw 
   // on its empty state. Matched by testid, not by that empty state's copy:
   // this test is about the TAB title, and has no business pinning wording the
   // session pane owns.
-  await screen.findByTestId("empty-state");
+  await sessionBodyEmptyState();
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Debug the flaky test");
 });
 
@@ -1164,7 +1176,12 @@ test("a session pane's tab title falls back to the navigation location title whe
     </ClientProvider>,
   );
 
-  await screen.findByTestId("empty-state");
+  // The pane body is up on its pre-hydration loading status.
+  await vi.waitFor(() => {
+    const body = document.querySelector('[data-pane-scaffold="session:ref_tree"]');
+    if (!(body instanceof HTMLElement)) throw new Error("session pane body not rendered");
+    within(body).getByRole("status");
+  });
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Fix the flaky CI job");
 });
 
@@ -1178,7 +1195,7 @@ test("a session pane's tab title live-updates when the thread is renamed, with n
   );
   // The real session pane's own body (wave 4): synced against the
   // pre-seeded model, whose fixture turns default to [].
-  await screen.findByTestId("empty-state");
+  await sessionBodyEmptyState();
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Original name");
 
   await act(async () => {
@@ -1195,7 +1212,7 @@ test("a session pane's tab title live-updates when the thread is renamed, with n
   // Still the same pane, not a fresh one - the session pane's own body
   // (which doesn't read the thread name at all, only its turns) is
   // untouched throughout the rename.
-  expect(screen.getByTestId("empty-state")).toBeTruthy();
+  await sessionBodyEmptyState();
 });
 
 test("job tabs use their own hydrated titles without extra reads or cross-owner leakage", async () => {
@@ -1261,7 +1278,7 @@ test("a session pane's tab shows a live status dot wired to the real dockview ho
       <DockHost />
     </ClientProvider>,
   );
-  await screen.findByTestId("empty-state");
+  await sessionBodyEmptyState();
 
   // Scoped to the session tab's own .dv-tab element: the pane's OWN header
   // carries its own Cadence dot (also role="img") - this test is about the
@@ -1348,7 +1365,9 @@ function inspectionRecord(id: string): OpenPaneRecord {
 }
 
 async function mountedSecondaryInspector() {
-  const client = cascadeClient((ref) => cascadeContext(ref, ref === "child" ? ["root"] : []));
+  const client = cascadeClient((ref) =>
+    cascadeContext(ref, ref === "grandchild" ? ["root", "child"] : ref === "child" ? ["root"] : []),
+  );
   connectionStore.getState().connect(client);
   window.history.replaceState({}, "", "/s/root");
   const mainId = workspaceStore.getState().openPane("session", { ref: "root" });
@@ -1398,15 +1417,24 @@ test("cascade tabs keep the selected leaf title across pop, drill and native rea
   try {
     const { api, mainId, neighborId, inspectorId } = fixture;
     expect(api.getPanel(inspectorId)?.title).toBe("child");
-    await act(async () => popAgentCascade(inspectorId, "root"));
-    expect(api.getPanel(inspectorId)?.title).toBe("root");
+    // The origin conversation never renders in the pane, so the cascade
+    // cannot pop to it; a deeper drill leaves a real ancestor to pop to.
     await act(async () =>
       enterAgentCascade(
-        activityDelegate({ ownerRef: "root", childRef: "child", delegateId: "edge-child" }),
+        activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" }),
         inspectorId,
       ),
     );
+    expect(api.getPanel(inspectorId)?.title).toBe("grandchild");
+    await act(async () => popAgentCascade(inspectorId, "child"));
     expect(api.getPanel(inspectorId)?.title).toBe("child");
+    await act(async () =>
+      enterAgentCascade(
+        activityDelegate({ ownerRef: "child", childRef: "grandchild", delegateId: "edge-grandchild" }),
+        inspectorId,
+      ),
+    );
+    expect(api.getPanel(inspectorId)?.title).toBe("grandchild");
     const intent = inspectionRecord(inspectorId).params;
     const savedTitle = api.getPanel(inspectorId)?.title;
     await userEvent.click(screen.getByRole("tab", { name: "Doc neighbor" }));
@@ -1416,10 +1444,13 @@ test("cascade tabs keep the selected leaf title across pop, drill and native rea
     expect(workspaceStore.getState().focusedPaneId).toBe(inspectorId);
     expect(inspectionRecord(inspectorId).params).toBe(intent);
     expect(cascadeOrigin(inspectionRecord(inspectorId))).toBe(inspectionRecord(mainId));
-    // The origin conversation's own pane is live in the main group, so the
-    // cascade collapses it to a spine and keeps only the leaf readable.
-    expect(screen.getAllByTestId("cascade-column").map((column) => column.dataset.scopeRef)).toEqual(["child"]);
-    expect(screen.getAllByTestId("cascade-spine").map((spine) => spine.dataset.scopeRef)).toEqual(["root"]);
+    // The origin conversation never renders in the pane: the drilled branch
+    // keeps the readable pair above the removed origin, with no origin spine.
+    expect(screen.getAllByTestId("cascade-column").map((column) => column.dataset.scopeRef)).toEqual([
+      "child",
+      "grandchild",
+    ]);
+    expect(screen.queryAllByTestId("cascade-spine")).toEqual([]);
     expect(api.getPanel(inspectorId)?.title).toBe(savedTitle);
   } finally {
     fixture.dispose();
@@ -1488,7 +1519,13 @@ test.each([
     if (!restored) throw new Error("Missing restored Dockview API");
     expect(threadsStore.getState().threads.has(ref)).toBe(false);
     expect(restored.activePanel?.id).toBe(activeId);
-    expect(restored.toJSON().panels[neighborId]).toEqual(saved.panels[neighborId]);
+    // A saved session-ref transcript pane reopens as the conversation pane it
+    // always was - the workspace's documented restore migration - so its panel
+    // records the migrated pane type; every other fixture restores verbatim.
+    const savedPanel = saved.panels[neighborId]!;
+    const expectedPanel =
+      type === "transcript" ? { ...savedPanel, params: { paneType: "session", paneParams: { ref } } } : savedPanel;
+    expect(restored.toJSON().panels[neighborId]).toEqual(expectedPanel);
     expect(document.querySelector(`[data-pane-scaffold="session:${ref}"]`)).toBeNull();
 
     await act(async () => {
@@ -1499,7 +1536,7 @@ test.each([
       threadsStore.setState({ threads: new Map([[ref, fixtureThread(ref, { name: "" })]]) });
     });
     expect(restored.getPanel(neighborId)?.title).toBe(unnamedTitle);
-    expect(restored.getPanel(neighborId)?.params).toEqual(saved.panels[neighborId]?.params);
+    expect(restored.getPanel(neighborId)?.params).toEqual(expectedPanel.params);
     expect(restored.activePanel?.id).toBe(activeId);
     await act(async () => {
       expect(workspaceStore.getState().retypePane(inspectionRecord(neighborId), type, { ref: "ref_changed" })).toBe(
@@ -1521,7 +1558,7 @@ test.each([false, true])(
       const intent = inspectorPanel(saved, inspectorId).params?.paneParams;
       expect(parseZoomParams(intent)).toMatchObject({
         ref: "child",
-        source: { type: "transcript", params: { ref: "root" } },
+        source: { type: "session", params: { ref: "root" } },
         edges: [{ ownerRef: "root", childRef: "child", delegateId: "edge-child" }],
         inspection: { origin: { paneId: mainId, type: "session", ref: "root" } },
       });
@@ -1553,9 +1590,7 @@ test.each([false, true])(
       expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
         "child",
       ]);
-      expect(screen.getAllByTestId("cascade-spine").map((spine) => spine.getAttribute("data-scope-ref"))).toEqual([
-        "root",
-      ]);
+      expect(screen.queryAllByTestId("cascade-spine")).toEqual([]);
       await act(async () => returnFromAgentCascade(inspectorId));
       expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId]);
       expect(inspectionRecord(mainId)).toBe(main);
@@ -1652,7 +1687,7 @@ test("secondary inspector saves a retired locator before host reconciliation and
 
 test.each([
   { name: "missing target", locator: { paneId: "absent-pane", type: "session", ref: "root" } },
-  { name: "wrong type", locator: { paneId: "pane_session_1", type: "transcript", ref: "root" } },
+  { name: "wrong pane kind", locator: { paneId: "pane_doc_2", type: "session", ref: "root" } },
   { name: "empty ID", locator: { paneId: "", type: "session", ref: "root" } },
   { name: "invalid type", locator: { paneId: "pane_session_1", type: "doc", ref: "root" } },
   { name: "invalid ref", locator: { paneId: "pane_session_1", type: "session", ref: 42 } },
@@ -1673,11 +1708,55 @@ test.each([
     expect(parseZoomParams(inspector.params)?.inspection).toEqual({ origin: null });
     expect(cascadeOrigin(inspector)).toBeNull();
     expect(associatedCascade(main)).toBeNull();
-    expect(conversationPaneLifetime(inspector).composer).toBeNull();
+    // The recovered inspector embeds the conversation, so it owns its own
+    // composer state for the source ref - never the surviving source pane's.
+    const composer = conversationPaneLifetime(inspector).composer;
+    expect(composer?.ref).toBe("root");
+    expect(composer).not.toBe(conversationPaneLifetime(main).composer);
     await act(async () => returnFromAgentCascade(inspectorId));
     expect(inspectionRecord(mainId)).toBe(main);
     expect(workspaceStore.getState().focusedPaneId).not.toBe(mainId);
     expect(consumePaneFocus(mainId)).toBe(false);
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("a legacy transcript locator restores its origin binding against the surviving conversation pane", async () => {
+  const fixture = await mountedSecondaryInspector();
+  try {
+    const { mainId, neighborId, inspectorId } = fixture;
+    const saved = workspaceStore.getState().layoutJSON() as SerializedDockview;
+    const panel = inspectorPanel(saved, inspectorId);
+    panel.params = {
+      ...panel.params,
+      paneParams: {
+        ...panel.params?.paneParams,
+        inspection: { origin: { paneId: mainId, type: "transcript", ref: "root" } },
+      },
+    };
+    fixture.view.unmount();
+    resetWorkspaceStoreForTests();
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(saved));
+    await act(async () => fixture.mount());
+    const api = getDockviewApi();
+    if (!api) throw new Error("Missing restored Dockview API");
+    const main = inspectionRecord(mainId);
+    const inspector = inspectionRecord(inspectorId);
+    expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId, inspectorId]);
+    // The locator names the pane the origin restored as: its legacy
+    // transcript claim reads as the session it always was, so the binding
+    // survives the restore instead of being recovered away.
+    expect(parseZoomParams(inspector.params)?.inspection).toEqual({
+      origin: { paneId: mainId, type: "session", ref: "root" },
+    });
+    expect(cascadeOrigin(inspector)).toBe(main);
+    expect(associatedCascade(main)).toBe(inspector);
+    await act(async () => returnFromAgentCascade(inspectorId));
+    expect(workspaceStore.getState().panes.map((pane) => pane.id)).toEqual([mainId, neighborId]);
+    expect(inspectionRecord(mainId)).toBe(main);
+    expect(workspaceStore.getState().focusedPaneId).toBe(mainId);
+    expect(api.activePanel?.id).toBe(mainId);
   } finally {
     fixture.dispose();
   }
@@ -1837,7 +1916,11 @@ test.each([
         return;
       }
       await screen.findByRole("button", { name: "Return to previous view" });
-      expect(workspaceStore.getState().panes.find((pane) => pane.id === id)?.params).toEqual(intent);
+      // A promoted legacy transcript restores with its saved source migrated
+      // to the conversation descriptor; the session fixture restores verbatim.
+      expect(workspaceStore.getState().panes.find((pane) => pane.id === id)?.params).toEqual(
+        sourceType === "transcript" ? { ...intent, source: { ...intent.source, type: "session" } } : intent,
+      );
       expect((workspaceStore.getState().layoutJSON() as { grid: unknown }).grid).toEqual(before.grid);
       expect(screen.getAllByTestId("cascade-column").map((column) => column.getAttribute("data-scope-ref"))).toEqual([
         "child",

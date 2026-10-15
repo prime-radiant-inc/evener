@@ -89,6 +89,31 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   extends MutationRecord<A> {
   state: MutationOutboxState;
   attempted?: boolean;
+  // #4342: how many attempts this row has in flight or unresolved - a mark
+  // increments, an in-band refusal decrements its own. `attempted` is the
+  // boolean the reconcile park and Stop's cancel guard read; this count is
+  // what keeps that boolean honest when one row carries more than one
+  // unresolved attempt (two tabs dispatching concurrently, or a
+  // transport-failed attempt followed by a refused retry). Optional because
+  // records written before the field existed carry none: a missing count
+  // then reads as the attempted boolean's own evidence - one unresolved
+  // attempt when true, zero when false - and a record with neither field
+  // (a pre-#936 row, persisted untouched through every later schema
+  // version) keeps one unresolved attempt as its baseline, because its
+  // delivery state from that era is unknown and only an explicit
+  // `attempted: false` proves no earlier attempt.
+  unresolvedAttempts?: number;
+  // #4342: the ref's stop epoch at enqueue time - the barrier's own read,
+  // stored. A refusal proves the attempt never landed, and a Stop whose
+  // cancel scan skipped this attempted row bumped the epoch after this
+  // capture - the refusal's rollback then holds the row canceled (released
+  // only by an explicit Retry) instead of returning it dispatchable ahead
+  // of the interrupt that Stop already queued. A Stop before the first
+  // dispatch needs no capture: the cancel scan cancels the unattempted row
+  // outright, so the enqueue-time capture fences exactly the reachable
+  // interleavings. Optional because rows written before the field existed
+  // carry none; a missing capture reads as zero, the conservative direction.
+  stopEpochAtEnqueue?: number;
 }
 
 export interface MutationOptimisticRecord<A extends MutationAttachmentRef = MutationAttachmentRef>

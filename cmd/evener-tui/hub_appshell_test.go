@@ -15,7 +15,10 @@ func TestHubModelAppShellKeepsDashboardFooterUnderPaletteOverlay(t *testing.T) {
 	m.openCommandPalette()
 
 	got := m.View()
-	requireOrderedText(t, got, "EVENER LIVE", "Command palette", "dashboard")
+	// Header (it names the hub), the palette's first entry, then the footer's
+	// ctrl+o dashboard binding.
+	first := m.commandPalette.entries[0].Item.Label
+	requireOrderedText(t, got, "http://hub.test", first, "ctrl+o")
 }
 
 func TestHubModelAppShellBoundsPaletteOverlayToShortHeight(t *testing.T) {
@@ -24,10 +27,10 @@ func TestHubModelAppShellBoundsPaletteOverlayToShortHeight(t *testing.T) {
 	m.openCommandPalette()
 
 	got := m.View()
-	if !strings.Contains(got, "EVENER LIVE") {
-		t.Fatalf("short-height palette frame lost the EVENER LIVE header:\n%s", got)
+	if !strings.Contains(got, "http://hub.test") {
+		t.Fatalf("short-height palette frame lost the dashboard header:\n%s", got)
 	}
-	if !strings.Contains(got, "dashboard") {
+	if !strings.Contains(got, "ctrl+o") {
 		t.Fatalf("short-height palette frame lost the dashboard footer hint:\n%s", got)
 	}
 	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")

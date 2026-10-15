@@ -26,14 +26,15 @@ const KIND_CLASS: Record<ToastKind, string> = {
 // re-runs every such effect on every render - in Composer's case an effect
 // that writes the active recovery draft to IndexedDB, which republishes the
 // projection, which re-renders, which writes again.
-const TOASTS: { push: (kind: ToastKind, text: string) => void } = Object.freeze({ push: pushToast });
+const TOASTS: { push: (kind: ToastKind, text: string, reason?: string) => void } = Object.freeze({ push: pushToast });
 
 /**
- * `push(kind, text)` enqueues a toast for the `<Toast/>` region (mounted
- * once, e.g. near the app root) to display. Toasts always auto-dismiss -
- * there is no imperative dismiss in this hook's return value.
+ * `push(kind, text, reason?)` enqueues a toast for the `<Toast/>` region
+ * (mounted once, e.g. near the app root) to display. The optional reason names
+ * which outcome the toast reports (rendered as `data-reason`). Toasts always
+ * auto-dismiss - there is no imperative dismiss in this hook's return value.
  */
-export function useToasts(): { push: (kind: ToastKind, text: string) => void } {
+export function useToasts(): { push: (kind: ToastKind, text: string, reason?: string) => void } {
   return TOASTS;
 }
 
@@ -95,7 +96,13 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
     // (Toast above) announces this toast's text once, on insertion,
     // independent of how long the DOM node then sticks around for.
     // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only pause convenience, aria-live already covers AT users, see above
-    <div className={`${CLASS.toast} ${KIND_CLASS[toast.kind]}`} onMouseEnter={pause} onMouseLeave={resume}>
+    <div
+      className={`${CLASS.toast} ${KIND_CLASS[toast.kind]}`}
+      data-kind={toast.kind}
+      data-reason={toast.reason}
+      onMouseEnter={pause}
+      onMouseLeave={resume}
+    >
       <p className={CLASS.text}>{toast.text}</p>
     </div>
   );

@@ -1,6 +1,7 @@
 import type { ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { TRUNCATION_MARKER } from "../projectedRows";
+import { hasTestID } from "../markerTestUtils";
 import { render, renderedText } from "../renderNative.testkit";
 import { LogViewer } from "./LogViewer";
 
@@ -27,9 +28,9 @@ describe("the full log", () => {
 
 	it("says it shows only the first 64 KB when the text was cut", () => {
 		const cut = render(<LogViewer title="t" text={`${text}${TRUNCATION_MARKER}`} onClose={() => {}} />);
-		expect(renderedText(cut)).toContain("Showing the first 64 KB");
+		expect(hasTestID(cut, "log-truncated")).toBe(true);
 		const whole = render(<LogViewer title="t" text={text} onClose={() => {}} />);
-		expect(renderedText(whole)).not.toContain("Showing the first");
+		expect(hasTestID(whole, "log-truncated")).toBe(false);
 	});
 
 	it("expands tabs to the next stop of 8, as the preview does", () => {

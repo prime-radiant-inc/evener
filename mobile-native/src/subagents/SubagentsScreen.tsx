@@ -22,17 +22,26 @@ import {
 	type SubagentRow,
 	isSubagentRow,
 	sameModel,
-	subagentWhy,
+	subagentQuietWake,
 	summaryTally,
 } from "./subagentModel";
 import { stopRequests } from "./nativeStopRequests";
 import { ShellJobRowView } from "./ShellJobRowView";
-import { SubagentRowView } from "./SubagentRowView";
+import { type SubagentNote, SubagentRowView } from "./SubagentRowView";
 import { SubagentStrip, stateColors } from "./SubagentStrip";
 import type { SubagentTree } from "./subagentTree";
 import { useFollowedSubagentTree } from "./useSubagentTree";
 import { useNowPastQuiet } from "../session/quietClock";
 import { haptic } from "../haptics";
+
+/** Why the list shows words instead of rows: nothing to list yet, a read
+ * that failed, a session that can't list, or one that's shut down. */
+const NOTICE_WORDS = {
+	empty: "No subagents or shell jobs yet.",
+	failed: "The activity couldn't be listed right now.",
+	unsupported: "This session can't list its activity.",
+	ended: "This session is shut down, so its activity can't be listed.",
+} as const;
 
 export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Routes, "Subagents">) {
 	const { hubId, ref, threadId, title } = route.params;
@@ -48,10 +57,11 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const subagentTally = summaryTally(snapshot.summary?.delegates);
 	const activityTally = summaryTally(snapshot.summary?.delegates, snapshot.summary?.jobs);
 	// Taken when the tree changes, so the list runs no clock (ruling 7); it
-	// moves on only when a silent running subagent's row turns Quiet.
+	// moves on only when a running subagent's silence crosses the quiet
+	// threshold, dimming its dot.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot is what moves the clock
 	const treeTime = useMemo(() => Date.now(), [snapshot]);
-	const now = useNowPastQuiet(treeTime, (at) => rows.map((row) => subagentWhy(row, at).quietForMs));
+	const now = useNowPastQuiet(treeTime, (at) => rows.map((row) => subagentQuietWake(row, at)));
 
 	const [filter, setFilter] = useState<ActivityFilter>("all");
 	const [query, setQuery] = useState("");
@@ -104,10 +114,13 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		// A request recorded after the tree already shows the stop settles too.
 	}, [focused, rows, requests, ref, showToast, stopRevision]);
 	const noteFor = useCallback(
-		(row: SubagentRow) => {
+		(row: SubagentRow): SubagentNote | undefined => {
 			const view = requests.view(row);
-			if (view === "stopped") return "Stopped at your request";
-			if (view === "requested") return requests.direct(row) ? "Stop requested" : "Stop requested from the coordinator";
+			if (view === "stopped") return { kind: "stop-settled", text: "Stopped at your request" };
+			if (view === "requested")
+				return requests.direct(row)
+					? { kind: "stop-requested-direct", text: "Stop requested" }
+					: { kind: "stop-requested", text: "Stop requested from the coordinator" };
 			return undefined;
 		},
 		// biome-ignore lint/correctness/useExhaustiveDependencies: the revision says the requests changed
@@ -149,14 +162,14 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	};
 	const notice = snapshot.tree
 		? activity.length === 0 && !snapshot.partial && snapshot.missing.length === 0
-			? "No subagents or shell jobs yet."
+			? "empty"
 			: null
 		: snapshot.failed
-			? "The activity couldn't be listed right now."
+			? "failed"
 			: snapshot.unsupported
-				? "This session can't list its activity."
+				? "unsupported"
 				: snapshot.ended
-					? "This session is shut down, so its activity can't be listed."
+					? "ended"
 					: null;
 
 	const renderItem = useCallback(
@@ -246,8 +259,8 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 				</View>
 			) : null}
 			{notice ? (
-				<Text allowFontScaling={allowFontScaling} style={quiet}>
-					{notice}
+				<Text testID={`activity-notice:${notice}`} allowFontScaling={allowFontScaling} style={quiet}>
+					{NOTICE_WORDS[notice]}
 				</Text>
 			) : null}
 			{!snapshot.tree && !notice ? <Skeleton /> : null}
@@ -411,6 +424,7 @@ function MissingLine({ title }: { title?: string }) {
 	const scale = useTextScale();
 	return (
 		<Text
+			testID="activity-missing"
 			allowFontScaling={allowFontScaling}
 			style={{ padding: 16, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
 		>

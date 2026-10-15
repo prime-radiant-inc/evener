@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -795,7 +794,7 @@ func TestAuth_Codex_ApiKeySetIsRefused(t *testing.T) {
 	if err == nil {
 		t.Fatal("ApiKeySet(openai-codex) succeeded; a key the Codex transport never reads must be refused")
 	}
-	if !strings.Contains(err.Error(), "evener openai login") {
+	if !errors.Is(err, errAPIKeyForOAuthInstance) {
 		t.Errorf("the refusal names the way in: %v", err)
 	}
 	store2, _ := credentials.LoadStore(credsPath)
@@ -1147,7 +1146,7 @@ base = "openai"
 
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "evener openai login") {
+		if !errors.Is(err, errAPIKeyForOAuthInstance) {
 			t.Fatalf("ApiKeySet = %v, want the Codex refusal for the name the rename left behind", err)
 		}
 	case <-time.After(10 * time.Second):
@@ -1198,7 +1197,7 @@ base = "openai-codex"
 		FlowID:      start.FlowID,
 		RedirectURL: "http://localhost:1455/auth/callback?code=auth-code&state=" + url.QueryEscape(state),
 	})
-	if err == nil || !strings.Contains(err.Error(), "OAuth is not supported") {
+	if !errors.Is(err, errOAuthUnsupported) {
 		t.Fatalf("LoginComplete = %v, want the refusal for the name the rename left behind", err)
 	}
 	if _, err := authopenai.LoadAuth(stateDir, "work"); !errors.Is(err, authopenai.ErrAuthNotFound) {
@@ -1232,7 +1231,7 @@ base = "openai-codex"
 		t.Fatalf("DeviceStart: %v", err)
 	}
 	_, err = ctrl.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "work", FlowID: start.FlowID})
-	if err == nil || !strings.Contains(err.Error(), "OAuth is not supported") {
+	if !errors.Is(err, errOAuthUnsupported) {
 		t.Fatalf("DevicePoll = %v, want the refusal for the name the rename left behind", err)
 	}
 	if _, err := authopenai.LoadAuth(stateDir, "work"); !errors.Is(err, authopenai.ErrAuthNotFound) {

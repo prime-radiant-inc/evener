@@ -31,6 +31,7 @@ export function QuestionHistory({
 			{answer ? (
 				<Text
 					allowFontScaling={allowFontScaling}
+					testID="question-answer"
 					style={{ fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkMid }}
 				>
 					{`You answered: ${answer}`}

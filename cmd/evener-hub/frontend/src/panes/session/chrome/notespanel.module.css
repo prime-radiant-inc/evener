@@ -4,6 +4,9 @@
  * room a popover never had. Token colors and spacing only. */
 
 .section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
   padding-block-end: var(--space-4);
   border-block-end: 1px solid var(--edge);
 }
@@ -17,14 +20,12 @@
   padding-block-start: var(--space-4);
 }
 
-.sectionTitle {
-  margin: 0 0 var(--space-3);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-semibold);
-  text-transform: uppercase;
-  letter-spacing: var(--tracking-eyebrow);
-  color: var(--ink-mid);
+/* The editor and the one-line save status under it (saving, saved, the
+ * idle-wake cost, or the failure). */
+.editorGroup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }
 
 /* The human note's writing surface claims the card's full width; autoGrow
@@ -40,24 +41,6 @@
 .editor textarea {
   width: 100%;
   box-sizing: border-box;
-}
-
-/* The one-line status under the textarea: saving progress, the saved
- * confirmation, the idle-wake cost warning, or the failure report. Caption
- * size and mid ink keep it a whisper beside the note itself; the error
- * variant is the only state allowed the danger color. */
-.status {
-  margin: var(--space-2) 0 0;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
-}
-
-.statusError {
-  margin: var(--space-2) 0 0;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--danger);
 }
 
 /* Read-only note prose: the agent's words and a finished session's human
@@ -97,10 +80,4 @@
 .linkUrl {
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
-}
-
-/* Empty states recede: "no agent note yet" is the absence of a fact, not a
- * fact, so it never takes the hi-ink voice real content gets. */
-.dim {
-  color: var(--ink-mid);
 }

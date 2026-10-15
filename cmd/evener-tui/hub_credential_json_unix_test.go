@@ -18,8 +18,8 @@ func TestCredentialJsonResult_RefusesPipesAndDevices(t *testing.T) {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatalf("mkfifo: %v", err)
 	}
-	t.Run("named pipe", func(t *testing.T) { assertCredentialPathRefused(t, fifo, "not a regular file") })
-	t.Run("character device", func(t *testing.T) { assertCredentialPathRefused(t, "/dev/zero", "not a regular file") })
+	t.Run("named pipe", func(t *testing.T) { assertCredentialPathRefused(t, fifo, errCredentialPathNotRegular) })
+	t.Run("character device", func(t *testing.T) { assertCredentialPathRefused(t, "/dev/zero", errCredentialPathNotRegular) })
 }
 
 // TestCredentialJsonResult_BoundsAFileThatGrowsAfterItIsOpened: the size is
@@ -39,5 +39,5 @@ func TestCredentialJsonResult_BoundsAFileThatGrowsAfterItIsOpened(t *testing.T) 
 	if err := f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	assertCredentialPathRefused(t, path, "too large")
+	assertCredentialPathRefused(t, path, errCredentialFileTooLarge)
 }

@@ -3,9 +3,10 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -82,6 +83,27 @@ func (s *sandboxFS) close() {
 		_ = unix.Close(fd)
 		delete(s.rootFds, k)
 	}
+	s.closeStaleFdsLocked()
+}
+
+// closeStaleFds closes the carve-out root fds dropped from the cache, once no
+// operation holds the layer. The count is checked again under s.mu: an
+// operation that began after release saw zero may already hold a root fd that
+// a later one moved to staleFds, and every fd an operation can still reach was
+// handed out under s.mu, which this holds.
+func (s *sandboxFS) closeStaleFds() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.inUse.Load() == 0 {
+		s.closeStaleFdsLocked()
+	}
+}
+
+func (s *sandboxFS) closeStaleFdsLocked() {
+	for _, fd := range s.staleFds {
+		_ = unix.Close(fd)
+	}
+	s.staleFds = nil
 }
 
 // isTraversalRefusal reports whether an open error from a component walk means the
@@ -113,12 +135,23 @@ func (s *sandboxFS) mapOpenErr(tool, p string, err error) error {
 func (s *sandboxFS) rootFd(root string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	carveOut := slices.Contains(s.policy.UnmaskedRoots, root)
 	if fd, ok := s.rootFds[root]; ok {
-		return fd, nil
+		// A carve-out can stop holding its pinned place after its fd was
+		// cached (moved aside and recreated, or a mask linked into it), so it
+		// is judged on every use. This keeps the grant correct as the files
+		// around it change; another local process rearranging them is
+		// trusted (docs/sandboxing.md, "Threat model"), not raced. A stale fd is dropped and the root opened
+		// afresh below, which reads a directory recreated in place and refuses
+		// (without caching) while a mask still points into it.
+		if !carveOut || s.carveOutFdValid(root, fd) {
+			return fd, nil
+		}
+		delete(s.rootFds, root)
+		s.staleFds = append(s.staleFds, fd)
 	}
 	// A carve-out root swapped for a symlink after resolution would otherwise be
 	// followed here; it must still resolve to its own place under its mask.
-	carveOut := slices.Contains(s.policy.UnmaskedRoots, root)
 	if carveOut && !s.policy.CarveOutIntact(root) {
 		return -1, errEscapesRoot
 	}
@@ -128,17 +161,21 @@ func (s *sandboxFS) rootFd(root string) (int, error) {
 	}
 	// The directory actually opened is judged too, since the root could be
 	// swapped between the check above and the open.
-	if carveOut {
-		canon, cerr := canonicalPathForFd(fd)
-		// Required on every platform for a carve-out: without the opened
-		// directory's canonical path the swap cannot be ruled out.
-		if cerr != nil || canon == "" || !s.policy.CarveOutResolvesTo(root, canon) {
-			_ = unix.Close(fd)
-			return -1, errEscapesRoot
-		}
+	if carveOut && !s.carveOutFdValid(root, fd) {
+		_ = unix.Close(fd)
+		return -1, errEscapesRoot
 	}
 	s.rootFds[root] = fd
 	return fd, nil
+}
+
+// carveOutFdValid reports whether fd, a directory opened for the carve-out
+// root, is still the root's own place under its mask with no mask pointing
+// into it. The canonical path is required on every platform: without it a swap
+// cannot be ruled out.
+func (s *sandboxFS) carveOutFdValid(root string, fd int) bool {
+	canon, err := canonicalPathForFd(fd)
+	return err == nil && canon != "" && s.policy.CarveOutResolvesTo(root, canon)
 }
 
 // openRead opens abs for reading per the policy's file-tool read shape, returning
@@ -371,61 +408,71 @@ func (s *sandboxFS) grantedWriteParent(tool, abs string) (int, string, error) {
 	return parentFd, leaf, nil
 }
 
-// errNotRegularFile is the refusal for an admitted path that is neither a
-// regular file nor (where allowed) a directory.
-var errNotRegularFile = errors.New("not a regular file")
-
-// admitReadFD turns a descriptor opened with O_NONBLOCK into an *os.File whose
-// type is confirmed before any read: a regular file, or — when allowDir — a
-// directory (the fs.FS Open contract admits directories). The nonblocking open
-// keeps an allowed FIFO or device from blocking at open; the type is then
-// fstat'd on the same descriptor, so it cannot be swapped between the check and
-// the bytes. O_NONBLOCK is cleared once the type is admitted, so callers get the
-// ordinary blocking descriptor they expect. On a non-nil error the caller owns
-// nothing (the file, and its fd, are closed); on success the returned *os.File
-// owns fd.
-func admitReadFD(fd int, name string, allowDir bool) (*os.File, error) {
-	file := os.NewFile(uintptr(fd), name)
-	if file == nil {
-		_ = unix.Close(fd)
-		return nil, fmt.Errorf("open %q: no file for descriptor", name)
-	}
-	info, err := file.Stat()
-	if err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	admitted := info.Mode().IsRegular() || (allowDir && info.IsDir())
-	if !admitted {
-		_ = file.Close()
-		return nil, errNotRegularFile
-	}
-	flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0)
-	if err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags&^unix.O_NONBLOCK); err != nil {
-		_ = file.Close()
-		return nil, err
-	}
-	return file, nil
+// admitReadFD is the sandboxed arm's entry to admitOpenedFD, the single
+// admission constructor (open_regular_unix.go). It is a variable so a test can
+// swap the admission seam; production wires it straight to the core, so both
+// arms classify the opened descriptor identically.
+var admitReadFD = func(fd int, name string, allowDir, streamed bool) (*os.File, error) {
+	return admitOpenedFD(fd, name, admitOptions{allowDir: allowDir}, streamed)
 }
 
 // readFile reads the whole file at abs through a race-safe fd, admitted by
 // admitReadFD: a FIFO would otherwise block at open and a never-ending special
-// file would allocate without bound.
+// file would allocate without bound. The read is capped at
+// MaxWholeFileReadBytes, so an oversized or hostile regular file — procfs
+// specials stat regular at terabyte sizes — fails fast instead of loading
+// (issue #4556). A regular the admission routes as a stream can block in
+// read(2) although it stats regular, so that read is also bounded in time by
+// grepReadStallTimeout and cancellation-observable (see readFileCtx). This
+// context-less entry is the Background default for callers without one.
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
+	return s.readFileCtx(context.Background(), tool, abs)
+}
+
+// readFileCtx is readFile with the caller's context threaded to the read, so a
+// cancelled tool call ends the read instead of parking it on a stream. The
+// read itself goes through readBounded, the single bounded-read constructor
+// that arms the byte cap, the stall deadline, and the ctx watcher together.
+func (s *sandboxFS) readFileCtx(ctx context.Context, tool, abs string) ([]byte, error) {
+	// A cancelled call answers before touching the filesystem, mirroring the
+	// off arm's pre-open fence.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_NONBLOCK)
 	if err != nil {
 		return nil, err
 	}
-	f, err := admitReadFD(fd, abs, false)
+	f, err := admitReadFD(fd, abs, false, isPseudoFsPath(abs))
 	if err != nil {
 		return nil, fmt.Errorf("read %q: %w", abs, err)
 	}
 	defer func() { _ = f.Close() }()
-	return io.ReadAll(f)
+	// Refuse at the stat size before reading a byte, matching the off arm's
+	// fstat refusal; readBounded still bounds the read for a file that grows
+	// past the cap after this check.
+	info, serr := f.Stat()
+	if serr != nil {
+		return nil, fmt.Errorf("read %q: %w", abs, serr)
+	}
+	if info.Size() > MaxWholeFileReadBytes {
+		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
+	}
+	data, over, rerr := readBounded(ctx, f, f, MaxWholeFileReadBytes)
+	if rerr != nil {
+		if errors.Is(rerr, errGrepStreamStalled) {
+			return nil, fmt.Errorf("read %q: %w", abs, errGrepStreamStalled)
+		}
+		return nil, rerr
+	}
+	// A whole-file read REFUSES past the cap, unlike a windowed grep scan that
+	// truncates-and-discloses: an input whose stat size lies (a procfs special,
+	// a stream) must fail with the same typed refusal the off arm returns, not
+	// hand back the first cap+1 bytes as if they were the file (#4556).
+	if over {
+		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
+	}
+	return data, nil
 }
 
 // writeFile atomically writes data to abs: it resolves the parent beneath a
@@ -633,10 +680,11 @@ func (s *sandboxFS) exists(tool, abs string) bool {
 	if s.underMasked(abs) {
 		return false
 	}
-	// A granted root itself exists even though its parent may be outside policy
-	// (under restricted, the worktree root's parent is not a read root).
+	// A granted root's parent may be outside policy, so judge the root by
+	// opening it; a root not created yet does not exist.
 	if s.isGrantedRoot(abs) {
-		return true
+		_, err := s.rootFd(abs)
+		return err == nil
 	}
 	// Resolve the parent for reading, then Fstatat the leaf without following a
 	// final symlink. A symlinked leaf reports false (sandbox refuses symlinks).
@@ -675,19 +723,106 @@ func (s *sandboxFS) listDir(tool, abs string, depth int, visibleOnly bool) ([]Di
 	return out, nil
 }
 
+// listDirBudgeted is listDir with a context and a budget (#2375): the same
+// fd-anchored walk, policy checks and refusal surface, but each listing is
+// read in charged chunks and the walk stops once the page need is met.
+func (s *sandboxFS) listDirBudgeted(ctx context.Context, tool, abs string, depth int, budget *DirListBudget) ([]DirEntry, error) {
+	// The root open below resolves the requested path component by component
+	// and is this arm's one filesystem touch before the walk's own checks — a
+	// resolution over an unavailable mount is exactly the unbounded wait the
+	// budget exists to prevent — so an already-cancelled call answers before
+	// it, mirroring the off-sandbox arm's pre-open fence.
+	if cerr := ctx.Err(); cerr != nil {
+		return nil, cerr
+	}
+	abs = filepath.Clean(abs)
+	if s.underMasked(abs) {
+		return nil, s.deny(tool, abs, denyReasonMasked)
+	}
+	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_DIRECTORY)
+	if err != nil {
+		// The resolver's raw errno does not say which path was wrong, and the
+		// legacy walk returns it just as bare — but this walk is the one the
+		// tool calls, so an ordinary filesystem error names the requested
+		// path the way the off-sandbox arm's errors do, with the underlying
+		// error preserved. A typed sandbox denial never wraps: its own
+		// message is the disclosure contract — the requested path reduced to
+		// a basename, or omitted entirely for a sensitive denial — and an
+		// fs.PathError shell would print the FULL requested path around
+		// whatever the denial chose to disclose, defeating the redaction
+		// exactly where the masking policy needs it.
+		if _, ok := errors.AsType[*sandbox.DeniedError](err); ok {
+			return nil, err
+		}
+		return nil, &fs.PathError{Op: "open", Path: abs, Err: err}
+	}
+	var out []DirEntry
+	if err := s.walkDirFdBudgeted(ctx, fd, "", abs, depth, false, &out, budget); err != nil { // walkDirFdBudgeted closes fd
+		return nil, err
+	}
+	return out, nil
+}
+
 // walkDirFd reads the entries of the directory referenced by dirFd (which it
 // closes), appends them to out, and recurses into real subdirectories beneath
 // dirFd. relPrefix is the path prefix reported to the caller; baseAbs is the real
 // absolute path of dirFd, used only to skip masked entries. visibleOnly skips
 // dot entries, so a dot directory is never opened.
 func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, visibleOnly bool, out *[]DirEntry) error {
+	return s.walkDirFdBudgeted(context.Background(), dirFd, relPrefix, baseAbs, depth, visibleOnly, out, nil)
+}
+
+// walkDirFdBudgeted is walkDirFd with a context and, when budget is non-nil,
+// the budgeted list_dir walk (#2375): every listing is charged to the budget
+// and read in cancellation-checked chunks through the shared chunked reader
+// (see secureListDirChunked), the walk stops the moment the page need is met,
+// and ctx is checked between entries. The entries an offset skips are
+// charged and discarded rather than held, and a subdirectory whose entry
+// fills the need is never opened, so a huge one beyond the page cannot fail
+// a call whose page is already valid. A nil budget is the legacy walk
+// exactly — the whole-directory read through secureReadDirEntries, no
+// charges, no stops — which is the path ListVisibleDirectory and the
+// fd-edge tests pin.
+func (s *sandboxFS) walkDirFdBudgeted(ctx context.Context, dirFd int, relPrefix, baseAbs string, depth int, visibleOnly bool, out *[]DirEntry, budget *DirListBudget) error {
 	defer func() { _ = unix.Close(dirFd) }()
-	ents, err := secureReadDirEntries(dirFd)
-	if err != nil {
-		return err
+	var ents []fs.DirEntry
+	if budget == nil {
+		osEnts, err := secureReadDirEntries(dirFd)
+		if err != nil {
+			return err
+		}
+		ents = make([]fs.DirEntry, len(osEnts))
+		copy(ents, osEnts)
+	} else {
+		if berr := budget.glob.listing(true); berr != nil {
+			return berr
+		}
+		var err error
+		ents, err = secureListDirChunked(ctx, dirFd, listDirListingName(relPrefix), budget)
+		if err != nil {
+			return err
+		}
+		budget.listings++
+		if budget.onListing != nil {
+			budget.onListing()
+		}
 	}
 	sort.SliceStable(ents, func(i, j int) bool { return ents[i].Name() < ents[j].Name() })
 	for _, ent := range ents {
+		if budget != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
+			if !budget.room() {
+				budget.stopWalk()
+				return nil
+			}
+		}
+		// A discarded entry is charged but never assembled or retained; a
+		// discarded DIRECTORY still descends, because its descendants are part
+		// of the DFS sequence the skip counts through. The dot and masked
+		// skips come first, as in the legacy walk: a masked subtree is never
+		// entered — not even to count it — and neither skip is ever charged.
 		name := ent.Name()
 		if visibleOnly && IsDotPath(name) {
 			continue
@@ -700,21 +835,30 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, v
 		if relPrefix != "" {
 			relName = filepath.Join(relPrefix, name)
 		}
-		de := DirEntry{Name: relName, IsDir: ent.IsDir()}
-		if ent.Type()&os.ModeSymlink != 0 {
-			de.IsSymlink = true
-		}
-		if !ent.IsDir() {
-			if size, mode, modTime, ierr := secureEntryInfo(dirFd, name); ierr == nil {
-				de.Size = size
-				de.ModTime = modTime
-				de.IsRegular = mode.IsRegular()
-				if mode&0o111 != 0 {
-					de.IsExec = true
+		retained := budget == nil || !budget.discard()
+		if retained {
+			de := DirEntry{Name: relName, IsDir: ent.IsDir()}
+			if ent.Type()&os.ModeSymlink != 0 {
+				de.IsSymlink = true
+			}
+			if !ent.IsDir() {
+				if size, mode, modTime, ierr := secureEntryInfo(dirFd, name); ierr == nil {
+					de.Size = size
+					de.ModTime = modTime
+					de.IsRegular = mode.IsRegular()
+					if mode&0o111 != 0 {
+						de.IsExec = true
+					}
 				}
 			}
+			*out = append(*out, de)
+			if budget != nil && budget.collect(de) {
+				// The window holds the page plus its lookahead; nothing beyond
+				// it can be shown, so stop before openat-ing any child.
+				budget.stopWalk()
+				return nil
+			}
 		}
-		*out = append(*out, de)
 		if ent.IsDir() && depth > 1 {
 			// Re-open the subdir beneath dirFd (O_NOFOLLOW): a symlinked dir is
 			// refused, and resolution stays anchored at the checked parent.
@@ -722,12 +866,35 @@ func (s *sandboxFS) walkDirFd(dirFd int, relPrefix, baseAbs string, depth int, v
 			if cerr != nil {
 				continue // unreadable/symlinked subdir: skip, keep listing
 			}
-			if err := s.walkDirFd(childFd, relName, childAbs, depth-1, visibleOnly, out); err != nil {
+			if err := s.walkDirFdBudgeted(ctx, childFd, relName, childAbs, depth-1, visibleOnly, out, budget); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// secureListDirChunked lists the directory referenced by dirFd through
+// readDirChunked — the same chunked reader the off-sandbox list_dir arm and
+// the glob and native grep walkers use — over a dup of dirFd, so the confined
+// walk reuses the reader's per-chunk cancellation and per-directory entry and
+// live-entry budget charges instead of materializing a directory whole. dir
+// names the listing for the budget's accounting (see listDirListingName).
+// The caller keeps ownership of dirFd: only the dup is read and closed,
+// leaving dirFd valid for the walk's openat recursion and fd-anchored entry
+// info. The entries handed back are backed by that dup and must not be asked
+// for Info() — os.NewFile(dup, dir) makes dirEntry.Info lstat a path relative
+// to the process working directory, not the sandbox (see fstatatEntryInfo) —
+// so the walk resolves metadata with secureEntryInfo beneath dirFd, exactly
+// as the legacy walk does.
+func secureListDirChunked(ctx context.Context, dirFd int, dir string, budget *DirListBudget) ([]fs.DirEntry, error) {
+	dup, err := unix.FcntlInt(uintptr(dirFd), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	df := os.NewFile(uintptr(dup), dir)
+	defer func() { _ = df.Close() }()
+	return readDirChunked(ctx, df, dir, budget.glob)
 }
 
 // openReadBaseFd resolves a browse base directory (glob/grep) beneath the policy,

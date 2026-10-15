@@ -31,7 +31,13 @@ import type { DockviewApi } from "dockview-core";
 import { beforeEach, describe, expect, test } from "vitest";
 import { openDocBeside } from "../panes/doc/openDoc";
 import { paneFor } from "./paneRegistry";
-import { documentPaneState, registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+import {
+  conversationOpenParentRef,
+  documentPaneState,
+  registerDockviewApi,
+  resetWorkspaceStoreForTests,
+  workspaceStore,
+} from "./workspace";
 import "./AppShell"; // side effect: the boot-time pane-type registrations under test
 
 // A minimal DockviewApi double covering only what workspace.ts touches
@@ -145,7 +151,11 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
           contentComponent: "default",
           params: { paneType: "doc", paneParams: { session: "ref_a", path: "notes.md", kind: "file" } },
         },
-        p6: { id: "p6", contentComponent: "default", params: { paneType: "transcript", paneParams: { ref: "ref_b" } } },
+        p6: {
+          id: "p6",
+          contentComponent: "default",
+          params: { paneType: "transcript", paneParams: { ref: "job:job-1", parentRef: "ref_a" } },
+        },
       },
       activeGroup: "group-2",
     };
@@ -157,7 +167,7 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
         { id: "p3", params: { paneType: "sessionActivity", paneParams: { ref: "ref_a" } } },
         { id: "p4", params: { paneType: "sessionDetails", paneParams: { ref: "ref_a" } } },
         { id: "p5", params: { paneType: "doc", paneParams: { session: "ref_a", path: "notes.md", kind: "file" } } },
-        { id: "p6", params: { paneType: "transcript", paneParams: { ref: "ref_b" } } },
+        { id: "p6", params: { paneType: "transcript", paneParams: { ref: "job:job-1", parentRef: "ref_a" } } },
       ];
       fake.activePanel = { id: "p4" };
     };
@@ -175,7 +185,7 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
       { id: "p2", type: "sessionTasks", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p4", type: "sessionDetails", params: { ref: "ref_a" }, slot: "secondary" },
       { id: "p5", type: "doc", params: { session: "ref_a", path: "notes.md", kind: "file" }, slot: "secondary" },
-      { id: "p6", type: "transcript", params: { ref: "ref_b" }, slot: "secondary" },
+      { id: "p6", type: "transcript", params: { ref: "job:job-1", parentRef: "ref_a" }, slot: "secondary" },
     ]);
     expect(fake.panels.map((pane) => pane.id)).not.toContain("p3");
     expect(workspaceStore.getState().focusedPaneId).toBe("p4");
@@ -186,4 +196,149 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
         .map((pane) => paneFor(pane.type).title(pane.params, {})),
     ).toEqual(["Tasks · ref_a", "Details · ref_a"]);
   });
+});
+
+test("a saved session-ref transcript pane restores as the live conversation pane", () => {
+  const fake = new FakeDockviewApi();
+  registerDockviewApi(asDockviewApi(fake));
+  const saved = {
+    grid: {
+      root: { type: "branch", data: [{ type: "leaf", data: { views: ["p1", "p6", "p7"] } }] },
+      activeGroup: "group-1",
+    },
+    panels: {
+      p1: { id: "p1", contentComponent: "default", params: { paneType: "session", paneParams: { ref: "ref_a" } } },
+      p6: {
+        id: "p6",
+        contentComponent: "default",
+        params: { paneType: "transcript", paneParams: { ref: "ref_b", parentRef: "ref_a" } },
+      },
+      p7: {
+        id: "p7",
+        contentComponent: "default",
+        params: { paneType: "transcript", paneParams: { ref: "job:job-2", parentRef: "ref_a" } },
+      },
+    },
+    activeGroup: "group-1",
+  };
+  fake.serialized = saved;
+  fake.fromJSONBehavior = () => {
+    fake.panels = [
+      { id: "p1", params: { paneType: "session", paneParams: { ref: "ref_a" } } },
+      { id: "p6", params: { paneType: "transcript", paneParams: { ref: "ref_b", parentRef: "ref_a" } } },
+      { id: "p7", params: { paneType: "transcript", paneParams: { ref: "job:job-2", parentRef: "ref_a" } } },
+    ];
+    fake.activePanel = { id: "p1" };
+  };
+
+  const ok = workspaceStore.getState().restoreLayout(saved);
+
+  expect(ok).toBe(true);
+  expect(workspaceStore.getState().panes).toEqual([
+    { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" },
+    { id: "p6", type: "session", params: { ref: "ref_b" }, slot: "secondary" },
+    { id: "p7", type: "transcript", params: { ref: "job:job-2", parentRef: "ref_a" }, slot: "secondary" },
+  ]);
+});
+
+test("a layout holding both a session pane and a legacy transcript pane for one conversation restores it once", () => {
+  const fake = new FakeDockviewApi();
+  const saved = {
+    grid: {
+      root: { type: "branch", data: [{ type: "leaf", data: { views: ["p1", "p2", "p3"] } }] },
+      activeGroup: "group-1",
+    },
+    panels: {
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "local:owner" } },
+      },
+      p2: {
+        id: "p2",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "local:child" } },
+      },
+      p3: {
+        id: "p3",
+        contentComponent: "default",
+        params: { paneType: "transcript", paneParams: { ref: "local:child", parentRef: "local:owner" } },
+      },
+    },
+    activeGroup: "group-1",
+  };
+  fake.serialized = saved;
+  // Model dockview itself: the panels it builds come from the JSON the
+  // migration hands it, so dropping a panel has to happen before fromJSON
+  // (the live api would otherwise hold the duplicate too).
+  fake.fromJSONBehavior = (data) => {
+    const layout = data as { panels?: Record<string, { params?: unknown }> };
+    fake.panels = Object.entries(layout.panels ?? {}).map(([id, panel]) => ({ id, params: panel.params }));
+    fake.activePanel = { id: "p1" };
+  };
+  registerDockviewApi(asDockviewApi(fake));
+
+  expect(workspaceStore.getState().restoreLayout(saved)).toBe(true);
+
+  // One conversation, one pane: route reconciliation requires exactly one
+  // child pane, so the legacy read-only pane must not survive beside it.
+  expect(
+    workspaceStore.getState().panes.map((pane) => ({ id: pane.id, ref: (pane.params as { ref?: string }).ref })),
+  ).toEqual([
+    { id: "p1", ref: "local:owner" },
+    { id: "p2", ref: "local:child" },
+  ]);
+  expect(fake.panels.map((panel) => panel.id)).toEqual(["p1", "p2"]);
+  // The dropped pane's open-parent edge moves to the survivor, or the
+  // conversation's Back walk is lost with the duplicate.
+  const child = workspaceStore.getState().panes.find((pane) => pane.id === "p2");
+  if (!child) throw new Error("child pane missing");
+  expect(conversationOpenParentRef(child)).toBe("local:owner");
+});
+
+test("a removed legacy duplicate keeps the saved conversation focused", () => {
+  const fake = new FakeDockviewApi();
+  const saved = {
+    grid: {
+      root: { type: "branch", data: [{ type: "leaf", data: { views: ["p1", "p2", "p3", "p4"] } }] },
+      activeGroup: "group-1",
+    },
+    panels: {
+      p1: {
+        id: "p1",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "local:owner" } },
+      },
+      p2: {
+        id: "p2",
+        contentComponent: "default",
+        params: { paneType: "session", paneParams: { ref: "local:child" } },
+      },
+      p3: {
+        id: "p3",
+        contentComponent: "default",
+        params: { paneType: "transcript", paneParams: { ref: "local:child", parentRef: "local:owner" } },
+      },
+      p4: {
+        id: "p4",
+        contentComponent: "default",
+        params: { paneType: "doc", paneParams: { session: "local:owner", path: "notes.md", kind: "file" } },
+      },
+    },
+    activeGroup: "group-1",
+  };
+  fake.serialized = saved;
+  fake.fromJSONBehavior = (data) => {
+    const layout = data as { panels?: Record<string, { params?: unknown }> };
+    fake.panels = Object.entries(layout.panels ?? {}).map(([id, panel]) => ({ id, params: panel.params }));
+    // The saved focus was the legacy transcript pane the reconciliation drops.
+    fake.activePanel = { id: "p3" };
+  };
+  registerDockviewApi(asDockviewApi(fake));
+
+  expect(workspaceStore.getState().restoreLayout(saved)).toBe(true);
+
+  // Focus follows the conversation that pane became, not whatever unrelated
+  // panel the removal left selected.
+  expect(workspaceStore.getState().focusedPaneId).toBe("p2");
 });

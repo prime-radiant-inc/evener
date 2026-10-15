@@ -1,0 +1,21 @@
+{
+  "name": "scope-hierarchy-ancestor-wraps",
+  "description": "ScopeCrumbs hierarchy list (activity sidebar): an ancestor crumb's long, user-authored session title must wrap in full inside the sidebar width - the hierarchy view exists to show the whole ancestry, so an ancestor may not truncate to one ellipsized line (only a hover title would carry the rest, useless on touch) - and nothing may spill out of the list.",
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "widgets/button/button.module.css",
+    "shell/statusbar/scopeCrumbs.module.css"
+  ],
+  "mutation": {
+    "declaration": "shell/statusbar/scopeCrumbs.module.css: .hierarchy .crumbWrap { white-space: normal } (deleted - both ancestor links inherit .crumbWrap's nowrap and ellipsize to one line); .hierarchy .crumbWrap { overflow-wrap: anywhere } (deleted alone - the unbroken underscore title is cut off at 542px in a 272px box)",
+    "verified": "2026-10-12",
+    "expect": "fail"
+  }
+}

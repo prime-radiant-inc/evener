@@ -33,7 +33,7 @@ func TestReplayTurnCarriesFailureDiagnostic(t *testing.T) {
 	if got.Error.Message != persisted.Error.Message {
 		t.Errorf("Error.Message = %q, want %q", got.Error.Message, persisted.Error.Message)
 	}
-	if got.Error.Source != "provider" || got.Error.Title != "Access denied" || got.Error.Hint != "check the API key" {
+	if got.Error.Source != persisted.Error.Source || got.Error.Title != persisted.Error.Title || got.Error.Hint != persisted.Error.Hint {
 		t.Errorf("Error source/title/hint = %q/%q/%q, want the persisted diagnostic", got.Error.Source, got.Error.Title, got.Error.Hint)
 	}
 	if got.Error.Cause == nil {

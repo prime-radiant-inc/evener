@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apphistory"
 )
 
 type ServerConfig struct {
@@ -475,6 +476,7 @@ func (s *Server) Broadcast(threadID, method string, params any) {
 type notificationDelivery struct {
 	connection *Connection
 	record     SequencedNotification
+	content    *apphistory.Filter
 }
 
 // routeSequencedLocked runs under projectionMu, the same gate a capture holds
@@ -495,6 +497,7 @@ func (s *Server) routeSequencedLocked(record SequencedNotification) []notificati
 		deliveries = append(deliveries, notificationDelivery{
 			connection: conn,
 			record:     record,
+			content:    s.subs.content(connID, record.ThreadID),
 		})
 	}
 	return deliveries
@@ -506,8 +509,7 @@ func (s *Server) deliverNotifications(deliveries []notificationDelivery) []*Conn
 		if s.afterBroadcastConnectionLookup != nil {
 			s.afterBroadcastConnectionLookup(delivery.connection)
 		}
-		msg := appwire.Message{Notification: &delivery.record.Notification}
-		if !delivery.connection.enqueue(msg) {
+		if !delivery.connection.enqueueHistory(delivery.record, delivery.content) {
 			disconnected = append(disconnected, delivery.connection)
 		}
 	}
@@ -628,6 +630,11 @@ type Connection struct {
 	// queueSaturationAdvised makes the queue-saturation advisory one-shot per
 	// connection. Only the receive-loop goroutine touches it.
 	queueSaturationAdvised bool
+	// queueHighWaterAdvised makes the high-water refusal advisory one-shot
+	// per connection, separately from queueSaturationAdvised so a refusal
+	// cannot consume the full-queue block advisory (and vice versa). Only
+	// the receive-loop goroutine touches it.
+	queueHighWaterAdvised bool
 	// slowReadSlots is the buffered-channel semaphore capping in-flight slow
 	// reads per connection (slowReadDispatchCap). The worker acquires a slot
 	// before spawning a slow read; the slow-read goroutine releases it when
@@ -763,7 +770,7 @@ func (c *Connection) enqueueResponse(ctx context.Context, msg appwire.Message) e
 				if c.server.beforeHydrationCommit != nil {
 					c.server.beforeHydrationCommit()
 				}
-				finalizer.commit()
+				finalizer.commit(responseSucceeded)
 				c.hydrationMu.Unlock()
 				finalizer.commitAfterRelease()
 			} else {
@@ -1084,13 +1091,19 @@ type hydrationResponseFinalizer struct {
 	rollback               subscriptionCaptureRollback
 	handoff                CaptureSubscriptionHandoff
 	releaseOnErrorResponse bool
+	historyDone            chan struct{}
 }
 
-func (f *hydrationResponseFinalizer) commit() {
-	f.server.releaseHydration(f.conn, f.threadID, f.generation)
+func (f *hydrationResponseFinalizer) commit(responseSucceeded bool) {
+	var failedCapture *subscriptionCaptureRollback
+	if !responseSucceeded {
+		failedCapture = &f.rollback
+	}
+	f.server.releaseHydration(f.conn, f.threadID, f.generation, failedCapture)
 }
 
 func (f *hydrationResponseFinalizer) commitAfterRelease() {
+	defer f.finishHistory()
 	if f.handoff.Commit != nil {
 		f.handoff.Commit()
 	}
@@ -1101,8 +1114,15 @@ func (f *hydrationResponseFinalizer) abort() {
 }
 
 func (f *hydrationResponseFinalizer) abortAfterWithdrawal() {
+	defer f.finishHistory()
 	if f.handoff.Abort != nil {
 		f.handoff.Abort()
+	}
+}
+
+func (f *hydrationResponseFinalizer) finishHistory() {
+	if f.historyDone != nil {
+		close(f.historyDone)
 	}
 }
 
@@ -1251,6 +1271,8 @@ func UnsubscribeLifecycle(ctx context.Context, threadID string) {
 // SubscribeWithAdmission installs an immediate subscription and consumes the
 // request's admission at one boundary. Registration gates precede admissionMu,
 // matching capture; unsubscribe cannot pass eligibility before installation.
+// History reads retain a buffering capture until their response is enqueued,
+// including sources that do not supply an upstream read handoff.
 // An optional expectedLifecycle is the identity already resolved by the handler.
 // A mismatch rejects without consuming admission or changing subscriptions.
 func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool, expectedLifecycle ...string) error {
@@ -1262,6 +1284,19 @@ func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool, 
 		return context.Canceled
 	}
 	server := conn.server
+	if _, history := ctx.Value(historyContentContextKey{}).(historyContentRequest); history {
+		var resolve []func() SubscriptionTarget
+		if len(expectedLifecycle) != 0 {
+			resolve = append(resolve, func() SubscriptionTarget {
+				return SubscriptionTarget{ThreadID: threadID, LifecycleKey: expectedLifecycle[0]}
+			})
+		}
+		if !CaptureSubscriptionWithHandoff(ctx, replace, func() string { return threadID },
+			func() uint64 { return server.routedSeq }, func() bool { return true }, CaptureSubscriptionHandoff{}, resolve...) {
+			return appwire.SessionUnavailable("thread subscription is unavailable")
+		}
+		return nil
+	}
 	if server.beforeSubscriptionRegistration != nil {
 		server.beforeSubscriptionRegistration()
 	}
@@ -1287,7 +1322,12 @@ func SubscribeWithAdmission(ctx context.Context, threadID string, replace bool, 
 	if admission != nil {
 		owner = admission.threadID
 	}
+	if conn.deferHistorySubscription(ctx, responseID, threadID, replace) {
+		return appwire.SessionUnavailable("history subscription is awaiting its response")
+	}
+	content := subscriptionHistoryContent(ctx, server.subs, conn.id, threadID)
 	server.subs.subscribeOwned(conn.id, threadID, owner, replace)
+	server.subs.setContent(conn.id, threadID, 0, content)
 	if admission != nil {
 		delete(conn.pendingAdmissions, admission)
 	}
@@ -1443,6 +1483,11 @@ func captureSubscription(
 		conn.admissionMu.Unlock()
 		return abortAfterUnlock()
 	}
+	contentRequest, history := ctx.Value(historyContentContextKey{}).(historyContentRequest)
+	if history && contentRequest.preserve && conn.deferHistorySubscription(ctx, responseID, targetThreadID, replace) {
+		conn.admissionMu.Unlock()
+		return abortAfterUnlock()
+	}
 	if conn.server.beforeSubscriptionBeginBuffered != nil {
 		conn.server.beforeSubscriptionBeginBuffered()
 	}
@@ -1461,7 +1506,9 @@ func captureSubscription(
 	if admission != nil {
 		owner = admission.threadID
 	}
+	content := subscriptionHistoryContent(ctx, server.subs, conn.id, targetThreadID)
 	rollback := server.subs.beginBuffered(conn.id, targetThreadID, replace, generation, owner)
+	server.subs.setContent(conn.id, targetThreadID, generation, content)
 	if admission != nil {
 		delete(conn.pendingAdmissions, admission)
 	}
@@ -1478,6 +1525,10 @@ func captureSubscription(
 		server.subs.withdrawBuffered(conn.id, targetThreadID, generation, rollback)
 		return abortAfterUnlock()
 	}
+	var historyDone chan struct{}
+	if history {
+		historyDone = make(chan struct{})
+	}
 	conn.addHydration(&hydrationResponseFinalizer{
 		server:                 server,
 		conn:                   conn,
@@ -1488,6 +1539,7 @@ func captureSubscription(
 		rollback:               rollback,
 		handoff:                handoff,
 		releaseOnErrorResponse: releaseOnErrorResponse,
+		historyDone:            historyDone,
 	})
 	server.deliveryMu.Unlock()
 	server.projectionMu.Unlock()
@@ -1498,16 +1550,19 @@ func captureSubscription(
 	return true
 }
 
-func (s *Server) releaseHydration(conn *Connection, threadID string, generation uint64) {
+func (s *Server) releaseHydration(conn *Connection, threadID string, generation uint64, failedCapture *subscriptionCaptureRollback) {
 	s.projectionMu.Lock()
+	if failedCapture != nil {
+		s.subs.restoreContent(conn.id, threadID, generation, *failedCapture)
+	}
+	content := s.subs.content(conn.id, threadID)
 	records, ok := s.subs.Release(conn.id, threadID, generation)
 	s.deliveryMu.Lock()
 	s.projectionMu.Unlock()
 	disconnected := false
 	if ok {
 		for _, record := range records {
-			msg := appwire.Message{Notification: &record.Notification}
-			if !conn.enqueue(msg) {
+			if !conn.enqueueHistory(record, content) {
 				disconnected = true
 				break
 			}
@@ -1707,6 +1762,48 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 	return c.enqueueRequest(ctx, msg)
 }
 
+// backpressureRefusal mints the in-band refusal for a retry-safe mutation
+// arriving while the inbound queue is at or beyond half its capacity — the
+// depth at which the queue is demonstrably backlogged, while the connection
+// still carries writes. The receive loop, enqueueRequest's only caller and
+// this method's only caller, is the queue's sole producer, so len is exact
+// at the check with no lock. A refusal never enqueues, so it consumes no
+// queue depth; reads and other non-mutation frames keep the FIFO pressure
+// valve at every depth. The refusal precedes the worker's params validation:
+// a malformed mutation refused under load surfaces its real invalid-params
+// error on the retried attempt, and a request whose params carry no
+// extractable clientMutationId is still refused — the frame is never queued
+// either way.
+func (c *Connection) backpressureRefusal(msg appwire.Message) (appwire.Message, bool) {
+	request := msg.Request
+	if request == nil {
+		return appwire.Message{}, false
+	}
+	highWater := (cap(c.requests) + 1) / 2
+	if len(c.requests) < highWater {
+		return appwire.Message{}, false
+	}
+	if !appwire.RetrySafeMutationMethod(request.Method) {
+		return appwire.Message{}, false
+	}
+	return appwire.ErrorMessage(request.ID, appwire.BackpressureRefusal(clientMutationIDOf(request.Params),
+		"the hub's inbound queue is busy and did not accept this message")), true
+}
+
+// clientMutationIDOf extracts the refusal's clientMutationId from the
+// request's raw params with a minimal decode of the one field every
+// retry-safe mutation carries. The extracted id is never logged. Params that
+// do not decode, or carry no id, give "".
+func clientMutationIDOf(params json.RawMessage) string {
+	var only struct {
+		ClientMutationID string `json:"clientMutationId"`
+	}
+	if err := json.Unmarshal(params, &only); err != nil {
+		return ""
+	}
+	return only.ClientMutationID
+}
+
 // enqueueRequest pushes one inbound frame onto the connection's bounded
 // request queue on behalf of the transport's receive loop, which is the only
 // producer. A full queue blocks until the worker frees a slot or the
@@ -1718,6 +1815,28 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 // exactly the ordering it asked for, applied at the transport instead of in
 // server memory.
 func (c *Connection) enqueueRequest(ctx context.Context, msg appwire.Message) bool {
+	if refusal, ok := c.backpressureRefusal(msg); ok {
+		// The first refusal on the connection gets its own advisory, worded
+		// for this branch: the frame is answered in band, the receive loop
+		// keeps reading, and only mutations are turned away. A separate
+		// one-shot from the full-queue block advisory below, which must stay
+		// available to name the wedge signature when a non-mutation frame
+		// later parks the loop.
+		if !c.queueHighWaterAdvised {
+			c.queueHighWaterAdvised = true
+			c.server.logf("appserver: connection %s inbound request queue at high-water depth (%d of %d frames); refusing mutation requests in band until the worker drains", c.id, len(c.requests), cap(c.requests))
+		}
+		// This enqueue runs directly in the receive loop's goroutine, with no
+		// handler and so no handleRecovered call to barrier it — recoverPanic
+		// is the barrier here, the same one the force-stop busy refusal in
+		// receiveInbound uses. Delivery can park on a full outbound buffer
+		// until the connection ends: the same acknowledged trade the inline
+		// ping path makes.
+		c.recoverPanic(msg, func() {
+			c.enqueueDispatched(ctx, refusal)
+		})
+		return true
+	}
 	request := admittedRequest{ctx: ctx, message: msg}
 	select {
 	case c.requests <- request:

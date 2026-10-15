@@ -52,6 +52,7 @@ import {
 	liveAskQuestions,
 	makeTranscriptDisplayConfig,
 	MEMORY_CONTEXT_EVENT_KIND,
+	isParentSteer,
 	MEMORY_CONTEXT_LABEL,
 	type MemoryContextObservation,
 	parseMemoryContext,
@@ -257,6 +258,9 @@ export type MobileTimelineItem =
 				id: string;
 				origin: NoticeOrigin;
 				steeringKind?: string;
+				// A steering notice from the session's parent agent: a message in
+				// the conversation, not daemon steering.
+				fromParent?: true;
 				eventKind?: string;
 				exitCode?: number;
 				family: NoticeFamily;
@@ -803,6 +807,21 @@ function systemFamily(eventKind: string | undefined): NoticeFamily {
 // out, as the web leaves them: the tasks surfaces own them.
 function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> | null {
 	if (isSuppressedSteeringKind(it.steeringKind)) return null;
+	// A parent's message is conversation: quoted notification tags in it are
+	// text, never cards, and it shows whole.
+	if (isParentSteer(it.source)) {
+		return {
+			kind: "notice",
+			id: it.id,
+			origin: "steering",
+			steeringKind: it.steeringKind,
+			fromParent: true,
+			family: "informational",
+			tone: "info",
+			text: it.text,
+			label: steeringLabel(it.steeringKind, it.source),
+		};
+	}
 	const notifications = steeringNotificationFragments(it.text);
 	const common = {
 		kind: "notice" as const,
@@ -813,7 +832,7 @@ function steeringNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "not
 		tone: "info" as const,
 	};
 	if (notifications) return { ...common, text: it.text, notifications };
-	return { ...common, text: stripSystemReminder(it.text), label: steeringLabel(it.steeringKind) };
+	return { ...common, text: stripSystemReminder(it.text), label: steeringLabel(it.steeringKind, it.source) };
 }
 
 function systemNotice(it: ItemModel): Extract<MobileTimelineItem, { kind: "notice" }> {

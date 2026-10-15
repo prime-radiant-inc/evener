@@ -29,7 +29,9 @@
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
 
 import {
+  isParentSteer,
   isSuppressedSteeringKind,
+  labelledSteeringKind,
   steeringLabel,
   steeringNotificationFragments,
   stripSystemReminder,
@@ -42,7 +44,12 @@ import { UserMessageView } from "./UserMessageItem";
 
 export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: ItemRenderProps) {
   // Parsed once per text: a live turn re-renders this row on every publish.
-  const fragments = useMemo(() => steeringNotificationFragments(item.text ?? ""), [item.text]);
+  // A parent's message is conversation, so quoted notification tags in it are
+  // text, never cards.
+  const fragments = useMemo(
+    () => (isParentSteer(item.source) ? null : steeringNotificationFragments(item.text ?? "")),
+    [item.source, item.text],
+  );
   // The human-note steer rides the user-sourced steering rail (it interrupts
   // via the client-mutation steer path) but carries the human-note kind, and
   // the kind selects the divider: it labels the human's whiteboard update
@@ -51,7 +58,13 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   if (item.steeringKind === "human-note") {
     if (!item.text) return null; // no text, no images path here - nothing to show
     return (
-      <SteeringDivider id={item.id} label={steeringLabel("human-note")} text={item.text} sessionRef={sessionRef} />
+      <SteeringDivider
+        id={item.id}
+        label={steeringLabel("human-note")}
+        kind="human-note"
+        text={item.text}
+        sessionRef={sessionRef}
+      />
     );
   }
   // opensExchange={false}: a steer the human typed lands MID-turn, interrupting
@@ -64,7 +77,10 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
   // Card routing stays content-driven: the trigger is <job-notification>
   // markup, which cannot false-positive, so a steer projected before the kind
   // field existed still renders its cards.
-  const label = steeringLabel(item.steeringKind);
+  const label = steeringLabel(item.steeringKind, item.source);
+  // What the label names: the parent speaking, or the kind it labels (none
+  // for a kind this build has no label for).
+  const kind = isParentSteer(item.source) ? "parent" : labelledSteeringKind(item.steeringKind);
   if (fragments) {
     return (
       <>
@@ -104,6 +120,7 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
               key={index}
               id={`${item.id}:${index}`}
               label={label}
+              kind={kind}
               text={fragment.text}
               sessionRef={sessionRef}
             />
@@ -113,7 +130,8 @@ export const SteeringItem = memo(function SteeringItem({ item, sessionRef }: Ite
     );
   }
 
-  return <SteeringDivider id={item.id} label={label} text={stripSystemReminder(item.text)} sessionRef={sessionRef} />;
+  const text = isParentSteer(item.source) ? item.text : stripSystemReminder(item.text);
+  return <SteeringDivider id={item.id} label={label} kind={kind} text={text} sessionRef={sessionRef} />;
 }, ignoringTurn);
 
 registerItemRenderer("steering", SteeringItem);

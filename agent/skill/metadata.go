@@ -23,19 +23,22 @@ var utf8BOM = []byte{0xef, 0xbb, 0xbf}
 // It reports true only when the first non-blank line begins a plain mapping
 // entry and the block before the closing "---" line parses as a YAML mapping
 // carrying both a name and a description, so ordinary body text that merely
-// contains a "---" rule is left alone. Either way a leading UTF-8 BOM is
-// trimmed and line endings are normalized as frontmatter.Split reads them, so
-// the returned bytes never carry the BOM into the parse and a CRLF source
-// reads like any other.
+// contains a "---" rule is left alone.
+//
+// A leading UTF-8 BOM is framing: the recovery branch drops it and normalizes
+// line endings itself, because the mark would otherwise land inside the block
+// it prepends. When no recovery is needed the caller's bytes come back
+// unchanged, so frontmatter.Split drops one mark exactly as it does for every
+// other caller and a second mark stays content.
 func recoverMissingOpeningDelimiter(data []byte) ([]byte, bool) {
-	data = []byte(lineend.Normalize(string(bytes.TrimPrefix(data, utf8BOM))))
-	if bytes.HasPrefix(data, []byte(skillFrontmatterDelimiter)) {
+	if bytes.HasPrefix(bytes.TrimPrefix(data, utf8BOM), []byte(skillFrontmatterDelimiter)) {
 		return data, false
 	}
-	if !looksLikeFrontmatterStart(data) {
+	trimmed := []byte(lineend.Normalize(string(bytes.TrimPrefix(data, utf8BOM))))
+	if !looksLikeFrontmatterStart(trimmed) {
 		return data, false
 	}
-	normalized := append([]byte(skillFrontmatterDelimiter), data...)
+	normalized := append([]byte(skillFrontmatterDelimiter), trimmed...)
 	document, err := frontmatter.Parse(string(normalized))
 	if err != nil || document.Meta == nil {
 		return data, false
@@ -129,19 +132,17 @@ func Parse(data []byte, skillFile string) (Descriptor, []Diagnostic, error) {
 	}
 
 	data, recovered := recoverMissingOpeningDelimiter(data)
-	if !bytes.HasPrefix(data, []byte(skillFrontmatterDelimiter)) {
-		return invalidFrontmatter("skill file requires YAML frontmatter", nil)
-	}
-
 	document, err := frontmatter.Parse(string(data))
 	if err != nil {
 		return invalidFrontmatter("skill frontmatter is not valid YAML", fmt.Errorf("parsing skill frontmatter: %w", err))
 	}
+	switch document.Framing {
+	case frontmatter.NoOpeningDelimiter:
+		return invalidFrontmatter("skill file requires YAML frontmatter", nil)
+	case frontmatter.NoClosingDelimiter:
+		return invalidFrontmatter("skill frontmatter has no closing delimiter", nil)
+	}
 	if document.Meta == nil {
-		if document.Body == string(data) {
-			// No whole-line closing delimiter: Parse returns the input verbatim.
-			return invalidFrontmatter("skill frontmatter has no closing delimiter", nil)
-		}
 		// Framed, but the YAML decodes to null (e.g. "---\nnull\n---").
 		return invalidFrontmatter("skill frontmatter has no metadata", nil)
 	}

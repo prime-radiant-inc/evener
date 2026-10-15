@@ -1,6 +1,6 @@
 import { parseZoomParams } from "../panes/zoom/intent";
 import { navigate, paneToURL, refParam } from "./routing";
-import { type OpenPaneRecord, workspaceStore } from "./workspace";
+import { type OpenPaneRecord, recordConversationOpenParent, workspaceStore } from "./workspace";
 
 // A session pane's identity is the ref in its own params, derived here rather
 // than spelled by the caller so the type and the ref cannot diverge.
@@ -67,4 +67,6 @@ export function openTopLevelSession(ref: string): void {
 export function openNestedSessionWithOwner(ref: string, ownerRef: string): void {
   openTopLevelSession(ownerRef);
   workspaceStore.getState().openPane("session", { ref }, { slot: "secondary" });
+  const opened = workspaceStore.getState().panes.find((pane) => isSessionPaneFor(pane, ref));
+  if (opened) recordConversationOpenParent(opened, ownerRef);
 }

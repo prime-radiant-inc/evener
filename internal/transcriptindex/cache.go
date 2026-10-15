@@ -36,6 +36,11 @@ type Cache struct {
 	mu       sync.Mutex
 	capacity int
 	entries  map[string]*cacheEntry
+	// openIndex opens a transcript's index on a miss; NewCache defaults it
+	// to Open. The hub's past-read cache injects OpenRefusing, so no miss
+	// can rebuild inline and no in-flight open can park an acquirer behind
+	// a rebuild.
+	openIndex func(path, dir string) (*Index, error)
 	// idleHead/idleTail thread the entries with no outstanding acquire into a
 	// doubly linked list in release order: idleHead is the least recently
 	// released, and so the next evicted.
@@ -60,7 +65,14 @@ type cacheEntry struct {
 
 // NewCache returns a cache holding up to capacity open indexes.
 func NewCache(capacity int) *Cache {
-	return &Cache{capacity: capacity, entries: map[string]*cacheEntry{}}
+	return NewCacheWithOpen(capacity, Open)
+}
+
+// NewCacheWithOpen is NewCache with the open function injected. The open runs
+// on a miss exactly as Open does — outside the cache's lock, with concurrent
+// acquires of one path sharing a single call.
+func NewCacheWithOpen(capacity int, open func(path, dir string) (*Index, error)) *Cache {
+	return &Cache{capacity: capacity, openIndex: open, entries: map[string]*cacheEntry{}}
 }
 
 // Acquire returns the open index for path, opening it (Open(path,
@@ -113,7 +125,7 @@ func (c *Cache) open(path string, e *cacheEntry) (*Index, error) {
 	if cacheOpenHook != nil {
 		cacheOpenHook(path)
 	}
-	x, err := Open(path, DirFor(path))
+	x, err := c.openIndex(path, DirFor(path))
 	if cacheOpenedHook != nil {
 		cacheOpenedHook(path)
 	}
@@ -169,6 +181,11 @@ func (c *Cache) Release(x *Index) {
 		_ = x.Close()
 		return
 	}
+	// A parked handle holds no record buffers: the buffering serves active
+	// builds and extensions, and idle retention is the memory the cache's
+	// capacity bound was never meant to carry. Re-acquired handles read and
+	// extend through the files.
+	x.releaseRecordBuffers()
 	c.idlePushBack(e)
 }
 

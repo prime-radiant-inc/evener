@@ -39,7 +39,11 @@ var prunable = map[string]map[string]bool{
 	},
 	ProtocolGoogle: {
 		"generationConfig.temperature": true, "generationConfig.topP": true, "generationConfig.stopSequences": true,
-		"toolConfig": true, "safetySettings": true, "cachedContent": false, "labels": false,
+		// thinkingConfig carries either thinkingLevel (Gemini 3.x) or
+		// thinkingBudget (2.5 era); clearing it suppresses thinking for a row
+		// whose model takes no thinking fields at all.
+		"generationConfig.thinkingConfig": true,
+		"toolConfig":                      true, "safetySettings": true, "cachedContent": false, "labels": false,
 	},
 }
 

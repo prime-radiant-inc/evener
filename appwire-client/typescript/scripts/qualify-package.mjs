@@ -23,9 +23,32 @@ async function qualify() {
   const packageManifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
   const packed = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", consumerDir], packageDir))[0];
   const tarball = join(consumerDir, packed.filename);
+  // Use the installed runtime dependencies so qualification needs neither
+  // registry access nor metadata left in a developer's npm cache.
+  const runtimeTarballs = Object.keys(packageManifest.dependencies ?? {}).map((name) => {
+    const dependency = JSON.parse(
+      run(
+        "npm",
+        ["pack", "--ignore-scripts", "--json", "--pack-destination", consumerDir],
+        join(packageDir, "node_modules", name),
+      ),
+    )[0];
+    return join(consumerDir, dependency.filename);
+  });
   run(
     "npm",
-    ["install", "--offline", "--ignore-scripts", "--no-audit", "--no-fund", "--package-lock=false", tarball],
+    [
+      "install",
+      "--offline",
+      "--cache",
+      join(consumerDir, ".npm-cache"),
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--package-lock=false",
+      tarball,
+      ...runtimeTarballs,
+    ],
     consumerDir,
   );
   // Every module the package ships, read off the build's own file list rather
@@ -188,6 +211,13 @@ assert.deepEqual(
   ["review"],
 );
 assert.equal(client.evaluateSlashLabel("review", "rev").embedding.longestRun, 3);
+// groupSearchResults probes both synthesized paths in one call: an anchor
+// greyed for a session with no row of its own, and the nested child under it.
+const groupedSearch = client.groupSearchResults([], [
+  { id: "sub", ref: "local:sub", title: "Delegate", project: "", state: "ended", age: "1h", topLevel: { id: "root", ref: "local:root", title: "Root", state: "ended" } },
+]);
+assert.deepEqual([groupedSearch.past[0].indirect, groupedSearch.past[1].nested], [true, true]);
+assert.equal(client.countSearchMatches(groupedSearch.past), 1);
 assert.deepEqual(client.spliceSlashCommand("say /rev", slashToken, "/acme:review"), {
   text: "say /acme:review ",
   caret: 17,
@@ -408,7 +438,7 @@ transcriptStore.getState().refreshHubDefaults().then(() => {
   assert.equal(transcriptStore.getState().loaded, false);
 }).catch((error) => { console.error(error); process.exit(1); });
 `;
-  // The twelve storage-port methods neither outbox fixture exercises: the
+  // The thirteen storage-port methods neither outbox fixture exercises: the
   // type-use program and the smoke script embed this one definition and add the
   // two calls each of them actually makes (enqueueIntent, listTargetRefs).
   const inertOutboxStorageMethods = `  getOutbox: () => Promise.resolve(undefined),
@@ -418,6 +448,7 @@ transcriptStore.getState().refreshHubDefaults().then(() => {
   getRecovery: () => Promise.resolve(undefined),
   nextDispatchable: () => Promise.resolve(undefined),
   markAttempted: () => Promise.resolve(false),
+  unmarkAttempted: () => Promise.resolve(false),
   markUnknown: () => Promise.resolve(false),
   settleReceipt: () => Promise.resolve(false),
   settleApplied: () => Promise.resolve(false),
@@ -442,6 +473,13 @@ const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
     // readDocFile is not a root export: it needs a fetch, and a consumer that
     // wants to substitute one (or spy on the module) needs a real subpath to
     // import, which a root re-export cannot give it.
+    "./pairing": {
+      esmTypeUses: `const invite: DevicePairingInvitation = { invitation: "01".repeat(24), origin: "http://hub.local:9180", tailnet: true, expiresAt: 0 };
+const wire: Uint8Array = encodeInvitation(invite);
+const restored: DevicePairingInvitation = decodeInvitation(wire); void restored;`,
+      cjsTypeUses: `const bytes: Uint8Array = client.encodeInvitation({invitation:"01".repeat(24),origin:"http://hub.local:9180",tailnet:true,expiresAt:0}); void bytes;`,
+      smoke: `assert.equal(client.decodeInvitation(client.encodeInvitation({invitation:"01".repeat(24),origin:"http://hub.local:9180",tailnet:true,expiresAt:0})).origin, "http://hub.local:9180");`,
+    },
     "./docContent": {
       esmTypeUses: `const read: (session: string, path: string, port: DocPort) => Promise<DocFileContent> = readDocFile;
 const cap: number = DOC_FILE_MAX_BYTES; void read; void cap;`,
@@ -658,7 +696,8 @@ const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;
 const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }, client.createHubWriteGate()).getState(); void pluginsState;
 const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void layerState;`,
       // Stores built over a client that rejects everything: each list fetch
-      // records the rejection as state and resolves, a mutation rejects, and
+      // records the rejection as state (in its friendly form, never the raw
+      // text) and resolves, a mutation rejects, and
       // a browse caches the failure - the two conventions the layer keeps. A
       // promise chain rather than await: the CommonJS consumer has no
       // top-level await, and a failure inside exits the consumer non-zero.
@@ -688,17 +727,26 @@ marketplacesStore
   .getState()
   .fetchMarketplaces()
   .then(() => {
-    assert.equal(marketplacesStore.getState().marketplacesError, "offline");
+    // The list error is stored in its friendly form: recorded, but never the
+    // rejection's raw text.
+    assert.equal(typeof marketplacesStore.getState().marketplacesError, "string");
+    assert.notEqual(marketplacesStore.getState().marketplacesError, "offline");
     return assert.rejects(marketplacesStore.getState().removeMarketplace("acme"), /offline/);
   })
   .then(() => marketplacesStore.getState().browseMarketplace("acme"))
   .then(() => {
-    assert.deepEqual(marketplacesStore.getState().browseCatalogs.get("acme"), { status: "error", error: "offline" });
+    const browsed = marketplacesStore.getState().browseCatalogs.get("acme");
+    assert.equal(browsed?.status, "error");
+    assert.equal(typeof browsed.error, "string");
+    assert.notEqual(browsed.error, "offline");
     marketplacesStore.dispose();
     return pluginsStore.getState().fetchPlugins();
   })
   .then(() => {
-    assert.equal(pluginsStore.getState().pluginsError, "offline");
+    // The list error is stored in its friendly form: recorded, but never the
+    // rejection's raw text.
+    assert.equal(typeof pluginsStore.getState().pluginsError, "string");
+    assert.notEqual(pluginsStore.getState().pluginsError, "offline");
     return assert.rejects(pluginsStore.getState().installPlugin("linter", "acme"), /offline/);
   })
   .then(() => {
@@ -706,7 +754,8 @@ marketplacesStore
     return layerStore.getState().fetchLaunchLayer();
   })
   .then(() => {
-    assert.equal(layerStore.getState().launchLayerError, "offline");
+    assert.equal(typeof layerStore.getState().launchLayerError, "string");
+    assert.notEqual(layerStore.getState().launchLayerError, "offline");
     return assert.rejects(layerStore.getState().setLaunchLayer({ pluginDirs: [] }), /offline/);
   })
   .then(() => layerStore.dispose())

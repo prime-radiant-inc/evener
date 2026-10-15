@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -38,7 +39,7 @@ func (b Backend) String() string {
 	}
 }
 
-// CacheStrategy is how cache roots (~/.cache, ~/go/pkg, ~/.npm, ~/.cargo, …) are
+// CacheStrategy is how cache roots (~/.cache, ~/.npm, ~/.cargo, Go's, …) are
 // served so a sandboxed session can never poison a cache a later build consumes.
 type CacheStrategy int
 
@@ -122,8 +123,9 @@ type ResolvedPolicy struct {
 	CacheStrategy CacheStrategy // how cache roots are served (never persistent-writable)
 	SessionTmp    bool          // a per-session writable tmp (TMPDIR) is provisioned
 
-	// CacheRoots are the absolute language cache directories (~/.cache, ~/go/pkg,
-	// ~/.npm, ~/.cargo) served under the cache strategy: overlaid read-real/
+	// CacheRoots are the absolute language cache directories (~/.cache with
+	// $XDG_CACHE_HOME, ~/.npm with $npm_config_cache, ~/.cargo with $CARGO_HOME,
+	// and Go's, see goCacheRoots) served under the cache strategy: overlaid read-real/
 	// write-private when CacheStrategy is CacheOverlay, or redirected via env to
 	// the session tmp when CacheSessionPrivate. Empty when no cache handling is
 	// needed (off, read-only). Populated for the writable modes.
@@ -149,6 +151,16 @@ type ResolvedPolicy struct {
 	// carveOutAt records where each of the UnmaskedRoots that existed at
 	// resolution resolved to (CarveOutResolvesTo holds it to that location).
 	carveOutAt map[string]string
+
+	// configMasks are the masked entries that stand for Evener's config mask,
+	// the only ones a carve-out may sit under.
+	configMasks []string
+
+	// maskResolvedAt and maskExistedAt record where each of MaskedPaths
+	// resolved (or would land) at resolution and whether it existed, so a
+	// mask redirected or created since is noticed.
+	maskResolvedAt map[string]string
+	maskExistedAt  map[string]bool
 
 	// Git is the resolved git-surface map: writable metadata, write-protected
 	// config/hook surfaces, and outside-worktree read grants. Zero for off.
@@ -239,12 +251,22 @@ func (rp ResolvedPolicy) FileToolCanRead(path string) bool {
 // never need it. Every layer asks this one question, so the file tools, the
 // policy filters and the backends agree on what a mask hides.
 func (rp ResolvedPolicy) Masks(path string) bool {
+	return rp.masks(path, true)
+}
+
+// masks is Masks, with live false leaving out the live overlap check: a
+// grant (filterMasked) is a lasting decision that must not take in a
+// transient condition, which every access judges for itself.
+func (rp ResolvedPolicy) masks(path string, live bool) bool {
+	// The macOS data-volume firmlink spelling names the same file as the
+	// plain one, which is how masks and carve-outs are listed.
+	path = StripDataVolumeAlias(path)
 	if !isUnderAnyRoot(path, rp.MaskedPaths) {
 		return false
 	}
 	for _, root := range rp.UnmaskedRoots {
 		if pathUnder(path, root) {
-			return insideGitDir(path, root)
+			return insideGitDir(path, root) || (live && rp.maskOverlapsCarveOut(root))
 		}
 	}
 	return true
@@ -269,7 +291,7 @@ func isGitName(name string) bool { return strings.EqualFold(name, ".git") }
 // carve-outs (UnmaskedRoots) are read-only, so unlike Masks it makes no
 // exception for them.
 func (rp ResolvedPolicy) MasksWrite(path string) bool {
-	return isUnderAnyRoot(path, rp.MaskedPaths)
+	return isUnderAnyRoot(StripDataVolumeAlias(path), rp.MaskedPaths)
 }
 
 // FileToolEnforceable reports whether this OS has an in-process file-tool
@@ -450,7 +472,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		Network:       netOn,
 		Backend:       backend,
 		CacheStrategy: cacheStrategyFor(policy.Mode, backend, host),
-		CacheRoots:    cacheRootsFor(policy.Mode, host.Home),
+		CacheRoots:    cacheRootsFor(policy.Mode, host, layout.WorktreeRoot),
 		SessionTmp:    true,
 		MaskedPaths:   masked,
 		Git:           layout,
@@ -458,6 +480,17 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		resolveHost:   host,
 	}
 	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
+	rp.configMasks = configMasks
+	// The masks' state is recorded before admission judges them, so a mask
+	// that changes in between differs from this record and is judged again
+	// at access (maskOverlapsCarveOut), rather than becoming the baseline.
+	rp.maskResolvedAt = make(map[string]string, len(masked))
+	rp.maskExistedAt = make(map[string]bool, len(masked))
+	for _, m := range masked {
+		rp.maskResolvedAt[m] = resolveExistingPrefix(m)
+		_, err := os.Lstat(m)
+		rp.maskExistedAt[m] = err == nil
+	}
 	rp.UnmaskedRoots, rp.carveOutAt = unmaskedContentRoots(host.EvenerContentRoots, masked, configMasks,
 		slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots), host.Home, worktree, host.OS == "darwin")
 
@@ -476,6 +509,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	rp.FileTool.WriteRoots = filterMasked(rp.FileTool.WriteRoots, rp)
 	rp.Spawned.ReadRoots = filterMasked(rp.Spawned.ReadRoots, wholeMask)
 	rp.Spawned.WriteRoots = filterMasked(rp.Spawned.WriteRoots, rp)
+	rp.CacheRoots = dropCacheRootsSharingWriteRoots(rp.CacheRoots, bwrapWriteRoots(rp))
 
 	// File-tool read roots: restricted needs the grant, and the read-anywhere
 	// modes' file tools use it as an open anchor.
@@ -574,23 +608,222 @@ func chooseBackend(policy SandboxPolicy, host HostFacts, net bool) (Backend, *Re
 	}
 }
 
+// npmConfigCacheEnv is npm's cache-location variable. It is spelled lowercase by
+// npm itself and is not an evener environment variable, so it lives here rather
+// than in envvars.
+const npmConfigCacheEnv = "npm_config_cache"
+
 // defaultCacheRoots are the language cache directories served under the cache
-// strategy, expressed relative to $HOME.
-var defaultCacheRoots = []string{".cache", "go/pkg", ".npm", ".cargo"}
+// strategy, expressed relative to $HOME. $XDG_CACHE_HOME joins ~/.cache when
+// set, npm's and cargo's join ~/.npm and ~/.cargo when $npm_config_cache and
+// $CARGO_HOME set them, and Go's roots follow the host's go settings
+// (goCacheRoots). A host that moves a cache this way would otherwise leave the
+// real cache outside every overlay root, read-only to a cold build (#4225).
+var defaultCacheRoots = []string{".npm", ".cargo"}
 
 // cacheRootsFor returns the absolute cache roots for a mode: the writable modes
-// serve caches (overlaid or redirected), off/read-only need none.
-func cacheRootsFor(mode Mode, home string) []string {
+// serve caches (overlaid or redirected), off/read-only need none. Every root
+// passes the shared-tree guard, and none lies inside the worktree: an overlay
+// over the worktree, a directory holding it, the home directory or a temp root
+// would hide the real files behind an upper layer discarded at session end, so
+// edits there would silently vanish.
+func cacheRootsFor(mode Mode, host HostFacts, worktree string) []string {
 	switch mode {
 	case ModeWorkspaceWrite, ModeRestricted:
-		out := make([]string, 0, len(defaultCacheRoots))
+		// ~/.cache stays served alongside $XDG_CACHE_HOME, for tools that
+		// write it whatever XDG says.
+		out := []string{filepath.Join(host.Home, ".cache")}
+		out = append(out, absRoots(host.XDGCacheHome)...)
+		// Likewise the $HOME npm/cargo defaults above stay served alongside a
+		// configured value.
 		for _, rel := range defaultCacheRoots {
-			out = append(out, filepath.Join(home, rel))
+			out = append(out, filepath.Join(host.Home, rel))
 		}
-		return out
+		roots := guardedHostRoots(slices.Concat(out, npmCargoCacheRoots(host), goCacheRoots(host)), host.Home, worktree)
+		// A root that is not a directory yet (a file, a dangling link to an
+		// unmounted drive) stays: each spawn decides whether it is overlaid
+		// (liveCacheRoots), so one that becomes available is served.
+		roots = slices.DeleteFunc(roots, func(r string) bool {
+			rr := resolveExistingPrefix(r)
+			// bwrap mounts a private /tmp and /dev before the overlays, so a
+			// root whose resolution follows a link in or into those would be
+			// overlaid where the sandbox cannot see that link, not at the
+			// storage it names. Spellings are compared exactly; a worktree
+			// matched only by letter case on a case-insensitive Linux volume
+			// is the known Low tracked in #4306.
+			return pathUnder(r, worktree) || pathUnder(rr, worktree) || linksThroughPrivateMount(r)
+		})
+		return dedupeRoots(roots)
 	default:
 		return nil
 	}
+}
+
+// dropCacheRootsSharingWriteRoots drops each cache root that shares storage
+// with a persistent write root (an extra writable root, a linked worktree's
+// git metadata): the cache at or inside the write root, or the write root
+// inside the cache, by spelling or by where each lands with every link
+// followed, dangling ones included, and any link on the write root's way
+// (physicalPlaces). An overlay there would discard writes the user granted
+// for good. Such a cache is simply not overlaid: the granted root is bound
+// writable as usual, the env floor sends the Go cache variables that pointed
+// there to the session scratch (ApplyEnvFloor), and other writes into it fail
+// where they happen instead of vanishing.
+//
+// This is judged at resolution, for the scratch at wrapper creation, and
+// again at each spawn (servableCacheRoot), so a granted root retargeted since
+// is caught too.
+//
+// Containment compares resolved spellings exactly. Two spellings that differ
+// only by letter case on a case-insensitive Linux volume are not matched:
+// that friction case is tracked as a known Low in #4306, alongside the same
+// limit for carve-outs, rather than handled by identity checks here.
+func dropCacheRootsSharingWriteRoots(cacheRoots, writeRoots []string) []string {
+	within := func(c, w string) bool { return c == w || pathUnder(c, w) }
+	return slices.DeleteFunc(cacheRoots, func(c string) bool {
+		rc := physicalLanding(c)
+		return slices.ContainsFunc(writeRoots, func(w string) bool {
+			return within(c, w) || within(w, c) || slices.ContainsFunc(physicalPlaces(w), func(l string) bool {
+				return within(rc, l) || within(l, rc)
+			})
+		})
+	})
+}
+
+// inPrivateMount reports whether p is spelled under a directory bwrap gives
+// each spawn its own copy of (a private /tmp and a minimal /dev), where host
+// symlinks are not visible.
+func inPrivateMount(p string) bool {
+	return pathUnder(p, "/tmp") || pathUnder(p, "/dev")
+}
+
+// linksThroughPrivateMount reports whether resolving p follows a symlink that
+// lies in a private mount (inPrivateMount), or after following any symlink
+// reaches into one, at any step of the chain. Inside the sandbox such a link
+// is hidden or leads elsewhere, so an overlay at p would not sit over the
+// storage p names on the host.
+func linksThroughPrivateMount(p string) bool {
+	found := false
+	walkPhysical(p, func(path string, link, followed bool) bool {
+		found = (link || followed) && inPrivateMount(path)
+		return found
+	})
+	return found
+}
+
+// physicalLanding returns where p lands once every symlink on its way is
+// followed, dangling ones included: for a path that does not exist yet, where
+// creating it would put it.
+func physicalLanding(p string) string {
+	places := physicalPlaces(p)
+	return places[len(places)-1]
+}
+
+// physicalPlaces returns the host locations a write to p touches: each
+// symlink on its way, where it sits (a spawn could replace a dangling one with
+// a directory), and where p lands once every link is followed, dangling ones
+// included (for a path that does not exist yet, where creating it would put
+// it).
+func physicalPlaces(p string) []string {
+	var places []string
+	landing, _ := walkPhysical(p, func(path string, link, _ bool) bool {
+		if link {
+			places = append(places, StripDataVolumeAlias(path))
+		}
+		return false
+	})
+	return append(places, StripDataVolumeAlias(landing))
+}
+
+// walkPhysical resolves p one component at a time as the kernel does: each
+// symlink is followed (a ".." in a target climbs from where the link
+// resolved, not lexically), and missing components are kept as spelled. When
+// visit is non-nil it sees each symlink before it is followed (link true) and
+// each path the walk then settles on (link false), with followed saying
+// whether any link was followed before; returning true stops the walk. It
+// returns the path reached, and false when a link cannot be read or the chain
+// passes 40 links.
+func walkPhysical(p string, visit func(path string, link, followed bool) bool) (string, bool) {
+	pending := strings.Split(p, "/")
+	cur, followed := "/", false
+	for hops := 0; len(pending) > 0; {
+		comp := pending[0]
+		pending = pending[1:]
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+		default:
+			next := filepath.Join(cur, comp)
+			fi, err := os.Lstat(next)
+			if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+				if visit != nil && visit(next, true, followed) {
+					return next, true
+				}
+				target, err := os.Readlink(next)
+				if hops++; err != nil || hops > 40 {
+					return next, false
+				}
+				if filepath.IsAbs(target) {
+					cur = "/"
+				}
+				followed = true
+				pending = append(strings.Split(target, "/"), pending...)
+				continue
+			}
+			cur = next
+		}
+		if visit != nil && visit(cur, false, followed) {
+			return cur, true
+		}
+	}
+	return cur, true
+}
+
+// goCacheRoots are the directories the go command writes caches to: pkg under
+// the first GOPATH entry, which holds the default module cache and the checksum
+// database, Go's default $HOME/go/pkg, plus a GOMODCACHE or GOCACHE configured
+// somewhere else. A relative value, which the go command refuses, contributes
+// nothing. A configured root nested in another (GOMODCACHE=$HOME/go/pkg/mod)
+// is listed here; each spawn serves it through the outer overlay
+// (liveCacheRoots), so go clean -modcache can remove it.
+func goCacheRoots(host HostFacts) []string {
+	var roots []string
+	if entries := goPathEntries(host); len(entries) > 0 {
+		roots = append(roots, filepath.Join(entries[0], "pkg"))
+	}
+	// Go's default stays served alongside a custom GOPATH: a spawn whose
+	// environment does not carry that GOPATH (or the GOENV that set it) falls
+	// back to $HOME/go.
+	if def := goPathEntries(HostFacts{Home: host.Home}); len(def) > 0 {
+		roots = append(roots, filepath.Join(def[0], "pkg"))
+	}
+	for _, dir := range []string{host.GoModCache, host.GoCache} {
+		roots = append(roots, absRoots(dir)...)
+	}
+	return roots
+}
+
+// npmCargoCacheRoots are the cache directories npm and cargo move with the
+// environment: $npm_config_cache and $CARGO_HOME. A relative value, which each
+// tool resolves against its own working directory, is not a stable root and
+// contributes nothing — the go command's rule for its cache settings.
+func npmCargoCacheRoots(host HostFacts) []string {
+	return absRoots(host.NpmConfigCache, host.CargoHome)
+}
+
+// absRoots returns the absolute entries of dirs, in order, dropping the rest: a
+// relative configured cache location resolves against each tool's own working
+// directory, so it names no stable root.
+func absRoots(dirs ...string) []string {
+	out := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		if filepath.IsAbs(dir) {
+			out = append(out, dir)
+		}
+	}
+	return out
 }
 
 // cacheStrategyFor picks the cache strategy: workspace-write overlays only on a
@@ -722,8 +955,14 @@ func withResolvedMasks(masked []string) []string {
 		if slices.Contains(defaultPseudoFSPaths, m) {
 			continue
 		}
-		if resolved := resolveExistingPrefix(m); resolved != m && !slices.Contains(out, resolved) {
-			out = append(out, resolved)
+		resolved := resolveExistingPrefix(m)
+		// The filesystem's own spelling too (another letter case or Unicode
+		// normalization than the configured path), which the kernel reports
+		// for an opened file and the carve-outs are pinned to.
+		for _, spelling := range []string{resolved, onDiskSpelling(resolved)} {
+			if spelling != m && !slices.Contains(out, spelling) {
+				out = append(out, spelling)
+			}
 		}
 	}
 	return out
@@ -737,7 +976,7 @@ func filterMasked(roots []string, rp ResolvedPolicy) []string {
 	}
 	out := roots[:0:0]
 	for _, r := range roots {
-		if !rp.Masks(r) {
+		if !rp.masks(r, false) {
 			out = append(out, r)
 		}
 	}
@@ -781,11 +1020,75 @@ func withEvenerConfigMask(masked []string, host HostFacts, policy SandboxPolicy)
 	return append(slices.Clone(masked), cr), append(configMasks, cr)
 }
 
-// sameDir reports whether a and b name the same directory: the same spelling,
-// or the same symlink-resolved location (for one not created yet, where
-// creating it would land).
+// sameDir reports whether a and b name the same directory: by file identity,
+// since neither spelling nor resolved path tells on a case-insensitive volume
+// (~/.CONFIG/EVENER is ~/.config/evener), or, for one not created yet, by
+// where creating each would land, in the filesystem's own spelling of the
+// existing part.
 func sameDir(a, b string) bool {
-	return a == b || resolveExistingPrefix(a) == resolveExistingPrefix(b)
+	return a == b || sameFile(a, b) || resolveExistingPrefix(a) == resolveExistingPrefix(b) ||
+		onDiskSpelling(resolveExistingPrefix(a)) == onDiskSpelling(resolveExistingPrefix(b))
+}
+
+// sameFile reports whether a and b both exist and are the same file.
+func sameFile(a, b string) bool {
+	fa, aerr := os.Stat(a)
+	fb, berr := os.Stat(b)
+	return aerr == nil && berr == nil && os.SameFile(fa, fb)
+}
+
+// underByIdentity reports whether p, or a directory above it, is the existing
+// directory dir (sameFile), so containment holds under any spelling of either.
+func underByIdentity(p, dir string) bool {
+	for {
+		if p == dir || sameFile(p, dir) {
+			return true
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return false
+		}
+		p = parent
+	}
+}
+
+// overlapsMaskByIdentity reports whether any of masked, other than the entries
+// standing for Evener's config mask (configMasks, as resolution listed them),
+// is by file identity at, above or inside the directory at. Only those exact
+// entries are exempt: a user's entry naming the same directory in another
+// case is theirs, and wins.
+func overlapsMaskByIdentity(masked, configMasks []string, at string) bool {
+	return slices.ContainsFunc(masked, func(m string) bool {
+		if slices.Contains(configMasks, m) {
+			return false
+		}
+		// The mask (through any symlink: os.Stat follows it) at or above the
+		// directory, the mask's spelling inside it, or where it now resolves
+		// inside it.
+		return underByIdentity(at, m) || underByIdentity(m, at) || underByIdentity(resolveExistingPrefix(m), at)
+	})
+}
+
+// onDiskSpelling returns p as the filesystem stores it (diskSpelling: real
+// letter case and Unicode normalization, read without following symlinks, the
+// macOS data-volume firmlink spelling stripped), or, for a path not created
+// yet or running through a link, its nearest such ancestor so spelled with the
+// rest appended. Callers pass symlink-resolved paths; one that runs through a
+// link therefore never matches a pinned carve-out.
+func onDiskSpelling(p string) string {
+	p = filepath.Clean(p)
+	var rest []string
+	for {
+		if s, ok := diskSpelling(p); ok {
+			return StripDataVolumeAlias(filepath.Join(append([]string{s}, rest...)...))
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return StripDataVolumeAlias(filepath.Join(append([]string{p}, rest...)...))
+		}
+		rest = append([]string{filepath.Base(p)}, rest...)
+		p = parent
+	}
 }
 
 // unmaskedContentRoots admits the host's Evener content roots as read-only
@@ -830,6 +1133,13 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 			carveOutEscapes(resolved, root, masked) {
 			continue
 		}
+		// The checks above compare spellings; on a case-insensitive volume a
+		// mask spelled in another case (~/.config/evener/SKILLS) is the same
+		// directory, so overlap with any mask but Evener's config mask is also
+		// judged by file identity.
+		if overlapsMaskByIdentity(masked, configMasks, resolved) {
+			continue
+		}
 		// A mask that is itself a symlink into this root (~/.ssh pointing under
 		// the skills dir) would make its secrets readable through the carve-out.
 		if slices.ContainsFunc(masked, func(m string) bool {
@@ -839,17 +1149,20 @@ func unmaskedContentRoots(candidates, masked, configMasks, writeRoots []string, 
 			continue
 		}
 		// The root is exempt under its resolved spelling too, which is how the
-		// file tools see a directory they opened (its canonical path), and is
-		// held to this location (CarveOutResolvesTo), even one not created yet.
-		out = append(out, root, resolved)
-		at[root], at[resolved] = resolved, resolved
+		// file tools see a directory they opened (its canonical path), and
+		// under the filesystem's own spelling of it. Every spelling is held to
+		// that on-disk spelling (CarveOutResolvesTo compares exactly), even for
+		// a root not created yet.
+		disk := onDiskSpelling(resolved)
+		out = append(out, root, resolved, disk)
+		at[root], at[resolved], at[disk] = disk, disk, disk
 		// guardedHostRoots strips the macOS data-volume firmlink spelling
 		// (/System/Volumes/Data/Users/...), which names the same directory and
 		// which a configured XDG_CONFIG_HOME, and so a skill's path, may carry.
 		if darwin {
 			alias := firmlinkAlias(root)
 			out = append(out, alias)
-			at[alias] = resolved
+			at[alias] = disk
 		}
 	}
 	return dedupeRoots(out), at
@@ -870,10 +1183,48 @@ func (rp ResolvedPolicy) CarveOutResolvesTo(root, resolved string) bool {
 	// A root is held to where it resolved at session start (or, not created
 	// yet, where creating it would land), so redirecting an enclosing
 	// directory later cannot move the grant.
-	// The macOS data-volume firmlink spelling names the same directory, and
-	// EvalSymlinks does not collapse it, so both sides compare stripped.
+	//
+	// These re-checks keep the grant correct when the files around it change;
+	// they are not a defence against another local process rearranging the
+	// user's home mid-session, which the threat model trusts
+	// (docs/sandboxing.md, "Threat model"). Both sides are compared exactly
+	// in the filesystem's own spelling (onDiskSpelling): a spelling from the
+	// environment in another letter case or Unicode normalization, or the
+	// macOS firmlink alias, names the same directory, while a different
+	// directory never shares its on-disk spelling.
 	at, ok := rp.carveOutAt[root]
-	return ok && StripDataVolumeAlias(resolved) == at
+	if !ok || onDiskSpelling(resolved) != at {
+		return false
+	}
+	return !rp.maskOverlapsCarveOut(root)
+}
+
+// maskOverlapsCarveOut reports whether a mask other than Evener's config mask
+// overlaps root's pinned location now, by file identity: a user's mask naming
+// it in another case (for a directory created after resolution), or a mask
+// whose own path or an ancestor was made a link after resolution so it
+// resolves into, onto or above the carve-out (~/.docker linked to a directory
+// inside the skills dir). It is asked at every carve-out open and by Masks for
+// every path inside one, so a read reaching the carve-out by another spelling
+// or anchor is caught too, and the carve-out comes back once the cause goes.
+//
+// Evener's own config-mask entries stay exempt even if their targets change
+// mid-session: only another local process could retarget them, and the threat
+// model trusts it (docs/sandboxing.md, "Threat model").
+//
+// Because it runs on every such check, only the masks that can have come to
+// overlap since admission (which judged every mask by identity) are judged
+// again: one that resolves somewhere other than at resolution, or one that has
+// come into or gone out of existence, such as a case- or normalization-variant
+// entry for a directory created since. A mask unchanged since admission still
+// does not overlap.
+func (rp ResolvedPolicy) maskOverlapsCarveOut(root string) bool {
+	at := rp.carveOutAt[root]
+	candidates := slices.DeleteFunc(slices.Clone(rp.MaskedPaths), func(m string) bool {
+		_, err := os.Lstat(m)
+		return err == nil == rp.maskExistedAt[m] && resolveExistingPrefix(m) == rp.maskResolvedAt[m]
+	})
+	return overlapsMaskByIdentity(candidates, rp.configMasks, at)
 }
 
 // carveOutEscapes reports whether resolved, the symlink-resolved location of the

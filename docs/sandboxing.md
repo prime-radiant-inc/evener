@@ -68,6 +68,23 @@ boundary. The same structured scope and sandbox policy are revalidated before
 a stable delegate is restored, and a write-blocked delegate cannot relax that
 inherited floor for its own descendants.
 
+## Threat model
+
+The sandbox defends against the sandboxed session itself: a model, or anything
+it runs, that misbehaves or runs amok. Only sandboxed sessions are treated as
+even potentially hostile. Other local processes running as you are trusted:
+they could read `~/.ssh` directly anyway, so the sandbox does not try to stop
+them, and it does not treat a change they make to your files mid-session (a
+directory renamed, a symlink retargeted, a mount moved) as an attack.
+
+That bounds what the checks below defend. A sandboxed session cannot rearrange
+your home or Evener's config directory, because they are read-only or masked
+for it, so the re-checks at each open and spawn exist to keep the grants
+correct (a carve-out that moved stops being granted; one restored is granted
+again), not to win a race against another local process. A finding that needs
+an outside process to rearrange those directories at the right moment is out
+of scope.
+
 ## Independently confined memory
 
 The five [memory tools](tools/memory.md) use separate confined roots under the
@@ -175,7 +192,7 @@ unsandboxed root's `TMPDIR` is not in the tree.
 | `off` (default) | anywhere | anywhere | anywhere | anywhere |
 | `read-only` | anywhere minus the denylist | denied (temp only) | anywhere minus the denylist | temp only |
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
-| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + temp | worktree + temp + git metadata (not config/hooks) |
+| `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
 
 - **`off`** is exactly today's behavior — a strict superset of every sandboxed
   mode, with no new code path engaged.
@@ -259,6 +276,30 @@ unsandboxed root's `TMPDIR` is not in the tree.
   sandbox — `rerere.enabled=true`, for instance, makes `git commit` create
   `<common>/rr-cache`. That is the intended behaviour: the mode runs the
   developer's git, not a blanked-out one.
+
+  **A global `core.excludesFile` or `core.attributesFile` gets no read grant of its
+  own in `restricted`** (accepted limitation, 2026-10-13; recorded in
+  [friction.md's T06](product/friction.md#t06-global-git-excludes-files-in-restricted-mode)
+  and [#4234](https://github.com/prime-radiant-inc/evener/issues/4234)). The grant
+  above is the config FILES, never the files they name, so such a file is readable
+  inside the sandbox only where it already sits under a root the mode grants — the
+  project worktree, `/etc`, `/opt`, `/nix/store` and the other system read roots — and
+  not elsewhere, typically under `$HOME`. Where it is not readable, the effect depends
+  on the host: macOS/Seatbelt reports
+
+      warning: unable to access '<path>': Operation not permitted
+
+  on every command that reads the file, while Linux/bubblewrap hides an ungranted
+  path, so git applies no excludes or attributes file at all and says nothing. This
+  is deliberate, not overlooked. Granting one file the config names means granting a
+  pathname a spawned process resolves by its literal name at every spawn, and six
+  review rounds on that route each closed one way of re-pointing a granted name at
+  another file — a symlink, a `..` the kernel resolves after one, a writable alias, a
+  letter case, a directory in place of the file — while exposing another, with the
+  last one specific to a backend whose code cannot be verified where CI runs. The
+  project's own `.gitignore`, `.gitattributes` and `.git/info/exclude` are unaffected;
+  they live in the worktree. A session that needs global rules elsewhere on the host
+  can run with `--sandbox off`, or the rules can move into the repository.
 
   **git under a sandbox is silent and fast on macOS** (ruled 2026-08-07). It was
   neither: every `git` call emitted two `xcrun_db` cache-write denials to stderr
@@ -347,23 +388,37 @@ Installed plugins (the plugin store's `cache` and `bundled` directories under
 `~/.config/evener/plugins`) and your skills directory (`~/.config/evener/skills`)
 sit inside the masked `~/.config/evener` by default, but they hold only content
 the session itself loads, such as the skills whose `base_directory` it hands the
-model. So in every mode (`restricted` included) the file tools read those
-directories, **read-only**, carved out of the mask; spawned processes still see
-them masked. The rest of `~/.config/evener` stays masked: hub configuration,
+model, and the hook scripts of installed plugins it runs. So in every mode
+(`restricted` included) the file tools read those directories, **read-only**,
+carved out of the mask, and so do spawned processes. The rest of `~/.config/evener` stays masked: hub configuration,
 credentials, and the plugin store's metadata (`known_marketplaces.json`, the
 registries and the marketplace clones), which records marketplace URLs that may
 carry a token. Inside the carve-out any `.git` stays masked too (in any letter
 case): a plugin installed by cloning keeps its remote URL, which may carry a
-token, in its installed copy's `.git/config`, and skills never need it. The
+token, in its installed copy's `.git/config`, and skills and hooks never need
+it. Seatbelt denies `.git` there by pattern; bubblewrap masks the `.git` entries it finds, at any depth, at each spawn,
+so a copy cloned during a running command is masked from the next spawn on, and
+a carve-out it cannot inspect fully at spawn (over 50,000 entries, or with a
+directory it cannot list) stays masked for spawned processes. The
 carve-out never writes and never touches the pseudo-filesystem floor. It is cut
 only from Evener's own config mask, and a directory is left masked when it
 contains a masked path or sits under another one (so your own denylist entries,
-inside or above it, win), when a write root overlaps it (it would not stay
+inside or above it, win, under any spelling of the same directory, letter case
+included), when a write root overlaps it (it would not stay
 read-only), or when it resolves anywhere but its own place under Evener's config
 mask (a symlink into, or above, a masked directory). The file tools check that
 resolution again when they open the directory, against the directory actually
 opened, so one swapped for a symlink mid-session is refused, and one not
-installed yet is held to where installing it would land. With
+installed yet is held to where installing it would land. They also refuse a
+carve-out that a mask has since been pointed into or above (say `~/.ssh` made a
+link to the skills directory, or `~/.docker` to a directory inside it), on
+every read, and read it again once the link is gone or the directory is
+recreated in place; the backends re-check both at every spawn. In
+`restricted`, whose namespace starts empty, bubblewrap recreates a carve-out's
+symlinked spelling (a dotfile-managed `~/.config/evener`) as a link to the real
+directory, and Seatbelt lets each link on that spelling be read as metadata (the
+link, never its target), so the `base_directory` a skill advertises works in
+the shell. With
 `EVENER_NO_USER_SKILLS=1`, which loads no user skills, the skills directory stays
 masked. The locations follow `$XDG_CONFIG_HOME` the way Evener does.
 
@@ -427,29 +482,70 @@ denial is by design, not a bug.
 
 Invariant: a sandboxed session can never poison a cache that a later build consumes.
 
-- `workspace-write` serves the language cache roots (`~/.cache`, `~/go/pkg`,
-  `~/.npm`, `~/.cargo`, plus any you add) as a **read-real, write-private overlay**
-  where the host's bubblewrap supports it: builds read warm from the real cache, but
-  writes land in a per-session tmpfs that is discarded at session end.
+- `workspace-write` serves the language cache roots (`~/.cache` alongside a set
+  `$XDG_CACHE_HOME`, `~/.npm` and `~/.cargo` alongside a set `$npm_config_cache`
+  or `$CARGO_HOME`, the `pkg` directory of your first GOPATH entry and of Go's
+  `$HOME/go` default, and a `GOMODCACHE` or `GOCACHE` you set elsewhere) as a
+  **read-real, write-private overlay** where the
+  host's bubblewrap supports it: builds read warm from the real cache, but writes
+  land in a per-session tmpfs that is discarded at session end. The Go settings
+  are the host's, resolved once at session start (see the GOPATH note below). A
+  root at, above or inside the worktree, sharing storage with another
+  persistent write root (an extra writable root or a linked worktree's git
+  metadata inside it, or it inside one, by any spelling or link), at or above
+  your home directory or a temp root, or one that is not a directory, is never
+  overlaid, since the discarded upper layer would swallow writes there. Such a
+  cache is left as it is: the granted root is writable, and other writes into
+  it fail rather than vanish. The same holds for a cache holding the session
+  scratch. A root that does not exist yet is created empty at session start
+  (as the go command itself would) so it can be overlaid. Each spawn judges
+  the roots again: one removed since is recreated, one that is not a directory
+  (a file, a link to an unmounted drive) is overlaid only once it is, one
+  whose real location has since moved into the workspace, onto a shared tree,
+  or to share storage with a write root is not overlaid, and one inside
+  another is served by the outer overlay. Whether an overlay can be mounted
+  also depends on each root's filesystem: a root the host refuses as an
+  unprivileged overlay lower (one on an overlayfs root, or a network mount; the
+  kernel returns EINVAL) is probed once per root and left out of the overlay
+  rather than aborting every spawn, and the cache variables naming it —
+  including npm's and cargo's own defaults under it — go to the session scratch.
+  More generally, an npm or cargo cache the overlay does not serve and that no
+  persistent write root covers is redirected into the session scratch, so a
+  child that resolves its own default (a clean environment with no `HOME`) is
+  covered too.
+  A Go cache the overlay does not
+  serve (set in the spawn's environment, with `go env -w`, which is read again
+  at each spawn as go itself does, or by Go's defaults under the spawn's own
+  `HOME`), one at, inside or holding a persistent write root, one whose root
+  no longer resolves outside the persistent roots, one that cannot be a
+  directory, or one whose root has since been removed, is redirected into the
+  session scratch instead. So are all three Go settings when the spawn's go
+  env file can't be judged: named by a relative path, or not the file read at
+  session start, or hidden from the spawn (under a mask, or behind a link in
+  bwrap's private /tmp or /dev, at any step of its link chain; the file is
+  judged on the descriptor actually opened). A relative one is still left to
+  the spawn, so its other settings (`GOPROXY`, `GOPRIVATE`) keep applying.
+  When the spawn's go env file exists but cannot be read at that spawn (a
+  FIFO, a device, an oversized file), the Go settings go to the scratch and
+  that spawn gets `GOENV=off`, since reading it would block it too; once the
+  file is readable again, spawns read it as usual.
 - Where overlay is unavailable (macOS/Seatbelt, or a bubblewrap without overlay
   support — including bubblewrap 0.9.0), the cache **degrades to a session-private
   redirect**: `GOCACHE`, `npm_config_cache`, and `CARGO_HOME` point into the session
   temp (a cold cache), never to a persistent-writable location. GOMODCACHE is
-  redirected alongside GOCACHE: it defaults to `$GOPATH/pkg/mod`, which the
-  granted cache root does not track when GOPATH is customized away from its
-  default location, so the redirect applies regardless of GOPATH. `GOPATH` gets the
-  session scratch as its first entry too: Go records the checksum database's tree
-  heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE` says, so a cold
-  module or toolchain download needs it writable. In `workspace-write` the ambient
-  GOPATH stays after it, so GOPATH-mode builds still find the packages already
-  there: the spawn's own `$GOPATH`, else the host's resolved once at session start
-  the way the go command resolves it (`$GOPATH`, then a `go env -w` setting in the
-  go env file `$GOENV` names, `<user config dir>/go/env` by default, then
-  `$HOME/go`). Evener reads that file rather than running `go env`, which would
-  run whichever go is first on PATH, and any toolchain it downloads, before the
-  sandbox exists. A spawn whose environment gives go no way to find those
-  settings (no `HOME`, `XDG_CONFIG_HOME` or `GOENV`) gets the scratch alone, as
-  does `restricted`, which cannot read it.
+  redirected alongside GOCACHE, because an ambient value can name any directory.
+  `GOPATH` gets the session scratch as its first entry too: Go records the checksum
+  database's tree heads under the first entry's `pkg/sumdb` whatever `GOMODCACHE`
+  says, so a cold module or toolchain download needs it writable. In
+  `workspace-write` the ambient GOPATH stays after it, so GOPATH-mode builds still
+  find the packages already there: the spawn's own `$GOPATH`, else the host's
+  resolved once at session start the way the go command resolves it (`$GOPATH`,
+  then a `go env -w` setting in the go env file `$GOENV` names,
+  `<user config dir>/go/env` by default, then `$HOME/go`). Evener reads that file
+  rather than running `go env`, which would run whichever go is first on PATH, and
+  any toolchain it downloads, before the sandbox exists. A spawn whose environment
+  gives go no way to find those settings (no `HOME`, `XDG_CONFIG_HOME` or `GOENV`)
+  gets the scratch alone, as does `restricted`, which cannot read it.
 - `restricted` always uses the session-private redirect.
 
 The overlay is a performance optimization (warm vs cold reads); the no-poisoning
@@ -467,9 +563,10 @@ spawned process:
   `GCLOUD_*`, and `VAULT_*`.
 - Drops a `KUBECONFIG` that points outside every granted root (an external cluster
   config the session should not reach).
-- Points `TMPDIR` at the per-session temp and, under the session-private cache
-  strategy, redirects `GOCACHE`/`GOMODCACHE`/`GOPATH`/`npm_config_cache`/
-  `CARGO_HOME` there.
+- Points `TMPDIR` at the per-session temp and redirects the language cache
+  variables (`GOCACHE`/`GOMODCACHE`/`GOPATH`/`npm_config_cache`/`CARGO_HOME`)
+  there: all of them under the session-private cache strategy, and under the
+  overlay the Go ones whose directory it does not serve.
 
 **Known residual: Go telemetry noise is not suppressed.** Go's telemetry
 counter/token file lives under the user's Go config directory (outside every
@@ -588,12 +685,13 @@ The grant is tightly bounded:
   normally; it just cannot hand itself filesystem roots.
 - **Read and exec only.** The write surface is unchanged; a hook's own directory
   stays unwritable in every mode.
-- **Spawned layer only.** File tools do not gain a browse grant over the plugin
-  cache, so `restricted` still holds the model's own reads to the worktree.
+- **Spawned layer only.** This grant gives the file tools no browse access to a hook
+  or MCP path.
 - **The denylist still wins.** A hook or MCP path at or under a masked path is not
   granted, and a denylisted subtree inside a granted path stays masked — the
   pseudo-filesystem floor and the credential denylist are authoritative over this
-  grant as over every other.
+  grant as over every other, except for Evener's own content (see the denylist
+  section), which is how an installed plugin's hooks run from the plugin store.
 - **Never a shared, multi-tenant tree.** A candidate root is refused when it is at
   or *above* the user's home directory, the session's worktree, or a temp root, or
   when it is fewer than two path components deep. So `/`, `/Users`, `/home`,
@@ -621,7 +719,7 @@ Three boundary edges are deliberately documented as open rather than claimed clo
   (path-based masking cannot see that two names share an inode). Nothing Evener
   installs creates one: plugin installs clone or copy file contents. A *write* through such a hardlink does not propagate to the original —
   the file tools write atomically via temp-plus-rename, which replaces the name with
-  a fresh inode. This read residual is out of the running-amok threat model.
+  a fresh inode. This read residual is out of the [threat model](#threat-model).
 - **On Linux, a protected surface pinned into existence stays on disk.** bubblewrap
   denies a not-yet-created config/hook surface by mounting over it, and the
   mountpoint is real, so an absent `config.worktree` or `gitdir` under a write root

@@ -7,8 +7,8 @@
 //
 // Decisions locked in the mockup pass: humanize every duration (after 300s
 // → "in 5m", progress_interval_ms 120000 → "every 2m"; absolute clock only
-// for created_at); notes render in full to ~20 lines, disclosure only
-// beyond; no watch id on single-watch surfaces (list rows, inspect
+// for created_at); notes render in full to NOTE_CLAMP_LINES, disclosure
+// only beyond; no watch id on single-watch surfaces (list rows, inspect
 // summaries, raw disclosures only); status chips only in list rows, where
 // watching vs ended varies per row; clear and terminal catch-up are quiet
 // one-liners — the summary line IS the rendering, expanded body empty.
@@ -42,7 +42,7 @@ import {
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { useState } from "react";
-import { Chip } from "../../../../widgets";
+import { Button, Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import type { ToolRenderProps } from "../toolRenderers";
@@ -62,15 +62,17 @@ const CLASS = {
   rowStatic: requireClass(styles.rowStatic, "jobWatch.module.css", "rowStatic"),
   rowId: requireClass(styles.rowId, "jobWatch.module.css", "rowId"),
   rowCondition: requireClass(styles.rowCondition, "jobWatch.module.css", "rowCondition"),
-  disclosureSummary: requireClass(styles.disclosureSummary, "jobWatch.module.css", "disclosureSummary"),
 };
 
 // NOTE_CLAMP_LINES is the note policy, not a measurement: notes at or under
-// ~20 lines render in full with no disclosure; longer notes clamp behind
+// 100 lines render in full with no disclosure; longer notes clamp behind
 // "Show full note". The line count is a rough split on "\n" (a prose note's
 // lines are display lines, not data), so the boundary is approximate by
-// design — the mockup's "~20 lines".
-const NOTE_CLAMP_LINES = 20;
+// design — 100 lines is Jesse's 2026-10-11 call, aligned with CodeBlock's
+// fold window. The clamped view's height is the stylesheet's own
+// -webkit-line-clamp (jobWatch.module.css .noteClamped), which carries the
+// same number.
+const NOTE_CLAMP_LINES = 100;
 
 // The heartbeat phrase a condition sentence ends with, if the watch carries
 // a progress cadence ("heartbeat every 2m"). Undefined when the watch has
@@ -90,18 +92,14 @@ function NoteSection({ note }: { note: string }) {
         {note}
       </div>
       {clamped || open ? (
-        <details data-testid="job-watch-note-disclosure" open={open}>
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled for the same single-source-of-truth reason as ToolRow */}
-          <summary
-            className={CLASS.disclosureSummary}
-            onClick={(event) => {
-              event.preventDefault();
-              setOpen((previous) => !previous);
-            }}
-          >
-            {open ? "Show less" : "Show full note"}
-          </summary>
-        </details>
+        <Button
+          variant="link"
+          data-testid="job-watch-note-disclosure"
+          aria-expanded={open}
+          onClick={() => setOpen((previous) => !previous)}
+        >
+          {open ? "Show less" : "Show full note"}
+        </Button>
       ) : null}
     </div>
   );

@@ -5,10 +5,33 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/llm"
 )
+
+// TestGitExecBudgetUnderTestExceedsProductionBound pins the #4138 fix: under
+// `go test` the git exec bound is the named gitTestExecTimeout tripwire, never
+// the production 2s bound that a load-starved `git log` outran, dropping the
+// snapshot's commit titles (the reported
+// TestPromptDataTypedInputs/root_interactive_anthropic failure).
+//
+// gitExecTimeoutMS is the value every exec actually receives, so this asserts
+// the bound in force, not a constant restated. A behavioral guard — hold a real
+// git log open past the bound — needs >2s of wall time against
+// testing-budget.json's 3s per-test ceiling; #4138 demonstrates that path with a
+// PATH `git` shim instead.
+func TestGitExecBudgetUnderTestExceedsProductionBound(t *testing.T) {
+	t.Parallel()
+	if gitProductionExecTimeout != 2*time.Second {
+		t.Fatalf("gitProductionExecTimeout = %v, want 2s: the production launch bound changed", gitProductionExecTimeout)
+	}
+	productionMS := int(gitProductionExecTimeout / time.Millisecond)
+	if got := gitExecTimeoutMS(); got <= productionMS {
+		t.Fatalf("gitExecTimeoutMS under `go test` = %dms, want more than the production bound %dms: at the production bound a load-starved `git log` drops the snapshot's commit titles again (#4138)", got, productionMS)
+	}
+}
 
 type snapshotCountingEnv struct {
 	root             string
@@ -68,7 +91,7 @@ func TestSnapshotGit_NonRepoDoesNotShellOut(t *testing.T) {
 	dir := t.TempDir()
 	env := &snapshotCountingEnv{root: dir}
 
-	inRepo, branch, modified, untracked, commits := snapshotGit(context.Background(), env, dir)
+	inRepo, branch, modified, untracked, commits, _ := snapshotGit(context.Background(), env, dir)
 	if inRepo {
 		t.Fatal("expected inRepo=false for non-git directory")
 	}
@@ -181,7 +204,7 @@ func TestSnapshotGit_InGitRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inRepo, branch, mod, untracked, commits := snapshotGit(context.Background(), env, dir)
+	inRepo, branch, mod, untracked, commits, _ := snapshotGit(context.Background(), env, dir)
 	if !inRepo {
 		t.Fatal("expected inRepo=true")
 	}
@@ -204,7 +227,7 @@ func TestSnapshotGit_NotAGitRepo(t *testing.T) {
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
-	inRepo, _, _, _, _ := snapshotGit(context.Background(), env, dir)
+	inRepo, _, _, _, _, _ := snapshotGit(context.Background(), env, dir)
 	if inRepo {
 		t.Fatal("expected inRepo=false for non-git directory")
 	}
@@ -220,7 +243,7 @@ func TestSnapshotGit_FreshRepoNoCommits(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	inRepo, _, _, _, commits := snapshotGit(context.Background(), env, dir)
+	inRepo, _, _, _, commits, _ := snapshotGit(context.Background(), env, dir)
 	if !inRepo {
 		t.Fatal("expected inRepo=true")
 	}
@@ -258,7 +281,7 @@ func TestSnapshotGit_TracksModifiedAndUntracked(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, mod, untracked, _ := snapshotGit(context.Background(), env, dir)
+	_, _, mod, untracked, _, _ := snapshotGit(context.Background(), env, dir)
 	if mod != 1 {
 		t.Errorf("expected 1 modified, got %d", mod)
 	}

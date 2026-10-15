@@ -3,6 +3,7 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
+import { markedNodes, markers } from "../markerTestUtils";
 import { render, renderedText } from "../renderNative.testkit";
 import type { SearchSnapshot } from "./boardSearch";
 import { SearchResults, type SearchResultsProps } from "./SearchResults";
@@ -63,6 +64,10 @@ const textWith = (within: ReactTestRenderer | ReactTestInstance, content: string
 	);
 const resultRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "search-result");
 const projectRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "project-result");
+// The Sessions band's caption: its words are copy, its trailing count is the
+// behavior, so tests match the count alone.
+const bandText = (tree: ReactTestRenderer) =>
+	String(tree.root.find((node) => node.props.testID === "band-header").props.children ?? "");
 const evener: NavigationProjectSummary = {
 	key: "evener",
 	name: "evener",
@@ -123,27 +128,110 @@ it("opens a result when it's tapped", () => {
 	expect(props.onOpen).toHaveBeenCalledWith(asking);
 });
 
+// --- grouped subagent hits ---
+
+const subagent = result("sub1", {
+	title: "Delegate",
+	state: "ended",
+	age: "2h",
+	topLevel: { id: "root1", ref: "local:root1", title: "Alpha root", state: "ended", age: "3h" },
+});
+const grouped: SearchSnapshot = {
+	query: "fix",
+	results: { live: [], past: [subagent] },
+	searching: false,
+	failed: false,
+};
+
+it("groups a matching subagent under a greyed anchor that still opens its session", () => {
+	const { tree, props } = mount({ search: grouped });
+	const rows = resultRows(tree);
+	expect(rows).toHaveLength(2);
+	// The anchor greys — its own session did not match — but stays pressable.
+	expect(flatten(textWith(rows[0], "Alpha root").props.style).color).toBe(palette.inkLow);
+	// The subagent indents into its group and reads subordinate.
+	expect(flatten(rows[1].props.style).paddingLeft).toBe(44);
+	expect(flatten(textWith(rows[1], "Delegate").props.style).fontWeight).toBe("400");
+	// The band counts matches, not synthesized anchors.
+	expect(bandText(tree)).toMatch(/1$/);
+	act(() => rows[0].props.onPress());
+	expect(props.onOpen).toHaveBeenCalledWith(expect.objectContaining({ ref: "local:root1" }));
+	act(() => rows[1].props.onPress());
+	expect(props.onOpen).toHaveBeenCalledWith(expect.objectContaining({ ref: "local:sub1" }));
+});
+
+it("nests a matched live parent's subagent hit under its row, one row per session", () => {
+	const parent = result("root1", { title: "Live root", state: "active" });
+	const child = result("sub1", {
+		title: "Delegate",
+		state: "ended",
+		age: "2h",
+		topLevel: { id: "root1", ref: "local:root1", title: "Live root", state: "active", age: "now" },
+	});
+	const liveParent: SearchSnapshot = {
+		query: "fix",
+		results: { live: [parent], past: [child] },
+		searching: false,
+		failed: false,
+	};
+	const { tree } = mount({ search: liveParent });
+	const rows = resultRows(tree);
+	expect(rows).toHaveLength(2);
+	// The live parent keeps its own row, still working.
+	expect(rows[0].findByType(StateMark).props.state).toBe("working");
+	expect(bandText(tree)).toMatch(/2$/);
+	expect(flatten(rows[1].props.style).paddingLeft).toBe(44);
+});
+
+it("keeps past children out of the Live scope", () => {
+	const { tree } = mount({ search: { ...grouped, results: { live: [], past: [subagent] } }, scope: "live" });
+	expect(resultRows(tree)).toHaveLength(0);
+	expect(markers(tree, "search-note")).toEqual(["noMatch"]);
+});
+
+it("greys an unmatched live parent's anchor without hiding that it is live", () => {
+	const endedChildOfLiveParent = result("sub1", {
+		title: "Delegate",
+		state: "ended",
+		age: "2h",
+		topLevel: { id: "root1", ref: "local:root1", title: "Live root", state: "active", age: "now" },
+	});
+	const { tree } = mount({
+		search: {
+			query: "fix",
+			results: { live: [], past: [endedChildOfLiveParent] },
+			searching: false,
+			failed: false,
+		},
+	});
+	const rows = resultRows(tree);
+	expect(rows).toHaveLength(2);
+	const [anchor] = rows;
+	expect(flatten(textWith(anchor, "Live root").props.style).color).toBe(palette.inkLow);
+	expect(anchor.findByType(StateMark).props.state).toBe("working");
+	expect(bandText(tree)).toMatch(/1$/);
+});
+
 it("says so when nothing matches", () => {
 	const { tree } = mount({ search: { ...answered, results: { live: [], past: [past] } }, scope: "live" });
-	expect(renderedText(tree)).toContain("No sessions match.");
+	expect(markers(tree, "search-note")).toEqual(["noMatch"]);
 	expect(resultRows(tree)).toHaveLength(0);
 });
 
 it("says it's searching while the hub has the query and nothing has landed", () => {
 	const { tree } = mount({ search: { query: "fix", results: null, searching: true, failed: false } });
-	expect(renderedText(tree)).toContain("Searching…");
+	expect(markers(tree, "search-note")).toEqual(["searching"]);
 	// Nothing to show before the debounce ends.
 	const resting = mount({ search: { query: "fix", results: null, searching: false, failed: false } });
-	expect(renderedText(resting.tree)).not.toContain("Searching…");
+	expect(markers(resting.tree, "search-note")).toEqual([]);
 	expect(resultRows(resting.tree)).toHaveLength(0);
 });
 
 it("says a failed search failed, in ink, and never asks you to retry", () => {
 	const { tree } = mount({ search: { query: "fix", results: null, searching: false, failed: true } });
-	const text = renderedText(tree);
-	expect(text).toContain("Couldn't search this hub's sessions.");
-	expect(flatten(textWith(tree, "Couldn't search this hub's sessions.").props.style).color).toBe(palette.inkMid);
-	expect(text).not.toMatch(/retry|try again|refresh/i);
+	const [note] = markedNodes(tree, "search-note");
+	expect(note?.props.testID).toBe("search-note:failed");
+	expect(flatten(note?.props.style).color).toBe(palette.inkMid);
 	// Only the scope chips are controls.
 	expect(pressables(tree).map((node) => node.props.accessibilityLabel)).toEqual(["All", "Live"]);
 });
@@ -153,13 +241,13 @@ it("says search waits for the hub while it's out of reach", () => {
 		connected: false,
 		search: { query: "fix", results: null, searching: false, failed: false },
 	});
-	expect(renderedText(tree)).toContain("Search works when the hub is connected.");
+	expect(markers(tree, "search-note")).toEqual(["disconnected"]);
 });
 
 it("keeps the last answer's rows while the hub is out of reach", () => {
 	const { tree } = mount({ connected: false });
 	expect(resultRows(tree)).toHaveLength(3);
-	expect(renderedText(tree)).not.toContain("Search works when the hub is connected.");
+	expect(markers(tree, "search-note")).toEqual([]);
 });
 
 it("shows recent searches when the field is empty, each one searchable, with Clear", () => {
@@ -192,7 +280,9 @@ it("shows only the scope chips when the field is empty and there are no recent s
 
 it("names an untitled session", () => {
 	const { tree } = mount({ search: { ...answered, results: { live: [result("x", { title: "" })], past: [] } } });
-	expect(resultRows(tree)[0].props.accessibilityLabel).toBe("Untitled session, evener, 2 minutes");
+	const [name, ...rest] = resultRows(tree)[0].props.accessibilityLabel.split(", ");
+	expect(name).not.toBe("");
+	expect(rest).toEqual(["evener", "2 minutes"]);
 });
 
 it("lists the matching projects after the sessions, each opening its project", () => {

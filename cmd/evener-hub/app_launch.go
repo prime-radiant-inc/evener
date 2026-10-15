@@ -19,6 +19,10 @@ import (
 // directory, so the write refuses outright.
 var errNoLaunchConfigRoot = errors.New("launch config is unavailable: no user config root could be resolved")
 
+// errEnabledPluginsPerLaunch refuses persisting a plugin selection: it belongs
+// to one launch, never to a saved layer.
+var errEnabledPluginsPerLaunch = errors.New("enabledPlugins is per-launch only")
+
 // hubLaunchController owns the evener/launch/* RPC handlers.
 type hubLaunchController struct {
 	stateRoot string
@@ -181,7 +185,7 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 		return appwire.LaunchConfigResolved{}, errNoLaunchConfigRoot
 	}
 	if params.Config.EnabledPlugins != nil {
-		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("enabledPlugins is per-launch only")
+		return appwire.LaunchConfigResolved{}, invalidParamsFor(errEnabledPluginsPerLaunch)
 	}
 	layer := launchconfig.FromWire(params.Config)
 	// Refuse credential keys in env before persisting.

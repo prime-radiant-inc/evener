@@ -12,6 +12,8 @@ import {
   ErrorInvalidHostField,
   ErrorMarketplaceRemoveApplied,
   ErrorTranscriptHistoryFailed,
+  ErrorTranscriptIndexLocked,
+  ErrorTranscriptIndexRebuilding,
   ErrorUpgradeRequired,
   errorKind,
   errorText,
@@ -23,6 +25,8 @@ import {
   isInstanceRemoveApplied,
   isMethodNotFound,
   isTranscriptHistoryFailedError,
+  isTranscriptIndexLockedError,
+  isTranscriptIndexRebuildingError,
   isUpgradeRequiredError,
   refusedBeforeRunning,
   sessionActionError,
@@ -163,6 +167,63 @@ describe("the history-failed and upgrade-required discriminators are bound to ap
   });
 });
 
+// A read whose transcript index is being rebuilt in the background is the
+// retryable sibling of the history-failed discriminant: the hub owns one
+// repair off the read path, and the read that follows its commit succeeds,
+// so a client that recognizes it keeps the history it holds and retries. A
+// hub-side rename of the discriminant has to break this binding rather than
+// silently read a retryable state as a terminal one.
+describe("the transcript-index-rebuilding discriminant is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorTranscriptIndexRebuilding).toBe(goErrorInfo("ErrorTranscriptIndexRebuilding"));
+  });
+
+  test("the predicate reads only that discriminant", () => {
+    const rebuilding = new WireError("thread history is being rebuilt in the background", -32603, {
+      evenerErrorInfo: ErrorTranscriptIndexRebuilding,
+    });
+    const historyFailed = new WireError("thread history failed at entry 7", -32603, {
+      evenerErrorInfo: ErrorTranscriptHistoryFailed,
+    });
+    expect(isTranscriptIndexRebuildingError(rebuilding)).toBe(true);
+    expect(isTranscriptIndexRebuildingError(historyFailed)).toBe(false);
+    expect(isTranscriptHistoryFailedError(rebuilding)).toBe(false);
+    expect(isTranscriptIndexRebuildingError(new Error("thread history is being rebuilt in the background"))).toBe(
+      false,
+    );
+  });
+});
+
+// The lock-contention discriminant names ordinary contention — a writer
+// mid-extension or a foreign rebuild, with no hub repair in flight — so a
+// client that wants to tell a running repair from a transient collision can.
+// A hub-side rename of the discriminant has to break this binding rather
+// than silently leave the standing code read as an unknown one.
+describe("the transcript-index-locked discriminant is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorTranscriptIndexLocked).toBe(goErrorInfo("ErrorTranscriptIndexLocked"));
+  });
+
+  test("the package root re-exports both names, the only surface consumers import", async () => {
+    const root = await import("./index");
+    expect(root.ErrorTranscriptIndexLocked).toBe(ErrorTranscriptIndexLocked);
+    expect(root.isTranscriptIndexLockedError).toBe(isTranscriptIndexLockedError);
+  });
+
+  test("the predicate reads only that discriminant", () => {
+    const locked = new WireError("thread history index is busy with a live writer", -32603, {
+      evenerErrorInfo: ErrorTranscriptIndexLocked,
+    });
+    const rebuilding = new WireError("thread history is being rebuilt in the background", -32603, {
+      evenerErrorInfo: ErrorTranscriptIndexRebuilding,
+    });
+    expect(isTranscriptIndexLockedError(locked)).toBe(true);
+    expect(isTranscriptIndexLockedError(rebuilding)).toBe(false);
+    expect(isTranscriptIndexRebuildingError(locked)).toBe(false);
+    expect(isTranscriptIndexLockedError(new Error("thread history index is busy with a live writer"))).toBe(false);
+  });
+});
+
 test("errorText prefers an Error's message and stringifies anything else", () => {
   expect(errorText(new Error("switch boom"))).toBe("switch boom");
   expect(errorText(new WireError("turn t1 is active", -32013, { evenerErrorInfo: "conflict" }))).toBe(
@@ -241,8 +302,10 @@ test("friendlyErrorMessage keeps a WireError's own message untouched", () => {
   );
 });
 
-test("friendlyErrorMessage falls back to a generic sentence for a WireError with no message text", () => {
-  expect(friendlyErrorMessage(new WireError("", -32013))).toBe("Something went wrong.");
+test("friendlyErrorMessage falls back to the generic sentence for a WireError with no message text", () => {
+  const generic = friendlyErrorMessage(new TypeError("boom"));
+  expect(friendlyErrorMessage(new WireError("", -32013))).toBe(generic);
+  expect(friendlyErrorMessage(new WireError("  ", -32013))).toBe(generic);
 });
 
 // committedMutationRow (hostMutations.ts) throws a HostMutationOutcomeError for
@@ -257,22 +320,26 @@ test("friendlyErrorMessage keeps a HostMutationOutcomeError's own message", () =
   expect(friendlyErrorMessage(new HostMutationOutcomeError(message, "committed-with-teardown-failure"))).toBe(message);
 });
 
+// The hub-unreachable sentence every client-unreachable shape must share,
+// told apart from the generic fallback without reading its wording.
+const hubUnreachable = () => friendlyErrorMessage(new ConnectionClosedError("AppwireClient: closed"));
+const genericFallback = () => friendlyErrorMessage(new TypeError("boom"));
+
 test("friendlyErrorMessage maps ConnectionClosedError to a plain sentence naming the hub, not the class", () => {
-  expect(friendlyErrorMessage(new ConnectionClosedError("AppwireClient: closed"))).toBe(
-    "Can't reach the hub right now.",
-  );
+  const message = hubUnreachable();
+  expect(message).not.toBe(genericFallback());
+  expect(message).not.toContain("AppwireClient: closed");
+  expect(message).not.toContain("ConnectionClosedError");
 });
 
 test("friendlyErrorMessage maps AppwireClient's cannot-call-while-closed rejection to the same plain sentence", () => {
-  expect(friendlyErrorMessage(new Error('AppwireClient: cannot call "model/list" while state is "closed"'))).toBe(
-    "Can't reach the hub right now.",
-  );
-  expect(friendlyErrorMessage(new Error('AppwireClient: cannot call "thread/start" while state is "connecting"'))).toBe(
-    "Can't reach the hub right now.",
-  );
-  expect(friendlyErrorMessage(new Error('AppwireClient: cannot call "thread/start"; not connected'))).toBe(
-    "Can't reach the hub right now.",
-  );
+  for (const raw of [
+    'AppwireClient: cannot call "model/list" while state is "closed"',
+    'AppwireClient: cannot call "thread/start" while state is "connecting"',
+    'AppwireClient: cannot call "thread/start"; not connected',
+  ]) {
+    expect(friendlyErrorMessage(new Error(raw)), raw).toBe(hubUnreachable());
+  }
 });
 
 // ClientNotReadyError (stores/threads.ts's requireReadyClient, issue #195's
@@ -284,18 +351,18 @@ test("friendlyErrorMessage maps AppwireClient's cannot-call-while-closed rejecti
 test("friendlyErrorMessage maps ClientNotReadyError to the same hub-unreachable sentence", () => {
   expect(
     friendlyErrorMessage(new ClientNotReadyError("threads store: timed out waiting for a ready client after 15000ms")),
-  ).toBe("Can't reach the hub right now.");
+  ).toBe(hubUnreachable());
 });
 
 test("friendlyErrorMessage recognizes the same shape from FakeClient, tests' own stand-in", () => {
   expect(friendlyErrorMessage(new Error('FakeClient: cannot call "thread/start" while state is "closed"'))).toBe(
-    "Can't reach the hub right now.",
+    hubUnreachable(),
   );
 });
 
 test("friendlyErrorMessage recognizes the closed-client shape even as a bare string, not just an Error", () => {
   expect(friendlyErrorMessage('AppwireClient: cannot call "model/list" while state is "closed"')).toBe(
-    "Can't reach the hub right now.",
+    hubUnreachable(),
   );
 });
 
@@ -306,9 +373,10 @@ test("friendlyErrorMessage never leaks a class name or method name for an unrela
 });
 
 test("friendlyErrorMessage gives every other unknown rejection the same generic sentence", () => {
-  expect(friendlyErrorMessage("plain string failure")).toBe("Something went wrong.");
-  expect(friendlyErrorMessage(404)).toBe("Something went wrong.");
-  expect(friendlyErrorMessage(undefined)).toBe("Something went wrong.");
+  const generic = friendlyErrorMessage(new TypeError("boom"));
+  for (const rejection of ["plain string failure", 404, undefined]) {
+    expect(friendlyErrorMessage(rejection), String(rejection)).toBe(generic);
+  }
 });
 
 // errorKind is the classification spawn/model-picker call sites use to tell
@@ -349,12 +417,15 @@ test("errorKind classifies anything else as unknown", () => {
 
 // friendlyLaunchErrorMessage is friendlyErrorMessage plus actionable copy for
 // the daemon-missing family - everything else passes through unchanged.
+// The guidance the no-diagnosis subset of the daemon-missing family gets.
+const daemonGuidance = () =>
+  friendlyLaunchErrorMessage(new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" }));
+
 test("friendlyLaunchErrorMessage gives the daemon-missing family actionable copy instead of the launch-check's raw text", () => {
-  expect(
-    friendlyLaunchErrorMessage(
-      new WireError("evener launch-check timed out", -32014, { evenerErrorInfo: "hubLaunch" }),
-    ),
-  ).toBe("No agent daemon responded for this project. Start one by running evener in the repo, then retry.");
+  const message = daemonGuidance();
+  expect(message).not.toBe("evener launch-check timed out");
+  expect(message).not.toBe(genericFallback());
+  expect(message).not.toBe(hubUnreachable());
 });
 
 test("friendlyLaunchErrorMessage passes a hubLaunch config/credentials message through untouched", () => {
@@ -392,8 +463,8 @@ test("friendlyLaunchErrorMessage masks only the no-diagnosis subset with the gui
     "evener launch-check canceled",
     "fork/exec evener: no such file or directory",
   ]) {
-    expect(friendlyLaunchErrorMessage(new WireError(raw, -32014, { evenerErrorInfo: "hubLaunch" }))).toBe(
-      "No agent daemon responded for this project. Start one by running evener in the repo, then retry.",
+    expect(friendlyLaunchErrorMessage(new WireError(raw, -32014, { evenerErrorInfo: "hubLaunch" })), raw).toBe(
+      daemonGuidance(),
     );
   }
 });
@@ -422,9 +493,7 @@ test("friendlyLaunchErrorMessage passes wrapped and resume-advice messages throu
 });
 
 test("friendlyLaunchErrorMessage keeps the hub-unreachable message for a closed connection", () => {
-  expect(friendlyLaunchErrorMessage(new ConnectionClosedError("AppwireClient: closed"))).toBe(
-    "Can't reach the hub right now.",
-  );
+  expect(friendlyLaunchErrorMessage(new ConnectionClosedError("AppwireClient: closed"))).toBe(hubUnreachable());
 });
 
 test("friendlyLaunchErrorMessage keeps every other WireError's own message untouched", () => {
@@ -434,7 +503,8 @@ test("friendlyLaunchErrorMessage keeps every other WireError's own message untou
 });
 
 test("friendlyLaunchErrorMessage gives an unknown rejection the same generic sentence friendlyErrorMessage would", () => {
-  expect(friendlyLaunchErrorMessage(new Error("switch boom"))).toBe("Something went wrong.");
+  const unknown = new Error("switch boom");
+  expect(friendlyLaunchErrorMessage(unknown)).toBe(friendlyErrorMessage(unknown));
 });
 
 // The codes are Go ints, which goConstantValue (strings only) doesn't read.

@@ -53,9 +53,14 @@ const SUPPRESSED: ReadonlySet<string> = new Set<SuppressedSteeringKind>(["curren
  * as a labelled steer. The wire's kind is a plain string, so the lookup
  * tolerates a miss rather than inventing a label from a raw slug. */
 function steeringKindLabel(kind: string | undefined): string | undefined {
-  return kind !== undefined && Object.hasOwn(STEERING_KIND_LABELS, kind)
-    ? STEERING_KIND_LABELS[kind as LabelledSteeringKind]
-    : undefined;
+  const labelled = labelledSteeringKind(kind);
+  return labelled === undefined ? undefined : STEERING_KIND_LABELS[labelled];
+}
+
+/** A steer's kind when this build has a label for it, else undefined: the
+ * kind its label names, for a client that needs to know which. */
+export function labelledSteeringKind(kind: string | undefined): LabelledSteeringKind | undefined {
+  return kind !== undefined && Object.hasOwn(STEERING_KIND_LABELS, kind) ? (kind as LabelledSteeringKind) : undefined;
 }
 
 // Every daemon steer says it is the system's before it says what it did
@@ -63,10 +68,22 @@ function steeringKindLabel(kind: string | undefined): string | undefined {
 // name, because the row's own words say "System steered").
 const STEERED = "System steered";
 
-/** The label a daemon steer folds to in both clients: "System steered:
- * <what it did>", or a bare "System steered" for a kind with no label, since
- * a colon promises a value. */
-export function steeringLabel(kind: string | undefined): string {
+// A steer the session's parent agent sent with delegate_send (the wire's
+// source "parent", events.SteeringSourceParent) is the parent speaking, not
+// the system, so it says so instead of "System steered".
+const FROM_PARENT = "From parent";
+
+/** Whether a steer's wire source is its session's parent agent. */
+export function isParentSteer(source: string | undefined): boolean {
+  return source === "parent";
+}
+
+/** The label a steer folds to in both clients: "From parent" for a steer from
+ * the session's parent agent; otherwise "System steered: <what it did>", or a
+ * bare "System steered" for a kind with no label, since a colon promises a
+ * value. */
+export function steeringLabel(kind: string | undefined, source?: string): string {
+  if (isParentSteer(source)) return FROM_PARENT;
   const label = steeringKindLabel(kind);
   return label === undefined ? STEERED : `${STEERED}: ${label}`;
 }

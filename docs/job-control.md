@@ -311,7 +311,7 @@ Defaults and timeout semantics:
 - A foreground shell command that completes within that wait returns inline output and is ephemeral by default: no durable `job_id` is required and it does not appear in `job_list`.
 - A foreground shell command still running at the session command timeout is promoted to a durable background job: Evener returns the current bounded output/status with a `job_id`, and the normal terminal notification remains armed for the eventual terminal state.
 - `mode="background"`: Evener starts the command and returns a `job_id` immediately without waiting. The terminal notification fires when it finishes.
-- `mode="detached"`: Evener starts a disowned process and returns only its PID immediately. It is not a job, so Evener neither retains output nor sends notifications nor offers job control for it.
+- `mode="detached"`: Evener starts a disowned process and returns only its PID immediately. It is not a job, so Evener neither retains output nor sends notifications nor offers job control for it. It also gets no session scratch: the child's environment drops `EVENER_SCRATCH_DIR`, because the scratch is deleted when the root session is archived and the disowned process may outlive that, and `TMPDIR` names the world-usable session temp container instead, or nothing when that container could not be provisioned. Give a detached command absolute paths for its output and for any file it reads.
 - `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Evener stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
 - Omitted `max_runtime_ms` means implementation-defined shell runtime policy. Recommended policy: default finite runtime for foreground/promoted shell jobs, no default runtime limit for `mode="background"` shell jobs unless configured by the user/tool call.
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
@@ -514,6 +514,10 @@ Semantics:
 
 - If `to` identifies a running or currently-driven delegate, Evener injects the
   message into that exact generation. The return `action` is `steered`.
+  The injected steering turn has source `parent`, and the delegate's model reads
+  it after the line `Message from your parent agent:`; clients label it "From
+  parent". A message that starts an idle delegate opens its next generation as
+  user input, as the original brief does.
 - If `to` identifies an idle/resumable delegate, Evener starts its next private
   generation in the same child conversation. The return `action` is `started`.
 - If `to` is a `job_id`, `transcript_ref`, unknown/unauthorized delegate,
@@ -791,7 +795,7 @@ Rules:
 - Event frames and output excerpts are bounded and filtered before notification or observer delivery. Implementations may apply redaction/scrubbing for cross-session or observer delivery, but this contract does not promise perfect secret detection; callers must not treat frames as guaranteed secret-free.
 - `progress_interval_ms` applies to concrete job sources only (min `1000`, max `3600000`, clamped; omitted/`0` means no periodic progress notification, and negatives fail `invalid_request`). Timers use `after_seconds` (60 to 86400) or `repeat_seconds` (60 to 3600) on `self`, rejected rather than clamped when out of range; an optional `note` labels any watch, timer or condition, and rides every fire; a present `0` or `null` reads as absent, the same way `progress_interval_ms: 0` does. At most 8 live timers per session. Session event watches use `events`/`event_filter` instead of combining events with periodic progress.
 - Integer arguments to `job_watch` (`every`, `progress_interval_ms`, `after_seconds`, `repeat_seconds`) must be integral JSON numbers; strings and fractional numbers fail `invalid_request` rather than being silently ignored.
-- Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced. For parent-watch observer frames, coalescing is latest-frame-wins by durable key and must not turn a matched condition into silence: Evener either delivers the current pending frame, replaces it with a newer pending frame for the same key, or emits a caller-visible diagnostic for hard failure.
+- Match/event/progress notifications are batched/throttled. Multiple triggers may be coalesced. For parent-watch observer frames, coalescing is latest-frame-wins by durable key and must not turn a matched condition into silence: Evener either delivers the current pending frame, replaces it with a newer pending frame for the same key, or emits a caller-visible diagnostic for hard failure. A replaced frame gives up its delivery claim on the receiver when it is replaced, so only the frame still pending can hold up stopping that receiver or closing its tree. A delivery of the replaced frame already under way keeps the claim until it finishes, stands down without an error when it finds itself replaced, and then gives the claim up, unless the receiver took the frame and only the acknowledgement is being retried.
 - Each watch configuration has a model-facing delivery budget of 50 condition fires: output matches and event frames. Periodic ticks, timer or job progress, count as deliveries but never trip the budget, so the `deliveries` count `job_list` reports can run past the fires the budget counts. A watch that exhausts its budget is auto-cleared with one final notification saying how many times it matched and telling the caller to re-arm with a tighter condition (higher `every` or narrower `output_match`).
 - Terminal notification ordering: flush any queued watch notification/frame for a concrete job, then deliver the terminal notification. Both are facts about the same completion, so they arrive in ONE notification turn — the watch settlement first, then the terminal — rather than waking an idle owner twice for a single ending job.
 - If no watch condition is supplied (`output_match`, `events`, `progress_interval_ms`, `after_seconds`, or `repeat_seconds`) for `operation="create"`, the tool fails unless the source is a granted cross-session session source such as `parent`, where the default is the bounded public frame stream.
@@ -1268,6 +1272,13 @@ Delegate generations never create job records. A shell job record contains:
 }
 ```
 
+A kept within-bound completion arms no completion notification: its tool reply
+already told the caller the job ended. Once that reply is durable in the
+transcript the job's notification is recorded `consumed`, the same settlement a
+terminal `job_status` read gets, so a restore never re-announces it. If the
+process stops before the reply is durable, the record is still `not_armed` and
+the restore arms its notification.
+
 `parent_job_id` links shell-to-shell work. `parent_delegate_id` names the stable
 delegate that caused a shell job; a shell never points at a private delegate
 generation. Fields that do not apply are omitted.
@@ -1398,6 +1409,20 @@ ordered queue and receiver-transcript attention as the terminal packet.
   the owner ahead of its report. Delivery never fails the call: the message is
   already in the delegate's transcript.
 - Updates never feed Activity's `reportPreview`.
+- A delegate parked in its finalization drain can run further turns: an
+  update from a delegate it owns wakes it. A turn that ends with a terminal
+  `communicate` gives a newer report, and the newer report is the one the
+  parent receives and Activity previews; the earlier report stays in the
+  delegate's transcript. A turn that ends without a terminal `communicate`,
+  including one whose model returns bare text, leaves the earlier report
+  standing as the delegate's completed report.
+- The same holds for one-shot `evener run`: while it drains background work,
+  its answer is the root's latest terminal `communicate`. A drain turn driven
+  by a completion that reports again replaces the answer. A drain turn that
+  ends in bare text or an empty response leaves the earlier answer standing
+  and the run succeeds. Background-job announcement turns keep their own rule:
+  a report made on one does not replace the answer unless a completion
+  arrives during that turn.
 - A root's `communicate(end_turn=false)` is unchanged: a checkpoint for its
   human partner.
 
@@ -1437,9 +1462,9 @@ Rules:
   settled model request of a root turn, or of a delegate turn running in its
   generation, carried an attention entry, the turn's successful end appends the
   consumed marker, so the entry starts no further turn or attention generation.
-  Attention appended after the turn's last request was built keeps its own wake,
-  and so does attention already armed for the root's own notification turn when
-  the turn began: that notification turn consumes it.
+  This holds whether the attention was armed before the turn began or during
+  it. Attention appended after the turn's last request was built keeps its own
+  wake.
 - Duplicate terminal attention is suppressed by its durable source identity.
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Evener supervises each running stable delegate with a built-in quiet watchdog.

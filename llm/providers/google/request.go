@@ -42,15 +42,8 @@ func generateContentBody(req llm.Request, caps registry.Caps, system string, con
 		}
 	}
 	if req.ReasoningEffort != nil {
-		budget := llm.ReasoningBudget(*req.ReasoningEffort)
-		if budget > 0 {
-			genCfg["thinkingConfig"] = map[string]any{
-				"thinkingBudget": budget,
-				// includeThoughts asks Gemini to return thought summaries; without it
-				// the model thinks internally but streams no thought parts, so the
-				// live-thinking backend has nothing to render.
-				"includeThoughts": true,
-			}
+		if thinking := thinkingConfig(*req.ReasoningEffort, caps); thinking != nil {
+			genCfg["thinkingConfig"] = thinking
 		}
 	}
 
@@ -111,6 +104,65 @@ func generateContentBody(req llm.Request, caps registry.Caps, system string, con
 		return nil, err
 	}
 	return body, nil
+}
+
+// thinkingConfig builds the generationConfig.thinkingConfig object for a
+// reasoning effort, or nil when the row vouches no thinking shape. Gemini has
+// two wire shapes, selected by the row's derived ThinkingShape: "level"
+// (Gemini 3.x, catalog rows that vouch effort) spells thinkingLevel, and
+// "budget" (the 2.5 family, rows recording budget_tokens) spells the numeric
+// thinkingBudget. Sending one shape to a model that takes the other is a wire
+// 400, so a row with no vouched shape — a toggle-only row, or an uncataloged
+// live listing — sends no thinking object at all. includeThoughts asks Gemini
+// to return thought summaries; without it the model thinks internally but
+// streams no thought parts, so the live-thinking backend has nothing to
+// render.
+func thinkingConfig(effort string, caps registry.Caps) map[string]any {
+	// Normalize first: a non-canonical off ("NONE", " off ") or an empty
+	// effort names no thinking on either shape, where before the shape split
+	// ReasoningBudget swallowed them by returning zero.
+	effort = llm.NormalizeReasoningEffort(effort)
+	if effort == "" || effort == llm.ReasoningEffortNone {
+		return nil
+	}
+	// Only "budget" and "level" are google wire shapes; a shape from another
+	// protocol's vocabulary (adaptive, budget+effort) sends nothing.
+	shape := registry.StringValue(caps.ThinkingShape)
+	if shape != "budget" && shape != "level" {
+		return nil
+	}
+	thinking := map[string]any{"includeThoughts": true}
+	if shape == "budget" {
+		budget := llm.ReasoningBudget(effort)
+		if budget <= 0 {
+			return nil
+		}
+		thinking["thinkingBudget"] = budget
+		return thinking
+	}
+	level := effort
+	if len(caps.EffortValues) > 0 {
+		// A row with a ladder spells only a level the ladder vouches for.
+		level = llm.VouchedEffort(effort, caps.EffortValues)
+		if level == "" {
+			return nil
+		}
+	}
+	// The wire enum is uppercase (the Discovery document's
+	// ThinkingConfig.thinkingLevel: MINIMAL | LOW | MEDIUM | HIGH); catalogs
+	// and flags spell it lowercase. Evener's xhigh and max rank above the
+	// enum's ceiling, so they clamp down to HIGH; anything else unrecognized
+	// sends no thinking object at all.
+	wire := strings.ToUpper(level)
+	switch wire {
+	case "MINIMAL", "LOW", "MEDIUM", "HIGH":
+	case "XHIGH", "MAX":
+		wire = "HIGH"
+	default:
+		return nil
+	}
+	thinking["thinkingLevel"] = wire
+	return thinking
 }
 
 func reconcileOutputField(body map[string]any, admitted, outputCap *int) error {
@@ -333,7 +385,21 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 		})
 	}
 
+	// Consecutive tool-result messages accumulate into one user turn: Gemini
+	// requires the function response parts to sit in the single user turn
+	// that answers the function call turn, not spread across separate turns.
+	var pendingToolParts []map[string]any
+	flushToolParts := func() {
+		if len(pendingToolParts) > 0 {
+			appendContent("user", pendingToolParts)
+			pendingToolParts = nil
+		}
+	}
+
 	for _, m := range msgs {
+		if m.Role != llm.RoleTool {
+			flushToolParts()
+		}
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
 			if t := strings.TrimSpace(m.Text()); t != "" {
@@ -419,9 +485,13 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 					continue
 				}
-				name := strings.TrimSpace(p.ToolResult.Name)
+				// The functionResponse name must match the functionCall's
+				// wire name, which the call carries — the result's Name is
+				// the canonical name, which the wire edge may have renamed
+				// (e.g. list_dir → list_directory on the google surface).
+				name := toolNameFromCallID(msgs, p.ToolResult.ToolCallID)
 				if name == "" {
-					name = toolNameFromCallID(msgs, p.ToolResult.ToolCallID)
+					name = strings.TrimSpace(p.ToolResult.Name)
 				}
 				if name == "" {
 					name = p.ToolResult.ToolCallID
@@ -463,11 +533,12 @@ func toGeminiContents(model string, msgs []llm.Message, multimodalToolResults bo
 				}
 				parts = append(parts, map[string]any{"functionResponse": funcResp})
 			}
-			appendContent("user", parts)
+			pendingToolParts = append(pendingToolParts, parts...)
 		default:
 			// ignore
 		}
 	}
+	flushToolParts()
 	return strings.Join(sysParts, "\n\n"), contents, nil
 }
 

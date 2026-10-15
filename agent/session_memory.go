@@ -93,6 +93,22 @@ func (s *Session) memoryContextEnabled() bool {
 	return !s.cfg.DisableMemory && s.cfg.MemoryStateRoot != "" && s.reg != nil && s.reg.Get("memory_read") != nil
 }
 
+// gardeningMemorySkillName is the bundled skill whose instructions correct
+// memory pages with memory_write, memory_edit and memory_delete.
+const gardeningMemorySkillName = "gardening-memory"
+
+// skillAvailableToSession reports whether this session may advertise and load a
+// catalog skill. The gardening-memory skill corrects pages with the memory save
+// tools, so a session without them (a delegate, a memory-disabled session, or a
+// profile that denies a save tool) must neither see it in its catalog nor
+// activate it. Every other skill is available as the catalog advertises it.
+func (s *Session) skillAvailableToSession(name string) bool {
+	if name == gardeningMemorySkillName {
+		return s.memorySaveInstructionsEnabled()
+	}
+	return true
+}
+
 // memorySaveInstructionsEnabled gates text that tells the model to write or
 // correct memory: a session that can read but not write memory still gets its
 // indexes and read guidance, never instructions it cannot follow.
@@ -172,11 +188,13 @@ type memoryEnvironmentFlight struct {
 // session renders the pages as they are, with fallback descriptions, until a
 // writing session migrates. A failed migration never blocks the rendering;
 // the next one retries it. A failed listing leaves p as it was.
-func (s *Session) renderMemoryScope(env *execenv.LocalExecutionEnvironment, p *memoryProjection) error {
+// ctx is threaded to the listing and any migration it runs, so a cancelled
+// memory read ends a read parked on a stream.
+func (s *Session) renderMemoryScope(ctx context.Context, env *execenv.LocalExecutionEnvironment, p *memoryProjection) error {
 	if s.memorySaveInstructionsEnabled() {
-		_ = migrateMemoryScope(env)
+		_ = migrateMemoryScopeCtx(ctx, env)
 	}
-	pages, err := listMemoryPages(env)
+	pages, err := listMemoryPagesCtx(ctx, env)
 	if err != nil {
 		return err
 	}
@@ -205,7 +223,7 @@ func (s *Session) unavailableMemoryToolNames() []string {
 // decides what to keep, so a delegate keeps only read and search. Run after
 // registration, before caching definitions.
 func (s *Session) filterUnavailableMemoryTools() {
-	if s.cfg.DisableMemory || s.cfg.MemoryStateRoot == "" {
+	if memoryNamespaceUnavailable(s.cfg) {
 		for name := range s.reg.RegisteredNames() {
 			if strings.HasPrefix(name, "memory_") {
 				s.reg.Remove(name)
@@ -218,6 +236,16 @@ func (s *Session) filterUnavailableMemoryTools() {
 			s.reg.Remove(name)
 		}
 	}
+}
+
+// memoryNamespaceUnavailable reports that cfg has no memory namespace, so
+// filterUnavailableMemoryTools removes every memory_-prefixed tool name. It is
+// the single owner of that predicate: the result tool's registration refuses a
+// memory_ name on exactly this condition (registerCommunicateTool), and the two
+// must not diverge. Session.memoryContextEnabled is deliberately NOT used — it
+// consults the registry, which is not yet installed while core tools register.
+func memoryNamespaceUnavailable(cfg SessionConfig) bool {
+	return cfg.DisableMemory || cfg.MemoryStateRoot == ""
 }
 
 // openMemoryEnvironment opens scope, creating its directory if it is absent.
@@ -373,13 +401,14 @@ func (s *Session) closeMemoryEnvironments() {
 }
 
 func (s *Session) readMemoryIndex(scope string) memoryProjection {
-	p, _ := s.readMemoryScope(scope, nil)
+	p, _ := s.readMemoryScope(context.Background(), scope, nil)
 	return p
 }
 
 // readMemoryScope reads scope's index and, beneath the same environment
 // lease, the current record of each named page.
-func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjection, map[string]memoryPageRecord) {
+// ctx is threaded to each page read.
+func (s *Session) readMemoryScope(ctx context.Context, scope string, pages []string) (memoryProjection, map[string]memoryPageRecord) {
 	p := memoryProjection{Scope: scope, Status: "unavailable"}
 	env, release, err := s.acquireMemoryEnvironment(scope)
 	if err != nil {
@@ -407,10 +436,24 @@ func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjectio
 	if err := s.beforeMemoryIO(scope, "index_read"); err != nil {
 		return p, nil
 	}
-	_ = s.renderMemoryScope(env, &p) // a failed rendering leaves p unavailable
+	_ = s.renderMemoryScope(ctx, env, &p) // a failed rendering leaves p unavailable
 	records := make(map[string]memoryPageRecord, len(pages))
 	for _, page := range pages {
-		if record, ok := readMemoryPageRecord(env, page); ok {
+		if err := ctx.Err(); err != nil {
+			// A cancelled read must not return a degraded projection as success:
+			// leave it unavailable and report no records (#4621 round 2, M4).
+			p.Status = "unavailable"
+			return p, nil
+		}
+		record, ok := readMemoryPageRecord(ctx, env, page)
+		// memoryPageRecordFrom reports a read failure as "no record", which would
+		// swallow a cancellation during the LAST page's read: check ctx after the
+		// read, not only before the next one (#4621 round 4, class sweep).
+		if cerr := ctx.Err(); cerr != nil {
+			p.Status = "unavailable"
+			return p, nil
+		}
+		if ok {
 			records[page] = record
 		}
 	}
@@ -419,8 +462,9 @@ func (s *Session) readMemoryScope(scope string, pages []string) (memoryProjectio
 
 // readMemoryPageRecord reads page's current record through env. It reports
 // false when the page could not be read, so its last record stands.
-func readMemoryPageRecord(env *execenv.LocalExecutionEnvironment, page string) (memoryPageRecord, bool) {
-	return memoryPageRecordFrom(env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), page)))
+// ctx is threaded to the read.
+func readMemoryPageRecord(ctx context.Context, env *execenv.LocalExecutionEnvironment, page string) (memoryPageRecord, bool) {
+	return memoryPageRecordFrom(env.ReadFileRawCtx(ctx, filepath.Join(env.WorkingDirectory(), page)))
 }
 
 // memoryPageRecordFrom turns a page read into its record, reporting false
@@ -577,11 +621,12 @@ func (s *Session) memoryReadPagesFor(scope string) []string {
 }
 
 // memoryPageChangesSection is the section naming each read page of scope
-// whose content changed or that was removed since the session's record; it
-// advances those records. It never carries page contents.
+// whose content changed since the session's record; it advances those
+// records, a page found removed included, so a removal is never reported
+// later. It never carries page contents.
 func (s *Session) memoryPageChangesSection(scope string, observed map[string]memoryPageRecord) memoryContextSection {
 	return func() string {
-		var changes []apptranscript.MemoryPageChange
+		var changes []string
 		for _, page := range slices.Sorted(maps.Keys(observed)) {
 			known, tracked := s.memoryReadPages[scope][page]
 			now := observed[page]
@@ -589,7 +634,9 @@ func (s *Session) memoryPageChangesSection(scope string, observed map[string]mem
 				continue
 			}
 			s.memoryReadPages[scope][page] = now
-			changes = append(changes, apptranscript.MemoryPageChange{Path: page, Removed: now.absent})
+			if !now.absent {
+				changes = append(changes, page)
+			}
 		}
 		if len(changes) == 0 {
 			return ""
@@ -627,7 +674,9 @@ func (s *Session) memoryFlight(scope string, pages []string) *memoryIndexFlight 
 	s.memoryIndexFlights[scope] = flight
 	s.memoryMu.Unlock()
 	go func() {
-		flight.projection, flight.pages = s.readMemoryScope(scope, pages)
+		// A background flight has no caller context to observe; the read runs
+		// under context.Background().
+		flight.projection, flight.pages = s.readMemoryScope(context.Background(), scope, pages)
 		close(flight.done)
 	}()
 	return flight
@@ -735,15 +784,15 @@ func (s *Session) memoryBaselineFor(scope string) (memoryIndexBaseline, bool) {
 }
 
 // memoryIndexDeltaCap bounds the bytes of one index-change section; a larger
-// change is summarized as line counts with a route to memory_read.
+// change is summarized as a line count with a route to memory_read.
 const memoryIndexDeltaCap = 2048
 
 // knownMemoryIndexSection reports a completed read of a scope whose index
 // the session already knows. A current index delivers only the lines added
-// and removed since the baseline, which then advances; the same index
-// delivers nothing. That covers another session's edit and an index it
-// created where the session had deleted its own. A missing index the session
-// knows it deleted delivers nothing. Any other missing index, or a failed
+// since the baseline, which then advances; removed lines are never reported,
+// and an index that only lost lines delivers nothing. That covers another
+// session's edit and an index it created where the session had deleted its
+// own. A missing index the session knows it deleted delivers nothing. Any other missing index, or a failed
 // read, is projected as that state, as at any boundary. A read that missed
 // the boundary budget or went stale never reaches here.
 func (s *Session) knownMemoryIndexSection(baseline memoryIndexBaseline, p memoryProjection) memoryContextSection {
@@ -757,42 +806,38 @@ func (s *Session) knownMemoryIndexSection(baseline memoryIndexBaseline, p memory
 	}
 }
 
-// memoryIndexDeltaSection lists the lines another session added to or
-// removed from p's index since the baseline index, or is "" when no line
-// changed. A change whose section would exceed memoryIndexDeltaCap is
-// reported as line counts instead.
+// memoryIndexDeltaSection lists the lines another session added to p's index
+// since the baseline index, or is "" when no line was added. A change whose
+// section would exceed memoryIndexDeltaCap is reported as a line count
+// instead.
 func memoryIndexDeltaSection(baseline string, p memoryProjection) string {
-	added, removed := memoryIndexLineChanges(baseline, p.Index)
-	if len(added) == 0 && len(removed) == 0 {
+	added := memoryIndexAddedLines(baseline, p.Index)
+	if len(added) == 0 {
 		return ""
 	}
-	if section := apptranscript.MemoryIndexChangesSection(p.Scope, added, removed); len(section) <= memoryIndexDeltaCap {
+	if section := apptranscript.MemoryIndexChangesSection(p.Scope, added); len(section) <= memoryIndexDeltaCap {
 		return section
 	}
-	return apptranscript.MemoryIndexChangeCountsSection(p.Scope, len(added), len(removed))
+	return apptranscript.MemoryIndexChangeCountsSection(p.Scope, len(added))
 }
 
-// memoryIndexLineChanges compares two indexes line by line as multisets,
-// comparing page lines only: added holds the lines of next not matched in prior,
-// removed the lines of prior not matched in next, each in its file order.
-func memoryIndexLineChanges(prior, next string) (added, removed []string) {
-	unmatched := func(lines, against []string) []string {
-		counts := make(map[string]int)
-		for _, line := range against {
-			counts[line]++
-		}
-		var out []string
-		for _, line := range lines {
-			if counts[line] > 0 {
-				counts[line]--
-				continue
-			}
-			out = append(out, line)
-		}
-		return out
+// memoryIndexAddedLines compares two indexes line by line as multisets,
+// comparing page lines only, and returns the lines of next not matched in
+// prior, in file order.
+func memoryIndexAddedLines(prior, next string) []string {
+	counts := make(map[string]int)
+	for _, line := range memoryIndexLines(prior) {
+		counts[line]++
 	}
-	priorLines, nextLines := memoryIndexLines(prior), memoryIndexLines(next)
-	return unmatched(nextLines, priorLines), unmatched(priorLines, nextLines)
+	var added []string
+	for _, line := range memoryIndexLines(next) {
+		if counts[line] > 0 {
+			counts[line]--
+			continue
+		}
+		added = append(added, line)
+	}
+	return added
 }
 
 // memoryIndexLines returns an index's page lines; the tag header and the

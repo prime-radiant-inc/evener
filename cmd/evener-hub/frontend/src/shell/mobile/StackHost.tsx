@@ -48,6 +48,7 @@ import { navigate, paneToURL, urlToPane } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { isSinglePaneRoute } from "../singlePane";
 import {
+  conversationOpenParentRef,
   documentPaneState,
   type OpenPaneRecord,
   transcriptOpenOrigin,
@@ -167,9 +168,13 @@ export interface StackHostProps {
   // owns that condition and passes it down; StackHost's only duty is not to
   // publish a URL over a route in that state. See the URL-sync effect.
   routeDeferred?: boolean;
+  // True on a single-pane route (the /thread/{ref} share link). The drawer
+  // opens the sidebar/search/settings chrome floor §2.3 forbids there, so its
+  // trigger is not rendered at all.
+  singlePane?: boolean;
 }
 
-export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = {}) {
+export function StackHost({ railSlot, routeDeferred = false, singlePane = false }: StackHostProps = {}) {
   const panes = useWorkspaceStore((s) => s.panes);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
   // The focused pane's title, published host-agnostically by its
@@ -380,6 +385,50 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
         }
       }
     }
+    if (!target && focusedPane?.type === "session") {
+      const parentRef = conversationOpenParentRef(focusedPane);
+      if (parentRef !== undefined) {
+        // A host swap discards local history, not the retained parent pane.
+        // Focus that exact pane: reopening a session could promote a nested
+        // parent into main and discard the real owner and remaining context.
+        let ancestor =
+          panes.find(
+            (pane) =>
+              pane.id !== focusedPaneId &&
+              pane.type === "session" &&
+              (pane.params as { ref?: unknown }).ref === parentRef,
+          ) ??
+          panes.find(
+            (pane) =>
+              pane.id !== focusedPaneId &&
+              pane.type === "transcript" &&
+              (pane.params as { ref?: unknown }).ref === parentRef,
+          );
+        target = ancestor?.id;
+        // Reject cycles, not incomplete context: an absent farther ancestor
+        // must not prevent returning to the retained immediate parent. A
+        // conversation records each open as a parent edge, so opening `a`
+        // from `b` and then `b` from `a` makes both edges reachable; without
+        // this a repeated Back ping-pongs instead of reaching Welcome.
+        const visited = new Set([focusedPaneId]);
+        while (ancestor?.type === "session" || ancestor?.type === "transcript") {
+          if (visited.has(ancestor.id)) {
+            target = undefined;
+            break;
+          }
+          visited.add(ancestor.id);
+          const nextRef =
+            ancestor.type === "session"
+              ? conversationOpenParentRef(ancestor)
+              : (ancestor.params as { parentRef?: unknown }).parentRef;
+          ancestor =
+            typeof nextRef === "string" && nextRef !== ""
+              ? (panes.find((pane) => pane.type === "session" && (pane.params as { ref?: unknown }).ref === nextRef) ??
+                panes.find((pane) => pane.type === "transcript" && (pane.params as { ref?: unknown }).ref === nextRef))
+              : undefined;
+        }
+      }
+    }
     wentBackRef.current = true;
     if (target) {
       workspaceStore.getState().focusPane(target);
@@ -426,12 +475,12 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
             />
           )}
         </div>
-        <span className={styles.title} data-testid="topbar-title">
+        <span className={styles.stackTitle} data-testid="topbar-title">
           {paneTitle}
         </span>
-        <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} />
+        {!singlePane && <TreeDrawer onToggle={() => setPanelOpen((v) => !v)} />}
       </div>
-      <div className={styles.body}>
+      <div className={styles.stackBody} data-stacked-pane-type={focusedPane?.type}>
         {focusedPane && (
           // key forces a fresh mount on every distinct pane id, including
           // switching BACK to a previously-seen one - without it, two

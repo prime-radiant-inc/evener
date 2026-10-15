@@ -209,6 +209,10 @@ var Methods = []MethodSpec{
 	{MethodEvenerPathValidate, PathValidateParams{}, PathValidateResponse{}, ScopeHub, "Validates a launch path."},
 	{MethodEvenerGitHead, GitHeadParams{}, GitHeadResponse{}, ScopeHub, "Reads a working directory's git HEAD, and its sanitized origin remote URL when requested."},
 	{MethodEvenerMobilePairing, MobilePairingParams{}, MobilePairingResponse{}, ScopeHub, "Creates a validated mobile pairing URL for the authenticated web application."},
+	{MethodEvenerDevicePairingCreate, DevicePairingCreateParams{}, DevicePairingInvitation{}, ScopeHub, "Creates a short-lived device pairing invitation."},
+	{MethodEvenerDevicePairingRead, DevicePairingParams{}, DevicePairingStatus{}, ScopeHub, "Lists pending device claims for explicit comparison."},
+	{MethodEvenerDevicePairingApprove, DevicePairingApproveParams{}, DevicePairingStatus{}, ScopeHub, "Approves one device key for encrypted credential delivery."},
+	{MethodEvenerDevicePairingCancel, DevicePairingParams{}, DevicePairingStatus{}, ScopeHub, "Revokes a device pairing invitation."},
 	{MethodEvenerNavigationRead, NavigationReadParams{}, NavigationReadResponse{}, ScopeHub, "Reads one bounded, revisioned hub navigation resource as a normalized v3 snapshot or delta, optionally conditional on its exact base."},
 	{MethodEvenerFavoriteSet, FavoriteSetParams{}, FavoriteSetResponse{}, ScopeHub, "Sets or clears a project favorite and returns the committed navigation invalidation targets."},
 	{MethodEvenerArchiveSet, ArchiveParams{}, ArchiveResponse{}, ScopeHub, "Sets or clears an explicit project or session archive decision and returns its committed navigation receipt."},
@@ -219,7 +223,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerSessionPinAssign, SessionPinAssignParams{}, SessionPinAssignResponse{}, ScopeHub, "Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt."},
 	{MethodEvenerSessionPinUnpin, SessionPinUnpinParams{}, SessionPinUnpinResponse{}, ScopeHub, "Removes a top-level session's named pin assignment and returns its committed navigation receipt."},
 	{MethodEvenerSessionSeenSet, SessionSeenSetParams{}, SessionSeenSetResponse{}, ScopeHub, "Marks sessions seen through a hub or daemon timestamp the client showed (a row's turn end, or a session's last-moved time), or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen and seen_through from the hub's marker."},
-	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived."},
+	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches the hub's sessions: live and ended ones whose ID, title or prompt match, each once, and (S14) the sessions whose messages match, with each one's newest hits and snippets. A scope narrows every group; every result says whether it is archived. Each matching subagent names the top-level session it renders under, so clients group it there."},
 	{MethodEvenerArchivedList, ArchivedListParams{}, ArchivedListResponse{}, ScopeHub, "Lists one project's archived sessions, newest first, a page at a time: the key names the project and the catalog is a hint (a project that moved between projects and archived projects is read from the one holding it now, and the response says which catalog it read), and the cursor continues from the previous page. The rows are navigation session summaries. Each response carries the whole list's revision; a first-page read naming the revision it holds is answered unchanged, with no rows, while the list has not changed. The list has no invalidation of its own."},
 	{MethodEvenerActivityRead, ActivityReadParams{}, ActivityReadResponse{}, ScopeHub, "Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time, the newest tool intent and when the tree last moved, of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation."},
 	{MethodEvenerNoticesList, EmptyParams{}, NoticesListResponse{}, ScopeHub, "Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change."},
@@ -298,6 +302,16 @@ var Methods = []MethodSpec{
 	{MethodEvenerSessionDocument, SessionDocumentParams{}, SessionDocumentResponse{}, ScopeHub, "Reads one document out of the recipient hub's own local session state for the controller's host-qualified /doc/file proxy (S7): the path is resolved inside the session's working directory by the local route's rule and refused as pathOutsideSession when it leads out; the answer is the file's first 512 KiB, its true size, the sha256 of the whole file (up to 16 MiB) and its modification time. Never an HTTP route."},
 }
 
+// MissingMutationFieldError reports a retry-safe mutation whose params lack a
+// required field, or carry it empty.
+type MissingMutationFieldError struct {
+	Field string
+}
+
+func (e MissingMutationFieldError) Error() string {
+	return e.Field + " is required"
+}
+
 // ValidateMutationParams enforces the flag-day v2 identity and precondition
 // fields before a mutation reaches either Hub or daemon handlers.
 func ValidateMutationParams(method string, raw json.RawMessage) error {
@@ -327,7 +341,7 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 	for _, name := range required {
 		value, ok := fields[name]
 		if !ok {
-			return fmt.Errorf("%s is required", name)
+			return MissingMutationFieldError{Field: name}
 		}
 		if name == "expectedQueueRevision" {
 			var revision uint64
@@ -338,7 +352,7 @@ func ValidateMutationParams(method string, raw json.RawMessage) error {
 		}
 		var text string
 		if err := json.Unmarshal(value, &text); err != nil || strings.TrimSpace(text) == "" {
-			return fmt.Errorf("%s is required", name)
+			return MissingMutationFieldError{Field: name}
 		}
 	}
 	return nil

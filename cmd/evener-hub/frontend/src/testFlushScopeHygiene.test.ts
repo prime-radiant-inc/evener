@@ -162,9 +162,18 @@ test("the detector uses the parser, so literals and prose cannot fool it", () =>
   expect(hasNestedFlush(file, aliasedFlush)).toBe(true);
 });
 
+// The TypeScript parse dominates this scan, and a file can only call the flush
+// by naming it, so parse only the files that spell it. Parsing every test file
+// let the test's runtime grow with the tree and breach the gate's per-test
+// ceiling under CPU contention (#3966).
 test("no test file calls the projection flush directly inside an act(...)", () => {
   const offenders = testFilesUnder(SRC)
-    .filter((path) => path !== SELF && hasNestedFlush(path, readFileSync(path, "utf8")))
-    .map((path) => relative(SRC, path));
+    .filter((path) => path !== SELF)
+    .map((path) => [path, readFileSync(path, "utf8")] as const)
+    // A plainly spelled name, or one reached through any unicode escape, still
+    // gets parsed; nothing else can call the flush.
+    .filter(([, source]) => source.includes(FLUSH) || source.includes("\\u"))
+    .filter(([path, source]) => hasNestedFlush(path, source))
+    .map(([path]) => relative(SRC, path));
   expect(offenders).toEqual([]);
 });

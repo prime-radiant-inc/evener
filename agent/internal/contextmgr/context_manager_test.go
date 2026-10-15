@@ -14,8 +14,10 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/cheapmodel"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -320,6 +322,97 @@ func TestSummarizeToolResult_MemorySearch(t *testing.T) {
 	want := `[memory_search: "x" → 1 matches; results truncated at 1; narrow the path or glob_filter, or raise max_results]`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// A breaker nudge the registry appended to a repeated search
+// (agent/internal/tool appendIntervention) is not a note about the search, so
+// the summary must not show it as one. A search that wrote no notes of its own
+// is the case a positional rule (notes end at the second blank line) cannot
+// tell apart, and the case the issue named (#4223). The repeated result comes
+// from the registry itself, so no nudge text is copied here and the producer
+// and this reader are pinned to each other.
+func TestSummarizeToolResult_RepeatedSearchNudgeIsNotANote(t *testing.T) {
+	for _, tc := range []struct{ name, tool, body, want string }{
+		{
+			name: "a repeated grep with no notes of its own",
+			tool: "grep",
+			body: "a.go:1:x\nb.go:2:x",
+			want: `[grep: "x" → 2 matches]`,
+		},
+		{
+			name: "a repeated grep keeps its own note",
+			tool: "grep",
+			body: "a.go:1:x\n\nSENTINEL-NOTE",
+			want: `[grep: "x" → 1 matches; SENTINEL-NOTE]`,
+		},
+		{
+			name: "a repeated memory_search with no notes of its own",
+			tool: "memory_search",
+			body: "notes.md:1:x",
+			want: `[memory_search: "x" → 1 matches]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repeated := repeatedToolOutput(t, tc.tool, tc.body)
+			got := summarizeToolResult(tc.tool, repeated, json.RawMessage(`{"pattern":"x"}`))
+			if got != tc.want {
+				t.Fatalf("a repeated %s's nudge read as one of its notes: got %q, want %q", tc.tool, got, tc.want)
+			}
+		})
+	}
+}
+
+// repeatedToolOutput runs toolName twice through a registry whose executor
+// returns body, so the second result carries the registry's own repetition
+// nudge for a repeated identical call. It fails when the second call drew no
+// intervention, so a summarizer case cannot pass by never seeing one.
+func repeatedToolOutput(t *testing.T, toolName, body string) string {
+	t.Helper()
+	reg := tool.NewRegistry()
+	if err := reg.Register(tool.RegisteredTool{
+		Definition: llm.ToolDefinition{Name: toolName},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return body, nil
+		},
+		Limit: schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 200, Strategy: schema.TruncHeadCount},
+	}); err != nil {
+		t.Fatalf("register %s: %v", toolName, err)
+	}
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	call := llm.ToolCallData{ID: "c1", Name: toolName, Arguments: json.RawMessage(`{"pattern":"x"}`)}
+	first := reg.ExecuteCall(context.Background(), env, call)
+	repeated := reg.ExecuteCall(context.Background(), env, call)
+	if len(repeated.Output) <= len(first.Output) {
+		t.Fatalf("the repeated %s call drew no intervention: first %q, second %q", toolName, first.Output, repeated.Output)
+	}
+	return repeated.Output
+}
+
+// A search's own notes are kept, however many blocks they span. Opaque
+// sentinels stand in for the notes, so this pins that the notes cross the
+// summarizer without hardcoding any of the tools' or the registry's wording.
+func TestSummarizeToolResult_SearchKeepsItsNotes(t *testing.T) {
+	for _, tc := range []struct{ name, tool, output, want string }{
+		{
+			name:   "one note the tool wrote",
+			tool:   "grep",
+			output: "a.go:1:x\n\nSENTINEL-NOTE",
+			want:   `[grep: "x" → 1 matches; SENTINEL-NOTE]`,
+		},
+		{
+			name:   "two blocks, the second the registry's marker",
+			tool:   "glob",
+			output: "a.go\n\nSENTINEL-TOOL-NOTE\n\nSENTINEL-MARKER",
+			want:   `[glob: "x" → 1 files; SENTINEL-TOOL-NOTE; SENTINEL-MARKER]`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := summarizeToolResult(tc.tool, tc.output, json.RawMessage(`{"pattern":"x"}`))
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -2539,12 +2632,23 @@ func TestPressure_ReturnsEstimate(t *testing.T) {
 }
 
 func TestPressure_ZeroContextWindow(t *testing.T) {
-	profile := &provider.Profile{} // zero value reports ContextWindowSize() == 0
+	profile := &provider.Profile{} // zero value reports ContextWindowSize() == 0: unknown
 	cm := NewManager(profile, nil, cheapmodel.New(nil))
 
 	p := cm.Pressure(nil, 0)
 	if p != 0 {
-		t.Fatalf("Pressure() = %.2f, want 0 for zero context window", p)
+		t.Fatalf("Pressure() = %.2f, want 0 with nothing in history", p)
+	}
+	// Unknown no longer means "no budget" (issue #4564): with history present,
+	// the same zero-window profile pressure-reads against the assumed default,
+	// so the fraction is low but no longer pinned to 0.
+	history := []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("token ", 4_000)))}
+	if m := cm.EstimateUsage(history, 0); m.Window != AssumedContextWindow {
+		t.Fatalf("EstimateUsage window = %d, want the assumed %d", m.Window, AssumedContextWindow)
+	}
+	p = cm.Pressure(history, 0)
+	if p <= 0 || p >= 1 {
+		t.Fatalf("Pressure() = %v, want a fraction of the assumed window", p)
 	}
 }
 
@@ -3046,10 +3150,11 @@ func TestCheckpoint_ShedOrder_NoUserEntryShedsOldestFirst(t *testing.T) {
 	}
 }
 
-func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTask(t *testing.T) {
-	// A pinned original task too large to ever fit must be trimmed, not left to
-	// defeat the checkpoint's size cap and not dropped entirely.
-	original := "ORIGINAL TASK: " + strings.Repeat("t", 5000)
+func TestCheckpoint_ShedOrder_MiddleTrimsAnOversizedPartnerMessage(t *testing.T) {
+	// The human partner's messages are never dropped (#4281). One too large to
+	// fit is trimmed in the middle, keeping its head and tail and saying where
+	// the full text is, and the agent's own reply is shed first.
+	original := "ORIGINAL TASK: " + strings.Repeat("t", 5000) + " TASK_TAIL"
 	data := checkpointData{
 		conversation: []checkpointConversationEntry{
 			{Role: "user", Text: original},
@@ -3057,18 +3162,37 @@ func TestCheckpoint_ShedOrder_BoundsOversizedOriginalTask(t *testing.T) {
 		},
 	}
 
-	const maxChars = 1200
-	cp := formatCheckpoint(data, nil, maxChars)
+	cp := formatCheckpoint(data, persistentMeta, 1200)
 
-	if len(cp) > maxChars {
-		t.Fatalf("checkpoint length %d exceeds maxChars %d", len(cp), maxChars)
+	entries := extractCheckpointConversation(cp)
+	if len(entries) != 1 || entries[0].Role != "user" {
+		t.Fatalf("want only the partner's message, trimmed; got %q", entries)
 	}
-	if !strings.Contains(cp, "ORIGINAL TASK: "+strings.Repeat("t", 900)) {
-		t.Fatalf("the head of the original task should survive trimming:\n%s", cp)
+	got := entries[0].Text
+	if !strings.HasPrefix(got, "ORIGINAL TASK: ") || !strings.HasSuffix(got, " TASK_TAIL") {
+		t.Fatalf("the trimmed message lost its head or tail:\n%s", got)
 	}
-	if !strings.Contains(cp, "...") {
-		t.Fatalf("the trimmed original task should carry an ellipsis:\n%s", cp)
+	if !isMiddleTrimOf(got, original) {
+		t.Fatalf("want the message's head and tail around the trimmed-message note:\n%s", got)
 	}
+}
+
+// isMiddleTrimOf reports whether got is original with its middle replaced by
+// the trimmed-message note for the characters removed.
+func isMiddleTrimOf(got, original string) bool {
+	// The note's length depends only on how many digits the trimmed count has,
+	// which fixes how much of each end was kept.
+	for digits := 1; digits <= 9; digits++ {
+		noteLen := len(trimmedMessageNote(0)) - 1 + digits
+		keep := (len(got) - noteLen) / 2
+		if keep <= 0 || 2*keep >= len(original) {
+			continue
+		}
+		if got == original[:keep]+trimmedMessageNote(len(original)-2*keep)+original[len(original)-keep:] {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCheckpoint_ShedOrder_ShedsNotesToFitBudget(t *testing.T) {
@@ -3184,35 +3308,53 @@ func TestSummaryPromptGolden(t *testing.T) {
 	}
 }
 
-// TestUnknownContextWindowNeverCompacts pins spec §7.3: a row whose window the
-// registry does not know reports 0, and 0 means unknown, not tiny. With no
-// window there is no budget, so pressure is 0, the metrics report nothing, and
-// no layer of MaybeCompact runs however long the history grows.
-func TestUnknownContextWindowNeverCompacts(t *testing.T) {
+// TestUnknownWindowCompactsUnderAssumedDefault pins issue #4564's rule for a
+// row whose window the registry does not know: 0 still means unknown, never
+// tiny — but unknown now budgets against a conservative assumed window rather
+// than disabling management, so pressure and the metrics read against the
+// assumption, MaybeCompact folds a history that has outgrown it, and the
+// assumption is disclosed as exactly one warning per manager, not per round.
+// This test superseded the pre-#4564 pin that MaybeCompact never ran without
+// a known window.
+func TestUnknownWindowCompactsUnderAssumedDefault(t *testing.T) {
 	t.Parallel()
-	profile := provider.FromResolved(registry.Resolved{Instance: "gw", ModelID: "nobody-knows-this-one"}, nil)
-	if profile.ContextWindowSize() != 0 {
-		t.Fatalf("fixture window = %d, want 0 (unknown)", profile.ContextWindowSize())
-	}
-	cm := NewManager(profile, nil, cheapmodel.New(nil))
+	cm := NewManager(unknownGatewayProfile(), nil, cheapmodel.New(nil))
 
-	history := []schema.Turn{
-		schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("token ", 200_000))),
-		schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("reply ", 200_000))),
-	}
+	// Ten turns at ~15K tokens each: ~150K tokens, past the checkpoint
+	// threshold against the 128K assumption. The summarize layer stays out —
+	// no client.
+	history := bulkHistory(10, 10_000)
 	before := len(history)
 
-	if got := cm.Pressure(history, 100_000); got != 0 {
-		t.Fatalf("Pressure = %v, want 0 with no known window", got)
+	if got := cm.Pressure(history, 0); got < cm.CheckpointThreshold {
+		t.Fatalf("Pressure = %v, want ≥ %v against the assumed window", got, cm.CheckpointThreshold)
 	}
-	if got := cm.EstimateUsage(history, 100_000); got != (schema.ContextMetrics{}) {
-		t.Fatalf("EstimateUsage = %+v, want the zero metrics with no known window", got)
+	metrics := cm.EstimateUsage(history, 0)
+	if metrics.Window != AssumedContextWindow {
+		t.Fatalf("EstimateUsage window = %d, want the assumed %d", metrics.Window, AssumedContextWindow)
+	}
+	if metrics.Used <= 0 {
+		t.Fatalf("EstimateUsage used = %d, want the estimated bulk", metrics.Used)
 	}
 
-	var events0 int
-	cm.MaybeCompact(context.Background(), &history, 100_000, func(events.EventKind, events.EventData) { events0++ })
-	if len(history) != before || events0 != 0 {
-		t.Fatalf("MaybeCompact compacted %d turns and emitted %d events with no known window", before-len(history), events0)
+	spy := &emitSpy{}
+	cm.MaybeCompact(context.Background(), &history, 0, spy.fn)
+	if len(history) >= before {
+		t.Fatalf("MaybeCompact left %d turns (had %d): unknown window folded nothing", len(history), before)
+	}
+	if len(spy.compaction) == 0 || history[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("no checkpoint fold: %d turns, %d compaction events", len(history), len(spy.compaction))
+	}
+	if n := spy.disclosures(); n != 1 {
+		t.Fatalf("assumed-window disclosures = %d, want exactly 1", n)
+	}
+
+	// The disclosure is once per manager: a second pass under the same unknown
+	// window stays quiet about the assumption.
+	spy2 := &emitSpy{}
+	cm.MaybeCompact(context.Background(), &history, 0, spy2.fn)
+	if n := spy2.disclosures(); n != 0 {
+		t.Fatalf("second pass disclosed the assumption %d times, want 0", n)
 	}
 }
 

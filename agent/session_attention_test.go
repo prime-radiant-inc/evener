@@ -45,6 +45,11 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 		t.Fatalf("ReserveAttention: %v", err)
 	}
 
+	// The trigger is latched by the time its consumed marker is being made
+	// durable, so a fold that sees the item resolved already knows to keep it.
+	// The hook runs inside the resolution's attentionMu section.
+	var latchedDuringResolution string
+	fs.atSync = func() { latchedDuringResolution = runtime.attentionAcceptedID }
 	fs.arm()
 	type startResult struct {
 		started delegateStartCommit
@@ -77,6 +82,9 @@ func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
 	first := <-done
 	if first.err != nil {
 		t.Fatalf("accept first attention: %v", first.err)
+	}
+	if latchedDuringResolution != firstID {
+		t.Fatalf("trigger latched while its consumed marker was made durable = %q, want %q", latchedDuringResolution, firstID)
 	}
 	aggregate := c.durable["dlg_target"]
 	if aggregate.Generation != 1 || aggregate.Trigger != delegatestore.TriggerAttention || !aggregate.CurrentRunOpen || !aggregate.NeedsAttention || aggregate.ProjectionRevision != beforeRevision+1 {
@@ -597,6 +605,13 @@ func TestDelegateAttention_ResolutionFailureLeavesGenerationStoppable(t *testing
 	fs.failNextResolutionDurability()
 	if err := runtime.acceptDelegateAttention(reservation); err == nil {
 		t.Fatal("consumed attention resolution unexpectedly survived injected sync failure")
+	}
+	// The marker may have landed, so the retry still needs the trigger's turn.
+	runtime.attentionMu.Lock()
+	latched := runtime.attentionAcceptedID
+	runtime.attentionMu.Unlock()
+	if latched != attentionID {
+		t.Fatalf("trigger latched after the ambiguous failure = %q, want %q", latched, attentionID)
 	}
 	fold, err := readDelegateAttentionFold(path, sessionID)
 	if err != nil {
@@ -3274,12 +3289,119 @@ func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing
 	}
 }
 
-// Coverage credits only deliveries armed after the turn began. The per-turn
-// reset snapshots the armed set; attention armed before it (whatever its
-// steering turn's position in history) keeps its dedicated notification turn,
-// while attention armed after it counts the moment a built request presents
-// the steering turn.
-func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *testing.T) {
+// A user turn that presents attention armed before the turn began consumes it
+// at finish (#4247), the way a delegate does: the model has seen the message
+// that would have woken it, so a notification turn would carry nothing new.
+func TestRootDelegateAttention_UserTurnConsumesAttentionArmedBeforeTurn(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		attentionID = "delegate:dlg_preturn/delivery/1"
+		content     = `<delegate-notification delegate_id="dlg_preturn">landed before the user turn</delegate-notification>`
+	)
+	var (
+		root     *Session
+		requests int
+		sawIt    bool
+	)
+	root = newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
+		withSteps(
+			func(req llm.Request) llm.Response {
+				requests++
+				sawIt = requestContainsText(req, content)
+				return toolCallResponse(communicateCall("user-turn-complete", "answered"))
+			},
+			// A second request would be the notification turn #4247 removes.
+			func(llm.Request) llm.Response {
+				requests++
+				return toolCallResponse(communicateCall("notification-turn", "should not run"))
+			},
+		),
+	)
+	if _, err := root.appendDelegateNotificationDurably(attentionID, content); err != nil {
+		t.Fatalf("append pre-turn attention: %v", err)
+	}
+	if err := root.armDelegateAttention(attentionID); err != nil {
+		t.Fatalf("arm pre-turn attention: %v", err)
+	}
+	if _, err := root.ProcessInput(context.Background(), "status update please", nil); err != nil {
+		t.Fatalf("process user turn: %v", err)
+	}
+	if !sawIt {
+		t.Fatal("the user turn's request did not present the pre-armed delivery")
+	}
+	if requests != 1 {
+		t.Fatalf("provider requests = %d, want 1: the pre-armed delivery earned a notification turn", requests)
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, root.ID()), root.ID())
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	if got := fold.resolutions[attentionID]; got != delegateAttentionConsumed {
+		t.Fatalf("attention disposition = %q, want consumed by the user turn", got)
+	}
+	if root.hasPendingRootDelegateAttention() {
+		t.Fatal("the pre-armed delivery still holds a wake after the turn that presented it")
+	}
+}
+
+// Attention armed before the turn that no settled request of the turn
+// presents (its transcript entry lands after the request was built) keeps its
+// notification turn.
+func TestRootDelegateAttention_PreArmedAttentionNotPresentedKeepsItsNotificationTurn(t *testing.T) {
+	stateDir := t.TempDir()
+	const (
+		attentionID = "delegate:dlg_unseen/delivery/1"
+		content     = `<delegate-notification delegate_id="dlg_unseen">appended after the turn's only request</delegate-notification>`
+	)
+	var (
+		root            *Session
+		requests        int
+		notificationSaw bool
+		appendErr       error
+	)
+	root = newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
+		withSteps(
+			func(llm.Request) llm.Response {
+				requests++
+				_, appendErr = root.appendDelegateNotificationDurably(attentionID, content)
+				return toolCallResponse(communicateCall("user-turn-complete", "answered"))
+			},
+			func(req llm.Request) llm.Response {
+				requests++
+				notificationSaw = requestContainsText(req, content)
+				return toolCallResponse(communicateCall("notification-turn", "handled"))
+			},
+		),
+	)
+	// Armed in the wake set before the turn; its durable entry does not exist
+	// yet, so no request of the user turn can present it.
+	root.armRootDelegateAttention(attentionID)
+	if _, err := root.ProcessInput(context.Background(), "status update please", nil); err != nil {
+		t.Fatalf("process user turn: %v", err)
+	}
+	if appendErr != nil {
+		t.Fatalf("append: %v", appendErr)
+	}
+	if requests != 2 {
+		t.Fatalf("provider requests = %d, want 2: the unpresented item keeps its notification turn", requests)
+	}
+	if !notificationSaw {
+		t.Fatal("the notification turn did not present the item")
+	}
+	if root.hasPendingRootDelegateAttention() {
+		t.Fatal("the notification turn left the item pending")
+	}
+}
+
+// Coverage credits every presented delivery, whether armed before the turn
+// began or during it (#4247): the model has seen the message that would have
+// woken it, wherever the steering turn sits in history and whether or not its
+// arm has landed yet.
+func TestRootDelegateAttention_CoverageIncludesAttentionArmedBeforeTurnBegin(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	const (
@@ -3299,7 +3421,7 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 	if err := root.armDelegateAttention(preTurnID); err != nil {
 		t.Fatalf("arm pre-turn attention: %v", err)
 	}
-	// Turn start: the reset snapshots {preTurnID} as armed before this turn.
+	// Turn start.
 	root.resetAttentionCoverage()
 	if _, err := root.appendDelegateNotificationDurably(midTurnID, midContent); err != nil {
 		t.Fatalf("append mid-turn attention: %v", err)
@@ -3330,12 +3452,9 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 	root.attentionMu.Lock()
 	staged := maps.Clone(root.attentionStagedIDs)
 	root.attentionMu.Unlock()
-	if _, ok := staged[preTurnID]; ok {
-		t.Fatal("attention armed before the turn was staged")
-	}
-	for _, id := range []string{midTurnID, unarmedID} {
+	for _, id := range []string{preTurnID, midTurnID, unarmedID} {
 		if _, ok := staged[id]; !ok {
-			t.Fatalf("attention %q armed (or appended) after turn begin was not staged", id)
+			t.Fatalf("presented attention %q was not staged", id)
 		}
 	}
 	// Staging is candidacy, not credit: only a settled round promotes.
@@ -3343,12 +3462,9 @@ func TestRootDelegateAttention_CoverageExcludesAttentionArmedBeforeTurnBegin(t *
 	root.attentionMu.Lock()
 	covered := root.attentionCoveredIDs
 	root.attentionMu.Unlock()
-	if _, ok := covered[preTurnID]; ok {
-		t.Fatal("attention armed before the turn was marked covered")
-	}
-	for _, id := range []string{midTurnID, unarmedID} {
+	for _, id := range []string{preTurnID, midTurnID, unarmedID} {
 		if _, ok := covered[id]; !ok {
-			t.Fatalf("attention %q armed (or appended) after turn begin was not marked covered", id)
+			t.Fatalf("presented attention %q was not marked covered", id)
 		}
 	}
 }
@@ -3987,6 +4103,12 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	if err != nil {
 		t.Fatalf("open child attention transcript: %v", err)
 	}
+	// A compaction landed after the three items arrived, so the resumed
+	// history starts at its summary and holds none of them.
+	if err := writer.AppendDurable(schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nfold after the items\n[END SUMMARY]"))); err != nil {
+		_ = writer.Close()
+		t.Fatalf("append compaction marker: %v", err)
+	}
 	owedResolution := delegateAttentionResolutionTurn(owedID, delegateAttentionConsumed)
 	owedResolution.AttentionResolution.ResumeGeneration = 1
 	if err := writer.AppendDurable(owedResolution); err != nil {
@@ -4075,6 +4197,17 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	}
 	if fold.resumeGenerations[owedID] != 1 || fold.resumeGenerations[historicalID] != 0 || fold.resolutions[historicalID] != delegateAttentionConsumed {
 		t.Fatalf("restart resolution generations = %#v resolutions=%#v", fold.resumeGenerations, fold.resolutions)
+	}
+	// The recovered generation's first request is in flight and nothing has
+	// presented the trigger yet, so a fold now must still keep its turn.
+	root.delegateController.mu.Lock()
+	recovered := root.delegateController.live[fixture.delegateID].binding.runtime
+	root.delegateController.mu.Unlock()
+	recovered.attentionMu.Lock()
+	heldTrigger := recovered.attentionAcceptedID
+	recovered.attentionMu.Unlock()
+	if heldTrigger != owedID {
+		t.Fatalf("recovered generation holds trigger %q before its first request settles, want %q", heldTrigger, owedID)
 	}
 	releaseOnce.Do(func() { close(releaseAttention) })
 	waitForStableSupervisionRun(t, root, fixture.childID)
@@ -4261,6 +4394,9 @@ type attentionSyncBarrierFS struct {
 	allowSync   chan struct{}
 	enterOnce   sync.Once
 	releaseOnce sync.Once
+	// atSync, when set, runs on the syncing goroutine just before the barrier
+	// is entered.
+	atSync func()
 }
 
 type delegateAttentionLiveModelsAdapter struct {
@@ -4347,6 +4483,9 @@ func (file *attentionSyncBarrierFile) Sync() error {
 	if !armed {
 		return nil
 	}
+	if file.fs.atSync != nil {
+		file.fs.atSync()
+	}
 	file.fs.enterOnce.Do(func() { close(file.fs.syncEntered) })
 	<-file.fs.allowSync
 	return nil
@@ -4374,28 +4513,35 @@ func (fs *rootAttentionResolutionFailFS) injectedFailures() int {
 
 // installResolutionSyncFailuresWriter fails the sync of the session's first
 // failures attention resolution writes.
+//
+// The session may still be running: a delegate reads idle before its run's
+// tail has finished, and that tail checks its writer's health without
+// attentionMu. So the replacement opens on the file's shared tail while the
+// original is still open, the way reopenAttentionTranscriptDurably does, and
+// the original stays open until the test ends, so a health check that already
+// read it never finds it closed.
 func installResolutionSyncFailuresWriter(t *testing.T, s *Session, failures int) *rootAttentionResolutionFailFS {
 	t.Helper()
 	fs := &rootAttentionResolutionFailFS{Fs: afero.NewOsFs(), failures: failures}
 	path := transcriptPath(s.stateDir, s.id)
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	s.mu.Lock()
-	old := s.transcript
-	s.mu.Unlock()
+	old := s.attachedTranscript()
 	if old == nil {
 		t.Fatal("root attention session has no transcript writer")
 	}
-	if err := old.Close(); err != nil {
-		t.Fatalf("close original root attention writer: %v", err)
-	}
+	t.Cleanup(func() {
+		if err := old.Close(); err != nil {
+			t.Errorf("close original root attention writer: %v", err)
+		}
+	})
 	replacement, entries, err := transcript.OpenWriterForSessionWithFS(fs, path, s.id)
 	if err != nil {
 		t.Fatalf("open resolution-failing root attention writer: %v", err)
 	}
 	replacement.TrackFailures(entries, s.fork.divergence)
 	s.mu.Lock()
-	s.transcript = replacement
+	s.setTranscriptLocked(replacement)
 	s.mu.Unlock()
 	return fs
 }

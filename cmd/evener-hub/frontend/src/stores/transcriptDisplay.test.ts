@@ -1,6 +1,7 @@
 import type { TranscriptDisplayPatchResponse } from "@evener/appwire-client";
 import {
   encodeLocalConfig,
+  friendlyErrorMessage,
   makeTranscriptDisplayConfig,
   presetContent,
   shippedDesktopConfig,
@@ -456,7 +457,7 @@ describe("effective transcript display state", () => {
       await desktopPatch;
       expect(transcriptDisplayStore.getState().hub.desktop?.config).toEqual(desktop);
       expect(transcriptDisplayStore.getState().hubErrors.desktop).toBeUndefined();
-      expect(transcriptDisplayStore.getState().hubErrors.mobile).toBe("mobile failed");
+      expect(transcriptDisplayStore.getState().hubErrors.mobile).toBe(friendlyErrorMessage(new Error("mobile failed")));
     },
   );
 

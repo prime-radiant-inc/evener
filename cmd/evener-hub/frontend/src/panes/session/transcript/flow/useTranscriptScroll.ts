@@ -35,18 +35,22 @@
 
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useStore } from "zustand";
 import { isEditableTarget, isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
-import type { CommittedVirtualListLayout, VirtualListHandle } from "../../../../widgets/virtuallist";
+import { threadsStore } from "../../../../stores/threads";
+import type { CommittedVirtualListLayout, VirtualListHandle } from "../../../../widgets";
 import type { TranscriptReadView } from "../transcriptReadView";
 import { isDormantTranscript } from "../transcriptVisibility";
 import {
   contentGrewBelowViewport,
+  contentIsUnmeasured,
   isAtBottom,
   isEndBelowFold,
   isNearTop,
   portGeometryTargets,
   readScrollMetrics,
   type ScrollMetrics,
+  shouldAutoLoadOlder,
 } from "./scrollMetrics";
 import {
   type CapturedTranscriptView,
@@ -413,19 +417,14 @@ function focusNodeMatches(candidate: HTMLElement, metadata: CapturedFocusMetadat
   return metadata.sourceIndex === undefined || sourceIndex === undefined || sourceIndex === metadata.sourceIndex;
 }
 
-// A closed disclosure that owns the anchor: an intent-group entry's anchor
-// sits INSIDE its <details>, a folded tool run's anchor wraps its own
-// <details> (TurnBlock's runAnchorFor), so the two are looked up from
-// opposite directions. Either way the summary is the thing to focus.
+// A closed disclosure that owns the anchor: a folded tool run and an intent
+// group each wrap their own <details> in one anchor that lists its members
+// (TurnBlock's foldedAnchorFor), and their entries mount only while open, so
+// while closed the summary is the thing to measure and focus.
 function closedGroupSummary(anchor: HTMLElement): HTMLElement | undefined {
-  const id = anchor.dataset.viewAnchorId ?? "";
-  let summary: Element | null | undefined;
-  if (id.startsWith("intent:")) {
-    const details = anchor.closest<HTMLDetailsElement>('details[data-testid="intent-group"]:not([open])');
-    summary = details?.querySelector(":scope > summary");
-  } else if (id.startsWith("run:")) {
-    summary = anchor.querySelector(':scope > details[data-testid="tool-run"]:not([open]) > summary');
-  }
+  const summary = anchor.querySelector(
+    ':scope > details:is([data-testid="tool-run"], [data-testid="intent-group"]):not([open]) > summary',
+  );
   return summary instanceof HTMLElement ? summary : undefined;
 }
 
@@ -914,7 +913,7 @@ function totalItemCount(model: ThreadModel | undefined): number {
 }
 
 // Attention follows liveness.ts's raw-status mapping to needs-you.
-// shell/SessionStatusIndicator.tsx maps normalized navigation summaries.
+// shell/sessionStatus.ts maps normalized navigation summaries.
 // askPending is independent because it need not coincide with status.type.
 function isAttentionWorthy(model: ThreadModel | undefined): boolean {
   if (!model) return false;
@@ -1415,8 +1414,12 @@ export function useTranscriptScroll({
       )
         return;
       markGesture(true, undefined, 3);
+      // markGesture's reader intent supersedes the pending capture - and, with
+      // it, the movement record - so the key's own backward direction has to be
+      // armed AFTER it. A forward key keeps waiting for its event, as before.
+      if (direction === -1 && listRef.current?.getScrollElement() === port) listRef.current.noteBackwardMovement?.();
     },
-    [markGesture, measure],
+    [listRef, markGesture, measure],
   );
   useEffect(
     () => () => {
@@ -1533,6 +1536,58 @@ export function useTranscriptScroll({
   // constraint in spirit even though this hook's own work is cheap either way.
   const modelRef = useRef(model);
   modelRef.current = model;
+  // The store owns whether this ref's recorded history is still being restored
+  // from disk (the entry-backed local opening). While it is, the pane's first
+  // paint shows the evicted snapshot - rows the virtualizer measures at zero -
+  // and paging must hold regardless of that geometry.
+  const openingPending = useStore(threadsStore, (state) => state.localOpenings.has(ref));
+  const openingPendingRef = useRef(openingPending);
+  openingPendingRef.current = openingPending;
+  // The previous-pending transition is scoped to the ref AND the port it was
+  // observed on. Session persists across ref changes (see refForInitRef below),
+  // so an unkeyed boolean would read the NEXT session's ordinary state as THIS
+  // session's opening settling and submit the next session's older-page demand
+  // before its own initial scroll placement. A ref or port change is
+  // navigation, not settlement: reseed and take no load action.
+  const openingTransitionRef = useRef<{ ref: string; port: HTMLElement | null; pending: boolean }>({
+    ref,
+    port: null,
+    pending: openingPending,
+  });
+
+  // While the recorded opening is pending, hold BOTH paging triggers: stamp the
+  // scroll port so the short-page row's own geometry check holds (that row owns
+  // its own observer), and gate the near-top trigger above. When the opening
+  // settles - success, failure or no restored model - the store publishes the
+  // change, this effect runs, the stamp lifts, and a one-shot re-check lets a
+  // genuinely short or near-top page fill without waiting for a resize or
+  // scroll event that may never arrive. Disposal clears the store hold the same
+  // way, so a torn-down opening cannot strand the row watching a stale stamp.
+  useLayoutEffect(() => {
+    const port = listRef.current?.getScrollElement();
+    if (!port) return;
+    const previous = openingTransitionRef.current;
+    if (previous.ref !== ref || previous.port !== port) {
+      openingTransitionRef.current = { ref, port, pending: openingPending };
+      if (openingPending) port.setAttribute("data-opening-hold", "");
+      else port.removeAttribute("data-opening-hold");
+      return;
+    }
+    if (openingPending) {
+      port.setAttribute("data-opening-hold", "");
+      openingTransitionRef.current = { ref, port, pending: true };
+      return;
+    }
+    port.removeAttribute("data-opening-hold");
+    if (!previous.pending) return;
+    openingTransitionRef.current = { ref, port, pending: false };
+    // Resume only through the SAME readiness gates the normal triggers keep:
+    // near-top demand still requires measured content, and short-page demand
+    // still goes through shouldAutoLoadOlder (whose own guards apply).
+    const metrics = measure(port);
+    if (isNearTop(metrics.scrollTop) && !contentIsUnmeasured(port)) loadOlderRef.current().catch(() => {});
+    else if (shouldAutoLoadOlder(port)) loadOlderRef.current().catch(() => {});
+  });
 
   const rowIndexForTurn = useCallback((turnId: string, sourceIndex: number): number => {
     const mapped = sourceTurnRowIndexesRef.current?.get(turnId) ?? sourceIndex;
@@ -1935,7 +1990,19 @@ export function useTranscriptScroll({
       // fixed one; the full-suite exit-code check DOES catch this class of
       // regression - confirmed empirically: a genuinely uncaught rejection
       // exits 1 even though the individual test that triggered it "passes".)
-      if (isNearTop(m.scrollTop)) loadOlderRef.current().catch(() => {});
+      // The mount/measurement scroll of a transcript that is still painting its
+      // rows sits at scrollTop 0 with nothing measured, which reads as a reader
+      // at the top of a short transcript. That is the same transient empty
+      // render the geometry fill guards against; paging it would issue a network
+      // history request during an opening that must be local-only. The trigger
+      // resumes once any rendered row has a measured height.
+      //
+      // The store's local-opening state holds this trigger through the whole
+      // recorded restore, including rows react-virtual has already MEASURED at
+      // zero (the evicted first paint): measurement readiness alone cannot tell
+      // those rows from a settled transcript's legitimately empty turn.
+      if (isNearTop(m.scrollTop) && !contentIsUnmeasured(el) && !openingPendingRef.current)
+        loadOlderRef.current().catch(() => {});
     }
 
     // A geometry change that never produces a scroll event: a webfont swaps in

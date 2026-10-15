@@ -47,15 +47,22 @@ function restoreDistPlaceholder(): Plugin {
 
 export default defineConfig({
   plugins: [react(), restoreDistPlaceholder()],
-  // Keep the dep-optimizer cache inside this checkout. Vite defaults it to
-  // node_modules/.vite, and fleet worktrees symlink node_modules to ONE shared
-  // install (docs/developing-evener/conventions/agent-fleets.md), so that
-  // default's dep-cache temp dir is shared by every lane and every concurrent
-  // Vite process - which races (issue #1586). path.join(__dirname, ...) is
-  // lexical and never follows the symlink. make test-web starts only vitest's
-  // Vite, and make test-web-browser, which runs guards side by side, gives
-  // each guard its own cache (browserguard.vite.config.mjs).
-  cacheDir: path.join(__dirname, ".vite-cache"),
+  // Keep the dep-optimizer cache inside this checkout by default. Vite defaults
+  // it to node_modules/.vite, and fleet worktrees symlink node_modules to ONE
+  // shared install (docs/developing-evener/conventions/agent-fleets.md), so
+  // that default's dep-cache temp dir is shared by every lane and every
+  // concurrent Vite process - which races (issue #1586). path.join(__dirname,
+  // ...) is lexical and never follows the symlink. make test-web starts only
+  // vitest's Vite, and make test-web-browser, which runs guards side by side,
+  // gives each guard its own cache (browserguard.vite.config.mjs).
+  //
+  // EVENER_FRONTEND_VITE_CACHE_DIR moves the cache to a writable root the
+  // caller owns: the web gate (cmd/evener-dev/webchecks.go) points it at each
+  // check's private scratch directory, so a read-only checkout - which cannot
+  // hold .vite-cache and fails the optimizer with EACCES - still runs its
+  // vitest suite (issue #4193). An empty value falls back to the checkout, the
+  // same truthiness BROWSER_GUARD_VITE_CACHE_DIR uses below.
+  cacheDir: process.env.EVENER_FRONTEND_VITE_CACHE_DIR || path.join(__dirname, ".vite-cache"),
   build: { assetsDir: "webassets", outDir: "dist", emptyOutDir: true },
   // These mirror tsconfig.json's paths - tsconfig paths are invisible to Vite,
   // so the alias is what the bundler, the dev server, Vitest and the five
@@ -66,6 +73,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@evener/appwire-client/docContent": path.join(appwirePackageDir, "docContent.ts"),
+      "@evener/appwire-client/pairing": path.join(appwirePackageDir, "pairing.ts"),
       "@evener/appwire-client/state/navigation": path.join(appwirePackageDir, "state", "navigation", "index.ts"),
       "@evener/appwire-client/state/credentials": path.join(appwirePackageDir, "state", "credentials", "index.ts"),
       "@evener/appwire-client/state/extensions": path.join(appwirePackageDir, "state", "extensions", "index.ts"),
@@ -91,6 +99,7 @@ export default defineConfig({
       // the package's KeybindingParser port; the package itself never names
       // tinykeys, so this alias serves only its tests.
       tinykeys: path.join(__dirname, "node_modules", "tinykeys"),
+      tweetnacl: path.join(__dirname, "node_modules", "tweetnacl"),
     },
   },
   server: {
@@ -127,6 +136,7 @@ export default defineConfig({
         path.join(__dirname, "..", "testdata"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "notificationwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "systemeventwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "summaryfailurewire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "toolwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "subagentwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "memorycontextwire"),

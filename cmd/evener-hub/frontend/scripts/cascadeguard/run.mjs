@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { Driver } from "../skillguard/run.mjs";
-import { evaluate, navigateTo, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
+import { evaluate, navigateTo, queryAccessibilityTree, REFUSED_BUTTON_SELECTOR } from "../browserGuardCdp.mjs";
 
 const fixture = JSON.parse(readFileSync(0, "utf8"));
 const driver = new Driver(fixture);
@@ -14,13 +14,47 @@ const inspectorFooter = `${inspectorRoot} ~ [data-testid="pane-edge-footer"] [da
 const inspectorIdExpr = `document.querySelector(${q(`${inspectorFooter} [data-pane-id]`)})?.dataset.paneId`;
 const sourceFooter = `[data-pane-scaffold=${q(`session:${fixture.rootRef}`)}] ~ [data-testid="pane-edge-footer"] [data-testid="statusbar"]`;
 const sourceAgents = `${sourceFooter} button[aria-label^="Agents,"]`;
-const rootCrumb = 'nav[aria-label="Agent path"] button:first-child';
+// One probe for the redesign's chrome ruling, shared by the desktop and phone
+// legs: the pane renders no title (a pane title's only DOM is an h2 in the
+// pane header) and no Agent path nav. Null retries until the pane body mounts.
+const cascadeUntitledExpr = `(() => {
+  const body = document.querySelector(${q(inspectorRoot)});
+  if (!body) return null;
+  return body.previousElementSibling?.querySelector("h2") === null
+    && document.querySelector('nav[aria-label="Agent path"]') === null;
+})()`;
+// The pane body's scroll ownership and flush padding, asserted at both
+// widths: the body owns no unit scrollbar (a true non-scroller: clip, with
+// hidden as the pre-clip fallback), never grows with column content, and
+// carries no padding around the internally scrolling columns — not even on
+// the phone, where the scaffold's media .body rule restores padding for
+// ordinary scrollable panes.
+async function assertPaneBodyFlush(label) {
+  const paneBody = await read(`(() => {
+    const body = document.querySelector(${q(inspectorRoot)});
+    return { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight, overflowY: getComputedStyle(body).overflowY, padding: getComputedStyle(body).padding };
+  })()`);
+  assert.ok(["clip", "hidden"].includes(paneBody.overflowY), `${label}: the cascade pane body owns no unit scrollbar`);
+  assert.ok(paneBody.scrollHeight <= paneBody.clientHeight + 1, `${label}: the cascade pane body does not grow with column content`);
+  assert.equal(paneBody.padding, "0px", `${label}: the cascade pane body renders flush around the internally scrolling columns`);
+}
+// The rendered track at full depth, mirroring the shipped rule in
+// src/panes/zoom/intent.ts: the live origin conversation (the fixture's
+// rootRef) never renders in the pane.
+const renderedRefs = fixture.refs.filter((ref) => ref !== fixture.rootRef);
+// The drilled track's expected sets: the rendered track truncated to the
+// drilled path — its last two scopes are the readable columns (level 1's
+// lone leaf fills the pane), the rest are spines.
+const drilledTrack = (level) => {
+  const rendered = renderedRefs.slice(0, level);
+  return { columns: rendered.slice(-2), spines: rendered.slice(0, -2) };
+};
 const column = (ref) => `${inspectorRoot} [data-testid="cascade-column"][data-scope-ref=${q(ref)}]`;
 const row = (edge) => `[data-activity-anchor=${q(`delegate:${JSON.stringify([edge.childRef, edge.delegateId])}`)}]`;
 const scopeRefs = (testid) => `JSON.stringify([...document.querySelectorAll('[data-testid=${q(testid)}]')].map(node => node.dataset.scopeRef))`;
-const wait = (expression, label) => {
+const wait = (expression, label, options = {}) => {
   new Function(`return (${expression})`);
-  return driver.waitPage(expression, { label });
+  return driver.waitPage(expression, { label, ...options });
 };
 const read = (expression) => evaluate(driver.send, expression);
 const scope = (ref) => `${inspectorRoot} [data-scope-ref=${q(ref)}]`;
@@ -308,20 +342,20 @@ async function sharedWidthJourney() {
   await assertSourceDom();
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
-  await driver.click(rootCrumb);
-  await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.rootRef))}) !== null`, "real root pop supplies a read-only cascade reader");
+  // The origin conversation never renders in the pane, so the first drill's
+  // lone column is itself the cascade column reader under proof.
   await driver.send("Emulation.setDeviceMetricsOverride", { width:1640, height:900, deviceScaleFactor:1, mobile:false });
-  const portExpr = `document.querySelector(${q(scroll(fixture.rootRef))})`;
+  const portExpr = `document.querySelector(${q(scroll(fixture.refs[1]))})`;
   await wait(`(() => {
     const port = ${portExpr}, bounds = port?.getBoundingClientRect();
     return port?.clientWidth > 0 && port.clientHeight > 0 && bounds.width > 0 && bounds.height > 0;
-  })()`, "read-only cascade has a visible native wheel target");
-  await readInsideTallEntry(portExpr, "read-only cascade");
+  })()`, "cascade column has a visible native wheel target");
+  await readInsideTallEntry(portExpr, "cascade column");
   await widthOnlyReflow(portExpr, 2000, 900, "cascade-reader-width-reflow");
   await widthOnlyReflow(portExpr, 1640, 900, "cascade-reader-width-return");
   await heightOnlyChange(portExpr, 760, "cascade-reader-height-only");
   await heightOnlyChange(portExpr, 900, "cascade-reader-height-return");
-  await assertInspectorReadOnly();
+  await assertColumnConversations();
   await capture("shared-reader-width-reflow");
   await returnToSource();
   await driver.send("Emulation.setDeviceMetricsOverride", { width:1000, height:900, deviceScaleFactor:1, mobile:false });
@@ -522,8 +556,32 @@ async function nativePositioningInterruption(input) {
   await assertSourceDom();
 }
 
-async function assertInspectorReadOnly() {
-  assert.equal(await read(`document.querySelector(${q(inspectorRoot)}).querySelectorAll('[role="textbox"], input[type="file"]').length`), 0, "only inspection is read only");
+// The readable column IS the conversation now: each one embeds its scope's
+// live ConversationBody - transcript plus composer - on the cascade's own
+// frame, and nothing else in the pane mounts a composer for any scope. The
+// center keeps its original editor and file picker; inspection never
+// replaces the source pane.
+async function assertColumnConversations() {
+  const snapshot = await read(`(() => {
+    const root = document.querySelector(${q(inspectorRoot)});
+    if (!root) return null;
+    const columns = [...root.querySelectorAll('[data-testid="cascade-column"]')];
+    return {
+      columns: columns.map(node => ({
+        ref: node.dataset.scopeRef,
+        composer: node.querySelector("[data-composer]")?.dataset.composer ?? null,
+        editor: node.querySelector('[data-composer] [role="textbox"]') !== null,
+      })),
+      composerRefs: [...root.querySelectorAll("[data-composer]")].map(node => node.dataset.composer),
+    };
+  })()`);
+  assert.ok(snapshot && snapshot.columns.length >= 1, "the inspector hosts readable columns");
+  assert.deepEqual(snapshot.composerRefs, snapshot.columns.map(column => column.ref),
+    "every readable column embeds exactly its own conversation composer and nothing else does");
+  for (const column of snapshot.columns) {
+    assert.equal(column.composer, column.ref, `the readable column for ${column.ref} embeds its own conversation`);
+    assert.equal(column.editor, true, `the embedded conversation for ${column.ref} mounts its composer editor`);
+  }
   assert.ok(await read(`document.querySelector(${q(driver.composerSelector(fixture.rootRef))})?.querySelector('[role="textbox"]') != null`), "the center keeps its original editor");
   assert.ok(await read(`${driver.paneScopeExpr(fixture.rootRef)}?.querySelector('input[type="file"]') != null`), "the center keeps its original file picker");
 }
@@ -586,17 +644,35 @@ async function holdCanvasCompletion() {
   })()`);
 }
 
+// Found and clicked in one page turn, so a layout shift (or the pane content's
+// own transient remount while focus settles) between measuring and pressing
+// cannot send the press to a neighbour (#3804, #3819). A button that is
+// disabled or covered at its center is not clicked; the wait keeps polling.
+// `buttonExpr` is a page expression evaluating to the button (or null);
+// `inline` is the scrollIntoView inline mode the caller's surface needs.
+async function clickWhenReady(buttonExpr, label, inline) {
+  await wait(`(() => {
+    const button = ${buttonExpr};
+    if (!button || button.matches(${q(REFUSED_BUTTON_SELECTOR)})) return null;
+    button.scrollIntoView({ block: "center", inline: ${q(inline)} });
+    const r = button.getBoundingClientRect();
+    if (!button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
+    button.click();
+    return true;
+  })()`, label);
+}
+
 async function openPeek(ref, kind) {
-  await driver.click(peekChip(ref, kind));
+  await clickWhenReady(`document.querySelector(${q(peekChip(ref, kind))})`, `${kind} ancestor peek`, "center");
   await wait('document.querySelector("[data-testid=activity-peek]") !== null', `${kind} ancestor peek`);
 }
 
-// Each runtime state's exact hover and screen-reader text and its
-// session-list signal in the compact spine.
+// Each runtime state's exact hover and screen-reader text and the shared
+// session-list signal glyph it must keep rendering, named by its data-state.
 const spineStatus = {
-  active: { text: "Active", signalLabel: "Running" },
-  idle: { text: "Idle", signalLabel: null },
-  awaiting: { text: "Awaiting", signalLabel: "Needs you" },
+  active: { text: "Active", glyphState: "working" },
+  idle: { text: "Idle", glyphState: null },
+  awaiting: { text: "Awaiting", glyphState: "needs-you" },
 };
 
 async function assertSpineStatus(ref, ...states) {
@@ -605,26 +681,39 @@ async function assertSpineStatus(ref, ...states) {
     const runtime = spine?.querySelector('[data-runtime-state]');
     if (!runtime || !${q(states)}.includes(runtime.dataset.runtimeState)) return null;
     const label = runtime.querySelector('[data-runtime-label]');
-    const signal = runtime.querySelector('[role="img"]');
+    const glyph = runtime.querySelector('[data-state]');
     const box = runtime.getBoundingClientRect();
     const labelBox = label?.getBoundingClientRect();
     return { state: runtime.dataset.runtimeState, width: box.width, height: box.height, title: runtime.title,
       text: label?.textContent, hiddenFromAT: label?.getAttribute('aria-hidden'),
       labelWidth: labelBox?.width, labelHeight: labelBox?.height,
-      signalLabel: signal?.getAttribute('aria-label') ?? null,
-      animation: signal ? getComputedStyle(signal).animationName : null,
+      glyphState: glyph?.dataset.state ?? null, glyphHidden: glyph?.getAttribute('aria-hidden') ?? null,
+      exposedImage: runtime.querySelector('[role="img"]') !== null,
+      animation: glyph ? getComputedStyle(glyph).animationName : null,
       reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches };
   })()`, `actual ${states.join(" or ")} ancestor status`);
-  const { text, signalLabel } = spineStatus[status.state];
+  const { text, glyphState } = spineStatus[status.state];
   assert.ok(status.width <= 8.5 && status.height <= 8.5, `compact status must fit an 8px indicator, got ${status.width}x${status.height}`);
   assert.equal(status.title, text, "exact runtime state remains available on hover");
   assert.equal(status.text, text, "exact runtime state remains available to screen readers");
   assert.notEqual(status.hiddenFromAT, "true");
   assert.ok(status.labelWidth <= 1 && status.labelHeight <= 1, "runtime text does not paint horizontally in the spine");
-  assert.equal(status.signalLabel, signalLabel, "ancestor uses the session-list signal family");
-  if (signalLabel === "Running" && reducedMotion) {
+  assert.equal(status.glyphState, glyphState, "ancestor keeps the session-list signal family glyph");
+  // The compact status exposes ONE accessible label: its exact runtime text.
+  // The shared glyph is decorative, so its own family name never joins it, and
+  // the REAL browser accessibility tree must agree - not just the DOM attrs.
+  assert.equal(status.exposedImage, false, "the signal glyph adds no second accessible name");
+  if (glyphState) assert.equal(status.glyphHidden, "true", "the signal glyph is hidden from assistive tech");
+  if (glyphState === "working" && reducedMotion) {
     assert.equal(status.animation, "none", "reduced motion keeps the running indicator still");
   }
+  const axNodes = await queryAccessibilityTree(driver.send, `${scope(ref)} [data-runtime-state]`);
+  const axNames = (axNodes ?? []).filter((node) => !node.ignored && node.name?.value).map((node) => node.name.value);
+  assert.ok(axNames.length > 0, "the compact status exposes an accessible label in the real tree");
+  assert.ok(
+    axNames.every((name) => name === text),
+    `the real accessibility tree names the status only with its exact runtime text ${q(text)}, got ${q(axNames)}`,
+  );
   driver.milestone("compact-spine-status", { ref, ...status });
 }
 
@@ -671,7 +760,7 @@ async function pendingImage(name, success) {
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   await read('window.__cascadeTraceSource("after-drill")');
-  await assertInspectorReadOnly();
+  await assertColumnConversations();
   await assertSourceDom();
   await read(`window.__cascadeEncode.release(${success})`);
   await read('window.__cascadeTraceSource("after-release")');
@@ -742,8 +831,17 @@ const readableGeometrySettled = (expectedColumns) => `(() => {
   if (gridSize.width !== Math.round(shellSize.width) || gridSize.height !== Math.round(shellSize.height)) return false;
   const leaf = columns[columns.length - 1];
   const readableParent = columns.length === 2 ? columns[0] : null;
-  return leaf.getBoundingClientRect().width >= 439.5
-    && (!readableParent || Math.abs(readableParent.getBoundingClientRect().width - 400) < .75)
+  // Computed styles resolve only after the width checks pass: this wait is
+  // designed to fail cheaply while the geometry settles.
+  if (readableParent) {
+    return leaf.getBoundingClientRect().width >= 439.5
+      && Math.abs(readableParent.getBoundingClientRect().width - 400) < .75
+      && columns.every(node => getComputedStyle(node).transform === 'none');
+  }
+  // A lone column fills the track: the first drill reads as the subagent's
+  // own conversation pane, not a pinned 440px stripe.
+  const track = leaf.parentElement, box = leaf.getBoundingClientRect(), extent = track.getBoundingClientRect();
+  return Math.abs(box.left - extent.left) < .75 && Math.abs(box.right - extent.right) < .75 && box.height > 0
     && columns.every(node => getComputedStyle(node).transform === 'none');
 })()`;
 
@@ -767,6 +865,16 @@ async function sourceMutationJourney() {
   await driver.clearComposerDraft(ref);
   await driver.focusComposer(ref);
   await driver.typeText(ref, busyInput);
+  // The first submit below orders turn/start, which submitRouting emits only
+  // while the session is idle: deriveSendQueueAvailability routes a session the
+  // wire calls active, or one still holding this client's pending send, to the
+  // queue. The preceding mixedSourceJourney submits a turn of its own, so wait
+  // out the source's positive turn-end barrier before arming the outbox hold -
+  // a lingering turn then degrades into a bounded, named wait instead of a
+  // turn/queue record under the storage acknowledgement (#4233). The gate sits
+  // after clearComposerDraft because the barrier's durable-recovery predicate
+  // only releases once clearComposerDraft has drained the record it owns.
+  await driver.waitForTurnIdle(ref);
   await holdStorageAcknowledgement(ref, busyInput);
   const after = frames.length;
   await driver.clickSubmit(ref, { text: busyInput, chips: [], tiles: 0 });
@@ -776,7 +884,7 @@ async function sourceMutationJourney() {
   assert.ok(held?.clientMutationId, "real committed source mutation retains its identity");
   assert.ok(held.payload.input.some(item => item.text === busyInput), "actual committed record contains the original source input");
   assert.equal(held.targetRef, ref);
-  assert.equal(held.method, "turn/start");
+  assert.equal(held.method, "turn/start", `the first source submit for ${held.targetRef} must order turn/start; the outbox recorded ${held.method} (input ${JSON.stringify(held.payload.input.map(item => item.text))}), so the source was still busy when it submitted`);
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   await returnToSource();
@@ -803,14 +911,19 @@ async function sourceMutationJourney() {
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   await drill(fixture.edges[1], 2);
-  await assertSpineStatus(ref, "active");
+  // The busy origin conversation never renders in the pane, so the compact
+  // spine under proof is the first rendered ancestor (refs[1], idle). The
+  // origin's own live activity stays in its pane.
+  const ancestorRef = fixture.refs[1];
+  await drill(fixture.edges[2], 3);
+  await assertSpineStatus(ancestorRef, "idle");
   await driver.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
-  await assertSpineStatus(ref, "active");
+  await assertSpineStatus(ancestorRef, "idle");
   const screenshotViewport = await read("({ width: innerWidth, height: innerHeight })");
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 1050, deviceScaleFactor: 1, mobile: false });
   await wait(readableGeometrySettled(2), "settled compact-status screenshot geometry");
   const screenshotTrack = await wait(`(() => {
-    const track = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ref)}]')?.parentElement;
+    const track = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ancestorRef)}]')?.parentElement;
     if (!track) return null;
     const bounds = track.getBoundingClientRect();
     const x = bounds.left + bounds.width / 2, y = bounds.top + bounds.height / 2;
@@ -828,26 +941,27 @@ async function sourceMutationJourney() {
     assert.equal(wheel.intended, true);
   }
   await wait(`(() => {
-    const spine = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ref)}]');
+    const spine = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ancestorRef)}]');
     const track = spine?.parentElement;
     if (!track) return false;
     const ancestor = spine.getBoundingClientRect(), viewport = track.getBoundingClientRect();
     return ancestor.left >= viewport.left && ancestor.right <= viewport.right;
-  })()`, "running ancestor visible in replacement screenshot");
+  })()`, "compact ancestor spine visible in replacement screenshot");
   writeFileSync(path.join(fixture.artifactDir, "compact-spine-status-reveal.json"), JSON.stringify(await read(`(() => {
-    const spine = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ref)}]');
+    const spine = document.querySelector('[data-testid="cascade-spine"][data-scope-ref=${q(ancestorRef)}]');
     const track = spine.parentElement, ancestor = spine.getBoundingClientRect(), viewport = track.getBoundingClientRect();
     return { ...window.__cascadeStatusReveal, after:track.scrollLeft, ancestor:{ left:ancestor.left, right:ancestor.right }, viewport:{ left:viewport.left, right:viewport.right } };
   })()`), null, 2));
   await capture("compact-spine-status");
   await driver.send("Emulation.setDeviceMetricsOverride", { ...screenshotViewport, deviceScaleFactor: 1, mobile: false });
   await driver.send("Emulation.setEmulatedMedia", { features: [] });
-  await observeGeometryAndFocus(ref);
+  await observeGeometryAndFocus(ancestorRef);
   const releasedAfter = frames.length;
   driver.control("release-provider");
   await waitFrames(() => frames.slice(releasedAfter).some(frame => frame.direction === "Network.webSocketFrameReceived" && frame.method === "thread/status/changed" && frame.params.ref === ref && frame.params.status.type === "idle"), "actual source status settles after queued provider delivery");
-  // The queued turn ends on a plain reply, which rests idle.
-  await assertSpineStatus(ref, "idle");
+  // The queued turn ends on a plain reply, which rests idle. The rendered
+  // ancestor spine keeps its exact status through the origin's live change.
+  await assertSpineStatus(ancestorRef, "idle");
   assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "actual source status changes preserve focused element");
   assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "actual provider completion never changes geometry");
   await read("window.__cascadeGeometryObserver.disconnect()");
@@ -990,19 +1104,38 @@ function placement(layout, id) {
   return found;
 }
 
-// Found and clicked in one page turn, so a layout shift between measuring and
-// pressing cannot send the press to a neighbour (#3804, #3819). A button that
-// is disabled or covered at its center is not clicked; the wait keeps polling.
-async function clickColumnAction(ref, text) {
-  await wait(`(() => {
-    const button = [...document.querySelectorAll(${q(`${column(ref)} button`)})].find(node => node.textContent.trim() === ${q(text)});
-    if (!button || button.matches(${q(REFUSED_BUTTON_SELECTOR)})) return null;
-    button.scrollIntoView({ block: 'center', inline: 'nearest' });
-    const r = button.getBoundingClientRect();
-    if (!button.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2))) return null;
-    button.click();
-    return true;
-  })()`, `${text} in actual ${ref} column`);
+// The column's read-only surface and its Open-conversation link are gone:
+// the drilled column IS the child's live conversation. The explicit open of
+// a child conversation as its own ordinary pane now rides the root
+// transcript's delegate row - the same openTranscript entry subagent rows
+// use everywhere else. The root transcript is virtualized and the row sits
+// deep in it under the paging delegates, so the probe drives the real port:
+// jump to the top, then step half a viewport per poll until the virtualizer
+// mounts the row. The row is matched by the token the child was spawned
+// with - its prompt or its stated intent, either renders in the row - and
+// only that row's transcript_ref opens this child.
+async function openChildConversationFromDelegateRow() {
+  await read("window.__cascadeDelegateRowScan = { stepped: false }");
+  await clickWhenReady(`(() => {
+    const pane = ${driver.paneScopeExpr(fixture.rootRef)};
+    if (!pane) return null;
+    const row = [...pane.querySelectorAll('[data-testid="tool-row"]')]
+      .find(node => node.textContent.includes(${q("CASCADE_ROLE_1_SENTINEL")})
+        || node.textContent.includes(${q("Creating the next real cascade browser scope")}));
+    const button = row?.querySelector('button[aria-label="Open conversation"]');
+    if (button) return button;
+    const port = pane.querySelector('[data-testid="transcript-virtual-list"] > div');
+    const scan = window.__cascadeDelegateRowScan;
+    if (!port || !scan) return null;
+    if (!scan.stepped) { port.scrollTop = 0; scan.stepped = true; }
+    else port.scrollTop = Math.min(port.scrollTop + port.clientHeight * 0.5, port.scrollHeight - port.clientHeight);
+    return null;
+  })()`, "Open conversation in the actual root delegate row", "nearest");
+  // Return the reader to the bottom it came from: the scan mounted every
+  // paging delegate's card, and each card's child watch queues a slow read
+  // at the hub - leaving them mounted would park the just-opened child
+  // conversation's own read behind the whole queue.
+  await read(`(() => { const port = ${sourcePortExpr}; if (port) port.scrollTop = port.scrollHeight; })()`);
 }
 
 async function activeTabText(scaffold) {
@@ -1057,6 +1190,41 @@ async function installLateAncestryHold() {
   return installed.result.identifier;
 }
 
+// #3704: the restored unrelated pane is INACTIVE, so the app does not
+// re-derive its tab label from a live reader - its saved display name has to
+// survive the reload on its own. The journey's one CI failure compared the
+// whole dockview panel object and got a bare deep-equal (title 'local:<id>'
+// where 'Fake Session' was saved) that named neither the pane nor the label
+// that diverged. Keep the strict comparison, but when BOTH panels are present
+// and only the title differs, fail by naming the state a recurrence needs: the
+// pane, the label it restored against the label it saved, every live tab
+// label, the mounted session headings, and how long ago the reload was. A
+// missing panel or layout is left to the strict deep-equal below, so it is
+// never misreported as a title divergence.
+async function assertRestoredPanel(restored, paneId, expected, label, reloadedAt) {
+  const actual = restored?.panels?.[paneId];
+  if (actual && expected && actual.title !== expected.title) {
+    // A session pane's body is marked `session:<ref>`; its rendered heading is
+    // in the header sibling just before that body (PaneScaffold), not inside it.
+    const observed = await read(`(() => {
+      const bodies = [...document.querySelectorAll('[data-pane-scaffold^="session:"]')];
+      return {
+        tabs: [...document.querySelectorAll('.dv-tab')].map(node => node.textContent),
+        sessionScaffolds: bodies.map(body => body.dataset.paneScaffold),
+        sessionHeadings: bodies.map(body => body.previousElementSibling?.querySelector('h2')?.textContent ?? null),
+      };
+    })()`);
+    assert.fail(
+      `${label}: pane ${paneId} carries title ${JSON.stringify(actual.title)} where its saved layout had ${JSON.stringify(expected.title)}`
+      + `; every live tab label ${JSON.stringify(observed.tabs)}`
+      + `, mounted session scaffolds ${JSON.stringify(observed.sessionScaffolds)}`
+      + `, their headings ${JSON.stringify(observed.sessionHeadings)}`
+      + `, ${Date.now() - reloadedAt}ms since the reload`,
+    );
+  }
+  assert.deepEqual(actual, expected, label);
+}
+
 async function reloadAndMobileJourney() {
   await driver.clearComposerDraft(fixture.rootRef);
   await driver.focusComposer(fixture.rootRef);
@@ -1067,8 +1235,15 @@ async function reloadAndMobileJourney() {
   await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   const openedInspectorTabText = await activeTabText(inspectorRoot);
-  await clickColumnAction(fixture.childRef, "Open conversation");
-  await wait(`document.querySelector(${q(driver.composerSelector(fixture.childRef))}) !== null`, "explicit independent child conversation");
+  await openChildConversationFromDelegateRow();
+  // The pane's conversation re-hydrates from a fresh thread/read once the
+  // inspector's column releases it, so this budget covers one full read under
+  // the fixture's 57-session slow-read contention, not just the pane mount;
+  // typing needs the editor the same hydration produces.
+  await wait(`(() => {
+    const composers = document.querySelectorAll(${q(driver.composerSelector(fixture.childRef))});
+    return composers.length === 1 && ${driver.paneScopeExpr(fixture.childRef)}?.contains(composers[0]) === true;
+  })()`, "explicit independent child conversation owns the only mounted composer for its ref", { timeoutMs: 45000 });
   await driver.focusComposer(fixture.childRef);
   await driver.typeText(fixture.childRef, "CASCADE_UNSENT_UNRELATED_DRAFT");
   const unrelatedId = await read(`${driver.paneScopeExpr(fixture.childRef)}.querySelector('[data-testid="statusbar"] [data-pane-id]').dataset.paneId`);
@@ -1078,13 +1253,25 @@ async function reloadAndMobileJourney() {
   fixture.sourceTabCount++;
   const removedInspectorId = fixture.inspectorPaneId;
   await activateTab(openedInspectorTabText, `[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`, removedInspectorId);
-  // The origin parent is a spine at the first drill. Popping to the root
-  // restores the origin conversation as the readable leaf, whose Open
-  // conversation action resolves the original source pane.
-  await driver.click(rootCrumb);
-  await wait(`document.querySelector(${q(column(fixture.rootRef))}) !== null && ${inspectorIdExpr} === ${q(removedInspectorId)}`, "the root pop keeps the same inspector active before its original-conversation action");
-  await clickColumnAction(fixture.rootRef, "Open conversation");
-  await wait(`document.querySelector(${q(inspectorRoot)}) === null && document.querySelector(${q(driver.composerSelector(fixture.rootRef))})?.querySelector('[role="textbox"]')?.contains(document.activeElement) === true`, "original Open closes inspection and focuses its existing source editor");
+  // The child conversation is already open as its own ordinary pane, so the
+  // delegate row's Open conversation resolves that existing branch: the child
+  // pane is focused and the inspection keeps its tab. The original root
+  // conversation never rendered in the pane, so the old root-column Open
+  // shortcut that closed inspection is gone with the column's link.
+  await openChildConversationFromDelegateRow();
+  await wait(`(() => {
+    const scope = ${driver.paneScopeExpr(fixture.childRef)};
+    // The mounted child scaffold proves the existing pane became its group's
+    // active view (inactive tabs unmount); the tab count proves the inspector
+    // pane survived. A dockview panel activation can settle focus on the panel
+    // wrapper after the editor focus, so the journey asserts the activation,
+    // not the final keyboard owner.
+    // sourceTabCount already accounts for the inspector's upcoming Return;
+    // here it is still open, so one more tab is present.
+    return scope && document.querySelectorAll('.dv-tab').length === ${fixture.sourceTabCount + 1} ? true : null;
+  })()`, "existing-child Open activates the open conversation while its inspection tab survives");
+  await activateTab(openedInspectorTabText, `[data-pane-scaffold=${q(`session:${fixture.childRef}`)}]`, removedInspectorId);
+  await returnToSource();
   const baseline = await wait(`(() => {
     const saved = ${layoutExpr};
     return saved?.panels[${q(fixture.sourcePaneId)}]?.params?.paneType === 'session' && saved.panels[${q(unrelatedId)}] && !saved.panels[${q(removedInspectorId)}] ? saved : null;
@@ -1105,7 +1292,7 @@ async function reloadAndMobileJourney() {
     return panel?.params?.paneType === 'sessionZoom' && panel.params.paneParams.ref === ${q(fixture.refs[6])} && saved.panels[${q(fixture.sourcePaneId)}]?.params?.paneType === 'session' ? saved : null;
   })()`, "native debounce persisted selected leaf intent");
   const expectedIntent = {
-    ref: fixture.refs[6], source: { type: "transcript", params: { ref: fixture.rootRef } },
+    ref: fixture.refs[6], source: { type: "session", params: { ref: fixture.rootRef } },
     edges: fixture.edges.map(({ ownerRef, childRef, delegateId }) => ({ ownerRef, childRef, delegateId })),
     inspection: { origin: { paneId: fixture.sourcePaneId, type: "session", ref: fixture.rootRef } },
   };
@@ -1125,13 +1312,14 @@ async function reloadAndMobileJourney() {
   assert.equal(JSON.stringify(saved).includes("data:image"), false, "layout never stores source image bytes");
   writeFileSync(path.join(fixture.artifactDir, "before-reload-layout.json"), JSON.stringify(saved, null, 2));
   const holdScriptId = await installLateAncestryHold();
+  const reloadedAt = Date.now();
   try {
     await driver.send("Page.reload", { ignoreCache: true });
     await wait(`document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelector(${q(inspectorRoot)}).textContent.includes('Earlier ancestry is incomplete')`, "saved path paints before actual ancestry delivery");
     const actualContext = await wait(`window.__cascadeLate.replies.find(reply => reply.context?.ancestryKnown && reply.context.ancestors.length === 6)?.context`, "actual known leaf ancestry reply is held at native message delivery");
     assert.deepEqual(actualContext.ancestors.map(ancestor => ancestor.ref), fixture.refs.slice(0, 6));
     await wait("window.__cascadeLate.replies.some(reply => reply.location && reply.response && !reply.error)", "actual successful route location reply is held at native message delivery");
-    assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), fixture.refs, "unknown ancestry preserves six saved edges");
+    assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), renderedRefs, "unknown ancestry preserves the six saved edges above the removed origin");
     assert.equal(await read(inspectorIdExpr), fixture.inspectorPaneId);
     assert.equal(await read("document.querySelectorAll('.dv-tab').length"), fixture.sourceTabCount + 1);
     await pinSourceDom();
@@ -1152,8 +1340,8 @@ async function reloadAndMobileJourney() {
   assert.deepEqual(restored.panels[fixture.inspectorPaneId].params.paneParams, expectedIntent);
   assert.deepEqual(restored.panels[fixture.sourcePaneId], sourcePanel);
   assert.deepEqual(placement(restored, fixture.inspectorPaneId), inspectorPlacement);
-  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), fixture.refs);
-  assert.deepEqual(restored.panels[unrelatedId], unrelatedPanel);
+  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), renderedRefs);
+  await assertRestoredPanel(restored, unrelatedId, unrelatedPanel, "restored unrelated pane keeps the identity its saved layout had", reloadedAt);
   assert.deepEqual(placement(restored, unrelatedId), unrelatedPlacement);
   // Inactive secondary tabs retain their work under normal mounting rules.
   // Activate the actual saved tab before observing its recovered composer.
@@ -1171,7 +1359,7 @@ async function reloadAndMobileJourney() {
   await assertInspectorFocus(refocused);
   assert.deepEqual(refocused.panels[fixture.inspectorPaneId].params.paneParams, expectedIntent);
   assert.deepEqual(placement(refocused, unrelatedId), unrelatedPlacement);
-  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), fixture.refs);
+  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(node => node.dataset.scopeRef)`), renderedRefs);
   await assertSourceDom();
   driver.milestone("unrelated-pane-reload", { sourcePaneId: fixture.sourcePaneId, inspectorPaneId: fixture.inspectorPaneId, unrelatedPaneId: unrelatedId, selectedRef: fixture.refs[6], edges: expectedIntent.edges });
   await capture("unrelated-pane-reload");
@@ -1179,7 +1367,7 @@ async function reloadAndMobileJourney() {
   const desktopReturned = await driver.composerState(fixture.rootRef);
   assert.equal(desktopReturned.text, source.text);
   assert.deepEqual(desktopReturned.chips, source.chips);
-  assert.deepEqual((await read(layoutExpr)).panels[unrelatedId], unrelatedPanel);
+  await assertRestoredPanel(await read(layoutExpr), unrelatedId, unrelatedPanel, "returned unrelated pane keeps the identity its saved layout had", reloadedAt);
   assert.deepEqual(placement(await read(layoutExpr), unrelatedId), baselinePlacement);
   await capture("desktop-source-return-after-reload");
   await driver.click(sourceAgents);
@@ -1194,9 +1382,49 @@ async function reloadAndMobileJourney() {
   await key("Escape", 27);
   await wait('document.querySelector("[data-testid=activity-sidebar]") === null', "close desktop sidebar before phone scene");
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
-  await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelectorAll('[data-testid="cascade-spine"]').length === 0`, "saved phone cascade contains only selected readonly leaf");
-  assert.equal(await read('document.querySelectorAll("[role=textbox]").length'), 0, "saved phone cascade has no composer");
+  await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.refs[6]))}) !== null && document.querySelectorAll('[data-testid="cascade-spine"]').length === 0`, "saved phone cascade contains only the selected leaf");
+  await wait(cascadeUntitledExpr, "the phone cascade has no path nav and no pane title");
+  await assertPaneBodyFlush("phone");
+  await wait(`(() => {
+    const col = document.querySelector(${q(column(fixture.refs[6]))});
+    if (!col) return null;
+    const footer = col.querySelector('[data-testid="cascade-column-footer"]');
+    return col.querySelector("h3") === null
+      && footer !== null
+      && col.querySelector('[data-testid="cascade-column-content"]').compareDocumentPosition(footer)
+        & Node.DOCUMENT_POSITION_FOLLOWING
+      && document.querySelector(${q(inspectorFooter)}) === null;
+  })()`, "the phone column carries no duplicate title, keeps status and the conversation footer at its bottom, and renders no pane footer status bar");
+  // env(safe-area-inset-bottom) cannot be emulated through CDP, so drive the
+  // shared clearance formula's --keyboard-inset custom property seam with a
+  // negative stand-in for a 44px home-indicator band: only the phone media
+  // rule reserves it (the base padding alone stays at var(--space-2)).
+  const phonePadding = await read(`(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--keyboard-inset", "-44px");
+    const padding = getComputedStyle(
+      document.querySelector(${q(`${column(fixture.refs[6])} [data-testid="cascade-activity-controls"]`)}),
+    ).paddingBottom;
+    root.style.removeProperty("--keyboard-inset");
+    return padding;
+  })()`);
+  assert.ok(
+    Number.parseFloat(phonePadding) > 44,
+    `the phone column's activity controls reserve the home-indicator band (got ${phonePadding})`,
+  );
   await wait(`document.querySelector(${q(column(fixture.refs[6]))}).textContent.includes('CASCADE_ROLE_6_SENTINEL')`, "real selected phone transcript");
+  // The composer renders with the live conversation, so this runs after the
+  // transcript proved live: the column's bottom bar holds the conversation's
+  // own composer with its editable editor mounted.
+  assert.ok(
+    await read(`(() => {
+      const col = document.querySelector(${q(column(fixture.refs[6]))});
+      const footer = col?.querySelector('[data-testid="cascade-column-footer"]');
+      return footer?.querySelector(${q(`[data-composer="${fixture.refs[6]}"]`)}) != null
+        && col?.querySelector(${q(`[data-composer="${fixture.refs[6]}"] [role="textbox"]`)}) != null;
+    })()`),
+    "the saved phone cascade's column embeds the selected conversation with its composer at its bottom",
+  );
   driver.milestone("mobile-saved-cascade");
   await capture("mobile-saved-cascade");
   await driver.clickByText("Return to previous view");
@@ -1221,10 +1449,15 @@ async function reloadAndMobileJourney() {
   await wait(sidebarEntranceSettled, "phone Overview entrance settled before physical row tap");
   const mobileRow = await reveal(fixture.edges[0], '[data-testid="activity-sidebar"]');
   await driver.click(mobileRow);
-  await wait('document.querySelectorAll("[data-testid=transcript-virtual-list]").length === 1 && document.querySelectorAll("[role=textbox]").length === 0 && document.querySelector("[data-pane-scaffold=cascade]") === null', "ordinary mobile Agents transcript action stays readonly without cascade");
+  await wait(`(() => {
+    const scope = ${driver.paneScopeExpr(fixture.childRef)};
+    return document.querySelectorAll("[data-testid=transcript-virtual-list]").length === 1
+      && scope?.querySelector(${q(`[data-composer="${fixture.childRef}"] [role="textbox"]`)}) != null
+      && document.querySelector("[data-pane-scaffold=cascade]") === null ? true : null;
+  })()`, "the mobile Agents row opens the child's live conversation without a cascade");
   await wait("document.body.textContent.includes('CASCADE_ROLE_1_SENTINEL')", "real ordinary phone child transcript");
   assert.equal(await read('document.querySelectorAll("[data-testid=cascade-column], [data-testid=cascade-spine]").length'), 0);
-  assert.deepEqual((await read(layoutExpr)).panels[unrelatedId], unrelatedPanel, "phone action retains independent pane identity");
+  await assertRestoredPanel(await read(layoutExpr), unrelatedId, unrelatedPanel, "phone action retains independent pane identity", reloadedAt);
   driver.milestone("mobile-agents-transcript", { childRef: fixture.childRef, unrelatedPaneId: unrelatedId });
   await capture("mobile-agents-transcript");
 }
@@ -1305,20 +1538,15 @@ async function drill(edge, level) {
   const selector = await reveal(edge, '[data-testid="activity-sidebar"]');
   await driver.click(selector);
   await wait(`document.querySelector(${q(column(edge.childRef))}) !== null`, `selected column at level ${level}`);
-  // The drill whose immediate parent is the live origin conversation
-  // collapses that parent to a spine: the origin pane is already mounted
-  // beside the cascade, so the leaf is the only readable column.
-  const readableFrom = fixture.refs[level - 1] === fixture.rootRef ? level : level - 1;
-  const expected = fixture.refs.slice(readableFrom, level + 1);
-  const expectedSpines = fixture.refs.slice(0, readableFrom);
-  await wait(`${scopeRefs("cascade-column")} === ${q(JSON.stringify(expected))} && ${scopeRefs("cascade-spine")} === ${q(JSON.stringify(expectedSpines))}`, `exact column and spine sets ${level}`);
+  const track = drilledTrack(level);
+  await wait(`${scopeRefs("cascade-column")} === ${q(JSON.stringify(track.columns))} && ${scopeRefs("cascade-spine")} === ${q(JSON.stringify(track.spines))}`, `exact column and spine sets ${level}`);
   await wait(`document.querySelector(${q(column(edge.childRef))}).textContent.includes(${q(`CASCADE_ROLE_${level}_SENTINEL`)})`, `real retained transcript ${level}`);
   const id = await wait(inspectorIdExpr, "secondary inspector has a committed pane ID");
   assert.notEqual(id, fixture.sourcePaneId, "inspection never replaces the source panel");
   if (fixture.inspectorPaneId) assert.equal(id, fixture.inspectorPaneId, "drill reuses the inspector");
   else fixture.inspectorPaneId = id;
   assert.equal(await read("document.querySelectorAll('.dv-tab').length"), fixture.sourceTabCount + 1);
-  await assertInspectorReadOnly();
+  await assertColumnConversations();
 }
 
 try {
@@ -1492,6 +1720,7 @@ try {
   await read('window.__cascadeTraceSource("after-sidebar-open")');
   await drill(fixture.edges[0], 1);
   await wait(readableGeometrySettled(1), "first secondary split has settled readable geometry");
+  await wait(cascadeUntitledExpr, "the pane hosts no Agent path nav and no title heading");
   await read('window.__cascadeTraceSource("after-first-drill")');
   await assertSourceDom();
   assert.equal(await sourceAnchor(), beforeEntryAnchor, "secondary entry preserves the visible source row");
@@ -1499,13 +1728,14 @@ try {
   for (let level = 2; level <= 6; level++) await drill(fixture.edges[level - 1], level);
   await wait(`${readableGeometrySettled(2)} && (() => {
     const spines = [...document.querySelectorAll('[data-testid="cascade-spine"]')];
-    return spines.length === 5 && spines.every(n => Math.abs(n.getBoundingClientRect().width - 52) < 0.75);
+    return spines.length === 4 && spines.every(n => Math.abs(n.getBoundingClientRect().width - 52) < 0.75);
   })()`, "settled six-edge geometry");
   const boxes = await read(`([...document.querySelectorAll('[data-testid="cascade-spine"], [data-testid="cascade-column"]')]).map(n => {
     const r = n.getBoundingClientRect(); return { ref: n.dataset.scopeRef, kind: n.dataset.testid, x:r.x, y:r.y, width:r.width, height:r.height };
   })`);
-  assert.deepEqual(boxes.map(n => n.ref), fixture.refs);
-  await assertSpineStatus(fixture.rootRef, "idle");
+  // The origin root never renders: the settled track is the rendered set.
+  assert.deepEqual(boxes.map(n => n.ref), renderedRefs);
+  await assertSpineStatus(fixture.refs[1], "idle");
   driver.milestone("six-edges", { boxes, sourcePaneId: fixture.sourcePaneId, inspectorPaneId: fixture.inspectorPaneId, tabs: fixture.sourceTabCount + 1 });
   const paint = await capture("six-edges");
   const cascadePaint = paint.filter(view => view.surface === "cascade");
@@ -1514,6 +1744,10 @@ try {
   assert.ok(cascadePaint[0].chain[0].box.width >= 398.5, `parent transcript fills its readable column, got ${cascadePaint[0].chain[0].box.width}px`);
   assert.ok(cascadePaint[1].chain[0].box.width >= 439.5, `leaf transcript fills its readable column, got ${cascadePaint[1].chain[0].box.width}px`);
   assert.ok(paint.every(view => view.rows.some(row => row.intersects && row.box.width > 0 && row.textLength > 0)), "every real transcript viewport contains rendered text rows");
+  // The pane body hosting the spines and columns never scrolls as a unit:
+  // its height is the track's own allocation, and each column's transcript
+  // viewport scrolls internally instead.
+  await assertPaneBodyFlush("desktop");
   await driver.send("Emulation.setDeviceMetricsOverride", { width: 1000, height: 900, deviceScaleFactor: 1, mobile: false });
   // A user pop/drill after the resize must reveal the selected leaf. Resizing
   // itself is not a drill and must not move the retained reader's position.
@@ -1525,7 +1759,7 @@ try {
     return r.width > 0 && r.height > 0 && r.right > 0 && r.left < innerWidth && style.visibility === 'visible' && style.display !== 'none';
   })()`, "the original center remains visible on narrow desktop");
   await assertSourceDom();
-  const parentCrumb = 'nav[aria-label="Agent path"] button:nth-last-child(2)';
+  const parentCrumb = `${inspectorFooter} [data-session-navigation-ref=${q(fixture.refs[5])}]`;
   await read(`document.querySelector(${q(parentCrumb)}).focus()`);
   await wait(`document.activeElement === document.querySelector(${q(parentCrumb)})`, "parent breadcrumb owns keyboard focus");
   await key("Enter", 13);
@@ -1577,38 +1811,43 @@ try {
   assert.deepEqual(await read(`({ footer: document.querySelector(${q(inspectorFooter)}).textContent, sidebar: document.querySelector('[data-testid="activity-sidebar"]').textContent })`), leafChrome);
   driver.milestone("parent-selection-leaf-scope");
 
-  await openPeek(fixture.rootRef, "Tasks");
+  await openPeek(fixture.refs[1], "Tasks");
   await wait('document.querySelector("[data-testid=activity-peek]").textContent.includes("No tasks")', "Tasks is rendered inside ancestor peek");
   await key("Escape", 27);
   await wait('document.querySelector("[data-testid=activity-peek]") === null', "single Escape closes only peek");
   assert.ok(await read('document.querySelector("[data-testid=activity-sidebar]") !== null'));
-  assert.equal(await read('document.querySelectorAll("[data-testid=cascade-spine]").length'), 5);
+  assert.equal(await read('document.querySelectorAll("[data-testid=cascade-spine]").length'), 4);
   driver.milestone("peek-tasks-single-escape");
   await driver.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }] });
   assert.equal(await read('matchMedia("(prefers-reduced-motion: reduce)").matches'), true);
-  const beforePeek = frames.length;
-  await openPeek(fixture.rootRef, "Agents");
-  const peekRow = await reveal(fixture.branch, '[data-testid="activity-peek"]');
-  const paging = sent(beforePeek).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === fixture.rootRef && f.params.cursor);
-  assert.ok(paging.length > 0 && paging.every(answered), "open ancestor peek advances the real direct-page cursor");
-  await read(`document.querySelector(${q(peekRow)}).focus()`);
-  await wait(`document.activeElement === document.querySelector(${q(peekRow)})`, "real peek row owns keyboard focus");
+  // The origin root never renders in the pane, so its Agents collection is
+  // reached through its own pane's footer: the shared sidebar scoped to the
+  // source. The paging delegate rows there still keyboard-truncate the
+  // inspector's selected branch.
+  const beforeSidebar = frames.length;
+  await driver.click(sourceAgents);
+  const branchRow = await reveal(fixture.branch, '[data-testid="activity-sidebar"]');
+  const paging = sent(beforeSidebar).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === fixture.rootRef && f.params.cursor);
+  assert.ok(paging.length > 0 && paging.every(answered), "the observed root collection advances the real direct-page cursor");
+  await read(`document.querySelector(${q(branchRow)}).focus()`);
+  await wait(`document.activeElement === document.querySelector(${q(branchRow)})`, "real sidebar row owns keyboard focus");
   await key("Enter", 13);
-  await wait(`document.querySelector(${q(column(fixture.branch.childRef))}) !== null && document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)}).length === 2`, "keyboard ancestor branch truncation");
-  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(n => n.dataset.scopeRef)`), [fixture.rootRef, fixture.branch.childRef], "the sibling replaces the old six-edge suffix");
+  await wait(`document.querySelector(${q(column(fixture.branch.childRef))}) !== null && document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)}).length === 1`, "keyboard ancestor branch truncation");
+  assert.deepEqual(await read(`[...document.querySelectorAll(${q(`${inspectorRoot} [data-scope-ref]`)})].map(n => n.dataset.scopeRef)`), [fixture.branch.childRef], "the sibling replaces the old six-edge suffix without the removed origin");
   assert.equal(await read('document.querySelectorAll("[data-testid=activity-peek]").length'), 0);
   assert.equal(await read('document.getAnimations().filter(a => a.effect?.target?.matches("[data-scope-ref]") && a.playState === "running").length'), 0);
-  await driver.click(rootCrumb);
-  await wait(`document.querySelectorAll('[data-testid="cascade-column"]').length === 1 && document.querySelector(${q(column(fixture.rootRef))}) !== null`, "pop to root before restoring real branch");
+  await driver.click(sourceAgents);
   await drill(fixture.edges[0], 1);
   for (let level = 2; level <= 6; level++) await drill(fixture.edges[level - 1], level);
   assert.equal(await read('document.getAnimations().filter(a => a.effect?.target?.matches("[data-scope-ref]") && a.playState === "running").length'), 0);
   driver.milestone("keyboard-branch-reduced-motion");
 
-  await openPeek(fixture.rootRef, "Agents");
-  const rootPeekRow = await reveal(fixture.branch, '[data-testid="activity-peek"]');
+  // The observed root collection recovers its full paged extent across a
+  // reconnect, without animating cascade geometry or moving keyboard focus.
+  await driver.click(sourceAgents);
+  const rootSidebarRow = await reveal(fixture.branch, '[data-testid="activity-sidebar"]');
   await read(`(() => {
-    document.querySelector(${q(rootPeekRow)}).focus();
+    document.querySelector(${q(rootSidebarRow)}).focus();
     window.__cascadeFocused = document.activeElement;
     window.__cascadeGeometryChanges = [];
     window.__cascadeGeometryObserver = new MutationObserver(records => {
@@ -1618,18 +1857,24 @@ try {
   })()`);
   await driver.send("Emulation.setEmulatedMedia", { features: [] });
   const openAfter = await reconnect();
-  await waitFrames(() => sent(openAfter).some(f => f.method === "evener/thread/delegates/list" && f.params.ref === fixture.rootRef && f.params.cursor && answered(f)), "open peek recovers its full observed page extent");
-  assert.ok(await read(`document.querySelector(${q(rootPeekRow)}) !== null`), "retained older-page row remains useful after reconnect");
+  await waitFrames(() => sent(openAfter).some(f => f.method === "evener/thread/delegates/list" && f.params.ref === fixture.rootRef && f.params.cursor && answered(f)), "the observed root collection recovers its full observed page extent");
+  assert.ok(await read(`document.querySelector(${q(rootSidebarRow)}) !== null`), "retained older-page row remains useful after reconnect");
   assert.equal(await read("document.activeElement === window.__cascadeFocused"), true, "reconnect and republished context keep keyboard focus");
   assert.deepEqual(await read("window.__cascadeGeometryChanges"), [], "reconnect and runtime/context refresh never animate cascade geometry");
   await key("Escape", 27);
-  await wait('document.querySelector("[data-testid=activity-peek]") === null', "root peek closes without changing center demand");
+  await wait('document.querySelector("[data-testid=activity-sidebar]") === null', "the observed root sidebar closes without changing center demand");
   const closedRef = fixture.refs[4];
   const closedPeekAfter = frames.length;
+  // Closing the sidebar relayouts the panes; the peek clicks below measure
+  // chip coordinates, so they wait for the settled geometry first.
+  await wait(readableGeometrySettled(2), "settled geometry after closing the observed root sidebar");
   await openPeek(closedRef, "Agents");
   await waitFrames(() => sent(closedPeekAfter).some(f => f.method === "evener/thread/delegates/list" && f.params.ref === closedRef && answered(f)), "the independent ancestor peek owns a real delegate read");
   await key("Escape", 27);
   await wait('document.querySelector("[data-testid=activity-peek]") === null', "independent ancestor peek relinquishes direct collection demand");
+  // The selected leaf's own sidebar demand resumes for the recovery legs.
+  await driver.click(`${inspectorFooter} button[aria-label^="Agents,"]`);
+  await wait(sidebarEntranceSettled, "selected-leaf sidebar entrance settled before the recovery reconnect");
   const closedAfter = await reconnect();
   await waitFrames(() => sent(closedAfter).some(f => f.method === "evener/thread/delegates/list" && f.params.ref === fixture.refs[6] && answered(f)), "selected-leaf sidebar resumes its actual direct collection");
   assert.equal(sent(closedAfter).filter(f => f.method === 'evener/thread/delegates/list' && f.params.ref === closedRef).length, 0, "closed independent peek causes no delegate-page read on recovery");

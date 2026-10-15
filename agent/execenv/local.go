@@ -53,6 +53,8 @@ var coreEnvVars = []envvars.Var{
 	envvars.Term,
 	envvars.TmpDir,
 	envvars.XDGConfigHome,
+	envvars.XDGCacheHome,
+	envvars.GoCache,
 	envvars.GoEnv,
 	envvars.GoPath,
 	envvars.GoModCache,
@@ -73,15 +75,17 @@ type LocalExecutionEnvironment struct {
 	mainRoots   *gitRootCache // stable main repo root per cwd (ResolveMainRepoRoot)
 	fs          afero.Fs      // filesystem backing ReadFile/WriteFile/EditFile; defaults to the OS
 
-	// commandFactory, inheritedEnv, lookPath, sandboxTmpBase, and terminationGrace
-	// are instance-local test seams. Nil/empty values retain production os/exec,
-	// os.Environ, exec.LookPath, os.TempDir, and terminateGrace behavior. Keeping
-	// them on the environment avoids global swaps in deterministic fuzzers.
+	// commandFactory, inheritedEnv, lookPath, sandboxTmpBase, terminationGrace,
+	// and outputCaptureCap are instance-local test seams. Nil/empty values retain
+	// production os/exec, os.Environ, exec.LookPath, os.TempDir, terminateGrace,
+	// and maxCapturedOutputBytes behavior. Keeping them on the environment avoids
+	// global swaps in deterministic fuzzers.
 	commandFactory   commandRuntimeFactory
 	inheritedEnv     func() []string
 	lookPath         func(string) (string, error)
 	sandboxTmpBase   string
 	terminationGrace *time.Duration
+	outputCaptureCap *int
 
 	// Sandbox is the resolved sandbox policy for this environment, or nil for the
 	// default (off) — exactly today's behavior. M2 consults it in the FILE tools
@@ -464,6 +468,7 @@ func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path string) Exec
 		lookPath:         e.lookPath,
 		sandboxTmpBase:   e.sandboxTmpBase,
 		terminationGrace: e.terminationGrace,
+		outputCaptureCap: e.outputCaptureCap,
 		LoginPATH:        e.LoginPATH,
 		Sandbox:          e.Sandbox,
 		Wrapper:          e.Wrapper,
@@ -1144,6 +1149,7 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 		lookPath:         e.lookPath,
 		sandboxTmpBase:   e.sandboxTmpBase,
 		terminationGrace: e.terminationGrace,
+		outputCaptureCap: e.outputCaptureCap,
 		LoginPATH:        e.LoginPATH,
 	}
 	if e.Sandbox != nil {
@@ -1244,6 +1250,15 @@ func (e *LocalExecutionEnvironment) terminationGraceDuration() time.Duration {
 		return *e.terminationGrace
 	}
 	return terminateGrace
+}
+
+// outputCaptureCapBytes is the per-stream capture bound for buffered commands:
+// the seam's value when a test sets one, else maxCapturedOutputBytes.
+func (e *LocalExecutionEnvironment) outputCaptureCapBytes() int {
+	if e.outputCaptureCap != nil && *e.outputCaptureCap > 0 {
+		return *e.outputCaptureCap
+	}
+	return maxCapturedOutputBytes
 }
 
 // Cleanup terminates any tracked processes by sending SIGTERM to each process
@@ -1349,11 +1364,15 @@ var (
 	execCommandContext = exec.CommandContext
 	execCommand        = exec.Command
 	runtimeGOOS        = runtime.GOOS
-	osVersionOutput    = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return execCommandContext(ctx, name, args...).Output()
+	osVersionOutput    = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
+		cmd := execCommandContext(ctx, name, args...)
+		out := newCappedOutputBuffer(probeOutputCaptureCap)
+		cmd.Stdout = out
+		err := cmd.Run()
+		return newProbeCapture(out), err
 	}
 	shellStat              = os.Stat
-	grepReadFile           = fs.ReadFile
+	grepReadFile           = grepReadFileCapped
 	grepWalk               = fs.WalkDir
 	listReadDir            = os.ReadDir
 	streamBeforeSignalOnce = func(func()) {}
@@ -1364,11 +1383,13 @@ var (
 	venvCandidateDirs      = func(root, binDir string) []string {
 		return []string{filepath.Join(root, ".venv", binDir), filepath.Join(root, "venv", binDir)}
 	}
-	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
 		cmd := execCommandContext(ctx, name, args...)
 		cmd.WaitDelay = loginShellPATHWaitDelay
-		out, err := cmd.Output()
-		return out, orphanpipe.ChildErr(cmd, err)
+		out := newCappedOutputBuffer(probeOutputCaptureCap)
+		cmd.Stdout = out
+		err := cmd.Run()
+		return newProbeCapture(out), orphanpipe.ChildErr(cmd, err)
 	}
 )
 
@@ -1388,6 +1409,15 @@ const loginShellPATHTimeout = 2 * time.Second
 // this bound the timeout would not bound the probe (see orphanpipe).
 const loginShellPATHWaitDelay = time.Second
 
+// probeOutputCaptureCap bounds the stdout a launch probe captures. The probes
+// extract one short line — the login shell's PATH, a uname banner — but the
+// login-shell probe runs the USER'S rc chain, whose emissions the probe
+// timeouts bound only in time: a runaway rc file printing at pipe speed OOMs
+// the agent exactly like an uncapped command capture (#4557). 64KiB is orders
+// of magnitude past any real PATH or banner, so the bound never trips on a
+// well-formed probe answer.
+const probeOutputCaptureCap = 64 * 1024
+
 // LoginShellPATH resolves the PATH the user's login shell would produce
 // ($SHELL -lc 'echo $PATH'), so a session or daemon launched from a context
 // that skips the shell rc chain (macOS launchd, a GUI app, systemd) can still
@@ -1395,8 +1425,9 @@ const loginShellPATHWaitDelay = time.Second
 // /opt/homebrew/bin that only the rc chain adds (kata 31gh). Resolved once
 // per process and cached, exactly like OSVersion: a wedged or slow rc file
 // costs at most one short-timeout probe, never one per session or per spawn.
-// Returns "" when $SHELL is unset, the probe fails, or it times out —
-// callers then leave the inherited process PATH unchanged.
+// Returns "" when $SHELL is unset, the probe fails, it times out, or the
+// capture truncated across the answer's start (a cut fragment) — callers then
+// leave the inherited process PATH unchanged.
 func LoginShellPATH() string {
 	loginShellPATHOnce.Do(func() { loginShellPATHValue = resolveLoginShellPATH() })
 	return loginShellPATHValue
@@ -1409,11 +1440,15 @@ func resolveLoginShellPATH() string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), loginShellPATHTimeout)
 	defer cancel()
-	out, err := loginShellPATHOutput(ctx, shell, "-lc", "echo $"+envvars.Path.Name)
+	capture, err := loginShellPATHOutput(ctx, shell, "-lc", "echo $"+envvars.Path.Name)
 	if err != nil {
 		return ""
 	}
-	return lastNonEmptyLine(string(out))
+	answer, ok := probeTrustedAnswer(capture)
+	if !ok {
+		return ""
+	}
+	return answer
 }
 
 // lastNonEmptyLine returns the last non-blank line of s, trimmed. An rc file
@@ -1432,19 +1467,95 @@ func lastNonEmptyLine(s string) string {
 	return ""
 }
 
+// probeCapture is a launch probe's captured output: the rendered view (the exact
+// stream under the cap, else head + omission marker + tail), the buffer's
+// authoritative retained tail window when the cap tripped, and whether it
+// tripped.
+type probeCapture struct {
+	view      []byte
+	tail      []byte
+	truncated bool
+}
+
+// newProbeCapture snapshots a probe's capture. The trust decision reads the
+// authoritative head and tail windows directly rather than parsing the rendered
+// omission marker, so marker-shaped text in the command's own output cannot
+// move the guard's reference point.
+func newProbeCapture(b *cappedOutputBuffer) probeCapture {
+	c := probeCapture{view: []byte(b.String()), truncated: b.truncated()}
+	if c.truncated {
+		c.tail = b.tailView()
+	}
+	return c
+}
+
+// lastNonEmptyLineAt returns the last non-blank line of b, trimmed, and the byte
+// offset in b where that line starts. ok is false when b has no non-blank line.
+func lastNonEmptyLineAt(b []byte) (line string, start int, ok bool) {
+	start = -1
+	for off := 0; off < len(b); {
+		nl := bytes.IndexByte(b[off:], '\n')
+		end := len(b)
+		if nl >= 0 {
+			end = off + nl
+		}
+		if trimmed := strings.TrimSpace(string(b[off:end])); trimmed != "" {
+			line, start = trimmed, off
+		}
+		if nl < 0 {
+			break
+		}
+		off = end + 1
+	}
+	if start < 0 {
+		return "", 0, false
+	}
+	return line, start, true
+}
+
+// probeTrustedAnswer extracts a probe's answer line and reports whether it is
+// trustworthy. Under the cap the whole stream is present, so the last non-blank
+// line is returned exactly as before.
+//
+// A truncated capture is different: the cap may have fallen across the answer's
+// start, leaving only its suffix in the retained tail window. When the tail has
+// any non-blank line, the tail is the stream's end, so its last non-blank line
+// is the view's last non-blank line — trusted only when a newline precedes its
+// start (it is not the tail's first line, whose beginning may be cut). When the
+// whole retained tail is blank nothing is trusted: the omitted middle may hold
+// the stream's real last line, and the byte-exact head can end midway through
+// a line, so its last line is a fragment — the caller falls back to the
+// inherited PATH rather than cache either.
+func probeTrustedAnswer(c probeCapture) (string, bool) {
+	if !c.truncated {
+		return lastNonEmptyLine(string(c.view)), true
+	}
+	if answer, start, ok := lastNonEmptyLineAt(c.tail); ok {
+		if start > 0 {
+			return answer, true
+		}
+		return "", false
+	}
+	return "", false
+}
+
 func resolveOSVersion() string {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	switch runtimeGOOS {
 	case "darwin", "linux":
-		out, err := osVersionOutput(ctx, "uname", "-rs")
+		capture, err := osVersionOutput(ctx, "uname", "-rs")
 		if err == nil {
-			return strings.TrimSpace(string(out))
+			if version, ok := probeTrustedAnswer(capture); ok {
+				return version
+			}
 		}
 	case "windows":
-		out, err := osVersionOutput(ctx, "cmd", "/c", "ver")
+		capture, err := osVersionOutput(ctx, "cmd", "/c", "ver")
 		if err == nil {
-			return strings.TrimSpace(string(out))
+			if version, ok := probeTrustedAnswer(capture); ok {
+				return version
+			}
 		}
 	}
 	return runtimeGOOS + "/" + runtime.GOARCH // fallback
@@ -1457,7 +1568,13 @@ func resolveOSVersion() string {
 // and limited to limitLines lines (default 2000); CRLF line endings are
 // normalized to LF.
 func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
-	out, _, err := e.ReadFileAndBytes(path, offsetLine, limitLines)
+	return e.ReadFileCtx(context.Background(), path, offsetLine, limitLines)
+}
+
+// ReadFileCtx is ReadFile with the caller's context threaded to the read, so a
+// cancelled call ends a read parked on a stream instead of waiting it out.
+func (e *LocalExecutionEnvironment) ReadFileCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, error) {
+	out, _, err := e.ReadFileAndBytesCtx(ctx, path, offsetLine, limitLines)
 	return out, err
 }
 
@@ -1466,6 +1583,12 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 // saw. The bytes are the complete file even when offset and limit select only
 // some of its lines; on error they are nil.
 func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *int, limitLines *int) (string, []byte, error) {
+	return e.ReadFileAndBytesCtx(context.Background(), path, offsetLine, limitLines)
+}
+
+// ReadFileAndBytesCtx is ReadFileAndBytes with the caller's context threaded to
+// the read (see ReadFileCtx).
+func (e *LocalExecutionEnvironment) ReadFileAndBytesCtx(ctx context.Context, path string, offsetLine *int, limitLines *int) (string, []byte, error) {
 	abs := e.resolve(path)
 	var b []byte
 	var err error
@@ -1479,9 +1602,9 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 		// (symlink-refusing, root/denylist-checked).
 		// The image/PDF/binary/line-numbering contract below is applied identically
 		// to the returned bytes, so the output is unchanged from the off path.
-		b, err = sfs.readFile("read_file", abs)
+		b, err = sfs.readFileCtx(ctx, "read_file", abs)
 	} else {
-		b, err = afero.ReadFile(e.filesystem(), abs)
+		b, err = readFileCappedCtx(ctx, e.filesystem(), abs)
 	}
 	if err != nil {
 		// Best-effort "did you mean" suggestion for a genuine missing-file miss
@@ -1515,11 +1638,27 @@ func (e *LocalExecutionEnvironment) ReadFileAndBytes(path string, offsetLine *in
 	return NumberLines(string(b), offsetLine, limitLines), b, nil
 }
 
+// eachLine visits the '\n'-separated segments of text in order — including
+// the final (possibly empty) segment after a trailing newline, exactly the
+// segments strings.Split(text, "\n") yields — without materializing them all:
+// a line-heavy file at the whole-file read cap would otherwise hold ~16 bytes
+// of slice header per line at once (issue #4556). The walk stops once visit
+// returns true.
+func eachLine(text string, visit func(line string) bool) {
+	for line := range strings.SplitSeq(text, "\n") {
+		if visit(line) {
+			return
+		}
+	}
+}
+
 // NumberLines presents text as ReadFile presents a text file: CRLF
 // normalized to LF, lines numbered from offsetLine (default 1), at most
-// limitLines lines (default 2000), and "" past the end.
+// limitLines lines (default 2000), and "" past the end. The window is
+// extracted by scanning segments rather than splitting the file, so a
+// line-heavy file at the whole-file read cap does not allocate per line for
+// every line in it (issue #4556).
 func NumberLines(text string, offsetLine, limitLines *int) string {
-	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	start := 1
 	if offsetLine != nil && *offsetLine > 0 {
 		start = *offsetLine
@@ -1528,14 +1667,24 @@ func NumberLines(text string, offsetLine, limitLines *int) string {
 	if limitLines != nil && *limitLines > 0 {
 		limit = *limitLines
 	}
-	if start > len(lines) {
-		return ""
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	// Skip to line start. Running out of newlines first means start is past
+	// the final segment.
+	for i := 1; i < start; i++ {
+		idx := strings.IndexByte(text, '\n')
+		if idx < 0 {
+			return ""
+		}
+		text = text[idx+1:]
 	}
-	end := min(start-1+limit, len(lines))
+	remaining := limit
 	var out strings.Builder
-	for i := start; i <= end; i++ {
-		fmt.Fprintf(&out, "%4d\t%s\n", i, lines[i-1])
-	}
+	eachLine(text, func(line string) bool {
+		fmt.Fprintf(&out, "%4d\t%s\n", start, line)
+		start++
+		remaining--
+		return remaining == 0
+	})
 	return out.String()
 }
 
@@ -1634,6 +1783,19 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 // EditFileWith is EditFile, except that finish, when not nil, turns the
 // edited bytes into the bytes written, inside the same read and write.
 func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
+	return e.EditFileWithCtx(context.Background(), path, oldString, newString, replaceAll, finish)
+}
+
+// EditFileCtx is EditFile with the caller's context threaded to its read, so a
+// cancelled edit ends a read parked on a stream. It is the interface-visible
+// entry of ContextualFileReader.
+func (e *LocalExecutionEnvironment) EditFileCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool) (string, error) {
+	return e.EditFileWithCtx(ctx, path, oldString, newString, replaceAll, nil)
+}
+
+// EditFileWithCtx is EditFileWith with the caller's context threaded to its
+// read, so a cancelled edit ends a read parked on a stream.
+func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
 	sfs := e.sandbox()
 	var abs string
 	var b []byte
@@ -1652,13 +1814,13 @@ func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, 
 		if derr := sfs.checkWritable("edit_file", abs); derr != nil {
 			return "", derr
 		}
-		b, err = sfs.readFile("edit_file", abs)
+		b, err = sfs.readFileCtx(ctx, "edit_file", abs)
 	} else {
 		abs, err = e.resolveWrite(path)
 		if err != nil {
 			return "", err
 		}
-		b, err = afero.ReadFile(e.filesystem(), abs)
+		b, err = readFileCappedCtx(ctx, e.filesystem(), abs)
 	}
 	if err != nil {
 		return "", err
@@ -1707,29 +1869,49 @@ func (e *LocalExecutionEnvironment) EditFileWith(path string, oldString string, 
 
 // findFuzzyMatch scans the file content for a substring that matches
 // oldString when whitespace is normalized. Returns the actual substring from
-// the file, or "" if no match.
+// the file, or "" if no match. The content is scanned segment by segment: a
+// line-heavy file at the whole-file read cap would otherwise allocate ~16
+// bytes of slice header per line for every line in it (issue #4556).
 func findFuzzyMatch(content, oldString string) string {
 	normOld := normalizeWS(oldString)
 	if normOld == "" {
 		return ""
 	}
 	// Scan lines for single-line matches.
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
+	var match string
+	eachLine(content, func(line string) bool {
 		if normalizeWS(line) == normOld {
-			return line
+			match = line
+			return true
 		}
+		return false
+	})
+	if match != "" {
+		return match
 	}
 	// Multi-line: try sliding window of the same line count.
 	oldLines := strings.Split(oldString, "\n")
 	wSize := len(oldLines)
-	if wSize > 1 && wSize <= len(lines) {
-		for i := 0; i <= len(lines)-wSize; i++ {
-			candidate := strings.Join(lines[i:i+wSize], "\n")
-			if normalizeWS(candidate) == normOld {
-				return candidate
-			}
+	if wSize < 2 {
+		return ""
+	}
+	window := make([]string, 0, wSize)
+	found := false
+	eachLine(content, func(line string) bool {
+		if len(window) == wSize {
+			copy(window, window[1:])
+			window[wSize-1] = line
+		} else {
+			window = append(window, line)
 		}
+		if len(window) == wSize && normalizeWS(strings.Join(window, "\n")) == normOld {
+			found = true
+			return true
+		}
+		return false
+	})
+	if found {
+		return strings.Join(window, "\n")
 	}
 	return ""
 }
@@ -1753,18 +1935,34 @@ func nearestFileRegion(content, oldString string) string {
 	if target == "" {
 		return ""
 	}
-	lines := strings.Split(content, "\n")
+	// Score every segment, then re-walk to collect the best window: two
+	// streamed passes instead of a whole-file split, which would hold ~16
+	// bytes of slice header per line at once (issue #4556).
 	best, bestScore := -1, 0.0
-	for i, line := range lines {
+	lineNo := 0
+	eachLine(content, func(line string) bool {
 		if score := lineSimilarity(normalizeWS(line), target); score > bestScore {
-			best, bestScore = i, score
+			best, bestScore = lineNo, score
 		}
-	}
+		lineNo++
+		return false
+	})
 	if best < 0 || bestScore < 0.5 {
 		return ""
 	}
-	end := min(best+len(oldLines), len(lines))
-	return strings.Join(lines[best:end], "\n")
+	window := make([]string, 0, len(oldLines))
+	lineNo = 0
+	eachLine(content, func(line string) bool {
+		if lineNo >= best && lineNo < best+len(oldLines) {
+			window = append(window, line)
+			if len(window) == len(oldLines) {
+				return true
+			}
+		}
+		lineNo++
+		return false
+	})
+	return strings.Join(window, "\n")
 }
 
 // lineSimilarity scores two whitespace-normalized lines in [0,1]: 1.0 when one
@@ -1932,6 +2130,36 @@ func (e *LocalExecutionEnvironment) listDirectory(path string, depth int, visibl
 	return out, nil
 }
 
+// ListDirectoryWithBudget implements DirListBudgeter: ListDirectory as a
+// context-aware, budgeted page/walk. The walk stops once it has collected
+// enough entries to answer the page the budget was built for (#2375) — or
+// when the budget's bounds refuse — rather than enumerating the whole
+// requested subtree; a cancelled context aborts it. Depth is clamped to
+// MaxListDirDepth. What the walk collected is returned whole; slicing it
+// into the rendered page is the caller's.
+func (e *LocalExecutionEnvironment) ListDirectoryWithBudget(ctx context.Context, path string, depth int, budget *DirListBudget) ([]DirEntry, error) {
+	if budget == nil {
+		return nil, errors.New("list_dir requires a budget: pass execenv.NewDirListBudget(offset, limit, charBudget)")
+	}
+	if depth <= 0 {
+		depth = 1
+	}
+	depth = min(depth, MaxListDirDepth)
+	if sfs := e.sandbox(); sfs != nil {
+		defer sfs.release()
+		// Sandboxed: fd-anchored recursive walk (each subdir re-opened beneath
+		// its parent fd with O_NOFOLLOW; masked entries skipped; symlinks not
+		// followed) under the same bounds.
+		return sfs.listDirBudgeted(ctx, "list_dir", e.resolve(path), depth, budget)
+	}
+	root := e.resolve(path)
+	var out []DirEntry
+	if err := listDirWalk(ctx, root, "", depth, &out, budget); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // Glob returns absolute paths matching pattern (doublestar syntax) under
 // basePath, which defaults to RootDir and is resolved relative to RootDir when
 // not absolute. Results are sorted by modification time, newest first, with
@@ -2082,8 +2310,9 @@ func resolveGrepDir(path, rootDir string) string {
 
 // buildRipgrepArgs builds the ripgrep argument vector for a Grep call. It is the
 // pure arg-construction core: a fixed no-heading / no-color prefix, then exactly
-// one output-mode flag (files-with-matches / count / line-number), then optional
-// case-insensitivity and glob filter, then the trailing pattern and directory.
+// one output-mode flag (files-with-matches / count / line-number), then a NUL
+// path delimiter and the per-file size cap, then optional case-insensitivity
+// and glob filter, then the trailing pattern and directory.
 func buildRipgrepArgs(outputMode string, caseInsensitive bool, globFilter, pattern, dir string, contextLines int) []string {
 	filters := []string(nil)
 	if strings.TrimSpace(globFilter) != "" {
@@ -2105,7 +2334,11 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 	// --null ends each path with a NUL in place of its ":" or "-" (or line
 	// ending), so ripgrepOutputLines can find the whole path even when the
 	// name holds a newline.
-	args = append(args, "--null")
+	// --max-filesize mirrors the native reader's per-file cap: rg skips a
+	// file whose size already exceeds it, exactly as grepCappedRead stops and
+	// the walk skips the file, so an oversized file is treated the same with
+	// and without ripgrep.
+	args = append(args, "--null", "--max-filesize", strconv.Itoa(grepMaxFileBytes))
 	if caseInsensitive {
 		args = append(args, "-i")
 	}
@@ -2170,6 +2403,11 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	if skip != nil {
 		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
 	}
+	// Targets ripgrep cannot bound never reach it (see grepTakesNativeArm);
+	// the native walk applies the pseudo-root skip and the per-file read cap.
+	if grepTakesNativeArm(dir) {
+		return e.grepNativeSkipping(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines, skip)
+	}
 	rg, err := e.findExecutable("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
@@ -2190,24 +2428,173 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 	// "%VAR%" therefore stayed live there. Portable and shell-free beats
 	// platform-specific quoting: with argv in hand there is nothing to
 	// escape on any platform.
-	res, err := e.ExecArgv(ctx, rg, args, 10_000, e.RootDir, nil)
+	filesOnly := outputMode == "files_with_matches"
+	oneFile := grepTargetsOneFile(dir)
+	// Bound ripgrep's stdout at the capture itself, then parse the bounded bytes
+	// with the same formatter the native arm's lines go through, so the result
+	// keeps ripgrep's own exclusion rules by construction (rgCapture).
+	capture := newRgCapture(dir, filesOnly, grepRetainedBytes)
+	res, err := e.execPreparedCommandStdout(ctx, e.commands().Argv(rg, args...), 10_000, e.RootDir, nil, capture)
 	if err == nil {
 		// Keep the first maxResults lines. In content mode that counts context
 		// lines and "--" separators too, which is what the grep tool's
 		// max_results promises ("lines, file paths, or count entries by output
 		// mode", tool.DefGrep) and what grepAccum.feedContent counts, so with
 		// context_lines a cut can fall inside a match's context.
-		lines := ripgrepOutputLines(res.Stdout, dir, grepTargetsOneFile(dir), outputMode == "files_with_matches")
+		view := capture.view(filesOnly)
+		// A capture that left nothing out holds the stream in two pieces: the
+		// head, and the tail's records, which are the stream's own final ones
+		// whenever the cap fell on a record boundary (wholeStream). Parsing them
+		// together keeps a record the cap landed on whole instead of losing it to
+		// the tail note it does not need — nothing was omitted.
+		source := view.head
+		if whole := view.wholeStream(); whole != "" {
+			source = whole
+		}
+		lines := ripgrepOutputLines(source, dir, oneFile, filesOnly)
+		var notes []string
+		if view.omitted > 0 {
+			// The capture left bytes out; the note discloses that exactly as the
+			// native arm's retained-output budget does, and the stream's last
+			// records ride in the same note so the model still sees how the
+			// matches end — never as rows past maxResults.
+			notes = append(notes, grepRetainedTruncationNote())
+		}
+		// The tail is shown whenever the cap did something to the stream: it left
+		// bytes out, or it cut a tail record at its slot. Gating on the omission
+		// alone lost the tail of a boundary-ending cap that omitted nothing, with
+		// no disclosure at all.
+		if view.omitted > 0 || view.cut > 0 {
+			if tail := rgTailNote(view); tail != "" {
+				notes = append(notes, tail)
+			}
+		}
 		if len(lines) > maxResults {
-			return searchresult.WithNotes(strings.Join(lines[:maxResults], "\n"), grepTruncationNote(maxResults)), nil
+			notes = append(notes, grepTruncationNote(maxResults))
+		}
+		// rg skips over-cap files by --max-filesize without a trace in its
+		// output, so the same omission note the native walk's finishWalk
+		// composes is composed here, from ripgrep's own views of the tree.
+		oversized, cerr := e.grepRgOversizeCount(ctx, rg, dir, globFilters)
+		if cerr != nil {
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return "", cancelErr
+			}
+			// A listing that failed another way is no note: the disclosure
+			// is best-effort and must not assert a count it could not
+			// obtain — a failed listing is not an empty one.
+			oversized = 0
+		}
+		if oversized > 0 {
+			notes = append(notes, grepOversizeNote(oversized))
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if len(notes) > 0 {
+			return searchresult.WithNotes(strings.Join(lines[:min(len(lines), maxResults)], "\n"), notes...), nil
 		}
 		return strings.Join(lines, "\n"), nil
 	}
 	// Exit code 1 means "no matches" for rg.
 	if res.ExitCode == 1 {
+		// A directory whose only matching files were over-cap was not
+		// searched to its end: the empty says so rather than reading as
+		// "genuinely no matches".
+		oversized, cerr := e.grepRgOversizeCount(ctx, rg, dir, globFilters)
+		if cerr != nil {
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return "", cancelErr
+			}
+			oversized = 0
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if oversized > 0 {
+			return searchresult.WithNotes("", grepOversizeNote(oversized)), nil
+		}
 		return "", nil
 	}
-	return res.Stdout + res.Stderr, err
+	// The capture consumed rg's stdout, so a failed search's diagnostic shows the
+	// bounded prefix it kept beside rg's stderr.
+	return capture.diagnostics() + res.Stderr, err
+}
+
+// grepRgOversizeCount reports how many candidate files ripgrep leaves out of
+// a directory search by --max-filesize, so the rg arm can disclose the same
+// omissions the native walk's finishWalk does: the difference between the
+// files rg lists without the size filter and with it. Both listings run
+// through the same ripgrep with the same glob filters, so the count is rg's
+// own view of the tree — its ignore rules included — not a guess about which
+// files it would search. A named file never needs the count (an over-cap one
+// routes to the native arm), a cancelled search reports its cancellation,
+// and any listing that fails another way returns none: the disclosure is
+// best-effort and never fails the search it describes.
+func (e *LocalExecutionEnvironment) grepRgOversizeCount(ctx context.Context, rg, dir string, globFilters []string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if grepTargetsOneFile(dir) {
+		return 0, nil
+	}
+	all, err := e.grepRgListFiles(ctx, rg, dir, globFilters, false)
+	if err != nil {
+		return 0, err
+	}
+	under, err := e.grepRgListFiles(ctx, rg, dir, globFilters, true)
+	if err != nil {
+		return 0, err
+	}
+	if under > all {
+		return 0, nil
+	}
+	return all - under, nil
+}
+
+// grepRgListFiles counts one rg --files listing of dir: --null keeps the
+// paths separable and only their number matters — counted as they stream
+// through, so a listing of any size is never retained — and --max-filesize,
+// when capped, is the same filter the search itself passes. rg exits 1 for
+// a listing that found no file, so both 0 and 1 are a listing's answers;
+// anything else is a failure, which propagates so the caller suppresses the
+// note rather than deriving a count from a half-failed pair of listings,
+// while a cancellation is the search's error to report.
+func (e *LocalExecutionEnvironment) grepRgListFiles(ctx context.Context, rg, dir string, globFilters []string, capped bool) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	args := []string{"--files", "--null"}
+	if capped {
+		args = append(args, "--max-filesize", strconv.Itoa(grepMaxFileBytes))
+	}
+	for _, globFilter := range globFilters {
+		if strings.TrimSpace(globFilter) != "" {
+			args = append(args, "-g", globFilter)
+		}
+	}
+	args = append(args, "--", dir)
+	counter := &nulCounter{}
+	res, err := e.execPreparedCommandStdout(ctx, e.commands().Argv(rg, args...), 10_000, e.RootDir, nil, counter)
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return 0, cerr
+		}
+		if res.ExitCode != 0 && res.ExitCode != 1 {
+			return 0, err
+		}
+	}
+	return int(counter.n), nil
+}
+
+// nulCounter counts the NUL delimiters ripgrep --null ends each path with,
+// retaining nothing: whatever streams through is counted and dropped, so a
+// listing costs its delimiters' count and one pipe block of memory.
+type nulCounter struct{ n int64 }
+
+func (c *nulCounter) Write(p []byte) (int, error) {
+	c.n += int64(bytes.Count(p, []byte{0}))
+	return len(p), nil
 }
 
 // grepTargetsOneFile reports whether a grep's resolved target names a single
@@ -2354,19 +2741,38 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 	// secureDirFS policy on the sandboxed arm while retaining file-symlink
 	// behavior for the unsandboxed fallback.
 	budget := newGlobBudget("grep")
-	fsys := cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(path), budget: budget, ctx: ctx}}
+	// Reads go through grepAdmitFS rather than os.DirFS's blocking Open;
+	// cancellation and the listing budgets stay wrapped underneath it. A
+	// named target is the walk root's own file, so only that arm admits a
+	// device (see grepAdmitFS.admitDevice).
+	fsys := grepAdmitFS{
+		FS:          cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(path), budget: budget, ctx: ctx}},
+		root:        path,
+		ctx:         ctx,
+		admitDevice: singleFile,
+		rootPseudo:  grepRootIsPseudo(path),
+	}
 	// No masking concept off the sandboxed path: no-op skip.
 	ignoreFS := fsys
 	if singleFile {
 		// Preserve the old single-file behavior: ignore rules are rooted at the
 		// file argument, which cannot contain a .gitignore tree of its own.
-		ignoreFS = cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget, ctx: ctx}}
+		ignoreFS = grepAdmitFS{
+			FS:          cancelFS{ctx: ctx, fsys: boundedDirFS{FS: os.DirFS(filepath.Join(path, walkRoot)), budget: budget, ctx: ctx}},
+			root:        filepath.Join(path, walkRoot),
+			ctx:         ctx,
+			admitDevice: true,
+			rootPseudo:  grepRootIsPseudo(filepath.Join(path, walkRoot)),
+		}
 	}
-	ignores, err := loadIgnoreSet(ctx, ignoreFS, nil, budget, wholeBaseIgnoreScope())
+	ignores, err := loadIgnoreSet(ctx, ignoreFS, func(rel string) bool {
+		return walkSkipsPseudoDir(path, filepath.Join(path, rel))
+	}, budget, wholeBaseIgnoreScope())
 	if err != nil {
 		return "", err
 	}
 	excludedByIgnore := 0
+	oversized := 0
 
 	err = grepWalk(fsys, walkRoot, func(p string, d fs.DirEntry, err error) error {
 		if cancelErr := ctx.Err(); cancelErr != nil {
@@ -2402,6 +2808,9 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 					excludedByIgnore++
 					return filepath.SkipDir
 				}
+				if walkSkipsPseudoDir(path, filepath.Join(path, p)) {
+					return filepath.SkipDir
+				}
 			}
 			// fs.WalkDir never follows a directory symlink, so this walk
 			// cannot cycle back into itself the way the glob pattern walk's
@@ -2431,6 +2840,33 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 			if cancelErr := ctx.Err(); cancelErr != nil {
 				return cancelErr
 			}
+			if singleFile && errors.Is(err, errGrepFileTooLarge) {
+				// A file named as the target is a deliberate request: search
+				// the over-cap regular behind it in bounded windows. A device
+				// keeps the capped skip — its stream never ends, so bounding
+				// it is the cap's job, not the window's.
+				if opened, oerr := fsys.Open(p); oerr == nil {
+					if cf, ok := opened.(*grepCtxFile); ok {
+						if info, ierr := cf.Stat(); ierr == nil && info.Mode().IsRegular() {
+							stop, serr := a.feedLargeFile(cf.ctx, cf.File)
+							_ = cf.Close()
+							if serr != nil {
+								if cancelErr := ctx.Err(); cancelErr != nil {
+									return cancelErr
+								}
+								return nil //nolint:nilerr // best-effort grep: a stalled or failed stream is skipped, like an unreadable file
+							}
+							if stop {
+								return filepath.SkipAll
+							}
+							return nil
+						}
+					}
+					_ = opened.Close()
+				}
+			} else if errors.Is(err, errGrepFileTooLarge) {
+				oversized++
+			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files and keep walking
 		}
 		if a.feed(relPath, data) {
@@ -2444,7 +2880,7 @@ func (e *LocalExecutionEnvironment) grepNativeSkipping(ctx context.Context, patt
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return a.finishWalk(excludedByIgnore), nil
+	return a.finishWalk(excludedByIgnore, oversized), nil
 }
 
 // ExecCommand runs command through the platform shell in its own process group,
@@ -2482,6 +2918,17 @@ func (e *LocalExecutionEnvironment) resolveCommandWorkingDir(workingDir string) 
 }
 
 func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd commandRuntime, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
+	return e.execPreparedCommandStdout(ctx, cmd, timeoutMS, workingDir, envVars, nil)
+}
+
+// execPreparedCommandStdout is execPreparedCommand with stdout, when sink is
+// not nil, streamed to sink as it arrives instead of captured: a caller that
+// only counts or scans the stream lets any volume flow through without any
+// of it being retained. The same lifecycle owns the run — cancellation, the
+// timeout, process-group termination, the drain barrier, exit-code mapping —
+// and Stdout stays empty on the result, since the buffer nothing streamed
+// into is never read.
+func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Context, cmd commandRuntime, timeoutMS int, workingDir string, envVars map[string]string, sink io.Writer) (ExecResult, error) {
 	if timeoutMS <= 0 {
 		timeoutMS = 10_000
 	}
@@ -2491,15 +2938,19 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 	}
 
 	start := time.Now()
-	var stdout, stderr bytes.Buffer
+	stdout := newCappedOutputBuffer(e.outputCaptureCapBytes())
+	stderr := newCappedOutputBuffer(e.outputCaptureCapBytes())
 	env := injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir})
 	config := commandRuntimeConfig{
 		Dir:              dir,
 		Env:              env,
-		Stdout:           &stdout,
-		Stderr:           &stderr,
+		Stdout:           stdout,
+		Stderr:           stderr,
 		Wrapper:          e.Wrapper,
 		TerminationGrace: e.terminationGraceDuration(),
+	}
+	if sink != nil {
+		config.Stdout = sink
 	}
 	if args := cmd.Args(); len(args) > 0 {
 		if resolved, ok := lookPathInEnv(args[0], env); ok {
@@ -2578,11 +3029,13 @@ func (e *LocalExecutionEnvironment) execPreparedCommand(ctx context.Context, cmd
 	}
 
 	return ExecResult{
-		Stdout:     stdout.String(),
-		Stderr:     stderr.String(),
-		ExitCode:   exitCode,
-		TimedOut:   timedOut,
-		DurationMS: time.Since(start).Milliseconds(),
+		Stdout:          stdout.String(),
+		Stderr:          stderr.String(),
+		ExitCode:        exitCode,
+		TimedOut:        timedOut,
+		DurationMS:      time.Since(start).Milliseconds(),
+		StdoutTruncated: stdout.truncated(),
+		StderrTruncated: stderr.truncated(),
 	}, waitErr
 }
 

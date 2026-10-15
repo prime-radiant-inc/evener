@@ -1237,6 +1237,28 @@ test("codec accepts a row's turn end and unseen mark and refuses malformed ones"
   expect(() => statusFor({ unseen: "yes" })).toThrow();
 });
 
+// #4199: a row the rail files as archived carries that fact so the Board can
+// suppress its unread dot. The codec keeps a true flag on the materialized row
+// and refuses a non-boolean value, which the hub never sends.
+test("codec keeps a session's archived flag and refuses a non-boolean one", () => {
+  const rows = materializeSnapshot(key, decodedSnapshot(key, snapshotWithSessionField("archived", true)))
+    .sessions as Array<Record<string, unknown>>;
+  expect(rows[0]?.archived).toBe(true);
+
+  const session = entityKey(key, "1");
+  const statusFor = (extra: Record<string, unknown>) =>
+    decodeNavigationResponse(
+      key,
+      undefined,
+      snapshotResponse(key, {
+        ...liveSnapshot(),
+        entities: [{ key: session, kind: "session", value: { ...sessionValue("local:session"), ...extra } }],
+      }),
+    ).status;
+  expect(statusFor({ archived: false })).toBe("snapshot");
+  expect(() => statusFor({ archived: "yes" })).toThrow();
+});
+
 // A snapshot whose one session value carries `value` under `field`, for the
 // nested value records below.
 const snapshotWithSessionField = (field: string, value: unknown): NavigationSnapshot => ({

@@ -339,7 +339,7 @@ test("a non-image file is rejected: no item, no marker, and onRejected receives 
   expect(onRejected.mock.calls[0]?.[0]).toContain("notes.txt");
 });
 
-test("an oversized image is rejected before decode, naming the 8 MB limit", () => {
+test("an oversized image is rejected before decode, naming the file", () => {
   const editor = makeFakeEditor("", 0);
   const { result } = renderHook(() => useAttachments(editor));
   const onRejected = vi.fn();
@@ -349,7 +349,8 @@ test("an oversized image is rejected before decode, naming the 8 MB limit", () =
   });
 
   expect(result.current.items).toHaveLength(0);
-  expect(onRejected.mock.calls[0]?.[0]).toContain("maximum 8 MB");
+  expect(onRejected).toHaveBeenCalledTimes(1);
+  expect(onRejected.mock.calls[0]?.[0]).toContain("big.png");
 });
 
 test("a mixed accept+reject batch combines all rejections into one onRejected call while still accepting the good file", async () => {
@@ -374,7 +375,7 @@ test("a mixed accept+reject batch combines all rejections into one onRejected ca
   });
 });
 
-test("the 9th image in one session is rejected on the count cap, naming the 8-image limit", async () => {
+test("the 9th image in one session is rejected on the count cap, naming the file", async () => {
   const editor = makeFakeEditor("", 0);
   const { result } = renderHook(() => useAttachments(editor));
 
@@ -391,7 +392,8 @@ test("the 9th image in one session is rejected on the count cap, naming the 8-im
     result.current.ingestFiles([makeFile("ninth.png")], onRejected);
   });
   expect(result.current.items).toHaveLength(8);
-  expect(onRejected.mock.calls[0]?.[0]).toContain("maximum 8 images");
+  expect(onRejected).toHaveBeenCalledTimes(1);
+  expect(onRejected.mock.calls[0]?.[0]).toContain("ninth.png");
   await act(async () => {
     await Promise.all(decodes);
   });

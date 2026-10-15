@@ -19,24 +19,63 @@
 # Two independent things are checked, both from the same measurement:
 #
 #   - Per-package budget: fail at 1.5x the checked-in budget, warn at 1.1x.
-#   - Per-test ceiling (testing-budget.json's perTestCeilingSeconds, currently
-#     3s; 2s when a budget file does not name one at all):
-#     any single test or subtest over the ceiling is flagged regardless of its
-#     package's budget — one runaway test is a defect on its own.
+#   - Per-test ceiling, SEGMENTED BY TEST CLASS (testing-budget.json's
+#     perTestCeilingClasses; ruling, 2026-10-13, issue #4601):
+#       * A test named in a class — or a subtest of one (Name/sub) — is compared
+#         strictly against that class's ceiling; a breach FAILs regardless of its
+#         package's budget. The classes and their ceilings were drawn from the
+#         breaches #4601 recorded, each ceiling that class's largest CI observation
+#         across two runs + 25% rounded up to a multiple of five seconds, so one
+#         runaway test is a defect on its own.
+#       * A test in no class keeps the flat perTestCeilingSeconds (currently 3s;
+#         2s when a budget file does not name one at all) and stays WARN-ONLY in
+#         every mode, --strict included: the unclassified backlog never ran under
+#         a ceiling, so enforcing the flat 3s would red the gate on tests that
+#         were always over it. Give the test a class to enforce it.
+#     A 2026-10-14 ruling (issue #4615) removed four runner-bound classes whose
+#     wall time tracks how busy the runner is, not the code - dev-tool
+#     compile/CLI, install, transcript large-fixture and gate-runner integration.
+#     Their members now keep the flat perTestCeilingSeconds and stay warn-only,
+#     like the rest of the unclassified backlog; the sighting was #4615's
+#     TestCrossCompileWindows at 52.26s over its 15s class ceiling on a 67-line
+#     diff in internal/transcriptindex that could not cost 37 seconds. Two
+#     further classes are deliberately absent: bounded-wait unit has no class yet
+#     by ruling, so its members stay on the flat ceiling; the web repo-audit test
+#     was a class of one and #4608 split it into one case per slice rather than
+#     blessing it.
 #
 # A package the budget file does not mention is a WARN, not silently skipped —
 # see kata b6rv's stop condition. When the budget file is missing or its
 # "packages" map is empty, the WHOLE run is that same warn state and --check
 # always exits 0: the tree must stay green until a real baseline is blessed
 # (`make test-rebaseline`), never fail on a budget nobody has measured yet.
+# A MALFORMED budget file is different: only a missing (or empty) file is the
+# deliberate warn state. An unparseable file is a broken config, not an absent
+# one, so it fails in every mode naming the file and the parse error — otherwise
+# a stray comma would read as no baseline and silently disarm every ratio and
+# every perTestCeilingClasses ceiling (issue #4609). A budget whose TOP level is
+# not an object, a `packages` value that is present but not an object, the values
+# INSIDE that map, a `perTestCeilingSeconds` that is present but not a finite
+# number, and a `perTestCeilingClasses` that is present but not an object are the
+# same broken config reached different ways (issues #4614, #4618, #4622): a
+# hand-edit `"packages": []` would read as no baseline and disarm the whole
+# ratchet with a green gate; `"packages": "x"` and a string or null
+# `perTestCeilingSeconds` would crash with a traceback; a bool IS an int, so the
+# ratio is computed against True and `true` reads as a 1-second ceiling; an
+# Infinity package budget makes m/inf read 0 and a non-finite or huge-integer
+# ceiling never fires (silent disarms); and a null class map silently drops every
+# class ceiling. A non-object TOP level crashed with an AttributeError traceback —
+# #4609 left that shape alone because it already exited nonzero, but #4622's
+# contract is a failure that NAMES the file — so it takes this path too. All now
+# fail in every mode through the same path, naming the file, the entry or the
+# field.
 #
-# The one thing that fails in EVERY mode, --check or not, is a broken
-# measurement: `go list` or `go test` exiting nonzero, or a package go list
-# reported that the go test -json stream never mentions (issue #172 — a
-# package that fails to build used to contribute no rows, so --bless quietly
-# wrote a budget without it). A failed measurement exits before the comparison
-# and before any --bless: there is no honest baseline to write from a stream
-# nobody vouches for.
+# A broken measurement also fails in EVERY mode, --check or not: `go list` or
+# `go test` exiting nonzero, or a package go list reported that the go test
+# -json stream never mentions (issue #172 — a package that fails to build used
+# to contribute no rows, so --bless quietly wrote a budget without it). A failed
+# measurement exits before the comparison and before any --bless: there is no
+# honest baseline to write from a stream nobody vouches for.
 #
 # Usage:
 #   scripts/gate/test-timing-budget.sh                # measure + print (fails
@@ -62,9 +101,11 @@
 #                                                   # the coverage-floor web row's reuse of the vitest report
 #
 # --check's exit policy: CI is strict (a $CI-set environment, or --strict);
-# everywhere else is warn-only (--local, or --check with $CI unset). Strict
-# fails on a per-package ratio over 1.5x or any ceiling breach; warn-only
-# prints the identical diagnostics, labeled, and always exits 0. Bare
+# everywhere else is warn-only (--local, or --check with $CI unset). Strict fails
+# on a per-package ratio over 1.5x, on a blessed-class per-test ceiling breach,
+# and on a broken measurement; an unclassified test over the flat ceiling warns
+# in every mode (see above, #4601). Warn-only prints the identical
+# diagnostics, labeled, and always exits 0 except for a broken measurement. Bare
 # measurement (no --check) fails only on a broken measurement; its ratio and
 # ceiling verdicts are a report, like `evener dev coverage-floor` with neither
 # --check nor --bless.
@@ -123,6 +164,9 @@ fi
 # surface no gate reproduces.
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/scratch-lib.sh"
+# The row contract (go_test_json_to_tsv / vitest_json_to_tsv) is shared with
+# run-module-tests.sh, the gate's single measured producer (issue #144).
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/timing-tsv-lib.sh"
 
 if [ -n "$strict_override" ]; then
 	strict=$([ "$strict_override" = "1" ] && echo true || echo false)
@@ -137,55 +181,6 @@ scratch_dir work evener-testbudget
 
 measured="$work/measured.tsv"
 : >"$measured"
-
-# go_test_json_to_tsv PACKAGE_JSON_LOG EXPECTED_PACKAGES_FILE
-# — prints the ratchet's rows for one module: one "PKG\t<package>" line per
-# package-level terminal event, one "TEST\t<package>\t<name>\t<seconds>" line per
-# test AND subtest result (what the ceiling check needs to catch a slow subtest a
-# top-level-only view would hide), and one "SUM\t<package>\t<seconds>" line per
-# package, the package's own wall time read from its terminal event's Elapsed
-# field. (The SUM used to be the sum of top-level Test/Example Elapsed; under
-# t.Parallel that counts overlapping tests additively, so it measured contention
-# as much as work — issue #172.)
-#
-# go test -json emits exactly one terminal event for EVERY package it was asked
-# to test — including a package with no test files (skip) and a package that
-# fails to build (fail). $2 lists what `go list ./...` reported, one import path
-# per line; any of those the stream never ends is the silent-drop shape issue
-# #172 filed (a build-failed package contributing no rows, so --bless quietly
-# wrote a budget without it) and fails the whole run.
-#
-# The parsing is `evener-dev timing-parse`, unit-tested in Go against JSON stream
-# strings rather than through a faked toolchain (issue #172 review;
-# docs/developing-evener/testing.md's port-on-touch rule). GOFLAGS= keeps an
-# inherited GOFLAGS from changing how the helper itself builds.
-go_test_json_to_tsv() {
-	( cd "$repo_root" && GOFLAGS= go run ./cmd/evener-dev/bin dev timing-parse --json "$1" --packages "$2" )
-}
-
-# vitest_json_to_tsv REPORT_JSON >> measured.tsv — rolls the whole frontend
-# suite up under one package key, "web": vitest has no per-package shape the
-# way a Go module does, and the budget's own doc comment names this as the
-# design. duration is milliseconds in the vitest/Jest-compatible JSON reporter;
-# everything else in this file is seconds.
-vitest_json_to_tsv() {
-	python3 - "$1" <<'PY'
-import json, sys
-
-with open(sys.argv[1]) as fh:
-	report = json.load(fh)
-
-total = 0.0
-for suite in report.get("testResults", []):
-	for a in suite.get("assertionResults", []):
-		secs = a.get("duration") or 0
-		secs = secs / 1000.0
-		name = a.get("fullName") or a.get("title") or "(unnamed)"
-		print(f"TEST\tweb\t{name}\t{secs}")
-		total += secs
-print(f"SUM\tweb\t{total}")
-PY
-}
 
 module_short_flag() {
 	[ "$1" = "." ] && printf '' || printf -- '-short'
@@ -307,13 +302,14 @@ if [ -z "$measured_override" ] && [ "$modules_overridden" -eq 0 ] && [ "$module_
 fi
 
 # compare.py is the whole comparison contract: package ratios against the
-# checked-in budget, the flat per-test ceiling, the missing-budget-entry warn,
-# and the global no-baseline-yet warn. It can be exercised entirely through
+# checked-in budget, the per-class per-test ceilings (strict) plus the flat
+# per-test ceiling (warn-only for an unclassified test), the missing-budget-entry
+# warn, and the global no-baseline-yet warn. It can be exercised entirely through
 # --budget/--modules/measured.tsv, with no go test or vitest run involved —
 # the fixture IS the input this step reads.
 compare_out="$work/compare.txt"
 python3 - "$measured" "$budget_file" "$bless" "$check" "$strict" "$compare_out" "$bless_full" <<'PY'
-import json, sys
+import json, math, sys
 
 measured_path, budget_path, bless, check, strict, out_path, bless_full = sys.argv[1:8]
 bless = bless == "true"
@@ -335,9 +331,10 @@ WARN_RATIO = 1.1
 WALL_METRIC = "package-wall-seconds"
 
 # The frontend rolls up under this one key. Its number is the vitest reporter's
-# assertion durations, the same metric issue #172 left unchanged, so it stays
-# comparable to the checked-in budget even while the Go packages' units are
-# stale and held back (below).
+# assertion durations, the same metric issue #172 left unchanged, but the
+# checked-in entry was blessed on a different host than a CI runner, so its
+# measurement is not comparable to this run's either and it warns with the Go
+# rows until #141 re-blesses the baseline for the host class CI uses.
 WEB_KEY = "web"
 
 sums = {}
@@ -360,14 +357,122 @@ with open(measured_path) as fh:
 			if parts[1]:
 				sums.setdefault(parts[1], 0.0)
 
+def fail_malformed(what):
+	# A malformed budget is a broken config, not an absent one. The missing-file
+	# warn state below is deliberate (kata b6rv): the tree stays green until a
+	# measured baseline is blessed. A syntax error must not ride that path —
+	# collapsing it into `budget = {}` reads as no baseline and silently disarms
+	# every package ratio and every perTestCeilingClasses ceiling, with nothing
+	# naming the syntax error (issue #4609). Fail in every mode, before any bless,
+	# naming the file and the problem.
+	with open(out_path, "w") as fh:
+		fh.write("FAIL  MALFORMED BUDGET: testing-budget.json " + what
+			+ " (" + budget_path + ")\n")
+	sys.exit(1)
+
+def seconds_error(value):
+	# Why `value` cannot serve as a number of seconds, or None if it can. bool is an
+	# int subclass in Python, so it is rejected explicitly (True would otherwise read
+	# as 1). A JSON float can be Infinity or NaN, and a JSON integer can be too large
+	# to convert to a float — a 400-digit literal, which would crash the ratio
+	# arithmetic below and is no more a usable seconds value than Infinity is. The
+	# package map and the flat perTestCeilingSeconds share this one definition.
+	if isinstance(value, bool) or not isinstance(value, (int, float)):
+		return "got " + type(value).__name__
+	try:
+		if math.isfinite(value):
+			return None
+	except OverflowError:
+		return "too large for a float"
+	return "got " + json.dumps(value)
+
 try:
 	with open(budget_path) as fh:
 		budget = json.load(fh)
-except (FileNotFoundError, ValueError):
+except FileNotFoundError:
 	budget = {}
+except ValueError as exc:
+	fail_malformed("could not be parsed: " + str(exc))
 
-packages = budget.get("packages") or {}
+# A budget whose TOP level is not an object is a broken config, not an empty one:
+# budget.get below would crash a list, number, string, null or bool with an
+# AttributeError traceback. #4609 left this shape alone because it already exited
+# nonzero (through the traceback), but issue #4622 requires every malformed shape
+# to fail loudly NAMING the file, so it takes the same path as the rest
+# (#4609/#4614/#4618) instead of an unnamed crash.
+if not isinstance(budget, dict):
+	fail_malformed("must be a JSON object (got " + type(budget).__name__ + ")")
+
+# A `packages` value present but not an object is a broken config, not an empty
+# map: `packages or {}` swallowed the falsy mistakes ([], 0, false, "") into the
+# NO BASELINE warn state (exit 0, nothing enforced) and crashed on the truthy
+# ones (issue #4614). Test the KEY, not the value — `budget.get` cannot tell an
+# absent key from an explicit `null`, and `{"packages": null}` disarms the same
+# way — and route it through the malformed-config path above (#4609), which fails
+# in every mode naming the file. `budget` is an object by the guard above.
+if "packages" in budget and not isinstance(budget["packages"], dict):
+	fail_malformed("packages must be an object mapping each package to its budget seconds (got "
+		+ type(budget["packages"]).__name__ + ")")
+packages = budget.get("packages", {})
+
+# Every package VALUE must be a usable number, not only the map's type (issue
+# #4618). A string crashes the ratio below with a TypeError traceback, a bool IS
+# an int in Python (True/False) so the ratio is computed against 1 or 0, and a
+# null reads as "no budget entry" — a WARN that leaves the package silently
+# unenforced. A non-finite value is worse than either: m/inf reads 0, so the
+# package prints OK and the run exits 0 with the package silently disarmed, and a
+# 400-digit integer tracebacks the arithmetic (issue #4622). Route each through
+# the malformed-config path above, which fails in every mode naming the entry.
+# The loop runs only for an object `packages` (the top-level guard above).
+for pkg, budget_secs in packages.items():
+	problem = seconds_error(budget_secs)
+	if problem:
+		fail_malformed("packages[" + json.dumps(pkg) + "] must be a number of seconds (" + problem + ")")
+
+# The flat ceiling is read with budget.get, so a present null cannot be told from
+# an absent key — test the KEY, as `packages` and the class map do. A string,
+# null, list or object crashes the `secs > ceiling` comparison with a TypeError
+# traceback; a bool IS an int so `true` silently becomes a 1-second ceiling; and a
+# non-finite value silently disarms the ceiling instead of bounding it. Each is a
+# broken config reached the same way as the package values above (issue #4622),
+# so each takes the malformed-config path and fails in every mode naming the field.
+if "perTestCeilingSeconds" in budget:
+	problem = seconds_error(budget["perTestCeilingSeconds"])
+	if problem:
+		fail_malformed("perTestCeilingSeconds must be a number of seconds (" + problem + ")")
 ceiling = budget.get("perTestCeilingSeconds", DEFAULT_CEILING)
+
+# The per-class ceilings (#4601, ruling 2026-10-13). A test whose name is listed
+# in a class, or is a subtest of one (Name/sub), is compared STRICTLY against
+# that class's ceiling; a test in no class keeps the flat `ceiling` above and
+# stays warn-only in every mode, so the unclassified backlog cannot red the
+# gate. Membership is by test name, not by package, because one package holds
+# several classes (issue #4601). A name matched by more than one class is a
+# config error, reported as a FAIL: the map is hand-edited, and silently
+# picking the first class would enforce the wrong number.
+# A perTestCeilingClasses present but not an object is a broken config, not "no
+# classes": `budget.get` cannot tell an absent key from an explicit `null`, so
+# `{"perTestCeilingClasses": null}` read as an empty map and silently disarmed
+# every class ceiling, while the other non-object values (`[]`, `false`, `0`,
+# `""`) failed only under the strict posture (issue #4618). Test the KEY and
+# route all of them through the malformed-config path above, as the `packages`
+# value does (#4614): they fail in every mode, not only strict. An absent key
+# still means no classes, which is fine. The `packages` read above has already
+# made `budget` an object, so no isinstance guard is needed here.
+if "perTestCeilingClasses" in budget and not isinstance(budget["perTestCeilingClasses"], dict):
+	fail_malformed("perTestCeilingClasses must be an object mapping each class to "
+		"{ceilingSeconds, tests} (got " + type(budget["perTestCeilingClasses"]).__name__ + ")")
+ceiling_classes = budget.get("perTestCeilingClasses", {})
+
+def class_memberships(name):
+	found = []
+	for class_name, spec in ceiling_classes.items():
+		for member in spec.get("tests", []):
+			if name == member or name.startswith(member + "/"):
+				found.append((class_name, spec.get("ceilingSeconds")))
+				break
+	return found
+
 no_baseline = len(packages) == 0
 had_metric = budget.get("metric") == WALL_METRIC
 stale_units = not no_baseline and not had_metric
@@ -380,16 +485,54 @@ def raise_worst(level):
 	if order[level] > order[worst]:
 		worst = level
 
+# A class must be an object naming a usable (non-bool) ceiling and a non-empty
+# list of string test names. The ceiling goes through the shared seconds_error
+# definition and the malformed-config path above — every mode, naming the class
+# and the field — like the package values and the flat perTestCeilingSeconds
+# (#4629). The remaining faults (a non-object spec, or a `tests` string that
+# iterates as characters and matches nothing) FAIL naming the class and drop the
+# class, leaving its members on the flat warn-only default below rather than
+# crashing the check. (The map itself being a non-object is the harder error
+# above, handled before any class is read.)
+valid_classes = {}
+for class_name, spec in ceiling_classes.items():
+	bad_spec = (f"FAIL  ceiling class '{class_name}' must be an object with a "
+		f"non-empty tests list of strings (testing-budget.json perTestCeilingClasses)")
+	if not isinstance(spec, dict):
+		lines.append(bad_spec)
+		raise_worst("fail")
+		continue
+	# seconds_error is the one definition of "cannot serve as seconds", and it is
+	# overflow-safe: a JSON integer too large to convert to a float used to reach
+	# math.isfinite first and raise OverflowError — a traceback in every mode, from
+	# a shape the strict-only FAIL line below would only have downgraded (#4629).
+	# Routing its problem through fail_malformed names the class and the field in
+	# every mode. A huge but FINITE ceiling stays accepted: a ceiling is an upper
+	# bound, so a very large finite value simply disables that class.
+	problem = seconds_error(spec.get("ceilingSeconds"))
+	if problem:
+		fail_malformed("perTestCeilingClasses[" + json.dumps(class_name)
+			+ "].ceilingSeconds must be a number of seconds (" + problem + ")")
+	if (not isinstance(spec.get("tests"), list)
+			or not spec.get("tests")
+			or not all(isinstance(t, str) for t in spec.get("tests"))):
+		lines.append(bad_spec)
+		raise_worst("fail")
+		continue
+	valid_classes[class_name] = spec
+ceiling_classes = valid_classes
+
 if no_baseline:
 	lines.append("NO BASELINE: testing-budget.json has no packages recorded yet; every "
 		"result below is informational only and --check always exits 0 until "
 		"`make test-rebaseline` lands a measured baseline (kata b6rv).")
 elif stale_units:
 	lines.append("STALE UNITS: testing-budget.json's Go-package numbers were blessed "
-		"under the pre-#172 sum-of-test-Elapsed metric; they are not comparable to the "
-		"package wall time measured now, so their ratio failures are warnings until #141 "
-		f"regenerates the baseline (a rebaseline records \"metric\": \"{WALL_METRIC}\"). "
-		f"The \"{WEB_KEY}\" entry is the unchanged vitest metric and stays enforced.")
+		"under the pre-#172 sum-of-test-Elapsed metric and its "
+		f"\"{WEB_KEY}\" entry on a different host than this run, so no ratio in it is "
+		"comparable to what this run measured; every ratio failure below warns, with its "
+		"numbers, until #141 re-blesses the baseline for the host class CI uses "
+		f"(a rebaseline records \"metric\": \"{WALL_METRIC}\").")
 
 for pkg in sorted(sums):
 	m = sums[pkg]
@@ -400,7 +543,7 @@ for pkg in sorted(sums):
 		continue
 	ratio = (m / b) if b > 0 else (float("inf") if m > 0 else 0.0)
 	if ratio > FAIL_RATIO:
-		if stale_units and pkg != WEB_KEY:
+		if stale_units:
 			lines.append(f"WARN  {pkg}: {m:.2f}s over stale budget {b:.2f}s "
 				f"({ratio:.2f}x > {FAIL_RATIO}x; not enforced until the #141 rebaseline)")
 			raise_worst("warn")
@@ -414,9 +557,34 @@ for pkg in sorted(sums):
 		lines.append(f"OK    {pkg}: {m:.2f}s (budget {b:.2f}s)")
 
 for pkg, name, secs in tests:
-	if secs > ceiling:
-		lines.append(f"FAIL  {pkg}: test {name} took {secs:.2f}s, over the {ceiling:.2f}s per-test ceiling")
+	# A test in a class is compared STRICTLY against that class's ceiling
+	# (#4601, ruling 2026-10-13): the classes are drawn, so a breach is a real
+	# regression and FAILs — nonzero under --check in a CI-shaped environment or
+	# --strict. Membership is by name; a subtest inherits its parent's class.
+	memberships = class_memberships(name)
+	if len(memberships) > 1:
+		listed = ", ".join(f"'{c}'" for c, _ in memberships)
+		lines.append(f"FAIL  {pkg}: test {name} is listed in more than one ceiling class ({listed}); "
+			f"a test must belong to exactly one class in testing-budget.json perTestCeilingClasses")
 		raise_worst("fail")
+		continue
+	if memberships:
+		class_name, class_ceiling = memberships[0]
+		if secs > class_ceiling:
+			lines.append(f"FAIL  {pkg}: test {name} took {secs:.2f}s, over its {class_ceiling:g}s "
+				f"'{class_name}' class ceiling")
+			raise_worst("fail")
+		else:
+			lines.append(f"OK    {pkg}: test {name} {secs:.2f}s (class '{class_name}', ceiling {class_ceiling:g}s)")
+		continue
+	if secs > ceiling:
+		# A test in no class keeps the flat ceiling and stays warn-only in EVERY
+		# mode, --strict included (#4601): the unclassified backlog has never run
+		# under a ceiling, so enforcing the flat 3s would red the gate on tests
+		# that were always over it. Give the test a class to enforce it.
+		lines.append(f"WARN  {pkg}: test {name} took {secs:.2f}s, over the {ceiling:.2f}s per-test ceiling "
+			f"(unclassified; warn-only, #4601)")
+		raise_worst("warn")
 
 # no_baseline is the ONE place the "tree must stay green" rule is enforced
 # (below, in exit_code): severity above is computed the same way regardless of
@@ -474,8 +642,10 @@ if check:
 		exit_code = 1 if worst == "fail" else 0
 	else:
 		exit_code = 0
-		if worst != "ok":
+		if worst == "fail":
 			lines.append(f"warn-only run: would exit non-zero under --strict/CI ({worst})")
+		elif worst == "warn":
+			lines.append("warn-only run: the warnings above are reported but not enforced")
 
 with open(out_path, "w") as fh:
 	fh.write("\n".join(lines) + ("\n" if lines else ""))

@@ -319,7 +319,7 @@ func TestDelegateControllerStopDrainsSteeringAndModelClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("successor model request: %v", err)
 	}
-	if got := countMessageText(history, "stop-racing steer"); got != 1 {
+	if got := countMessageText(history, parentMessageAttribution+"stop-racing steer"); got != 1 {
 		t.Fatalf("successor replay contains accepted pre-stop steer %d times, want once: %#v", got, history)
 	}
 }

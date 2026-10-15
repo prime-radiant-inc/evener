@@ -240,10 +240,7 @@ func TestSessionDeleteRemovesTheSessionsDaemonLog(t *testing.T) {
 // A deleted session's scratch tree (root and delegates) goes with it; an
 // unrelated session's tree stays.
 func TestSessionDeleteRemovesTheSessionsScratchTree(t *testing.T) {
-	tmp, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	tmp := canonicalTempDir(t)
 	t.Setenv("TMPDIR", tmp)
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
@@ -282,14 +279,8 @@ func TestSessionDeleteRemovesTheSessionsScratchTree(t *testing.T) {
 // Deleting a session whose daemon ran with its own TMPDIR removes the tree
 // from that temp dir, which the session's meta records.
 func TestSessionDeleteRemovesTheTreeInTheDaemonsTempDir(t *testing.T) {
-	hubTmp, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	daemonTmp, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	hubTmp := canonicalTempDir(t)
+	daemonTmp := canonicalTempDir(t)
 	root := t.TempDir()
 	project, err := identifier.ResolveProject(t.TempDir())
 	if err != nil {
@@ -836,7 +827,7 @@ func TestSessionDeletePreservesDaemonOwnedDelegates(t *testing.T) {
 				if err == nil && len(response.Skipped) != 1 {
 					t.Errorf("missing ownership refusal: %+v", response)
 				}
-				if status != "unconfirmed" && (err != nil || len(response.Skipped) != 1 || response.Skipped[0].Reason != "resumed live") {
+				if status != "unconfirmed" && (err != nil || len(response.Skipped) != 1 || response.Skipped[0].ID != childID || response.Skipped[0].Kind != appwire.SkipKindLive) {
 					t.Errorf("verified owner not classified live: response=%+v error=%v", response, err)
 				}
 				for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".api.jsonl"} {

@@ -64,7 +64,9 @@ export interface ApprovalCard {
 	target: string;
 	scope: string;
 	partiallyRan: boolean;
-	primary: { label: string; detail: string };
+	/** What Allow grants: the one named file, or this one action when the hub
+	 * couldn't name the path. */
+	primary: { kind: "file" | "once"; label: string; detail: string };
 }
 
 // The hub's floor when it can't name the denied path
@@ -87,8 +89,8 @@ export function approvalCard(request: SandboxEscalationRequested): ApprovalCard 
 		scope: scopeSentence(request.mode, reads),
 		partiallyRan: request.partiallyRan === true,
 		primary: named
-			? { label: "Allow this file only", detail: "It will ask again for the next one" }
-			: { label: "Allow once", detail: "Just this action" },
+			? { kind: "file", label: "Allow this file only", detail: "It will ask again for the next one" }
+			: { kind: "once", label: "Allow once", detail: "Just this action" },
 	};
 }
 

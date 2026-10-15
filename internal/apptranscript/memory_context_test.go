@@ -113,9 +113,9 @@ func TestMemoryContextProjectionSplitsSections(t *testing.T) {
 	t.Parallel()
 	sections := []string{
 		MemoryIndexSection("personal", "current", false, "- [a](a.md) — opaque-personal\n"),
-		MemoryIndexChangesSection("project", []string{"- [new](new.md) — opaque-added"}, []string{"- [old](old.md) — opaque-removed"}),
-		MemoryIndexChangeCountsSection("personal", 150, 3),
-		MemoryPageChangesSection("project", []MemoryPageChange{{Path: "opaque-changed.md"}, {Path: "opaque-gone.md", Removed: true}}),
+		MemoryIndexChangesSection("project", []string{"- [new](new.md) — opaque-added"}),
+		MemoryIndexChangeCountsSection("personal", 150),
+		MemoryPageChangesSection("project", []string{"opaque-changed.md", "opaque-gone.md"}),
 	}
 	items := ProjectTurn("memory-turn", 3, memoryContextTurn(memoryContextRecord(sections...)), NewToolCallRegistry(), nil, nil)
 	if len(items) != len(sections) {
@@ -166,9 +166,11 @@ func TestMemoryContextProjectionRejectsMalformed(t *testing.T) {
 		{name: "unknown-state", text: memoryContextRecord("Project memory: gone.")},
 		{name: "trailing-garbage", text: memoryContextRecord(index + " trailing")},
 		{name: "index-with-more-lines", text: memoryContextRecord(index + "\nmore")},
-		{name: "bad-change-line", text: memoryContextRecord(MemoryIndexChangesSection("project", []string{"x"}, nil) + "\nchanged \"y\"")},
-		{name: "empty-change-list", text: memoryContextRecord(MemoryIndexChangesSection("project", nil, nil))},
-		{name: "bad-page-state", text: memoryContextRecord(strings.Replace(MemoryPageChangesSection("project", []MemoryPageChange{{Path: "a.md"}}), " changed", " edited", 1))},
+		{name: "bad-change-line", text: memoryContextRecord(MemoryIndexChangesSection("project", []string{"x"}) + "\nchanged \"y\"")},
+		{name: "empty-change-list", text: memoryContextRecord(MemoryIndexChangesSection("project", nil))},
+		{name: "bad-page-state", text: memoryContextRecord(strings.Replace(MemoryPageChangesSection("project", []string{"a.md"}), " changed", " edited", 1))},
+		{name: "removed-index-line", text: memoryContextRecord(MemoryIndexChangesSection("project", []string{"x"}) + "\n" + `removed "y"`)},
+		{name: "removed-page-line", text: memoryContextRecord(strings.Replace(MemoryPageChangesSection("project", []string{"a.md"}), " changed", " removed", 1))},
 		{name: "plain-text", text: "opaque-memory-display-78"},
 	}
 	for _, tc := range cases {
@@ -229,7 +231,7 @@ func TestMemoryContextProjectionReloadParity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := memoryContextRecord(MemoryIndexSection("project", "current", true, "opaque-parity\n"), MemoryPageChangesSection("project", []MemoryPageChange{{Path: "opaque-parity.md"}}))
+	text := memoryContextRecord(MemoryIndexSection("project", "current", true, "opaque-parity\n"), MemoryPageChangesSection("project", []string{"opaque-parity.md"}))
 	turn := memoryContextTurn(text)
 	if err := w.Append(turn); err != nil {
 		t.Fatal(err)

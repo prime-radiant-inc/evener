@@ -29,6 +29,7 @@ const BASE_THREAD = {
   contextUsed: 0,
   contextWindow: 100,
   contextPressure: 0,
+  contextAssumed: false,
   usage: null,
   workMillis: 0,
 } as unknown as Omit<ThreadModel, "turns">;
@@ -259,6 +260,14 @@ describe("transcript projector", () => {
 
     expect(entriesFor(model, preset("chat")).map((entry) => entry.id)).toEqual(["steer-user", "note"]);
     expect(entriesFor(model, preset("chat")).every((entry) => entry.kind === "critical")).toBe(true);
+  });
+
+  test("a steer from the parent agent shows at chat: it is a colleague's message, not daemon plumbing", () => {
+    const model = threadWith(item("steer-parent", "steering", { text: "Use the drain_log table.", source: "parent" }));
+
+    expect(entriesFor(model, preset("chat")).map((entry) => [entry.id, entry.kind])).toEqual([
+      ["steer-parent", "critical"],
+    ]);
   });
 
   test("the terminal fallback does not resurrect a daemon steer chat hid when the error end cap renders", () => {

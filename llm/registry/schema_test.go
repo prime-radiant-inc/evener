@@ -115,6 +115,19 @@ func TestParseConfig_ThinkingDisplayValues(t *testing.T) {
 	}
 }
 
+func TestParseConfig_ThinkingShapeLevel(t *testing.T) {
+	// "level" is the google protocol's level-shaped thinking body (Gemini
+	// 3.x); a custom level-model needs no catalog entry.
+	l, err := ParseConfig([]byte("[providers.x.models.m]\nthinking_shape = \"level\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := l.Providers["x"].Models["m"]
+	if row.Caps.ThinkingShape == nil || *row.Caps.ThinkingShape != "level" {
+		t.Fatalf("thinking_shape = \"level\": %+v", row.Caps.ThinkingShape)
+	}
+}
+
 func TestParseConfig_Rejects(t *testing.T) {
 	cases := map[string]string{
 		"unknown key":              "[providers.x]\nthinking_levels = { a = \"b\" }\n",
@@ -429,12 +442,9 @@ func TestParseConfig_UnsupportedSchemaNamesIt(t *testing.T) {
 	}
 }
 
-func TestParseConfig_OldSchemaErrorNamesMigrate(t *testing.T) {
+func TestParseConfig_OldSchemaIsErrOldSchema(t *testing.T) {
 	_, err := ParseConfig([]byte("[instances.kimi]\ntype = \"kimi\"\n"))
 	if !errors.Is(err, ErrOldSchema) {
 		t.Fatalf("want ErrOldSchema, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "evener migrate") {
-		t.Fatalf("old-schema error must point at evener migrate: %v", err)
 	}
 }

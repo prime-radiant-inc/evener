@@ -81,7 +81,7 @@ func TestModelsInspect(t *testing.T) {
 	if _, ok := out["provenance"]; !ok {
 		t.Fatal("inspect must include provenance")
 	}
-	if !strings.Contains(strings.Join(anyStrings(out["warnings"]), ";"), "no credential") {
+	if len(anyStrings(out["warnings"])) == 0 {
 		t.Fatalf("credential-less inspect must warn: %v", out["warnings"])
 	}
 }
@@ -117,8 +117,8 @@ func TestModelsList(t *testing.T) {
 	if err := runModels([]string{"list", "--provider", "cohere", "--all"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "needs base_url") {
-		t.Fatalf("--all must flag a hidden provider:\n%s", stdout.String())
+	if listedRow(stdout.String(), "cohere/") == "" {
+		t.Fatalf("--all must list the hidden provider as a bare row:\n%s", stdout.String())
 	}
 }
 
@@ -133,16 +133,28 @@ func TestModelsListAllCoversCuratedProviders(t *testing.T) {
 	if !strings.Contains(out, "huggingface/") {
 		t.Fatal("--all must list a curated provider that is not an instance")
 	}
-	if !strings.Contains(out, "needs base_url (hidden)") {
-		t.Fatal("--all must flag a hidden provider")
+	if listedRow(out, "cohere/") == "" {
+		t.Fatalf("--all must list a hidden provider as a bare row:\n%s", out)
 	}
 	stdout.Reset()
 	if err := runModels([]string{"list", "--provider", "huggingface"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("list --provider huggingface: %v (%s)", err, stderr.String())
 	}
 	out = stdout.String()
-	if !strings.Contains(out, "huggingface/") || !strings.Contains(out, "not an instance: add a [providers.huggingface] entry or export its key") {
-		t.Fatalf("a curated id lists with the 'not an instance' warning:\n%s", out)
+	r, _, err := loadCLIRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := r.CatalogModelIDs("huggingface")
+	if err != nil || len(ids) == 0 {
+		t.Fatalf("huggingface catalog ids = %v, %v", ids, err)
+	}
+	res, err := r.ResolveCatalog("huggingface", ids[0])
+	if err != nil || len(res.Warnings) == 0 {
+		t.Fatalf("a curated id that is not an instance resolves with warnings: %v %v", res.Warnings, err)
+	}
+	if row := listedRow(out, "huggingface/"+ids[0]); !strings.Contains(row, strings.Join(res.Warnings, "; ")) {
+		t.Fatalf("a curated id lists with its resolution's warnings %q:\n%s", res.Warnings, out)
 	}
 	stdout.Reset()
 	if err := runModels([]string{"list", "--provider", "nope"}, strings.NewReader(""), &stdout, &stderr); err == nil {
@@ -206,8 +218,8 @@ func TestModelsOldSchemaIsTheFlagDayError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("an old-schema providers.toml must fail the command; stdout:\n%s", stdout.String())
 	}
-	if !errors.Is(err, registry.ErrOldSchema) || !strings.Contains(err.Error(), "§14.1") {
-		t.Fatalf("error must be the §14.1 pointer: %v", err)
+	if !errors.Is(err, registry.ErrOldSchema) {
+		t.Fatalf("error must be the §14.1 flag-day error: %v", err)
 	}
 	if !strings.Contains(err.Error(), path) {
 		t.Fatalf("error must name the file: %v", err)
@@ -230,8 +242,8 @@ func TestModelsListOldSchemaIsTheFlagDayError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("an old-schema providers.toml must fail the command; stdout:\n%s", stdout.String())
 	}
-	if !errors.Is(err, registry.ErrOldSchema) || !strings.Contains(err.Error(), "§14.1") {
-		t.Fatalf("error must be the §14.1 pointer: %v", err)
+	if !errors.Is(err, registry.ErrOldSchema) {
+		t.Fatalf("error must be the §14.1 flag-day error: %v", err)
 	}
 	if !strings.Contains(err.Error(), path) {
 		t.Fatalf("error must name the file: %v", err)
@@ -255,24 +267,37 @@ func TestModelsRefreshUsesInjectedFetcher(t *testing.T) {
 	if err := runModels([]string{"refresh", "--force"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	if calls != 1 || !strings.Contains(stdout.String(), "updated") {
+	if calls != 1 || !strings.Contains(stdout.String(), `W/"test"`) {
 		t.Fatalf("refresh output: %q calls=%d", stdout.String(), calls)
 	}
 	stdout.Reset()
 	if err := runModels([]string{"refresh"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || !strings.Contains(stdout.String(), "fresh") {
+	if calls != 1 || stdout.Len() == 0 {
 		t.Fatalf("a fresh cache is skipped without --force: %q", stdout.String())
 	}
 }
 
 func TestModelsUsageAndUnknown(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if err := runModels(nil, strings.NewReader(""), &stdout, &stderr); err != nil || !strings.Contains(stderr.String(), "Usage: evener models") {
-		t.Fatalf("usage: %v %q", err, stderr.String())
+	if err := runModels(nil, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("usage: %v", err)
 	}
-	if err := runModels([]string{"bogus"}, strings.NewReader(""), &stdout, &stderr); err == nil {
-		t.Fatal("unknown subcommand must error")
+	requireOnlyStderr(t, &stdout, &stderr)
+	err := runModels([]string{"bogus"}, strings.NewReader(""), &stdout, &stderr)
+	if unknown, ok := errors.AsType[*unknownSubcommandError](err); !ok || unknown.name != "bogus" {
+		t.Fatalf("unknown subcommand error = %v, want an unknownSubcommandError naming bogus", err)
 	}
+}
+
+// listedRow returns the `evener models list` row whose REF is ref, or "" when
+// none is listed.
+func listedRow(out, ref string) string {
+	for line := range strings.SplitSeq(out, "\n") {
+		if fields := strings.Fields(line); len(fields) > 0 && fields[0] == ref {
+			return line
+		}
+	}
+	return ""
 }

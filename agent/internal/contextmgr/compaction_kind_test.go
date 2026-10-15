@@ -345,6 +345,8 @@ func TestCheckpoint_SectionHeadingsInsideFencesAreContent(t *testing.T) {
 
 // Earlier summaries and fixed metadata together cannot push a checkpoint past
 // its cap: the earlier summaries yield, so the conversation's floor still fits.
+// (The conversation here is the agent's own replies, which shed; the human
+// partner's messages are kept even past the cap.)
 func TestFormatCheckpoint_EarlierSummariesKeepTheCap(t *testing.T) {
 	const maxChars = 4000
 	data := checkpointData{
@@ -357,7 +359,7 @@ func TestFormatCheckpoint_EarlierSummariesKeepTheCap(t *testing.T) {
 		data.fileWrites[fmt.Sprintf("internal/some/long/package/path/file_%02d.go", i)] = writeConfirmed
 	}
 	for i := range 10 {
-		data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: fmt.Sprintf("message %d %s", i, strings.Repeat("words ", 200))})
+		data.conversation = append(data.conversation, checkpointConversationEntry{Role: "agent", Text: fmt.Sprintf("message %d %s", i, strings.Repeat("words ", 200))})
 	}
 	got := formatCheckpoint(data, nil, maxChars)
 	if len(got) > maxChars {

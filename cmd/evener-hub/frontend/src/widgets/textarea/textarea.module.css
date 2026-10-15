@@ -76,3 +76,10 @@
 .seamless:focus-visible {
   outline: none;
 }
+
+/* Monospace: code or config the user edits as text. The face only - the base
+ * rule's font-size keeps the field at or above the phone's control-size floor,
+ * so iOS Safari does not zoom on focus. */
+.monospace {
+  font-family: var(--font-mono);
+}

@@ -146,7 +146,7 @@ export function ProviderEditor({
 				// A newer listing superseded this save's answer: the write may have
 				// landed on the host, but the store cannot confirm it, so the editor
 				// does not close reporting success.
-				if (alive.current) setError(UNCONFIRMED_CHANGE);
+				if (alive.current) setError(UNCONFIRMED_CHANGE, "unconfirmed");
 				return;
 			}
 			if (alive.current) onSaved(instance?.name ?? draft.name.trim());
@@ -160,7 +160,7 @@ export function ProviderEditor({
 					// is never shown.
 					onEndpointConflict(instance?.name ?? draft.name.trim());
 				} else {
-					setError(UNCONFIRMED_CHANGE);
+					setError(UNCONFIRMED_CHANGE, "unconfirmed");
 				}
 			}
 		} finally {
@@ -241,7 +241,7 @@ export function ProviderEditor({
 										))}
 									</Group>
 								) : (
-									<GroupFooter>No providers match.</GroupFooter>
+									<GroupFooter testID="provider-picker-empty">No providers match.</GroupFooter>
 								)}
 							</>
 						) : null}
@@ -265,11 +265,11 @@ export function ProviderEditor({
 						{...chain("baseUrl")}
 					/>
 				</Group>
-				<GroupFooter>
-					{instance?.baseUrl && !draft.baseUrl.trim()
-						? "Resets the endpoint to the provider’s default."
-						: "Optional. Empty uses the provider’s default."}
-				</GroupFooter>
+				{instance?.baseUrl && !draft.baseUrl.trim() ? (
+					<GroupFooter testID="base-url-note:resets">Resets the endpoint to the provider’s default.</GroupFooter>
+				) : (
+					<GroupFooter testID="base-url-note:optional">Optional. Empty uses the provider’s default.</GroupFooter>
+				)}
 				{!instance && (
 					<>
 						{varFields.map(([template, environment]) => (

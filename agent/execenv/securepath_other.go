@@ -53,11 +53,20 @@ func errSandboxUnsupported() error {
 
 func (s *sandboxFS) close() { s.closed.Store(true) }
 
+// closeStaleFds has nothing to close where no root fds are cached.
+func (s *sandboxFS) closeStaleFds() {}
+
 func (s *sandboxFS) rootFd(root string) (int, error) {
 	return -1, errSandboxUnsupported()
 }
 
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
+	return nil, errSandboxUnsupported()
+}
+
+// readFileCtx is the ctx-carrying variant's stand-in; like readFile above, this
+// platform never builds a sandboxFS, so it fails closed.
+func (s *sandboxFS) readFileCtx(ctx context.Context, tool, abs string) ([]byte, error) {
 	return nil, errSandboxUnsupported()
 }
 
@@ -92,6 +101,10 @@ func (s *sandboxFS) mkdirAll(tool, abs string) error {
 func (s *sandboxFS) exists(tool, abs string) bool { return false }
 
 func (s *sandboxFS) listDir(tool, abs string, depth int, visibleOnly bool) ([]DirEntry, error) {
+	return nil, errSandboxUnsupported()
+}
+
+func (s *sandboxFS) listDirBudgeted(ctx context.Context, tool, abs string, depth int, budget *DirListBudget) ([]DirEntry, error) {
 	return nil, errSandboxUnsupported()
 }
 

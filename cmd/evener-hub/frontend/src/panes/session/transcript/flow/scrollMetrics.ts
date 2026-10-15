@@ -94,7 +94,58 @@ export function shouldAutoLoadOlder(el: HTMLElement): boolean {
   // The triggers re-check on every geometry change, so the load happens once
   // the port does have a box.
   if (el.clientHeight <= 0 && el.offsetHeight <= 0) return false;
+  // The store-owned recorded opening holds paging: the pane is painting the
+  // background-evicted snapshot, whose rows measure zero, and reading that as
+  // "too short" would page history over the network during a local-only
+  // opening. useTranscriptScroll stamps the port while the opening is pending
+  // and lifts it (with a one-shot re-check) the moment it settles.
+  if (el.hasAttribute("data-opening-hold")) return false;
+  // A transcript that has rendered rows but has not measured them yet reads as
+  // zero-height content: its sizer is sized from measured rows, so until the
+  // first measurement lands the port looks too short to scroll. That is a
+  // transient empty render, not a short transcript - the entry-backed local
+  // opening paints the background-pruned model first and would otherwise page
+  // in history over the network before the restored model is on screen. Once
+  // any rendered row carries real height, the short-page reading is honest and
+  // the geometry check decides as before.
+  if (contentIsUnmeasured(el)) return false;
   return el.scrollHeight <= el.clientHeight;
+}
+
+/**
+ * True while the port's content element has rendered rows and any of them has
+ * no measured height yet. The virtualizer renders its rows first and adopts
+ * their real heights a moment later, so a paint mid-measurement can show one
+ * measured row beside thirteen zero-height ones and a total far smaller than
+ * the transcript really is. A genuinely empty transcript has no rows at all
+ * and is not this state; the short-page check still decides it.
+ *
+ * A zero-height row is only *unmeasured* while the virtualizer has not yet
+ * taken ownership of its present element. A legitimately empty row (a projected
+ * turn with no entries) still has an element the virtualizer measures - at
+ * zero - and must not veto paging forever. VirtualList marks a row
+ * `data-measured` at the moment the virtualizer takes ownership of that row's
+ * current element (its measureElement ref), which is a CURRENT-ownership fact,
+ * not the historical size react-virtual remembers for the key. Only a row whose
+ * present element the virtualizer has not yet owned is treated as unmeasured.
+ *
+ * Exported because the same transient empty render reaches the near-top scroll
+ * trigger too: the pane's mount scroll during an unmeasured paint has scrollTop
+ * at zero, which reads as "the reader is at the top of a short transcript".
+ */
+export function contentIsUnmeasured(el: HTMLElement): boolean {
+  const content = el.firstElementChild;
+  if (!(content instanceof HTMLElement)) return false;
+  const rows = content.children;
+  if (rows.length === 0) return false;
+  for (const row of rows) {
+    if (!(row instanceof HTMLElement) || row.offsetHeight > 0) continue;
+    // A row the virtualizer has already measured is measured-zero, not
+    // unmeasured: an empty projected turn keeps a real zero-height wrapper.
+    if (row.hasAttribute("data-measured")) continue;
+    return true;
+  }
+  return false;
 }
 
 /**

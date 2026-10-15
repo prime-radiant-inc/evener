@@ -370,11 +370,12 @@ func audioTurn() schema.Turn {
 }
 
 // TestSetModel_DocumentInHistory_RejectedForHardErrorAndCompatTargets verifies
-// (c): a document in history rejects a switch to anthropic-family, google, and
-// openai-compat targets, naming the "document" kind.
-func TestSetModel_DocumentInHistory_RejectedForHardErrorAndCompatTargets(t *testing.T) {
+// (c): a document in history rejects a switch to google and openai-compat
+// targets, naming the "document" kind. Anthropic-family targets are accepted
+// now that the Anthropic builder writes a document content block (#4209).
+func TestSetModel_DocumentInHistory_RejectedForGoogleAndCompatTargets(t *testing.T) {
 	t.Parallel()
-	targets := []string{"anthropic/claude-opus-4-6", "google/gemini-3-pro", "kimi/kimi-k3"}
+	targets := []string{"google/gemini-3-pro", "kimi/kimi-k3"}
 	for _, target := range targets {
 		t.Run(target, func(t *testing.T) {
 			t.Parallel()
@@ -418,6 +419,28 @@ func TestSetModel_DocumentInHistory_AcceptedForResponsesTarget(t *testing.T) {
 
 	if err := sess.SetModel("gpt-4.1-mini"); err != nil {
 		t.Fatalf("SetModel same-provider (Responses) switch with document in history: %v", err)
+	}
+}
+
+// TestSetModel_DocumentInHistory_AcceptedForAnthropicTarget verifies the
+// counterpart of (c) for the Anthropic protocol: once the Anthropic builder
+// writes a document content block (#4209), a document in history switches into
+// an Anthropic-family target instead of being refused.
+func TestSetModel_DocumentInHistory_AcceptedForAnthropicTarget(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withAdapter(&fakeAdapter{name: "anthropic"}),
+		withConfig(SessionConfig{
+			ResolveProfile: testResolver,
+			testOnly:       testConfig{skipGitSnapshot: true},
+		}),
+	)
+	sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
+
+	if err := sess.SetModel("anthropic/claude-opus-4-6"); err != nil {
+		t.Fatalf("SetModel cross-provider (Anthropic) switch with document in history: %v", err)
 	}
 }
 
@@ -501,7 +524,7 @@ func TestUnrepresentableContentKinds_ProtocolTable(t *testing.T) {
 		protocol string
 		want     map[llm.ContentKind]bool
 	}{
-		{registry.ProtocolAnthropic, both},
+		{registry.ProtocolAnthropic, audioOnly},
 		{registry.ProtocolGoogle, both},
 		{registry.ProtocolOpenAIChat, both},
 		{registry.ProtocolOpenAIResponses, audioOnly},
@@ -522,11 +545,13 @@ func TestUnrepresentableContentKinds_ProtocolTable(t *testing.T) {
 }
 
 // TestSetModel_DocumentInHistory_RejectedForNewlyClassifiedTargets is the
-// end-to-end regression guard for the bricking bug: a document in history must
-// reject a switch into kimi-anthropic/minimax (both route through the anthropic
-// builder). Before the fix, unrepresentableContentKinds returned nil for both,
-// so the switch was NOT rejected and every subsequent turn hard-failed.
-func TestSetModel_DocumentInHistory_RejectedForNewlyClassifiedTargets(t *testing.T) {
+// TestSetModel_DocumentInHistory_AcceptedForAnthropicBuilderTargets is the
+// counterpart of the old bricking guard: kimi-anthropic and minimax route
+// through the Anthropic builder, which now writes a document content block
+// (#4209), so a document in history switches cleanly instead of being refused.
+// Audio stays rejected for both (TestSetModel_AudioInHistory_
+// RejectedForAnthropicBuilderTargets).
+func TestSetModel_DocumentInHistory_AcceptedForAnthropicBuilderTargets(t *testing.T) {
 	t.Parallel()
 	targets := []string{
 		"kimi-anthropic/kimi-k3",
@@ -538,6 +563,8 @@ func TestSetModel_DocumentInHistory_RejectedForNewlyClassifiedTargets(t *testing
 			sess := newSession(t,
 				withProfile(NewOpenAIProfile("gpt-5.4")),
 				withAdapter(&fakeAdapter{name: "openai"}),
+				withAdapter(&fakeAdapter{name: "kimi-anthropic"}),
+				withAdapter(&fakeAdapter{name: "minimax"}),
 				withConfig(SessionConfig{
 					ResolveProfile: unrepresentableTargetResolver,
 					testOnly:       testConfig{skipGitSnapshot: true},
@@ -545,12 +572,8 @@ func TestSetModel_DocumentInHistory_RejectedForNewlyClassifiedTargets(t *testing
 			)
 			sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
 
-			err := sess.SetModel(target)
-			if err == nil {
-				t.Fatalf("SetModel(%q) with document in history = nil error, want non-nil (was bricking before fix)", target)
-			}
-			if !strings.Contains(err.Error(), "document") {
-				t.Fatalf("error = %q, want it to name the document kind", err.Error())
+			if err := sess.SetModel(target); err != nil {
+				t.Fatalf("SetModel(%q) with document in history: %v, want nil (the Anthropic builder now carries documents)", target, err)
 			}
 		})
 	}
@@ -652,7 +675,7 @@ func TestSetModel_RejectionLeavesProfileMetaAndHistoryUnchanged(t *testing.T) {
 		{name: "unknown-model-on-enumerable-instance", setup: func(sess *Session) {}, model: "google/not-a-real-model"},
 		{name: "unrepresentable-document", setup: func(sess *Session) {
 			sess.appendTurn(schema.TurnUserInput, documentTurn().Message)
-		}, model: "anthropic/claude-opus-4-6"},
+		}, model: "google/gemini-3-pro"},
 	}
 
 	for _, rc := range rejections {

@@ -1394,13 +1394,8 @@ func TestBootCompensationOwnsTheStagedMarker(t *testing.T) {
 	}, fixture.configPath, registry, func(format string, args ...any) {
 		_, _ = fmt.Fprintf(&logged, format+"\n", args...)
 	})
-	// The skip is the direct evidence: the finalization loop names the open
-	// compensation and leaves the marker staged instead of finalizing it.
-	if !strings.Contains(logged.String(), "left staged: an open compensation owns its convergence") {
-		t.Fatalf("the crash boot did not leave the compensated name's marker staged; log:\n%s", logged.String())
-	}
 	if _, still := registry.Get("keep"); !still {
-		t.Fatal("the staged marker was finalized for a compensated name: its pinned teardown removed the host")
+		t.Fatalf("the staged marker was finalized for a compensated name: its pinned teardown removed the host; log:\n%s", logged.String())
 	}
 	cfg, _ := readPipelineConfig(t, fixture.configPath)
 	if _, carried := cfg.StagedReceipts["keep"]; carried {

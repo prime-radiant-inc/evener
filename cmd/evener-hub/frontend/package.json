@@ -47,6 +47,7 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tinykeys": "^4.0.0",
+    "tweetnacl": "1.0.3",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
@@ -62,8 +63,10 @@
     "@vitest/coverage-v8": "^4.1.11",
     "fake-indexeddb": "6.2.5",
     "jsdom": "^29.1.1",
+    "jsqr": "1.4.0",
     "typescript": "^6.0.3",
     "vite": "^8.1.5",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "ws": "8.21.3"
   }
 }

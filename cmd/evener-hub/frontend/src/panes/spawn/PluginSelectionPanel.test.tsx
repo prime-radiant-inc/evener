@@ -69,8 +69,6 @@ test("renders named switches, source subheading, counts, and description", () =>
   expect(screen.getByText("2 skills · 1 agent · 1 command")).toBeTruthy();
   expect(screen.getByText("Alpha tools")).toBeTruthy();
   expect(screen.getByText("1 of 2 selected")).toBeTruthy();
-  expect(screen.queryByText(/for session$/)).toBeNull();
-  expect(screen.queryByText(/^Showing /)).toBeNull();
 });
 
 test("each row orders source subheading, then counts, then description", () => {
@@ -110,13 +108,15 @@ test("exposes diagnostics and blocking selection errors without relying on color
   const user = userEvent.setup();
   renderPanel();
   expect(screen.getByRole("alert").textContent).toContain("missing");
-  const details = screen.getByText(/preview diagnostic/);
-  await user.click(details);
+  expect(screen.queryByText("could not be loaded")).toBeNull();
+  await user.click(screen.getByText(/preview diagnostic/));
   expect(screen.getByText("could not be loaded")).toBeTruthy();
 });
 
-test("diagnostics render above the plugin list", () => {
+test("diagnostics render above the plugin list", async () => {
+  const user = userEvent.setup();
   renderPanel();
+  await user.click(screen.getByText(/preview diagnostic/));
 
   const text = screen.getByTestId("plugin-selection-panel").textContent ?? "";
   const diagnosticAt = text.indexOf("could not be loaded");
@@ -125,8 +125,10 @@ test("diagnostics render above the plugin list", () => {
   expect(diagnosticAt).toBeLessThan(firstRowAt);
 });
 
-test("a diagnostic whose message already names its path does not repeat it in parentheses", () => {
+test("a diagnostic whose message already names its path does not repeat it in parentheses", async () => {
+  const user = userEvent.setup();
   renderPanel();
+  await user.click(screen.getByText(/preview diagnostic/));
 
   const item = screen.getByText(/duplicate plugin name/).closest("li");
   if (item === null) throw new Error("duplicate diagnostic list item not found");

@@ -9,38 +9,53 @@
 
 /* Square counterpart of Button's own xs (button.module.css) - same 24px, for
  * an icon-only control in a prompt card's row. */
-.xs {
+.squareXs {
   width: 24px;
   height: 24px;
   padding: 0;
 }
 
-.sm {
+.squareSm {
   width: 28px;
   height: 28px;
   padding: 0;
 }
 
-.md {
+.squareMd {
   width: 32px;
   height: 32px;
   padding: 0;
 }
 
-/* Phone tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):
+/* badge: the count overhangs the button's top-right corner, so it reads as
+ * attached to the icon without widening the square. pointer-events: none
+ * keeps the overhang from catching clicks outside the button's own box. */
+.badgedButton {
+  position: relative;
+}
+
+.cornerBadge {
+  position: absolute;
+  top: calc(-1 * var(--space-1));
+  right: calc(-1 * var(--space-1));
+  display: inline-flex;
+  pointer-events: none;
+}
+
+/* Tap floor (2026-07-30-mobile-session-layout-design.md, decision 4):
  * min-*, not width/height - the desktop squares above stay the desktop rule.
  * The top bar's Back/drawer and the composer's attach are the controls this
  * exists for. */
-@media (max-width: 899px) {
-  .xs {
+@media (max-width: 899px), (any-pointer: coarse) {
+  .squareXs {
     min-width: var(--tap-min);
     min-height: var(--tap-min);
   }
-  .sm {
+  .squareSm {
     min-width: var(--tap-min);
     min-height: var(--tap-min);
   }
-  .md {
+  .squareMd {
     min-width: var(--tap-min);
     min-height: var(--tap-min);
   }

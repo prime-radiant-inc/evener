@@ -1,6 +1,7 @@
 package dev
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -28,7 +29,7 @@ func FuzzParseGoTestJSON(f *testing.F) {
 		expected := []string{"example.com/mod"}
 		rows, err := parseGoTestJSON(strings.NewReader(stream), expected)
 		if err != nil {
-			if !strings.Contains(err.Error(), "produced no terminal event") {
+			if !errors.As(err, new(*missingTerminalEventError)) {
 				t.Fatalf("parse failed for a reason other than a missing terminal event: %v", err)
 			}
 			return

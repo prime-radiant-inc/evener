@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../motion";
 import { NOW_TICK_MS } from "../../panes/session/liveness";
-import Transcript from "../../panes/transcript/testing/CommittedTranscript";
+import { CommittedSession } from "../../panes/session/testing/CommittedSession";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { sessionActivitySnapshot } from "../../stores/sessionActivity";
@@ -16,6 +16,7 @@ import {
   answerActivityRead,
 } from "../../stores/sessionActivityTestUtils";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { ClientProvider } from "../clientContext";
 import { installFocusedScope } from "../statusbar/scopeTestUtils";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { ActivitySidebar } from "./ActivitySidebar";
@@ -70,7 +71,12 @@ test("About renders the explicit remote session's hydrated accounting", async ()
     "About",
   ]);
   expect(screen.getByRole("radio", { name: "About" }).textContent).toBe("About");
-  expect(client.calls.some((call) => call.method.endsWith("/list"))).toBe(false);
+  // The shell's eager catalog warm (stores/commandCatalog) reads
+  // evener/command/list on connect; About's own contract is no collection
+  // reads, which is what the remaining /list methods would be.
+  expect(client.calls.some((call) => call.method.endsWith("/list") && call.method !== "evener/command/list")).toBe(
+    false,
+  );
 });
 
 test.each(["ended", "closed"] as const)("About preserves %s accounting without live context", async (status) => {
@@ -121,7 +127,7 @@ test("About clears A immediately while B's model read is pending", async () => {
   await screen.findByText("identity-A");
   act(() => installFocusedScope("remote:b"));
   expect(screen.queryByText("identity-A")).toBeNull();
-  expect(screen.getByRole("status").textContent).toContain("Loading session details");
+  expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   await act(async () => pendingB.resolve(activityDetailsThread("remote:b", { id: "identity-B" })));
   await screen.findByText("identity-B");
   expect(screen.queryByText("identity-A")).toBeNull();
@@ -269,20 +275,46 @@ test("leaving About releases its rich model while the sidebar keeps its summary"
   expect(sessionActivitySnapshot(client, ref, "session")?.summary?.context.ref).toBe(ref);
 });
 
-test("closing About preserves the independent transcript's updating model", async () => {
+test("closing About preserves the independent conversation's updating model", async () => {
   const client = activityClient();
-  client.on("thread/read", ({ ref }) => activityDetailsThread(ref));
+  client.on("thread/read", ({ ref }) => {
+    const details = activityDetailsThread(ref);
+    // A session the status notification makes working has a Stop; an
+    // all-false capability set would trip the stopless-composer breadcrumb
+    // (kata 5gdv) that exists to describe the live defect.
+    details.thread.evener = {
+      ...details.thread.evener,
+      capabilities: {
+        send: false,
+        steer: true,
+        interrupt: true,
+        compact: true,
+        clear: true,
+        forkFromTurn: false,
+        shutdown: true,
+        changeModel: true,
+        changeVisionModel: true,
+        queue: false,
+        goal: false,
+        sharedNotes: false,
+        rename: false,
+      },
+    };
+    return details;
+  });
   connectionStore.getState().connect(client);
   installFocusedScope(ref);
   activitySidebarStore.getState().openWith("about");
   mountSidebar();
   await screen.findByText("about-owner");
-  const transcript = render(
-    <MotionProvider>
-      <Transcript params={{ ref }} paneId="transcript-proof" focused={false} />
-    </MotionProvider>,
+  const conversation = render(
+    <ClientProvider client={client}>
+      <MotionProvider>
+        <CommittedSession focused={false} params={{ ref }} paneId="conversation-proof" />
+      </MotionProvider>
+    </ClientProvider>,
   );
-  await screen.findByText("No turns yet");
+  await screen.findByText("Send the first message");
   const sidebar = screen.getByTestId("activity-sidebar");
   act(() => activitySidebarStore.getState().close());
   await waitFor(() => expect(sidebar.isConnected).toBe(false));
@@ -295,9 +327,11 @@ test("closing About preserves the independent transcript's updating model", asyn
     }),
   );
   await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("active"));
-  expect(screen.getByText("No turns yet")).toBeTruthy();
+  // The conversation's empty face follows the status: the active turn turns
+  // the dormant empty state into the waiting one.
+  expect(screen.getByText("Waiting for the first reply")).toBeTruthy();
   expect(client.calls.filter((call) => call.method === "thread/unsubscribe")).toHaveLength(unsubscribes);
-  transcript.unmount();
+  conversation.unmount();
   await waitFor(() => expect(threadsStore.getState().threads.has(ref)).toBe(false));
 });
 
@@ -335,9 +369,13 @@ test("visible About work time advances during an active turn", async () => {
 test("About keeps accepted accounting during disconnection and refreshes on ready", async () => {
   let cost = "~$1.00";
   const client = activityClient();
-  client.on("thread/read", ({ ref }) => {
+  client.on("thread/read", ({ ref, requestGeneration }) => {
     const response = activityDetailsThread(ref);
     if (response.thread.evener) response.thread.evener.cost = cost;
+    response.bootGeneration = "1";
+    response.epoch = 1;
+    response.snapshot = { incarnation: "inc-about", length: 0 };
+    response.requestGeneration = requestGeneration;
     return response;
   });
   connectionStore.getState().connect(client);

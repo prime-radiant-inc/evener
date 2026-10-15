@@ -1839,7 +1839,7 @@ func transcriptRefusal(cause error) error {
 	if cause == nil {
 		return nil
 	}
-	if errors.Is(cause, errTranscriptFailedClosed) {
+	if errors.Is(cause, ErrTranscriptFailedClosed) {
 		return cause
 	}
 	if errors.Is(cause, transcript.ErrWriterPoisoned) {
@@ -1908,9 +1908,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}()
 	var rootAttentionIDs []string
 	rootAttentionAccepted := false
-	// Consume the mid-turn deliveries this turn's settled rounds presented,
-	// at every exit that ran the turn. A delivery injected as steering while
-	// this turn ran rode the turn's requests; leaving it for the wake it
+	// Consume the deliveries this turn's settled rounds presented, armed
+	// before or during the turn, at every exit that ran the turn. A delivery
+	// injected as steering rode the turn's requests; leaving it for the wake it
 	// armed runs a redundant notification turn whose request carries nothing
 	// new.
 	//

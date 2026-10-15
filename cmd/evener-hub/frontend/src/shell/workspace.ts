@@ -43,6 +43,13 @@ export interface OpenPaneRecord {
 // bind each edge to these pane lifetimes, not IDs a restore/reset can reuse.
 const transcriptOpenOrigins = new Map<OpenPaneRecord, OpenPaneRecord>();
 
+// A conversation pane's identity is its ref alone, so the parent context it
+// was opened with lives here instead of in its params. Object keys bind each
+// edge to pane lifetimes, not IDs a restore/reset can reuse, while the ref
+// value survives the parent pane closing - the same retention a transcript
+// pane's parentRef param has.
+const conversationOpenParentRefs = new Map<OpenPaneRecord, string>();
+
 export interface DocumentPaneState {
   readonly reference: FileReference;
   readonly origin: OpenPaneRecord | undefined;
@@ -86,6 +93,24 @@ export function recordTranscriptOpenOrigin(pane: OpenPaneRecord, origin: OpenPan
 
 export function transcriptOpenOrigin(pane: OpenPaneRecord): OpenPaneRecord | undefined {
   return transcriptOpenOrigins.get(pane);
+}
+
+export function recordConversationOpenParent(pane: OpenPaneRecord, parentRef: string | undefined): void {
+  conversationOpenParentRefs.delete(pane);
+  const params = pane.params as { ref?: unknown };
+  if (
+    pane.type === "session" &&
+    typeof parentRef === "string" &&
+    parentRef !== "" &&
+    parentRef !== params.ref &&
+    workspaceStore.getState().panes.includes(pane)
+  ) {
+    conversationOpenParentRefs.set(pane, parentRef);
+  }
+}
+
+export function conversationOpenParentRef(pane: OpenPaneRecord): string | undefined {
+  return conversationOpenParentRefs.get(pane);
 }
 
 const paneRetypeListeners = new Set<(previous: OpenPaneRecord, replacement: OpenPaneRecord) => void>();
@@ -330,7 +355,132 @@ function readPanelParams(panel: IDockviewPanel): PanePanelParams | null {
   const parse = paneFor(raw.paneType).parseParams;
   const params = parse ? parse(raw.paneParams) : raw.paneParams;
   if (parse && params === null) return null;
+  // Layouts saved before the conversation-view ruling carry session refs on
+  // transcript panes; those reopen as their live conversation pane. Job
+  // logs keep the transcript pane.
+  if (raw.paneType === "transcript") {
+    const ref = (params as { ref?: unknown } | null)?.ref;
+    if (typeof ref === "string" && ref !== "" && !ref.startsWith(JOB_REF_PREFIX)) {
+      return { paneType: "session", paneParams: { ref } };
+    }
+  }
   return { paneType: raw.paneType, paneParams: params };
+}
+
+// The same migration applied to the incoming layout JSON before dockview
+// rebuilds its panels: a migrated panel must be CREATED as a session panel,
+// or the dockview panel would still render the removed transcript surface
+// while the workspace record beside it says session.
+function migrateLegacyLayout(json: unknown): unknown {
+  const layout = json as {
+    panels?: Record<string, { params?: { paneType?: unknown; paneParams?: unknown } }>;
+    conversationParents?: Record<string, string>;
+  } | null;
+  if (!layout || typeof layout !== "object" || layout.panels === null || typeof layout.panels !== "object") return json;
+  let changed = false;
+  let parentsChanged = false;
+  const panels: Record<string, unknown> = {};
+  // A legacy transcript panel carried its open-parent inside its params; the
+  // conversation pane records that edge out of band, so the migration lifts
+  // each converted panel's parentRef into the layout's edge map - the same
+  // key layoutJSON writes for panes saved by this build.
+  const conversationParents: Record<string, string> = { ...layout.conversationParents };
+  for (const [id, panel] of Object.entries(layout.panels)) {
+    const params = panel?.params as
+      | {
+          paneType?: unknown;
+          paneParams?: {
+            ref?: unknown;
+            parentRef?: unknown;
+            source?: { type?: unknown; params?: { ref?: unknown; parentRef?: unknown } };
+          };
+        }
+      | undefined;
+    const ref = params?.paneParams?.ref;
+    if (
+      params &&
+      params.paneType === "transcript" &&
+      typeof ref === "string" &&
+      ref !== "" &&
+      !ref.startsWith(JOB_REF_PREFIX)
+    ) {
+      changed = true;
+      panels[id] = { ...panel, params: { paneType: "session", paneParams: { ref } } };
+      const parentRef = params.paneParams?.parentRef;
+      if (typeof parentRef === "string" && parentRef !== "" && parentRef !== ref) {
+        conversationParents[id] = parentRef;
+        parentsChanged = true;
+      }
+    } else {
+      panels[id] = panel;
+      // A legacy cascade's source descriptor named the conversation it was
+      // opened from; on a read-only layout that descriptor was a transcript
+      // carrying the source's own parentRef. parseZoomParams drops that field
+      // when the record is normalized on restore, so lift it into the edge map
+      // now, while the raw panel JSON still holds it. Return retypes this pane
+      // into the source conversation and retypePane carries the recorded edge
+      // across, so Back reaches the retained parent instead of Welcome.
+      const source = params?.paneType === "sessionZoom" ? params.paneParams?.source : undefined;
+      const sourceRef = source?.params?.ref;
+      const sourceParentRef = source?.params?.parentRef;
+      if (
+        typeof sourceRef === "string" &&
+        sourceRef !== "" &&
+        typeof sourceParentRef === "string" &&
+        sourceParentRef !== "" &&
+        sourceParentRef !== sourceRef
+      ) {
+        conversationParents[id] = sourceParentRef;
+        parentsChanged = true;
+      }
+    }
+  }
+  if (!changed && !parentsChanged) return json;
+  return parentsChanged || layout.conversationParents !== undefined
+    ? { ...layout, panels, conversationParents }
+    : { ...layout, panels };
+}
+
+// A layout saved while the read-only transcript surface still existed can
+// hold BOTH that pane and a session pane for the same conversation, and the
+// migration maps the transcript panel to a session panel - so the restore
+// would produce two identical conversations. Route reconciliation requires
+// exactly one pane per ref (its placement checks count child panes), so the
+// duplicates are reconciled here, while the legacy paneType is still
+// visible: the panel already typed session is the live conversation and
+// survives, else the first panel for the ref. The map returned is
+// dropped panel id -> surviving panel id.
+function legacyDuplicatePanels(json: unknown): Map<string, string> {
+  const layout = json as {
+    panels?: Record<string, { params?: { paneType?: unknown; paneParams?: { ref?: unknown } } }>;
+  } | null;
+  const panels = layout?.panels;
+  if (panels === null || panels === undefined || typeof panels !== "object") return new Map();
+  const byRef = new Map<string, { sessions: string[]; all: string[] }>();
+  for (const [id, panel] of Object.entries(panels)) {
+    const params = panel?.params;
+    const ref = params?.paneParams?.ref;
+    if (
+      (params?.paneType !== "session" && params?.paneType !== "transcript") ||
+      typeof ref !== "string" ||
+      ref === "" ||
+      ref.startsWith(JOB_REF_PREFIX)
+    ) {
+      continue;
+    }
+    const entry = byRef.get(ref) ?? { sessions: [], all: [] };
+    entry.all.push(id);
+    if (params.paneType === "session") entry.sessions.push(id);
+    byRef.set(ref, entry);
+  }
+  const dropped = new Map<string, string>();
+  for (const { sessions, all } of byRef.values()) {
+    if (all.length < 2) continue;
+    const survivor = sessions[0] ?? all[0];
+    if (survivor === undefined) continue;
+    for (const id of all) if (id !== survivor) dropped.set(id, survivor);
+  }
+  return dropped;
 }
 
 // Restored panel ids came from a PREVIOUS page load's own independently-
@@ -478,6 +628,22 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     for (const [pane, origin] of origins) {
       transcriptOpenOrigins.set(pane === expected ? replacement : pane, origin === expected ? replacement : origin);
     }
+    // A cascade's drill, pop and resume retype its pane; a document opened
+    // from one of its columns keeps pointing at the surviving inspector, so
+    // its origin binding must follow the replacement the same way.
+    const documents = [...documentPaneStates];
+    documentPaneStates.clear();
+    for (const [pane, state] of documents) {
+      documentPaneStates.set(
+        pane === expected ? replacement : pane,
+        state.origin === expected ? { ...state, origin: replacement } : state,
+      );
+    }
+    const parents = [...conversationOpenParentRefs];
+    conversationOpenParentRefs.clear();
+    for (const [pane, parentRef] of parents) {
+      conversationOpenParentRefs.set(pane === expected ? replacement : pane, parentRef);
+    }
     set({ panes: state.panes.map((pane) => (pane === expected ? replacement : pane)) });
     return true;
   },
@@ -500,18 +666,71 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
 
   layoutJSON() {
     if (!dockviewApi) return null;
-    const layout = dockviewApi.toJSON();
+    const layout = dockviewApi.toJSON() as {
+      panels?: Record<string, { params?: Record<string, unknown> }>;
+      conversationParents?: Record<string, string>;
+    };
     for (const pane of get().panes) {
       const panel = layout.panels?.[pane.id];
       if (panel) panel.params = { ...panel.params, paneType: pane.type, paneParams: pane.params };
     }
+    // The conversation parent-context record is object-keyed beside this
+    // store, so a layout must carry its edges separately or a reload
+    // strands every restored child's Back walk (the legacy transcript
+    // params used to hold the same edge and serialize with the panel).
+    const conversationParents: Record<string, string> = {};
+    for (const [pane, parentRef] of conversationOpenParentRefs) {
+      if (layout.panels?.[pane.id]) conversationParents[pane.id] = parentRef;
+    }
+    if (Object.keys(conversationParents).length > 0) layout.conversationParents = conversationParents;
     return layout;
   },
 
   restoreLayout(json, opts) {
     if (!dockviewApi) return false;
     try {
-      dockviewApi.fromJSON(json as SerializedDockview);
+      // Keep the migrated layout, not just hand it to dockview: its
+      // conversationParents edge map (lifted from legacy transcript params by
+      // the migration, written by layoutJSON for this build's saves) records
+      // the open-parent edges below, after the restored records publish.
+      const migrated = migrateLegacyLayout(json) as {
+        panels?: Record<string, { params?: unknown }>;
+        conversationParents?: Record<string, unknown>;
+      };
+      // The migration maps a legacy transcript panel to its live conversation
+      // pane, so a layout holding both that panel and a session panel for the
+      // same conversation would restore the conversation twice. Reconcile the
+      // duplicate before dockview builds it: the dropped panel's open-parent
+      // edge moves to the survivor, and an inspection origin that named the
+      // dropped pane is rewritten to the pane that now is that conversation.
+      // A host swap restores the app's own current layout against live records
+      // and has no legacy paneType to reconcile.
+      const duplicates = opts?.preserveLivePanes ? new Map<string, string>() : legacyDuplicatePanels(json);
+      if (duplicates.size > 0) {
+        const parents: Record<string, unknown> = { ...(migrated.conversationParents ?? {}) };
+        for (const [droppedId, survivorId] of duplicates) {
+          const edge = parents[droppedId];
+          if (edge !== undefined) {
+            if (parents[survivorId] === undefined) parents[survivorId] = edge;
+            delete parents[droppedId];
+          }
+        }
+        for (const panel of Object.values(migrated.panels ?? {})) {
+          const params = panel?.params as
+            | { paneParams?: { inspection?: { origin?: { paneId?: unknown } | null } | null } }
+            | undefined;
+          const origin = params?.paneParams?.inspection?.origin;
+          if (!origin || typeof origin.paneId !== "string") continue;
+          const survivorId = duplicates.get(origin.paneId);
+          if (survivorId === undefined) continue;
+          panel.params = {
+            ...(panel.params as Record<string, unknown>),
+            paneParams: { ...params?.paneParams, inspection: { origin: { ...origin, paneId: survivorId } } },
+          };
+        }
+        migrated.conversationParents = parents;
+      }
+      dockviewApi.fromJSON(migrated as SerializedDockview);
       // Slots come back from dockview's OWN restored geometry, not from the
       // saved JSON: api.panels is in grid order, so the FIRST panel is the one
       // in the top-left group - the main pane. Read only `panels` (plus each
@@ -528,13 +747,20 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       // readPanelParams skips (an unregistered/removed pane type) drop out
       // BEFORE the slot assignment, so the first SURVIVING panel is main.
       const entries = dockviewApi.panels.map((panel) => ({ panel, params: readPanelParams(panel) }));
+      // The saved selection is read BEFORE any panel leaves the api: removing
+      // the active panel makes dockview select an unrelated neighbor, and
+      // reading it afterwards would restore that neighbor instead of the
+      // conversation the removed pane became.
+      const savedActiveId = dockviewApi.activePanel?.id;
       // A panel this build cannot render must leave the live api NOW, not in
       // DockHost's later structural reconciliation: the commit between this
       // restore and that reconciliation renders every api panel through
       // paneFor(), which throws for an unregistered type and can take the
-      // whole workspace chunk down with it.
+      // whole workspace chunk down with it. A reconciled duplicate leaves the
+      // same way: the migration created it as a session panel, so leaving it
+      // in the api would undo the collapse this restore just made.
       for (const entry of entries) {
-        if (entry.params === null) dockviewApi.removePanel(entry.panel);
+        if (entry.params === null || duplicates.has(entry.panel.id)) dockviewApi.removePanel(entry.panel);
       }
       // A host swap is not a cold load. Even valid saved geometry can be
       // stale after phone opens, closes, promotion or focus changes. Keep the
@@ -542,7 +768,8 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       // the restored grid against them before applying the current focus.
       if (opts?.preserveLivePanes) return true;
       const restored = entries.filter(
-        (entry): entry is { panel: IDockviewPanel; params: PanePanelParams } => entry.params !== null,
+        (entry): entry is { panel: IDockviewPanel; params: PanePanelParams } =>
+          entry.params !== null && !duplicates.has(entry.panel.id),
       );
       const panes: OpenPaneRecord[] = restored.map((entry, index) => ({
         id: entry.panel.id,
@@ -552,13 +779,32 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       }));
       for (const listener of workspaceRestoreListeners) listener(panes);
       bumpPastRestoredIds(panes);
-      // The api's active panel may be one the skip dropped; focus only an id
-      // that actually survived, else the first survivor.
-      const activeId = dockviewApi.activePanel?.id;
+      // The saved active panel may be one the skip dropped - or the duplicate
+      // this restore reconciled, in which case focus follows the conversation
+      // that survived. Focus only an id that actually survived, else the
+      // first survivor.
+      const wantedId = savedActiveId === undefined ? undefined : (duplicates.get(savedActiveId) ?? savedActiveId);
       set({
         panes,
-        focusedPaneId: panes.find((p) => p.id === activeId)?.id ?? panes[0]?.id ?? null,
+        focusedPaneId: panes.find((p) => p.id === wantedId)?.id ?? panes[0]?.id ?? null,
       });
+      const conversationParents = migrated.conversationParents ?? {};
+      for (const pane of panes) {
+        const parentRef = conversationParents[pane.id];
+        if (typeof parentRef !== "string" || parentRef === "") continue;
+        // A legacy cascade's returned-to source conversation is not a pane of
+        // its own: the migration lifted the source's parentRef onto the cascade
+        // record, and Return retypes that record into the source session
+        // (retypePane carries conversation parent edges to the replacement).
+        // Record it here, describing the SOURCE conversation rather than the
+        // drilled leaf, so the reopened conversation keeps its Back target.
+        if (pane.type === "sessionZoom") {
+          const sourceRef = (pane.params as { source?: { params?: { ref?: unknown } } } | null)?.source?.params?.ref;
+          if (typeof sourceRef === "string" && parentRef !== sourceRef) conversationOpenParentRefs.set(pane, parentRef);
+          continue;
+        }
+        recordConversationOpenParent(pane, parentRef);
+      }
       return true;
     } catch {
       // Dockview may have partially rebuilt its grid. Clear that failed grid,
@@ -577,6 +823,9 @@ workspaceStore.subscribe((state, previous) => {
   if (state.panes === previous.panes) return;
   for (const [pane, origin] of transcriptOpenOrigins) {
     if (!state.panes.includes(pane) || !state.panes.includes(origin)) transcriptOpenOrigins.delete(pane);
+  }
+  for (const pane of conversationOpenParentRefs.keys()) {
+    if (!state.panes.includes(pane)) conversationOpenParentRefs.delete(pane);
   }
   for (const pane of documentPaneStates.keys()) {
     if (!state.panes.includes(pane)) documentPaneStates.delete(pane);

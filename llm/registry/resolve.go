@@ -293,6 +293,9 @@ func (r *Registry) resolveMode(ref string, includeLive, allowCodexCandidate bool
 	return r.resolveOnMode(rec, pr, warnings, includeLive, allowCodexCandidate)
 }
 
+// ErrUnknownInstance reports a name the registry has no instance for.
+var ErrUnknownInstance = errors.New("unknown instance")
+
 // unknownInstance reports a reference or ResolveInstance call naming an
 // instance the registry does not have, listing the available ones.
 func (r *Registry) unknownInstance(name string) error {
@@ -300,7 +303,7 @@ func (r *Registry) unknownInstance(name string) error {
 	for _, inst := range r.rankedInstances() {
 		names = append(names, inst.name)
 	}
-	return fmt.Errorf("unknown instance %q (available: %s)", name, strings.Join(names, ", "))
+	return fmt.Errorf("%w %q (available: %s)", ErrUnknownInstance, name, strings.Join(names, ", "))
 }
 
 // resetLayerFields clears caps.Fields and purges any "Fields.*" provenance
@@ -750,6 +753,8 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 	aliasLockstep := false
 	var aliasDisabled *bool
 	var aliasDefault *bool
+	aliasTargetProtocol := ""
+	aliasControlsRecorded := false
 	if row.AliasOf != "" {
 		target, same, err := r.resolveAliasTarget(rec, row.AliasOf, includeLive)
 		if err != nil {
@@ -757,7 +762,23 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 			// it says itself.
 			warnings = append(warnings, "dangling alias: "+err.Error())
 		} else {
-			seedFromAlias(&caps, &row, target, prov)
+			aliasTargetProtocol = target.Protocol
+			// The target's provenance says whether a real layer recorded the
+			// effort control or derivation invented it. Any catalog or config
+			// layer counts; "derived" does not.
+			aliasControlsRecorded = target.Provenance["ReasoningControls"] != "" && target.Provenance["ReasoningControls"] != provDerived
+			// The alias's effective protocol is its own override, else the
+			// target's when the replay below will inherit it (same provider,
+			// no transport override), else the provider default.
+			aliasRow := rec.head.Models[hit.rowID]
+			aliasProto := aliasRow.Protocol
+			if aliasProto == "" && same && aliasRow.Transport == nil && target.Model.Protocol != "" {
+				aliasProto = target.Model.Protocol
+			}
+			if aliasProto == "" {
+				aliasProto = rec.head.Protocol
+			}
+			seedFromAlias(&caps, &row, target, aliasProto, prov)
 			if same {
 				// Lockstep: a same-provider alias follows its target's
 				// Disabled verdict, so its own exact-row and glob flags
@@ -908,7 +929,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 		warnings = append(warnings, cw...)
 	}
 
-	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family}, prov)
+	derive(&caps, &row, deriveInput{Protocol: rowProto, Synthesized: hit.synthesized, ProviderSurface: rec.head.Surface, ProviderFamily: rec.head.Family, Aliased: row.AliasOf != "", AliasTargetProtocol: aliasTargetProtocol, AliasControlsRecorded: aliasControlsRecorded}, prov)
 
 	if hit.synthesized {
 		warnings = append(warnings, "model not in catalog")
@@ -995,13 +1016,19 @@ func (r *Registry) resolveAliasTarget(rec *record, aliasOf string, includeLive b
 
 // seedFromAlias copies the target's facts, surface, and family in as the
 // alias row's layer 0 (spec §4.2).
-func seedFromAlias(c *Caps, row *Model, target Resolved, prov map[string]string) {
+func seedFromAlias(c *Caps, row *Model, target Resolved, aliasProtocol string, prov map[string]string) {
 	facts := Caps{
 		ContextWindow: target.Caps.ContextWindow, MaxInputTokens: target.Caps.MaxInputTokens, MaxOutputTokens: target.Caps.MaxOutputTokens, Tools: target.Caps.Tools,
 		StructuredOutput: target.Caps.StructuredOutput, Sampling: target.Caps.Sampling, Reasoning: target.Caps.Reasoning,
 		ReasoningControls: target.Caps.ReasoningControls, EffortValues: target.Caps.EffortValues,
 		DefaultEffort:   target.Caps.DefaultEffort,
 		InputModalities: target.Caps.InputModalities, KnowledgeCutoff: target.Caps.KnowledgeCutoff, Cost: target.Caps.Cost,
+	}
+	// A thinking shape is a verdict of the target's protocol: a same-protocol
+	// alias inherits it settled, while a cross-protocol alias re-derives from
+	// the controls its own replay leaves.
+	if target.Protocol == aliasProtocol {
+		facts.ThinkingShape = target.Caps.ThinkingShape
 	}
 	mergeCaps(c, facts, provAlias, prov)
 	if target.Surface != "" {
@@ -1580,7 +1607,7 @@ func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 func (r *Registry) instanceRecordIDs(instance string) (*record, []string, error) {
 	rec, ok := r.recordFor(instance)
 	if !ok {
-		return nil, nil, fmt.Errorf("unknown instance %q", instance)
+		return nil, nil, fmt.Errorf("%w %q", ErrUnknownInstance, instance)
 	}
 	return rec, modelIDs(rec, r.LiveModels(instance)), nil
 }
