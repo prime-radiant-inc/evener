@@ -3,6 +3,10 @@
 // @evener/appwire-client's systemEventCopy, which the phone reads too.
 import { hydrateThread, type Thread, type ThreadItem, type Turn, type TurnModel } from "@evener/appwire-client";
 import {
+  summaryFailureWireFixture,
+  summaryFailureWireRead,
+} from "@evener/appwire-client/testing/summaryFailureWireFixtures";
+import {
   type SystemEventWireCase,
   systemEventWireFailedTurn,
   systemEventWireFailedTurnWithOtherError,
@@ -48,6 +52,22 @@ function lineFor(name: SystemEventWireCase): HTMLElement {
   render(<TurnBlock turn={oneItemTurn(systemEventWireItem(name))} />);
   return screen.getByTestId("system-notice-line");
 }
+
+test("a recorded summary failure retains attention and route details beside successful recovery", () => {
+  const fixture = summaryFailureWireFixture();
+  const model = hydrateThread(summaryFailureWireRead(), "local:summary-fixture", 0);
+  const turn = model.turns[0];
+  if (!turn) throw new Error("producer turn was lost");
+  render(<TurnBlock turn={turn} />);
+  expect(screen.getAllByTestId("warning-item")).toHaveLength(1);
+  expect(screen.queryByTestId("warning-quiet-line")).toBeNull();
+  const message = screen.getByTestId("warning-message");
+  for (const identifier of ["openai/summary-model-8af1", "429", "rate_limit"])
+    expect(message.textContent).toContain(identifier);
+  expect(message.textContent).toBe(fixture.warning.message);
+  expect(screen.getByTestId("warning-hint").textContent).toBe(fixture.warning.hint);
+  expect(screen.getAllByTestId("system-notice-line")).toHaveLength(1);
+});
 
 test("names a loaded plugin, or says a plugin loaded, with no counts", () => {
   const named = lineFor("plugin-loaded");
