@@ -1780,7 +1780,7 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 			}
 			resp, err := cm.completeSummarization(ctx, cm.currentProfile(), partnerBatchPrompt+strings.Join(lines[start:end], ""), func(reply llm.Response) error {
 				if strings.TrimSpace(reply.Text()) == "" {
-					return errors.New("summarizer returned an empty batch summary")
+					return errSummaryEmptyBatch
 				}
 				return checkNotCutOff(reply)
 			})
@@ -1804,7 +1804,7 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 	// Summaries that will not shrink to fit are never cut short: failing here
 	// fails the summary, and the checkpoint, which keeps every partner
 	// message, stands.
-	return "", errors.New("partner messages did not condense to fit the summarizer")
+	return "", errSummaryUncondensable
 }
 
 // splitMessage splits text into parts of at most size bytes, each cut at the
@@ -2012,7 +2012,7 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(llm.Response) error) (llm.Response, error) {
 	routes := summarizationModels(profile)
 	if len(routes) == 0 {
-		return llm.Response{}, errors.New("summarization model is empty")
+		return llm.Response{}, errSummaryMissingModel
 	}
 	judge := func(resp llm.Response) error {
 		if accept == nil {
@@ -2027,6 +2027,17 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	if apiErr == nil {
 		rejected = judge(resp)
 	}
+	route, role := routes[0], "cheap"
+	if ranSessionModel {
+		route, role = summarizationRoute{provider: profile.ID(), model: profile.Model()}, "session"
+	}
+	describe := func() *summaryFailureError {
+		if apiErr != nil {
+			return summaryFailure(apiErr, route, role)
+		}
+		return summaryFailure(rejected, route, role)
+	}
+	failure := describe()
 	if !ranSessionModel && len(routes) > 1 && (rejected != nil || apiErr != nil && shouldFallbackSummarizationModel(ctx, apiErr)) {
 		// More than one route means the second is the session model, distinct
 		// from the configured cheap one; the caller ran only the cheap one.
@@ -2037,12 +2048,22 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 		if apiErr == nil {
 			rejected = judge(resp)
 		}
+		route, role = sessionRoute, "session"
+		previous := failure
+		failure = describe()
+		if failure != nil && previous != nil {
+			failure.detail.Previous = previous.detail.Previous
+			failure.detail.Previous = append(failure.detail.Previous, previous.detail.Terminal)
+			if len(failure.detail.Previous) > 2 {
+				failure.detail.Previous = failure.detail.Previous[len(failure.detail.Previous)-2:]
+			}
+		}
 	}
 	attemptGroupScope.SettleResult(apiErr)
-	if apiErr != nil {
-		return resp, apiErr
+	if failure != nil {
+		return resp, failure
 	}
-	return resp, rejected
+	return resp, nil
 }
 
 // partnerAuthorityRule keeps a summary from adding or dropping the human
@@ -2130,7 +2151,7 @@ func promptSectionNames(prompt string) []string {
 // off too the summary fails and the checkpoint stands.
 func checkNotCutOff(reply llm.Response) error {
 	if reply.Finish.Reason == llm.FinishReasonLength {
-		return errors.New("the summary was cut off at the model's output limit")
+		return errSummaryOutputLimit
 	}
 	return nil
 }
@@ -2153,7 +2174,7 @@ func checkNotCutOff(reply llm.Response) error {
 // partner's messages verbatim beside the reply (partnerMessagesMarkdown).
 func checkSummaryReply(reply, instructions string) error {
 	if strings.TrimSpace(reply) == "" {
-		return errors.New("summarizer returned an empty reply")
+		return errSummaryEmptyReply
 	}
 	if instructions != "" {
 		return nil
@@ -2199,7 +2220,7 @@ func checkSummaryReply(reply, instructions string) error {
 			return nil
 		}
 	}
-	return errors.New("summarizer reply has no summary section with content")
+	return errSummaryMissingSection
 }
 
 // summarySectionHeading reports whether line is a heading naming one of the
@@ -2711,19 +2732,4 @@ func countJSONArrayElements(s string) int {
 		return 0
 	}
 	return len(arr)
-}
-
-// summarizerFailureWarning is the warning for a failed LLM summarization. Its
-// message stays bare: the summarizer's error can carry a provider's body,
-// which can echo the conversation it was asked to summarize, and a strategy's
-// warnings reach Notification hooks (#3386). The error still classifies the
-// Title and Hint.
-func summarizerFailureWarning(err error) events.WarningData {
-	info := diagnostic.FromError(err)
-	return events.WarningData{
-		Message: "LLM summarization failed",
-		Source:  string(info.Source),
-		Title:   info.Title,
-		Hint:    info.Hint,
-	}
 }
