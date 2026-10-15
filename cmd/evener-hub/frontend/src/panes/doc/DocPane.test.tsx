@@ -2240,6 +2240,118 @@ test("a saved annotation awaiting handoff cannot append behind a source change a
   expect((await f.drafts.load(f.key))?.text).toBe(baselineText);
 });
 
+// RoboRev round 36 medium: the reader's evidence gate missed the shared
+// comparator's mixed-scope EOF rule. A capture armed against a TRUNCATED
+// display keeps a displayed-prefix fingerprint, so a reread that comes back
+// COMPLETE at or before the prefix's end proves the file lost the annotated
+// continuation - a definite change even though every overlapping byte is
+// identical. evidenceProvesChange fell through to the same-range comparison,
+// read the differing coverage as insufficiency, and kept the saved
+// operation's pending handoff appendable behind the changed source.
+test("a saved annotation awaiting handoff cannot append behind a change only the file's end proved", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  let failAppend = false;
+  // The baseline annotation was made against a TRUNCATED display, the way a
+  // too-large document reads: its capture evidence is a displayed-prefix
+  // fingerprint, and its acceptance recorded the truncated observation.
+  const f = await fixture(
+    "reader-saved-handoff-eof-proof",
+    {
+      beforeAbortableCompletion: () => {
+        if (failAppend) throw new Error("append boundary");
+      },
+    },
+    true,
+  );
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  const held: Array<(content: DocFileContent) => void> = [];
+  mockRead.mockImplementation(
+    () =>
+      new Promise<DocFileContent>((resolve) => {
+        held.push(resolve);
+      }),
+  );
+  mountAnnotated(f, ports, client, "doc-saved-handoff-eof");
+  const work = documentReaderWork("doc-saved-handoff-eof", f.document, ports);
+  await settleFakeReadCycle();
+  // The displayed document is the same truncated prefix the baseline
+  // observed, so the read leases cleanly.
+  await act(async () => {
+    held[0]?.(docContent(SOURCE, "rev-A", true));
+  });
+  await settleFakeReadCycle();
+  expect(work.lease).not.toBeNull();
+
+  // A real save against that truncated display - the fixture operation's
+  // capture already carries the prefix fingerprint buildCapture derives from
+  // truncated content - whose handoff append faults: the durable row commits
+  // and both unsaved slots clear.
+  work.comment = selectCommentPassage(editCommentText(work.comment, "Keep this scope."), f.operation.capture);
+  failAppend = true;
+  await act(async () => {
+    await saveReaderAnnotation(work, f.destination);
+  });
+  await settleFakeReadCycle();
+  const saved = (await f.repo.listAnnotations(f.document)).find((entry) => entry.handoff.state === "pending");
+  if (!saved) throw new Error("handoff did not stay pending across the faulted append");
+  const baselineText = (await f.drafts.load(f.key))?.text;
+  if (!baselineText) throw new Error("baseline draft missing");
+  expect(work.attempted).toBeNull();
+  expect(work.comment.capture).toBeUndefined();
+
+  // A reread whose beginRead faults while the raw fetch returns the file now
+  // complete at a SHORTER end: every overlapping byte is identical, and the
+  // vanished continuation is the only difference. Only the saved operation's
+  // prefix evidence can prove it, so the reader must retire into expiry-pending
+  // and the saved epoch's pending handoff must stay suppressed.
+  const shorter = SOURCE.slice(0, -8);
+  const fault = { value: true };
+  faultBeginReadTransaction(fault);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  fireEvent(document, new Event("visibilitychange"));
+  await settleFakeReadCycle();
+  await act(async () => {
+    held[1]?.(docContent(shorter, "rev-A", false));
+  });
+  await settleFakeReadCycle();
+  expect(work.phase).toBe("expiry-pending");
+
+  // Inside the recovery window the composer-open retry must not append the
+  // saved operation's obsolete reference behind the changed source.
+  failAppend = false;
+  await act(async () => {
+    await retryDocumentReaders("composer-open");
+  });
+  await settleFakeReadCycle();
+  expect((await f.drafts.load(f.key))?.text).toBe(baselineText);
+
+  // The retired reader is not stranded: the demand's paced retries walk back
+  // to usable authority over the current complete document - the
+  // complete-shorter observation first fences the retired truncated epoch,
+  // then the next paced read accepts and restores a fresh lease.
+  for (let rounds = 0; (work.phase === "expiry-pending" || work.lease === null) && rounds < 16; rounds += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    const pacedFetch = held.at(-1);
+    if (held.length > 2) {
+      await act(async () => {
+        pacedFetch?.(docContent(shorter, "rev-A", false));
+      });
+    }
+    await settleFakeReadCycle();
+  }
+  expect(work.phase).not.toBe("expiry-pending");
+  expect(work.lease).not.toBeNull();
+});
+
 // RoboRev round 35 low, pane wiring: the retained reader work keeps the note
 // text across a host swap, and the same work now keeps the textarea's caret
 // selection - so a remounted pane restores the range and its direction instead

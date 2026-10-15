@@ -195,6 +195,18 @@ function evidenceProvesChange(content: DocFileContent, evidence: CapturedPassage
     // Both observations are whole-file reads, so any difference is a definite change.
     return retained.value !== current.value || retained.coverage.end !== current.coverage.end;
   }
+  // A mixed observation hides a definite change the same-range comparison can
+  // never see - the same rule the shared accepted-read comparator applies: a
+  // complete observation pins the document's true end while a truncated one
+  // proves content existed beyond its coverage, so a truncated end at or
+  // beyond the complete end means the annotated continuation vanished (or
+  // content appeared past the EOF the capture watched) even when every
+  // overlapping byte is identical.
+  if (retained.scope !== current.scope) {
+    const completeEnd = retained.scope === "displayed-full" ? retained.coverage.end : current.coverage.end;
+    const truncatedEnd = retained.scope === "displayed-prefix" ? retained.coverage.end : current.coverage.end;
+    if (truncatedEnd >= completeEnd) return true;
+  }
   // Only an identical displayed range is comparable from fingerprint evidence alone; a
   // different coverage interval is insufficiency, not proof of change.
   const sameRange =
