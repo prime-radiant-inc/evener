@@ -19,7 +19,7 @@ import {
   createBrowserDraftRepository,
   type StoredComposerDraft,
 } from "./browserDraftRepository";
-import { DRAFT_TRANSFERS_STORE, MUTATION_RECOVERY_STORE } from "./localCompositionSchema";
+import { DRAFT_TRANSFERS_STORE, MUTATION_RECOVERY_STORE, MUTATION_SEQUENCES_STORE } from "./localCompositionSchema";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import type { MutationIntent } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -785,6 +785,71 @@ describe("MutationOutboxIndexedDB recovery revision participation", () => {
     ).toBeUndefined();
 
     await expectRefusedWithStatePreserved(repository, outbox, id, baseline);
+  });
+
+  // RoboRev round 37 medium, the race window: the resend re-read the sequence
+  // row for its stop epoch after the live authorization guard, so an edit,
+  // disposal or recovery-backing change during that read could flip the
+  // source's authorization to false while the transaction went on to delete
+  // the recovery record and enqueue the resend. The row the transaction
+  // already read carries the same epoch, so the re-read is redundant - and it
+  // is the very window that opened behind the guard.
+  test("a resent recovery reads the target's sequence row exactly once", async () => {
+    const { repository, outbox, id } = await arrangeTransferred();
+    const baseline = (await requireRow(repository, browserKey())).token;
+
+    let sequenceReads = 0;
+    const realGet = IDBObjectStore.prototype.get;
+    const getSpy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (
+      this: IDBObjectStore,
+      ...args: Parameters<IDBObjectStore["get"]>
+    ) {
+      if (this.name === MUTATION_SEQUENCES_STORE) sequenceReads += 1;
+      return realGet.apply(this, args);
+    });
+    try {
+      await outbox.resendRecovery(
+        id,
+        turnIntent("resent"),
+        recoveryGuard(baseline, () => true),
+      );
+      expect((await outbox.listOutbox(REF)).length).toBe(1);
+      expect(sequenceReads).toBe(1);
+    } finally {
+      getSpy.mockRestore();
+    }
+    expect((await requireRow(repository, browserKey())).token.sessionRevision).toBe(baseline.sessionRevision + 1);
+  });
+
+  // The same medium's contract half: the live guard must sit AFTER the
+  // transaction's sequence read, so a source whose authorization flips while
+  // that read is in flight is still refused. (The redundant re-read is the
+  // other half above; this pin holds whichever way it is eliminated.)
+  test("a resent recovery consults its live authorization after the transaction's sequence read", async () => {
+    const { repository, outbox, id } = await arrangeTransferred();
+    const baseline = (await requireRow(repository, browserKey())).token;
+
+    let authorized = true;
+    const realGet = IDBObjectStore.prototype.get;
+    const getSpy = vi.spyOn(IDBObjectStore.prototype, "get").mockImplementation(function (
+      this: IDBObjectStore,
+      ...args: Parameters<IDBObjectStore["get"]>
+    ) {
+      if (this.name === MUTATION_SEQUENCES_STORE) authorized = false;
+      return realGet.apply(this, args);
+    });
+    try {
+      expect(
+        await outbox.resendRecovery(
+          id,
+          turnIntent("resent"),
+          recoveryGuard(baseline, () => authorized),
+        ),
+      ).toBeUndefined();
+      await expectRefusedWithStatePreserved(repository, outbox, id, baseline);
+    } finally {
+      getSpy.mockRestore();
+    }
   });
 
   test("a recovery guard with a wrong namespace incarnation is refused at the same numeric revision", async () => {
