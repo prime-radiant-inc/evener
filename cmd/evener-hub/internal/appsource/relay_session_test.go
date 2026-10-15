@@ -483,7 +483,7 @@ func TestRelaySessionReadPublishesRoutesBeforeWaitingForPreCutAcknowledgement(t 
 		t.Fatal(err)
 	}
 	type routePublishingLease interface {
-		ReadWithRoutePublication(context.Context, appwire.ThreadReadParams, func(context.Context, appwire.Thread) error) (RelayReadResult, error)
+		ReadWithRoutePublication(context.Context, appwire.ThreadReadParams, *RelayRoutePublication) (RelayReadResult, error)
 	}
 	publishingLease, ok := lease.(routePublishingLease)
 	if !ok {
@@ -492,10 +492,10 @@ func TestRelaySessionReadPublishesRoutesBeforeWaitingForPreCutAcknowledgement(t 
 	routesPublished := make(chan appwire.Thread, 1)
 	result := make(chan relayReadOutcome, 1)
 	go func() {
-		read, err := publishingLease.ReadWithRoutePublication(t.Context(), params, func(_ context.Context, thread appwire.Thread) error {
+		read, err := publishingLease.ReadWithRoutePublication(t.Context(), params, &RelayRoutePublication{Publish: func(_ context.Context, thread appwire.Thread) error {
 			routesPublished <- thread
 			return nil
-		})
+		}})
 		result <- relayReadOutcome{result: read, err: err}
 	}()
 	call := <-daemon.reads
@@ -540,9 +540,9 @@ func TestRelaySessionRoutePublicationPanicReleasesCapture(t *testing.T) {
 	recovered := make(chan any, 1)
 	go func() {
 		defer func() { recovered <- recover() }()
-		_, _ = lease.ReadWithRoutePublication(t.Context(), params, func(context.Context, appwire.Thread) error {
+		_, _ = lease.ReadWithRoutePublication(t.Context(), params, &RelayRoutePublication{Publish: func(context.Context, appwire.Thread) error {
 			panic("route callback panic")
-		})
+		}})
 	}()
 	call := <-daemon.reads
 	call.transport.recv <- appwire.ResponseMessage(call.request.ID, relaySnapshot("thread-route-panic", "snapshot"))
@@ -578,9 +578,9 @@ func TestRelaySessionRoutePublicationErrorReleasesCapture(t *testing.T) {
 	publicationErr := errors.New("route publication canceled")
 	result := make(chan error, 1)
 	go func() {
-		_, err := lease.ReadWithRoutePublication(t.Context(), params, func(context.Context, appwire.Thread) error {
+		_, err := lease.ReadWithRoutePublication(t.Context(), params, &RelayRoutePublication{Publish: func(context.Context, appwire.Thread) error {
 			return publicationErr
-		})
+		}})
 		result <- err
 	}()
 	call := <-daemon.reads
