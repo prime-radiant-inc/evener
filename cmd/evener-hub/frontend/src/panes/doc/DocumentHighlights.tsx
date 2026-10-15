@@ -52,6 +52,19 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
   const activeOperationIdRef = useRef<string | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const notesRef = useRef<HTMLDivElement | null>(null);
+  // The selection/tap gesture must survive the overlay effect's own rebinds:
+  // a revalidation landing mid-drag re-runs the effect on a changed annotations
+  // list or map, and handlers rebound over empty closure state would ignore the
+  // armed drag's release, leaving its trailing click free to toggle the note it
+  // happens to land on. One ref carries the gesture across rebinds.
+  const gestureRef = useRef({
+    pointerId: null as number | null,
+    start: null as { x: number; y: number } | null,
+    operationId: null as string | null,
+    moved: false,
+    inNotes: false,
+    handledTap: null as { x: number; y: number; at: number } | null,
+  });
 
   useEffect(() => {
     const setActive = (operationId: string | null): void => {
@@ -108,6 +121,7 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
         // same modifier - extending a text selection across a band must
         // neither reveal nor dismiss the note it crosses.
         if (event instanceof MouseEvent && event.shiftKey) return;
+        const handledTap = gestureRef.current.handledTap;
         if (
           event instanceof MouseEvent &&
           handledTap !== null &&
@@ -115,7 +129,7 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
           Math.abs(event.clientY - handledTap.y) < 5 &&
           Date.now() - handledTap.at < 1500
         ) {
-          handledTap = null;
+          gestureRef.current.handledTap = null;
           return;
         }
         setActive(operationId !== null && operationId === activeOperationIdRef.current ? null : operationId);
@@ -127,67 +141,63 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
     // completed by the SAME uncancelled pointer's release — never a Shift
     // release and never a drag. Cancellation resets without revealing, and an
     // unrelated pointer's release is ignored because the arming pointer id must
-    // match.
-    let tapPointerId: number | null = null;
-    let tapStart: { x: number; y: number } | null = null;
-    let tapOperationId: string | null = null;
-    let tapMoved = false;
-    let tapInNotes = false;
-    // A real press reaches the browser as pointerdown/up AND THEN a click at
-    // the same coordinates. The tap path has already handled the interaction,
-    // so the trailing click must be consumed — otherwise a reveal's own click
-    // would toggle it back off. Keyboard-activated clicks have no preceding
-    // pointer press and keep the full toggle path.
-    let handledTap: { x: number; y: number; at: number } | null = null;
+    // match. The armed fields live in gestureRef so a rebind mid-gesture keeps
+    // them; only the reset helper and the handlers are per-binding.
+    const resetArmedGesture = (): void => {
+      const gesture = gestureRef.current;
+      // A consumed-click record deliberately survives the reset: the trailing
+      // click arrives after pointerup, once no pointer is armed.
+      gesture.pointerId = null;
+      gesture.start = null;
+      gesture.operationId = null;
+      gesture.moved = false;
+      gesture.inNotes = false;
+    };
     const onPointerDown = (event: PointerEvent): void => {
       if (event.button !== 0 || event.isPrimary === false || event.shiftKey) return;
-      tapPointerId = event.pointerId;
-      tapStart = { x: event.clientX, y: event.clientY };
-      tapMoved = false;
+      const gesture = gestureRef.current;
+      gesture.pointerId = event.pointerId;
+      gesture.start = { x: event.clientX, y: event.clientY };
+      gesture.moved = false;
       // A press on the note's own interactive surface never arms a reveal or
       // a dismissal: its release and trailing click belong to that surface.
-      tapInNotes = event.target instanceof Node && notesRef.current?.contains(event.target) === true;
-      tapOperationId = tapInNotes ? null : bandAtPoint(event.clientX, event.clientY);
+      gesture.inNotes = event.target instanceof Node && notesRef.current?.contains(event.target) === true;
+      gesture.operationId = gesture.inNotes ? null : bandAtPoint(event.clientX, event.clientY);
     };
     const onPointerMove = (event: PointerEvent): void => {
-      if (event.pointerId !== tapPointerId || !tapStart) return;
-      if (Math.abs(event.clientX - tapStart.x) > 3 || Math.abs(event.clientY - tapStart.y) > 3) tapMoved = true;
+      const gesture = gestureRef.current;
+      if (event.pointerId !== gesture.pointerId || !gesture.start) return;
+      if (Math.abs(event.clientX - gesture.start.x) > 3 || Math.abs(event.clientY - gesture.start.y) > 3)
+        gesture.moved = true;
     };
     const onPointerUp = (event: PointerEvent): void => {
-      if (event.pointerId !== tapPointerId) return;
-      if (!tapMoved && !event.shiftKey && !tapInNotes) {
+      const gesture = gestureRef.current;
+      if (event.pointerId !== gesture.pointerId) return;
+      if (!gesture.moved && !event.shiftKey && !gesture.inNotes) {
         // The tap mirrors the click's dismissal contract: a repeated stationary
         // tap on the same band toggles the note away, and a stationary tap that
         // lands on no band clears the revealed note so touch users get the
         // underlying prose back. A moved tap is a selection drag and reveals
         // or dismisses nothing.
-        if (tapOperationId === null) {
+        if (gesture.operationId === null) {
           if (activeOperationIdRef.current !== null) setActive(null);
         } else {
-          setActive(tapOperationId === activeOperationIdRef.current ? null : tapOperationId);
+          setActive(gesture.operationId === activeOperationIdRef.current ? null : gesture.operationId);
         }
-        handledTap = { x: event.clientX, y: event.clientY, at: Date.now() };
-      } else if (tapMoved && !event.shiftKey) {
+        gesture.handledTap = { x: event.clientX, y: event.clientY, at: Date.now() };
+      } else if (gesture.moved && !event.shiftKey) {
         // A drag is a selection gesture: it reveals nothing here, and the
         // compatibility click the browser fires at the release point must not
         // reach activate and toggle the note it happened to land on. Consume
         // it exactly like a tap's trailing click; keyboard-activated clicks
         // have no preceding pointer press and keep the full toggle path.
-        handledTap = { x: event.clientX, y: event.clientY, at: Date.now() };
+        gesture.handledTap = { x: event.clientX, y: event.clientY, at: Date.now() };
       }
-      tapPointerId = null;
-      tapStart = null;
-      tapOperationId = null;
-      tapMoved = false;
-      tapInNotes = false;
+      resetArmedGesture();
     };
     const onPointerCancel = (event: PointerEvent): void => {
-      if (event.pointerId !== tapPointerId) return;
-      tapPointerId = null;
-      tapStart = null;
-      tapOperationId = null;
-      tapMoved = false;
-      tapInNotes = false;
+      if (event.pointerId !== gestureRef.current.pointerId) return;
+      resetArmedGesture();
     };
     // Keyboard reachability is symmetric: when focus leaves the bands and the
     // revealed surface, the note goes with it. Focus moving between the bands
