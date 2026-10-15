@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 // kata 68fm: hub ports were handed out in prose (a dispatch prompt listing
@@ -120,6 +121,13 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 	reportedAddr := m[1]
 	if reportedAddr == "127.0.0.1:0" || reportedAddr == ":0" {
 		t.Fatalf("reported address is still the unresolved request %q, want the real bound port", reportedAddr)
+	}
+	actual, err := hubendpoint.Read(cfg.HubStateRoot)
+	if err != nil {
+		t.Fatalf("published endpoint: %v", err)
+	}
+	if actual.BoundAddr != reportedAddr || actual.RequestedListenAddr != "127.0.0.1:0" || actual.BootID != hubBootID || actual.LocalURL != "http://"+reportedAddr {
+		t.Fatalf("published binding disagrees with requested and actual listener: %+v", actual)
 	}
 
 	var browserURL, privateURL *url.URL

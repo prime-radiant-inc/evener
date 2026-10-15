@@ -35,6 +35,7 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/hubendpoint"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/rendezvous"
@@ -262,6 +263,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if len(args) > 0 && args[0] == "attach" {
 		return runAttach(args[1:], stderr, deps)
 	}
+	if len(args) > 0 && args[0] == "endpoint" {
+		return runEndpoint(args[1:], deps.stdout, stderr, deps)
+	}
 
 	opts, err := parseHubOptions(args, stderr)
 	if err != nil {
@@ -488,6 +492,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
 	}
 	boundAddr := hubListener.Addr().String()
+	defer func() { _ = hubListener.Close() }()
 
 	resumeLocks, err := hubcore.NewPersistentResumeLocks(hubStateRoot)
 	if err != nil {
@@ -938,6 +943,37 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		},
 		ln: hubListener,
 	}
+	// Publish only after the actual listener and health handler exist. A record
+	// does not mean ready until a reader verifies this boot on the live socket.
+	record := hubendpoint.Record{
+		SchemaVersion:       hubendpoint.SchemaVersion,
+		BootID:              hubBootID,
+		PID:                 os.Getpid(),
+		StartedAt:           web.startedAt,
+		ConfigPath:          opts.configPath,
+		HubStateRoot:        hubStateRoot,
+		RequestedListenAddr: endpoint.ListenAddr.String(),
+		ListenSource:        endpoint.ListenSource,
+		BoundAddr:           boundAddr,
+	}
+	if endpoint.PublicURL != nil {
+		record.PublicURL = endpoint.PublicURL.String()
+	}
+	if origin, originErr := hubendpoint.LocalOrigin(boundAddr); originErr == nil {
+		record.LocalURL = origin.String()
+		if ip := net.ParseIP(origin.Hostname()); ip != nil && ip.IsLoopback() {
+			record.LoopbackURL = origin.String()
+		}
+	}
+	removeEndpoint, err := hubendpoint.Publish(hubStateRoot, record)
+	if err != nil {
+		return fmt.Errorf("publish hub endpoint: %w", err)
+	}
+	defer func() {
+		if removeErr := removeEndpoint(); removeErr != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] retire endpoint: %v\n", removeErr)
+		}
+	}()
 
 	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
 	// it with a hostname the operator can reach the hub at.

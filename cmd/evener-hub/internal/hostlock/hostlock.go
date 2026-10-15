@@ -3,6 +3,7 @@
 package hostlock
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,4 +35,46 @@ func AcquireLock(path string) (func(), error) {
 		_ = flockUnlock(f)
 		_ = f.Close()
 	}, nil
+}
+
+// IsHeld inspects the existing lock inode without creating or replacing it.
+// An absent lock is free; an unsupported inspection is an error, never a guess.
+func IsHeld(path string) (bool, error) {
+	if !flockInspectionSupported() {
+		return false, fmt.Errorf("hub lock inspection unsupported: %s", path)
+	}
+	before, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !before.Mode().IsRegular() || !lockOwnedByCurrentUser(before) {
+		return false, fmt.Errorf("unsafe hub lock: %s", path)
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = file.Close() }()
+	opened, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !os.SameFile(before, opened) || !lockOwnedByCurrentUser(opened) {
+		return false, fmt.Errorf("hub lock changed while opening: %s", path)
+	}
+	held, err := flockIsHeld(file)
+	if err != nil {
+		return false, err
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	if !os.SameFile(before, after) {
+		return false, fmt.Errorf("hub lock changed during inspection: %s", path)
+	}
+	return held, nil
 }
