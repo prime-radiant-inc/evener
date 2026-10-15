@@ -1147,9 +1147,10 @@ export class MutationOutboxIndexedDB {
       // The resend is the user's deliberate post-Stop send (§4's exemption),
       // so its fresh row captures the target's current epoch like any new
       // submission: its own refused redeliveries stay transient instead of
-      // fence-canceling against a Stop that predates the resend.
-      const stopEpoch = await this.#stopEpochOf(transaction, intent.targetRef);
-      if (guard && !guard.stillAuthorized()) return undefined;
+      // fence-canceling against a Stop that predates the resend. The sequence
+      // row read above already carries that epoch, so no second read opens an
+      // asynchronous window behind the live guard.
+      const stopEpoch = sequenceRow?.stopEpoch ?? 0;
       const attachments = intent.attachments.map((attachment) => ({
         ...attachment,
         presentationId: this.#createPresentationId(),
@@ -1169,6 +1170,11 @@ export class MutationOutboxIndexedDB {
         attempted: false,
         stopEpochAtEnqueue: stopEpoch,
       };
+      // The live guard is the last check before the writes issue, mirroring
+      // the update and discard paths: an edit, disposal or recovery-backing
+      // change on the source during the reads above must still refuse, with no
+      // asynchronous step left to race the refusal away.
+      if (guard && !guard.stillAuthorized()) return undefined;
       const { writes } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
       const allWrites = [
         requestResult(
