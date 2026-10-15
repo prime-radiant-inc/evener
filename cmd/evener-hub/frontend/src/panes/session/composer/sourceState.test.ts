@@ -3890,6 +3890,60 @@ test("a competing tab's identical committed draft survives the first tab's prepa
   }
 });
 
+// RoboRev round 34 medium: bindEditor can restore another same-session
+// source's latest draft into a source whose ready() hydration adopted an
+// older token, and the unchanged send then captures that stale token: the
+// settlement's durable cleanup is refused, so a reload restores the
+// already-sent message. The restore must establish matching durable
+// authority over the row the editor now shows, before submission capture.
+test("a restored latest draft sends and clears the durable row it adopted", async () => {
+  const fixture = sourceFixture("restored-draft-authority");
+  // The values are coherent documents: the restore re-derives a draft's
+  // skills from its prose, so a skill selection the text never carried would
+  // be dropped on restore and the send would honestly differ from the row.
+  const firstWrite: SkillEditorValue = { text: "first write", skillNames: [], mentions: [] };
+  const latestWrite: SkillEditorValue = { text: "latest write", skillNames: [], mentions: [] };
+  await fixture.repository.seedDraft(fixture.key, firstWrite);
+  const first = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  const secondRepository = fixture.secondRepository();
+  const second = fixture.track(
+    createComposerSourceState("root", { repository: secondRepository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  // Both sources hydrate at the seeded row; the second source's cached
+  // hydration adopted the first write's token.
+  await Promise.all([first.ready(), second.ready()]);
+  // The first source commits a newer draft after that hydration cached, so
+  // the second source no longer owns the shared draft revision.
+  first.acceptEdit(latestWrite);
+  await first.whenSettled();
+  const rowBeforeSend = await requireRow(secondRepository, fixture.key);
+  // The second source's editor rebinds and restores the latest draft from
+  // the shared projection while its durable lineage stays at the old token.
+  second.bindEditor({
+    read: () => ({ text: "", cursor: 0, selection: { start: 0, end: 0 } }),
+    write: () => {},
+  });
+  expect(second.getSnapshot()).toMatchObject({ text: "latest write" });
+  // The unchanged send captures the CURRENT durable authority over the row
+  // the editor adopted, and its settlement clears that row: nothing changed,
+  // so a reload must not restore the already-sent draft.
+  const submitted = await second.submissionDraft();
+  expect(submitted.settlementGuard?.token).toEqual(rowBeforeSend.token);
+  const settlement = await second.settleDraft(submitted);
+  expect(settlement).toMatchObject({ cleared: true, persistence: "committed" });
+  const reopened = createBrowserDraftRepository({ indexedDB: fixture.factory, databaseName: fixture.databaseName });
+  try {
+    // The settlement's clear writes the system's empty "no draft" row rather
+    // than deleting it; what must not happen is the sent text resurrecting.
+    const row = await reopened.load(fixture.key);
+    expect(row?.text ?? "").toBe("");
+  } finally {
+    reopened.close();
+  }
+});
+
 // Issue #4581's recovery-resend variant: the strict resend preparation runs
 // the same unconditional adoption, so a resend can acquire authority over a
 // COMPETING tab's recovery edit — adopting its revision into the resend guard

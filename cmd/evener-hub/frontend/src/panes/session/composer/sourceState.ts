@@ -458,6 +458,37 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     });
     return readyPromise;
   }
+  // A restore adopts the latest draft into this editor, and the durable row
+  // that value came from is the one an unchanged send must be able to clear:
+  // without matching authority the settlement refuses the cleanup and a
+  // reload restores the already-sent message. #4581 keeps the guard honest -
+  // adoption needs proof - and the proof is the restore itself: the editor
+  // took the row's value. The adoption lands only while this source still
+  // shows the row's exact value, so a competing source's newer row can never
+  // put authority over content this source is not sending; any edit after
+  // the restore changes the value and the load adopts nothing. whenSettled
+  // awaits the latest establishment before a submission captures its guard.
+  let restoredAuthority: Promise<void> | null = null;
+  function establishRestoredAuthority(): void {
+    restoredAuthority = ensureDeps()
+      .then(async () => {
+        const repositoryNow = repository;
+        const keyNow = draftKey;
+        if (!repositoryNow || !keyNow) return;
+        const row = await repositoryNow.load(keyNow).catch(() => null);
+        if (
+          row &&
+          !disposed &&
+          textRef.current === row.text &&
+          sameSkillSelections(skillNamesRef.current, row.skillNames) &&
+          sameSkillSelections(selectionMetaRef.current.commandNames, row.commandNames ?? []) &&
+          sameMentions(selectionMetaRef.current.mentions, row.mentions)
+        ) {
+          draftToken = row.token;
+        }
+      })
+      .catch(() => undefined);
+  }
   function whenSettled(): Promise<void> {
     return ready()
       .then(() => {
@@ -466,6 +497,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
         scheduleDrain();
         return drainPromise;
       })
+      .then(() => restoredAuthority ?? undefined)
       .catch(() => undefined);
   }
   function acceptEdit(value: SkillEditorValue): void {
@@ -1444,6 +1476,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
         updateSkillNames(restoredSkillNames(draft));
         updateSelectionMeta(draft);
         ownedDraftRevisionRef.current = readDraftRevision(ref);
+        establishRestoredAuthority();
       }
       markRestore();
       boundEditor = nextEditor;
