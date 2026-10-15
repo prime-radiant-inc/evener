@@ -14,7 +14,7 @@ import {
   getBrowserDraftRepository,
   resetBrowserDraftRepositoryForTests,
 } from "../../../stores/browserDraftRepository";
-import { serializeSessionKey } from "../../../stores/compositionRevision";
+import { sameSessionToken, serializeSessionKey } from "../../../stores/compositionRevision";
 import {
   ANNOTATION_NAMESPACES_STORE,
   COMPOSER_DRAFTS_STORE,
@@ -1486,7 +1486,7 @@ test("prepareAnnotation returns the current token/backing/generation and ownsPre
   expect(source.ownsPreparation(preparation)).toBe(false);
 });
 
-test("prepareAnnotation reconciles a later foreign durable commit's winning value and token", async () => {
+test("prepareAnnotation reconciles a later foreign durable commit's winning value without adopting its token", async () => {
   const fixture = sourceFixture("source-state-prepare-foreign");
   const value: SkillEditorValue = {
     text: "shared start /same",
@@ -1499,6 +1499,8 @@ test("prepareAnnotation reconciles a later foreign durable commit's winning valu
     createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
   );
   await source.ready();
+  // This source's own recorded lineage, before the foreign commit.
+  const baseline = await requireRow(fixture.repository, fixture.key);
   // A second real adapter commits a foreign winning value this source never saw.
   const foreign = fixture.secondRepository();
   const foreignValue: SkillEditorValue = {
@@ -1527,7 +1529,13 @@ test("prepareAnnotation reconciles a later foreign durable commit's winning valu
   const durable = await fixture.repository.load(fixture.key);
   if (!durable) throw new Error("expected the foreign durable row");
   expect(durable).toMatchObject(foreignValue);
-  expect(preparation.token).toEqual(durable.token);
+  // The reconciliation publishes the foreign winning VALUE, but the preparation
+  // keeps THIS source's own lineage. The foreign revision is not one this source
+  // produced, so adopting it would put the other tab's authority behind the
+  // append; the append's sameSessionToken check therefore refuses instead of
+  // rebasing onto the foreign row (#4649).
+  expect(preparation.token).toEqual(baseline.token);
+  expect(sameSessionToken(durable.token, preparation.token)).toBe(false);
 });
 
 test("prepareAnnotation drains a distinct pending recovery write at its return boundary", async () => {
@@ -3885,6 +3893,66 @@ test("a competing tab's identical committed draft survives the first tab's prepa
     // competing tab's revision.
     expect(submitted.settlementGuard?.token).toEqual(baseline.token);
     expect(submitted.stillOwnsEdit?.()).toBe(true);
+  } finally {
+    hold.release();
+  }
+});
+
+// Issue #4649: prepareAnnotation's durable read adopted the loaded row's token
+// UNCONDITIONALLY — the cross-tab adoption shape #4581 removed from the
+// submission preparation, one call site over. A competing same-ref tab
+// committing during this tab's preparation window makes the loaded row carry
+// that tab's revision, and the preparation adopted authority over it, so the
+// append's sameSessionToken check could rebase onto the competitor's row
+// instead of refusing. Two sources over one shared fake-IndexedDB database
+// reproduce the two-tab window: source A's preparation read is parked before
+// its real durable read, source B commits during it, and A's preparation must
+// keep A's OWN lineage so the downstream append refuses honestly.
+test("prepareAnnotation does not adopt a competing tab's revision committed during its preparation window", async () => {
+  const fixture = sourceFixture("prepare-annotation-adoption");
+  const value: SkillEditorValue = { text: "shared identical draft", skillNames: ["same"], mentions: [] };
+  await fixture.repository.seedDraft(fixture.key, value);
+  const first = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  const secondRepository = fixture.secondRepository();
+  await first.ready();
+  const baseline = await requireRow(fixture.repository, fixture.key);
+  expect(first.getDraftToken()).toEqual(baseline.token);
+
+  // Park the first source's preparation read BEFORE its real durable read
+  // issues, so the competing tab's commit lands inside the preparation window
+  // and the released read observes it.
+  const hold = holdNextLoadBeforeRead(fixture.repository);
+  try {
+    const pending = first.prepareAnnotation();
+    await hold.reached;
+    const competitorValue: SkillEditorValue = {
+      text: "competitor winner /same",
+      skillNames: ["same"],
+      mentions: [],
+    };
+    const committed = await secondRepository.commitEdit(fixture.key, baseline.token, competitorValue, () => true);
+    if (committed.state !== "committed") throw new Error("expected the competing tab's draft to commit");
+    const competitorRow = committed.draft;
+    hold.release();
+    const preparation = await pending;
+    if (!preparation) throw new Error("expected a preparation after the competing commit");
+
+    // The competing tab's write is durable and one revision past this source's
+    // lineage.
+    const durable = await requireRow(fixture.repository, fixture.key);
+    expect(durable.token).toEqual(competitorRow.token);
+    expect(durable.token.sessionRevision).toBe(baseline.token.sessionRevision + 1);
+
+    // The preparation keeps THIS source's own lineage, never the competing
+    // tab's revision. This is exactly the predicate appendAnnotation's
+    // sameSessionToken(row.token, preparation.token) check reads, so the
+    // downstream append refuses (revision-conflict) instead of rebasing onto
+    // the competitor's row.
+    expect(preparation.token).toEqual(baseline.token);
+    expect(sameSessionToken(durable.token, preparation.token)).toBe(false);
+    expect(first.ownsPreparation(preparation)).toBe(true);
   } finally {
     hold.release();
   }
