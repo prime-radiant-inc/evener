@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 // Client is a small typed HTTP client for the evener hub JSON API.
@@ -30,17 +32,14 @@ func (e *HTTPError) Error() string {
 func (e *HTTPError) StatusCode() int { return e.Status }
 
 func NewClient(base string, httpClient *http.Client) (*Client, error) {
-	if !strings.Contains(base, "://") {
-		base = "http://" + base
-	}
-	u, err := url.Parse(base)
+	origin, err := hubendpoint.ParseOrigin(base)
 	if err != nil {
 		return nil, err
 	}
-	if u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("invalid hub URL %q", base)
+	u, err := url.Parse(origin.String())
+	if err != nil {
+		return nil, err
 	}
-	u.Path = strings.TrimRight(u.Path, "/")
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
@@ -49,7 +48,7 @@ func NewClient(base string, httpClient *http.Client) (*Client, error) {
 
 func (c *Client) URL(path string) string {
 	u := *c.baseURL
-	fullPath := strings.TrimRight(c.baseURL.Path, "/") + "/" + strings.TrimLeft(path, "/")
+	fullPath := "/" + strings.TrimLeft(path, "/")
 	if p, q, ok := strings.Cut(fullPath, "?"); ok {
 		u.Path = p
 		u.RawQuery = q
