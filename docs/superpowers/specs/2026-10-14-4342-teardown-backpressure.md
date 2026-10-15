@@ -558,6 +558,16 @@ fixtures, and an injectable transport/observer where needed.
   request sequence byte-identical (the note editor's drain), and a
   legacy pending interrupt redelivers on refusal instead of canceling
   its own Stop, the round-5 interrupt rule held for the legacy shape.
+  The notification the round-6 fix added then closed its own loop: the
+  refusal's storage change refreshes the ref's projection, the refresh
+  re-marks the ref newly loaded, and the newly-loaded hand-off called
+  the dispatch scheduler directly - an immediate redelivery per refusal
+  (222 requests in ~350ms in the red test), a far tighter hammer than
+  the discovery cadence the two-clause construction rules. The hand-off
+  now skips refs whose paced retry is armed - the timer owns their
+  refused row's re-drive - so the notification still refreshes
+  projections and the busy surfaces, but never wakes the dispatcher
+  itself; discovery and the timer remain the only redrivers.
 - The busy surface's visible copy is pinned structurally, not verbatim
   (round-4 review, low): the queue row's reason span carries a
   data-busy-reason hook asserted non-empty, the ghost's caption stage and

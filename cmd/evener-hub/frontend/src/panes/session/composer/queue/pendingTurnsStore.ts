@@ -33,6 +33,7 @@ import {
   retryBlockedMutation,
   subscribeMutationPersistence,
   threadsStore,
+  transientRefusalPaceArmed,
   updateRecoveryMutation,
   useThreadsStore,
 } from "../../../../stores/threads";
@@ -169,7 +170,16 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   // scheduler - the same explicit hand-off publishAndReconcileThreadHydration
   // makes when its reconciliation opens the gate. A ref with no dispatchable
   // mutation is a no-op there.
-  if (loaded.length > 0) notifyReadyForMutationDispatch(loaded);
+  if (loaded.length > 0) {
+    // #4342: a ref whose paced retry is armed has that timer owning its
+    // refused row's re-drive, so the hand-off skips it: the refusal's own
+    // storage notification triggers this refresh, and handing the
+    // newly-loaded mark for an armed ref to the dispatcher would redeliver
+    // the refused row immediately, repeating per refusal in a tight loop.
+    // Discovery and the timer still re-drive the row at their own cadence.
+    const handoff = loaded.filter((ref) => !transientRefusalPaceArmed(ref));
+    if (handoff.length > 0) notifyReadyForMutationDispatch(handoff);
+  }
   return true;
 }
 

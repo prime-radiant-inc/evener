@@ -35,6 +35,7 @@ import { IDBUpgradeError } from "./idbConnection";
 import { MutationDispatcher } from "./mutationDispatcher";
 import type { MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
+import { settleProjectionWorkForTests } from "./projectionWork";
 import { SessionEntryCache } from "./sessionEntryCache";
 import {
   blockedUpgradeRequest,
@@ -10059,6 +10060,48 @@ test("a backpressured send stays queued, surfaces busy, and paces retries that r
   await flushIndexedDBUntil(async () => (await storage.listOutbox("ref_a")).length === 0);
   expect(await storage.listOutbox("ref_a")).toEqual([]);
   expect(threadsStore.getState().transientRefusalPaces.size).toBe(0);
+  restoreScheduler();
+});
+
+// #4342 (round-9 review): the refusal's own storage notification refreshes
+// the ref's projection, and that refresh's newly-loaded hand-off must not
+// wake the dispatcher - the notification fires once per refusal, so an
+// unfiltered hand-off redelivers the refused row immediately and each
+// refusal repeats the wake in a tight loop, hammering the saturated
+// connection and perpetually replacing the pace timer. The paced retry and
+// the ordinary discovery drive own the re-drive: with the scheduler withheld
+// and nothing else driving, a fully drained runtime leaves exactly one
+// request on the wire.
+test("a refusal's storage notification does not itself redispatch the refused row", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  fake.on("turn/start", (params) => {
+    throw new WireError(HUB_REFUSAL_MESSAGE, -32014, {
+      evenerErrorInfo: "connectionBackpressure",
+      clientMutationId: params.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "automatic",
+      cause: "queueSaturated",
+    });
+  });
+  const restoreScheduler = installBackpressureRetrySchedulerForTests(() => () => {});
+
+  await threadsStore.getState().ensureThread("ref_a");
+  await threadsStore.getState().send("ref_a", "refused under saturation");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+
+  // Drain every storage and projection async the refusal kicked off: the
+  // rollback's notification, the commit feed's projection refresh, the
+  // marker prune. Each round is bounded so a busy loop cannot hang the
+  // drain itself; any quiet gap lets one settle through.
+  for (let round = 0; round < 3; round++) {
+    await Promise.race([settleProjectionWorkForTests(), new Promise((resolve) => setTimeout(resolve, 100))]);
+  }
+
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  expect(threadsStore.getState().transientRefusalPaces.get("ref_a")?.attempt).toBe(1);
   restoreScheduler();
 });
 
