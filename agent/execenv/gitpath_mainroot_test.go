@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -390,6 +391,63 @@ func TestResolveMainRepoRoot_CommonDirEmptyStdout(t *testing.T) {
 	}
 	if got := ResolveMainRepoRoot(env, dir); got != "" {
 		t.Fatalf("ResolveMainRepoRoot with blank --git-common-dir stdout = %q, want empty", got)
+	}
+}
+
+// TestGitRootOrEmpty_CappedStreamsNeedNotDiscardAWholeRoot is the class sweep
+// for the stdout-only gates (round 16): the toplevel parser reads stdout, so a
+// capped STDERR must not make a whole answer report itself unknown — while a
+// capped STDOUT still must.
+func TestGitRootOrEmpty_CappedStreamsNeedNotDiscardAWholeRoot(t *testing.T) {
+	repo := t.TempDir()
+	stderrCapped := &fakeExecEnv{
+		workDir: repo,
+		exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+			if strings.Contains(command, "--show-toplevel") {
+				return ExecResult{Stdout: repo, ExitCode: 0, StderrTruncated: true}, nil
+			}
+			return ExecResult{ExitCode: 1}, nil
+		},
+	}
+	if got, want := GitRootOrEmpty(stderrCapped, repo), evalSym(t, repo); got != want {
+		t.Fatalf("GitRootOrEmpty with a capped STDERR = %q, want %q: its stdout is whole", got, want)
+	}
+
+	stdoutCapped := &fakeExecEnv{
+		workDir: repo,
+		exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+			if strings.Contains(command, "--show-toplevel") {
+				return ExecResult{Stdout: repo, ExitCode: 0, StdoutTruncated: true}, nil
+			}
+			return ExecResult{ExitCode: 1}, nil
+		},
+	}
+	if got := GitRootOrEmpty(stdoutCapped, repo); got != "" {
+		t.Fatalf("GitRootOrEmpty with a capped STDOUT = %q, want unknown: a partial path is not a root", got)
+	}
+}
+
+// TestExecGitOutput_CappedStreamsNeedNotDiscardAWholePath is the same sweep at
+// the path the project resolver takes its verdict from: a capped STDERR leaves a
+// whole git answer usable, and a capped STDOUT still refuses it.
+func TestExecGitOutput_CappedStreamsNeedNotDiscardAWholePath(t *testing.T) {
+	stderrCapped := &fakeExecEnv{
+		exec: func(context.Context, string, int, string, map[string]string) (ExecResult, error) {
+			return ExecResult{Stdout: "/x\n", ExitCode: 0, StderrTruncated: true}, nil
+		},
+	}
+	got, err := execGitOutput(stderrCapped, "/x", "rev-parse", "--show-toplevel")
+	if err != nil || got != "/x" {
+		t.Fatalf("execGitOutput with a capped STDERR = %q, %v, want /x and no error", got, err)
+	}
+
+	stdoutCapped := &fakeExecEnv{
+		exec: func(context.Context, string, int, string, map[string]string) (ExecResult, error) {
+			return ExecResult{Stdout: "/x\n", ExitCode: 0, StdoutTruncated: true}, nil
+		},
+	}
+	if _, err := execGitOutput(stdoutCapped, "/x", "rev-parse", "--show-toplevel"); !errors.Is(err, ErrOutputTruncated) {
+		t.Fatalf("execGitOutput with a capped STDOUT = %v, want ErrOutputTruncated", err)
 	}
 }
 
