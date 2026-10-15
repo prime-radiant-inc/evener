@@ -1364,12 +1364,12 @@ var (
 	execCommandContext = exec.CommandContext
 	execCommand        = exec.Command
 	runtimeGOOS        = runtime.GOOS
-	osVersionOutput    = func(ctx context.Context, name string, args ...string) ([]byte, bool, error) {
+	osVersionOutput    = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
 		cmd := execCommandContext(ctx, name, args...)
 		out := newCappedOutputBuffer(probeOutputCaptureCap)
 		cmd.Stdout = out
 		err := cmd.Run()
-		return []byte(out.String()), out.truncated(), err
+		return newProbeCapture(out), err
 	}
 	shellStat              = os.Stat
 	grepReadFile           = grepReadFileCapped
@@ -1383,13 +1383,13 @@ var (
 	venvCandidateDirs      = func(root, binDir string) []string {
 		return []string{filepath.Join(root, ".venv", binDir), filepath.Join(root, "venv", binDir)}
 	}
-	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) ([]byte, bool, error) {
+	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
 		cmd := execCommandContext(ctx, name, args...)
 		cmd.WaitDelay = loginShellPATHWaitDelay
 		out := newCappedOutputBuffer(probeOutputCaptureCap)
 		cmd.Stdout = out
 		err := cmd.Run()
-		return []byte(out.String()), out.truncated(), orphanpipe.ChildErr(cmd, err)
+		return newProbeCapture(out), orphanpipe.ChildErr(cmd, err)
 	}
 )
 
@@ -1440,11 +1440,11 @@ func resolveLoginShellPATH() string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), loginShellPATHTimeout)
 	defer cancel()
-	out, truncated, err := loginShellPATHOutput(ctx, shell, "-lc", "echo $"+envvars.Path.Name)
+	capture, err := loginShellPATHOutput(ctx, shell, "-lc", "echo $"+envvars.Path.Name)
 	if err != nil {
 		return ""
 	}
-	answer, ok := probeTrustedAnswer(out, truncated)
+	answer, ok := probeTrustedAnswer(capture)
 	if !ok {
 		return ""
 	}
@@ -1467,55 +1467,79 @@ func lastNonEmptyLine(s string) string {
 	return ""
 }
 
-// probeMarkerOpen and probeMarkerClose are the fixed ends of the omission
-// marker a truncated capture carries, split out of the one outputOmissionMarker
-// format so probeTailSection stays in step with it.
-var probeMarkerOpen, probeMarkerClose, _ = strings.Cut(outputOmissionMarker, "%d")
-
-// probeTailSection returns the text after the omission marker in a probe view —
-// the capture's retained tail window — and whether the view carried a marker.
-func probeTailSection(view string) (string, bool) {
-	_, rest, ok := strings.Cut(view, probeMarkerOpen)
-	if !ok {
-		return "", false
-	}
-	_, tail, ok := strings.Cut(rest, probeMarkerClose)
-	if !ok {
-		return "", false
-	}
-	return tail, true
+// probeCapture is a launch probe's captured output: the rendered view (the exact
+// stream under the cap, else head + omission marker + tail), the buffer's
+// authoritative byte-exact head prefix and retained tail window when the cap
+// tripped, and whether it tripped.
+type probeCapture struct {
+	view      []byte
+	head      []byte
+	tail      []byte
+	truncated bool
 }
 
-// probeAnswerMayBeCut reports whether a truncated probe's answer line is the
-// sole line of the retained tail window. There the cap fell between the
-// answer's start and the window, so no newline is visible before the answer and
-// its beginning may be missing — the fragment must not be trusted. A line that
-// is not the tail's first line was preceded by a newline the window kept, so
-// its start is visible and it stays trustworthy even under truncation.
-func probeAnswerMayBeCut(view, answer string) bool {
-	if answer == "" {
-		return false
+// newProbeCapture snapshots a probe's capture. The trust decision reads the
+// authoritative head and tail windows directly rather than parsing the rendered
+// omission marker, so marker-shaped text in the command's own output cannot
+// move the guard's reference point.
+func newProbeCapture(b *cappedOutputBuffer) probeCapture {
+	c := probeCapture{view: []byte(b.String()), truncated: b.truncated()}
+	if c.truncated {
+		c.head = b.head
+		c.tail = b.tailView()
 	}
-	tail, ok := probeTailSection(view)
-	if !ok {
-		return false
+	return c
+}
+
+// lastNonEmptyLineAt returns the last non-blank line of b, trimmed, and the byte
+// offset in b where that line starts. ok is false when b has no non-blank line.
+func lastNonEmptyLineAt(b []byte) (line string, start int, ok bool) {
+	start = -1
+	for off := 0; off < len(b); {
+		nl := bytes.IndexByte(b[off:], '\n')
+		end := len(b)
+		if nl >= 0 {
+			end = off + nl
+		}
+		if trimmed := strings.TrimSpace(string(b[off:end])); trimmed != "" {
+			line, start = trimmed, off
+		}
+		if nl < 0 {
+			break
+		}
+		off = end + 1
 	}
-	return !strings.Contains(strings.TrimRight(tail, "\n"), "\n")
+	if start < 0 {
+		return "", 0, false
+	}
+	return line, start, true
 }
 
 // probeTrustedAnswer extracts a probe's answer line and reports whether it is
-// trustworthy. An untruncated capture is always trusted; a truncated one only
-// when its answer is not a cut tail-window fragment (probeAnswerMayBeCut).
-func probeTrustedAnswer(out []byte, truncated bool) (string, bool) {
-	view := string(out)
-	answer := lastNonEmptyLine(view)
-	if answer == "" {
+// trustworthy. Under the cap the whole stream is present, so the last non-blank
+// line is returned exactly as before.
+//
+// A truncated capture is different: the cap may have fallen across the answer's
+// start, leaving only its suffix in the retained tail window. When the tail has
+// any non-blank line, the tail is the stream's end, so its last non-blank line
+// is the view's last non-blank line — trusted only when a newline precedes its
+// start (it is not the tail's first line, whose beginning may be cut). When the
+// whole retained tail is blank, the last non-blank line lies in the byte-exact
+// head prefix, whose line starts are visible, and is trusted.
+func probeTrustedAnswer(c probeCapture) (string, bool) {
+	if !c.truncated {
+		return lastNonEmptyLine(string(c.view)), true
+	}
+	if answer, start, ok := lastNonEmptyLineAt(c.tail); ok {
+		if start > 0 {
+			return answer, true
+		}
 		return "", false
 	}
-	if truncated && probeAnswerMayBeCut(view, answer) {
-		return "", false
+	if answer := lastNonEmptyLine(string(c.head)); answer != "" {
+		return answer, true
 	}
-	return answer, true
+	return "", false
 }
 
 func resolveOSVersion() string {
@@ -1523,16 +1547,16 @@ func resolveOSVersion() string {
 	defer cancel()
 	switch runtimeGOOS {
 	case "darwin", "linux":
-		out, truncated, err := osVersionOutput(ctx, "uname", "-rs")
+		capture, err := osVersionOutput(ctx, "uname", "-rs")
 		if err == nil {
-			if version, ok := probeTrustedAnswer(out, truncated); ok {
+			if version, ok := probeTrustedAnswer(capture); ok {
 				return version
 			}
 		}
 	case "windows":
-		out, truncated, err := osVersionOutput(ctx, "cmd", "/c", "ver")
+		capture, err := osVersionOutput(ctx, "cmd", "/c", "ver")
 		if err == nil {
-			if version, ok := probeTrustedAnswer(out, truncated); ok {
+			if version, ok := probeTrustedAnswer(capture); ok {
 				return version
 			}
 		}

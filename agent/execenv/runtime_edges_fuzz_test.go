@@ -52,8 +52,8 @@ func FuzzRuntimeBoundaryEdges(f *testing.F) {
 				t.Fatal("empty OS version fallback")
 			}
 		}
-		osVersionOutput = func(context.Context, string, ...string) ([]byte, bool, error) {
-			return []byte(" scripted version \n"), false, nil
+		osVersionOutput = func(context.Context, string, ...string) (probeCapture, error) {
+			return probeCapture{view: []byte(" scripted version \n")}, nil
 		}
 		for _, goos := range []string{"linux", "darwin", "windows"} {
 			runtimeGOOS = goos
