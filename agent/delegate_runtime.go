@@ -2466,6 +2466,13 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		if !ok {
 			return delegatestore.Descriptor{}, identifier.Project{}, errors.New(`delegate isolation:"worktree" requires a local execution environment`)
 		}
+		// A dead session anchor cannot cut an honest lane: createDelegateWorktree
+		// -> worktreeCreateCore re-resolves the project AND the base SHA from the
+		// active root, so refuse here with the named recovery rather than leak the
+		// resolve-project lstat (issue #4671).
+		if err := s.worktreeAnchorGone(); err != nil {
+			return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("delegate isolation: %w", err)
+		}
 		project, err = resolveWorktreeProject(local, local.WorkingDirectory())
 		if err != nil {
 			return delegatestore.Descriptor{}, identifier.Project{}, fmt.Errorf("delegate isolation: resolve project: %w", err)
