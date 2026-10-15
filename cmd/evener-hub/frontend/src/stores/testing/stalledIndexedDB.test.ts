@@ -2,7 +2,19 @@
 
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
-import { holdIndexedDBEvent, holdNextWriteTransaction, nextRealTask, wedgeDatabaseOpens } from "./stalledIndexedDB";
+import {
+  CLEAR_EPOCH_KEY,
+  ENTRY_META_STORE,
+  SESSION_CACHE_DATABASE_VERSION,
+  upgradeSessionCache,
+} from "../sessionCacheSchema";
+import {
+  bumpCacheEpochRow,
+  holdIndexedDBEvent,
+  holdNextWriteTransaction,
+  nextRealTask,
+  wedgeDatabaseOpens,
+} from "./stalledIndexedDB";
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -134,6 +146,23 @@ test("holdNextWriteTransaction holds the exact scope, not an earlier narrower wr
 
   held.release();
   expect(target.isDone()).toBe(true);
+});
+
+test("bumpCacheEpochRow updates the entry cache epoch without requesting a downgrade", async () => {
+  const indexedDB = new IDBFactory();
+  const open = indexedDB.open("evener-session-cache", SESSION_CACHE_DATABASE_VERSION);
+  open.addEventListener("upgradeneeded", () => upgradeSessionCache(open.result), { once: true });
+  const database = await requestResult(open);
+  database.close();
+
+  await bumpCacheEpochRow(indexedDB, 7);
+
+  const reopened = await requestResult(indexedDB.open("evener-session-cache"));
+  const epoch = await requestResult(
+    reopened.transaction(ENTRY_META_STORE).objectStore(ENTRY_META_STORE).get(CLEAR_EPOCH_KEY),
+  );
+  expect(epoch).toEqual({ historyKey: CLEAR_EPOCH_KEY, epoch: 7 });
+  reopened.close();
 });
 
 // The wedge is selective: only the named database's open is held, and any other

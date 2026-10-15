@@ -30,6 +30,7 @@ interface Entry {
 interface TargetWaiter {
   targets: NavigationInvalidationTarget[];
   generationID: string;
+  keys?: ReadonlySet<string>;
   resolve: () => void;
   reject: (reason?: unknown) => void;
 }
@@ -38,6 +39,11 @@ export interface NavigationInvalidationWaiter {
   cancel(): void;
 }
 const protocolError = (message: string) => new Error(`navigation protocol: ${message}`);
+// Mutation and invalidation convergence forces every loaded location read as
+// well as the explicitly named targets, so foreground locations participate in
+// the same wait even though the wire target vocabulary has no location kind.
+const matchesConvergenceTarget = (key: ResourceKey, target: NavigationInvalidationTarget) =>
+  key.kind === "location" || matchesTarget(key, target);
 
 /** True when error is a generation-mismatch rejection from this revalidator
  * (stale waiters after resetGeneration, waiter calls against a new
@@ -126,11 +132,16 @@ export class NavigationRevalidator {
   loadedKeys(): ResourceKey[] {
     return [...this.entries.values()].map((entry) => entry.state.key);
   }
-  waitForTargets(targets: NavigationInvalidationTarget[], generationID = this.generationIDValue): Promise<void> {
+  waitForTargets(
+    targets: NavigationInvalidationTarget[],
+    generationID = this.generationIDValue,
+    keys?: ReadonlySet<string>,
+  ): Promise<void> {
     if (generationID !== this.generationIDValue) return Promise.reject(protocolError("generation mismatch"));
-    if (this.targetsSatisfied(targets, generationID)) return Promise.resolve();
+    const snapshot = keys === undefined ? undefined : new Set(keys);
+    if (this.targetsSatisfied(targets, generationID, snapshot)) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
-      this.targetWaiters.add({ targets, generationID, resolve, reject });
+      this.targetWaiters.add({ targets, generationID, keys: snapshot, resolve, reject });
       this.resolveTargetWaiters();
     });
   }
@@ -234,6 +245,18 @@ export class NavigationRevalidator {
     if (this.disposed) return;
     this.entry(key).request = request as NavigationRequest;
   }
+  /** Retires an unowned entry. A running request is aborted and fenced so a
+   * transport that ignores AbortSignal cannot publish into the shared store. */
+  release(key: ResourceKey): void {
+    if (this.disposed) return;
+    const id = keyID(key);
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    entry.epoch = this.epoch + 1;
+    entry.controller?.abort();
+    this.entries.delete(id);
+    this.resolveTargetWaiters();
+  }
   private entry(key: ResourceKey): Entry {
     const id = keyID(key);
     const existing = this.entries.get(id);
@@ -265,10 +288,13 @@ export class NavigationRevalidator {
     e.state = frozen({ ...e.state, targetRevision: nextRevision, forceToken, stale: true, error: null });
     this.emit(e.state);
     if (e.promise) e.rerun = true;
-    else if (e.request) void this.start(e);
+    // A listener may release this entry during the emit, deleting it from the
+    // map (e.g. a lease retiring while force publishes). A detached entry must
+    // not be restarted, or its later response would republish obsolete work.
+    else if (e.request && this.entries.get(keyID(e.state.key)) === e) void this.start(e);
   }
   private start(e: Entry): Promise<ResourceState> {
-    if (!e.request || this.disposed) return Promise.resolve(e.state);
+    if (!e.request || this.disposed || this.entries.get(keyID(e.state.key)) !== e) return Promise.resolve(e.state);
     const epoch = this.epoch;
     e.epoch = epoch;
     const generation = this.generationIDValue;
@@ -277,6 +303,12 @@ export class NavigationRevalidator {
     e.controller = controller;
     e.state = frozen({ ...e.state, loading: true, error: null });
     this.emit(e.state);
+    // The emit may have released this entry; a detached entry must not issue
+    // or publish its request.
+    if (this.disposed || this.entries.get(keyID(e.state.key)) !== e) {
+      controller.abort();
+      return Promise.resolve(e.state);
+    }
     let run!: Promise<ResourceState>;
     run = e
       .request(controller.signal, usableNavigationBase(e.state))
@@ -370,12 +402,17 @@ export class NavigationRevalidator {
       }
     this.resolveTargetWaiters();
   }
-  private targetsSatisfied(targets: NavigationInvalidationTarget[], generationID: string): boolean {
+  private targetsSatisfied(
+    targets: NavigationInvalidationTarget[],
+    generationID: string,
+    keys?: ReadonlySet<string>,
+  ): boolean {
     if (generationID !== this.generationIDValue) return false;
     return targets.every((target) => {
       return [...this.entries.values()].every((entry) => {
-        if (!matchesTarget(entry.state.key, target)) return true;
-        const revision = target.revision;
+        if (keys && !keys.has(keyID(entry.state.key))) return true;
+        if (!matchesConvergenceTarget(entry.state.key, target)) return true;
+        const revision = entry.state.key.kind === "location" ? undefined : target.revision;
         return (
           !entry.state.loading &&
           !entry.state.stale &&
@@ -391,19 +428,23 @@ export class NavigationRevalidator {
       if (waiter.generationID !== this.generationIDValue) {
         waiter.reject(protocolError("generation mismatch"));
         this.targetWaiters.delete(waiter);
-      } else if (this.targetFailed(waiter.targets)) {
+      } else if (this.targetFailed(waiter.targets, waiter.keys)) {
         waiter.reject(protocolError("target convergence failed"));
         this.targetWaiters.delete(waiter);
-      } else if (this.targetsSatisfied(waiter.targets, waiter.generationID)) {
+      } else if (this.targetsSatisfied(waiter.targets, waiter.generationID, waiter.keys)) {
         waiter.resolve();
         this.targetWaiters.delete(waiter);
       }
     }
   }
-  private targetFailed(targets: NavigationInvalidationTarget[]): boolean {
+  private targetFailed(targets: NavigationInvalidationTarget[], keys?: ReadonlySet<string>): boolean {
     return targets.some((target) =>
       [...this.entries.values()].some(
-        (entry) => matchesTarget(entry.state.key, target) && entry.state.error !== null && !entry.rerun,
+        (entry) =>
+          (!keys || keys.has(keyID(entry.state.key))) &&
+          matchesConvergenceTarget(entry.state.key, target) &&
+          entry.state.error !== null &&
+          !entry.rerun,
       ),
     );
   }

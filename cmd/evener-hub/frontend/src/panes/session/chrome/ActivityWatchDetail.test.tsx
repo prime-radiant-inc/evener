@@ -627,6 +627,11 @@ test("keeps the loaded compact recipient identity after a read-only child transc
     });
     const value = row();
     value.watch.receiverRef = childRef;
+    // Hydrate the child BEFORE mounting the detail: the entry route publishes
+    // the ThreadModel asynchronously and needs no mounted subscriber, so its
+    // hydration runs outside act. Hydrating through a mounted tree inside
+    // act(async) deadlocks the entry route's hydration on act's deferred flush.
+    await threadsStore.getState().ensureThread(childRef);
     const beforeRender = client.calls.length;
     render(
       <EntityViewsProvider entities={entities} ownerRef={rootRef}>
@@ -634,11 +639,14 @@ test("keeps the loaded compact recipient identity after a read-only child transc
       </EntityViewsProvider>,
     );
     expect(client.calls).toHaveLength(beforeRender);
-    await act(async () => {
-      await threadsStore.getState().ensureThread(childRef);
-    });
     expect(screen.getByText("Notifies Chosen child title")).toBeTruthy();
-    act(() => threadsStore.getState().releaseThread(childRef));
+    // The ordinary entry route retires through a finite final read before it
+    // drops the ref, and its drop republishes the store; awaiting the
+    // retirement inside act lands that publish inside a test's act window
+    // rather than as an un-acted update to the mounted detail.
+    await act(async () => {
+      await threadsStore.getState().releaseThreadAndWait(childRef);
+    });
     expect(threadsStore.getState().threads.has(childRef)).toBe(false);
     const calls = client.calls.length;
     expect(screen.getByText("Notifies navigation-observer")).toBeTruthy();

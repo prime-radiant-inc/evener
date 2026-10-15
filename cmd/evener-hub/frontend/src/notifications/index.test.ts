@@ -658,6 +658,7 @@ describe("reconnect re-baselines silently", () => {
     const sectionKey = (section: "live" | "needs_you") => ({ kind: "section", section, offset: 0, limit: 50 }) as const;
     const { keyID } = await import("@evener/appwire-client/state/navigation");
     navigationStore.setState({
+      visibleResourceKeys: new Set([keyID(sectionKey("live")), keyID(sectionKey("needs_you"))]),
       resources: new Map([
         [
           keyID(sectionKey("live")),

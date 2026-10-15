@@ -105,6 +105,8 @@ function installLocationForRoute(ref: string): void {
   };
   const key = { kind: "location", ref } as const;
   const resources = new Map(navigationStore.getState().resources);
+  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+  visibleResourceKeys.add(keyID(key));
   resources.set(keyID(key), {
     key,
     data: location,
@@ -117,7 +119,12 @@ function installLocationForRoute(ref: string): void {
     error: null,
     generationID: location.generation_id,
   });
-  navigationStore.setState({ mode: "v3", clientGenerationID: location.generation_id, resources });
+  navigationStore.setState({
+    mode: "v3",
+    clientGenerationID: location.generation_id,
+    resources,
+    visibleResourceKeys,
+  });
 }
 
 function installNeedsYouRows(): void {
@@ -127,6 +134,8 @@ function installNeedsYouRows(): void {
     { ...TREE_SESSION, ref: "local:ny2", session_id: "ny2", title: "Needs you two", state: "awaiting" },
   ];
   const resources = new Map(navigationStore.getState().resources);
+  const visibleResourceKeys = new Set(navigationStore.getState().visibleResourceKeys);
+  visibleResourceKeys.add(keyID(key));
   resources.set(keyID(key), {
     key,
     data: { generation_id: "generation_test", revision: 1, sessions: rows, remaining: 0, truncated: false },
@@ -139,7 +148,7 @@ function installNeedsYouRows(): void {
     error: null,
     generationID: "generation_test",
   });
-  navigationStore.setState({ mode: "v3", resources });
+  navigationStore.setState({ mode: "v3", resources, visibleResourceKeys });
 }
 
 // A focused plain <input> appended beside the shell: the editable target the

@@ -165,6 +165,43 @@ Use those generated unions directly when consuming results; the failure arms
 carry `seam`, and planned results carry `plan` and `token`. The public Go arm
 structs and their wire fields remain the protocol authority.
 
+## Recorded transcript items
+
+`encodeTranscriptItem` and `decodeTranscriptItem` reuse the reducer's cache
+codec for one item. They preserve omitted text separately from explicit empty
+text, identity-only markers, images, reasoning summaries, tool output and
+errors. `mergeTranscriptItemVersioned` ignores an older item version and uses
+the reducer's omission-tolerant replacement rules for equal or newer versions.
+`mergeTranscriptTurnVersioned` applies the same recorded version precedence to
+turn scalars while retaining the already-owned item array. These helpers do not
+establish range coverage or own persisted turn metadata.
+
+## Transcript reader reducer helpers
+
+`mergeTranscriptReaderWindow(model, turns)` folds actual bounded local reader
+rows into `model.history` with the reducer's ordinary versioned merge rules.
+Equal/newer cached item versions can restore payload over identity-only history
+records; older versions do not regress accepted content. It preserves the
+model's other state, including its live overlay. It is a merge primitive, not a
+coverage proof or a local-storage query.
+
+`pruneBackgroundHistoryBodies(model)` returns an idle background model with
+completed item bodies compacted to identity-only records. It retains identity,
+version, position, round, call and completion fields needed for later upserts
+and overlay handoff. Active overlays are projected through the normal display
+fold and are not persisted by this helper. Call it only for the background
+owner after writes settle; mounted readers retain their own full model. It does
+not write cache rows, prove disk persistence, or compact a reader's displayed
+history.
+
+`applyOverlayEndForTranscriptHandoff(model, notification, now)` is the narrow
+entry-backed repository path for `overlay/end`. It uses the reducer's normal
+display fold, removes ended-round overlays already covered by recorded history,
+and keeps uncovered ended-round slots until their recorded replacement arrives.
+It leaves notices and overlays from other rounds alone. Use it only for the
+entry-backed transcript handoff; ordinary `applyNotification` intentionally
+retains its established end behavior for existing consumers.
+
 ## Host-scoped requests
 
 `hostRequest(client, host, method, params, opts)` sends a typed request to the
@@ -257,6 +294,57 @@ translate their store's end marker: the browser's loaded model has an absent
 optional `olderCursor` at history end, while an unavailable model stays `undefined`. The
 existing history store remains responsible for merging pages and scroll anchors.
 Typed client-upgrade and deleted-target rejections remain explained failures.
+
+### Entry-backed older pages and the baseline authority
+
+The browser's entry repository — now the ordinary production route for every
+session — extends the same reader intent with a persistent cache. The server
+transcript remains authoritative; the entry repository is the browser's single
+owner of recorded-history ingestion and persistence and the source of truth for
+a session's cached transcript, writing keyed item, turn and coverage rows to the
+existing `evener-session-cache` IndexedDB. It
+mints an opaque *baseline identity* from its tab-local binding lifetime and its
+source revision. The identity changes when an authoritative read, an identity
+change, or the store's own reconciliation of an ambiguous frontier advances the
+source revision, and the store explicitly retires it at a connection/reconnect
+boundary (the same boundary that invalidates held histories), because a
+reconnect can report the same boot generation, epoch and incarnation across a
+gap. A same-connection reader close/reopen keeps the old
+identity. The per-installation lifetime counter is bookkeeping, not a durable
+connection identifier. Callers treat the identity as opaque and never decode it.
+
+Every accepted older page is recorded as a page certificate under
+`page:<readId>:<boundary>`, carrying the captured request cursor (the opaque
+cursor the page answered, kept only as the successor edge to the certificate
+whose `serverCursor` it equals), the page's request boundary, its returned
+range and the baseline identity as `authority`. A cursor is never decoded or
+invented. `mergeOlderItemPage` remains the versioned page merge, so a page's
+older copy never wins over a newer held item.
+
+The cache's older-window query anchors only certificates belonging to the
+caller's authority, so one connection's baseline can never be stitched onto
+another's chain. A **connected but unverified (ambiguous) frontier** is
+uncertainty: it returns a distinct reconciliation result and the caller runs the
+existing bounded authoritative reconciliation, never an ordinary cursor request
+the server might accept, then re-certifies the fresh boundary. A baseline with
+**no local certificate below the oldest row** is not uncertainty; it is an
+ordinary network continuation and takes the existing server request. Only a
+certified chain that ends with no remaining cursor is true history end. A page
+is certified only when the shared reducer actually merged it, and only under the
+authority captured when the request went out.
+
+This contract is verified against the accepted cache at the store level. The
+production browser cutover that selects this repository for all sessions has
+since landed, so the ordinary browser is on this route. A local open with
+complete cached coverage paints without an activation read; one without it
+reconciles from the server through the existing bounded recovery (the 250 ms
+lookup deadline before ordinary recovery can proceed). Active unfinished output
+is memory-only and may exceed the background budget, and charged ended-body
+overage is an accepted exception. Clear suppresses persistence for the existing
+cache lifetime, renewed only by a new explicit foreground acquisition and
+authoritative read or a new browser lifetime. The legacy client-side cache is not
+migrated: old cached transcripts are discarded on upgrade and rebuilt from the
+server.
 
 ## Session activity demand and subscriptions
 

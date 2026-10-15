@@ -7,7 +7,7 @@ import {
   useVirtualizer,
   type Virtualizer,
 } from "@tanstack/react-virtual";
-import { type ReactNode, type Ref, useImperativeHandle, useLayoutEffect, useReducer, useRef } from "react";
+import { type ReactNode, type Ref, useCallback, useImperativeHandle, useLayoutEffect, useReducer, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./virtuallist.module.css";
 
@@ -349,6 +349,25 @@ export function VirtualList({
       }
     : undefined;
 
+  // Dynamic mode exposes whether the virtualizer currently OWNS and has
+  // measured a row's PRESENT element, distinct from any historical size it
+  // remembers for the row's key. react-virtual's itemSizeCache is historical:
+  // resizeItem only writes it when the measured size differs from the
+  // remembered/estimated one, so a row whose real height equals its estimate
+  // never enters it, and a stale zero from a prior element survives a remount
+  // until the ResizeObserver reports again. Neither is measurement readiness.
+  // The moment the virtualizer takes ownership of the current node is the ref
+  // callback below, which runs measureElement on it; stamping
+  // `data-measured` there marks exactly that ownership. A freshly rendered row
+  // whose element has not yet been handed to the virtualizer carries no mark.
+  const measureRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      virtualizer.measureElement(node);
+      if (node !== null) node.setAttribute("data-measured", "");
+    },
+    [virtualizer],
+  );
+
   useImperativeHandle(
     ref,
     () => ({
@@ -395,7 +414,7 @@ export function VirtualList({
           <div
             key={item.key}
             data-index={item.index}
-            ref={dynamic ? virtualizer.measureElement : undefined}
+            ref={dynamic ? measureRef : undefined}
             className={CLASS.item}
             // dynamic mode never writes an inline height here: measureElement
             // reads this same element's offsetHeight (both on mount and via

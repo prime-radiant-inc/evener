@@ -143,7 +143,7 @@ export function ConversationBody({
   // session's blue dot clears on the phone too.
   useMarkSessionSeenOnOpen(ref);
 
-  const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
+  const { model, hasOlder, loadOlder, loadingOlder, loadOlderReportingError, olderError, cancelOlder } = useTranscript(
     ref,
     seat.readView,
   );
@@ -329,7 +329,7 @@ export function ConversationBody({
         }}
         showSeenDividerTurnId={seenDividerTurnId ?? undefined}
         loadOlderRow={
-          model.olderCursor && (
+          hasOlder && (
             <LoadOlderRow
               onLoad={loadOlderReportingError}
               loading={loadingOlder}

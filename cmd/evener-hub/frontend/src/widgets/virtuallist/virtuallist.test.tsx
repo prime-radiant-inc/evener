@@ -241,6 +241,30 @@ describe("dynamic sizing", () => {
       expect((el as HTMLElement).style.height).toBe("");
     }
   });
+
+  // data-measured must mean "the virtualizer currently owns and measured this
+  // row's PRESENT element", not a historical size it remembers for the key.
+  // raw-item-size-paging review: itemSizeCache is delta-gated (resizeItem
+  // writes only when the measured size differs), so a row whose real height
+  // equals the estimate never enters it. Marking from itemSizeCache would read
+  // that measured row as unmeasured. Here every row measures exactly the
+  // estimate (ROW_HEIGHT), the delta-0 case, and each must still be marked.
+  test("dynamic=true marks each row measured even when its height equals the estimate (resizeItem's delta-0 stores nothing)", () => {
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains(styles.root) ? CONTAINER_HEIGHT : ROW_HEIGHT;
+      },
+    });
+    const { container } = render(
+      <VirtualList dynamic count={10} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+    );
+    const rowEls = Array.from(rootOf(container).querySelectorAll("[data-index]")) as HTMLElement[];
+    expect(rowEls.length).toBeGreaterThan(0);
+    for (const el of rowEls) {
+      expect(el.hasAttribute("data-measured")).toBe(true);
+    }
+  });
 });
 
 test("declares no :focus-visible rule of its own (rows are consumer content, not this widget's concern)", () => {
