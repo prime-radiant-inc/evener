@@ -3851,6 +3851,46 @@ it("retryPending completes a persisted unfinished expiry receipt from a fresh ad
   ).toBe(false);
 });
 
+// RoboRev round 38 medium: one document's failed expiry fence aborted the whole
+// retry pass before any persisted handoff was visited, so a document-specific
+// fault (say, insufficient quota for a large replacement snapshot) starved
+// every other session's pending annotations on every retry trigger. The pass
+// must retain the failed expiry and still deliver the other documents' work.
+it("one document's failed expiry fence does not block another document's pending handoff", async () => {
+  let failFence = true;
+  const f = await fixture("retry-isolate-expiry-fault", {
+    beforeCommit: (operation) => {
+      if (operation === "expiry" && failFence) throw new Error("fence fault");
+    },
+  });
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+  const documentA = { ...f.document, path: "A.md" };
+
+  // Document A's changed read fences its epoch, and the fence faults, so the
+  // expiry stays retained as retryable work.
+  await f.repo.acceptRead(await f.repo.beginRead(documentA), docContent(SOURCE, "rev-A"));
+  const fenced = await f.repo.acceptRead(await f.repo.beginRead(documentA), docContent(`${SOURCE}X`, "rev-B"));
+  if (fenced.state !== "expiry-pending") throw new Error(`A's changed read should fence: ${fenced.state}`);
+
+  // An unrelated document holds an ordinary pending handoff.
+  const unrelated = await acceptedOperation(f.repo, f.document, "op-unrelated", "unrelated note", f.destination);
+  await f.repo.saveAnnotation(unrelated);
+
+  // The pass still reports A's failure (the runtime keeps its retry-needed
+  // status), but A's fault must not stop the unrelated handoff from being
+  // visited and delivered.
+  await expect(f.repo.retryPending("reader-open")).rejects.toBeInstanceOf(Error);
+  const delivered = (await f.repo.listAnnotations(f.document)).find(
+    (view) => view.receipt.operationId === unrelated.operationId,
+  );
+  expect(delivered?.handoff.state).toBe("already-applied");
+
+  // A's retained expiry survives for the next trigger: once the fault heals,
+  // the next pass completes the fence and reports no pending work.
+  failFence = false;
+  expect(await f.repo.retryPendingWithOutcome("reader-open")).toEqual({ pending: false });
+});
+
 it("issuing a newer read retires this adapter's superseded issued tickets", async () => {
   const f = await fixture("issued-reads-pruning");
   const otherDocument: DocumentKey = { ...f.document, path: "OTHER.md" };
