@@ -253,6 +253,33 @@ describe("MutationOutboxIndexedDB", () => {
     });
   });
 
+  // #4342 (round-6 review): the recovery resend is the user's deliberate
+  // post-Stop send (§4's exemption), so the fresh row captures the target's
+  // current epoch - a refusal of its own attempt stays transient instead of
+  // fence-canceling against a Stop that predates the resend.
+  test("a recovery resend after a historical Stop keeps its refused retry transient", async () => {
+    const storage = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+      now: () => 1234,
+    });
+    await storage.enqueueInterruptAndCancel({
+      ...intent("stop once"),
+      method: "turn/interrupt",
+      payload: { ref: TARGET },
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+    const original = await storage.enqueueIntent(intent("resent after the stop"));
+    await storage.transferToRecovery(original.clientMutationId, "rejected", "not accepted");
+    const resent = await storage.resendRecovery(original.clientMutationId, intent("resent fresh"));
+    if (!resent) throw new Error("expected the resend to create a row");
+
+    await storage.markAttempted(resent.clientMutationId);
+    await expect(storage.unmarkAttempted(resent.clientMutationId)).resolves.toBe(true);
+    expect((await storage.getOutbox(resent.clientMutationId))?.state).toBe("submitting");
+  });
+
   test("attachment blobs survive an IndexedDB round trip", async () => {
     const store = new MutationOutboxIndexedDB({
       indexedDB,

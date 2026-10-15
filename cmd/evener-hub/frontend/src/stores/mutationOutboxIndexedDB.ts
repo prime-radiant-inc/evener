@@ -498,6 +498,10 @@ export class MutationOutboxIndexedDB {
         // the whole batch, then one put - the lists are sorted, so order is kept.
         const sequence = await requestResult<TargetSequence | undefined>(sequenceStore.get(toRef));
         let lastSequence = sequence?.lastSequence ?? 0;
+        // The refusal fence compares against the destination ref's own
+        // counter, so a moved row's capture rebases to that counter here -
+        // the source ref's historical epoch must not travel with the row.
+        const toStopEpoch = await this.#stopEpochOf(transaction, toRef);
         // The identity token the daemon's instance fence compares: the same
         // fused reading a fresh send takes (instanceId ?? threadId).
         const instanceToken = identity.instanceId ?? identity.threadId;
@@ -517,6 +521,7 @@ export class MutationOutboxIndexedDB {
               ...("expectedInstanceId" in record.payload ? { expectedInstanceId: instanceToken } : {}),
             },
             intentSequence: lastSequence,
+            ...("stopEpochAtEnqueue" in record ? { stopEpochAtEnqueue: toStopEpoch } : {}),
           };
           await requestResult(store.put(retargeted));
           return retargeted;
@@ -922,6 +927,11 @@ export class MutationOutboxIndexedDB {
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const nextMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, nextMutationId);
+      // The resend is the user's deliberate post-Stop send (§4's exemption),
+      // so its fresh row captures the target's current epoch like any new
+      // submission: its own refused redeliveries stay transient instead of
+      // fence-canceling against a Stop that predates the resend.
+      const stopEpoch = await this.#stopEpochOf(transaction, intent.targetRef);
       const attachments = intent.attachments.map((attachment) => ({
         ...attachment,
         presentationId: this.#createPresentationId(),
@@ -939,6 +949,7 @@ export class MutationOutboxIndexedDB {
         createdAt: this.#now(),
         state: "submitting",
         attempted: false,
+        stopEpochAtEnqueue: stopEpoch,
       };
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
       await requestResult(recoveryStore.delete(clientMutationId));

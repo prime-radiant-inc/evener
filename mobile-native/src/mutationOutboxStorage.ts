@@ -227,11 +227,17 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		// #4342: the ref's stop epoch at enqueue time - the barrier's own
 		// read, stored, so a refusal can fence its rollback: a Stop whose
 		// cancel scan skipped the attempted row must not be outrun by the
-		// refusal's redelivery. The additive default-zero column is the whole
-		// migration; rows written before it existed read as captured-at-zero,
-		// the conservative direction.
-		if (!outboxColumns.some((column) => column.name === "stop_epoch_at_enqueue")) {
-			this.db.execSync(`ALTER TABLE ${TABLES.outbox} ADD COLUMN stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0`);
+		// refusal's redelivery. The column is part of the shared insert
+		// shape, so every record table needs it - the instance_id loop, not an
+		// outbox-only ALTER: a database from the previous schema would
+		// otherwise throw on every optimistic and recovery write. Rows
+		// written before the column existed read as captured-at-zero, the
+		// conservative direction.
+		for (const table of Object.values(TABLES)) {
+			const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
+			if (!columns.some((column) => column.name === "stop_epoch_at_enqueue")) {
+				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0`);
+			}
 		}
 	}
 

@@ -131,6 +131,43 @@ test("the enqueue stop-epoch capture persists through the row plumbing", async (
 	expect((await storage.getOutbox(message.clientMutationId))?.stopEpochAtEnqueue).toBe(1);
 });
 
+// #4342 (round-6 review): the capture column is part of the shared insert
+// shape, so an upgrade must add it to every record table - a database from
+// the previous schema settles no receipts and transfers no recovery rows
+// otherwise, because those writes share the insert.
+test("an upgrade from the previous schema settles receipts and transfers recovery", async () => {
+	// Simulate the previous schema: the shared insert shape's column is
+	// absent from every record table.
+	for (const table of ["mutation_outbox", "mutation_optimistic", "mutation_recovery"]) {
+		const columns = database.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+		if (columns.some((column) => column.name === "stop_epoch_at_enqueue")) {
+			database.prepare(`ALTER TABLE ${table} DROP COLUMN stop_epoch_at_enqueue`).run();
+		}
+	}
+
+	// The reopened adapter runs the upgrade, and every shared-shape table
+	// must accept writes again.
+	openStorage();
+	const upgradedColumns = database.prepare("PRAGMA table_info(mutation_optimistic)").all() as { name: string }[];
+	expect(upgradedColumns.some((column) => column.name === "stop_epoch_at_enqueue")).toBe(true);
+	const record = await storage.enqueueIntent({
+		...intent("upgraded row"),
+		// The real turn/queue display shape, the one carriesOptimisticInput
+		// accepts: without input, a pending receipt retires the row without
+		// writing the optimistic INSERT this test needs to exercise.
+		optimisticDisplay: { input: [{ type: "text", text: "upgraded row" }] },
+	});
+	// A pending receipt with a display to carry is the write the previous
+	// schema could not accept: the accepted optimistic row.
+	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toBeDefined();
+	const second = await storage.enqueueIntent(intent("to recover"));
+	await expect(
+		storage.transferToRecovery(second.clientMutationId, "rejected", "turn is not active"),
+	).resolves.toBeTruthy();
+	expect(rawRow("mutation_recovery", second.clientMutationId)).toBeDefined();
+});
+
 // #4342 (round-5 review): an explicit release is the user deliberately
 // sending after a Stop (§4's exemption), so it re-authorizes the row past
 // the Stop its fence captured: the release refreshes the capture to the

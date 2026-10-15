@@ -523,7 +523,19 @@ fixtures, and an injectable transport/observer where needed.
   and native's projections refresh through storage notifications. On
   native the capture also rides the row plumbing - COLUMNS, insertValues,
   fromRow - not just the returned record, or a fresh adapter over the
-  same database reads every capture as zero.
+  same database reads every capture as zero. Three gaps the next review
+  closed: a retargeted row rebases its capture to the destination ref's
+  current counter inside the retarget's own transaction (the fence
+  compares the destination's epochs, and the source ref's capture would
+  authorize a same-number epoch past a destination Stop); a recovery
+  resend is a deliberate send, so it captures the current epoch at its
+  own enqueue like any enqueue does, and a historical Stop's fence does
+  not cancel the resend the user just made (§4's exemption); and the
+  native migration alters all three tables - the column rides the shared
+  INSERT shape, so the instance_id loop precedent applies, not the
+  outbox-only precedent of direct-SQL columns like the attempt count -
+  or an upgraded optimistic or recovery write throws on the column the
+  old schema never gained.
 - The busy surface's visible copy is pinned structurally, not verbatim
   (round-4 review, low): the queue row's reason span carries a
   data-busy-reason hook asserted non-empty, the ghost's caption stage and

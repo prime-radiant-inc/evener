@@ -148,4 +148,35 @@ describe("MutationOutboxIndexedDB retargetOutbox", () => {
     expect((await storage.listOutbox(FROM)).map((record) => textOf(record))).toEqual(["stays"]);
     storage.close();
   });
+
+  // #4342 (round-6 review): a moved row's stop capture belongs to the
+  // destination ref's own counter - the refusal fence compares against that
+  // counter, so the source ref's historical epoch must not travel with the
+  // row, or a Stop on the destination that reaches the same number passes
+  // the fence and the stopped message becomes dispatchable again.
+  test("a moved row's capture rebases to the destination ref's counter", async () => {
+    const storage = store();
+    // A historical Stop on the source ref gives the enqueued row a
+    // nonzero capture that would otherwise travel with it.
+    await storage.enqueueInterruptAndCancel({
+      ...intent("stop the old ref"),
+      method: "turn/interrupt",
+      payload: { ref: FROM },
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+    const row = await storage.enqueueIntent(intent("moves after a stop"));
+    await storage.retargetOutbox(FROM, TO, NEW_IDENTITY);
+
+    // The moved row dispatches, and a Stop on the destination ref
+    // interrupts that attempt: the fence must hold it canceled.
+    await storage.markAttempted(row.clientMutationId);
+    await storage.enqueueInterruptAndCancel({
+      ...intent("stop the new ref", TO),
+      method: "turn/interrupt",
+      payload: { ref: TO },
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+    expect(await storage.unmarkAttempted(row.clientMutationId)).toBe(false);
+    expect((await storage.getOutbox(row.clientMutationId))?.state).toBe("canceled");
+  });
 });
