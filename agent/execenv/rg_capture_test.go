@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/searchresult"
 )
@@ -750,4 +751,112 @@ func FuzzRgCapture(f *testing.F) {
 			}
 		}
 	})
+}
+
+// TestCapTailSlotDoesNotSplitARune: the slot cap is an arbitrary byte offset, so
+// a multibyte character straddling it must not survive as an orphaned fragment
+// that renders as a replacement character. The marker must state the bytes
+// actually dropped, which the trim moves past the nominal cap.
+func TestCapTailSlotDoesNotSplitARune(t *testing.T) {
+	t.Parallel()
+	// A four-byte rune opens exactly at the last byte the cap keeps, so the cut
+	// leaves its first byte dangling.
+	prefix := bytes.Repeat([]byte("a"), rgTailSlotBytes-1)
+	rec := append(append(append([]byte(nil), prefix...), []byte("😀")...), []byte("tail\n")...)
+	if len(rec) <= rgTailSlotBytes {
+		t.Fatalf("fixture record is %d bytes, want past the %d-byte slot", len(rec), rgTailSlotBytes)
+	}
+	want := string(prefix) + fmt.Sprintf(outputOmissionMarker, len(rec)-len(prefix))
+	got := capTailSlot(rec)
+	if got != want {
+		t.Fatalf("capTailSlot(record with a rune across the cut) = %q, want %q", got, want)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("the slot's retained prefix is not valid UTF-8: %q", got)
+	}
+}
+
+// TestRgCaptureTailSlotDoesNotSplitARune is that same cut where the view presents
+// it, with the accounting the note reads left consistent.
+func TestRgCaptureTailSlotDoesNotSplitARune(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	first := dir + "/a.txt\x001:n\n"
+	// A record whose rune straddles the slot cap, after a cap that ends on a
+	// record boundary so the record is the whole tail.
+	pad := bytes.Repeat([]byte("a"), rgTailSlotBytes-1-len("1:"))
+	huge := append(append([]byte("1:"), pad...), []byte("😀tail\n")...)
+	if len(huge) <= rgTailSlotBytes {
+		t.Fatalf("fixture record is %d bytes, want past the %d-byte slot", len(huge), rgTailSlotBytes)
+	}
+	c := newRgCapture("/base", false, len(first))
+	if _, err := c.Write(append([]byte(first), huge...)); err != nil {
+		t.Fatal(err)
+	}
+	view := c.view(false)
+	if len(view.tail) != 1 {
+		t.Fatalf("tail = %q, want the one record after the cap", view.tail)
+	}
+	if !utf8.ValidString(view.tail[0]) {
+		t.Fatalf("the presented tail slot is not valid UTF-8: %q", view.tail[0])
+	}
+	// The trim must not disturb the view's own accounting.
+	if view.omitted != c.total-view.retained {
+		t.Fatalf("omitted %d does not account for %d stream bytes less %d retained",
+			view.omitted, c.total, view.retained)
+	}
+}
+
+// TestRgCaptureDiagnosticsDoesNotSplitARune: the diagnostic prefix is cut at an
+// arbitrary byte offset, so a rune straddling it must not be left dangling.
+func TestRgCaptureDiagnosticsDoesNotSplitARune(t *testing.T) {
+	t.Parallel()
+	// A four-byte rune opens exactly at the last byte the diagnostic keeps.
+	prefix := bytes.Repeat([]byte("a"), rgCaptureDiagnosticBytes-1)
+	stream := append(append(append([]byte(nil), prefix...), []byte("😀")...), bytes.Repeat([]byte("b"), 32)...)
+	c := newRgCapture("/base", false, len(stream))
+	if _, err := c.Write(stream); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.head) <= rgCaptureDiagnosticBytes {
+		t.Fatalf("the fixture head is %d bytes, want past the %d-byte bound", len(c.head), rgCaptureDiagnosticBytes)
+	}
+	got := c.diagnostics()
+	if got != string(prefix) {
+		t.Fatalf("diagnostics(stream with a rune across the cut) = %q, want %q", got, prefix)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("the diagnostic prefix is not valid UTF-8: %q", got)
+	}
+}
+
+// TestCapTailSlotAtOrUnderTheCapIsByteIdentical: a record that fits its slot is
+// returned untouched, including bytes that are not valid UTF-8 — the trim is for
+// the capture's own cut, never for bytes the stream itself holds.
+func TestCapTailSlotAtOrUnderTheCapIsByteIdentical(t *testing.T) {
+	t.Parallel()
+	for _, rec := range [][]byte{
+		[]byte("1:short\n"),
+		bytes.Repeat([]byte("a"), rgTailSlotBytes),
+		append(bytes.Repeat([]byte("a"), rgTailSlotBytes-1), 0x80),
+	} {
+		if got := capTailSlot(rec); got != string(rec) {
+			t.Fatalf("a record of %d bytes at or under the slot cap changed: %q", len(rec), got)
+		}
+	}
+}
+
+// TestRgCaptureDiagnosticsUnderTheBoundIsByteIdentical: a head at or under the
+// diagnostic bound is returned untouched — there is no cut of the capture's to
+// trim, so even a byte the stream itself left dangling passes through.
+func TestRgCaptureDiagnosticsUnderTheBoundIsByteIdentical(t *testing.T) {
+	t.Parallel()
+	stream := []byte("/base/a.txt\x001:n\n\x80")
+	c := newRgCapture("/base", false, 1<<20)
+	if _, err := c.Write(stream); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.diagnostics(); got != string(stream) {
+		t.Fatalf("diagnostics under the bound = %q, want the stream's own bytes %q", got, stream)
+	}
 }

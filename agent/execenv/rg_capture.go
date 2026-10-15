@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"primeradiant.com/evener/agent/internal/runetrim"
 )
 
 // rgTailRecords is how many of a stream's last complete records the rg arm's
@@ -173,7 +175,14 @@ func (c *rgCapture) heldBytes() int { return len(c.head) + len(c.window) }
 // diagnostics is the bounded stdout prefix a failed search shows beside its
 // stderr.
 func (c *rgCapture) diagnostics() string {
-	return string(c.head[:min(len(c.head), rgCaptureDiagnosticBytes)])
+	head := c.head[:min(len(c.head), rgCaptureDiagnosticBytes)]
+	if len(c.head) > rgCaptureDiagnosticBytes {
+		// The bound is an arbitrary byte offset, so the cut can land inside a
+		// rune; trim the orphaned fragment. A head under the bound was not cut
+		// here, so its own last byte — even an invalid one — passes through.
+		head = runetrim.TrimTrailingPartial(head)
+	}
+	return string(head)
 }
 
 // rgCaptureView is what a completed search reads from its capture: the head cut
@@ -349,7 +358,11 @@ func capTailSlot(rec []byte) string {
 	if len(rec) <= rgTailSlotBytes {
 		return string(rec)
 	}
-	return string(rec[:rgTailSlotBytes]) + fmt.Sprintf(outputOmissionMarker, len(rec)-rgTailSlotBytes)
+	// The slot cap is an arbitrary byte offset, so the prefix it keeps can end
+	// inside a rune; trim the orphaned fragment and state the bytes actually
+	// dropped, which is then a byte or two past the nominal cap.
+	prefix := runetrim.TrimTrailingPartial(rec[:rgTailSlotBytes])
+	return string(prefix) + fmt.Sprintf(outputOmissionMarker, len(rec)-len(prefix))
 }
 
 // rgTailNote is the disclosure block's tail: what the cap did to the stream, then
