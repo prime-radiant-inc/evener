@@ -48,6 +48,11 @@ type rgCapture struct {
 	window []byte // rolling: the last rgTailWindowBytes bytes written past the cap
 	total  int
 	over   bool
+	// windowSlid records that the rolling trim has moved the window's start. The
+	// window then opens inside a record, so the head's boundary proof — which
+	// describes the stream position the cap ended at — no longer describes where
+	// the window begins.
+	windowSlid bool
 }
 
 // newRgCapture returns a capture bounded at capBytes. A non-positive cap falls
@@ -76,6 +81,7 @@ func (c *rgCapture) Write(p []byte) (int, error) {
 		c.window = append(c.window, p...)
 		if extra := len(c.window) - rgTailWindowBytes; extra > 0 {
 			c.window = append(c.window[:0], c.window[extra:]...)
+			c.windowSlid = true
 		}
 	}
 	return written, nil
@@ -98,7 +104,11 @@ type rgCaptureView struct {
 	tail     []string
 	retained int
 	omitted  int
-	capped   bool
+	// cut is how many tail records are longer than one slot and are presented cut
+	// to it. It is not the same as an omission: a cut records the record's own
+	// tail, while omitted counts stream bytes neither the head nor the records
+	// hold.
+	cut int
 }
 
 // wholeStream is the head and the tail as one stream when the capture holds every
@@ -106,7 +116,7 @@ type rgCaptureView struct {
 // parses it as a complete result: the tail's records are the stream's own final
 // ones, and there is no omission to disclose.
 func (v rgCaptureView) wholeStream() string {
-	if v.omitted != 0 || v.capped {
+	if v.omitted != 0 || v.cut > 0 {
 		return ""
 	}
 	return v.head + strings.Join(v.tail, "")
@@ -120,15 +130,17 @@ func (c *rgCapture) view(dir string, filesOnly bool) rgCaptureView {
 	prefix := []byte(strings.TrimSuffix(dir, string(filepath.Separator)) + string(filepath.Separator))
 	head := c.head
 	// atBoundary is the head's own framing proving the cap fell exactly at a
-	// record end. The window then opens on a whole record, and dropping its first
-	// record as a fragment would lose one the capture holds entire.
-	atBoundary := true
+	// record end, AND the window still opening where the cap left it. The window's
+	// first record is then whole, and dropping it as a fragment would lose one the
+	// capture holds entire. Once the trim has slid the window, its first bytes are
+	// a record's tail again and the proof is stale.
+	atBoundary := !c.windowSlid
 	if c.over {
 		end := lastRecordEnd(head, prefix, filesOnly)
-		atBoundary = end == len(head)
+		atBoundary = atBoundary && end == len(head)
 		head = head[:end]
 	}
-	tail, tailBytes, capped := tailRecords(c.window, prefix, filesOnly, atBoundary)
+	tail, tailBytes, cut := tailRecords(c.window, prefix, filesOnly, atBoundary)
 	// A capped slot carries synthetic omission text, which is not stream bytes:
 	// counting the slots instead of their records understates the omission, and
 	// once the slots' text outweighs what was really dropped the count goes
@@ -140,7 +152,7 @@ func (c *rgCapture) view(dir string, filesOnly bool) rgCaptureView {
 		tail:     tail,
 		retained: retained,
 		omitted:  c.total - retained,
-		capped:   capped,
+		cut:      cut,
 	}
 }
 
@@ -196,13 +208,13 @@ func lastRecordEnd(b, prefix []byte, filesOnly bool) int {
 // unless the head proved the cap fell on a record boundary (atBoundary) it is
 // resynchronized first: the bytes before its first genuine record boundary are a
 // fragment of a record that started earlier and are left out.
-func tailRecords(b, prefix []byte, filesOnly, atBoundary bool) (slots []string, source int, capped bool) {
+func tailRecords(b, prefix []byte, filesOnly, atBoundary bool) (slots []string, source, cut int) {
 	if !atBoundary {
 		b = b[resync(b, filesOnly):]
 	}
 	ends := rgRecordEnds(b, prefix, filesOnly)
 	if len(ends) == 0 {
-		return nil, 0, false
+		return nil, 0, 0
 	}
 	var recs [][]byte
 	for i, end := range ends {
@@ -218,11 +230,15 @@ func tailRecords(b, prefix []byte, filesOnly, atBoundary bool) (slots []string, 
 	slots = make([]string, 0, len(recs))
 	for _, rec := range recs {
 		source += len(rec)
-		slot := capTailSlot(rec)
-		capped = capped || len(slot) != len(rec)
-		slots = append(slots, slot)
+		// The record's own size decides: comparing the slot's length against the
+		// record's misses a record whose dropped part is exactly as wide as the
+		// marker that replaces it (rgTailSlotBytes+28 gets a 28-byte marker).
+		if len(rec) > rgTailSlotBytes {
+			cut++
+		}
+		slots = append(slots, capTailSlot(rec))
 	}
-	return slots, source, capped
+	return slots, source, cut
 }
 
 // resync drops the bytes of a window that opens inside a record, returning the
@@ -261,18 +277,26 @@ func capTailSlot(rec []byte) string {
 	return string(rec[:rgTailSlotBytes]) + fmt.Sprintf(outputOmissionMarker, len(rec)-rgTailSlotBytes)
 }
 
-// rgTailNote is the disclosure block's tail: the established omission marker with
-// the byte count the capture left out, then the last records the stream held, so
-// a truncated search shows both ends of the match stream. It rides in the note,
-// never among the result rows, so the tool's "at most max_results rows" promise
-// holds whatever the cap dropped.
+// rgTailNote is the disclosure block's tail: what the cap did to the stream, then
+// the last records it held, so a truncated search shows both ends of the match
+// stream. What it states depends on what happened — an omission marker claims
+// bytes were left out, so a capture that omitted none states its cut slots
+// instead. It rides in the note, never among the result rows, so the tool's "at
+// most max_results rows" promise holds whatever the cap dropped.
 func rgTailNote(view rgCaptureView) string {
 	if len(view.tail) == 0 {
 		return ""
 	}
-	marker := strings.Trim(fmt.Sprintf(outputOmissionMarker, view.omitted), "\n")
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\nthe stream's last %d records:", marker, len(view.tail))
+	if view.omitted > 0 {
+		// The established omission marker, with the bytes the cap left out.
+		fmt.Fprintf(&b, "%s\n", strings.Trim(fmt.Sprintf(outputOmissionMarker, view.omitted), "\n"))
+	} else {
+		fmt.Fprintf(&b,
+			"the byte cap tripped and left nothing out; %d tail record(s) longer than the %d-byte slot are cut at the slot:\n",
+			view.cut, rgTailSlotBytes)
+	}
+	fmt.Fprintf(&b, "the stream's last %d records:", len(view.tail))
 	for _, slot := range view.tail {
 		b.WriteString("\n")
 		b.WriteString(strings.TrimSuffix(slot, "\n"))

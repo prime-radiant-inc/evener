@@ -525,6 +525,142 @@ func TestRgCaptureWholeStreamRefusesACappedSlot(t *testing.T) {
 	}
 }
 
+// TestRgCaptureReportsACutSlotWithNothingOmitted is MEDIUM 1 (round 13): a
+// boundary-ending cap whose tail holds an oversized record omits no bytes and
+// cuts one slot to its bound. The view must say so, because the caller's
+// disclosure guard reads exactly this state.
+func TestRgCaptureReportsACutSlotWithNothingOmitted(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	short := dir + "/a.txt\x001:n\n"
+	huge := dir + "/big.txt\x001:" + strings.Repeat("n", rgTailSlotBytes) + "\n"
+	c := newRgCapture(len(short)) // the cap ends exactly at the first record's end
+	if _, err := c.Write([]byte(short + huge)); err != nil {
+		t.Fatal(err)
+	}
+	view := c.view(dir, false)
+	if view.omitted != 0 {
+		t.Fatalf("the capture holds every byte, but reports %d omitted", view.omitted)
+	}
+	if view.cut != 1 {
+		t.Fatalf("cut = %d, want the one record longer than its slot", view.cut)
+	}
+	if whole := view.wholeStream(); whole != "" {
+		t.Fatalf("a cut slot was presented as the stream: %q", whole)
+	}
+}
+
+// TestGrepRgDisclosesACutSlotWhenNothingWasOmitted is MEDIUM 1 as the model sees
+// it: gating both notes on the omission alone lost the tail of a capture that cut
+// a record at its slot bound and omitted nothing — silent truncation.
+func TestGrepRgDisclosesACutSlotWhenNothingWasOmitted(t *testing.T) {
+	// Not parallel: shrinks the package-wide byte budget.
+	root := t.TempDir()
+	file := filepath.Join(root, "big.txt")
+	if err := os.WriteFile(file, []byte("n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	short := "1:n\n"
+	huge := "1:" + strings.Repeat("n", rgTailSlotBytes) + "\n"
+	stubGrepRetainedBytes(t, len(short))
+	env := rgFakeRgEnv(t, root, rgStreamFixture(t, t.TempDir(), "rg", []byte(short+huge)))
+
+	got, err := env.Grep(context.Background(), "n", file, "", false, 100, "content")
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	entries, notes := searchresult.Split(got)
+	if !strings.Contains(notes, fmt.Sprintf("%d-byte slot", rgTailSlotBytes)) {
+		t.Fatalf("a cut tail slot was not disclosed: entries=%q notes=%q", entries, notes)
+	}
+	if strings.Contains(notes, "later matches omitted") {
+		t.Fatalf("nothing was omitted, but the note claims otherwise: %q", notes)
+	}
+	// The slot's own marker states the record it cut, which is honest; what must
+	// not appear is a stream-level omission marker claiming zero bytes.
+	if strings.Contains(notes, fmt.Sprintf(outputOmissionMarker, 0)) {
+		t.Fatalf("nothing was omitted, but the note carries a zero-omission marker: %q", notes)
+	}
+}
+
+// TestRgCaptureIgnoresABoundaryProofTheWindowSlideInvalidated is MEDIUM 2: the
+// head proves the cap ended on a record boundary, but the rolling trim then moved
+// the window's start INSIDE a record. Trusting the stale proof presents that
+// record's payload suffix as a complete one, losing its path and line number.
+func TestRgCaptureIgnoresABoundaryProofTheWindowSlideInvalidated(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	short := dir + "/a.txt\x001:n\n"
+	// A final record larger than the whole tail window, so the window slides into
+	// its payload and holds no record start at all.
+	huge := dir + "/big.txt\x001:" + strings.Repeat("n", 2*rgTailWindowBytes) + "\n"
+	c := newRgCapture(len(short))
+	if _, err := c.Write([]byte(short + huge)); err != nil {
+		t.Fatal(err)
+	}
+	view := c.view(dir, false)
+	for _, slot := range view.tail {
+		if !strings.HasPrefix(slot, dir+"/") {
+			t.Fatalf("a payload suffix was presented as a complete record: %q", slot[:min(len(slot), 80)])
+		}
+	}
+}
+
+// TestRgCaptureCapsARecordWhoseMarkerMatchesItsDroppedBytes is MEDIUM 3: a record
+// whose dropped part is exactly as wide as the marker that states it leaves the
+// slot the same length as the record, so a length comparison cannot tell a cut
+// slot from an intact one.
+func TestRgCaptureCapsARecordWhoseMarkerMatchesItsDroppedBytes(t *testing.T) {
+	t.Parallel()
+	const dir = "/base"
+	short := dir + "/a.txt\x001:n\n"
+	head := dir + "/big.txt\x001:"
+	// rgTailSlotBytes + 28: 28 is the width of "[... 28 bytes omitted ...]".
+	exact := head + strings.Repeat("n", rgTailSlotBytes+28-len(head)-1) + "\n"
+	if len(exact) != rgTailSlotBytes+28 {
+		t.Fatalf("fixture record is %d bytes, want %d", len(exact), rgTailSlotBytes+28)
+	}
+	c := newRgCapture(len(short))
+	if _, err := c.Write([]byte(short + exact)); err != nil {
+		t.Fatal(err)
+	}
+	view := c.view(dir, false)
+	if view.cut != 1 {
+		t.Fatalf("cut = %d, want the record that is longer than its slot", view.cut)
+	}
+	if whole := view.wholeStream(); whole != "" {
+		t.Fatalf("a cut slot was presented as the stream: %q", whole)
+	}
+}
+
+// TestGrepRgKeepsACappedSlotMarkerOutOfTheRows is MEDIUM 3 as the model sees it:
+// the slot's synthetic marker must never be parsed as a result row.
+func TestGrepRgKeepsACappedSlotMarkerOutOfTheRows(t *testing.T) {
+	// Not parallel: shrinks the package-wide byte budget.
+	root := t.TempDir()
+	file := filepath.Join(root, "big.txt")
+	if err := os.WriteFile(file, []byte("n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	short := "1:n\n"
+	head := "1:"
+	exact := head + strings.Repeat("n", rgTailSlotBytes+28-len(head)-1) + "\n"
+	stubGrepRetainedBytes(t, len(short))
+	env := rgFakeRgEnv(t, root, rgStreamFixture(t, t.TempDir(), "rg", []byte(short+exact)))
+
+	got, err := env.Grep(context.Background(), "n", file, "", false, 100, "content")
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	entries, notes := searchresult.Split(got)
+	if strings.Contains(entries, "bytes omitted") {
+		t.Fatalf("a slot's marker text became a result row: %q", entries)
+	}
+	if !strings.Contains(notes, "bytes omitted") {
+		t.Fatalf("the cut slot's own marker is missing from the note: %q", notes)
+	}
+}
+
 // FuzzRgCapture drives the capture with arbitrary bytes: whatever the stream and
 // the cap, the object stays inside its bound, its view accounts for every byte
 // it did not keep, and chunking the writes cannot change the view.

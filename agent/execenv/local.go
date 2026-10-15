@@ -2363,6 +2363,12 @@ func (e *LocalExecutionEnvironment) GrepSkipping(ctx context.Context, pattern st
 			// records ride in the same note so the model still sees how the
 			// matches end — never as rows past maxResults.
 			notes = append(notes, grepRetainedTruncationNote())
+		}
+		// The tail is shown whenever the cap did something to the stream: it left
+		// bytes out, or it cut a tail record at its slot. Gating on the omission
+		// alone lost the tail of a boundary-ending cap that omitted nothing, with
+		// no disclosure at all.
+		if view.omitted > 0 || view.cut > 0 {
 			if tail := rgTailNote(view); tail != "" {
 				notes = append(notes, tail)
 			}
