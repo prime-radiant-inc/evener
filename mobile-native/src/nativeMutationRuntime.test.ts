@@ -1442,18 +1442,8 @@ function refuseWrites(db: SqliteDoubleDatabase): void {
 	db.exec("PRAGMA query_only = ON");
 }
 
+// node:sqlite's errcode for SQLITE_READONLY; expo-sqlite has no structured code.
 const SQLITE_READONLY = 8;
-
-// What a rejected submit threw, so a test can check the storage error's own
-// result code instead of its wording.
-async function rejectionOf(submitted: Promise<unknown>): Promise<unknown> {
-	try {
-		await submitted;
-	} catch (error) {
-		return error;
-	}
-	throw new Error("expected the submit to reject");
-}
 
 async function readyRuntimeWithClient(createMutationId?: () => string) {
 	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId });
@@ -1582,7 +1572,7 @@ test("a refused write with no ready connection still fails the send with the sto
 	await runtime.start();
 	refuseWrites(database!);
 
-	expect(await rejectionOf(runtime.submit(request("send")))).toMatchObject({ errcode: SQLITE_READONLY });
+	await expect(runtime.submit(request("send"))).rejects.toMatchObject({ errcode: SQLITE_READONLY });
 	expect(client.calls).toHaveLength(0);
 	await runtime.stop();
 });
@@ -1592,7 +1582,7 @@ test("a Stop whose outbox write is refused by storage stays fail-closed", async 
 	client.on("turn/interrupt", (params) => appliedReceipt(params));
 	refuseWrites(database!);
 
-	expect(await rejectionOf(runtime.submit({ ...request("send"), kind: "interrupt" }))).toMatchObject({
+	await expect(runtime.submit({ ...request("send"), kind: "interrupt" })).rejects.toMatchObject({
 		errcode: SQLITE_READONLY,
 	});
 	expect(client.calls).toHaveLength(0);
@@ -1606,7 +1596,7 @@ test("an outbox bug stays a visible send failure with no request", async () => {
 	client.calls.length = 0;
 
 	// The same id twice is the outbox's own validation refusing the record.
-	const failure = await rejectionOf(runtime.submit(request("send")));
+	const failure = await runtime.submit(request("send")).catch((error: unknown) => error);
 	expect(failure).toBeInstanceOf(Error);
 	expect(failure).not.toHaveProperty("errcode");
 	expect(client.calls).toHaveLength(0);
