@@ -6,12 +6,15 @@
 // Send validates with trim only (never trimming the stored note), and Return
 // inserts a normal newline without reaching a surrounding shortcut. Opening
 // does not autofocus or alter the current selection. Cancel delegates
-// unsaved-work cleanup to the host and never touches saved annotations.
+// unsaved-work cleanup to the host and never touches saved annotations. A
+// retained caret selection (the host's to keep across remounts) restores
+// through setSelectionRange at mount - no focus, no document-selection change.
 import type { AnnotationCommentWork } from "@evener/appwire-client";
-import { type ChangeEvent, type KeyboardEvent, useId } from "react";
+import { type ChangeEvent, type KeyboardEvent, type UIEvent, useEffect, useId, useRef } from "react";
 import { Button, Textarea } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./documentAnnotations.module.css";
+import type { CommentSelection } from "./documentReadState";
 
 // The status vocabulary the later DocPane integration supplies: "unsaved" for a
 // retained attempt/newer comment, "expiry-pending" for that phase, "saved" only
@@ -37,6 +40,12 @@ export interface DocumentCommentBoxProps {
   // retained but unconfirmed lease/capture evidence. The note keeps editing and
   // Cancel stays usable.
   suspended?: boolean;
+  // The retained caret selection to restore once this box mounts. The host
+  // owns the value (it rides the reader work, so it survives remounts); the
+  // box only applies it.
+  retainedSelection?: CommentSelection | null;
+  // Delegates the field's live caret/selection changes to the host.
+  onSelection?: (selection: CommentSelection) => void;
 }
 
 const CLASS = {
@@ -55,15 +64,39 @@ export function DocumentCommentBox({
   saving,
   status,
   suspended = false,
+  retainedSelection,
+  onSelection,
 }: DocumentCommentBoxProps) {
   const noteId = useId();
   // Trim is validation only: it decides whether Send is available, never what is
   // stored. The literal note (including leading/trailing whitespace and newlines)
   // reaches the host unchanged.
   const blank = work.note.trim().length === 0;
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // The latest retained value, readable by the mount-only effect below without
+  // re-running on every change: a live user's caret is never rewound by an
+  // unrelated re-render.
+  const retainedSelectionRef = useRef(retainedSelection);
+  retainedSelectionRef.current = retainedSelection;
+  useEffect(() => {
+    const node = textareaRef.current;
+    const retained = retainedSelectionRef.current;
+    // setSelectionRange restores the field's own caret without focusing, so
+    // neither focus nor the document selection moves.
+    if (node && retained) node.setSelectionRange(retained.start, retained.end, retained.direction);
+  }, []);
 
   const handleNote = (event: ChangeEvent<HTMLTextAreaElement>) => {
     onNote(event.target.value);
+  };
+  const handleSelect = (event: UIEvent<HTMLTextAreaElement>) => {
+    if (!onSelection) return;
+    const target = event.target as HTMLTextAreaElement;
+    onSelection({
+      start: target.selectionStart,
+      end: target.selectionEnd,
+      direction: target.selectionDirection,
+    });
   };
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // Return inserts a normal newline; stop it from reaching a composer-style
@@ -86,7 +119,15 @@ export function DocumentCommentBox({
       <label className={CLASS.label} htmlFor={noteId}>
         Comment
       </label>
-      <Textarea id={noteId} value={work.note} onChange={handleNote} onKeyDown={handleKeyDown} minLines={2} />
+      <Textarea
+        id={noteId}
+        value={work.note}
+        onChange={handleNote}
+        onKeyDown={handleKeyDown}
+        onSelect={handleSelect}
+        minLines={2}
+        ref={textareaRef}
+      />
       <div className={CLASS.status} role="status">
         {status}
       </div>

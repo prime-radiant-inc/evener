@@ -34,7 +34,24 @@ export interface DocumentReaderWork {
   attempted: PreparedAnnotation | null;
   attemptedComment: AnnotationCommentWork | null;
   lease: AcceptedSourceLease | null;
+  // The last save THIS reader committed, set when its receipt lands and kept
+  // across the handoff: its capture is the retained evidence a later fault
+  // branch needs to prove a source change against the saved operation, and
+  // its lease names the epoch whose pending handoff such a change must
+  // suppress. The expiry machinery owns the durable row's retirement.
+  saved: PreparedAnnotation | null;
+  // The comment textarea's retained caret selection, captured on the box's
+  // select events and restored by a remounted box WITHOUT touching focus or
+  // the document selection. Cleared whenever the note itself resets.
+  commentSelection: CommentSelection | null;
   phase: "reading" | "saving" | "unsaved" | "expiry-pending";
+}
+
+// The comment field's caret/selection state, in the textarea's own terms.
+export interface CommentSelection {
+  start: number;
+  end: number;
+  direction: "forward" | "backward" | "none";
 }
 
 // The one lazy browser singleton: the repository and runtime every production
@@ -91,9 +108,13 @@ export function publishReader(work: DocumentReaderWork): void {
 function settleSavedAttempt(work: DocumentReaderWork, operation: PreparedAnnotation): void {
   if (work.attempted !== operation) return;
   const unchanged = work.comment === work.attemptedComment;
+  work.saved = operation;
   work.attempted = null;
   work.attemptedComment = null;
-  if (unchanged) work.comment = { note: "", captureFrozen: false };
+  if (unchanged) {
+    work.comment = { note: "", captureFrozen: false };
+    work.commentSelection = null;
+  }
   work.phase = unchanged ? "reading" : "unsaved";
   publishReader(work);
 }
@@ -129,6 +150,8 @@ export function documentReaderWork(
     attempted: null,
     attemptedComment: null,
     lease: null,
+    saved: null,
+    commentSelection: null,
     phase: "reading",
   };
   const entry: ReaderEntry = { work, listeners: new Set(), unsubscribe: () => {} };
