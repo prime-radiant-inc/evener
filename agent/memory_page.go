@@ -23,6 +23,7 @@ type memoryPage struct {
 	Description    string // one line; the fallback when HasDescription is false
 	HasDescription bool
 	When           string // one line saying when a future session needs the page; "" when the page has none
+	Scope          string // the scope the page was listed in, for the off-scope index cue; "" when unknown
 	Unreadable     bool   // the page's frontmatter did not parse
 	Frontmatter    bool   // the page opens with a complete frontmatter block, readable or not
 	Tags           []string

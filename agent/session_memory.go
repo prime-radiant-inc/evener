@@ -194,6 +194,9 @@ func (s *Session) renderMemoryScopePages(env *execenv.LocalExecutionEnvironment,
 		return nil, nil
 	}
 	p.Status = "current"
+	for i := range pages {
+		pages[i].Scope = p.Scope
+	}
 	p.Content, p.Index, p.Truncated = projectMemoryIndex(pages, memoryProjectionCap)
 	return pages, nil
 }
@@ -475,6 +478,7 @@ func (s *Session) recordOwnMemoryWrite(env *execenv.LocalExecutionEnvironment, s
 	if ioErr == nil {
 		raw, readErr = env.ReadFileRaw(filepath.Join(env.WorkingDirectory(), file))
 		if page, exists := memoryPageFromRead(listed, raw, readErr, time.Time{}); exists {
+			page.Scope = scope
 			line = memoryIndexLine(page)
 		}
 	}

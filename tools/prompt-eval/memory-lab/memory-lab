@@ -1230,8 +1230,8 @@ def main():
                    help="spike: set EVENER_MEMORY_WHEN for every session (both = description then when line; only = when line in place of the description)")
     r.add_argument("--write-fields", choices=["off", "on"],
                    help="spike: set EVENER_MEMORY_WRITE_FIELDS for every session (on = memory_write takes description, when, tags, evidence and body as separate fields)")
-    r.add_argument("--index-title", choices=["off", "on"],
-                   help="spike: set EVENER_MEMORY_INDEX_TITLE for every session (off = index lines link each page's path instead of its title)")
+    r.add_argument("--index-title", choices=["off", "on", "off-note", "off-scope"],
+                   help="spike: set EVENER_MEMORY_INDEX_TITLE for every session (off = index lines link each page's path instead of its title; off-note = also a line opening the index saying the links are memory pages; off-scope = scope:path as link text)")
     r.add_argument("--rank", choices=["off", "on"],
                    help="spike: set EVENER_MEMORY_RANK for every session (on = BM25-ranked hidden pages listed at each human message)")
     r.add_argument("--arm", choices=["on", "off"],

@@ -126,17 +126,39 @@ func memoryIndexText(p memoryPage) string {
 	return p.Description
 }
 
-// Spike: EVENER_MEMORY_INDEX_TITLE=off shows each page's path as its link
-// text instead of its title.
+// Spike: EVENER_MEMORY_INDEX_TITLE picks a page's link text: its title (the
+// default), its path ("off"), its path under a note opening the index
+// ("off-note"), or its scope and path ("off-scope").
 const memoryIndexTitleEnv = "EVENER_MEMORY_INDEX_TITLE"
 
-// memoryIndexLinkText is the text of a page's index link: its title, or its
-// path when the title switch is off.
+// memoryIndexNote opens the index under "off-note", so a path-only link reads
+// as a memory page rather than a file in the workspace.
+const memoryIndexNote = "Each link below is a page in this memory, kept apart from the workspace files: open it with memory_read and the path in its link."
+
+func memoryIndexTitleMode() string {
+	return strings.ToLower(strings.TrimSpace(os.Getenv(memoryIndexTitleEnv)))
+}
+
+// memoryIndexLinkText is the text of a page's index link, by memoryIndexTitleMode.
 func memoryIndexLinkText(p memoryPage) string {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv(memoryIndexTitleEnv)), "off") {
+	switch memoryIndexTitleMode() {
+	case "off", "off-note":
+		return p.Path
+	case "off-scope":
+		if p.Scope != "" {
+			return p.Scope + ":" + p.Path
+		}
 		return p.Path
 	}
 	return p.Title
+}
+
+// memoryIndexNoteLine is the line opening the index, "" unless "off-note".
+func memoryIndexNoteLine() string {
+	if memoryIndexTitleMode() == "off-note" {
+		return memoryIndexNote + "\n"
+	}
+	return ""
 }
 
 // memoryIndexLine is one page's index line.
@@ -302,7 +324,7 @@ func memoryPageLines(pages []memoryPage) (sorted []memoryPage, lines []string) {
 // one line per page, newest first. It is "" for a scope with no pages.
 func renderMemoryIndex(pages []memoryPage) string {
 	sorted, lines := memoryPageLines(pages)
-	return memoryTagsHeaderLine(sorted, false) + strings.Join(lines, "")
+	return memoryIndexNoteLine() + memoryTagsHeaderLine(sorted, false) + strings.Join(lines, "")
 }
 
 // projectMemoryIndex is the index as projected into context within limit
@@ -311,11 +333,11 @@ func renderMemoryIndex(pages []memoryPage) string {
 // is the whole index, rendered in the same pass.
 func projectMemoryIndex(pages []memoryPage, limit int) (content, full string, truncated bool) {
 	sorted, lines := memoryPageLines(pages)
-	full = memoryTagsHeaderLine(sorted, false) + strings.Join(lines, "")
+	full = memoryIndexNoteLine() + memoryTagsHeaderLine(sorted, false) + strings.Join(lines, "")
 	if len(full) <= limit {
 		return full, full, false
 	}
-	prefix := memoryTagsHeaderLine(sorted, true)
+	prefix := memoryIndexNoteLine() + memoryTagsHeaderLine(sorted, true)
 	sizes := make([]int, len(sorted)+1) // sizes[k]: prefix plus the first k lines
 	sizes[0] = len(prefix)
 	for i, line := range lines {

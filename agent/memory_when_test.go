@@ -78,3 +78,37 @@ func TestMemoryIndexLineWithoutTitles(t *testing.T) {
 		t.Fatalf("titles on: %q", got)
 	}
 }
+
+// The off-scope cue puts the page's scope in its link text; memoryIndexLineFor
+// still finds the line by its path.
+func TestMemoryIndexLineScopeCue(t *testing.T) {
+	t.Setenv(memoryWhenEnv, "only")
+	t.Setenv(memoryIndexTitleEnv, "off-scope")
+	p := memoryPage{Path: "shop/api-frozen.md", Title: "T", When: "When changing shop's exports", Scope: "project"}
+	line := memoryIndexLine(p)
+	if want := "- [project:shop/api-frozen.md](shop/api-frozen.md) — When changing shop's exports"; line != want {
+		t.Fatalf("got %q, want %q", line, want)
+	}
+	if !memoryIndexLineFor(line, "shop/api-frozen.md") {
+		t.Fatalf("memoryIndexLineFor does not find %q", line)
+	}
+}
+
+// The off-note cue opens the index with one line saying what the links are;
+// it is not a page line, and the projection counts it against the cap.
+func TestMemoryIndexNoteCue(t *testing.T) {
+	t.Setenv(memoryWhenEnv, "only")
+	pages := []memoryPage{{Path: "a.md", Title: "A", When: "When A"}}
+	t.Setenv(memoryIndexTitleEnv, "off-note")
+	content, full, _ := projectMemoryIndex(pages, memoryProjectionCap)
+	if !strings.HasPrefix(content, memoryIndexNote+"\n") || !strings.HasPrefix(full, memoryIndexNote+"\n") {
+		t.Fatalf("index does not open with the note: %q", content)
+	}
+	if got := memoryIndexLines(content); len(got) != 1 || !strings.HasPrefix(got[0], "- [a.md](a.md) — ") {
+		t.Fatalf("page lines = %q", got)
+	}
+	t.Setenv(memoryIndexTitleEnv, "off")
+	if content, _, _ := projectMemoryIndex(pages, memoryProjectionCap); strings.Contains(content, memoryIndexNote) {
+		t.Fatalf("plain off has the note: %q", content)
+	}
+}
