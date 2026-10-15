@@ -433,11 +433,11 @@ func TestRgCaptureTailDropsANewlineBearingPathFragment(t *testing.T) {
 
 // TestRgCaptureKeepsTheRecordAfterACaptureEndingOnABoundary is round 11's
 // finding: the resync dropped the window's first record unconditionally, so a cap
-// that fell exactly at a record end — where the head's own framing proves the
-// next record is whole — still lost it.
+// that fell exactly at a record end lost a record the capture holds whole. The
+// framing state now proves the window opens at a record start, so nothing is
+// dropped.
 func TestRgCaptureKeepsTheRecordAfterACaptureEndingOnABoundary(t *testing.T) {
 	t.Parallel()
-	const dir = "/base"
 	c := newRgCapture("/base", false, len("1:a\n")) // the cap ends exactly at the first record's end
 	if _, err := c.Write([]byte("1:a\n2:b\n")); err != nil {
 		t.Fatal(err)

@@ -211,9 +211,8 @@ func (c *rgCapture) view(filesOnly bool) rgCaptureView {
 	if c.over {
 		head = head[:lastRecordEnd(head, c.prefix, filesOnly)]
 	}
-	// Where the window opens is the tracker's to say: its state and the head's
-	// boundary proof describe the same fact, and the tracker is the one that
-	// stays true when the window slides.
+	// Where the window opens is the tracker's to say (see rgFraming): the state
+	// it carries is exactly that position's, however the window has moved.
 	tail, tailBytes, cut := tailRecords(c.window, c.prefix, filesOnly, c.frame)
 	// A capped slot carries synthetic omission text, which is not stream bytes:
 	// counting the slots instead of their records understates the omission, and
@@ -278,10 +277,10 @@ func lastRecordEnd(b, prefix []byte, filesOnly bool) int {
 
 // tailRecords is the last rgTailRecords complete records in b, in stream order,
 // each bounded by capTailSlot, with the SOURCE bytes those records occupy and
-// whether any record was cut to its slot. b opens wherever the cap tripped, so
-// unless the head proved the cap fell on a record boundary (atBoundary) it is
-// resynchronized first: the bytes before its first genuine record boundary are a
-// fragment of a record that started earlier and are left out.
+// whether any record was cut to its slot. b opens wherever the cap tripped, at
+// the framing state frame describes, so it is resynchronized to the first
+// complete record there: the bytes before that boundary are a fragment of a
+// record that started earlier and are left out.
 func tailRecords(b, prefix []byte, filesOnly bool, frame rgFraming) (slots []string, source, cut int) {
 	b = b[resync(b, filesOnly, frame):]
 	ends := rgRecordEnds(b, prefix, filesOnly)
