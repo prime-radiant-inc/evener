@@ -9990,6 +9990,11 @@ test("the parked Send-resumes row dispatches exactly once when the resync and re
   expect(sends).toBe(1);
 });
 
+// The fixture's refusal message: one constant shared by every fake throw
+// and the passthrough assertion, so no assertion matches a duplicated
+// string (copy is not a test oracle).
+const HUB_REFUSAL_MESSAGE = "the hub's inbound queue is busy and did not accept this message";
+
 // #4342: the hub's high-water backpressure refusal is transient. The row
 // stays queued in the outbox FIFO (never recovery), the pending surface
 // shows the hub did not accept it yet — the busy marker holds until the row
@@ -10005,7 +10010,7 @@ test("a backpressured send stays queued, surfaces busy, and paces retries that r
   let refuse = true;
   fake.on("turn/start", (params) => {
     if (refuse) {
-      throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+      throw new WireError(HUB_REFUSAL_MESSAGE, -32014, {
         evenerErrorInfo: "connectionBackpressure",
         clientMutationId: params.clientMutationId,
         mutationOutcome: "notAccepted",
@@ -10077,7 +10082,7 @@ test("a backpressured send survives the non-authoritative reconcile park and red
         receipt: mutationReceipt(params.clientMutationId),
       };
     }
-    throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+    throw new WireError(HUB_REFUSAL_MESSAGE, -32014, {
       evenerErrorInfo: "connectionBackpressure",
       clientMutationId: params.clientMutationId,
       mutationOutcome: "notAccepted",
@@ -10133,7 +10138,7 @@ test("a backpressure refusal on the direct-send path rejects with the hub's mess
   const fake = connectMutationClient();
   await threadsStore.getState().ensureThread("ref_a");
   fake.on("turn/start", (params) => {
-    throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+    throw new WireError(HUB_REFUSAL_MESSAGE, -32014, {
       evenerErrorInfo: "connectionBackpressure",
       clientMutationId: params.clientMutationId,
       mutationOutcome: "notAccepted",
@@ -10152,9 +10157,7 @@ test("a backpressure refusal on the direct-send path rejects with the hub's mess
     throw new DOMException("storage full", "QuotaExceededError");
   });
 
-  await expect(threadsStore.getState().send("ref_a", "sent from a full origin")).rejects.toThrow(
-    "the hub's inbound queue is busy and did not accept this message",
-  );
+  await expect(threadsStore.getState().send("ref_a", "sent from a full origin")).rejects.toThrow(HUB_REFUSAL_MESSAGE);
   expect(add).toHaveBeenCalledTimes(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   expect(await storage.listOutbox()).toEqual([]);
@@ -10174,7 +10177,7 @@ test("a fresh refusal replaces the pending paced retry's timer", async () => {
   const fake = connectMutationClient();
   await threadsStore.getState().ensureThread("ref_a");
   fake.on("turn/start", (params) => {
-    throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+    throw new WireError(HUB_REFUSAL_MESSAGE, -32014, {
       evenerErrorInfo: "connectionBackpressure",
       clientMutationId: params.clientMutationId,
       mutationOutcome: "notAccepted",
@@ -10221,7 +10224,7 @@ test("the busy marker clears when the record settles, not when the paced attempt
   const acceptedRetry = deferred<TurnStartResponse>();
   fake.on("turn/start", (params) => {
     if (refuse) {
-      throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+      throw new WireError(HUB_REFUSAL_MESSAGE, -32014, {
         evenerErrorInfo: "connectionBackpressure",
         clientMutationId: params.clientMutationId,
         mutationOutcome: "notAccepted",
@@ -10275,7 +10278,7 @@ test("resetting the store cancels pending paced retries", async () => {
   const fake = connectMutationClient();
   await threadsStore.getState().ensureThread("ref_a");
   fake.on("turn/start", (params) => {
-    throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+    throw new WireError(HUB_REFUSAL_MESSAGE, -32014, {
       evenerErrorInfo: "connectionBackpressure",
       clientMutationId: params.clientMutationId,
       mutationOutcome: "notAccepted",
@@ -10309,7 +10312,7 @@ test("a refusal's busy marker leaves when another tab settles the row", async ()
   const fake = connectMutationClient();
   await threadsStore.getState().ensureThread("ref_a");
   fake.on("turn/start", (params) => {
-    throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+    throw new WireError(HUB_REFUSAL_MESSAGE, -32014, {
       evenerErrorInfo: "connectionBackpressure",
       clientMutationId: params.clientMutationId,
       mutationOutcome: "notAccepted",
@@ -10340,6 +10343,59 @@ test("a refusal's busy marker leaves when another tab settles the row", async ()
   restoreScheduler();
 });
 
+// #4342 (round-4 review): a Stop whose cancel scan skips the in-flight
+// attempted row must not be outrun by the refusal that answers that attempt.
+// The hub proved the attempt never landed, but the row holds canceled -
+// released only by an explicit Retry - instead of returning dispatchable
+// ahead of the interrupt the Stop already queued.
+test("a refusal after a mid-attempt Stop holds the row canceled instead of redelivering", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  await threadsStore.getState().ensureThread("ref_a");
+  const inFlight = deferred<TurnStartResponse>();
+  fake.on("turn/start", () => inFlight.promise);
+  fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+  const paced: number[] = [];
+  const restoreScheduler = installBackpressureRetrySchedulerForTests((attempt) => {
+    paced.push(attempt);
+    return () => {};
+  });
+
+  await threadsStore.getState().send("ref_a", "held past a stop");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  const [row] = await storage.listOutbox("ref_a");
+  if (!row) throw new Error("expected the in-flight row to stay durable");
+  expect(row.attempted).toBe(true);
+
+  // The user stops while the attempt is in flight: the cancel scan skips
+  // the attempted row, and the interrupt goes out.
+  await threadsStore.getState().interrupt("ref_a");
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
+
+  // The hub's refusal lands after the Stop: the rollback holds the row
+  // canceled, arms no paced retry, and leaves no busy marker.
+  inFlight.reject(
+    new WireError(HUB_REFUSAL_MESSAGE, -32014, {
+      evenerErrorInfo: "connectionBackpressure",
+      clientMutationId: row.clientMutationId,
+      mutationOutcome: "notAccepted",
+      retryDisposition: "automatic",
+      cause: "queueSaturated",
+    }),
+  );
+  await flushIndexedDBUntil(async () => (await storage.getOutbox(row.clientMutationId))?.state === "canceled");
+  expect((await storage.getOutbox(row.clientMutationId))?.state).toBe("canceled");
+  expect(paced).toEqual([]);
+  expect(threadsStore.getState().transientRefusalPaces.size).toBe(0);
+
+  // Discovery cannot outrun the Stop either: the canceled row never re-sends.
+  notifyReadyForMutationDispatch(["ref_a"]);
+  await flushIndexedDBUntil(() => false, 4);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  restoreScheduler();
+});
+
 // #4342 (review): the settle prune is fire-and-forget at every call site,
 // so a storage read failing inside it must not escape as an unhandled
 // rejection - and a failed read proves nothing, so it clears nothing: the
@@ -10355,7 +10411,7 @@ test("a refusal's busy marker survives a prune whose storage read fails", async 
   const fake = connectMutationClient();
   await threadsStore.getState().ensureThread("ref_a");
   fake.on("turn/start", (params) => {
-    throw new WireError("the hub's inbound queue is busy and did not accept this message", -32014, {
+    throw new WireError(HUB_REFUSAL_MESSAGE, -32014, {
       evenerErrorInfo: "connectionBackpressure",
       clientMutationId: params.clientMutationId,
       mutationOutcome: "notAccepted",

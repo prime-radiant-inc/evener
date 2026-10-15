@@ -247,6 +247,9 @@ describe("MutationOutboxIndexedDB", () => {
       optimisticDisplay: { text: "survive reload" },
       state: "submitting",
       attempted: false,
+      // The enqueue barrier's own epoch read, stored for the refusal
+      // rollback's stop fence.
+      stopEpochAtEnqueue: 0,
     });
   });
 

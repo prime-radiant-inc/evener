@@ -111,6 +111,10 @@ test("enqueueIntent persists a submitting record with the full intent", async ()
 		optimisticDisplay: { text: "survive reload" },
 		state: "submitting",
 		attempted: false,
+		// The enqueue barrier's own epoch read, stored for the refusal
+		// rollback's stop fence. Oracle: "reload restores the complete
+		// persisted intent" asserts the same field (mutationOutbox.test.ts).
+		stopEpochAtEnqueue: 0,
 	});
 	const row = rawRow("mutation_outbox", "mutation-1");
 	expect(row).toMatchObject({ state: "submitting", attempted: 0, intent_sequence: 1 });

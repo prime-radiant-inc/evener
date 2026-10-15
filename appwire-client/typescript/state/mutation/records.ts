@@ -98,6 +98,17 @@ export interface MutationOutboxRecord<A extends MutationAttachmentRef = Mutation
   // records written before the field existed carry none, and a missing count
   // reads as zero.
   unresolvedAttempts?: number;
+  // #4342: the ref's stop epoch at enqueue time - the barrier's own read,
+  // stored. A refusal proves the attempt never landed, and a Stop whose
+  // cancel scan skipped this attempted row bumped the epoch after this
+  // capture - the refusal's rollback then holds the row canceled (released
+  // only by an explicit Retry) instead of returning it dispatchable ahead
+  // of the interrupt that Stop already queued. A Stop before the first
+  // dispatch needs no capture: the cancel scan cancels the unattempted row
+  // outright, so the enqueue-time capture fences exactly the reachable
+  // interleavings. Optional because rows written before the field existed
+  // carry none; a missing capture reads as zero, the conservative direction.
+  stopEpochAtEnqueue?: number;
 }
 
 export interface MutationOptimisticRecord<A extends MutationAttachmentRef = MutationAttachmentRef>

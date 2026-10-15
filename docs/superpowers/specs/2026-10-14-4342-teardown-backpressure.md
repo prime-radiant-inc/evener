@@ -493,6 +493,29 @@ fixtures, and an injectable transport/observer where needed.
   marker and its armed retry survive for a later recovery pass, and the
   fire-and-forget prune contains the failure rather than leaking an
   unhandled rejection.
+  The refusal's rollback is also stop-fenced (round-4 review, high). The
+  capture rides the enqueue barrier's own epoch read, stored on the row
+  (`stopEpochAtEnqueue`; on native an additive default-zero
+  `stop_epoch_at_enqueue` column) - an extra request inside the mark's
+  write transaction reordered the note editor's tightly-sequenced drain,
+  so the mark itself stays byte-identical to the pre-fence shape and the
+  fence reads only at rollback time. A Stop whose cancel scan skipped the
+  attempted row bumped the epoch after the enqueue-time capture, and the
+  refusal's rollback compares the two inside its own transaction - that row
+  holds `canceled` (released only by an explicit Retry, the born-canceled
+  §4 direction) instead of returning dispatchable ahead of the interrupt
+  the Stop already queued. A Stop before the first dispatch needs no
+  capture: the cancel scan cancels the unattempted row outright, so the
+  enqueue-time capture fences exactly the reachable interleavings. The
+  fence covers both rollback branches (the submitting rollback and the
+  blockedUnknown reopen); rows with earlier unresolved evidence keep
+  their uncertain treatment, and the dispatcher arms no busy surface and
+  no pacing for a fence-held row.
+- The busy surface's visible copy is pinned structurally, not verbatim
+  (round-4 review, low): the queue row's reason span carries a
+  data-busy-reason hook asserted non-empty, the ghost's caption stage and
+  data-busy attribute are the assertions, and the refusal-message fixtures
+  share one constant so no assertion matches a duplicated string.
 - Item 8's TUI e2e uses a fixture-specific refusal message, so the pin proves
   the hub's message reaches the TUI's failure line verbatim rather than two
   copies of a known string agreeing, and asserts the refusal's ledger

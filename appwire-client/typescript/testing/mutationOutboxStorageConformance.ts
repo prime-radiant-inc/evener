@@ -264,6 +264,32 @@ export function describeMutationOutboxStorage(factory: MutationOutboxStorageFact
       });
     });
 
+    // #4342 (review): a Stop whose cancel scan skipped the attempted row
+    // bumped the ref's stop epoch while the attempt was in flight. The
+    // refusal then proves the attempt never landed, but the row must not
+    // return dispatchable ahead of the interrupt the Stop already queued:
+    // the rollback holds it canceled, released only by an explicit Retry.
+    test("unmarkAttempted holds a row canceled when a Stop interrupted the refused attempt", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("stopped mid-attempt"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await storage.enqueueInterruptAndCancel(conformanceInterruptIntent(record.targetRef));
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(false);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "canceled",
+      });
+    });
+
+    test("unmarkAttempted holds a parked row canceled when a Stop interrupted the refused attempt", async () => {
+      const record = await storage.enqueueIntent(conformanceTextIntent("parked, then stopped"));
+      await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
+      await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+      await storage.enqueueInterruptAndCancel(conformanceInterruptIntent(record.targetRef));
+      await expect(storage.unmarkAttempted(record.clientMutationId)).resolves.toBe(false);
+      await expect(storage.getOutbox(record.clientMutationId)).resolves.toMatchObject({
+        state: "canceled",
+      });
+    });
+
     test("markAttempted counts concurrent unresolved attempts", async () => {
       const record = await storage.enqueueIntent(conformanceTextIntent("two tabs, one row"));
       await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);

@@ -600,7 +600,11 @@ export function QueueStrip({
               data-busy={hubRefused ? "true" : undefined}
             >
               <span className={CLASS.rowText}>
-                {hubRefused ? <span className={CLASS.rowReason}>Retrying — </span> : null}
+                {hubRefused ? (
+                  <span className={CLASS.rowReason} data-busy-reason="">
+                    Retrying —{" "}
+                  </span>
+                ) : null}
                 {pendingPreview(entry)}
               </span>
             </li>

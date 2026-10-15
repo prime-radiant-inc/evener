@@ -962,7 +962,9 @@ describe("canceled rows", () => {
     const pending = await screen.findByText("queued while busy");
     expect(pending.closest("li")?.getAttribute("data-kind")).toBe("pending");
     expect(pending.closest("li")?.getAttribute("data-busy")).toBe("true");
-    expect(screen.getByText(/Retrying/)).toBeTruthy();
+    // The visible affordance is a non-empty reason span, not a phrase: copy
+    // is not a test oracle, so its wording stays free to change.
+    expect(pending.closest("li")?.querySelector("[data-busy-reason]")?.textContent?.trim()).not.toBe("");
   });
 
   // Mirrors "visible Retry treats an other-tab settled/reopened row as a

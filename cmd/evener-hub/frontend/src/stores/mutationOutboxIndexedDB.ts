@@ -250,6 +250,9 @@ export class MutationOutboxIndexedDB {
         createdAt: this.#now(),
         state: canceledByBarrier ? "canceled" : "submitting",
         attempted: false,
+        // The barrier's own read, stored: the refusal rollback's fence
+        // compares the ref's epoch at rollback time against this capture.
+        stopEpochAtEnqueue: stopEpoch,
       };
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
       return record;
@@ -735,7 +738,7 @@ export class MutationOutboxIndexedDB {
   // refusal is authoritative proof that park's uncertainty resolves, while
   // one parked with earlier evidence stays parked.
   async unmarkAttempted(clientMutationId: string): Promise<boolean> {
-    return this.#write(OUTBOX_STORE, "unmarkAttempted", async (transaction) => {
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "unmarkAttempted", async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const record = await requestResult<MutationOutboxRecord | undefined>(store.get(clientMutationId));
       // A missing count on a pre-field record reads as the one unresolved
@@ -743,6 +746,18 @@ export class MutationOutboxIndexedDB {
       const priorAttempts = record?.unresolvedAttempts ?? (record?.attempted ? 1 : 0);
       if (record?.state === "submitting") {
         const unresolvedAttempts = Math.max(0, priorAttempts - 1);
+        if (unresolvedAttempts === 0) {
+          // §4's conservative direction, at the refusal seam: a Stop whose
+          // cancel scan skipped this attempted row bumped the epoch while
+          // the attempt was in flight, and the refusal proves the attempt
+          // never landed - the row holds canceled, released only by an
+          // explicit Retry, never dispatchable ahead of the interrupt.
+          const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
+          if (stopEpoch > (record.stopEpochAtEnqueue ?? 0)) {
+            await requestResult(store.put({ ...record, state: "canceled", attempted: false, unresolvedAttempts: 0 }));
+            return false;
+          }
+        }
         await requestResult(store.put({ ...record, attempted: unresolvedAttempts > 0, unresolvedAttempts }));
         return unresolvedAttempts === 0;
       }
@@ -750,6 +765,11 @@ export class MutationOutboxIndexedDB {
         const unresolvedAttempts = priorAttempts;
         if (unresolvedAttempts > 1) {
           await requestResult(store.put({ ...record, unresolvedAttempts: unresolvedAttempts - 1 }));
+          return false;
+        }
+        const stopEpoch = await this.#stopEpochOf(transaction, record.targetRef);
+        if (stopEpoch > (record.stopEpochAtEnqueue ?? 0)) {
+          await requestResult(store.put({ ...record, state: "canceled", attempted: false, unresolvedAttempts: 0 }));
           return false;
         }
         await requestResult(store.put({ ...record, state: "submitting", attempted: false, unresolvedAttempts: 0 }));
