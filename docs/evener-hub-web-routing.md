@@ -82,8 +82,12 @@ their acknowledgements. Known targets retain their ordering barrier; updates
 for a route that remains unbound do not enter a different session's stream.
 
 The command owner has a longer lifetime, through downstream subscription
-handoff. It retains daemon-departure recovery for a joining subscriber even
-after routing is known. Cancellation releases read ownership; connection loss
+handoff. It retains daemon-departure announcements until in-flight handoffs
+finish, allowing a newly subscribed route to receive recovery after routing is
+known. Replay tracks served routes, so a second subscriber joining an already
+served route can still miss that announcement; see
+[the same-route recovery gap](https://github.com/prime-radiant-inc/evener/issues/4684).
+Cancellation releases read ownership; connection loss
 fences the old epoch, and rejoining establishes a fresh snapshot and ordered
 live stream. These guarantees apply to every AppWire client, including browser
 tabs and background subscriptions, native clients, and the TUI. Reads alone

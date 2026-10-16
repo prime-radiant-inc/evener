@@ -402,6 +402,87 @@ async function readTargetDomain(driver, ref) {
   return evaluate(driver.send, targetDomainExpr(ref));
 }
 
+function renderedSentinelRowsExpr(ref) {
+  return `(() => {
+    const pane = document.querySelector("[data-pane-scaffold='session:${ref}']");
+    if (!pane) return [];
+    return [...pane.querySelectorAll("[data-view-anchor-turn-id][data-view-anchor-id]")]
+      .map((row) => ({
+        id: row.getAttribute("data-view-anchor-id"),
+        turnId: row.getAttribute("data-view-anchor-turn-id"),
+        text: row.textContent ?? "",
+      }))
+      .filter((row) => row.text.includes(${JSON.stringify(BEFORE)}) || row.text.includes(${JSON.stringify(AFTER)}));
+  })()`;
+}
+
+// A fresh browser document joins the real hub while the provider is gated
+// mid-turn. Both panes must load that turn and receive its remaining output.
+async function runLiveTwoTabs(driver, harnessUrl) {
+  const opened = await openPage(driver.endpoint, "about:blank");
+  const tab = await connectPage(driver.endpoint, opened.id);
+  const sibling = new Driver({
+    url: driver.url,
+    artifactDir: driver.artifactDir,
+    controlPath: driver.controlPath,
+    milestonePath: driver.milestonePath,
+  });
+  sibling.page = tab;
+  try {
+    await applyViewport(sibling.send, VIEWPORT);
+    await navigateTo(tab, harnessUrl, BOOT);
+    if (!(await waitForEvidenceGlobal(sibling))) throw new Error("second live tab did not boot");
+    await sibling.openSession(SESSION_B);
+    const beforeRows = [];
+    for (const [index, pane] of [driver, sibling].entries()) {
+      await pane.send("Page.bringToFront");
+      await waitForPaneText(pane, SESSION_B, BEFORE, 30000, `initial live output in tab ${index}`);
+      await waitForTargetRunning(pane, SESSION_B);
+      beforeRows.push(await evaluate(pane.send, renderedSentinelRowsExpr(SESSION_B)));
+    }
+    driver.phase("after-eviction");
+    for (const pane of [driver, sibling]) {
+      await pane.send("Page.bringToFront");
+      await waitForPaneText(pane, SESSION_B, AFTER, 30000, "new live output in both tabs");
+      await waitForTargetRunning(pane, SESSION_B);
+    }
+    driver.phase("finish");
+    for (const pane of [driver, sibling]) {
+      await pane.send("Page.bringToFront");
+      await pane.waitForTurnIdle(SESSION_B, { timeoutMs: 60000 });
+    }
+    await waitForNativeEntryEvidence(
+      sibling,
+      (value) => value.rows.some((row) => row.item?.output?.includes(TOOL_OUTPUT)),
+      "second tab's completed real tool output",
+    );
+    const afterRows = await evaluate(sibling.send, renderedSentinelRowsExpr(SESSION_B));
+    const domain = await readTargetDomain(sibling, SESSION_B);
+    const output = await readShellOutputRegion(sibling, SESSION_B, TOOL_OUTPUT);
+    return {
+      beforeRows: beforeRows[0],
+      sibling: {
+        beforeRows: beforeRows[1],
+        afterRows,
+        items: (domain?.items ?? []).filter((item) => item.turnId === afterRows[0]?.turnId),
+        output: output?.outputs?.[0] ?? "",
+      },
+    };
+  } catch (error) {
+    await sibling.screenshot("second-tab-failure");
+    await sibling.dumpState("second-tab-failure");
+    const evidence = await evaluate(sibling.send, `({
+      model: window.backgroundTranscriptEvidence?.model(${JSON.stringify(SESSION_B)}),
+      route: window.backgroundTranscriptEvidence?.entryRoute(${JSON.stringify(SESSION_B)})
+    })`);
+    writeFileSync(path.join(ARTIFACT_DIR, "second-tab-failure-model.json"), JSON.stringify(evidence), { mode: 0o600 });
+    throw error;
+  } finally {
+    tab.close();
+    await closePage(driver.endpoint, opened.id);
+  }
+}
+
 // renderedOutputExpr reads the shell OUTPUT region: the <pre> belonging to the
 // CodeBlock that carries the "Copy output" control. The command block is a
 // separate element, so command arguments cannot satisfy it.
@@ -938,7 +1019,7 @@ async function main() {
           `${error instanceof Error ? error.message : String(error)}\npage errors:\n${pageErrors.join("\n") || "(none captured)"}\ndom: ${JSON.stringify(dump)}`,
         );
       }
-      await runJourney(driver, ENTRY_PRODUCTION);
+      await runJourney(driver, ENTRY_PRODUCTION, harnessUrl);
       await runTwoTabFencing(driver, cdpEndpoint, harnessUrl);
     } finally {
       try {
@@ -957,7 +1038,7 @@ async function main() {
   }
 }
 
-async function runEntryProductionJourney(driver) {
+async function runEntryProductionJourney(driver, harnessUrl) {
   const installed = await waitForEvidenceGlobal(driver);
   if (!installed) throw new Error("production-entry dev entry did not expose the real app evidence global");
   await driver.waitPage("(() => document.querySelector(\"[data-testid='rail-brand']\") !== null ? true : null)()", {
@@ -1018,14 +1099,7 @@ async function runEntryProductionJourney(driver) {
   });
   if (beforeIsPersisted) throw new Error("live-only output was written to entry storage before its turn completed");
 
-  driver.phase("after-eviction");
-  await driver.waitPage(
-    `(() => document.querySelector("[data-pane-scaffold='session:${SESSION_B}']")?.textContent?.includes(${JSON.stringify(AFTER)}) ? true : null)()`,
-    { timeoutMs: 30000, label: "streaming output remains visible in the selected pane" },
-  );
-  await waitForTargetRunning(driver, SESSION_B);
-  driver.phase("finish");
-  await driver.waitForTurnIdle(SESSION_B, { timeoutMs: 60000 });
+  const liveTabs = await runLiveTwoTabs(driver, harnessUrl);
   await evaluate(driver.send, `window.backgroundTranscriptEvidence.entrySettled(${JSON.stringify(SESSION_B)})`);
   const completed = await waitForNativeEntryEvidence(
     driver,
@@ -1038,20 +1112,18 @@ async function runEntryProductionJourney(driver) {
   const outputRegion = await readShellOutputRegion(driver, SESSION_B, TOOL_OUTPUT);
   const outputText = outputRegion?.outputs?.[0] ?? "";
   const rendererItems = target?.items ?? [];
-  const renderedSentinelRows = await evaluate(
-    driver.send,
-    `(() => {
-      const pane = document.querySelector("[data-pane-scaffold='session:${SESSION_B}']");
-      if (!pane) return [];
-      return [...pane.querySelectorAll("[data-view-anchor-turn-id][data-view-anchor-id]")]
-        .map((row) => ({
-          id: row.getAttribute("data-view-anchor-id"),
-          turnId: row.getAttribute("data-view-anchor-turn-id"),
-          text: row.textContent ?? "",
-        }))
-        .filter((row) => row.text.includes(${JSON.stringify(BEFORE)}) || row.text.includes(${JSON.stringify(AFTER)}));
-    })()`,
-  );
+  const renderedSentinelRows = await evaluate(driver.send, renderedSentinelRowsExpr(SESSION_B));
+  driver.milestone("two-tab-live", {
+    tabs: [
+      {
+        beforeRows: liveTabs.beforeRows,
+        afterRows: renderedSentinelRows,
+        items: rendererItems.filter((item) => item.turnId === renderedSentinelRows[0]?.turnId),
+        output: outputText,
+      },
+      liveTabs.sibling,
+    ],
+  });
   const recordedRendererItems = rendererItems.filter((item) => item.transcriptKey && item.position);
   const renderedToolItems = recordedRendererItems.filter((item) => item.output.includes(TOOL_OUTPUT));
   const nativeItems = completed.rows.map((row) => ({
@@ -1607,7 +1679,7 @@ async function waitForNewTargetRead(_driver, ref, beforeReads, timeoutMs = 30000
   return ev;
 }
 
-async function runJourney(driver, entryProduction = false) {
+async function runJourney(driver, entryProduction = false, harnessUrl) {
   // The legacy session-cache journey was retired with the legacy stores (6d-2b),
   // so the production entry route is the only journey. The flag still selects
   // the entry harness budget and is always true from the registered guard.
@@ -1616,7 +1688,7 @@ async function runJourney(driver, entryProduction = false) {
       "backgroundtranscriptguard requires --entry-production true: the legacy session-cache journey was removed with the legacy stores",
     );
   }
-  return runEntryProductionJourney(driver);
+  return runEntryProductionJourney(driver, harnessUrl);
 }
 
 // runTwoTabFencing drives the entry route's Clear and delete fences across two

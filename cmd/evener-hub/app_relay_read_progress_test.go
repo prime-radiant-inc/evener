@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime/pprof"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,18 +27,22 @@ import (
 // scripted lease returning a response independently of delivery acknowledgements
 // cannot reproduce the circular wait between a read and its unbound child event.
 func TestHubRelayRetiredChildDoesNotBlockRootRead(t *testing.T) {
-	testHubRelayRetiredChildReadProgress(t, false, 1)
+	testHubRelayRetiredChildReadProgress(t, false, false, 1)
+}
+
+func TestHubRelayRetiredChildReadWithBackgroundConsumer(t *testing.T) {
+	testHubRelayRetiredChildReadProgress(t, false, true, 1)
 }
 
 func TestHubRelayQueuedReadDoesNotHoldPreCutAcknowledgement(t *testing.T) {
-	testHubRelayRetiredChildReadProgress(t, true, 1)
+	testHubRelayRetiredChildReadProgress(t, true, false, 1)
 }
 
 func TestHubRelayPendingTargetBurstMakesProgress(t *testing.T) {
-	testHubRelayRetiredChildReadProgress(t, true, hubRelayPendingDeliveryLimit+1)
+	testHubRelayRetiredChildReadProgress(t, true, false, hubRelayPendingDeliveryLimit+1)
 }
 
-func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead bool, childEvents int) {
+func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead, backgroundConsumer bool, childEvents int) {
 	t.Helper()
 	f := newHubRelayProgressFixture(t, hubcore.RelayLifecycleHooks{})
 	ctx, daemon, relays, open := f.ctx, f.daemon, f.relays, f.open
@@ -50,6 +55,14 @@ func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead bool, childEv
 		if _, err := target.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: target.ref, Subscribe: true, ReplaceSubscription: false}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	consumers := []*appwire.Client{root}
+	if backgroundConsumer {
+		background := open()
+		if _, err := background.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+			t.Fatal(err)
+		}
+		consumers = append(consumers, background)
 	}
 	if _, err := child.ThreadUnsubscribe(ctx, appwire.ThreadUnsubscribeParams{Ref: childRef}); err != nil {
 		t.Fatal(err)
@@ -76,11 +89,7 @@ func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead bool, childEv
 		response, err := root.ThreadRead(ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
 		readDone <- readOutcome{response, err}
 	}()
-	select {
-	case <-gateEntered:
-	case <-ctx.Done():
-		t.Fatal("root read did not reach the daemon subscription gate")
-	}
+	awaitActivityRelaySignal(ctx, t, gateEntered, "root read did not reach the daemon subscription gate")
 	queuedDone := make(chan readOutcome, 1)
 	if queuedRead {
 		second := open()
@@ -90,15 +99,9 @@ func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead bool, childEv
 		}()
 		// No admission hook exists here. Observe ownership, not elapsed time,
 		// before releasing the source command ahead of this one.
-		ticker := time.NewTicker(time.Millisecond)
-		defer ticker.Stop()
-		for relays.relayCommandCount(rootRef) != 2 {
-			select {
-			case <-ticker.C:
-			case <-ctx.Done():
-				t.Fatal("second read did not acquire its hub owner")
-			}
-		}
+		awaitActivityRelayCondition(ctx, t, func() bool {
+			return relays.relayCommandCount(rootRef) == 2
+		}, "second read did not acquire its hub owner")
 	}
 	// CommitProjection sends the real child notification before the gated read
 	// can capture its response. The source publishes it at that response's cut.
@@ -137,6 +140,13 @@ func testHubRelayRetiredChildReadProgress(t *testing.T, queuedRead bool, childEv
 	// cross-target leakage checks. These events traverse the real projector.
 	daemon.RecordAppEvent(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: rootID, Data: events.NotesUpdatedData{HumanNote: "root-sentinel"}})
 	daemon.RecordAppEvent(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: rootID, Data: events.NotesUpdatedData{HumanNote: "root-fence"}})
+	for _, consumer := range consumers {
+		assertHubRelayRootNotes(ctx, t, consumer)
+	}
+}
+
+func assertHubRelayRootNotes(ctx context.Context, t *testing.T, root *appwire.Client) {
+	t.Helper()
 	sentinels := 0
 	for {
 		select {
@@ -184,8 +194,7 @@ const rootRef, childRef = "local:" + rootID, "local:" + childID
 func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 	oldEntered, oldRelease := make(chan struct{}), make(chan struct{})
 	var oldArmed atomic.Bool
-	var releaseOnce sync.Once
-	releaseOld := func() { releaseOnce.Do(func() { close(oldRelease) }) }
+	releaseOld := sync.OnceFunc(func() { close(oldRelease) })
 	f := newHubRelayProgressFixture(t, hubcore.RelayLifecycleHooks{
 		AfterCanonicalPublishEntry: func(key string, _ appwire.Notification) {
 			if key == childRef && oldArmed.CompareAndSwap(true, false) {
@@ -201,11 +210,7 @@ func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 	}
 	oldArmed.Store(true)
 	f.daemon.RecordDescendantAppEvent(rootID, events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: childID, Data: events.NotesUpdatedData{HumanNote: "old-owner"}})
-	select {
-	case <-oldEntered:
-	case <-f.ctx.Done():
-		t.Fatal("old publication did not enter")
-	}
+	awaitActivityRelaySignal(f.ctx, t, oldEntered, "old publication did not enter")
 
 	const replacementID = "read-progress-replacement"
 	replacement := daemonserver.NewServer(daemonserver.ServerConfig{})
@@ -217,19 +222,7 @@ func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 	replacement.ReplaceAppIdentity(identity.WithBootGeneration("1"), nil)
 	replacement.SetStatus(daemonserver.StatusInfo{SessionID: replacementID, State: "idle"})
 	replacement.RecordDescendantAppEvent(replacementID, events.SessionEvent{Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{}})
-	var gateArmed atomic.Bool
-	gateEntered, gateRelease := make(chan struct{}), make(chan struct{})
-	var gateOnce sync.Once
-	releaseGate := func() { gateOnce.Do(func() { close(gateRelease) }) }
-	replacement.AppServer().SetBeforeSubscriptionGate(func() {
-		if gateArmed.CompareAndSwap(true, false) {
-			close(gateEntered)
-			select {
-			case <-gateRelease:
-			case <-f.ctx.Done():
-			}
-		}
-	})
+	gateArmed, gateEntered, releaseGate := installRelayProgressGate(f.ctx, replacement)
 	replacementHTTP := httptest.NewServer(http.HandlerFunc(replacement.AppServer().ServeWebSocket))
 	t.Cleanup(replacementHTTP.Close)
 	t.Cleanup(func() { releaseOld(); releaseGate() })
@@ -267,11 +260,7 @@ func TestHubRelayRoutePublicationUnblocksPendingDelivery(t *testing.T) {
 		response, err := joining.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: childRef, Subscribe: true})
 		joined <- outcome{response, err}
 	}()
-	select {
-	case <-gateEntered:
-	case <-f.ctx.Done():
-		t.Fatal("replacement read did not enter")
-	}
+	awaitActivityRelaySignal(f.ctx, t, gateEntered, "replacement read did not enter")
 	for _, note := range []string{"replacement-first", "replacement-second"} {
 		replacement.RecordDescendantAppEvent(replacementID, events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: childID, Data: events.NotesUpdatedData{HumanNote: note}})
 	}
@@ -336,11 +325,7 @@ func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
 		}
 		finished <- err
 	}()
-	select {
-	case <-f.gateEntered:
-	case <-f.ctx.Done():
-		t.Fatal("read did not acquire the upstream subscription gate")
-	}
+	awaitActivityRelaySignal(f.ctx, t, f.gateEntered, "read did not acquire the upstream subscription gate")
 	if disconnect {
 		f.daemon.RecordAppEvent(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: rootID, Data: events.NotesUpdatedData{HumanNote: "old-epoch"}})
 		f.closeUpstream()
@@ -395,6 +380,22 @@ func nextRelayProgressNote(ctx context.Context, t *testing.T, client *appwire.Cl
 	}
 }
 
+func installRelayProgressGate(ctx context.Context, daemon *daemonserver.Server) (*atomic.Bool, <-chan struct{}, func()) {
+	armed := new(atomic.Bool)
+	entered, released := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(released) })
+	daemon.AppServer().SetBeforeSubscriptionGate(func() {
+		if armed.CompareAndSwap(true, false) {
+			close(entered)
+			select {
+			case <-released:
+			case <-ctx.Done():
+			}
+		}
+	})
+	return armed, entered, release
+}
+
 type hubRelayProgressFixture struct {
 	ctx           context.Context
 	daemon        *daemonserver.Server
@@ -437,19 +438,7 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 		Kind: events.EventSessionStart, SessionID: childID, Data: events.SessionStartData{},
 	})
 
-	var gateArmed atomic.Bool
-	gateEntered, gateRelease := make(chan struct{}), make(chan struct{})
-	var releaseOnce sync.Once
-	releaseGate := func() { releaseOnce.Do(func() { close(gateRelease) }) }
-	daemon.AppServer().SetBeforeSubscriptionGate(func() {
-		if gateArmed.CompareAndSwap(true, false) {
-			close(gateEntered)
-			select {
-			case <-gateRelease:
-			case <-ctx.Done():
-			}
-		}
-	})
+	gateArmed, gateEntered, releaseGate := installRelayProgressGate(ctx, daemon)
 	t.Cleanup(releaseGate)
 	var connectionsMu sync.Mutex
 	var connections []net.Conn
@@ -482,7 +471,7 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 	source := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		inventoryMu.Lock()
 		defer inventoryMu.Unlock()
-		return append([]appsource.LocalDaemonEntry(nil), inventory...)
+		return slices.Clone(inventory)
 	}, daemonHTTP.Client())
 	remapChild := func(replacement rendezvous.Entry) {
 		inventoryMu.Lock()
@@ -517,7 +506,7 @@ func newHubRelayProgressFixture(t *testing.T, hooks hubcore.RelayLifecycleHooks)
 	t.Cleanup(func() { releaseGate(); cancel() })
 	return hubRelayProgressFixture{
 		ctx: ctx, daemon: daemon, source: source, relays: relays, open: open,
-		idleDeleted: idleDeleted, gateArmed: &gateArmed, gateEntered: gateEntered,
+		idleDeleted: idleDeleted, gateArmed: gateArmed, gateEntered: gateEntered,
 		releaseGate: releaseGate, pendingWait: &pendingWait, closeUpstream: closeUpstream, remapChild: remapChild,
 	}
 }

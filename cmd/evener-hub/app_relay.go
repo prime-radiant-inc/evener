@@ -1277,12 +1277,15 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			release := func() {
 				var closeHandle bool
 				relayMu.Lock()
-				resolveRoutesLocked()
 				if state.commands > 0 && handle.commandOwners > 0 {
 					state.commands--
 					handle.commandOwners--
 				}
-				signalRouteChangeLocked(handle)
+				if routesPending {
+					resolveRoutesLocked()
+				} else {
+					signalRouteChangeLocked(handle)
+				}
 				if state.commands == 0 && pendingRelays[relayKey][state] == handle {
 					unregisterPendingStateLocked(handle, state)
 					close(state.done)
