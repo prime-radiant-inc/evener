@@ -19,7 +19,7 @@ import (
 )
 
 // defaultHubAddr is the host hub's default loopback listen address
-// (docs/evener-hub.md:96-104); the controller may override via Options.HubAddr.
+// (docs/evener-hub.md:96-104); the controller may override via Options.HubListenAddr.
 const defaultHubAddr = "127.0.0.1:9180"
 
 // Bounds for the restart stop/health waits. The stop wait is short: with
@@ -49,15 +49,14 @@ const (
 )
 
 // explicitHostAddr is the address the operator configured for host: the per-host
-// registry Addr when set, else the manager-wide Options.HubAddr. Empty means the
-// controller was told nothing, and the host must resolve its own address (from
-// hub.toml, else the hub default), so the bridge is left to do exactly that
-// rather than being handed a default that would override the config.
+// registry Addr when set, else the manager-wide Options.HubListenAddr. This is
+// bootstrap listener intent, also retained by the legacy lifecycle probes.
+// Attachment always discovers its destination on the remote host.
 func explicitHostAddr(o Options, host hostreg.Host) string {
 	if a := strings.TrimSpace(host.Addr); a != "" {
 		return a
 	}
-	return strings.TrimSpace(o.HubAddr)
+	return strings.TrimSpace(o.HubListenAddr)
 }
 
 // hostAddrFor resolves the listen address of host's hub for the restart and
@@ -92,7 +91,7 @@ func (m *Manager) checkHostAddr(host hostreg.Host) error {
 		return validateHubAddr(host.Name, a)
 	}
 	if p := strings.TrimSpace(host.ConfigPath); p != "" {
-		return fmt.Errorf("%w: host %q sets config_path %q but no address; set Addr (or Options.HubAddr) to the hub's listen address so the restart and health probes address the same hub the bridge attaches to",
+		return fmt.Errorf("%w: host %q sets config_path %q but no address; set Addr (or Options.HubListenAddr) to the hub's listen address so the restart and health probes address the same hub the bridge attaches to",
 			ErrHostAddr, host.Name, p)
 	}
 	// Nothing configured: the host resolves the hub's documented default, which
@@ -1638,7 +1637,7 @@ func (m *Manager) resolveExecutableName(ctx context.Context, host hostreg.Host, 
 // on either side compares equal. A hub installed at the installer default
 // ~/.local/bin/evener but absent from the non-interactive PATH is identified
 // through the resolved-target branch: preflight probes that location and
-// records it as the host's target (probeInstallerDefaultExecutable →
+// records it as the host's target (installerDefaultForPreflight →
 // setResolvedTarget), so the host is read as running the controller's build
 // rather than re-deployed to on every reconnect.
 func (m *Manager) expectedHubExecutable(ctx context.Context, host hostreg.Host) (string, error) {

@@ -68,6 +68,8 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.HasPrefix(argv[len(argv)-1], `if [ -n "${HOME-}" ]`):
+			return nil, nil // no installer-default binary
 		case strings.HasSuffix(joined, "uname -s"):
 			return []byte("Linux\n"), nil
 		case strings.HasSuffix(joined, "uname -m"):
@@ -82,7 +84,7 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
 			launchPaths = append(launchPaths, joined)
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "list-units"):
 			return nil, nil
 		case strings.Contains(joined, "lsof -ti :9180"):
@@ -164,7 +166,7 @@ func TestRound8InstallerPreservesSymlinkedInstallLayout(t *testing.T) {
 		case strings.Contains(joined, "command -v evener"):
 			return []byte(link + "\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			installerJoined = joined
 			return nil, nil
@@ -269,7 +271,7 @@ func TestRound8InstallerVersionMismatchIsTerminal(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			// The installer succeeded but fetched a newer snapshot than this
 			// controller's commit.
-			return []byte(`{"protocol":"evener-appwire-v7","version":"oldersha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldersha","launch_flags":["api-log"]}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}

@@ -165,17 +165,12 @@ type Options struct {
 	// embedders).
 	EnsureDeploy EnsureDeployHook
 
-	// HubAddr is the host hub's loopback listen address, used as this host's
-	// --addr for the bridge and by the restart path to find the old pid and probe
-	// /api/health. Both read the same resolution (hostAddrFor), so they cannot
-	// address different ports. It must be a loopback or wildcard host:port. A
-	// host entry may override it with its own Addr. When neither is set, this
-	// Manager assumes the hub's documented default, 127.0.0.1:9180, and leaves
-	// --addr off the bridge so the host resolves its own hub.toml; a host that
-	// names its hub.toml via ConfigPath must therefore also carry an explicit
-	// address (ErrHostAddr), because the controller cannot read the file to learn
-	// the port the bridge will actually dial.
-	HubAddr string
+	// HubListenAddr is the optional server-listener override for fresh bootstrap.
+	// A host entry may override it with Addr. Attachment discovers the selected
+	// instance remotely and never consumes this value. The legacy restart/probe
+	// path still uses hostAddrFor and requires config/address pairing until its
+	// ownership and readiness migration is complete.
+	HubListenAddr string
 
 	// Test seams.
 	sleep                     func(context.Context, time.Duration) error
@@ -2308,10 +2303,14 @@ func (m *Manager) refreshLaunchContract(ctx context.Context, host hostreg.Host, 
 	if err != nil {
 		return facts, err
 	}
+	facts.HubEndpointSchema = refreshed.HubEndpointSchema
+	facts.LaunchCheckKnown = true
+	if err := endpointCapability(host, facts); err != nil {
+		return facts, err
+	}
 	if refreshed.Protocol != appwire.ProtocolVersion {
 		return facts, fmt.Errorf("%w: host %q protocol %q, want %q after deploy/restart", ErrProtocolIncompatible, host.Name, refreshed.Protocol, appwire.ProtocolVersion)
 	}
-	facts.LaunchCheckKnown = true
 	facts.Protocol = refreshed.Protocol
 	facts.LaunchFlags = refreshed.LaunchFlags
 	// Report the version the re-probe actually read. The restart verified the
@@ -2848,6 +2847,7 @@ func nextBackoff(delay, limit time.Duration) time.Duration {
 func isTerminal(err error) bool {
 	switch {
 	case errors.Is(err, ErrProtocolIncompatible),
+		errors.Is(err, ErrEndpointMigration),
 		errors.Is(err, ErrUnsupportedHost),
 		errors.Is(err, ErrLaunchContract),
 		errors.Is(err, ErrVersionMismatch),
@@ -3478,7 +3478,7 @@ func (m *Manager) resolvedTarget(name string) string {
 // Manager already resolved for the host, when the registry configured none. A
 // configured evener_path always wins. ensureOnce applies it twice for one
 // reason: preflight can discover and record the installer-default binary during
-// the very attempt that needs to address it (probeInstallerDefaultExecutable →
+// the very attempt that needs to address it (installerDefaultForPreflight →
 // setResolvedTarget), and a host.EvenerPath that stays empty there makes
 // channelArgv build the bridge from the bare word `evener`, which a
 // non-interactive PATH need not carry.

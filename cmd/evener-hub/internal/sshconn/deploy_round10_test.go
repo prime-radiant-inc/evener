@@ -113,7 +113,7 @@ func TestRound10PreflightDiscoversInstallerDefault(t *testing.T) {
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
 		case strings.Contains(joined, resolved+" launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, " evener launch-check"):
 			// No evener on the non-interactive PATH.
 			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
@@ -153,6 +153,8 @@ func TestRound10ResolvedTargetAvoidsRedeploy(t *testing.T) {
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.HasPrefix(argv[len(argv)-1], `if [ -n "${HOME-}" ]`):
+			return nil, nil // no installer-default binary
 		case strings.HasSuffix(joined, "uname -s"):
 			return []byte("Linux\n"), nil
 		case strings.HasSuffix(joined, "uname -m"):
@@ -162,7 +164,7 @@ func TestRound10ResolvedTargetAvoidsRedeploy(t *testing.T) {
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
 		case strings.Contains(joined, resolved+" launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, " evener launch-check"):
 			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 		case strings.Contains(joined, executableProbeRemote("evener")):

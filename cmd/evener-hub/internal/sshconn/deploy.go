@@ -635,26 +635,6 @@ func (m *Manager) evenerOnPath(ctx context.Context, host hostreg.Host) (string, 
 	return p, nil
 }
 
-// probeInstallerDefaultExecutable reports the host's installer-default evener
-// path (~/.local/bin/evener) when a regular file exists there, and ok=false when
-// it does not. deployTarget falls back to that location to provision a fresh
-// host; preflight consults it too and records what it finds as the host's
-// resolved target, which expectedHubExecutable reads, so a host whose binary
-// already lives there but is absent from the non-interactive PATH is recognized
-// as running the controller's build rather than re-deployed to on every
-// reconnect. A probe failure is read as absent: this is best-effort discovery,
-// and the deploy path re-resolves (surfacing a real transport error) when
-// nothing is found.
-func (m *Manager) probeInstallerDefaultExecutable(ctx context.Context, host hostreg.Host) (string, bool) {
-	remote := `if [ -n "${HOME-}" ] && [ -f "${HOME-}/.local/bin/evener" ]; then printf '%s\n' "${HOME-}/.local/bin/evener"; fi`
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
-	if err != nil {
-		return "", false
-	}
-	p := firstLine(string(out))
-	return p, p != ""
-}
-
 // resolvePathScript is a POSIX-sh path resolver that prints the real path a file
 // names, following symlinks. It deliberately avoids `readlink -f`: that flag is a
 // GNU/coreutils extension which BSD `readlink` (macOS) rejects with `readlink:

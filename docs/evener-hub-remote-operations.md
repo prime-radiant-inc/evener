@@ -135,3 +135,13 @@ The first three checks do not validate model generation. See [upgrades and migra
 | Session disappeared after restart | Effective `run_dir`, `state_glob`, XDG paths, and daemon health |
 
 Keep logs private: startup output contains authorization URLs. For a report, include sanitized host labels, build identities, timestamps, and the exact failure—not tokens, full environments, or whole rendezvous records. [Troubleshooting](troubleshooting.md) gives read-only diagnostic commands.
+
+## Managed SSH attachment
+
+The controller invokes `evener hub attach --stdio [--config PATH]` on the selected host executable. Attachment resolves the selected config and live endpoint on that host before reading its token. It never uses `[[hosts]].addr` as a connect URL or takes `public_url` as a local target. `addr` remains a server-listener override for authorized fresh bootstrap, and the server retains `--addr`. The attachment command rejects its former `--addr` option.
+
+For an explicit direct attachment, `evener hub attach --stdio --hub-url http://127.0.0.1:PORT [--config PATH]` must agree with the verified selected instance. The bridge requires literal-loopback HTTP, bypasses proxies, refuses redirects and verifies each authenticated socket before sending the token. A listener reachable only on a non-loopback interface remains usable by direct clients, but not by this SSH bridge.
+
+Before automatic deployment or restart, the manager reads `evener launch-check --json` without a protocol filter. `hub_endpoint_schema: 1` is required independently of the reported AppWire protocol. An endpoint-capable binary with an older AppWire protocol can use the existing authorized upgrade path. An installed binary lacking supported endpoint capability requires an operator's manual upgrade/migration, without killing the running hub or rewriting config. A genuinely absent executable can still be installed through the authorized fresh-host path. A failed SSH connection or cancellation is neither absence nor migration.
+
+Managed lifecycle readiness and restart checks retain their existing address-based resolution. Host entries selecting `config_path` still require an explicit `addr` for those checks, even though attachment itself discovers its endpoint. Do not treat the bridge's successful discovery as proof of restart ownership or use an ephemeral bound port as future listener configuration.

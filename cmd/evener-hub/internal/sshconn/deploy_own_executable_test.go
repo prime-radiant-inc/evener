@@ -571,5 +571,5 @@ func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 // protocol incompatible" (what a hardcoded "evener-appwire-v5" did when the
 // protocol moved to v6 on main).
 func launchCheckJSON(version string) string {
-	return fmt.Sprintf(`{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, version)
+	return fmt.Sprintf(`{"hub_endpoint_schema":1,"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, version)
 }

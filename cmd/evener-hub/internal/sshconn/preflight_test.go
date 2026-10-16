@@ -187,21 +187,6 @@ func TestParseLaunchCheck(t *testing.T) {
 	}
 }
 
-func TestIsProtocolMismatchOutput(t *testing.T) {
-	yes := []string{
-		`unsupported appwire protocol "evener-appwire-v4" (supported "evener-appwire-v7")`,
-		`evener launch-check protocol "x" does not match Hub protocol "y"`,
-	}
-	for _, s := range yes {
-		if !isProtocolMismatchOutput([]byte(s)) {
-			t.Errorf("isProtocolMismatchOutput(%q) = false, want true", s)
-		}
-	}
-	if isProtocolMismatchOutput([]byte("connection refused")) {
-		t.Error("unrelated output classified as protocol mismatch")
-	}
-}
-
 func TestIsAuthFailure(t *testing.T) {
 	auth := []string{
 		"bob@host: Permission denied (publickey).",
@@ -461,6 +446,13 @@ func TestPreflightExecutableMissingComesFromTheProbe(t *testing.T) {
 			if errors.Is(err, ErrExecutableMissing) {
 				t.Fatalf("preflight err = %v; a missing executable must be verified by the probe, not by the launch-check's status or text", err)
 			}
+			if tc.probeErr == nil {
+				if !errors.Is(err, ErrEndpointMigration) || !isTerminal(err) {
+					t.Fatalf("present binary without contract: %v", err)
+				}
+				return
+			}
+
 			if !errors.Is(err, ErrSSHStart) {
 				t.Fatalf("preflight err = %v, want the retryable ErrSSHStart class", err)
 			}
