@@ -200,6 +200,8 @@ func waitForForegroundCleanupChild(t *testing.T, cmd *exec.Cmd, output func() st
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+	timeout := time.NewTimer(120 * time.Second)
+	defer timeout.Stop()
 	select {
 	case err := <-done:
 		if err == nil {
@@ -210,7 +212,7 @@ func waitForForegroundCleanupChild(t *testing.T, cmd *exec.Cmd, output func() st
 		}
 		t.Fatalf("helper wait: %v\noutput:\n%s", err, output())
 		return -1
-	case <-time.After(120 * time.Second):
+	case <-timeout.C:
 		t.Fatalf("helper never exited\noutput:\n%s", output())
 		return -1
 	}

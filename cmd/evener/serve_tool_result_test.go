@@ -229,25 +229,20 @@ func runServeForegroundShellPersistenceCaseWithCheckpoint(t *testing.T, mode for
 			"--run-dir", runDir,
 		}, deps)
 	}()
-	// A single receiver drains serveResult, so both the normal path and cleanup
-	// can wait on the same join without consuming the result twice.
-	serveDone := make(chan struct{})
-	var serveErr error
-	go func() {
-		serveErr = <-serveResult
-		close(serveDone)
-	}()
 
 	// One idempotent cleanup, registered before serve can fail. Its body releases
 	// the shell gate and the second provider gate, cancels the fixture context,
 	// then joins serve under a bounded deadline. It runs ahead of the temporary
-	// directories' removal because it is registered after they are created.
+	// directories' removal because it is registered after they are created. It is
+	// the single reader of serveResult, and the normal path waits on it by calling
+	// cleanup() below, so the join is never consumed twice.
+	var serveErr error
 	cleanup := sync.OnceFunc(func() {
 		_ = os.WriteFile(gatePath, []byte("release"), 0o600)
 		releaseSecondResponse()
 		cancelFixture()
 		select {
-		case <-serveDone:
+		case serveErr = <-serveResult:
 			checkpoint("joined", shellPIDPath)
 		case <-time.After(foregroundCleanupJoinDeadline):
 			t.Errorf("foreground fixture's serve did not join within %s", foregroundCleanupJoinDeadline)
