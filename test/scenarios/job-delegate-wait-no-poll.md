@@ -71,7 +71,7 @@ orientation `job_status` call (ideally zero) and then goes idle.
 
 ## Cleanup
 
-Stop the daemon, hub/web client, and any tmux session this card created. Remove
+Stop the daemon and hub/web client this card created. Remove
 the scratch state dir. Leave any pre-existing evener instance running and
 untouched.
 

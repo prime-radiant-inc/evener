@@ -2,9 +2,8 @@
 
 Evener is a coding agent. Its default interactive surface is the browser:
 the `evener hub` orchestrator serves a web UI where you start sessions,
-watch the agent work, and steer it with follow-up messages. The `evener tui`
-terminal dashboard and a non-interactive command line serve other workflows,
-but the hub is the everyday way to use Evener.
+watch the agent work, and steer it with follow-up messages. A non-interactive
+command line serves scripting and automation workflows.
 
 This guide walks a new user from install to a working session. It points to
 reference docs for details that change; follow the links where you need
@@ -19,8 +18,8 @@ curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/insta
 ```
 
 The installer downloads the matching GitHub release archive, verifies its
-SHA-256 checksum, and installs five commands — `evener`, `evener hub`,
-`evener tui`, `evener doctor`, and `evener migrate` — under
+SHA-256 checksum, and installs the `evener` binary with its `hub`,
+`doctor`, and `migrate` subcommands — under
 `~/.local/share/evener/bin`, symlinked into `~/.local/bin`. Add
 `~/.local/bin` to your `PATH` if your shell does not already find the
 commands there.
@@ -154,12 +153,12 @@ Upgrade the installed binaries with:
 evener upgrade
 ```
 
-The command updates `evener`, `evener hub`, `evener tui`, and `evener doctor`,
+The command updates `evener`, `evener hub`, and `evener doctor`,
 following the binary's install channel: release builds upgrade to the latest
 release, snapshot builds to the latest `main` build. Pass `release`, `snapshot`,
 or a tag such as `v1.2.3` to switch tracks. It does not update `evener migrate`;
 rerun the installer, or run `make install` (or `sudo make install-system`), to
-refresh that command. The web UI's `/upgrade` command and the TUI call through
+refresh that command. The web UI's `/upgrade` command calls through
 the same mechanism.
 
 Running sessions keep the binary they started with. End a session, upgrade,
@@ -167,9 +166,6 @@ and resume it to pick up the new build.
 
 ## Other ways to drive Evener
 
-- **`evener tui`** is a terminal dashboard backed by the same hub: browse
-  sessions, read transcripts, and send actions without a browser. See the
-  [TUI section of the README](../README.md#evener-tui-terminal-user-interface).
 - **`evener --model <provider/model> "<prompt>"`** runs one non-interactive
   session from the shell, suitable for scripts and CI. See
   [Non-interactive CLI](../README.md#non-interactive-cli).
