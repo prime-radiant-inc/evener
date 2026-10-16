@@ -6,9 +6,10 @@
 // that moved on, and never appends twice. Every expected reference string is
 // the literal REFERENCE from annotationFixtures.ts.
 
+import { buildInput } from "@evener/appwire-client";
 import { afterEach, expect, it, vi } from "vitest";
 import { REFERENCE } from "../panes/doc/testing/annotationFixtures";
-import { fixture } from "../panes/doc/testing/annotationRepositoryFixtures";
+import { blobBytes, fixture } from "../panes/doc/testing/annotationRepositoryFixtures";
 import { APPEND_STORES } from "./browserDraftRepository";
 import { holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 
@@ -111,4 +112,86 @@ it("an uncertain append that rolled back still completes through the sweep", asy
   expect(f.source.getSnapshot().text).toBe(`ordinary /same\n\n${REFERENCE}`);
   expect((await f.drafts.load(f.key))?.text).toBe(`ordinary /same\n\n${REFERENCE}`);
   expect((await f.repo.handoff(f.document, "op-1")).state).toBe("already-applied");
+});
+
+it("an unobserved completion reconciles staged attachments a peer replaced", async () => {
+  const f = await fixture("uncertain-append-image-replacement");
+  f.source.setActiveRecoveryId("rec-1");
+  const hold = holdNextWriteTransaction(APPEND_STORES);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const outcome = f.repo.handoff(f.document, "op-1");
+  await hold.reached;
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(await outcome).toEqual({ state: "pending", reason: "owner-unavailable" });
+  vi.useRealTimers();
+  hold.release();
+  // A peer tab replaces the recovery record's image while the completion
+  // goes unobserved, building on the record the append committed.
+  const replacement = buildInput(
+    `recovery /plan [image 1]\n\n${REFERENCE}`,
+    [{ marker: 1, name: "two.png", mediaType: "image/png", data: "Ag==" }],
+    [],
+    ["plan"],
+    [{ kind: "command", name: "plan", offset: 9 }],
+  );
+  await f.outbox.updateRecoveryInput(
+    "rec-1",
+    replacement,
+    [
+      {
+        presentationId: "image-2",
+        marker: 1,
+        name: "two.png",
+        mediaType: "image/png",
+        blob: new Blob([new Uint8Array([2])]),
+      },
+    ],
+    `recovery /plan [image 1]\n\n${REFERENCE}`,
+    [{ kind: "command", name: "plan", offset: 9 }],
+  );
+  // The retained replay reconciles the unchanged composer from the committed
+  // backing: the published text is the peer's, and the staged attachments
+  // must become the peer's replacement - not stay the image the composer
+  // staged before the append.
+  await f.repo.retryPending("storage-recovered");
+  expect(f.source.getSnapshot().text).toBe(`recovery /plan [image 1]\n\n${REFERENCE}`);
+  await f.source.whenSettled();
+  // The next persistence must not write the superseded image back under the
+  // newly adopted token.
+  f.source.editor.write("typed after the reconcile", 24);
+  await f.source.whenSettled();
+  const record = await f.outbox.getRecovery("rec-1");
+  if (!record) throw new Error("record missing after the reconcile");
+  const image = (record.payload.input as Array<{ type: string; data?: string }>).find((item) => item.type === "image");
+  expect(image?.data).toBe("Ag==");
+  const attachment = record.attachments[0];
+  if (!attachment) throw new Error("record attachment missing");
+  expect(await blobBytes(attachment.blob)).toEqual(new Uint8Array([2]));
+});
+
+it("a faulted reconciliation read keeps the retry outcome pending", async () => {
+  const f = await fixture("uncertain-append-faulted-backing");
+  const hold = holdNextWriteTransaction(APPEND_STORES);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const outcome = f.repo.handoff(f.document, "op-1");
+  await hold.reached;
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(await outcome).toEqual({ state: "pending", reason: "owner-unavailable" });
+  vi.useRealTimers();
+  hold.release();
+  expect(f.source.getSnapshot().text).toBe("ordinary /same");
+  // The first pass's reconciliation read faults: the work stays retained, so
+  // the outcome the runtime consumes must still report pending work instead
+  // of clearing the shared retry intent while the composer is stale.
+  const readAppendBacking = vi
+    .spyOn(f.drafts, "readAppendBacking")
+    .mockRejectedValueOnce(new Error("committed backing read fault"));
+  await expect(f.repo.retryPendingWithOutcome("storage-recovered")).resolves.toEqual({ pending: true });
+  expect(readAppendBacking).toHaveBeenCalledTimes(1);
+  expect(f.source.getSnapshot().text).toBe("ordinary /same");
+  // The next pass - the one the retained retry intent owes - completes the
+  // reconciliation and reports no further pending work.
+  await expect(f.repo.retryPendingWithOutcome("storage-recovered")).resolves.toEqual({ pending: false });
+  expect(f.source.getSnapshot().text).toBe(`ordinary /same\n\n${REFERENCE}`);
+  readAppendBacking.mockRestore();
 });

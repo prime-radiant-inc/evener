@@ -2001,6 +2001,122 @@ test("a submitted recovery settles through a guarded resend into the approved lo
   expect(submitted.settlementGuard).toEqual(guardCopy);
 });
 
+test("a command settlement vetoed by a newer edit keeps the surviving recovery backing", async () => {
+  const fixture = sourceFixture("source-state-command-veto-backing");
+  setMutationStorageForTests(fixture.outbox);
+  await fixture.repository.seedDraft(fixture.key, { text: "ordinary", skillNames: ["same"] });
+  const originalMentions = [{ kind: "command" as const, name: "same", offset: 18 }];
+  const originalInput = [
+    { type: "text" as const, text: "recovery original /same", mentions: originalMentions },
+    { type: "command" as const, name: "same" },
+  ];
+  const original = await fixture.outbox.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: originalInput },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: originalInput },
+    composerText: "recovery original /same",
+    composerMentions: originalMentions,
+  });
+  await fixture.outbox.transferToRecovery(original.clientMutationId, "rejected");
+  const source = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  await source.ready();
+  source.setActiveRecoveryId(original.clientMutationId);
+  // The preparation's restore publishes the selected record's value, so the
+  // command's capture holds it.
+  const preparation = await source.prepareAnnotation();
+  if (!preparation) throw new Error("expected a recovery preparation");
+  const submitted = await source.submissionDraft();
+  expect(submitted.text).toBe("recovery original /same");
+  // The command's RPC is in flight; typed work lands on the recovery record
+  // and vetoes the settlement.
+  source.editor.write("newer typed work", 17);
+  await source.whenSettled();
+  expect(submitted.stillOwnsEdit?.()).toBe(false);
+  const record = await fixture.outbox.getRecovery(original.clientMutationId);
+  if (!record) throw new Error("expected the surviving recovery record");
+  expect(record.composerText).toBe("newer typed work");
+  expect(await source.settleDraft(submitted, { command: true })).toMatchObject({
+    cleared: false,
+    persistence: "committed",
+  });
+  // The command consumed no recovery record, so the veto must keep the
+  // backing: the newer work stays attached to its surviving record instead of
+  // being detached into draft-only state.
+  expect(source.getSnapshot().activeRecoveryId).toBe(original.clientMutationId);
+  expect(source.getRuntimeBacking()).toEqual({ kind: "recovery", recoveryId: original.clientMutationId });
+  // The newer work's own send then consumes the record through the guarded
+  // resend and settles the cleared local transition.
+  const sendPreparation = await source.prepareAnnotation();
+  if (!sendPreparation) throw new Error("expected a preparation for the newer work");
+  const sent = await source.submissionDraft();
+  expect(sent.text).toBe("newer typed work");
+  const sendInput = [{ type: "text" as const, text: "newer typed work" }];
+  const resendGuard = {
+    key: sendPreparation.key,
+    token: sendPreparation.token,
+    stillAuthorized: () => source.ownsPreparation(sendPreparation),
+  };
+  const resent = await fixture.outbox.resendRecovery(
+    original.clientMutationId,
+    {
+      targetRef: "root",
+      method: "turn/start",
+      payload: { ref: "root", input: sendInput },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: sendInput },
+      composerText: "newer typed work",
+    },
+    resendGuard,
+  );
+  if (!resent) throw new Error("expected the guarded resend to consume the record");
+  expect(await source.settleDraft(sent)).toMatchObject({ cleared: true, persistence: "committed" });
+  expect(await fixture.outbox.getRecovery(original.clientMutationId)).toBeUndefined();
+});
+
+test("a resend settlement vetoed by a newer edit releases its consumed recovery backing", async () => {
+  const fixture = sourceFixture("source-state-resend-veto-release");
+  setMutationStorageForTests(fixture.outbox);
+  await fixture.repository.seedDraft(fixture.key, { text: "ordinary", skillNames: ["same"] });
+  const originalMentions = [{ kind: "command" as const, name: "same", offset: 18 }];
+  const originalInput = [
+    { type: "text" as const, text: "recovery original /same", mentions: originalMentions },
+    { type: "command" as const, name: "same" },
+  ];
+  const original = await fixture.outbox.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: originalInput },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: originalInput },
+    composerText: "recovery original /same",
+    composerMentions: originalMentions,
+  });
+  await fixture.outbox.transferToRecovery(original.clientMutationId, "rejected");
+  const source = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  await source.ready();
+  source.setActiveRecoveryId(original.clientMutationId);
+  const preparation = await source.prepareAnnotation();
+  if (!preparation) throw new Error("expected a recovery preparation");
+  const submitted = await source.submissionDraft();
+  source.editor.write("newer typed work", 17);
+  await source.whenSettled();
+  expect(submitted.stillOwnsEdit?.()).toBe(false);
+  expect(await source.settleDraft(submitted)).toMatchObject({
+    cleared: false,
+    persistence: "committed",
+  });
+  // The accepted resend consumed the old recovery backing, so the veto
+  // releases it without a read: the newer work continues on the draft path.
+  expect(source.getSnapshot().activeRecoveryId).toBeNull();
+  expect(source.getRuntimeBacking()).toEqual({ kind: "draft" });
+});
+
 test("a backing replacement between an accepted resend and its settlement stays visible and does not recreate the recovery", async () => {
   const { fixture, source, original, intent, preparation, submitted } =
     await arrangeSelectedRecovery("source-state-recovery-stale");
