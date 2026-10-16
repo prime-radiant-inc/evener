@@ -198,7 +198,7 @@ func pastThreadTurnsList(ctx context.Context, cfg hubcore.WebConfig, params appw
 	}
 	packed, packErr := packThreadTurnsItemCandidates(page.candidateResult(), func(response appwire.ThreadTurnsListResponse) (appwire.ThreadTurnsListResponse, error) {
 		thread := appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir, Turns: response.Data}
-		thread = stampItemPageTurns(cfg, entry, thread)
+		thread = stampItemPageTurns(cfg, entry, thread, page.Derived)
 		response.Data = thread.Turns
 		return response, nil
 	}, itemLimit)
@@ -239,7 +239,7 @@ func pastEntryItemReadResponse(ctx context.Context, cfg hubcore.WebConfig, param
 	}
 	packed, packErr := packThreadReadItemCandidates(page.candidateResult(), func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
 		thread.Turns = response.Thread.Turns
-		thread = stampItemPageTurns(cfg, entry, thread)
+		thread = stampItemPageTurns(cfg, entry, thread, page.Derived)
 		response.Thread = thread
 		return response, nil
 	}, itemLimit)
@@ -272,6 +272,18 @@ type pastItemPage struct {
 	// Changes is what changed since the client's held snapshot, when the
 	// index could answer for it; nil sends the window as a full replacement.
 	Changes *transcriptindex.Changes
+	// Derived is the session's token total and failed-tool-call count read
+	// from the index's records in the same pass, so a cold read need not
+	// rescan the transcript. Nil when the index could not answer (see
+	// transcriptindex.ErrDerivedTotalsUnavailable): the caller then falls back
+	// to the transcript scan.
+	Derived *pastDerivedTotals
+}
+
+// pastDerivedTotals is one index-derived answer for a session's own span.
+type pastDerivedTotals struct {
+	usage    *appwire.EvenerUsage
+	failures int
 }
 
 func (p pastItemPage) candidateResult() transcriptItemCandidateResult {
@@ -398,20 +410,40 @@ func answerPastTranscriptIndexError(entry hubcore.PastEntry, err error) error {
 func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit int, held *appwire.SnapshotIdentity) (pastItemPage, error) {
 	var page pastItemPage
 	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+		var window transcriptindex.Window
+		var changes *transcriptindex.Changes
 		if held == nil {
-			window, err := index.Latest(limit)
-			page = pastItemPageFromWindow(entry, window)
-			return err
-		}
-		window, changes, err := index.LatestSince(limit, *held)
-		if errors.Is(err, transcriptindex.ErrUpdateLogTruncated) {
-			return appwire.TranscriptItemCursorStale()
+			var err error
+			if window, err = index.Latest(limit); err != nil {
+				return err
+			}
+		} else {
+			var err error
+			window, changes, err = index.LatestSince(limit, *held)
+			if errors.Is(err, transcriptindex.ErrUpdateLogTruncated) {
+				return appwire.TranscriptItemCursorStale()
+			}
+			if err != nil {
+				return err
+			}
 		}
 		page = pastItemPageFromWindow(entry, window)
+		page.Derived = pastIndexDerivedTotals(index, entry)
 		page.Changes = changes
-		return err
+		return nil
 	})
 	return page, err
+}
+
+// pastIndexDerivedTotals reads the session's own-span totals from the index, or
+// nil when the index cannot answer them (a quarantined line), leaving the
+// caller to fall back to the transcript scan.
+func pastIndexDerivedTotals(index *transcriptindex.Index, entry hubcore.PastEntry) *pastDerivedTotals {
+	usage, failures, err := index.DerivedTotals(entry.Meta.DivergenceTurn)
+	if err != nil {
+		return nil
+	}
+	return &pastDerivedTotals{usage: usage, failures: failures}
 }
 
 // pastEntryPageItems reads the page before the request's cursor, or before
@@ -441,6 +473,7 @@ func pastEntryPageItems(ctx context.Context, entry hubcore.PastEntry, params app
 			return appwire.TranscriptItemCursorStale()
 		}
 		page = pastItemPageFromWindow(entry, window)
+		page.Derived = pastIndexDerivedTotals(index, entry)
 		return nil
 	})
 	return page, err
@@ -483,11 +516,11 @@ func pastHistoryChanges(cfg hubcore.WebConfig, entry hubcore.PastEntry, changes 
 	return &appwire.HistoryChanges{Turns: turns, Items: carrier.Turns[0].Items}
 }
 
-func stampItemPageTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
+func stampItemPageTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread, derived *pastDerivedTotals) appwire.Thread {
 	stampSessionImageURLs(entry.Meta.ID, thread.Turns)
 	stampPastTurnCosts(pastEntryCost(cfg, entry), thread.Turns)
 	thread = reconcileAndEnrichPastThread(entry, thread)
-	return stampDerivedTotals(cfg, entry, thread)
+	return stampDerivedTotalsWith(cfg, entry, thread, derived)
 }
 
 func pastEntryForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (hubcore.PastEntry, bool) {
@@ -557,7 +590,11 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	// A live window is authoritative. Read saved turns only as the compatibility
 	// fallback for a live source that returned none; the metadata merged below
 	// does not use pastThreadForRead's full-transcript usage or failure scans.
-	past, err := pastEntryThread(ctx, cfg, entry, includePastTurns)
+	past, err := projectPastEntryThread(ctx, cfg, entry, pastEntryThreadProjection{
+		turns:       includePastTurns,
+		tasks:       live.Evener.Tasks == nil,
+		diagnostics: live.Evener.Diagnostics == nil,
+	})
 	if err != nil {
 		return appwire.Thread{}, err
 	}
@@ -1121,34 +1158,51 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 }
 
 func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
+	return projectPastEntryThread(ctx, cfg, entry, pastEntryThreadProjection{turns: includeTurns, tasks: true, diagnostics: true})
+}
+
+// A live merge requests only missing fields. In particular, reconstructing
+// discarded diagnostics would read the root delegate journal and eligible child
+// attention transcripts even when the daemon already supplied the authority.
+type pastEntryThreadProjection struct {
+	turns       bool
+	tasks       bool
+	diagnostics bool
+}
+
+func projectPastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, projection pastEntryThreadProjection) (appwire.Thread, error) {
 	thread, err := pastEntryThreadForList(ctx, cfg, entry)
 	if err != nil {
 		return appwire.Thread{}, err
 	}
-	thread.Evener.Tasks = persistedTaskAggregate(entry.StateDir, entry.Meta.ID)
-	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(ctx, entry)
-	if err != nil {
-		return appwire.Thread{}, err
+	if projection.tasks {
+		thread.Evener.Tasks = persistedTaskAggregate(entry.StateDir, entry.Meta.ID)
 	}
-	if len(delegates) != 0 || len(delegateDiagnostics) != 0 {
-		if thread.Evener.Diagnostics == nil {
-			thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
+	if projection.diagnostics {
+		delegates, delegateDiagnostics, err := pastEntryDelegateStatus(ctx, entry)
+		if err != nil {
+			return appwire.Thread{}, err
 		}
-		for _, delegate := range delegates {
-			projected := appwire.SlimDelegateForRoster(appwireDelegateFromAgentStatus(delegate))
-			projected.Diagnostics = append(projected.Diagnostics, delegateDiagnostics...)
-			thread.Evener.Diagnostics.Delegates = append(thread.Evener.Diagnostics.Delegates, projected)
+		if len(delegates) != 0 || len(delegateDiagnostics) != 0 {
+			if thread.Evener.Diagnostics == nil {
+				thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
+			}
+			for _, delegate := range delegates {
+				projected := appwire.SlimDelegateForRoster(appwireDelegateFromAgentStatus(delegate))
+				projected.Diagnostics = append(projected.Diagnostics, delegateDiagnostics...)
+				thread.Evener.Diagnostics.Delegates = append(thread.Evener.Diagnostics.Delegates, projected)
+			}
+			// delegateDiagnostics must reach the wire independently of whether
+			// any delegate exists to also carry a copy on its own Diagnostics
+			// above: a diagnostic about the shared delegates.jsonl itself (e.g.
+			// delegatestore.ErrLineTooLong, which degrades to zero delegates)
+			// has no delegate to attach to, so
+			// appwire.EvenerDiagnostics.DelegateDiagnostics is the only vessel
+			// that can still carry it to the wire.
+			thread.Evener.Diagnostics.DelegateDiagnostics = append(thread.Evener.Diagnostics.DelegateDiagnostics, delegateDiagnostics...)
 		}
-		// delegateDiagnostics must reach the wire independently of whether
-		// any delegate exists to also carry a copy on its own Diagnostics
-		// above: a diagnostic about the shared delegates.jsonl itself (e.g.
-		// delegatestore.ErrLineTooLong, which degrades to zero delegates)
-		// has no delegate to attach to, so
-		// appwire.EvenerDiagnostics.DelegateDiagnostics is the only vessel
-		// that can still carry it to the wire.
-		thread.Evener.Diagnostics.DelegateDiagnostics = append(thread.Evener.Diagnostics.DelegateDiagnostics, delegateDiagnostics...)
 	}
-	if includeTurns {
+	if projection.turns {
 		thread.Turns, err = pastEntryTurns(cfg, entry)
 		if err != nil {
 			return appwire.Thread{}, err
@@ -1337,14 +1391,42 @@ var pastTranscriptCache = apptranscript.NewTurnCache()
 // nothing rather than "clean", and a missing figure is no reason to fail the
 // whole thread projection.
 func stampDerivedTotals(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
+	return stampDerivedTotalsWith(cfg, entry, thread, nil)
+}
+
+// pastDerivedTotalsScan is the transcript-scan fallback for a read that holds no
+// index, or an index that cannot answer the totals. A package variable so a test
+// can prove a read against a current sidecar does not scan at all.
+var pastDerivedTotalsScan = func(path string, fromEntryOrdinal int) (*appwire.EvenerUsage, int, error) {
+	return pastTranscriptCache.DerivedTotalsFromFile(path, transcriptJSONLMaxLineBytes, fromEntryOrdinal)
+}
+
+// stampDerivedTotalsWith stamps a past thread's token total and failed-tool-call
+// count. When derived is non-nil the index answered them and no transcript scan
+// runs; the precedence is the one the scan path has always held — a meta
+// cumulative usage wins over a derived one, and the failure count is always
+// stamped. With no derived answer it falls back to the transcript scan exactly
+// as before.
+func stampDerivedTotalsWith(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread, derived *pastDerivedTotals) appwire.Thread {
+	if derived != nil {
+		return stampTotals(cfg, entry, thread, derived.usage, derived.failures)
+	}
 	if thread.Evener.Usage != nil {
 		return stampDerivedFailureCount(entry, thread)
 	}
-	total, failures, err := pastTranscriptCache.DerivedTotalsFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
+	total, failures, err := pastDerivedTotalsScan(pastTranscriptPath(entry), entry.Meta.DivergenceTurn)
 	if err != nil {
 		return thread
 	}
-	if total != nil {
+	return stampTotals(cfg, entry, thread, total, failures)
+}
+
+// stampTotals stamps a derived token total and failure count under the
+// precedence the scan path has always held: the meta cumulative usage wins, so
+// a derived usage fills in only when it is absent, while the failure count is
+// always stamped.
+func stampTotals(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread, total *appwire.EvenerUsage, failures int) appwire.Thread {
+	if thread.Evener.Usage == nil && total != nil {
 		thread.Evener.Usage = total
 		thread.Evener.Cost = appwire.EstimateCost(pastEntryCost(cfg, entry), total)
 	}

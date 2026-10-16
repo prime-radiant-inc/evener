@@ -11,7 +11,7 @@ import (
 // and an append can rewrite one in place.
 const (
 	itemRecordSize   = 132
-	turnRecordSize   = 160
+	turnRecordSize   = 168
 	contributorSize  = 32
 	contextEntrySize = contributorSize + 12 // contributor + TurnID strRef
 	updateRecordSize = 24
@@ -121,22 +121,35 @@ const (
 // TOOL_RESULTS lands, outside any server lock. Memory stays bounded by the
 // number of calls, not by their argument size.
 type turnRecord struct {
-	ID              strRef
-	Kind            uint32
-	FirstOffset     int64
-	FirstOrdinal    uint64
-	Status          uint32
-	FailureOffset   int64
-	FailureLength   uint32 // 0: no TURN_FAILURE
-	CompletedAt     int64  // unix ms, from the latest completion entry; 0 when none
-	DurationMS      int64
-	HasCompletion   bool
-	Started         bool     // StartedAt is set
-	StartedAt       int64    // unix ms of the first entry with a timestamp
-	Usage           [4]int64 // input, output, cache read, total tokens
-	Model           strRef   // the latest entry's model, for cost at egress
-	AwaitingOffset  int64    // the latest ASSISTANT entry with tool calls
-	AwaitingLength  uint32   // 0: none
+	ID            strRef
+	Kind          uint32
+	FirstOffset   int64
+	FirstOrdinal  uint64
+	Status        uint32
+	FailureOffset int64
+	FailureLength uint32 // 0: no TURN_FAILURE
+	CompletedAt   int64  // unix ms, from the latest completion entry; 0 when none
+	DurationMS    int64
+	HasCompletion bool
+	Started       bool     // StartedAt is set
+	StartedAt     int64    // unix ms of the first entry with a timestamp
+	Usage         [4]int64 // input, output, cache read, total tokens
+	// FailedToolCalls is the turn's failing tool results, counted at build time
+	// by the shared failure rule (agent/transcript.FailureCounter) as it feeds
+	// every entry in file order. It lets a reader derive the session's
+	// failed-tool-call total from the records instead of rescanning the
+	// transcript. A fold copy contributes nothing, matching the corrected
+	// scans.
+	FailedToolCalls uint32
+	// FailedInexact records that this turn's failure count was computed with a
+	// nameless result whose announcing call the build could not resolve, so the
+	// count may not match a full scan. It rides in the same record as the count
+	// it qualifies, so a crash between flushing the records and publishing meta
+	// cannot leave the count authoritative without it.
+	FailedInexact   bool
+	Model           strRef // the latest entry's model, for cost at egress
+	AwaitingOffset  int64  // the latest ASSISTANT entry with tool calls
+	AwaitingLength  uint32 // 0: none
 	AwaitingOrdinal uint64
 	Version         uint64 // highest accounted entry ordinal + 1
 }
@@ -318,6 +331,8 @@ func encodeTurnInto(dst []byte, r turnRecord) []byte {
 	for _, v := range r.Usage {
 		c.putI64(v)
 	}
+	c.putU32(r.FailedToolCalls)
+	c.putBool(r.FailedInexact)
 	c.putRef(r.Model)
 	c.putI64(r.AwaitingOffset)
 	c.putU32(r.AwaitingLength)
@@ -344,6 +359,8 @@ func decodeTurn(buf []byte) turnRecord {
 	for i := range r.Usage {
 		c.i64(&r.Usage[i])
 	}
+	c.u32(&r.FailedToolCalls)
+	c.bool(&r.FailedInexact)
 	c.ref(&r.Model)
 	c.i64(&r.AwaitingOffset)
 	c.u32(&r.AwaitingLength)

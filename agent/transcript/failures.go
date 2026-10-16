@@ -111,12 +111,34 @@ func NewFailureCounter(fromEntryOrdinal int) *FailureCounter {
 }
 
 // Observe records one transcript entry's turn: it learns the tool names the
-// turn announces and counts the failures the turn settles.
+// turn announces and counts the failures the turn settles. A compaction fold
+// copy is re-appended after its original, so it takes its ordinal but settles
+// nothing — its original already counted.
 func (c *FailureCounter) Observe(turn schema.Turn) {
 	if c == nil {
 		return
 	}
+	c.observe(turn, nil)
+}
+
+// ObserveEntry is Observe for a caller that must learn whether a nameless tool
+// result's name was resolvable from the calls seen so far. It reports true when
+// one was not: a counter restored from persisted state (the transcript-index
+// builder's extension path) then cannot count such a result the same way a full
+// scan does, and must not present a figure it could not compute.
+func (c *FailureCounter) ObserveEntry(turn schema.Turn) (unresolved bool) {
+	if c == nil {
+		return false
+	}
+	c.observe(turn, &unresolved)
+	return unresolved
+}
+
+func (c *FailureCounter) observe(turn schema.Turn, unresolved *bool) {
 	c.ordinal++
+	if turn.OriginalOrdinal != nil {
+		return // a compaction fold copy: its original already counted
+	}
 	counting := c.ordinal >= c.from
 	for _, part := range turn.Message.Content {
 		switch {
@@ -128,7 +150,11 @@ func (c *FailureCounter) Observe(turn schema.Turn) {
 			}
 			name := part.ToolResult.Name
 			if name == "" {
-				name = c.toolNames[part.ToolResult.ToolCallID]
+				resolved, ok := c.toolNames[part.ToolResult.ToolCallID]
+				if !ok && unresolved != nil {
+					*unresolved = true
+				}
+				name = resolved
 			}
 			if FailedToolResult(name, part.ToolResult.IsError, part.ToolResult.ToolState) {
 				c.count++
@@ -143,4 +169,27 @@ func (c *FailureCounter) Count() int {
 		return 0
 	}
 	return c.count
+}
+
+// Reset drops the names and count the counter has learned. A caller that has
+// finished consuming it — the transcript-index builder at the end of a build —
+// releases the per-call state so a long-lived index does not retain one entry
+// per tool call of the whole session. A later extension then resolves only the
+// calls it sees itself, and reports a nameless result it cannot resolve.
+func (c *FailureCounter) Reset() {
+	if c == nil {
+		return
+	}
+	c.toolNames = map[string]string{}
+	c.count = 0
+}
+
+// Len is how many tool calls the counter currently retains names for. A caller
+// that must bound memory — the transcript-index builder — uses it to show the
+// state is released once a build no longer needs it.
+func (c *FailureCounter) Len() int {
+	if c == nil {
+		return 0
+	}
+	return len(c.toolNames)
 }

@@ -26,7 +26,7 @@ import (
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
-	formatVersion = 5
+	formatVersion = 6
 	projectionID  = "transcript-read-model-v7"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
@@ -724,6 +724,11 @@ func (x *Index) extend(length int64) error {
 			return x.rebuild(length, x.meta.Incarnation)
 		}
 	}
+	// Release the failure counter's call names, as buildNew does at the end of
+	// a full build: an extension that kept them would retain one entry per tool
+	// call for the handle's whole life. A later extension then resolves only
+	// what it sees itself and marks a turn inexact when a name it needs is gone.
+	x.builder.failures.Reset()
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	if x.meta.PendingCommunicate && !x.builder.lastAssistantKnown {
 		// A communicate call just became pending with lastAssistantText
@@ -1024,6 +1029,11 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	// Only the open turn's names are kept past a build: memory stays bounded
 	// by the open turn, and errRebuild covers the rest.
 	x.builder.global = nil
+	// The failure counter's call names follow the same rule: released at the
+	// end of the build, so a long-lived index does not retain one entry per
+	// tool call. A later extension resolves only the calls it sees itself and
+	// marks a turn's count inexact when a nameless result's call is gone.
+	x.builder.failures.Reset()
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	// The kill seam lives inside writeMeta, after the record flushes: killing
 	// here instead would exit before anything reached the files.

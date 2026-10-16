@@ -36,6 +36,8 @@ type hubRelayHandle struct {
 	// commandOwners includes commands whose relay-key generation was remapped
 	// while they were in flight, so the displaced handle cannot close early.
 	commandOwners int
+	// pendingRoutes counts executing reads until their authoritative routing
+	// is published. Queued commands and downstream handoffs are not discovery.
 	pendingRoutes int
 	routeChanged  chan struct{}
 }
@@ -846,7 +848,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			routesPending := func() bool {
 				relayMu.Lock()
 				defer relayMu.Unlock()
-				return handle.pendingRoutes != 0 && !handle.stopping
+				return handle.commandOwners != 0 && !handle.stopping
 			}
 			// serveDaemonGone publishes a daemon-gone delivery to every current
 			// route it has not reached yet. It reports whether a route is
@@ -1040,7 +1042,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		base appsource.Source,
 		params appwire.ThreadReadParams,
 		canonicalRef appwire.Ref,
-	) (*hubRelayHandle, *relayKeyState, func(context.Context, appwire.Thread) error, func(), error) {
+	) (*hubRelayHandle, *relayKeyState, *appsource.RelayRoutePublication, func(), error) {
 		relayKey, _, err := relayTarget(base, params)
 		if err != nil {
 			return nil, nil, nil, nil, err
@@ -1101,7 +1103,6 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			state.commands++
 			handle.commandOwners++
-			handle.pendingRoutes++
 			return state, nil
 		}
 		waitForStoppedGeneration := func(done <-chan struct{}) error {
@@ -1115,14 +1116,25 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				return ctx.Err()
 			}
 		}
-		commandFunctions := func(handle *hubRelayHandle, state *relayKeyState) (func(context.Context, appwire.Thread) error, func()) {
+		commandFunctions := func(handle *hubRelayHandle, state *relayKeyState) (*appsource.RelayRoutePublication, func()) {
 			routesPending := true
+			discovering := false
+			begin := func() {
+				relayMu.Lock()
+				defer relayMu.Unlock()
+				if routesPending && !discovering {
+					discovering = true
+					handle.pendingRoutes++
+				}
+			}
 			resolveRoutesLocked := func() {
 				if !routesPending {
 					return
 				}
 				routesPending = false
-				handle.pendingRoutes--
+				if discovering {
+					handle.pendingRoutes--
+				}
 				signalRouteChangeLocked(handle)
 			}
 			publish := func(publicationCtx context.Context, thread appwire.Thread) error {
@@ -1250,10 +1262,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						unregisterPendingStateLocked(handle, state)
 						close(state.done)
 					}
-					// The route stays pending past this publication, until the
-					// read releases it (release, below): the appserver installs
-					// the client's subscription only after the read returns, and
-					// a departure announced in between must still reach it.
+					// Unbound ordinary deliveries can now be resolved without
+					// waiting on the read's own acknowledgement barrier. The
+					// command owner still retains departure recovery until the
+					// downstream subscription has been installed.
+					resolveRoutesLocked()
 					relayMu.Unlock()
 					for _, closeHandle := range closeHandles {
 						closeRelayHandle(closeHandle)
@@ -1264,10 +1277,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			release := func() {
 				var closeHandle bool
 				relayMu.Lock()
-				resolveRoutesLocked()
 				if state.commands > 0 && handle.commandOwners > 0 {
 					state.commands--
 					handle.commandOwners--
+				}
+				if routesPending {
+					resolveRoutesLocked()
+				} else {
+					signalRouteChangeLocked(handle)
 				}
 				if state.commands == 0 && pendingRelays[relayKey][state] == handle {
 					unregisterPendingStateLocked(handle, state)
@@ -1282,7 +1299,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					closeRelayHandle(handle)
 				}
 			}
-			return publish, release
+			return &appsource.RelayRoutePublication{Begin: begin, Publish: publish}, release
 		}
 		for {
 			relayMu.Lock()
@@ -1472,7 +1489,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		// Canonical leases invoke publish before their pre-cut acknowledgement
 		// barrier. This idempotent call verifies the returned response without a
 		// base-only compatibility path.
-		if err := publish(ctx, result.Response.Thread); err != nil {
+		if err := publish.Publish(ctx, result.Response.Thread); err != nil {
 			read.finish(false)
 			return nil, err
 		}
