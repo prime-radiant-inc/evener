@@ -1158,15 +1158,17 @@ it.each([
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const storage = cache();
     setProductionEntryCacheForTests(storage);
-    const recorded = Array.from(
-      { length: bodyCount },
-      (_, index): ThreadItem => ({
+    const recorded = Array.from({ length: bodyCount }, (_, index): ThreadItem => {
+      let type: ThreadItem["type"] = "toolCall";
+      if (index % 3 === 0) type = "userMessage";
+      else if (index % 3 === 1) type = "agentMessage";
+      return {
         id: `recorded-${index}`,
         transcriptKey: `recorded-${index}`,
         turnId: `turn-${Math.floor(index / 3)}`,
         version: index + 1,
         position: { entry: index * 2, item: 0 },
-        type: index % 3 === 0 ? "userMessage" : index % 3 === 1 ? "agentMessage" : "toolCall",
+        type,
         ...(index % 3 === 2
           ? {
               toolName: "exec_command",
@@ -1176,8 +1178,8 @@ it.each([
               status: "completed" as const,
             }
           : { text: `payload-${index}` }),
-      }),
-    );
+      };
+    });
     const turnsFor = (items: ThreadItem[]): Turn[] => {
       const turns = new Map<string, Turn>();
       for (const item of items) {

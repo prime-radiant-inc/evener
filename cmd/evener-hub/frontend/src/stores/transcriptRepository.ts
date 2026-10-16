@@ -1324,17 +1324,11 @@ export class TranscriptRepository {
           : [];
         const sourceRevisionAtOpen = cut.sourceRevision;
         const authorityCurrent = () => sourceRevisionAtOpen === this.#sourceRevision;
+        const openingCurrent = () => active && this.#acceptsLifetime(lifetime) && authorityCurrent();
         const checkRetainedRange = (model: ThreadModel | undefined): boolean | undefined => {
           // An exception may follow cancellation or source replacement. Those
           // results cannot judge the obsolete opening's retained requirements.
-          if (
-            limit <= 0 ||
-            requestedForeground.length === 0 ||
-            !active ||
-            !this.#acceptsLifetime(lifetime) ||
-            !authorityCurrent()
-          )
-            return undefined;
+          if (limit <= 0 || requestedForeground.length === 0 || !openingCurrent()) return undefined;
           const displayed = new Map(
             model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
           );
@@ -1355,7 +1349,7 @@ export class TranscriptRepository {
           // Suffix certificates are mutable per readId. Resolve the latest real
           // certificate and prove that it covers this reader's fixed cut.
           let window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit, cut.latestWindowBoundary);
-          if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+          if (!openingCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           if (this.#seedAuthorityInvalid) {
@@ -1423,14 +1417,14 @@ export class TranscriptRepository {
               window = { ...window, rows: [...boundedOlder, ...window.rows] };
             }
           }
-          if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+          if (!openingCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           cut.cacheRows = [...window.rows];
           window = { ...window, rows: [] };
           const turnIds = this.#turnIDsForRows(cut.cacheRows, cut.pendingRows);
           const turnMetadata = await this.#readTurnMetadata(turnIds);
-          if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+          if (!openingCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           // A committed Clear during the reads retires the snapshot's authority
@@ -1459,13 +1453,8 @@ export class TranscriptRepository {
             comparePosition(left.position, right.position),
           );
           const boundedRows = limit === 0 ? [] : localRows.slice(-limit);
-          const restored = this.#restoreWindow(
-            current,
-            boundedRows,
-            turnMetadata,
-            () => active && this.#acceptsLifetime(lifetime) && authorityCurrent(),
-          );
-          if (!restored || !active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+          const restored = this.#restoreWindow(current, boundedRows, turnMetadata, openingCurrent);
+          if (!restored || !openingCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           // A racing accepted model wins by item version; the stale query only fills absent slots.

@@ -268,13 +268,13 @@ test.each(
     const replacement = repo.attachReader();
     try {
       const restored = await replacement.openLocal(3);
-      expect(displayedPositions(restored.model)).toEqual(
-        change === "replace"
-          ? [20, 21, 22]
-          : change === "live" || change === "live-v2"
-            ? [1, 2, 3, 4, 5, 6, 7, 8, 9]
-            : [1, 2, 3, 4, 5, 6, 7, 8],
-      );
+      const expectedPositions: Record<typeof change, number[]> = {
+        replace: [20, 21, 22],
+        live: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "live-v2": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        cancel: [1, 2, 3, 4, 5, 6, 7, 8],
+      };
+      expect(displayedPositions(restored.model)).toEqual(expectedPositions[change]);
       if (change === "live" || change === "live-v2") {
         const items = restored.model?.turns.flatMap((turn) => turn.items);
         expect(items?.find((item) => item.transcriptKey === "item-2")).toEqual(updatedTwo);

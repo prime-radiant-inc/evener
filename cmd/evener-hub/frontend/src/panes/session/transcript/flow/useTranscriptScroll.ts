@@ -37,7 +37,7 @@ import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { isEditableTarget, isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
-import { threadsStore } from "../../../../stores/threads";
+import { isEntryTranscriptLocalOpening, threadsStore } from "../../../../stores/threads";
 import type { CommittedVirtualListLayout, VirtualListHandle } from "../../../../widgets";
 import type { TranscriptReadView } from "../transcriptReadView";
 import { isDormantTranscript } from "../transcriptVisibility";
@@ -597,8 +597,7 @@ export function useTranscriptViewRegistration(
       return;
     }
     if (!currentOptions.enabled || !el || !committed?.isCurrent() || committed.virtualizer.scrollElement !== el) return;
-    if (currentOptions.logicalRef !== undefined && threadsStore.getState().localOpenings.has(currentOptions.logicalRef))
-      return;
+    if (currentOptions.logicalRef !== undefined && isEntryTranscriptLocalOpening(currentOptions.logicalRef)) return;
 
     const confirmScrollOffset = () => {
       if (Math.abs(el.scrollTop - (committed.virtualizer.scrollOffset ?? 0)) > 1.5) {
