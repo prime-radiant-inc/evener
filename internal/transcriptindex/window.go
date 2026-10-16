@@ -49,6 +49,83 @@ func (x *Index) Latest(limit int) (Window, error) {
 	})
 }
 
+// ErrDerivedTotalsUnavailable reports that the sidecar cannot answer the
+// session's derived totals — the covered file held a line that did not decode.
+// A caller falls back to the transcript scan, which reports the same figures
+// unknown for the same reason, rather than present a value read past the damage.
+var ErrDerivedTotalsUnavailable = errors.New("transcript index cannot derive totals")
+
+// DerivedTotals returns the session's own-span token total and failed-tool-call
+// count from the turn records, for entries at or after fromEntryOrdinal (the
+// 1-based entry ordinal at which the session's own history begins, i.e. a fork
+// child's DivergenceTurn; 0 or 1 counts the whole file). Both figures were
+// computed by the build with the shared rules — usage summed per entry, failures
+// by agent/transcript.FailureCounter — so a cold read answers without rescanning
+// the transcript. Usage is nil when the counted span carried no token data,
+// matching UsageTotalFromFile.
+func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	const chunk = 256
+	var sum [4]int64
+	failed := 0
+	// Read under the shared sidecar lock so the records describe the same
+	// snapshot another handle may have extended or rebuilt, exactly as the
+	// window readers do (readWindow/x.locked).
+	err := x.locked(false, func() error {
+		for start := uint64(0); start < x.turns.n; start += chunk {
+			count := min(uint64(chunk), x.turns.n-start)
+			buf, err := x.turns.read(start, int(count))
+			if err != nil {
+				return err
+			}
+			for i := range count {
+				record := decodeTurn(buf[i*turnRecordSize:])
+				if record.Kind == turnKindUnreadable {
+					// A line that did not decode; the scan errors on it, so the
+					// totals are unknown. Checked for every record, as the scan
+					// decodes every line regardless of the cut.
+					return ErrDerivedTotalsUnavailable
+				}
+				first := int(record.FirstOrdinal) + 1
+				if first < fromEntryOrdinal {
+					// record.Version is the turn's last entry ordinal (stampTurn
+					// writes ordinal+1 for every entry it folds in). A cut
+					// between the turn's first and last entry would need a
+					// suffix this record cannot express, so refuse and let the
+					// scan answer rather than drop or over-count the turn.
+					if fromEntryOrdinal <= int(record.Version) {
+						return ErrDerivedTotalsUnavailable
+					}
+					continue
+				}
+				for j := range sum {
+					sum[j] += record.Usage[j]
+				}
+				if record.FailedInexact {
+					// This turn's failure count was computed without a name it
+					// needed, so the total cannot match the scan. The bit rides
+					// in the same record as the count, so a crash cannot leave
+					// the count authoritative without it.
+					return ErrDerivedTotalsUnavailable
+				}
+				failed += int(record.FailedToolCalls)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	cacheRead := int(sum[2])
+	return appwire.EvenerUsageFromLLM(llm.Usage{
+		InputTokens:     int(sum[0]),
+		OutputTokens:    int(sum[1]),
+		CacheReadTokens: &cacheRead,
+		TotalTokens:     int(sum[3]),
+	}), failed, nil
+}
+
 // LatestSince is Latest together with what changed since held, read under one
 // lock so both describe the same snapshot: a reader that took them apart could
 // miss a change another handle extended over between the two. The changes

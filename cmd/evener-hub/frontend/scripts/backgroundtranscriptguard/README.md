@@ -36,16 +36,27 @@ The journey, in order:
    history. The trace byte window around that activation must contain no target
    `thread/read` or `thread/turns/list` request, and a live streaming sentinel
    must be absent from entry rows until its turn completes.
-3. The turn finishes; `BACKGROUND_AFTER_EVICTION` and the real `shell` tool
+3. A fresh second tab opens the same session through the rail while that turn
+   is running. Both panes show the initial output, then receive the remaining
+   streamed output and real tool result. The `two-tab-live` milestone retains
+   both tabs' rendered rows, ordered item identities and tool output. The Go
+   owner compares them with each other and the daemon's durable turn/call data.
+4. The turn finishes; `BACKGROUND_AFTER_EVICTION` and the real `shell` tool
    output are recorded in native entry storage. Each produced item renders
    exactly once in its real tool output region, the renderer's recorded items
    match the native IndexedDB item/turn/coverage rows one-to-one by keyed
    identity and position, and the durable producer turn/call identity matches
    independently.
-4. The raw renderer items, rendered rows, output region, native items, turns and
+5. The raw renderer items, rendered rows, output region, native items, turns and
    coverage boundaries are retained in `entry-audit.json`, and the Go owner
    re-reads the daemon's own durable `target-producer-transcript.jsonl` for the
    producer assertions.
+
+This browser provider does not produce delegate lifecycles. The retained-child
+relay deadlock and the otherwise-identical schedules with and without an extra
+background subscriber are exercised through real hub/daemon components in
+`cmd/evener-hub/app_relay_read_progress_test.go`. A passing browser journey
+alone does not attribute a live incident to that deadlock.
 
 ### Retired legacy journey
 

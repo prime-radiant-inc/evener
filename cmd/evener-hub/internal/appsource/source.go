@@ -745,7 +745,17 @@ type RelaySessionLease interface {
 // do not own a routing index.
 type RelaySessionRoutePublicationLease interface {
 	RelaySessionLease
-	ReadWithRoutePublication(context.Context, appwire.ThreadReadParams, func(context.Context, appwire.Thread) error) (RelayReadResult, error)
+	ReadWithRoutePublication(context.Context, appwire.ThreadReadParams, *RelayRoutePublication) (RelayReadResult, error)
+}
+
+// RelayRoutePublication brackets route discovery inside the source's serialized
+// read. Begin runs after command admission and before the upstream request, so a
+// queued read cannot hold up delivery acknowledgements owed by an earlier read.
+// Publish installs authoritative routes before the pre-response barrier drains.
+// The caller releases its ownership when Read fails or its handoff finishes.
+type RelayRoutePublication struct {
+	Begin   func()
+	Publish func(context.Context, appwire.Thread) error
 }
 
 type RelayReadResult struct {

@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
@@ -74,6 +75,26 @@ type builder struct {
 	assistantOffset int64
 	models          map[string]strRef
 
+	// failures applies the shared failure rule as the builder feeds every entry
+	// in file order — the one bookkeeping the corrected file scans use, so the
+	// per-turn FailedToolCalls it records matches DerivedTotalsFromFile. A fold
+	// copy contributes nothing (the counter skips it), matching the scans. On
+	// an extension this counter starts empty and sees only the appended
+	// entries, so a nameless non-error result whose announcing call is in the
+	// covered prefix resolves to the scan's own empty-name fallback rather than
+	// to that call's name; the daemonless read's sidecar is a full rebuild,
+	// where every call is seen, so its count is exact.
+	failures *transcript.FailureCounter
+	// entryFailures is the failures the entry currently being applied settled,
+	// added to its turn's summary by stampTurn.
+	entryFailures uint32
+	// entryInexact reports that the entry currently being applied met a nameless
+	// tool result whose announcing call the build could not resolve. A full
+	// build never does; an extension does when the call lies in the covered
+	// prefix. It rides on the turn's own FailedInexact bit, so the qualifier
+	// commits atomically with the count it qualifies.
+	entryInexact bool
+
 	// commCalls and the lastAssistant* fields mirror ProjectTurn's
 	// ToolCallRegistry.CommRawArgs/LastAssistantText/LastAssistantTurnID:
 	// unlike names/calls, they are NOT reset at a new open legacy group,
@@ -125,11 +146,21 @@ func newBuilder(x *Index) builder {
 	return builder{
 		x: x, calls: map[string]uint64{}, names: map[string]toolName{}, open: map[string]uint64{}, models: map[string]strRef{},
 		commCalls: map[string]commState{}, seedBuf: map[string]string{}, regNames: map[string]string{}, regCommArgs: map[string]string{},
+		failures: transcript.NewFailureCounter(0),
 	}
 }
 
 // apply indexes the entry at ordinal, whose line is length bytes at offset.
 func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *schema.Turn) error {
+	if entry.OriginalOrdinal != nil {
+		// A compaction fold copy re-appends an entry the file already holds.
+		// The projection and the corrected derived scans skip it, so it takes
+		// its ordinal and contributes no turn, usage, or failure.
+		return nil
+	}
+	before := b.failures.Count()
+	b.entryInexact = b.failures.ObserveEntry(*entry)
+	b.entryFailures = uint32(b.failures.Count() - before)
 	if entry.Format == schema.TurnFormatIdentity {
 		return b.applyIdentity(ordinal, offset, length, entry)
 	}
@@ -936,6 +967,10 @@ func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, off
 		if r.Model, err = b.modelRef(entry.Model); err != nil {
 			return err
 		}
+	}
+	r.FailedToolCalls += b.entryFailures
+	if b.entryInexact {
+		r.FailedInexact = true
 	}
 	r.Version = version
 	if err := b.x.turns.write(slot, encodeTurnInto(b.turnBuf[:], r)); err != nil {

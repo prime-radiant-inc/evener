@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/afero"
@@ -18,6 +19,194 @@ import (
 // resolves relative paths against the working directory without restricting
 // unrestricted off sessions to that root. Allocated scratch keeps its own
 // fd-anchored contract.
+
+// ErrWorkingDirectoryUnavailable reports that a relative-path mutation was
+// refused because the environment's working directory is not an existing
+// directory — deleted, or otherwise not a usable directory. A deleted directory
+// must never be recreated by a write that silently lands outside any checkout
+// (issue #4671). Absolute-path mutations never raise it.
+var ErrWorkingDirectoryUnavailable = errors.New("working directory unavailable")
+
+// requireLiveWorkingDirForRelative refuses a relative-path mutation when the
+// environment's working directory is not an existing directory, so a write
+// cannot silently recreate a deleted directory and land outside any checkout
+// (issue #4671). It
+// is called only on the plain, unrestricted mutation arm — the one that
+// joins the working directory and `MkdirAll`s parents — because that is the
+// path that recreates a deleted directory. The sandbox and scratch arms resolve
+// through a captured root descriptor; the scratch arm in particular serves the
+// confined-file root, whose logical path may legitimately not exist while its
+// captured descriptor is live, so a working-directory liveness check cannot be
+// applied there. It is a no-op for an absolute path, an empty path, or an empty
+// RootDir (whose relative handling is already a bare join).
+func (e *LocalExecutionEnvironment) requireLiveWorkingDirForRelative(path string) error {
+	p := strings.TrimSpace(path)
+	if p == "" || filepath.IsAbs(p) || e.RootDir == "" {
+		return nil
+	}
+	if info, err := e.filesystem().Stat(e.RootDir); err == nil && info.IsDir() {
+		return nil
+	}
+	return errDeadWorkingDir(p, e.RootDir)
+}
+
+// errDeadWorkingDir builds the named-recovery refusal a relative mutation gets
+// when the directory it anchors on has gone: it names the requested path and
+// the dead anchor and tells the caller to re-anchor. Shared by the plain arm's
+// requireLiveWorkingDirForRelative (issue #4671) and the sandbox arm's
+// requireLiveSandboxRootForRelative (issue #4680) so both surfaces report one
+// shape.
+func errDeadWorkingDir(path, anchor string) error {
+	return fmt.Errorf(
+		"%s: working directory %s is not an existing directory; re-anchor the session to an existing directory or operate from a valid working directory (%w)",
+		path, anchor, ErrWorkingDirectoryUnavailable)
+}
+
+// requireLiveSandboxRootForRelative refuses a relative-path mutation whose
+// sandbox root's directory is gone — deleted out from under a running
+// file-tool-confined session (issue #4680). The plain arm's path-based check
+// above cannot be used on this arm: the confined-file root used for memory
+// storage deliberately carries a live descriptor whose logical path does not
+// exist, so the descriptor must tell "unlinked" from "path missing"
+// (sandboxFS.rootDead). A root never opened yet is opened here, so a relative
+// mutation against a session that never wrote under its root still refuses with
+// the named recovery rather than the bare ENOENT (or the silent no-op a
+// best-effort remove would otherwise report). A renamed-away or swap-recreated
+// root keeps a positive link count and is left to the normal fd-anchored
+// resolution — rearranging the directory is outside the sandbox's threat model
+// (docs/sandboxing.md, "Threat model"). It is a no-op for an absolute path, an
+// empty path, an empty RootDir, or a path that anchors on no writable root
+// (whose enforcement is a denial anyway). Under a dead root, a masked or
+// git-protected target returns that target's own typed denial instead of the
+// recovery, so a masked secret keeps its redaction; the policy may spell the
+// mask through the canonical path while the target is spelled through a
+// symlinked ancestor, so both spellings are checked.
+func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandboxFS, tool, path string) error {
+	if sfs == nil {
+		return nil
+	}
+	p := strings.TrimSpace(path)
+	if p == "" || filepath.IsAbs(p) || e.RootDir == "" {
+		return nil
+	}
+	abs := filepath.Clean(e.resolve(p))
+	canonicalCwd := resolveDanglingSymlinks(e.RootDir)
+	root, rel, ok := e.sandboxAnchor(abs, canonicalCwd, p, sfs.policy.FileTool.WriteRoots)
+	if !ok {
+		return nil
+	}
+	if !sfs.rootDead(root) {
+		return nil
+	}
+	// The mask may be spelled through the canonical root while the target is
+	// spelled through a symlinked ancestor, so check every spelling. rel is the
+	// literal in-root tail (it never follows a symlink inside the tree) when the
+	// per-root containment could derive it; otherwise fall back to the cwd's
+	// canonical spelling.
+	candidates := []string{abs, resolveSymlinksBestEffort(abs)}
+	if rel != "" {
+		candidates = append(candidates, filepath.Clean(filepath.Join(root, rel)))
+	} else {
+		candidates = append(candidates, filepath.Clean(filepath.Join(canonicalCwd, filepath.FromSlash(p))))
+	}
+	for _, cand := range candidates {
+		if sfs.underMaskedForWrite(cand) {
+			return sfs.deny(tool, p, denyReasonMasked)
+		}
+		if sfs.underProtected(cand) {
+			return sfs.deny(tool, p, denyReasonProtected)
+		}
+	}
+	return errDeadWorkingDir(p, root)
+}
+
+// sandboxAnchor returns the writable root a relative target anchors on and the
+// literal in-root tail when one can be derived. Two independent answers combine:
+//
+//   - containingRoot, run per root, resolves only ANCESTORS and keeps the tail
+//     literal, so it spells the mask correctly even when a symlink inside the
+//     root points elsewhere. It cannot match a root no longer on disk.
+//   - The session's cwd resolved through symlinks (dangling and ancestor
+//     components included) names the anchor even after its root is deleted, and
+//     matching the cwd under a root keeps an overlapping broader grant — a live
+//     parent of the deleted workspace — from answering for the dead one.
+//
+// The most specific (longest) root either answer matches wins. rel is filled
+// from the per-root containingRoot answer for that root; a root matched only by
+// the cwd has none. A target under no writable root anchors on none.
+func (e *LocalExecutionEnvironment) sandboxAnchor(abs, canonicalCwd, p string, roots []string) (root, rel string, ok bool) {
+	containRel := map[string]string{}
+	for _, r := range roots {
+		if _, rl, mok := containingRoot([]string{r}, abs); mok {
+			containRel[r] = rl
+		}
+	}
+	bestCanon := ""
+	consider := func(r string) {
+		// Specificity is judged on the CANONICAL root, not the raw spelling: a
+		// broader grant reached through a longer symlink alias must not outrank a
+		// shorter canonical workspace root beneath it.
+		canon := resolveDanglingSymlinks(r)
+		if root == "" || len(canon) > len(bestCanon) {
+			root, rel, bestCanon = r, containRel[r], canon
+		}
+	}
+	for r := range containRel {
+		consider(r)
+	}
+	for _, r := range roots {
+		if pathWithinRoot(canonicalCwd, r) {
+			consider(r)
+		}
+	}
+	if root == "" {
+		return "", "", false
+	}
+	return root, rel, true
+}
+
+// resolveDanglingSymlinks resolves path through symlinks even when the eventual
+// target no longer exists: os.Readlink still reports each link's target, so a
+// link left dangling by a root's deletion is followed to its final spelling.
+// A work queue walks components in order; when a component is a symlink its
+// target's OWN components are pushed to the front, so a multi-component target
+// (middle/sub) is walked the same way and a link inside a link target is
+// resolved too. maxLinks bounds a cyclic chain. The result is then resolved
+// best-effort through its nearest existing ancestor.
+func resolveDanglingSymlinks(path string) string {
+	const maxLinks = 16
+	cur := string(filepath.Separator)
+	pending := pathComponents(path)
+	links := 0
+	for len(pending) > 0 {
+		comp := pending[0]
+		pending = pending[1:]
+		if comp == "" || comp == "." {
+			continue
+		}
+		cur = filepath.Join(cur, comp)
+		target, err := os.Readlink(cur)
+		if err != nil {
+			continue
+		}
+		links++
+		if links > maxLinks {
+			continue
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(cur), target)
+		}
+		target = filepath.Clean(target)
+		cur = string(filepath.Separator)
+		pending = append(pathComponents(target), pending...)
+	}
+	return resolveSymlinksBestEffort(cur)
+}
+
+// pathComponents splits an absolute path into its non-root components.
+func pathComponents(path string) []string {
+	return strings.Split(strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)), string(filepath.Separator))
+}
 
 // ReadFileRaw returns the raw bytes of path subject to the active policy.
 func (e *LocalExecutionEnvironment) ReadFileRaw(path string) ([]byte, error) {
@@ -48,12 +237,18 @@ func (e *LocalExecutionEnvironment) ReadFileRawCtx(ctx context.Context, path str
 func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm os.FileMode) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
+		if err := e.requireLiveSandboxRootForRelative(sfs, "apply_patch", path); err != nil {
+			return err
+		}
 		return sfs.writeFile("apply_patch", e.resolve(path), data, perm)
 	}
 	abs := e.resolve(path)
 	if sfs := e.scratchSandboxFor(abs); sfs != nil {
 		defer sfs.release()
 		return sfs.writeFile("apply_patch", abs, data, perm)
+	}
+	if err := e.requireLiveWorkingDirForRelative(path); err != nil {
+		return err
 	}
 	abs, err := e.resolveWrite(path)
 	if err != nil {
@@ -72,12 +267,18 @@ func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm 
 func (e *LocalExecutionEnvironment) RemovePath(path string) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
+		if err := e.requireLiveSandboxRootForRelative(sfs, "apply_patch", path); err != nil {
+			return err
+		}
 		return sfs.remove("apply_patch", e.resolve(path))
 	}
 	abs := e.resolve(path)
 	if sfs := e.scratchSandboxFor(abs); sfs != nil {
 		defer sfs.release()
 		return sfs.remove("apply_patch", abs)
+	}
+	if err := e.requireLiveWorkingDirForRelative(path); err != nil {
+		return err
 	}
 	abs, err := e.resolveWrite(path)
 	if err != nil {
@@ -102,6 +303,12 @@ func isAbsentRemove(err error) bool {
 func (e *LocalExecutionEnvironment) RenamePath(oldPath, newPath string) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
+		if err := e.requireLiveSandboxRootForRelative(sfs, "apply_patch", oldPath); err != nil {
+			return err
+		}
+		if err := e.requireLiveSandboxRootForRelative(sfs, "apply_patch", newPath); err != nil {
+			return err
+		}
 		return sfs.rename("apply_patch", e.resolve(oldPath), e.resolve(newPath))
 	}
 	oldAbs := e.resolve(oldPath)
@@ -121,8 +328,14 @@ func (e *LocalExecutionEnvironment) RenamePath(oldPath, newPath string) error {
 		return fmt.Errorf("%s: cannot rename into the session scratch root from outside that root", newPath)
 	}
 	var err error
+	if err := e.requireLiveWorkingDirForRelative(oldPath); err != nil {
+		return err
+	}
 	oldAbs, err = e.resolveWrite(oldPath)
 	if err != nil {
+		return err
+	}
+	if err := e.requireLiveWorkingDirForRelative(newPath); err != nil {
 		return err
 	}
 	newAbs, err = e.resolveWrite(newPath)

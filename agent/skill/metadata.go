@@ -132,7 +132,7 @@ func Parse(data []byte, skillFile string) (Descriptor, []Diagnostic, error) {
 	}
 
 	data, recovered := recoverMissingOpeningDelimiter(data)
-	document, err := frontmatter.Parse(string(data))
+	document, descriptionRecovered, err := parseSkillDocument(data)
 	if err != nil {
 		return invalidFrontmatter("skill frontmatter is not valid YAML", fmt.Errorf("parsing skill frontmatter: %w", err))
 	}
@@ -167,6 +167,15 @@ func Parse(data []byte, skillFile string) (Descriptor, []Diagnostic, error) {
 			Name:     name,
 			Source:   source,
 			Message:  "skill frontmatter is missing its opening --- delimiter; the leading block was read as frontmatter",
+		})
+	}
+	if descriptionRecovered {
+		diagnostics = append(diagnostics, Diagnostic{
+			Category: "unquoted_description",
+			Name:     name,
+			Source:   source,
+			Field:    "description",
+			Message:  "skill description contains an unquoted colon; it was read as plain text",
 		})
 	}
 

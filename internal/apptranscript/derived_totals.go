@@ -68,6 +68,9 @@ func scanDerivedTotals(path string, maxLineBytes int, fromEntryOrdinal int) (der
 	if err := narrowScan(path, maxLineBytes, 1,
 		decodeNarrowEntry[derivedTotalsEntry]("derived totals"),
 		func(record derivedTotalsEntry, ordinal int) error {
+			if record.Turn.OriginalOrdinal != nil {
+				return nil // a compaction fold copy: its original already counts
+			}
 			counting := ordinal >= fromEntryOrdinal
 			if counting {
 				accumulated.add(record.Turn.Usage)
@@ -91,7 +94,8 @@ func scanDerivedTotals(path string, maxLineBytes int, fromEntryOrdinal int) (der
 // bodies (including inline image bytes) per line.
 type derivedTotalsEntry struct {
 	Turn struct {
-		Usage   llm.Usage       `json:"usage"`
-		Message toolScanMessage `json:"message"`
+		Usage           llm.Usage       `json:"usage"`
+		Message         toolScanMessage `json:"message"`
+		OriginalOrdinal *uint64         `json:"original_ordinal"`
 	} `json:"turn"`
 }
