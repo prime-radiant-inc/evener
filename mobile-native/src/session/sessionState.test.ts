@@ -54,6 +54,51 @@ describe("the nav bar's state line (spec 8.1, 13.1)", () => {
 		expect(sessionStateLine(running, NOW, null).text).toBe("Working · 2m");
 	});
 
+	it("shows the live line in place of Working, keeping the session's elapsed time", () => {
+		const running = session("active", { activeTurnStartedAt: ago(23_000) });
+		const line = sessionStateLine(running, NOW, null, { text: "Checking for an existing remote…", attention: false });
+		expect(line.state).toBe("working");
+		expect(line.text).toBe("Checking for an existing remote… · 23s");
+		expect(line.live).toEqual({ text: "Checking for an existing remote…", attention: false });
+	});
+
+	it("keeps the live line's amber with its words, and works without an elapsed time", () => {
+		const running = session("active");
+		expect(
+			sessionStateLine(running, NOW, null, { text: "May be stuck · no updates for 12m", attention: true }),
+		).toEqual({
+			state: "working",
+			text: "May be stuck · no updates for 12m",
+			live: { text: "May be stuck · no updates for 12m", attention: true },
+		});
+	});
+
+	it("keeps Working, with no live line, when the tray has none", () => {
+		const running = session("active", { activeTurnStartedAt: ago(38 * 60_000) });
+		expect(sessionStateLine(running, NOW, null, null)).toEqual({ state: "working", text: "Working · 38m" });
+	});
+
+	it("adds no second duration to a live line that already carries one", () => {
+		// A step's line ends in its own clock ("Running go test · 42s"), so the
+		// session's elapsed time must not trail it too.
+		const running = session("active", { activeTurnStartedAt: ago(23_000) });
+		const line = sessionStateLine(running, NOW, null, {
+			text: "Running go test ./agent/... · 42s",
+			attention: false,
+			timed: true,
+		});
+		expect(line.text).toBe("Running go test ./agent/... · 42s");
+	});
+
+	it("never lets a live line colour a state that outranks working", () => {
+		// A stale tray line can outlive the turn a moment; the state wins.
+		const failed = session("systemError");
+		expect(sessionStateLine(failed, NOW, null, { text: "Thinking…", attention: false })).toEqual({
+			state: "failed",
+			text: "Failed",
+		});
+	});
+
 	it.each([
 		[session("active", { activeTurnStartedAt: ago(38 * 60_000) }), "working", "Working · 38m"],
 		[session("active"), "working", "Working"],

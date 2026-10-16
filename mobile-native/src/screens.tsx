@@ -197,12 +197,11 @@ import {
 	modelChipLabel,
 	sessionHosts,
 } from "./session/sessionFacts";
-import { type ChipKind, contextChips, SHUT_DOWN, sessionStateLine } from "./session/sessionState";
+import { type ChipKind, contextChips, SHUT_DOWN } from "./session/sessionState";
 import { canWriteHumanNote, NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
 import { hasFinishedSubagentRow } from "./session/subagentLine";
-import { SessionTitle } from "./session/SessionTitle";
+import { LiveSessionTitle } from "./session/LiveSessionTitle";
 import { useActivityPoll } from "./board/useActivityPoll";
-import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
@@ -581,7 +580,7 @@ export function ConversationScreen({
 	const live = useMemo(() => liveOrder(fleet.bands), [fleet.bands]);
 	// This session's own row, which the fleet re-reads when a turn ends.
 	const fleetRow = useMemo(() => live.find((row) => row.ref === route.params.ref), [live, route.params.ref]);
-	// This session's activity while it is in front: the status tray's pulse
+	// This session's activity while it is in front: the live status line's pulse
 	// and quiet time, and the last-moved time the in-front mark follows. The
 	// hub reports activity only for top-level sessions.
 	const { activityOf } = useActivityPoll(subagentOf ? null : client, connected, focused, route.params.ref);
@@ -962,14 +961,6 @@ export function ConversationScreen({
 		},
 		[store, client, chipsConnected, route.params.hubId, route.params.ref, navigation, route.params.title],
 	);
-	// The title's state line reads live ages ("Working · 38m", "Idle · 1h
-	// ago"): re-render twice a minute while the session is in front.
-	const [, setClock] = useState(0);
-	useEffect(() => {
-		if (!focused) return;
-		const clock = setInterval(() => setClock((tick) => tick + 1), 30_000);
-		return () => clearInterval(clock);
-	}, [focused]);
 	const conversation = snapshot.conversation;
 	// A subagent's screen times its run as its Subagents row does, from the
 	// row its panel reads (one number per subagent everywhere). An ended row
@@ -1003,8 +994,6 @@ export function ConversationScreen({
 		if (follow.state.current.following)
 			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 	}, [barHeight]);
-	const now = Date.now();
-	const stateLine = conversation ? sessionStateLine(conversation, now, runMs(now)) : null;
 	// Files (spec 10.1): what the session wrote or linked, and
 	// whether any of it is new or changed since you last opened it.
 	const documents = useMemo(() => {
@@ -1219,25 +1208,36 @@ export function ConversationScreen({
 	const chooseSessionActionRef = useRef(chooseSessionAction);
 	const runSessionActionRef = useRef(runSessionAction);
 	const swipeToSessionRef = useRef(swipeToSession);
+	// The header title's jump-to-live reaches the latest jumpToLive through a
+	// ref, so a re-render never hands it a stale closure (as the swipe does).
+	const jumpToLiveRef = useRef(jumpToLive);
 	useEffect(() => {
 		chooseSessionActionRef.current = chooseSessionAction;
 		runSessionActionRef.current = runSessionAction;
 		swipeToSessionRef.current = swipeToSession;
+		jumpToLiveRef.current = jumpToLive;
 	});
 	useEffect(() => {
 		navigation.setOptions({
 			// iPhone only: the pressable title with the session's state (spec
-			// 8.1). Android keeps the plain title.
+			// 8.1). Android keeps the plain title. The title builds the state
+			// line itself, on its own clock, so the live line's seconds tick
+			// without re-rendering the transcript under it.
 			headerTitle:
-				Platform.OS === "ios" && stateLine
+				Platform.OS === "ios" && hasConversation
 					? ({ children }) => (
-							<SessionTitle
+							<LiveSessionTitle
 								title={children}
-								line={stateLine}
+								runMs={runMs}
+								activity={sessionActivity}
+								row={fleetRow}
+								store={store}
+								connected={connected}
 								backCount={othersWaitingCount}
 								onPress={() => openSessionDestination("session")}
 								onSwipe={(direction) => swipeToSessionRef.current(direction)}
 								neighbors={{ previous: hasPrevious, next: hasNext }}
+								onJumpToLive={() => jumpToLiveRef.current()}
 							/>
 						)
 					: undefined,
@@ -1286,8 +1286,12 @@ export function ConversationScreen({
 		connected,
 		openSessionDestination,
 		colors.text,
-		stateLine?.state,
-		stateLine?.text,
+		// The title reads the conversation itself, so the header options key
+		// off whether there is one, not the per-frame conversation object.
+		hasConversation,
+		sessionActivity,
+		fleetRow,
+		runMs,
 		hasPrevious,
 		hasNext,
 		othersWaitingCount,
@@ -2096,7 +2100,6 @@ export function ConversationScreen({
 		}
 		return acceptedAnswers;
 	}
-	const frames = useFrameCounter(store);
 	const toaster = useToast();
 	const showToast = toaster.show;
 	const showSubagentToast = useCallback((text: string) => showToast({ text }), [showToast]);
@@ -3349,21 +3352,6 @@ export function ConversationScreen({
 								/>
 							) : null}
 						</View>
-						{bottom.tray ? (
-							<LiveStatusTray
-								session={conversation}
-								frames={frames}
-								activity={sessionActivity}
-								row={fleetRow}
-								connected={connected}
-								canStop={!!permitted?.stop}
-								stopping={stopping || pending}
-								onStop={() => {
-									void stop();
-								}}
-								onJumpToLive={jumpToLive}
-							/>
-						) : null}
 						{subagentOf ? (
 							<SubagentPanel
 								hubId={route.params.hubId}
@@ -3397,6 +3385,19 @@ export function ConversationScreen({
 								// this Send says it sends what you typed.
 								sendLabel={bottom.dock === "question" ? "Send your answer" : composerSendLabel}
 								sendEnabled={sendEnabled}
+								// While the turn runs and the field is empty, Stop takes
+								// Send's slot: it can act only from a reachable hub (spec
+								// 8.5), and a stop already in flight disables it.
+								stop={
+									connected && permitted?.stop
+										? {
+												onStop: () => {
+													void stop();
+												},
+												disabled: stopping || pending,
+											}
+										: undefined
+								}
 								onSend={() => {
 									void send();
 								}}

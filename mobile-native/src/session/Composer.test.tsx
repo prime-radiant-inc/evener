@@ -204,13 +204,54 @@ describe("Composer", () => {
 		expect(pressable(tree, "Expand editor")).toBeDefined();
 	});
 
-	it("never offers Stop, Steer, Queue, Reconnect or Refresh", () => {
+	it("hides Stop while you type, so the slot is Send whenever there is text", () => {
+		const onStop = vi.fn();
+		const { props, tree } = composer({ value: "half a thought", stop: { onStop, disabled: false } });
+		expect(pressable(tree, "Stop")).toBeUndefined();
+		const send = pressable(tree, "Queue message");
+		expect(send).toBeDefined();
+		act(() => send?.props.onPress());
+		expect(props.onSend).toHaveBeenCalledTimes(1);
+		expect(onStop).not.toHaveBeenCalled();
+	});
+
+	it("keeps Send when the session cannot stop", () => {
+		const { tree } = composer();
+		expect(pressable(tree, "Stop")).toBeUndefined();
+		expect(pressable(tree, "Queue message")).toBeDefined();
+	});
+
+	it("shows Stop in the slot and stops when pressed, and disables it while a stop is in flight", () => {
+		const onStop = vi.fn();
+		const { props, tree } = composer({ stop: { onStop, disabled: false } });
+		expect(pressable(tree, "Queue message")).toBeUndefined();
+		const stop = pressable(tree, "Stop");
+		expect(stop?.props.accessibilityState).toMatchObject({ disabled: false });
+		expect(stop?.findByType("SymbolView" as never).props).toMatchObject({
+			name: "stop.fill",
+			tintColor: light.onFill,
+		});
+		// The slot keeps the Send circle's shape, in the danger fill.
+		expect(stop?.findByType("View" as never).props.style).toMatchObject({
+			width: 36,
+			height: 36,
+			backgroundColor: light.danger,
+		});
+		act(() => stop?.props.onPress());
+		expect(onStop).toHaveBeenCalledTimes(1);
+		expect(props.onSend).not.toHaveBeenCalled();
+
+		act(() => tree.update(<Composer {...props} stop={{ onStop, disabled: true }} />));
+		expect(pressable(tree, "Stop")?.props.disabled).toBe(true);
+	});
+
+	it("never offers Steer, Queue, Reconnect or Refresh", () => {
 		const { tree } = composer({ value: "1\n2\n3\n4\n5\n6\n7" });
 		const labels = tree.root
 			.findAll((node) => typeof node.props.accessibilityLabel === "string")
 			.map((node) => node.props.accessibilityLabel as string);
 		const words = [...labels, ...renderedText(tree).split(" ")];
-		for (const word of ["Stop", "Steer", "Queue", "Reconnect", "Refresh"]) expect(words).not.toContain(word);
+		for (const word of ["Steer", "Queue", "Reconnect", "Refresh"]) expect(words).not.toContain(word);
 	});
 });
 

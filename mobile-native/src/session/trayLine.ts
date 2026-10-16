@@ -1,4 +1,4 @@
-// The status tray's one line while the agent works (spec 8.3), and the counts
+// The live status line's one line while the agent works (spec 8.3), and the counts
 // behind its pulse meter (spec 16.4). Built from what the session already
 // holds: the running turn's items, the model's retry state, and lastFrameAt,
 // which the package's reducer restamps on every streamed frame
@@ -30,6 +30,9 @@ export interface TrayLine {
 	text: string;
 	/** Amber ink: the agent may be stuck. */
 	attention: boolean;
+	/** The text already ends in its own clock ("Running go test · 42s"), so a
+	 * surface that would append an elapsed time adds none. */
+	timed?: boolean;
 }
 
 export type TraySource = Pick<
@@ -74,7 +77,7 @@ export function trayLine(
 	if (session.modelRetry && (silence >= AGENT_QUIET_AFTER_MS || session.modelRetry.attempt >= 2)) {
 		const retry = retryText(session.modelRetry);
 		return silence >= STUCK_AFTER_MS
-			? { text: `${retry} · no updates for ${compactDuration(silence)}`, attention: true }
+			? { text: `${retry} · no updates for ${compactDuration(silence)}`, attention: true, timed: true }
 			: { text: retry, attention: false };
 	}
 	// The Board row's precedence (attention.ts's whyLine): the activity
@@ -88,7 +91,7 @@ export function trayLine(
 	// below is unreachable while one runs, since every path with a running
 	// subagent returns first.
 	if (running === 0 && silence >= STUCK_AFTER_MS)
-		return { text: `May be stuck · no updates for ${compactDuration(silence)}`, attention: true };
+		return { text: `May be stuck · no updates for ${compactDuration(silence)}`, attention: true, timed: true };
 	const step = currentStep(session);
 	if (running > 0 && (!step || step.waitsOnSubagents)) return { text: waitingOnSubagents(running), attention: false };
 	if (step)
@@ -97,8 +100,11 @@ export function trayLine(
 			// tolerable in a running clock, and a negative one reads 0s.
 			text: step.startedAt === undefined ? step.text : `${step.text} · ${compactDuration(now - step.startedAt)}`,
 			attention: false,
+			timed: step.startedAt !== undefined,
 		};
-	return { text: quietOrWorking(silence), attention: false };
+	// quietOrWorking reads "Quiet 40s" once past the quiet threshold (its own
+	// compact duration) and "Working" before it, so only the former is timed.
+	return { text: quietOrWorking(silence), attention: false, timed: silence >= AGENT_QUIET_AFTER_MS };
 }
 
 function retryText(retry: ModelRetryState): string {

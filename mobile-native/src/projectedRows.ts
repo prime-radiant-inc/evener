@@ -381,7 +381,7 @@ function unhandledEntryKind(_entry: never): null {
 // intent entry keeps everything, so the reader can always see why a call
 // failed — the ruling covers the settled row. A failed call shows at every
 // level, Chat included; a running one shows at every level but Chat, whose
-// screen drops it because the status tray already shows the live step
+// screen drops it because the live status line already shows the live step
 // (transcriptPresentation.ts, conversationOnly).
 function intentRow(
 	entry: Extract<ProjectedEntry, { kind: "intent" }>,
