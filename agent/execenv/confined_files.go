@@ -109,11 +109,7 @@ func (r *ConfinedFileRoot) Open(previous *LocalExecutionEnvironment) (*LocalExec
 	if err := host.mkdirAll("memory", root); err != nil {
 		return nil, err
 	}
-	hostFd, err := host.rootFd(r.stateRoot)
-	if err != nil {
-		return nil, err
-	}
-	fd, err := openBeneathRoot(hostFd, filepath.ToSlash(r.relativeRoot), os.O_RDONLY, 0)
+	fd, err := openBeneathRoot(host.rootFds[r.stateRoot], filepath.ToSlash(r.relativeRoot), os.O_RDONLY, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +126,7 @@ func (r *ConfinedFileRoot) Open(previous *LocalExecutionEnvironment) (*LocalExec
 	}
 	env := NewLocalExecutionEnvironment(root)
 	layer := newScratchSandboxFS(root)
-	layer.adoptRootFd(root, fd)
+	layer.rootFds[root] = fd
 	env.Sandbox = layer.policy
 	// Keep the layer so all operations share the same root-fd lifetime.
 	env.sbfs = layer

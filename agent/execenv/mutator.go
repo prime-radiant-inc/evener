@@ -151,14 +151,27 @@ func (e *LocalExecutionEnvironment) sandboxAnchor(abs, canonicalCwd, p string, r
 			containRel[r] = rl
 		}
 	}
+	// opRoot is the root the subsequent file operation will resolve abs under
+	// (containingRoot: its first lexical match, then its real-ancestor match).
+	// Roots that canonicalize to the same directory cannot be ranked by
+	// specificity, so the tie is broken toward opRoot: the guard then checks the
+	// descriptor the operation will actually use, and a check through one
+	// equivalent spelling cannot disagree with a use through another (issue
+	// #4703, roborev 42975). A tie the operation does not resolve (no root
+	// contains abs) leaves the first considered root, which is harmless because
+	// the operation denies the same abs as outside every root.
+	opRoot, _, _ := containingRoot(roots, abs)
 	bestCanon := ""
 	consider := func(r string) {
 		// Specificity is judged on the CANONICAL root, not the raw spelling: a
 		// broader grant reached through a longer symlink alias must not outrank a
 		// shorter canonical workspace root beneath it.
 		canon := resolveDanglingSymlinks(r)
-		if root == "" || len(canon) > len(bestCanon) {
+		switch {
+		case root == "" || len(canon) > len(bestCanon):
 			root, rel, bestCanon = r, containRel[r], canon
+		case len(canon) == len(bestCanon) && r == opRoot:
+			root, rel = r, containRel[r]
 		}
 	}
 	for r := range containRel {

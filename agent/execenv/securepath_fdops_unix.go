@@ -146,18 +146,12 @@ func (s *sandboxFS) mapOpenErr(tool, p string, err error) error {
 
 // rootFd returns the cached O_DIRECTORY fd for a canonical allowed root, opening
 // and caching it on first use. The fd is captured once so a later swap of the
-// root directory cannot redirect resolution beneath it. The cache is keyed by
-// the root's canonical directory, so two spellings that name the same directory
-// (a workspace root and a symlink alias of it) share ONE descriptor: the guard's
-// dead-root answer then comes from the descriptor the operation will use, and a
-// check through one spelling cannot disagree with a use through another (issue
-// #4703, roborev 42975).
+// root directory cannot redirect resolution beneath it.
 func (s *sandboxFS) rootFd(root string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	carveOut := slices.Contains(s.policy.UnmaskedRoots, root)
-	key := s.canonicalRootKey(root)
-	if fd, ok := s.rootFds[key]; ok {
+	if fd, ok := s.rootFds[root]; ok {
 		// A carve-out can stop holding its pinned place after its fd was
 		// cached (moved aside and recreated, or a mask linked into it), so it
 		// is judged on every use. This keeps the grant correct as the files
@@ -168,7 +162,7 @@ func (s *sandboxFS) rootFd(root string) (int, error) {
 		if !carveOut || s.carveOutFdValid(root, fd) {
 			return fd, nil
 		}
-		delete(s.rootFds, key)
+		delete(s.rootFds, root)
 		s.staleFds = append(s.staleFds, fd)
 	}
 	// A carve-out root swapped for a symlink after resolution would otherwise be
@@ -186,7 +180,7 @@ func (s *sandboxFS) rootFd(root string) (int, error) {
 		_ = unix.Close(fd)
 		return -1, errEscapesRoot
 	}
-	s.rootFds[key] = fd
+	s.rootFds[root] = fd
 	return fd, nil
 }
 
