@@ -79,9 +79,11 @@ type builder struct {
 	// in file order — the one bookkeeping the corrected file scans use, so the
 	// per-turn FailedToolCalls it records matches DerivedTotalsFromFile. A fold
 	// copy contributes nothing (the counter skips it), matching the scans. On
-	// an extension this counter starts empty; a nameless result whose call the
-	// extension did not see is unresolvable, so apply forces a full rebuild
-	// rather than record a count resolved from a guess.
+	// an extension this counter starts empty and sees only the appended
+	// entries, so a nameless non-error result whose announcing call is in the
+	// covered prefix resolves to the scan's own empty-name fallback rather than
+	// to that call's name; the daemonless read's sidecar is a full rebuild,
+	// where every call is seen, so its count is exact.
 	failures *transcript.FailureCounter
 	// entryFailures is the failures the entry currently being applied settled,
 	// added to its turn's summary by stampTurn.

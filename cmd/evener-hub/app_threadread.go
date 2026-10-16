@@ -410,7 +410,6 @@ func answerPastTranscriptIndexError(entry hubcore.PastEntry, err error) error {
 func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit int, held *appwire.SnapshotIdentity) (pastItemPage, error) {
 	var page pastItemPage
 	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
-		page.Derived = pastIndexDerivedTotals(index, entry)
 		if held == nil {
 			window, err := index.Latest(limit)
 			page = pastItemPageFromWindow(entry, window)
