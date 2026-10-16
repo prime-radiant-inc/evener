@@ -97,7 +97,13 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 	if !sfs.rootDead(root) {
 		return nil
 	}
-	for _, cand := range []string{abs, resolveSymlinksBestEffort(abs)} {
+	// The mask may be spelled through the canonical root while the target is
+	// spelled through a symlinked ancestor, so check both, plus the canonical
+	// root joined with the literal in-root tail (never following a symlink
+	// INSIDE the root, which could otherwise point a masked entry away from its
+	// mask).
+	candidates := []string{abs, resolveSymlinksBestEffort(abs), filepath.Clean(filepath.Join(root, p))}
+	for _, cand := range candidates {
 		if sfs.underMaskedForWrite(cand) {
 			return sfs.deny(tool, p, denyReasonMasked)
 		}
@@ -129,6 +135,24 @@ func (e *LocalExecutionEnvironment) sandboxAnchorRoot(abs string, roots []string
 	}
 	if best != "" {
 		return best, true
+	}
+	// RootDir may itself be a symlink to the (now-deleted) root, so it dangles
+	// once the target is gone and every path-based match above fails. os.Readlink
+	// still reports the target, so the anchor can be recovered and matched.
+	if target, lerr := os.Readlink(e.RootDir); lerr == nil {
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(e.RootDir), target)
+		}
+		target = resolveSymlinksBestEffort(filepath.Clean(target))
+		best = ""
+		for _, r := range roots {
+			if (filepath.Clean(r) == target || pathWithinRoot(target, r)) && len(r) > len(best) {
+				best = r
+			}
+		}
+		if best != "" {
+			return best, true
+		}
 	}
 	return "", false
 }

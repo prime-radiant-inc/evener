@@ -218,6 +218,105 @@ func TestSandboxMutations_MaskedPathUnderDeadRootKeepsMaskedDenial(t *testing.T)
 	}
 }
 
+// T2e: after the captured root is recreated and a masked entry inside it is made
+// a symlink pointing away from the mask, full symlink resolution follows the
+// link off the mask while the ancestor-spelled target keeps the alias. The
+// canonical root joined with the literal in-root tail must still match the mask,
+// so the masked denial — not the recovery — is returned.
+func TestSandboxMutations_MaskedTargetUnderRecreatedSymlinkRootKeepsMaskedDenial(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	realParent := filepath.Join(base, "realdir")
+	home := filepath.Join(base, "home")
+	outside := filepath.Join(base, "outside")
+	for _, d := range []string{realParent, home, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(realParent, filepath.Join(base, "link")); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(base, "link", "wt")
+	canonicalSecret := filepath.Join(realParent, "wt", "secret")
+	if err := os.MkdirAll(canonicalSecret, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rp, err := sandbox.Resolve(
+		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, DenylistAdd: []string{canonicalSecret}},
+		sbTestHost(home), worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := env.WriteFileRaw("seed.txt", []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	// Delete the captured root, recreate its path, and point the masked entry
+	// outside the mask.
+	if err := os.RemoveAll(filepath.Join(realParent, "wt")); err != nil {
+		t.Fatalf("remove canonical root: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(realParent, "wt"), 0o755); err != nil {
+		t.Fatalf("recreate root path: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(realParent, "wt", "secret")); err != nil {
+		t.Fatalf("plant masked-entry symlink: %v", err)
+	}
+	err = env.RemovePath("secret/file.txt")
+	if errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("masked target under a recreated symlink root got the recovery error: %v", err)
+	}
+	denied, ok := errors.AsType[*sandbox.DeniedError](err)
+	if !ok {
+		t.Fatalf("masked remove under a recreated symlink root = %v, want *sandbox.DeniedError", err)
+	}
+	if denied.ReasonKind != sandbox.DenialMasked || !denied.Sensitive {
+		t.Fatalf("masked remove denial = %+v, want DenialMasked and Sensitive", denied)
+	}
+}
+
+// T2f: the working directory may itself be a symlink to the root. Deleting the
+// root leaves that symlink dangling, so no path-based match finds the anchor
+// even though its captured descriptor is unlinked. The relative mutation must
+// still refuse with the named recovery, never the outside-write denial (which
+// would invite an access-approval retry).
+func TestSandboxMutations_RefuseUnderDeadRootWhenCwdIsSymlinkToRoot(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	realRoot := filepath.Join(base, "real", "wt")
+	if err := os.MkdirAll(realRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cwd := filepath.Join(base, "link")
+	if err := os.Symlink(realRoot, cwd); err != nil {
+		t.Fatal(err)
+	}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, sbTestHost(home), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(cwd)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := env.WriteFileRaw("seed.txt", []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := os.RemoveAll(realRoot); err != nil {
+		t.Fatalf("remove canonical root: %v", err)
+	}
+	err = env.RemovePath("nested/file.txt")
+	if !errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("remove under a dead root reached through a dangling cwd symlink = %v, want ErrWorkingDirectoryUnavailable", err)
+	}
+}
+
 // T2d: the mask may be spelled through the canonical root while the target is
 // spelled through a symlinked ancestor. Under a dead root the masked denial —
 // and its Sensitive redaction — must still win over the recovery, or the
