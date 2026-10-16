@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -47,35 +46,31 @@ func TestDerivedTotalsNeverDisagreeAfterAnExtension(t *testing.T) {
 	if err := os.WriteFile(path, append(append([]byte(nil), fxHeader...), joinLines(lines[:2])...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Build the prefix under one handle, then close it so the extension runs
-	// against a restored builder with no call names of its own — the condition
-	// an inexact count would arise from.
-	prefix := openIndex(t, path, t.TempDir())
+	// One sidecar directory for every handle, so the later opens EXTEND the
+	// prefix's build (rather than each rebuilding a private sidecar) under a
+	// restored builder with no call names of its own — the condition an inexact
+	// count would arise from.
+	dir := t.TempDir()
+	prefix := openIndex(t, path, dir)
 	if err := prefix.Close(); err != nil {
 		t.Fatal(err)
 	}
 	appendBytes(t, path, joinLines(lines[2:]))
-	extended := openIndex(t, path, t.TempDir())
+	extended := openIndex(t, path, dir)
 	if err := extended.Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	x := openIndex(t, path, t.TempDir())
+	x := openIndex(t, path, dir)
 	defer x.Close() //nolint:errcheck // read-only test handle
 
 	gotUsage, gotFailures, derivedErr := x.DerivedTotals(0)
-	if errors.Is(derivedErr, ErrDerivedTotalsUnavailable) {
-		return // refused: the caller falls back to the scan, never a wrong figure
-	}
-	if derivedErr != nil {
-		t.Fatalf("DerivedTotals: %v", derivedErr)
-	}
-	wantUsage, wantFailures, err := apptranscript.NewTurnCache().DerivedTotalsFromFile(path, testMaxLineBytes, 0)
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-	if !reflect.DeepEqual(gotUsage, wantUsage) || gotFailures != wantFailures {
-		t.Fatalf("after extension: derived (%+v, %d) disagrees with scan (%+v, %d)",
-			gotUsage, gotFailures, wantUsage, wantFailures)
+	if !errors.Is(derivedErr, ErrDerivedTotalsUnavailable) {
+		// The extension extended (rebuilt would be exact); the guard must report
+		// the totals unavailable so the caller falls back to the scan, never a
+		// figure the scan would not produce.
+		sanityUsage, sanityFailures, _ := apptranscript.NewTurnCache().DerivedTotalsFromFile(path, testMaxLineBytes, 0)
+		t.Fatalf("DerivedTotals after an inexact extension = (%+v, %d) err=%v, want ErrDerivedTotalsUnavailable (scan says %+v, %d; inexact=%v rebuilds=%d)",
+			gotUsage, gotFailures, derivedErr, sanityUsage, sanityFailures, x.meta.FailuresInexact, x.rebuilds)
 	}
 }
