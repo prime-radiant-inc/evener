@@ -15,6 +15,7 @@ export type SessionMenuAction =
 	| {
 			kind:
 				| "find"
+				| "stop"
 				| "files"
 				| "activity"
 				| "tasks"
@@ -37,6 +38,10 @@ export interface SessionMenuInput {
 	sharedNotes: boolean;
 	canAside: boolean;
 	canShutDown: boolean;
+	/** The running turn can be stopped (`controls.stop`). The composer's Stop
+	 * takes the slot while the field is empty; this is where it stays
+	 * reachable once a draft fills it. */
+	canStop: boolean;
 	choose(action: SessionMenuAction): void;
 }
 
@@ -69,6 +74,9 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 	};
 	const entries: Entry[] = [
 		levels,
+		// Stop leads: it is the one action whose misfire cannot be undone, and a
+		// draft in the composer is exactly when Stop has no other home.
+		...(input.canStop ? [item("Stop", "stop", { destructive: true })] : []),
 		item("Find in session", "find"),
 		...(input.hasDocuments ? [item("Files", "files")] : []),
 		// Activity lists shell jobs as well as subagents, and a session's read

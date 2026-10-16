@@ -1,7 +1,7 @@
 // The Board's list as shown (spec 7.3): held while the settle machine
 // (listSettle.ts) isn't idle, or while an interaction holds it (a row's open
-// swipe, the row menu, select mode; ruling 22). Every change applies in one
-// step when it settles, and the rows that entered Needs you then wash amber.
+// swipe, the row menu; ruling 22). Every change applies in one step when it
+// settles, and the rows that entered Needs you then wash amber.
 import { enteredNeedsYou, HeldOrder, type HoldableItem } from "./heldOrder";
 import { nextSettleState, SETTLE_DEADLINE_MS, type SettleEvent, type SettleState } from "./listSettle";
 

@@ -238,13 +238,13 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 - **Shape:** Open 48-unit rows with a top hairline and a trailing chevron.
 - **Behavior:** One per pinned category (with a pin glyph, its name and count), even an empty one, since a category is a place; then Projects and Archived when they hold anything. Each opens its own screen. This is a placeholder for the inline treatment a later PR brings.
 
-### The bottom toolbar and its connection status
-- **Shape:** A 50-unit bar on the page color with a top hairline.
-- **Behavior:** The center shows the connection status only when it is not live: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" once it has been down 30 seconds, or "Update needed" at once, and never "Reconnecting…", when the hub speaks an incompatible protocol version. A live connection shows nothing there. Trailing is New session, a 44-unit `square.and.pencil` glyph in accent-ink that opens the New session sheet (below), disabled (not hidden) while disconnected.
+### The floating compose button
+- **Shape:** A 56-unit accent circle floating over the Board's end, 16 units in from the trailing edge and clear of the home indicator, with a centered `square.and.pencil` in the fill's on-color. The Board insets and pads its end by the button's room (its circle, its edge and the home indicator), and the toast floats above it.
+- **Behavior:** Opens the New session sheet (below); disabled (not hidden, dimmed) while disconnected. The Board carries no connection status of its own: the fleet meter grays while the hub is away, the rows keep their last state, and each control that needs the hub is disabled or holds its action, so a bar announcing the drop would be redundant chrome.
 
 ### The notice row
 - **Shape:** Sits on the page like a row: a mark, one sentence, a bottom hairline.
-- **Behavior:** Today's only notice is the incompatible-version warning, "This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.", shown with an amber `exclamationmark.triangle.fill` mark. The row takes no action of its own; the toolbar's status carries the matching "Update needed" wording.
+- **Behavior:** Today's only notice is the incompatible-version warning, "This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.", shown with an amber `exclamationmark.triangle.fill` mark. The row takes no action of its own.
 
 ### Skeleton, empty and failed-first-read states
 - **Skeleton:** Three still placeholder rows, 64 units tall with a 10-unit rounded fill, on the very first load only.
@@ -274,20 +274,20 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 This records the shipped Session, the screen a session opens to: one conversation, what the agent is doing now, and the one place you talk to it. The full design is `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`, section 8; this phase's plan is `docs/superpowers/plans/2026-09-26-iphone-redesign-phase3-session.md`. The Session uses the Board's palette, type roles and shapes above; what follows is what it adds.
 
 **Key Characteristics:**
-- One screen from top to bottom: the nav bar, the context chips and notes bar, the transcript ending in any ghosts, then whatever is live at the bottom (the tray, a dock, the composer).
-- One way to send: the composer's Send sends, or queues while the agent works. Stop lives in the tray; steering is something you do to a queued message.
+- One screen from top to bottom: the nav bar (whose state line is the live status), the context chips and notes bar, the transcript ending in any ghosts, then whatever is live at the bottom (a dock, or the composer).
+- One way to send: the composer's slot sends or, while the agent works with an empty field, stops. Steering is something you do to a queued message.
 - The transcript shows as much of the agent's work as you choose, per session.
 
 ### Session Components
 
 #### The nav bar
 - **Back:** The chevron, then the amber count (17pt, attention-ink) of the other sessions that need you, so you know before leaving whether anything is waiting.
-- **Title:** The session's name (15pt semibold, one line) over its state line (13pt, ink-mid, tabular figures): a still state mark, the state ("Failed", "Restart needed", "Warning", "Shut down", "Asks a question", "Needs you", "Asks for approval", "Working · 7m", or "Working" before the turn's start is known, "Idle · 35m ago", or "Idle" when no turn has ended) and a small chevron. The mark never animates; the Session's one meter is the tray's. The whole title is one button that opens the Session sheet.
+- **Title:** The session's name (15pt semibold, one line) over its state line (13pt, ink-mid, tabular figures): a state mark, the state, and a small chevron. While the agent works the state line is the live line - the meter (16.4), what the turn is doing now, and the session's elapsed time ("Checking for an existing remote… · 23s") - and a press on it jumps to the live end. Every other state reads its still mark and words: "Failed", "Restart needed", "Warning", "Shut down", "Asks a question", "Needs you", "Asks for approval", "Idle · 35m ago" or "Idle" when no turn has ended. The title is one button that opens the Session sheet; a horizontal pan on it moves to the next or previous session.
 - **Title swipe:** A horizontal pan on the title moves to the next session in Live order (to the left, as a page turns) or the previous one (to the right). It starts only once a drag goes 10pt sideways, and it moves after 60pt or a 500pt/s flick; a pan flicked back the other way moves nowhere. The session slides in from the side it came from. VoiceOver gets "Previous session" and "Next session" actions in its place.
-- **⋯ menu:** A native menu: Detail level (with the five levels inline), Find in session, then Files, Subagents, Tasks and Notes & links, each only when it can act, Session info, Ask aside… (when the session can fork and the hub is reachable), Pin to category…, Archive, and Shut down (destructive, only when it can). Delete lives in the Session sheet.
+- **⋯ menu:** A native menu: Detail level (with the five levels inline), Stop (destructive, only while the turn can be stopped — where the turn stays stoppable once a draft fills the composer's slot), Find in session, then Files, Subagents, Tasks and Notes & links, each only when it can act, Session info, Ask aside… (when the session can fork and the hub is reachable), Pin to category…, Archive, and Shut down (destructive, only when it can). Delete lives in the Session sheet.
 
 #### The connection bar, context chips and notes bar
-- **Connection bar:** A 24pt line of 13pt ink-low text under the nav bar, with the Board toolbar's words: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" after 30, and "Update needed" at once when the hub speaks an incompatible protocol version. A live connection shows nothing.
+- **Connection bar:** A 24pt line of 13pt ink-low text under the nav bar: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" after 30, and "Update needed" at once when the hub speaks an incompatible protocol version. A live connection shows nothing.
 - **Context chips:** 32pt capsules (16-unit radius, 1pt border, inset fill) in one sideways-scrolling row, each only when it has content: Subagents with its count and "2 failed" in danger ink (`person.2`), Files with its count and a blue dot when a document is new or changed (`doc.text`), Tasks "3/7" (`checklist`, settled: done plus cancelled), Goal (`target`, amber when blocked) and Queue with its depth (`tray`). Subagents and Tasks open live sheets, so they hide while disconnected; the others always show. Dragging the list down more than 8pt from where the scroll last turned slides the row up in 200ms, behind the connection bar when it shows and behind the nav bar otherwise; any upward scroll, or reaching the top, brings it back. Scrolls the app makes itself (restoring your place, following the latest message) never hide it. The slide is a transform, so the list and your place in it never move.
 - **Notes bar:** One 32pt line under the chips, in the same sliding row: "Your note: …" with a person glyph, else "Agent's note: …" with a sparkles glyph, else the one link's label or "3 links", 15pt in ink-hi, with a trailing "3 links" in 13pt ink-mid when a note shows beside links. It shows only when the hub offers shared notes and there is something to preview. Tapping it opens Notes & links.
 
@@ -296,9 +296,9 @@ This records the shipped Session, the screen a session opens to: one conversatio
 - **Your message:** A right-aligned bubble in the accent wash (`#DDEBFC` light, `#2A343D` dark), Source Serif 17/25. A message steered into a running turn carries "Steered in mid-turn" beneath it.
 - **Agent message:** Source Serif 17/26 on the page, no bubble; headings in SF Pro, code in Menlo.
 - **Time markers:** A centered 13pt marker ("Today 3:00 PM") before the first turn, before a turn that starts after ten quiet minutes, and at a new day.
-- **Runs:** Consecutive steps fold into one line: "▸ 3 steps · 1m · read 1 file, edited 1 file, ran npm test", with "(1 failed)" in danger ink. The duration shows only when every step carries its times. Expanded, each step is a line with a check or `xmark.octagon.fill`, its intent and its target in Menlo; a step with evidence opens under its line: command output in a Menlo inset (the first 40 lines, then "Show all 60 lines"), an edit as a diff, the file a write wrote, an error, and the step's images. The step in progress is the tray's line, never the transcript's; the run still growing never folds.
+- **Runs:** Consecutive steps fold into one line: "▸ 3 steps · 1m · read 1 file, edited 1 file, ran npm test", with "(1 failed)" in danger ink. The duration shows only when every step carries its times. Expanded, each step is a line with a check or `xmark.octagon.fill`, its intent and its target in Menlo; a step with evidence opens under its line: command output in a Menlo inset (the first 40 lines, then "Show all 60 lines"), an edit as a diff, the file a write wrote, an error, and the step's images. The step in progress is the live status line's, never the transcript's; the run still growing never folds.
 - **Subagent:** The web's shape: a 2pt left rail in the state's hue, no card. The title and "running · 10m" or "failed · 11m" share one line, the latest activity ("Quiet 5m", "Waiting on 3 subagents", or the failure's reason) beneath. Tapping opens its own transcript.
-- **Thought:** A settled thought reads "Thought for 12s ›", folded, and opens to the thought in the serif. A live thought is the tray's.
+- **Thought:** A settled thought reads "Thought for 12s ›", folded, and opens to the thought in the serif. A live thought is the live status line's.
 - **Question (history):** An amber left rule, each question in the reading serif, and "You answered: Drop them" beneath. While a question is still open, the dock is the question, and the transcript leaves it out.
 - **Your note:** A saved note shows as its own row where the agent was told: a 2pt left rule in the strong edge color, "You updated your note" in 13pt ink-mid, and the note in the your-message serif ("You cleared your note" alone when it was emptied).
 - **Document chip:** A document the agent named sits under its message: its kind and title, the file name, and how long ago the session wrote it. Tapping opens the Reader.
@@ -306,9 +306,9 @@ This records the shipped Session, the screen a session opens to: one conversatio
 - **Error:** A red left rule, the hub's words as they are, and at most one action: Resume when the session is paused, Sign in when a sign-in failed, otherwise Retry on the latest turn's own failure while Send can act.
 - **Scrolling:** A session opens at the right place and never moves what you are reading. New content below reads "↓ 3 new" in a floating capsule (a ghost coming or going is never new content); tapping it scrolls to the end. Until the first read lands, three still blocks stand in for the conversation.
 
-#### The status tray and Stop
-- **Shape:** One 36pt line above the composer, only while the agent works: the session's pulse meter, the running turn's most recent nonblank tool-call intent in 15pt, and Stop (`stop.fill`) at the trailing edge in a 44pt target. Before a tool intent arrives, the line falls back to current progress such as "Running go test ./cmd/evener-hub/… · 5m", "Waiting on 32 subagents", "Thinking…", or "Quiet 40s".
-- **Behavior:** The newest tool-call intent remains verbatim until the running turn ends, including after that tool call completes, and outranks progress and liveness fallbacks. Before the first intent, ten minutes with no update reads "May be stuck · no updates for 12m" in amber, unless the agent is waiting on subagents, which is never stuck; a provider retry reads "Retrying · rate limited · attempt 2 of 5". Tapping the line jumps to the live end. Stop hides while disconnected and is only disabled while a change is in flight.
+#### The live status line
+- **Place:** The nav bar title's state line, while the agent works; there is no separate tray above the composer. It carries the session's pulse meter and the running turn's most recent nonblank tool-call intent, with the session's elapsed time after it ("Checking for an existing remote… · 23s"). Before a tool intent arrives, the line falls back to current progress such as "Running go test ./cmd/evener-hub/… · 5m", "Waiting on 32 subagents", "Thinking…", or "Quiet 40s".
+- **Behavior:** The newest tool-call intent remains verbatim until the running turn ends, including after that tool call completes, and outranks progress and liveness fallbacks. Before the first intent, ten minutes with no update reads "May be stuck · no updates for 12m" in amber, unless the agent is waiting on subagents, which is never stuck; a provider retry reads "Retrying · rate limited · attempt 2 of 5". Tapping the line jumps to the live end. Its own clock ticks the seconds once a second while the agent works, so the transcript below never re-renders for them.
 
 #### Floating controls
 - **Next:** A capsule floating 10pt above the bottom while another session needs you: "Next" in accent ink, then that session's title and a chevron. A tap opens it; touch and hold lists everyone who needs you. The Next capsule, "↓ 3 new" and toasts share one column so none covers another.
@@ -320,13 +320,14 @@ This records the shipped Session, the screen a session opens to: one conversatio
 - **Behavior:** At most three queued messages show; the rest read "2 more queued", which opens the Queued messages sheet with every one and Steer all now. Tapping a bubble opens the rest of its actions (Edit, "Cancel message"). A queued or held message swipes left to Cancel. A queued message's actions hide while the hub is away; the message itself stays.
 
 #### The ask dock
-- **Shape:** An amber-edged card (1pt `#E9C598` light, `#7D583A` dark, 12-unit radius, raised fill: `#FCFBF8` light, `#232320` dark) in the tray's place, the same card for both kinds.
+- **Shape:** An amber-edged card (1pt `#E9C598` light, `#7D583A` dark, 12-unit radius, raised fill: `#FCFBF8` light, `#232320` dark) above the composer, the same card for both kinds.
 - **Question:** "Question 1 of 2", one question at a time in the reading serif with its why beneath, then its options as radio rows (checkboxes for a multi-select), the recommended one first and marked "Recommended". "Other answer…" answers in your own words through the composer; one primary button reads "Next question", then "Send answers". A chevron folds the dock to one bar that says what waits ("Answer 2 questions"), and the composer returns.
 - **Approval:** "Wants to write outside the workspace" with an amber hand, the tool and its target in Menlo (a path wraps only at its slashes), the session's scope ("This session can only write inside its project folder."), then "Allow this file only" (with "It will ask again for the next one") and Deny. There is no redirect, and the composer stays away while an approval waits.
 
 #### The composer
-- **Shape:** One rounded field (22-unit radius, 1pt border, raised fill: `#FCFBF8` light, `#232320` dark) holding the text, which grows to six lines and then offers the full-screen editor, then one controls row that looks the same whether or not the agent works: +, the model chip, and Send.
-- **Send:** A 44pt paper airplane on the accent fill, the only Send. Its placeholder and VoiceOver label say what it will do: "Message" and Send, "Tell the agent something…" and Queue message while the agent works, "Message to resume" and Send and resume on a shut-down session, "Answer or ask…" and Send answer while a question is open.
+- **Shape:** One rounded field (22-unit radius, 1pt border, raised fill: `#FCFBF8` light, `#232320` dark) holding the text, which grows to six lines and then offers the full-screen editor, then one controls row: +, the model chip, and the trailing slot - Stop or Send.
+- **Send:** A 44pt paper airplane on the accent fill. Its placeholder and VoiceOver label say what it will do: "Message" and Send, "Tell the agent something…" and Queue message while the agent works, "Message to resume" and Send and resume on a shut-down session, "Answer or ask…" and Send answer while a question is open.
+- **Stop:** While the agent works and the draft is empty (no text and no image), Stop (`stop.fill` on the danger fill, in the same 44pt slot) replaces Send: with nothing to send, stopping is the immediate action. Any text or an attached image brings Send back. Stop needs the hub, so it hides while disconnected, and is disabled while a stop is in flight.
 - **+ menu:** Photo library, Camera, and Commands and skills, which opens a sheet of the built-in commands, then skills and plugin commands grouped by plugin; a choice puts its "/name" at the start of the draft.
 - **Model chip:** "DeepSeek 4.1 Flash · XHigh ⌄" opens the model sheet: a search field and the Effort control (Low to Max, "Applies from the next turn") in its header, then Recent and each provider's models with their context. It steps aside while the composer answers an open question.
 - **In the composer's place:** A session that runs an older Evener and needs a restart, or one that is paused, shows plain text with its one button instead.
@@ -346,15 +347,15 @@ This records the shipped Session, the screen a session opens to: one conversatio
 ### Session Do's and Don'ts
 
 #### Do:
-- **Do** show the tray only while the agent works, and keep Stop there, never in the composer.
-- **Do** keep one meter per view: the tray's. The title's state mark stays still.
+- **Do** show the live status line only while the agent works, in the nav bar title; Stop takes the composer's slot with an empty field, and Send with text.
+- **Do** keep one meter per view: the live status line's.
 - **Do** keep a queued message where it will land, as a ghost, with what it waits for spelled out beneath it.
 - **Do** let reads retry on their own, and let the skeleton stand in without a spinner, shimmer or sentence about connecting.
 
 #### Don't:
 - **Don't** show connection controls in the composer, or any Reconnect or Refresh control: a control appears only when it can act, and one that needs the hub hides while the hub is away.
 - **Don't** move what the reader is reading: new content is announced by "↓ 3 new", and the chips slide away with a transform, never by changing the list's layout.
-- **Don't** show the live step or the live thought in the transcript; the tray says what's happening now.
+- **Don't** show the live step or the live thought in the transcript; the live status line says what's happening now.
 - **Don't** offer a redirect on an approval, or the composer while one waits.
 
 ## The Sheets: New session and the Hub

@@ -21,7 +21,6 @@ import {
 	useSyncExternalStore,
 } from "react";
 import {
-	AccessibilityInfo,
 	ActionSheetIOS,
 	Alert,
 	AppState,
@@ -37,9 +36,9 @@ import {
 	View,
 } from "react-native";
 import Animated from "react-native-reanimated";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { useConnection } from "../ConnectionProvider";
-import type { NavigationActions } from "../navigationActions";
 import { getNativeMutationRuntime } from "../nativeMutationRuntime";
 import { drafts } from "../nativeDrafts";
 import { useReduceMotion } from "../accessibilitySettings";
@@ -79,7 +78,7 @@ import { BoardNotices, NoticeRow } from "./BoardNotices";
 import { ContinueReadingRow } from "./ContinueReadingRow";
 import { BandHeader, FoldChevron, Hairline, TITLE_INSET } from "./BoardRow";
 import { BoardListRow, type RowContext } from "./BoardRows";
-import { BoardToolbar, type ToolbarPlacement } from "./BoardToolbar";
+import { ComposeButton, composeButtonRoom } from "./ComposeButton";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { useBoardReadRetry } from "./useBoardReadRetry";
 import { useActivityPoll } from "./useActivityPoll";
@@ -117,7 +116,6 @@ import { PulseMeter } from "./PulseMeter";
 import {
 	archiveTarget,
 	archivingSessionId,
-	journalOutcome,
 	projectChange,
 	type RowAction,
 	type RowActionContext,
@@ -130,16 +128,14 @@ import {
 	shutDownSession,
 } from "./rowActions";
 import { type RowMenuHost, rowMenuHosts } from "./RowMenu";
-import { archiveRequest, archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
+import { archiveRow, rowSwipes, type SwipeRowAction } from "./rowSwipes";
 import { SearchResults } from "./SearchResults";
-import { SelectBar } from "./SelectBar";
-import { selectionActions, toggleSelected } from "./selection";
 import { listScrollHandlers } from "./settledList";
 import { journalOperation, organizationOpen } from "./organizationCheck";
 import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 import { useSettledList } from "./useSettledList";
-import { FLOAT_GAP, underBar, useBarHeight } from "../design/underBar";
+import { FLOAT_GAP, underBar } from "../design/underBar";
 import { destructiveButton, haptic } from "../haptics";
 import { Button } from "../sheet/Grouped";
 
@@ -207,28 +203,12 @@ function Board({
 	const seen = useBoardSeen(hubId);
 	const [now, setNow] = useState(Date.now);
 	const [draftRefs, setDraftRefs] = useState<Set<string>>(() => new Set());
-	// Select mode (spec 7.1): on from Select until Done or one of its
-	// actions completes (ruling 26), with the refs chosen so far.
-	const [selecting, setSelecting] = useState(false);
-	// How tall the toolbar (or the select bar) stands over the Board's end.
-	const toolbar = useBarHeight();
-	const toolbarHeight = toolbar.height ?? 0;
-	const boardUnderBar = underBar(toolbarHeight);
-	const toolbarPlacement: ToolbarPlacement = {
-		testID: "board-toolbar",
-		style: { position: "absolute", left: 0, right: 0, bottom: 0 },
-		onLayout: toolbar.onLayout,
-	};
-	const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set());
-	const leaveSelect = () => {
-		setSelecting(false);
-		setChosen(new Set());
-	};
-	const choose = (row: NavigationSessionSummary) => {
-		const next = toggleSelected(chosen, row.ref);
-		setChosen(next);
-		AccessibilityInfo.announceForAccessibility(`${next.size} selected`);
-	};
+	// The floating compose button's room over the Board's end, from the home
+	// indicator it clears. The Board is inset and padded by it, and the toast
+	// floats above it.
+	const { bottom: bottomInset } = useSafeAreaInsets();
+	const composeRoom = composeButtonRoom(bottomInset);
+	const boardUnderBar = underBar(composeRoom);
 
 	// Declared before the client binding so a first focus resumes an unbound
 	// controller rather than one whose reads just went out.
@@ -684,8 +664,7 @@ function Board({
 		usual,
 		hostLabel,
 		now,
-		// In select mode a press chooses the row instead of opening it.
-		onOpen: selecting ? choose : openSession,
+		onOpen: openSession,
 		draftRefs,
 		activityOf,
 		msSinceRead,
@@ -817,22 +796,14 @@ function Board({
 	useEffect(() => {
 		if (!inFront) list.send("reset");
 	}, [inFront, list]);
-	// Leaving the app releases every hold; coming back while selecting takes
-	// select mode's hold again, since it lasts until Done or an action.
-	const [appActive, setAppActive] = useState(true);
+	// Leaving the app releases every hold.
 	useEffect(() => {
 		const subscription = AppState.addEventListener("change", (state) => {
 			const away = state === "background" || state === "inactive";
 			if (away) list.send("reset");
-			setAppActive(!away);
 		});
 		return () => subscription.remove();
 	}, [list]);
-	// Select mode holds the list while the Board is in front (ruling 22).
-	useEffect(
-		() => list.setInteraction("select", selecting && inFront && appActive),
-		[list, selecting, inFront, appActive],
-	);
 	// The session rows the Board's list shows now, a departed row a hold keeps
 	// on screen included (ruling 22).
 	const shownRowItems = settled.display.flatMap((item) =>
@@ -1066,7 +1037,6 @@ function Board({
 						variant={item.variant}
 						moving={item.moving}
 						archived={item.archived}
-						selected={selecting ? chosen.has(item.item.row.ref) : undefined}
 						wash={settled.washed.get(item.key) ?? 0}
 						context={listContext}
 						onSwipeActive={(active) => list.setInteraction(`swipe:${item.key}`, active)}
@@ -1131,60 +1101,6 @@ function Board({
 		);
 	};
 	const liveShown = shownGroups.get("live");
-	const selection = selectionActions(shownRowItems.filter(({ item }) => chosen.has(item.row.ref)));
-	/** Select mode's change to many rows, one at a time through the journal,
-	 * reading the Board as it is now. A row whose change can't go now
-	 * (holdsChange) is held, and so is every row after one the journal
-	 * didn't take or couldn't confirm. Resolves the rows the hub confirmed,
-	 * and how many it tried. */
-	const changeEach = async (
-		rows: readonly NavigationSessionSummary[],
-		kind: "archive" | "pin",
-		holdOne: (row: NavigationSessionSummary) => void,
-		request: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<void>,
-	) => {
-		const actions = organizationNow.current.actions;
-		const sending: NavigationSessionSummary[] = [];
-		for (const row of rows) {
-			if (!actions || holdsChange(waitsFor(row.ref, kind), true)) holdOne(row);
-			else sending.push(row);
-		}
-		const confirmed = actions ? await confirmEach(actions, sending, request, (rest) => rest.forEach(holdOne)) : [];
-		return { confirmed, tried: sending.length };
-	};
-	const archiveEach = (rows: readonly NavigationSessionSummary[], archived: boolean) =>
-		changeEach(rows, "archive", holdArchive(archived), (actions, row) => archiveRequest(actions, row, archived));
-	const archiveChosen = async (rows: readonly NavigationSessionSummary[]) => {
-		const { confirmed, tried } = await archiveEach(rows, true);
-		leaveSelect();
-		if (confirmed.length)
-			toast.show({
-				kind: "archive:done",
-				text: sessionCount("Archived", confirmed.length, tried),
-				action: {
-					label: "Undo",
-					run: () =>
-						void archiveEach(confirmed, false).then((undone) => {
-							if (undone.confirmed.length)
-								toast.show({
-									kind: "unarchive:done",
-									text: sessionCount("Unarchived", undone.confirmed.length, undone.tried),
-								});
-						}),
-				},
-			});
-	};
-	const pinChosen = async (rows: readonly NavigationSessionSummary[], section: PinTarget, name: string) => {
-		const { confirmed, tried } = await changeEach(
-			rows,
-			"pin",
-			(row) => void holdAction({ kind: "pin", target: { sessionRef: row.ref, ...section } }),
-			(actions, row) => actions.assignPin({ sessionRef: row.ref, ...section }),
-		);
-		leaveSelect();
-		if (confirmed.length)
-			toast.show({ kind: "pin:done", text: `${sessionCount("Pinned", confirmed.length, tried)} to ${name}` });
-	};
 
 	let live: ReactNode;
 	// Update needed says everything there is to say until something loads.
@@ -1231,8 +1147,8 @@ function Board({
 						paddingBottom: 24 + boardUnderBar.endPadding,
 						minHeight: windowHeight + searchFieldHeight,
 					}}
-					// The Board runs under its toolbar's glass, its end and its
-					// scroll indicator clear of the toolbar.
+					// The Board runs under its compose button, its end and its
+					// scroll indicator clear of it.
 					contentInset={navGlass ? { ...boardUnderBar.contentInset, top: underGlass } : boardUnderBar.contentInset}
 					scrollIndicatorInsets={
 						navGlass ? { ...boardUnderBar.scrollIndicatorInsets, top: underGlass } : boardUnderBar.scrollIndicatorInsets
@@ -1307,36 +1223,14 @@ function Board({
 				<View
 					testID="board-toast"
 					pointerEvents="box-none"
-					style={{ position: "absolute", left: 0, right: 0, bottom: toolbarHeight + FLOAT_GAP }}
+					style={{ position: "absolute", left: 0, right: 0, bottom: composeRoom + FLOAT_GAP }}
 				>
 					<Toast toast={toast.toast} dismiss={toast.dismiss} />
 				</View>
 			</View>
-			{/* The toolbar lies over the Board's end, so the Board runs under it. */}
-			{selecting ? (
-				<SelectBar
-					{...toolbarPlacement}
-					counts={{
-						archive: selection.archive.length,
-						// Pin's sheet asks through ActionSheetIOS and Alert.prompt.
-						pin: Platform.OS === "ios" ? selection.pin.length : 0,
-					}}
-					onDone={leaveSelect}
-					onArchive={() => void archiveChosen(selection.archive)}
-					onPin={() =>
-						chooseCategory(board.getSnapshot().pins.rows, toast, (section, name) =>
-							pinChosen(selection.pin, section, name),
-						)
-					}
-				/>
-			) : (
-				<BoardToolbar
-					{...toolbarPlacement}
-					newSessionDisabled={!connected}
-					onNewSession={newSession}
-					onSelect={shownRowItems.length && !searching ? () => setSelecting(true) : undefined}
-				/>
-			)}
+			{/* The compose button floats over the Board's end, so the Board runs
+			    under it; the toast slot sits above it. */}
+			<ComposeButton disabled={!connected} onPress={newSession} />
 		</View>
 	);
 }
@@ -1419,43 +1313,13 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 	};
 }
 
-/** Where select mode pins: a category the catalog lists, or a new one by
- * name (the hub makes it for the first session and reuses it after). */
+/** Where a Pin goes: a category the catalog lists, or a new one by name (the
+ * hub makes it for the first session and reuses it after). */
 type PinTarget = { sectionId: string } | { sectionName: string };
 
-/** "Archived 2 sessions", or "Archived 2 of 3 sessions" when some weren't. */
-function sessionCount(verb: string, done: number, of: number): string {
-	return done === of ? `${verb} ${plural(done, "session")}` : `${verb} ${done} of ${plural(of, "session")}`;
-}
-
-/** Makes one journaled change per session, in order, through the Board's
- * organization journal, stopping at the first the hub doesn't confirm: an
- * unconfirmed one is the journal's to settle, and `holdRest` gets the rows
- * after it, or that row and the rows after it when the journal didn't take
- * it. Resolves the sessions it confirmed. */
-async function confirmEach(
-	actions: NavigationActions,
-	rows: readonly NavigationSessionSummary[],
-	request: (actions: NavigationActions, row: NavigationSessionSummary) => Promise<void>,
-	holdRest: (rows: readonly NavigationSessionSummary[]) => void,
-): Promise<NavigationSessionSummary[]> {
-	const confirmed: NavigationSessionSummary[] = [];
-	for (const [index, row] of rows.entries()) {
-		const outcome = await journalOutcome(actions, () => request(actions, row));
-		if (outcome === "confirmed") {
-			confirmed.push(row);
-			continue;
-		}
-		if (outcome === "unconfirmed") void actions.reconcile();
-		holdRest(rows.slice(outcome === "unconfirmed" ? index + 1 : index));
-		break;
-	}
-	return confirmed;
-}
-
-/** Select mode's Pin (ruling 18): the pin catalog's categories, then a new
- * one, as an action sheet. A new category's name is 1-80 characters, the
- * journal's own bound. */
+/** A row's Pin (ruling 18): the pin catalog's categories, then a new one, as
+ * an action sheet. A new category's name is 1-80 characters, the journal's
+ * own bound. */
 function chooseCategory(
 	categories: readonly NavigationPinSectionDescriptor[],
 	toast: Pick<ToastController, "show">,

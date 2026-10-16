@@ -66,7 +66,7 @@ interface Step {
 	seconds: number;
 	output?: string;
 	failed?: { error: string; exitCode: number };
-	// The step still running: the status tray's line.
+	// The step still running: the live status line.
 	running?: true;
 }
 

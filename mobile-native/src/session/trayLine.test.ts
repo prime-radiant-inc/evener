@@ -77,6 +77,7 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(session({ turns: [turn([running])] }), NOW)).toEqual({
 			text: "Running go test ./agent/... · 42s",
 			attention: false,
+			timed: true,
 		});
 	});
 
@@ -391,6 +392,7 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(session({ turns: [turn([running])], lastFrameAt: NOW - 12 * 60_000 }), NOW)).toEqual({
 			text: "May be stuck · no updates for 12m",
 			attention: true,
+			timed: true,
 		});
 	});
 
@@ -449,6 +451,7 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(session({ modelRetry: retry, lastFrameAt: NOW - 12 * 60_000 }), NOW)).toEqual({
 			text: "Retrying · rate limited · attempt 9 of 11 · no updates for 12m",
 			attention: true,
+			timed: true,
 		});
 	});
 });

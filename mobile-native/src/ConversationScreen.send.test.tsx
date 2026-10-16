@@ -582,11 +582,39 @@ it("sends a message when the agent is at rest", async () => {
 	expect(playedHaptics).toEqual(["impact:light"]);
 });
 
-it("stops the running turn from the tray and says so", async () => {
+it("stops the running turn from the composer's slot and says so", async () => {
 	const { tree, hub } = await mount(thread("ref-stop", "active"));
 	await press(tree, "Stop");
 	expect(hub.mutations()).toEqual(["turn/interrupt"]);
 	expect(toasts(tree)).toEqual(["stop:stopped"]);
+});
+
+it("shows Stop in the composer's slot only while the turn runs with an empty field", async () => {
+	// Running with an empty field: Stop, no Send.
+	const running = await mount(thread("ref-slot", "active"));
+	expect(pressable(running.tree, "Stop")).toBeDefined();
+	// A draft takes the slot back for the queueing Send.
+	await type(running.tree, "half a thought");
+	expect(pressable(running.tree, "Stop")).toBeUndefined();
+	expect(pressable(running.tree, "Queue message")).toBeDefined();
+});
+
+it("stops the running turn from the session menu while a draft waits", async () => {
+	const { tree, hub } = await mount(thread("ref-slot-menu", "active"));
+	await type(tree, "half a thought");
+	// The slot is Send while typing; the ⋯ menu is where Stop stays reachable.
+	expect(pressable(tree, "Stop")).toBeUndefined();
+	chooseMenu("Stop");
+	await settle();
+	expect(hub.mutations()).toEqual(["turn/interrupt"]);
+	// The draft survives the stop: stopping must not cost the typed message.
+	expect(field(tree)?.props.value).toBe("half a thought");
+});
+
+it("keeps Send in the slot when the session is not running", async () => {
+	const { tree } = await mount(thread("ref-slot-idle", "idle"));
+	expect(pressable(tree, "Stop")).toBeUndefined();
+	expect(pressable(tree, "Send")).toBeDefined();
 });
 
 it("queues a second Send pressed before the first one's turn is seen", async () => {
