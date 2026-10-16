@@ -618,3 +618,38 @@ it("a failed expiry fence recovers through the next storage-success notification
   // expired epoch without any reader-driven trigger.
   expect(headAfter.epoch).not.toBe(headBefore.epoch);
 });
+
+it("a storage-success notification that races a later pending handoff still schedules the pass it needs", async () => {
+  let runtime: DocumentAnnotationRuntime | undefined;
+  const f = await fixture("runtime-concurrent-handoffs", {
+    onStorageSuccess: () => runtime?.storageSucceeded(),
+  });
+  runtime = createDocumentAnnotationRuntime(f.repo);
+  const retainedRuntime = runtime;
+  cleanupAfterTest(async () => {
+    try {
+      await retainedRuntime.whenIdle();
+    } finally {
+      retainedRuntime.dispose();
+    }
+  });
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+
+  // Two saved annotations for the same composer, both pending.
+  const first = await acceptedOperation(f.repo, f.document, "op-first", "first note", f.destination);
+  const second = await acceptedOperation(f.repo, f.document, "op-second", "second note", f.destination);
+  await retainedRuntime.save(first);
+  await retainedRuntime.save(second);
+
+  // Both handoffs run concurrently: the composer source's preparation
+  // machinery is single-flight, and concurrent handoffs to one composer used
+  // to deadlock - the second handoff never returned at all. Serialized
+  // handoffs give each one a fresh, settled preparation, so both references
+  // apply without any external trigger.
+  const [r1, r2] = await Promise.all([
+    retainedRuntime.handoff(f.document, "op-first"),
+    retainedRuntime.handoff(f.document, "op-second"),
+  ]);
+  expect(r1.state).toBe("applied");
+  expect(r2.state).toBe("applied");
+});
