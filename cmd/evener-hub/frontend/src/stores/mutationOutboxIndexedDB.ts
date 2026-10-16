@@ -142,10 +142,12 @@ const SETTLEMENT_STORES = [
   COMPOSER_DRAFTS_STORE,
   ANNOTATION_NAMESPACES_STORE,
 ];
-// The settlement's record-only scope: no composer store, so the legacy-draft
-// migration gate never orders against it. #settle's discovery read picks this
-// scope for every settlement whose recovery branch cannot fire.
-const SETTLEMENT_RECORD_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE];
+// The settlement's record-only scope: all three record stores with no
+// composer store, so the legacy-draft migration gate never orders against it.
+// #settle's first attempt runs here and settles in place whenever the record
+// proves recovery-free; a record that would touch the session row escalates
+// from there to the full scope below.
+const SETTLEMENT_RECORD_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE];
 
 // The outbox's own storage failures: an open the database refused or that
 // another tab's older schema blocked, or a connection superseded mid-open.
@@ -738,37 +740,50 @@ export class MutationOutboxIndexedDB {
     return this.#settle(clientMutationId, { kind: "applied" });
   }
 
-  // Both canonical settlements share one engine. A readonly discovery read
-  // picks the scope first: a settlement touches the ref's session row - and so
-  // needs the composer store, and with it the legacy-draft migration gate -
-  // only through its recovery branch. A settlement the discovery proves
-  // recovery-free settles in the record-only scope instead, where an
-  // unrelated pending legacy transfer cannot block it: the dispatcher holds a
-  // settlement at the head of its queue while it retries, and behind a
-  // blocked settlement waits every later input.
+  // Both canonical settlements share one engine, attempted in two scopes.
+  // The first attempt always opens the record-only scope and settles there
+  // whenever the record proves recovery-free: no composer store is in scope,
+  // so the legacy-draft migration gate never orders against it, an unrelated
+  // pending legacy transfer cannot block the settlement the dispatcher holds
+  // at the head of its queue, and the settlement still writes in one
+  // transaction. A settlement that would touch the ref's session row - its
+  // own recovery record, or the refused superseded note recovery rows it
+  // retires - commits nothing in that scope and escalates to the full scope,
+  // where the migration gate orders the legacy-draft transfer before the
+  // transaction that can initialize the row. A row initialized before the
+  // legacy draft transferred is exactly the stranding the gate exists to
+  // prevent.
   async #settle(
     clientMutationId: string,
     settlement: { kind: "receipt"; projectionState: string } | { kind: "applied" },
   ): Promise<boolean> {
     const receipt = settlement.kind === "receipt" ? settlement : undefined;
     let settledSource: MutationRecord | undefined;
-    const scopedSettlement = (stores: string[], hasRecovery: boolean): Promise<boolean> =>
+    const scopedSettlement = async (
+      stores: string[],
+      sessionScope: boolean,
+    ): Promise<"settled" | "escalate" | "absent"> =>
       this.#write(stores, receipt ? "settleReceipt" : undefined, async (transaction) => {
         const outbox = transaction.objectStore(OUTBOX_STORE);
         const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
-        const recovery = hasRecovery ? transaction.objectStore(RECOVERY_STORE) : undefined;
+        const recovery = transaction.objectStore(RECOVERY_STORE);
         const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
           requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
           requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
-          recovery
-            ? requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId))
-            : Promise.resolve<MutationRecoveryRecord | undefined>(undefined),
+          requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
         ]);
         const source = receipt
           ? (outboxRecord ?? recoveryRecord ?? optimisticRecord)
           : (outboxRecord ?? optimisticRecord ?? recoveryRecord);
-        if (!source) return false;
-        const supersededRemoved = recovery ? await this.#discardSupersededNoteRecovery(transaction, source) : 0;
+        if (!source) return "absent";
+        if (!sessionScope) {
+          if (recoveryRecord !== undefined) return "escalate";
+          if (source.method === "notes/human/set") {
+            const records = await requestResult<MutationRecoveryRecord[]>(recovery.getAll());
+            if (records.some((record) => this.#isSupersededNoteRecovery(record, source))) return "escalate";
+          }
+        }
+        const supersededRemoved = sessionScope ? await this.#discardSupersededNoteRecovery(transaction, source) : 0;
         settledSource = source;
         await this.#settleRecordStores(transaction, {
           clientMutationId,
@@ -777,68 +792,26 @@ export class MutationOutboxIndexedDB {
           optimisticRecord,
           projectionState: receipt?.projectionState,
         });
-        if (recovery && recoveryRecord !== undefined) {
+        if (recoveryRecord !== undefined) {
           await requestResult(recovery.delete(clientMutationId));
         }
         // Only an actual recovery deletion advances the ref's session revision:
         // an outbox- or optimistic-only settle changes no ordinary work.
-        if (recoveryRecord !== undefined || supersededRemoved > 0) {
+        if (sessionScope && (recoveryRecord !== undefined || supersededRemoved > 0)) {
           const key = recoverySessionKey(source.targetRef);
           const { namespace, row } = await this.#readSession(transaction, key);
           const { writes } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
           await Promise.all(writes);
         }
-        return true;
+        return "settled";
       });
-    const scope = await this.#settlementScope(clientMutationId);
-    if (scope === "absent") return false;
-    let settled = false;
-    if (scope === "records") {
-      settled = await scopedSettlement(SETTLEMENT_RECORD_STORES, false);
-      // A record that moved to recovery between the discovery read and this
-      // write is invisible in the record-only scope; fall through to the full
-      // scope, which settles it exactly as before - gated, because that path
-      // can write the session row.
-    }
-    if (!settled) settled = await scopedSettlement(SETTLEMENT_STORES, true);
+    let outcome = await scopedSettlement(SETTLEMENT_RECORD_STORES, false);
+    if (outcome === "escalate") outcome = await scopedSettlement(SETTLEMENT_STORES, true);
+    const settled = outcome === "settled";
     this.#discardSupersededCanceledNotesAfterSettle(settled ? settledSource : undefined);
     const settledRef = settledSource?.targetRef;
     if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
     return settled;
-  }
-
-  // Readonly discovery for #settle. "session" means this settlement can write
-  // the ref's session row - through its own recovery record, or by retiring
-  // refused superseded note recovery rows - so it keeps the composer store in
-  // scope and waits for the legacy-draft migration with it. "records" means
-  // only the record stores are involved, and "absent" means no store holds the
-  // id: the cross-store uniqueness check keeps any later enqueue from
-  // recreating it, so there is nothing to settle and nothing to wait for. The
-  // superseded-note predicate mirrors #discardSupersededNoteRecovery exactly.
-  async #settlementScope(clientMutationId: string): Promise<"session" | "records" | "absent"> {
-    return this.#read([OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE], async (transaction) => {
-      const outbox = transaction.objectStore(OUTBOX_STORE);
-      const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
-      const recovery = transaction.objectStore(RECOVERY_STORE);
-      const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
-        requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
-        requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
-        requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
-      ]);
-      if (recoveryRecord !== undefined) return "session";
-      const source = outboxRecord ?? optimisticRecord;
-      if (!source) return "absent";
-      if (source.method !== "notes/human/set") return "records";
-      const records = await requestResult<MutationRecoveryRecord[]>(recovery.getAll());
-      return records.some(
-        (record) =>
-          record.method === "notes/human/set" &&
-          record.targetRef === source.targetRef &&
-          record.intentSequence < source.intentSequence,
-      )
-        ? "session"
-        : "records";
-    });
   }
 
   // The record-store retirement every settlement performs in either scope:
@@ -888,6 +861,16 @@ export class MutationOutboxIndexedDB {
     }
   }
 
+  // The supersede test the settlement's scope check and its discard share: a
+  // refused note recovery row earlier in the same ref's sequence.
+  #isSupersededNoteRecovery(record: MutationRecoveryRecord, source: MutationRecord): boolean {
+    return (
+      record.method === "notes/human/set" &&
+      record.targetRef === source.targetRef &&
+      record.intentSequence < source.intentSequence
+    );
+  }
+
   // A later accepted note supersedes refused earlier text, not chat recovery
   // or unresolved transport. Retire it in the same canonical-settlement write.
   async #discardSupersededNoteRecovery(
@@ -899,11 +882,7 @@ export class MutationOutboxIndexedDB {
     const records = await requestResult<MutationRecoveryRecord[]>(store.getAll());
     let removed = 0;
     for (const record of records) {
-      if (
-        record.method === "notes/human/set" &&
-        record.targetRef === source.targetRef &&
-        record.intentSequence < source.intentSequence
-      ) {
+      if (this.#isSupersededNoteRecovery(record, source)) {
         await requestResult(store.delete(record.clientMutationId));
         removed += 1;
       }

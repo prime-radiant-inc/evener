@@ -784,10 +784,10 @@ test.each<
   ["a Force stop's cancellation", ["outbox", "sequences"], (storage) => storage.cancelUnattempted("ref_a")],
   [
     "the dispatcher's record-only settlement",
-    // settleReceipt opens the settlement scope its readonly discovery read
-    // picks: this fixture's outbox-only record never reaches the recovery
-    // branch, so the settlement runs over the two record stores alone.
-    ["outbox", "optimistic"],
+    // settleReceipt attempts the record-only scope first: this fixture's
+    // outbox-only record proves recovery-free in that attempt, so the
+    // settlement runs over the three record stores alone.
+    ["outbox", "optimistic", "recovery"],
     (storage, clientMutationId) => storage.settleReceipt(clientMutationId, "reflected"),
   ],
   [
