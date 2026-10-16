@@ -304,6 +304,13 @@ async function touchJourney(driver) {
   if (!click.trusted || JSON.stringify(beforePanes) !== JSON.stringify(afterPanes)) {
     throw new Error("long press activated a session or failed to receive the native compatibility click");
   }
+  // The lift must not dismiss the card: only an outside touch or a scroll does.
+  // Without this, the outside-dismiss wait below would pass vacuously against a
+  // regression that hides the card on pointerup.
+  await driver.waitPage("window.__sessionHoverGuard.card() !== null", {
+    label: "card stays visible after the lifted long press",
+  });
+  assertCard(await measureCard(driver), false);
   await driver.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 16, y: 20 }] });
   await driver.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await driver.waitPage("window.__sessionHoverGuard.card() === null", { label: "outside touch dismisses context" });
@@ -332,6 +339,10 @@ async function touchJourney(driver) {
   if (!freshClick.trusted || JSON.stringify(beforePanes) !== JSON.stringify(afterFreshPanes)) {
     throw new Error("fresh long press activated a session or lost its compatibility click");
   }
+  await driver.waitPage("window.__sessionHoverGuard.card() !== null", {
+    label: "refreshed card stays visible after its lifted long press",
+  });
+  assertCard(await measureCard(driver), false);
   await driver.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 16, y: 20 }] });
   await driver.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await driver.waitPage("window.__sessionHoverGuard.card() === null", { label: "outside touch dismisses the refreshed card" });
