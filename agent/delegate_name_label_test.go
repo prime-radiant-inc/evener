@@ -62,7 +62,7 @@ func TestDelegateName_LabelCarriesToCreateResultAndListings(t *testing.T) {
 	if row.Name != "research-label" {
 		t.Fatalf("job_list row name = %q, want research-label", row.Name)
 	}
-	if rendered := formatJobList(listed); !strings.Contains(rendered, "research-label") {
+	if rendered := formatJobList(listed, jobToolResultDefaultMaxChar); !strings.Contains(rendered, "research-label") {
 		t.Fatalf("job_list render omits the label:\n%s", rendered)
 	}
 
