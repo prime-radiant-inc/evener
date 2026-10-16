@@ -317,6 +317,105 @@ func TestSandboxMutations_RefuseUnderDeadRootWhenCwdIsSymlinkToRoot(t *testing.T
 	}
 }
 
+// T2g: the working directory can be a subdirectory of the writable root, so the
+// requested path's literal in-root tail is longer than the request. A masked
+// entry under that subdirectory, made an outward symlink after the root is
+// recreated, must still yield the masked denial.
+func TestSandboxMutations_MaskedTargetUnderDeadSubdirCwdKeepsMaskedDenial(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	realParent := filepath.Join(base, "realdir")
+	home := filepath.Join(base, "home")
+	outside := filepath.Join(base, "outside")
+	for _, d := range []string{realParent, home, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(realParent, filepath.Join(base, "link")); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(base, "link", "wt", "sub")
+	canonicalSecret := filepath.Join(realParent, "wt", "sub", "secret")
+	if err := os.MkdirAll(canonicalSecret, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rp, err := sandbox.Resolve(
+		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, DenylistAdd: []string{canonicalSecret}},
+		sbTestHost(home), sub)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(sub)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := env.WriteFileRaw("seed.txt", []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(realParent, "wt")); err != nil {
+		t.Fatalf("remove canonical root: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(realParent, "wt", "sub"), 0o755); err != nil {
+		t.Fatalf("recreate root path: %v", err)
+	}
+	if err := os.Symlink(outside, canonicalSecret); err != nil {
+		t.Fatalf("plant masked-entry symlink: %v", err)
+	}
+	err = env.RemovePath("secret/file.txt")
+	if errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("masked target under a dead subdir cwd got the recovery error: %v", err)
+	}
+	denied, ok := errors.AsType[*sandbox.DeniedError](err)
+	if !ok {
+		t.Fatalf("masked remove under a dead subdir cwd = %v, want *sandbox.DeniedError", err)
+	}
+	if denied.ReasonKind != sandbox.DenialMasked || !denied.Sensitive {
+		t.Fatalf("masked remove denial = %+v, want DenialMasked and Sensitive", denied)
+	}
+}
+
+// T2h: the working directory can be reached through a chain of symlinks. When
+// the root at the end is deleted the whole chain dangles, and the anchor must
+// still be recovered so the mutation refuses with the named recovery rather than
+// the outside-write denial.
+func TestSandboxMutations_RefuseUnderDeadRootThroughCwdSymlinkChain(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	realRoot := filepath.Join(base, "real", "wt")
+	if err := os.MkdirAll(realRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	intermediate := filepath.Join(base, "intermediate")
+	if err := os.Symlink(realRoot, intermediate); err != nil {
+		t.Fatal(err)
+	}
+	cwd := filepath.Join(base, "link")
+	if err := os.Symlink(intermediate, cwd); err != nil {
+		t.Fatal(err)
+	}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, sbTestHost(home), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(cwd)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := env.WriteFileRaw("seed.txt", []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := os.RemoveAll(realRoot); err != nil {
+		t.Fatalf("remove canonical root: %v", err)
+	}
+	err = env.RemovePath("nested/file.txt")
+	if !errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("remove under a dead root reached through a symlink chain = %v, want ErrWorkingDirectoryUnavailable", err)
+	}
+}
+
 // T2d: the mask may be spelled through the canonical root while the target is
 // spelled through a symlinked ancestor. Under a dead root the masked denial —
 // and its Sensitive redaction — must still win over the recovery, or the

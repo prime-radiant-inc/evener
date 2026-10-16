@@ -90,7 +90,13 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 		return nil
 	}
 	abs := filepath.Clean(e.resolve(p))
-	root, ok := e.sandboxAnchorRoot(abs, sfs.policy.FileTool.WriteRoots)
+	// The canonical spelling of the target: RootDir resolved through symlinks —
+	// dangling ones included, which is the state once its root is deleted — with
+	// the requested relative tail appended literally. No symlink INSIDE the tree
+	// is followed, so a masked entry redirected by an in-tree symlink still
+	// matches its mask.
+	canonicalAbs := filepath.Clean(filepath.Join(resolveDanglingSymlinks(e.RootDir), filepath.FromSlash(p)))
+	root, ok := e.sandboxAnchorRoot(abs, canonicalAbs, sfs.policy.FileTool.WriteRoots)
 	if !ok {
 		return nil
 	}
@@ -98,12 +104,8 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 		return nil
 	}
 	// The mask may be spelled through the canonical root while the target is
-	// spelled through a symlinked ancestor, so check both, plus the canonical
-	// root joined with the literal in-root tail (never following a symlink
-	// INSIDE the root, which could otherwise point a masked entry away from its
-	// mask).
-	candidates := []string{abs, resolveSymlinksBestEffort(abs), filepath.Clean(filepath.Join(root, p))}
-	for _, cand := range candidates {
+	// spelled through a symlinked ancestor, so check every spelling.
+	for _, cand := range []string{abs, canonicalAbs, resolveSymlinksBestEffort(abs)} {
 		if sfs.underMaskedForWrite(cand) {
 			return sfs.deny(tool, p, denyReasonMasked)
 		}
@@ -116,45 +118,50 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 
 // sandboxAnchorRoot returns the writable root a resolved absolute path anchors
 // on. containingRoot answers the common case directly. When it cannot — the
-// path was spelled through a symlinked ancestor while the policy root was
-// canonicalized (the macOS /var → /private/var analogue), so its real-ancestor
-// fallback needs the root on disk and that root is exactly what has gone — the
-// relative path still anchors on RootDir, so fall back to the most specific
-// writable root that contains abs under best-effort (nearest-existing-ancestor)
-// symlink resolution. A path under no writable root still anchors on none, and
-// its own out-of-root denial stands.
-func (e *LocalExecutionEnvironment) sandboxAnchorRoot(abs string, roots []string) (string, bool) {
+// path was spelled through a symlinked ancestor (or through a symlinked RootDir)
+// while the policy root was canonicalized, so its real-ancestor fallback needs
+// the root on disk and that root is exactly what has gone — the relative path
+// still anchors on RootDir, so fall back to the most specific writable root that
+// contains abs or canonicalAbs (RootDir's symlink-resolved spelling plus the
+// literal tail) under best-effort, nearest-existing-ancestor resolution. A path
+// under no writable root still anchors on none, and its own out-of-root denial
+// stands.
+func (e *LocalExecutionEnvironment) sandboxAnchorRoot(abs, canonicalAbs string, roots []string) (string, bool) {
 	if root, _, ok := containingRoot(roots, abs); ok {
 		return root, true
 	}
 	best := ""
-	for _, r := range roots {
-		if pathWithinRoot(abs, r) && len(r) > len(best) {
-			best = r
+	for _, candidate := range []string{abs, canonicalAbs} {
+		for _, r := range roots {
+			if pathWithinRoot(candidate, r) && len(r) > len(best) {
+				best = r
+			}
 		}
 	}
 	if best != "" {
 		return best, true
 	}
-	// RootDir may itself be a symlink to the (now-deleted) root, so it dangles
-	// once the target is gone and every path-based match above fails. os.Readlink
-	// still reports the target, so the anchor can be recovered and matched.
-	if target, lerr := os.Readlink(e.RootDir); lerr == nil {
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(e.RootDir), target)
-		}
-		target = resolveSymlinksBestEffort(filepath.Clean(target))
-		best = ""
-		for _, r := range roots {
-			if (filepath.Clean(r) == target || pathWithinRoot(target, r)) && len(r) > len(best) {
-				best = r
-			}
-		}
-		if best != "" {
-			return best, true
-		}
-	}
 	return "", false
+}
+
+// resolveDanglingSymlinks resolves path through symlinks even when the eventual
+// target no longer exists: os.Readlink still reports each link's target, so a
+// chain left dangling by a root's deletion is followed to its final spelling.
+// The hop cap bounds a cyclic chain, after which the tail is resolved
+// best-effort through its nearest existing ancestor.
+func resolveDanglingSymlinks(path string) string {
+	const maxHops = 16
+	for i := 0; i < maxHops; i++ {
+		target, err := os.Readlink(path)
+		if err != nil {
+			break
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		path = filepath.Clean(target)
+	}
+	return resolveSymlinksBestEffort(path)
 }
 
 // ReadFileRaw returns the raw bytes of path subject to the active policy.
