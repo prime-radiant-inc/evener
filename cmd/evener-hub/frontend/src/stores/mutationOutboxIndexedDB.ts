@@ -142,6 +142,10 @@ const SETTLEMENT_STORES = [
   COMPOSER_DRAFTS_STORE,
   ANNOTATION_NAMESPACES_STORE,
 ];
+// The settlement's record-only scope: no composer store, so the legacy-draft
+// migration gate never orders against it. #settle's discovery read picks this
+// scope for every settlement whose recovery branch cannot fire.
+const SETTLEMENT_RECORD_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE];
 
 // The outbox's own storage failures: an open the database refused or that
 // another tab's older schema blocked, or a connection superseded mid-open.
@@ -727,8 +731,92 @@ export class MutationOutboxIndexedDB {
   }
 
   async settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean> {
+    return this.#settle(clientMutationId, { kind: "receipt", projectionState });
+  }
+
+  async settleApplied(clientMutationId: string): Promise<boolean> {
+    return this.#settle(clientMutationId, { kind: "applied" });
+  }
+
+  // Both canonical settlements share one engine. A readonly discovery read
+  // picks the scope first: a settlement touches the ref's session row - and so
+  // needs the composer store, and with it the legacy-draft migration gate -
+  // only through its recovery branch. A settlement the discovery proves
+  // recovery-free settles in the record-only scope instead, where an
+  // unrelated pending legacy transfer cannot block it: the dispatcher holds a
+  // settlement at the head of its queue while it retries, and behind a
+  // blocked settlement waits every later input.
+  async #settle(
+    clientMutationId: string,
+    settlement: { kind: "receipt"; projectionState: string } | { kind: "applied" },
+  ): Promise<boolean> {
+    const receipt = settlement.kind === "receipt" ? settlement : undefined;
     let settledSource: MutationRecord | undefined;
-    const settled = await this.#write(SETTLEMENT_STORES, "settleReceipt", async (transaction) => {
+    const scopedSettlement = (stores: string[], hasRecovery: boolean): Promise<boolean> =>
+      this.#write(stores, receipt ? "settleReceipt" : undefined, async (transaction) => {
+        const outbox = transaction.objectStore(OUTBOX_STORE);
+        const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
+        const recovery = hasRecovery ? transaction.objectStore(RECOVERY_STORE) : undefined;
+        const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
+          requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
+          requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
+          recovery
+            ? requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId))
+            : Promise.resolve<MutationRecoveryRecord | undefined>(undefined),
+        ]);
+        const source = receipt
+          ? (outboxRecord ?? recoveryRecord ?? optimisticRecord)
+          : (outboxRecord ?? optimisticRecord ?? recoveryRecord);
+        if (!source) return false;
+        const supersededRemoved = recovery ? await this.#discardSupersededNoteRecovery(transaction, source) : 0;
+        settledSource = source;
+        await this.#settleRecordStores(transaction, {
+          clientMutationId,
+          source,
+          outboxRecord,
+          optimisticRecord,
+          projectionState: receipt?.projectionState,
+        });
+        if (recovery && recoveryRecord !== undefined) {
+          await requestResult(recovery.delete(clientMutationId));
+        }
+        // Only an actual recovery deletion advances the ref's session revision:
+        // an outbox- or optimistic-only settle changes no ordinary work.
+        if (recoveryRecord !== undefined || supersededRemoved > 0) {
+          const key = recoverySessionKey(source.targetRef);
+          const { namespace, row } = await this.#readSession(transaction, key);
+          const { writes } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
+          await Promise.all(writes);
+        }
+        return true;
+      });
+    const scope = await this.#settlementScope(clientMutationId);
+    if (scope === "absent") return false;
+    let settled = false;
+    if (scope === "records") {
+      settled = await scopedSettlement(SETTLEMENT_RECORD_STORES, false);
+      // A record that moved to recovery between the discovery read and this
+      // write is invisible in the record-only scope; fall through to the full
+      // scope, which settles it exactly as before - gated, because that path
+      // can write the session row.
+    }
+    if (!settled) settled = await scopedSettlement(SETTLEMENT_STORES, true);
+    this.#discardSupersededCanceledNotesAfterSettle(settled ? settledSource : undefined);
+    const settledRef = settledSource?.targetRef;
+    if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
+    return settled;
+  }
+
+  // Readonly discovery for #settle. "session" means this settlement can write
+  // the ref's session row - through its own recovery record, or by retiring
+  // refused superseded note recovery rows - so it keeps the composer store in
+  // scope and waits for the legacy-draft migration with it. "records" means
+  // only the record stores are involved, and "absent" means no store holds the
+  // id: the cross-store uniqueness check keeps any later enqueue from
+  // recreating it, so there is nothing to settle and nothing to wait for. The
+  // superseded-note predicate mirrors #discardSupersededNoteRecovery exactly.
+  async #settlementScope(clientMutationId: string): Promise<"session" | "records" | "absent"> {
+    return this.#read([OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE], async (transaction) => {
       const outbox = transaction.objectStore(OUTBOX_STORE);
       const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
       const recovery = transaction.objectStore(RECOVERY_STORE);
@@ -737,11 +825,37 @@ export class MutationOutboxIndexedDB {
         requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
         requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
       ]);
-      const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
-      if (!source) return false;
-      const supersededRemoved = await this.#discardSupersededNoteRecovery(transaction, source);
-      settledSource = source;
+      if (recoveryRecord !== undefined) return "session";
+      const source = outboxRecord ?? optimisticRecord;
+      if (!source) return "absent";
+      if (source.method !== "notes/human/set") return "records";
+      const records = await requestResult<MutationRecoveryRecord[]>(recovery.getAll());
+      return records.some(
+        (record) =>
+          record.method === "notes/human/set" &&
+          record.targetRef === source.targetRef &&
+          record.intentSequence < source.intentSequence,
+      )
+        ? "session"
+        : "records";
+    });
+  }
 
+  // The record-store retirement every settlement performs in either scope:
+  // delete the settled id from whichever record store holds it, keeping an
+  // accepted copy only where a pending receipt owes one.
+  async #settleRecordStores(
+    transaction: IDBTransaction,
+    input: {
+      clientMutationId: string;
+      source: MutationRecord;
+      outboxRecord: MutationRecord | undefined;
+      optimisticRecord: MutationRecord | undefined;
+      projectionState: string | undefined;
+    },
+  ): Promise<void> {
+    const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
+    if (input.projectionState !== undefined) {
       // A "pending" receipt means accepted but not yet described by
       // authoritative state. The daemon reports pending for exactly the
       // mutations whose acceptance a read cannot yet prove - every
@@ -757,63 +871,21 @@ export class MutationOutboxIndexedDB {
       // already readable in the session's own state, so its pending receipts
       // drop the row exactly as before.
       const retainsAcceptedCopy =
-        projectionState === "pending" && (carriesOptimisticInput(source) || source.method === "notes/human/set");
+        input.projectionState === "pending" &&
+        (carriesOptimisticInput(input.source) || input.source.method === "notes/human/set");
       if (retainsAcceptedCopy) {
         // The accepted whitelist lives in the package's acceptedRecord so
         // this adapter and native's build the same row.
-        await requestResult(optimistic.put(acceptedRecord(source)));
-      } else if (optimisticRecord) {
-        await requestResult(optimistic.delete(clientMutationId));
+        await requestResult(optimistic.put(acceptedRecord(input.source)));
+      } else if (input.optimisticRecord) {
+        await requestResult(optimistic.delete(input.clientMutationId));
       }
-      if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-      if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
-      // Only an actual recovery deletion advances the ref's session revision:
-      // an outbox- or optimistic-only settle changes no ordinary work.
-      if (recoveryRecord !== undefined || supersededRemoved > 0) {
-        const key = recoverySessionKey(source.targetRef);
-        const { namespace, row } = await this.#readSession(transaction, key);
-        const { writes } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
-        await Promise.all(writes);
-      }
-      return true;
-    });
-    this.#discardSupersededCanceledNotesAfterSettle(settled ? settledSource : undefined);
-    const settledRef = settledSource?.targetRef;
-    if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
-    return settled;
-  }
-
-  async settleApplied(clientMutationId: string): Promise<boolean> {
-    let settledSource: MutationRecord | undefined;
-    const settled = await this.#write(SETTLEMENT_STORES, undefined, async (transaction) => {
-      const outbox = transaction.objectStore(OUTBOX_STORE);
-      const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
-      const recovery = transaction.objectStore(RECOVERY_STORE);
-      const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
-        requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
-        requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
-        requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
-      ]);
-      const source = outboxRecord ?? optimisticRecord ?? recoveryRecord;
-      if (!source) return false;
-      const supersededRemoved = await this.#discardSupersededNoteRecovery(transaction, source);
-      if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-      if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
-      if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
-      // Only an actual recovery deletion advances the ref's session revision.
-      if (recoveryRecord !== undefined || supersededRemoved > 0) {
-        const key = recoverySessionKey(source.targetRef);
-        const { namespace, row } = await this.#readSession(transaction, key);
-        const { writes } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
-        await Promise.all(writes);
-      }
-      settledSource = source;
-      return true;
-    });
-    this.#discardSupersededCanceledNotesAfterSettle(settled ? settledSource : undefined);
-    const settledRef = settledSource?.targetRef;
-    if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
-    return settled;
+    } else if (input.optimisticRecord) {
+      await requestResult(optimistic.delete(input.clientMutationId));
+    }
+    if (input.outboxRecord) {
+      await requestResult(transaction.objectStore(OUTBOX_STORE).delete(input.clientMutationId));
+    }
   }
 
   // A later accepted note supersedes refused earlier text, not chat recovery

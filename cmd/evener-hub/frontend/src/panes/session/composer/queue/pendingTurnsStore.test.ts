@@ -783,11 +783,24 @@ test.each<
 >([
   ["a Force stop's cancellation", ["outbox", "sequences"], (storage) => storage.cancelUnattempted("ref_a")],
   [
-    "the dispatcher's receipt settlement",
-    // settleReceipt opens the settlement scope: the three active record stores
-    // plus the two composition stores it advances in the same transaction.
-    ["outbox", "optimistic", "recovery", "composerDrafts", "annotationNamespaces"],
+    "the dispatcher's record-only settlement",
+    // settleReceipt opens the settlement scope its readonly discovery read
+    // picks: this fixture's outbox-only record never reaches the recovery
+    // branch, so the settlement runs over the two record stores alone.
+    ["outbox", "optimistic"],
     (storage, clientMutationId) => storage.settleReceipt(clientMutationId, "reflected"),
+  ],
+  [
+    "the dispatcher's recovery-bearing settlement",
+    // A recovery-bearing settlement keeps the full scope: the three active
+    // record stores plus the two composition stores it advances in the same
+    // transaction. The record reaches recovery inside the write callback, so
+    // the armed hold sees only the settlement's own transaction.
+    ["outbox", "optimistic", "recovery", "composerDrafts", "annotationNamespaces"],
+    (storage, clientMutationId) =>
+      storage
+        .transferToRecovery(clientMutationId, "rejected")
+        .then(() => storage.settleReceipt(clientMutationId, "reflected")),
   ],
 ])("a flush cannot settle while %s write is still in flight", async (_name, stores, write) => {
   const storage = new MutationOutboxIndexedDB();
