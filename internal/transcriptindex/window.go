@@ -90,7 +90,16 @@ func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, 
 					// decodes every line regardless of the cut.
 					return ErrDerivedTotalsUnavailable
 				}
-				if int(record.FirstOrdinal)+1 < fromEntryOrdinal {
+				first := int(record.FirstOrdinal) + 1
+				if first < fromEntryOrdinal {
+					// record.Version is the turn's last entry ordinal (stampTurn
+					// writes ordinal+1 for every entry it folds in). A cut
+					// between the turn's first and last entry would need a
+					// suffix this record cannot express, so refuse and let the
+					// scan answer rather than drop or over-count the turn.
+					if fromEntryOrdinal <= int(record.Version) {
+						return ErrDerivedTotalsUnavailable
+					}
 					continue
 				}
 				for j := range sum {

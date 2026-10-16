@@ -2,6 +2,7 @@ package transcriptindex
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -102,5 +103,45 @@ func TestDerivedTotalsExcludeLegacyFoldCopies(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotUsage, wantUsage) || gotFailures != wantFailures {
 		t.Fatalf("derived (%+v, %d) != scan (%+v, %d) for a legacy fold copy", gotUsage, gotFailures, wantUsage, wantFailures)
+	}
+}
+
+// A divergence cut can fall inside one logical turn: a fork child's transcript
+// opens with its parent's entries and the child's own entries continue the same
+// legacy group (see apptranscript's TestDerivedTotalsFromFileSkipsInheritedForkPrefix).
+// A per-turn record cannot express that suffix, so DerivedTotals must refuse it
+// rather than drop the turn's contribution or count the whole thing.
+func TestDerivedTotalsRefusesAMidTurnCut(t *testing.T) {
+	header := transcript.Header{SessionID: "s", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"}
+	answer := withUsage(assistant(text("answer")), 5, 5, 0, 10)
+	callPart := call("c1", "shell", `{}`)
+	failPart := result("c1", "shell", "boom")
+	failPart.ToolResult.IsError = true
+	fx := fixture{name: "mid-turn-cut", header: header, lines: []fixtureLine{
+		entryLine(user("q")),
+		entryLine(answer),
+		entryLine(assistant(text("run"), callPart)),
+		entryLine(results(failPart)),
+	}}
+
+	path := writeFixture(t, fx)
+	x := openIndex(t, path, t.TempDir())
+	defer x.Close() //nolint:errcheck // read-only test handle
+
+	// Cut 4 names an entry inside the single turn: refuse, do not mis-state.
+	if _, _, err := x.DerivedTotals(4); !errors.Is(err, ErrDerivedTotalsUnavailable) {
+		t.Fatalf("DerivedTotals(4) = %v, want ErrDerivedTotalsUnavailable for a mid-turn cut", err)
+	}
+	// Cut 0 (whole file) still answers, and agrees with the scan.
+	gotUsage, gotFailures, err := x.DerivedTotals(0)
+	if err != nil {
+		t.Fatalf("DerivedTotals(0): %v", err)
+	}
+	wantUsage, wantFailures, err := apptranscript.NewTurnCache().DerivedTotalsFromFile(path, testMaxLineBytes, 0)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if !reflect.DeepEqual(gotUsage, wantUsage) || gotFailures != wantFailures {
+		t.Fatalf("derived (%+v, %d) != scan (%+v, %d)", gotUsage, gotFailures, wantUsage, wantFailures)
 	}
 }
