@@ -93,12 +93,7 @@ test("one host picker owns marketplace and directory reads across remote and loc
   await user.click(screen.getByRole("radio", { name: /Sources/ }));
   await screen.findByText("/beta/plugins");
   expect(screen.getAllByLabelText("Host")).toHaveLength(1);
-  await user.click(screen.getByRole("button", { name: /^New directory:/ }));
-  const input = await screen.findByRole("textbox", { name: "Path" });
-  await user.clear(input);
-  await user.type(input, "/beta/new");
-  await user.keyboard("{Enter}");
-  await user.click(screen.getByRole("button", { name: "Use this folder" }));
+  await stageDirectory(user, "/beta/new");
   await user.click(screen.getByRole("button", { name: "Add" }));
   await screen.findByText("/beta/new");
   await user.click(screen.getByRole("button", { name: "Remove /beta/new" }));
@@ -176,7 +171,8 @@ test("marketplace details remain reachable while plugin inventory is unavailable
   const user = userEvent.setup();
   render(<MarketplacesPluginsSection />);
   await user.click(await screen.findByRole("radio", { name: /Sources/ }));
-  await user.click(await screen.findByRole("button", { name: /fixture-market/ }));
+  const marketplaces = screen.getByRole("region", { name: "Marketplaces" });
+  await user.click(await within(marketplaces).findByRole("button", { name: /fixture-market/ }));
   expect(await screen.findByRole("dialog", { name: "fixture-market" })).toBeTruthy();
 });
 

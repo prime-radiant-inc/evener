@@ -38,6 +38,22 @@ test("preferences lead the navigation in task order", () => {
   expect(SETTINGS_SECTIONS.slice(0, 4)).toEqual(preferences);
 });
 
+test.each([
+  ["composer", "keybindings"],
+  ["favicon", "notifications"],
+  ["transcript", "transcript"],
+  ["cost", "transcript"],
+  ["mobile", "mobile"],
+])("control query %s finds its owning destination %s", (query, owner) => {
+  expect(
+    SETTINGS_SECTIONS.filter((section) => matchesSettingsSection(section, query)).map((section) => section.id),
+  ).toContain(owner);
+});
+
+test.each(["origin", "TLS"])("unsupported Hub field %s does not offer a destination", (query) => {
+  expect(SETTINGS_SECTIONS.filter((section) => matchesSettingsSection(section, query))).toEqual([]);
+});
+
 test('the "agents-models" cluster has exactly these 5 sections, in order, right after preferences', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "agents-models");
   expect(cluster.map((s) => s.id)).toEqual(["credentials", "agents", "agents-md", "launch-evener", "inrepo"]);

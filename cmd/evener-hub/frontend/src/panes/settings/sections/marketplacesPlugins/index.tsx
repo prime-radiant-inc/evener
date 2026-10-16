@@ -19,6 +19,7 @@ import { SourcesSection } from "./SourcesSection";
 
 const CLASS = {
   page: requireClass(styles.page, "marketplacesPlugins.module.css", "page"),
+  help: requireClass(styles.help, "marketplacesPlugins.module.css", "help"),
 };
 
 type SegmentId = "installed" | "browse" | "sources";
@@ -141,6 +142,10 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
         ]}
         fullWidth
       />
+      <p className={CLASS.help}>
+        Installation makes a plugin available on this host. Enabled defaults apply to new sessions using the default
+        plugin selection; custom launches choose their own plugins. Existing sessions keep their selected plugins.
+      </p>
       {activeSegment === "sources" ? (
         <SourcesSection host={host} onSelectMarketplace={setSelectedMarketplace} />
       ) : loadError !== null ? (

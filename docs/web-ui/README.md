@@ -74,7 +74,7 @@ loading and editing recover independently of plugin and marketplace inventory
 failures; inventory retries preserve directory drafts. Host switching keeps
 reads and saves bound to the selected host. Skill directories remain separate.
 
-The former General summary's runtime, listen/origin, TLS, masked token and token
+The former General summary's runtime, listen address, masked token and token
 age belong to Hub; state/index paths and page size belong to Storage; version
 and credits belong to About. Existing stores and APIs remain authoritative.
 

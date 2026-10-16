@@ -231,7 +231,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
       >
         {pendingInstall !== null && (
           <>
-            <p>{`Install "${pendingInstall.plugin}" from ${pendingInstall.marketplace}? It will run in every new session once installed.`}</p>
+            <p>{`Install "${pendingInstall.plugin}" from ${pendingInstall.marketplace}? This makes it available on this host. New sessions use their launch's plugin selection; existing sessions keep theirs.`}</p>
             {(() => {
               const source = findMarketplace(pendingInstall.marketplace)?.source;
               return source && <p className={CLASS.rowMeta}>{`Source: ${marketplaceSourceLabel(source)}`}</p>;

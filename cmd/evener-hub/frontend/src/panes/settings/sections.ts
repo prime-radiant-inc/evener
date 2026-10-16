@@ -30,17 +30,22 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "transcript",
-    searchTerms: ["tokens", "thinking", "tool calls"],
+    searchTerms: ["transcript", "tokens", "cost", "thinking", "tool calls"],
     label: "Conversation display",
     cluster: "preferences",
   },
   {
     id: "keybindings",
-    searchTerms: ["enter", "send", "keyboard", "keybindings"],
+    searchTerms: ["composer", "enter", "send", "keyboard", "keybindings"],
     label: "Input & shortcuts",
     cluster: "preferences",
   },
-  { id: "notifications", searchTerms: ["sound", "audio", "alerts"], label: "Notifications", cluster: "preferences" },
+  {
+    id: "notifications",
+    searchTerms: ["sound", "audio", "alerts", "favicon"],
+    label: "Notifications",
+    cluster: "preferences",
+  },
   // --- Agents & models -----------------------------------------------
   {
     id: "credentials",
@@ -62,10 +67,10 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: "skills", searchTerms: ["skill directory"], label: "Skill directories", cluster: "extensions" },
   { id: "mcp", searchTerms: ["tools", "server"], label: "MCP servers", cluster: "extensions" },
   { id: "hosts", searchTerms: ["remote", "connections"], label: "Hosts", cluster: "system" },
-  { id: "mobile", searchTerms: ["pairing", "phone", "device"], label: "Devices", cluster: "system" },
+  { id: "mobile", searchTerms: ["pairing", "phone", "device", "mobile"], label: "Devices", cluster: "system" },
   {
     id: "hub",
-    searchTerms: ["runtime", "listen", "origin", "TLS", "token", "workers"],
+    searchTerms: ["runtime", "listen", "token", "workers"],
     label: "Hub",
     cluster: "system",
   },
@@ -92,5 +97,8 @@ export function isKnownSettingsSection(id: string): boolean {
 
 export function matchesSettingsSection(section: SettingsSection, query: string): boolean {
   const needle = query.trim().toLowerCase();
-  return [section.label, ...section.searchTerms].some((term) => term.toLowerCase().includes(needle));
+  return (
+    section.label.toLowerCase().includes(needle) ||
+    section.searchTerms.some((term) => term.toLowerCase().includes(needle))
+  );
 }
