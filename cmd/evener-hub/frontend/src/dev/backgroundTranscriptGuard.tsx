@@ -21,8 +21,23 @@ try {
   await import("../main");
   const threads = await import("../stores/threads");
   const connection = await import("../stores/connection");
+  const workspace = await import("../shell/workspace");
+  const paneIdentities = new WeakMap<object, number>();
+  let nextPaneIdentity = 0;
   Object.defineProperty(window, "backgroundTranscriptEvidence", {
     value: Object.freeze({
+      panes: (ref: string) =>
+        workspace.workspaceStore
+          .getState()
+          .panes.filter((pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === ref)
+          .map((pane) => {
+            let identity = paneIdentities.get(pane);
+            if (identity === undefined) {
+              identity = ++nextPaneIdentity;
+              paneIdentities.set(pane, identity);
+            }
+            return { id: pane.id, identity };
+          }),
       snapshot: threads.backgroundTranscriptSnapshotForTests,
       settled: threads.settleBackgroundTranscriptsForTests,
       entrySettled: (ref: string) => threads.settleEntryTranscriptForTests(ref),
@@ -54,6 +69,7 @@ try {
           present: route.repository !== undefined,
           historyKey: route.historyKey ?? null,
           storeModelPresent: store !== undefined,
+          localOpening: threads.isEntryTranscriptLocalOpening(ref),
           storeItemCount: items.length,
           storeNonEmptyItems: items.filter((item) => (item.text ?? "") !== "" || (item.output ?? "") !== "").length,
           lastLocalOpenStatus: route.lastLocalOpenStatus ?? null,

@@ -34,10 +34,10 @@
 //    data's own shape stays correct regardless of that interleaving.
 
 import type { ThreadModel, TurnModel } from "@evener/appwire-client";
-import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { isEditableTarget, isIMECompositionKeydown } from "../../../../keybindings/dispatcher";
-import { threadsStore } from "../../../../stores/threads";
+import { isEntryTranscriptLocalOpening, threadsStore } from "../../../../stores/threads";
 import type { CommittedVirtualListLayout, VirtualListHandle } from "../../../../widgets";
 import type { TranscriptReadView } from "../transcriptReadView";
 import { isDormantTranscript } from "../transcriptVisibility";
@@ -547,6 +547,7 @@ export function useTranscriptViewRegistration(
   options: UseTranscriptViewRegistrationOptions,
 ): UseTranscriptViewRegistrationResult {
   const { enabled, id, logicalRef, layout, readView } = options;
+  const [, retryOpeningPlacement] = useReducer((revision: number) => revision + 1, 0);
   const optionsRef = useRef(options);
   optionsRef.current = options;
   const latestCaptureRef = useRef<CapturedTranscriptView | undefined>(undefined);
@@ -596,6 +597,7 @@ export function useTranscriptViewRegistration(
       return;
     }
     if (!currentOptions.enabled || !el || !committed?.isCurrent() || committed.virtualizer.scrollElement !== el) return;
+    if (currentOptions.logicalRef !== undefined && isEntryTranscriptLocalOpening(currentOptions.logicalRef)) return;
 
     const confirmScrollOffset = () => {
       if (Math.abs(el.scrollTop - (committed.virtualizer.scrollOffset ?? 0)) > 1.5) {
@@ -839,6 +841,19 @@ export function useTranscriptViewRegistration(
     el.addEventListener("scroll", observeStablePosition);
     return () => el.removeEventListener("scroll", observeStablePosition);
   }, [capture, enabled, id, restoreAfterMeasurement]);
+
+  // Retry settlement through React's accepted projection, not synchronously
+  // against the previous DOM in the store publication callback. Only pending
+  // placement reads the current opening authority, keeping snapshot rendering
+  // independent of store reads. Child layouts before this subscription and
+  // settlement before subscription are covered by the current-state check in
+  // restoreAfterMeasurement and the unconditional commit retry below.
+  useLayoutEffect(() => {
+    if (!enabled || logicalRef === undefined) return;
+    return threadsStore.subscribe((state, previous) => {
+      if (state.localOpenings.has(logicalRef) !== previous.localOpenings.has(logicalRef)) retryOpeningPlacement();
+    });
+  }, [enabled, logicalRef]);
 
   // A virtualizer notification can precede its sizer's DOM commit. Retry
   // after each commit as well as from the actual measurement callback.

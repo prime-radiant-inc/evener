@@ -9,9 +9,15 @@ import {
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
+import { act, render } from "@testing-library/react";
+import { IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
+import { createElement, createRef } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { useStore } from "zustand";
+import { useTranscriptViewRegistration } from "../panes/session/transcript/flow/useTranscriptScroll";
+import { installTranscriptGeometry } from "../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { deleteSession } from "../shell/rail/actions";
+import { VirtualList, type VirtualListHandle } from "../widgets";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
@@ -598,6 +604,7 @@ it.each(["release", "delete", "Clear"] as const)(
       } else await clearCachedSessions();
       releaseLookup?.();
       await opening;
+      expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
       const readCount = client.calls.filter((call) => call.method === "thread/read").length;
       expect(readCount).toBe(retirement === "Clear" ? 1 : 0);
       expect(JSON.stringify(threadsStore.getState().threads.get("local:a")) ?? "").not.toContain("window-1");
@@ -910,6 +917,459 @@ it.each(["opening", "paging"])(
     vi.useRealTimers();
   },
 );
+
+it.each(["complete", "missing-row", "missing-turn"] as const)(
+  "reopening a paged background transcript preserves its loaded payloads (%s)",
+  async (durability) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const storage = cache();
+    setProductionEntryCacheForTests(storage);
+    const turns = Array.from({ length: 250 }, (_, index) => turn(`body-${index}`, index));
+    const read = response("local:a", turns);
+    read.snapshot = { incarnation: "inc-a", length: 250 };
+    const client = connect(read);
+    const background = acquireBackgroundThread("local:a");
+    await background.ready;
+    await settleEntryTranscriptForTests("local:a");
+    await threadsStore.getState().ensureThread("local:a");
+    const items = () =>
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items);
+    expect(items()).toEqual(turns.slice(-200).flatMap((turn) => turn.items));
+    await threadsStore.getState().loadOlderTurns("local:a");
+    await threadsStore.getState().loadOlderTurns("local:a");
+    const before = structuredClone(items());
+    expect(before).toHaveLength(250);
+    const reads = client.calls.filter((call) => call.method === "thread/read").length;
+    await settleEntryTranscriptForTests("local:a");
+    await threadsStore.getState().ensureThread("local:a");
+    threadsStore.getState().releaseThread("local:a");
+    expect(items()).toEqual(before);
+    threadsStore.getState().releaseThread("local:a");
+    if (durability !== "complete") {
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = factory.open(SESSION_CACHE_DATABASE_NAME);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      try {
+        const store = durability === "missing-row" ? "transcriptItems" : "transcriptTurns";
+        const transaction = database.transaction(store, "readwrite");
+        transaction.objectStore(store).delete([historyKey, "body-0"]);
+        await new Promise<void>((resolve, reject) => {
+          transaction.oncomplete = () => resolve();
+          transaction.onabort = () => reject(transaction.error);
+        });
+      } finally {
+        database.close();
+      }
+      if (durability === "missing-turn") {
+        // The accepted turn header still belongs to this repository. Losing
+        // its duplicate disk metadata must not erase otherwise usable bodies.
+        expect(await storage.getTurn(historyKey, "body-0")).toBeUndefined();
+      }
+      client.on("thread/read", (params) => ({
+        ...response("local:a", turns.slice(-40)),
+        snapshot: read.snapshot,
+        olderCursor: "recovered-older",
+        authoritative: true,
+        requestGeneration: params.requestGeneration,
+      }));
+    }
+    await threadsStore.getState().ensureThread("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    if (durability !== "missing-row") {
+      expect(items()).toEqual(before);
+      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+    } else {
+      expect(items()).toEqual(before?.slice(-40));
+      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+    }
+    expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+    if (durability === "missing-row") {
+      client.on("thread/turns/list", (params) => {
+        expect(params.cursor).toBe("recovered-older");
+        return {
+          data: turns.slice(170, 210),
+          nextCursor: "recovered-deeper",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: read.snapshot,
+        };
+      });
+      await threadsStore.getState().loadOlderTurns("local:a");
+      expect(items()).toEqual(turns.slice(170).flatMap((turn) => turn.items));
+      expect(threadsStore.getState().threads.get("local:a")?.olderCursor).toBe("recovered-deeper");
+      const updated = { ...turns[249]!.items![0]!, version: 2, text: "recovered-live-payload" };
+      client.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: "local:a",
+          threadId: "thread-a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-a", length: 251 },
+          items: [updated],
+        },
+      });
+      await settleEntryTranscriptForTests("local:a");
+      expect(items()).toEqual([...turns.slice(170, 249).flatMap((turn) => turn.items), updated]);
+      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+      expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+    }
+    threadsStore.getState().releaseThread("local:a");
+    background.release();
+  },
+);
+
+it.each([false, true])(
+  "aborted retained opening recovers only an incomplete live range, complete=%s",
+  async (complete) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const storage = cache();
+    setProductionEntryCacheForTests(storage);
+    const turns = Array.from({ length: 250 }, (_, index) => turn(`aborted-${index}`, index));
+    const read = response("local:a", turns);
+    read.snapshot = { incarnation: "inc-a", length: 250 };
+    const client = connect(read);
+    const background = acquireBackgroundThread("local:a");
+    await background.ready;
+    await settleEntryTranscriptForTests("local:a");
+    await threadsStore.getState().ensureThread("local:a");
+    const items = () =>
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items);
+    expect(items()).toEqual(turns.slice(-200).flatMap((turn) => turn.items));
+    await threadsStore.getState().loadOlderTurns("local:a");
+    await threadsStore.getState().loadOlderTurns("local:a");
+    expect(items()).toEqual(turns.flatMap((turn) => turn.items));
+    await settleEntryTranscriptForTests("local:a");
+    const reads = client.calls.filter((call) => call.method === "thread/read").length;
+    threadsStore.getState().releaseThread("local:a");
+    const updatedTurns = turns.map((turn) => ({
+      ...turn,
+      version: 2,
+      items: turn.items?.map((item) => ({ ...item, version: 2, text: `updated-${item.id}` })),
+    }));
+    const liveItems = updatedTurns.slice(complete ? 0 : 50).flatMap((turn) => turn.items ?? []);
+    const snapshot = { incarnation: "inc-a", length: 251 };
+    client.on("thread/read", (params) => {
+      expect(params.itemLimit).toBe(40);
+      return {
+        ...response("local:a", updatedTurns.slice(-40)),
+        snapshot,
+        olderCursor: "abort-recovery-older",
+        authoritative: true,
+        requestGeneration: params.requestGeneration,
+      };
+    });
+    let injected = false;
+    const openCursor = IDBIndex.prototype.openCursor;
+    const abortRead = vi.spyOn(IDBIndex.prototype, "openCursor").mockImplementation(function (this: IDBIndex, ...args) {
+      const request = openCursor.apply(this, args);
+      const transaction = this.objectStore.transaction;
+      if (!injected && transaction.mode === "readonly" && this.name === "historyKey_position") {
+        injected = true;
+        request.addEventListener(
+          "success",
+          () => {
+            // Let the cursor consumer queue its next request before aborting it.
+            queueMicrotask(() => {
+              client.emitNotification({
+                method: "history/updated",
+                params: {
+                  ref: "local:a",
+                  threadId: "thread-a",
+                  bootGeneration: "1",
+                  epoch: 1,
+                  snapshot,
+                  items: liveItems,
+                },
+              });
+              expect(items()).toEqual(liveItems);
+              transaction.abort();
+            });
+          },
+          { once: true },
+        );
+      }
+      return request;
+    });
+    try {
+      await threadsStore.getState().ensureThread("local:a");
+      await settleEntryTranscriptForTests("local:a");
+      expect(injected).toBe(true);
+      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + (complete ? 0 : 1));
+      expect(items()).toEqual(complete ? liveItems : updatedTurns.slice(-40).flatMap((turn) => turn.items));
+      expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+      expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+      if (!complete) {
+        client.on("thread/turns/list", (params) => {
+          expect(params.cursor).toBe("abort-recovery-older");
+          return {
+            data: updatedTurns.slice(170, 210),
+            nextCursor: "abort-recovery-deeper",
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot,
+          };
+        });
+        await threadsStore.getState().loadOlderTurns("local:a");
+        expect(items()).toEqual(updatedTurns.slice(170).flatMap((turn) => turn.items));
+        const lastLive = liveItems.at(-1);
+        if (!lastLive) throw new Error("missing live fixture item");
+        const later = { ...lastLive, version: 3, text: "continued-after-abort" };
+        client.emitNotification({
+          method: "history/updated",
+          params: {
+            ref: "local:a",
+            threadId: "thread-a",
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { ...snapshot, length: 252 },
+            items: [later],
+          },
+        });
+        await settleEntryTranscriptForTests("local:a");
+        expect(items()).toEqual([...updatedTurns.slice(170, 249).flatMap((turn) => turn.items), later]);
+        expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+        expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+      }
+    } finally {
+      abortRead.mockRestore();
+      threadsStore.getState().releaseThread("local:a");
+      background.release();
+    }
+  },
+);
+
+it.each([
+  { superseded: false, storageCost: false, bodyCount: 250 },
+  { superseded: true, storageCost: false, bodyCount: 250 },
+  { superseded: false, storageCost: true, bodyCount: 190 },
+])(
+  "post-reconnect multi-item reopen preserves $bodyCount payloads, superseded=$superseded storageCost=$storageCost",
+  async ({ superseded, storageCost, bodyCount }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const storage = cache();
+    setProductionEntryCacheForTests(storage);
+    const recorded = Array.from({ length: bodyCount }, (_, index): ThreadItem => {
+      let type: ThreadItem["type"] = "toolCall";
+      if (index % 3 === 0) type = "userMessage";
+      else if (index % 3 === 1) type = "agentMessage";
+      return {
+        id: `recorded-${index}`,
+        transcriptKey: `recorded-${index}`,
+        turnId: `turn-${Math.floor(index / 3)}`,
+        version: index + 1,
+        position: { entry: index * 2, item: 0 },
+        type,
+        ...(index % 3 === 2
+          ? {
+              toolName: "exec_command",
+              argumentsJson: JSON.stringify({ command: `fixture-${index}` }),
+              text: "",
+              output: `output-${index}`,
+              status: "completed" as const,
+            }
+          : { text: `payload-${index}` }),
+      };
+    });
+    const turnsFor = (items: ThreadItem[]): Turn[] => {
+      const turns = new Map<string, Turn>();
+      for (const item of items) {
+        const id = item.turnId ?? "";
+        const held = turns.get(id) ?? { id, version: 1, status: "completed", itemsView: "full", items: [] };
+        held.items?.push(item);
+        turns.set(id, held);
+      }
+      return [...turns.values()];
+    };
+    const latest = response("local:a", turnsFor(recorded.slice(-40)));
+    latest.snapshot = { incarnation: "inc-a", length: bodyCount * 2 + 20 };
+    latest.olderCursor = String(bodyCount - 40);
+    const client = connect(latest);
+    client.on("thread/read", (params) => ({ ...latest, requestGeneration: params.requestGeneration }));
+    client.on("thread/turns/list", (params) => {
+      const end = Number(params.cursor);
+      const start = Math.max(0, end - 40);
+      return {
+        data: turnsFor(recorded.slice(start, end)),
+        nextCursor: start > 0 ? String(start) : undefined,
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: latest.snapshot,
+      };
+    });
+    const background = acquireBackgroundThread("local:a");
+    await background.ready;
+    await settleEntryTranscriptForTests("local:a");
+    await threadsStore.getState().ensureThread("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    client.emitStateChange("reconnecting");
+    client.emitStateChange("ready");
+    await settleEntryTranscriptForTests("local:a");
+    for (let page = 0; page < Math.ceil((bodyCount - 40) / 40); page++) {
+      await threadsStore.getState().loadOlderTurns("local:a");
+    }
+    await settleEntryTranscriptForTests("local:a");
+    const items = () =>
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items);
+    const before = structuredClone(items());
+    expect(before).toEqual(recorded.map(({ argumentsJson, ...item }) => ({ ...item, argumentsJSON: argumentsJson })));
+    const reads = client.calls.filter((call) => call.method === "thread/read").length;
+    const pages = client.calls.filter((call) => call.method === "thread/turns/list").length;
+    threadsStore.getState().releaseThread("local:a");
+    // Model native storage service time at its external request boundary. Every
+    // two delivered body rows cost 1 ms, including rows later discarded by the
+    // caller. Real cache selection, transactions, and the 250 ms deadline run
+    // unchanged. The native diagnostic measured 106–152 ms for the discarded
+    // page-boundary lookup alone, before its subsequent restoration queries.
+    let bodyReads = 0;
+    const openCursor = IDBIndex.prototype.openCursor;
+    const cursorClock = storageCost
+      ? vi.spyOn(IDBIndex.prototype, "openCursor").mockImplementation(function (this: IDBIndex, ...args) {
+          const request = openCursor.apply(this, args);
+          if (this.name === "historyKey_position") {
+            request.addEventListener("success", () => {
+              if (request.result && ++bodyReads % 2 === 0) vi.advanceTimersByTime(1);
+            });
+          }
+          return request;
+        })
+      : undefined;
+    const opening = threadsStore.getState().ensureThread("local:a");
+    if (superseded) {
+      const originalToken = threadsStore.getState().localOpenings.get("local:a");
+      expect(originalToken).toBeDefined();
+      threadsStore.getState().releaseThread("local:a");
+      const replacement = threadsStore.getState().ensureThread("local:a");
+      const replacementToken = threadsStore.getState().localOpenings.get("local:a");
+      expect(replacementToken).toBeGreaterThan(originalToken!);
+      await opening;
+      expect(threadsStore.getState().localOpenings.get("local:a")).toBe(replacementToken);
+      await replacement;
+    }
+    await opening;
+    await settleEntryTranscriptForTests("local:a");
+    cursorClock?.mockRestore();
+    expect(items()).toEqual(before);
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+    expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(pages);
+    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+    threadsStore.getState().releaseThread("local:a");
+    background.release();
+  },
+);
+
+it("production opening publishes its hold before child measurement and settles accepted placement", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect(response("local:a", [turn("older", 1), turn("latest", 2)]));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const reads = client.calls.filter((call) => call.method === "thread/read").length;
+  const publications: { pending: boolean; bodies: number }[] = [];
+  const unsubscribe = threadsStore.subscribe((state) =>
+    publications.push({
+      pending: state.localOpenings.has("local:a"),
+      bodies: state.threads.get("local:a")?.turns.flatMap((turn) => turn.items).length ?? 0,
+    }),
+  );
+  const geometry = installTranscriptGeometry(() => ({
+    width: 500,
+    viewportHeight: 300,
+    rowHeights: (threadsStore.getState().threads.get("local:a")?.turns ?? []).map((turn, index) =>
+      turn.items.length ? (index === 0 ? 900 : 600) : 0,
+    ),
+  }));
+  const listRef = createRef<VirtualListHandle>();
+  const measurements: { pending: boolean; top: number }[] = [];
+  function Reader() {
+    const model = useStore(threadsStore, (state) => state.threads.get("local:a"));
+    const turns = model?.turns ?? [];
+    const registration = useTranscriptViewRegistration({
+      enabled: true,
+      id: "production-opening-reader",
+      logicalRef: "local:a",
+      listRef,
+      initialViewCapture: {
+        anchorId: "older",
+        anchorOffset: -100,
+        normalizedOffset: 100 / 900,
+        followingBottom: false,
+        readingPoint: { entryHeight: 600, viewportHeight: 300, viewportWidth: 1000 },
+      },
+      renderedRowCount: turns.length,
+      anchorEntries: turns.flatMap((turn, index) =>
+        turn.items.map((item) => ({ id: item.id, index, sourceIndex: index, isMessage: true })),
+      ),
+    });
+    return createElement(
+      "section",
+      { "data-testid": "transcript-virtual-list" },
+      createElement(VirtualList, {
+        ref: listRef,
+        count: turns.length,
+        dynamic: true,
+        estimateSize: () => 600,
+        anchorToEnd: !registration.hasRetainedPlacement(),
+        renderRow: (index) =>
+          turns[index]?.items.map((item) =>
+            createElement(
+              "div",
+              {
+                key: item.id,
+                "data-view-anchor-id": item.id,
+                "data-view-anchor-index": index,
+                "data-view-anchor-source-index": index,
+                "data-view-anchor-message": "true",
+              },
+              item.text,
+            ),
+          ),
+        onLayout: (layout) => {
+          registration.restoreAfterLayout(layout);
+          measurements.push({
+            pending: threadsStore.getState().localOpenings.has("local:a"),
+            top: listRef.current?.getScrollElement()?.scrollTop ?? -1,
+          });
+        },
+      }),
+    );
+  }
+  const opening = threadsStore.getState().ensureThread("local:a");
+  const mounted = render(createElement(Reader));
+  try {
+    expect(publications[0]).toEqual({ pending: true, bodies: 0 });
+    expect(measurements.some((entry) => entry.pending)).toBe(true);
+    expect(measurements.filter((entry) => entry.pending).every((entry) => entry.top === 0)).toBe(true);
+    await act(async () => {
+      await opening;
+      await settleEntryTranscriptForTests("local:a");
+      geometry.notify();
+    });
+    expect(publications.some((entry) => entry.pending && entry.bodies === 2)).toBe(true);
+    expect(publications.at(-1)).toEqual({ pending: false, bodies: 2 });
+    expect(listRef.current?.getScrollElement()?.scrollTop).toBe(200);
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+  } finally {
+    mounted.unmount();
+    geometry.restore();
+    unsubscribe();
+    threadsStore.getState().releaseThread("local:a");
+    background.release();
+  }
+});
 
 it("a second foreground claim preserves its established reader without another local opening", async () => {
   const storage = cache();
