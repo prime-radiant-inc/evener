@@ -190,7 +190,7 @@ func TestRemoteRestartIdentitySameBirth(t *testing.T) {
 						if !errors.Is(err, context.Canceled) || m.pendingRestart(host.Name).selected == nil {
 							t.Fatalf("lost response: err=%v pending=%+v", err, m.pendingRestart(host.Name))
 						}
-						err = m.recoverRestart(t.Context(), host, facts, "release-selected", m.pendingRestart(host.Name))
+						err = m.recoverSelectedRestart(t.Context(), host, facts, m.pendingRestart(host.Name))
 					}
 					if samePID && !errors.Is(err, errReplacementFixture) || !samePID && err != nil {
 						t.Fatalf("same birth settlement: err=%v", err)

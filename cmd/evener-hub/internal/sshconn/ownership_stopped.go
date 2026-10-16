@@ -2,6 +2,7 @@ package sshconn
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"slices"
@@ -54,14 +55,20 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 		}
 		var chosen *selectedOwner
 		for sup, def := range defs {
-			if def.pid != "0" {
-				continue
-			}
 			if err := m.hubExecutableMatches(ctx, host, def.program); err != nil {
-				continue
+				if errors.Is(err, errOwnerSelectionMismatch) {
+					continue
+				}
+				return selectedOwner{}, err
 			}
 			if err := m.checkOwnerConfig(ctx, host, def.argv, def.cwd, def.env, report); err != nil {
-				continue
+				if errors.Is(err, errOwnerSelectionMismatch) {
+					continue
+				}
+				return selectedOwner{}, err
+			}
+			if def.pid != "0" {
+				return selectedOwner{}, fmt.Errorf("%w: selected stopped root has a live service", errOwnerEvidence)
 			}
 			if chosen != nil {
 				return selectedOwner{}, errOwnerEvidence
@@ -70,7 +77,7 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 			chosen = &o
 		}
 		if chosen == nil {
-			return selectedOwner{}, errOwnerEvidence
+			return m.freshSelectedOwner(ctx, host, report)
 		}
 		return chosen.clone(), nil
 	}
@@ -89,8 +96,9 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 			}
 			return selectedOwner{}, err
 		}
-		_, dormant := parseSystemdHubs(out)
-		for _, label := range dormant {
+		live, dormant := parseSystemdHubs(out)
+		labels := slices.Concat(live, dormant)
+		for _, label := range labels {
 			sup := supervisor{kind: scope.kind, label: label}
 			out, err := m.ownerRead(ctx, host, supervisorShowRemote(sup))
 			if err != nil {
@@ -100,14 +108,17 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 			if err != nil {
 				return selectedOwner{}, err
 			}
-			if fields["Id"] != label || fields["MainPID"] != "0" {
+			if fields["Id"] != label {
 				return selectedOwner{}, errOwnerEvidence
 			}
 			if config, ok := ownerConfigFlag(argv); ok && path.IsAbs(config) && config != report.ConfigPath {
 				continue
 			}
 			if err := m.hubExecutableMatches(ctx, host, argv[0]); err != nil {
-				continue
+				if errors.Is(err, errOwnerSelectionMismatch) {
+					continue
+				}
+				return selectedOwner{}, err
 			}
 			user, ok := effectiveUserName(host)
 			if !ok {
@@ -143,7 +154,13 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 				}
 			}
 			if err := m.checkOwnerConfig(ctx, host, argv, cwd, env, report); err != nil {
-				continue
+				if errors.Is(err, errOwnerSelectionMismatch) {
+					continue
+				}
+				return selectedOwner{}, err
+			}
+			if fields["MainPID"] != "0" {
+				return selectedOwner{}, fmt.Errorf("%w: selected stopped root has a live service", errOwnerEvidence)
 			}
 			definition, err := m.serviceDefinition(ctx, host, sup)
 			if err != nil {
@@ -157,7 +174,7 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 		}
 	}
 	if chosen == nil {
-		return selectedOwner{}, fmt.Errorf("%w: no stopped selected service or retained launch", errOwnerEvidence)
+		return m.freshSelectedOwner(ctx, host, report)
 	}
 	return chosen.clone(), nil
 }

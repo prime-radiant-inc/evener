@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -94,15 +95,26 @@ func parseAttachOptions(args []string, stderr io.Writer) (attachOptions, error) 
 
 // runAttach resolves the hub's loopback address and capability token, then
 // runs the bidirectional bridge over the process streams carried in deps.
-func runAttach(args []string, stderr io.Writer, deps mainDeps) error {
-	opts, err := parseAttachOptions(args, stderr)
+func runAttach(args []string, stderr io.Writer, deps mainDeps) (err error) {
+	var parseOutput bytes.Buffer
+	opts, err := parseAttachOptions(args, &parseOutput)
+	parseReported := parseOutput.Len() != 0
+	_, _ = parseOutput.WriteTo(stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		// flag.Parse already reports syntax failures. Semantic parse errors do not.
+		if !parseReported {
+			_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		}
 		return err
 	}
+	defer func() {
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		}
+	}()
 	ctx, cancel := deps.notifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	// Validate an explicit destination before reading any host credential.
@@ -148,11 +160,7 @@ func runAttach(args []string, stderr io.Writer, deps mainDeps) error {
 	stream := appwire.NewStreamTransport(newStdioStream(stdin, stdout))
 	// A signal ends the bridge: the pump is one long-lived call, so without this
 	// an operator could not stop an attached bridge except by killing it.
-	if err := proxyAppWire(ctx, origin.String(), token, record, stream); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
-		return err
-	}
-	return nil
+	return proxyAppWire(ctx, origin.String(), token, record, stream)
 }
 
 // proxyAppWire dials the hub's loopback AppWire edge and pumps Messages in both

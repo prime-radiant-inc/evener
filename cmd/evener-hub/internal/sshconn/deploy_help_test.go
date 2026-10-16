@@ -156,6 +156,7 @@ func unstampedRefusal(t *testing.T, opts Options) error {
 			return []byte(`{"version":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "othersha")
 	opts.controllerVersionOverride = "newsha"
 	if opts.sleep == nil {
 		opts.sleep = func(context.Context, time.Duration) error { return nil }

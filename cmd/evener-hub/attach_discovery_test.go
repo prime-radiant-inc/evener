@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -167,6 +168,14 @@ func TestAttachDiscoveryRejectsExplicitMismatchBeforeToken(t *testing.T) {
 	if !errors.Is(err, hubendpoint.ErrIdentityMismatch) || stdout.Len() != 0 {
 		t.Fatalf("err=%v stdout=%q", err, stdout.String())
 	}
+	assertAttachErrorReportedOnce(t, err, &stdout, &stderr)
+	stderr.Reset()
+	err = runAttach([]string{"--stdio", "--config", path}, &stderr, deps)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing selected token err=%v", err)
+	}
+	assertAttachErrorReportedOnce(t, err, &stdout, &stderr)
+	stderr.Reset()
 	for _, flags := range [][]string{{"--hub-url", ""}, {"--addr", "127.0.0.1:9180"}} {
 		err = runAttach(append([]string{"--stdio", "--config", path}, flags...), &stderr, deps)
 		if err == nil || stdout.Len() != 0 {
@@ -174,6 +183,61 @@ func TestAttachDiscoveryRejectsExplicitMismatchBeforeToken(t *testing.T) {
 		}
 		if flags[0] == "--hub-url" && !errors.Is(err, errNonLoopbackAddr) {
 			t.Fatalf("empty URL err=%v", err)
+		}
+	}
+}
+
+func assertAttachErrorReportedOnce(t *testing.T, err error, stdout, stderr *bytes.Buffer) {
+	t.Helper()
+	if err == nil || stdout.Len() != 0 || strings.Count(stderr.String(), err.Error()) != 1 {
+		t.Fatalf("attach error=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+}
+
+func TestAttachEarlyDiagnostics(t *testing.T) {
+	root, state := endpointTestRoot(t)
+	path := endpointTestConfig(t, root, state, "127.0.0.1:0")
+	for _, tc := range []struct {
+		name string
+		args []string
+		want error
+	}{
+		{"stopped", []string{"--stdio", "--config", path}, errNoHubAt},
+		{"unsafe URL", []string{"--stdio", "--hub-url", "http://user:NEVER_PRINT_72c9@127.0.0.1:9180"}, errNonLoopbackAddr},
+		{"missing stdio", nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			deps := defaultMainDeps()
+			deps.stdin, deps.stdout = strings.NewReader(""), &stdout
+			err := runAttach(tc.args, &stderr, deps)
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("early refusal=%v", err)
+			}
+			assertAttachErrorReportedOnce(t, err, &stdout, &stderr)
+			if strings.Contains(stderr.String(), "NEVER_PRINT_72c9") {
+				t.Fatal("unsafe explicit URL escaped diagnostics")
+			}
+		})
+	}
+}
+
+func TestAttachParserOwnsItsDiagnostics(t *testing.T) {
+	for _, args := range [][]string{{"--not-a-flag"}, {"--help"}} {
+		var expected, stderr, stdout bytes.Buffer
+		_, parseErr := parseAttachOptions(args, &expected)
+		deps := defaultMainDeps()
+		deps.stdin, deps.stdout = strings.NewReader(""), &stdout
+		err := runAttach(args, &stderr, deps)
+		if expected.Len() == 0 || !bytes.Equal(stderr.Bytes(), expected.Bytes()) || stdout.Len() != 0 {
+			t.Fatalf("parser diagnostic duplicated or lost, stdout=%q stderr=%q", stdout.String(), stderr.String())
+		}
+		if errors.Is(parseErr, flag.ErrHelp) {
+			if err != nil {
+				t.Fatal(err)
+			}
+		} else if err == nil {
+			t.Fatal("parse failure lost")
 		}
 	}
 }

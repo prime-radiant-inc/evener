@@ -1964,13 +1964,8 @@ func TestIsTerminalClassifiesManagerClosed(t *testing.T) {
 	}
 }
 
-// TestEnsureBoundsHubIsPresent proves the hub-presence probe is bounded like
-// every other phase of ensureOnce. hubIsPresent issues real ssh commands
-// (systemctl list-units, then lsof); before the fix it inherited the attempt
-// context, which for a supervisor reconnect has no deadline, so a hung remote
-// command held the per-host lock forever. The fake hangs the supervisor probe and
-// the test asserts ensureOnce still returns.
-func TestEnsureBoundsHubIsPresent(t *testing.T) {
+// A selected endpoint command must not hold a reconnect's host gate forever.
+func TestEnsureBoundsSelectedEndpoint(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	probing := make(chan struct{}, 4)
 	fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
@@ -1985,18 +1980,13 @@ func TestEnsureBoundsHubIsPresent(t *testing.T) {
 		case strings.Contains(joined, "XDG_STATE_HOME"):
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			// A mismatching on-disk build puts a deploy on the table, which is the
-			// only path that runs the hub-presence probe.
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
-		case strings.Contains(joined, "api/health"):
-			return nil, errors.New("curl: (7) Failed to connect")
-		case strings.Contains(joined, "list-units"):
+		case strings.HasSuffix(joined, "/opt/evener/bin/evener hub endpoint --json"):
 			select {
 			case probing <- struct{}{}:
 			default:
 			}
-			// Block until the probe's own context expires: a real command stuck on
-			// a dead dbus behaves this way.
+			// Block until the selected probe's own context expires.
 			<-ctx.Done()
 			return nil, ctx.Err()
 		default:
@@ -2017,15 +2007,15 @@ func TestEnsureBoundsHubIsPresent(t *testing.T) {
 	select {
 	case <-probing:
 	case <-time.After(10 * time.Second):
-		t.Fatal("ensureOnce never reached the hub-presence supervisor probe")
+		t.Fatal("ensureOnce never reached the selected endpoint probe")
 	}
 	select {
 	case err := <-errCh:
-		if err == nil {
-			t.Fatal("ensureOnce returned nil; the hung hub-presence probe must surface a failure")
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("selected probe err=%v, want deadline exceeded", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("ensureOnce did not return: hubIsPresent ran on an unbounded context and held the host lock")
+		t.Fatal("selected endpoint probe held the host lock past its deadline")
 	}
 }
 

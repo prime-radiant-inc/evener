@@ -1125,20 +1125,20 @@ func (s *attachedUpdateStdio) Wait() error {
 type attachedUpdateRunner struct{}
 
 func (*attachedUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-	joined := strings.Join(argv, " ")
-	switch {
-	case strings.HasSuffix(joined, "uname -s"):
+	joined := strings.Join(argv[12:], " ")
+	switch joined {
+	case "uname -s":
 		return []byte("Linux\n"), nil
-	case strings.HasSuffix(joined, "uname -m"):
+	case "uname -m":
 		return []byte("x86_64\n"), nil
-	case strings.Contains(joined, "XDG_STATE_HOME"):
+	case `printf '%s\n' "HOME=${HOME-}" "XDG_STATE_HOME=${XDG_STATE_HOME-}" "XDG_CONFIG_HOME=${XDG_CONFIG_HOME-}"`:
 		return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-	case strings.HasSuffix(joined, "id -u"):
+	case "id -u":
 		return []byte("1000\n"), nil
-	case strings.Contains(joined, "launch-check"):
-		return []byte(`{"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
-	case strings.Contains(joined, "api/health"):
-		return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+	case "evener launch-check --json":
+		return []byte(probeGoodLaunchCheck), nil
+	case "evener hub endpoint --json", "/home/dev/.local/bin/evener hub endpoint --json":
+		return []byte(hostFixtureSelectedEndpoint), nil
 	default:
 		return nil, errors.New("attachedUpdateRunner: unexpected remote command")
 	}

@@ -19,6 +19,8 @@ import (
 // Keep this separate from the terminal, positively unsupported capability.
 var errOwnerEvidence = errors.New("sshconn: selected owner evidence missing")
 
+var errOwnerSelectionMismatch = fmt.Errorf("%w: different selected owner", errOwnerEvidence)
+
 // selectedOwner is a read-only live-owner snapshot, not a restart command or
 // durable operation record. It grants no authority after any field changes.
 // Call revalidateOwnedEndpoint immediately before consuming it for mutation.
@@ -260,7 +262,7 @@ func (m *Manager) checkOwnerConfig(ctx context.Context, host hostreg.Host, argv 
 	args := []string{argv[0], "hub", "endpoint", "--json"}
 	if config, supplied := ownerConfigFlag(argv); supplied {
 		if path.IsAbs(config) && config != selected.ConfigPath {
-			return fmt.Errorf("%w: process config disagrees with selection", errOwnerEvidence)
+			return fmt.Errorf("%w: process config disagrees with selection", errOwnerSelectionMismatch)
 		}
 		args = append(args, "--config", config)
 	} else if hasConfigFlag(argv) {
@@ -278,8 +280,11 @@ func (m *Manager) checkOwnerConfig(ctx context.Context, host hostreg.Host, argv 
 		return err
 	}
 	report, err := hubendpoint.DecodeReport(bytes.NewReader(out))
-	if err != nil || report.ConfigPath != selected.ConfigPath || report.HubStateRoot != selected.HubStateRoot {
-		return fmt.Errorf("%w: process config/root disagrees with selection", errOwnerEvidence)
+	if err != nil {
+		return fmt.Errorf("%w: process selection report is invalid", errOwnerEvidence)
+	}
+	if report.ConfigPath != selected.ConfigPath || report.HubStateRoot != selected.HubStateRoot {
+		return fmt.Errorf("%w: process config/root disagrees with selection", errOwnerSelectionMismatch)
 	}
 	return nil
 }

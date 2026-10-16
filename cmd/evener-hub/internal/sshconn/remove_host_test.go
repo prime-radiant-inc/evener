@@ -79,7 +79,7 @@ func TestRemoveHostClearsPerHostCaches(t *testing.T) {
 	m, events := detachHostFixture(t)
 	m.markDevDeployed("alpha")
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
-	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", hubIdentity{})
+	m.setSelectedRestart(hostreg.Host{Name: "alpha"}, selectedOwner{pid: "4242"}, "selected-restart", "dev", "")
 	if err := m.RemoveHost("alpha"); err != nil {
 		t.Fatalf("RemoveHost = %v, want nil", err)
 	}
@@ -102,7 +102,7 @@ func TestDetachHostClearsPerHostCaches(t *testing.T) {
 	m, events := detachHostFixture(t)
 	m.markDevDeployed("alpha")
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
-	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", hubIdentity{})
+	m.setSelectedRestart(hostreg.Host{Name: "alpha"}, selectedOwner{pid: "4242"}, "selected-restart", "dev", "")
 	if err := m.DetachHost("alpha"); err != nil {
 		t.Fatalf("DetachHost = %v, want nil", err)
 	}

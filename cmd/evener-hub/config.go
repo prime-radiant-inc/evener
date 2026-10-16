@@ -10,7 +10,6 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
-	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/hubendpoint"
@@ -42,9 +41,8 @@ type HostConfig struct {
 	// ConfigPath is the host hub's hub.toml, when it is not at the default
 	// location, so the bridge attaches with the host's own configuration.
 	ConfigPath string `toml:"config_path,omitempty"`
-	// Addr is the host hub's listen address, when it is not the default. The
-	// manager needs it to restart the hub and to health-check it after a deploy,
-	// where a wrong default would probe or kill the wrong listener.
+	// Addr is a listener override only for explicitly authorized fresh bootstrap.
+	// Existing service definitions and selected connection endpoints ignore it.
 	Addr  string   `toml:"addr,omitempty"`
 	Roots []string `toml:"roots,omitempty"`
 	// KeyPath is the SSH private-key file for this host, when it is not the
@@ -597,18 +595,7 @@ func decodeConfig(name, data string) (Config, error) {
 // validateHostConfigs. They are named sentinels so tests and callers can match
 // them with errors.Is.
 var (
-	// ErrHostAddrPair marks a [[hosts]] entry that sets exactly one of
-	// config_path and addr. The pair describes one host hub layout — the bridge
-	// resolves the hub's address and token from config_path, while the SSH
-	// manager's restart and health path probes addr — so a half-specified entry
-	// would attach through one layout while the manager probes another.
-	ErrHostAddrPair = errors.New("host config_path and addr must be set together")
-	// ErrHostAddr marks an addr the controller cannot use: malformed, missing a
-	// usable port, or not a loopback/wildcard bind. addr is interpolated into an
-	// SSH-side health probe and restart identity check, so a non-loopback value
-	// could let those paths reach an arbitrary host; the wildcard spellings are
-	// accepted because the manager normalizes them to loopback for its own dial
-	// and probe.
+	// ErrHostAddr marks a malformed fresh-bootstrap listener override.
 	ErrHostAddr = errors.New("host addr unusable")
 	// errIntegerDuration refuses a duration knob written as a bare integer,
 	// which TOML decodes as a nanosecond count.
@@ -632,8 +619,7 @@ func normalizeMachineRoots(roots []string) []string {
 // throwaway registry, so name grammar, duplicate names, reserved "local", the
 // ".." rule, ssh presence, the user/ssh-user conflict, and empty roots are all
 // checked by the single source of truth in hostreg. Each entry also runs
-// validateHostEntry — the pair and addr rules spec 03's "config_path / addr"
-// contract requires, the same function the runtime add/update paths run — so a
+// validateHostEntry — including optional fresh-bootstrap listener intent, the same function the runtime add/update paths run — so a
 // hub.toml entry and a UI-added entry are validated by one code path. No host
 // is registered anywhere: this is pure validation.
 //
@@ -676,8 +662,8 @@ func validateHostConfigs(hosts []HostConfig) error {
 
 // validateHostEntry runs every entry check the host surfaces share: hostreg's
 // own shape validation (name grammar, reserved name, ssh destination, user/ssh
-// agreement, non-empty roots) plus the config_path/addr pair and addr host
-// rules hub.toml loading applies (validateHostAddr). hub.toml loading and the
+// agreement, non-empty roots) plus optional bootstrap listener
+// validation hub.toml loading applies (validateHostAddr). hub.toml loading and the
 // runtime evener/host/add and evener/host/update paths all call it, so an entry
 // one surface refuses can never be stored by another.
 func validateHostEntry(entry hostreg.Host) error {
@@ -687,32 +673,12 @@ func validateHostEntry(entry hostreg.Host) error {
 	return validateHostAddr(entry)
 }
 
-// validateHostAddr refuses an entry whose config_path/addr pair is
-// half-specified, or whose addr the controller cannot use. It checks the
-// normalized values the registry would store.
-//
-// The pair describes ONE host hub layout (component 04, "Address, config path,
-// token"): the bridge resolves the hub's listen address and token state root
-// from config_path, while the manager's restart and health path probes addr. A
-// half-specified entry attaches through one layout while the manager probes
-// another — a silent split-brain, not a clean failure.
-//
-// addr is interpolated into an SSH-side curl probe and the restart identity
-// check, so a non-loopback value could let those paths reach an arbitrary
-// reachable host. The address half delegates to sshconn.ValidateHubAddrShape —
-// the SSH probe's own accepted-address rule — and wraps its refusal in this
-// package's ErrHostAddr, so load-time validation and the use-time probe cannot
-// drift on what an address may be: a loopback host literal, "localhost", the
-// wildcard spellings the manager normalizes to loopback (0.0.0.0, ::, and the
-// empty host of ":port"), and a usable port.
+// validateHostAddr validates optional fresh-bootstrap listener intent.
 func validateHostAddr(entry hostreg.Host) error {
-	if (entry.ConfigPath == "") != (entry.Addr == "") {
-		return fmt.Errorf("%w: host %q sets exactly one of config_path and addr; set both or neither", ErrHostAddrPair, entry.Name)
-	}
 	if entry.Addr == "" {
 		return nil
 	}
-	if err := sshconn.ValidateHubAddrShape(entry.Addr); err != nil {
+	if _, err := hubendpoint.ParseListenAddr(entry.Addr); err != nil {
 		return fmt.Errorf("%w: host %q %w", ErrHostAddr, entry.Name, err)
 	}
 	return nil

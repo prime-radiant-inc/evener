@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // selectedProcessFixture models the external process/service boundary for the
@@ -22,6 +24,8 @@ type selectedProcessFixture struct {
 	dormant, unsafeLabel          bool
 	delay, successorPolls         int
 	advisory                      bool
+	endpointAlias                 string
+	launchAddr                    string
 }
 
 func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after string) *selectedProcessFixture {
@@ -49,10 +53,18 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 		root := "/home/dev/.local/state/evener"
 		endpoint := f.exe + " hub endpoint --json"
 		contextEndpoint := "cd /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; " + endpoint
+		launchArgv := []string{f.exe, "hub"}
+		if f.launchAddr != "" {
+			contextEndpoint += " --addr " + shellquote.RemoteWord(f.launchAddr)
+			launchArgv = append(launchArgv, "--addr", f.launchAddr)
+		}
 		report := remoteEndpointFixture(config, "127.0.0.1:9180", boot)
 		report.HubStateRoot, report.Running.HubStateRoot = root, root
 		report.Running.PID, _ = strconv.Atoi(pid)
 		report.Running.Version, report.Running.BackendGitSHA = version, f.sha
+		if f.launchAddr != "" {
+			report.Running.RequestedListenAddr, report.Running.ListenSource = f.launchAddr, "flag"
+		}
 		if f.stopped {
 			report.State, report.Running = "stopped", nil
 		}
@@ -73,10 +85,14 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 		case "id -un", "ps -o user= -p " + pid:
 			return []byte("dev\n"), nil
 		case hubArgvRemote(pid):
-			return []byte(f.exe + "\x00hub\x00"), nil
+			return []byte(strings.Join(launchArgv, "\x00") + "\x00"), nil
 		case "readlink /proc/" + pid + "/cwd":
 			return []byte("/home/dev\n"), nil
 		case ownerEnvironmentRemote(pid):
+			return []byte("HOME=/home/dev\x00"), nil
+		case "pwd":
+			return []byte("/home/dev\n"), nil
+		case freshOwnerEnvironmentRemote:
 			return []byte("HOME=/home/dev\x00"), nil
 		case "cat /proc/" + pid + "/cgroup":
 			return []byte("0::/user.slice/session.scope\n"), nil
@@ -106,7 +122,7 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 			return []byte("1234 567\n"), nil
 		case "/proc/" + pid + "/exe launch-check --json":
 			return []byte(goodLaunchCheck), nil
-		case "command -v evener":
+		case "command -v evener", "command -v evener || echo __sshconn_no_evener__":
 			return []byte(f.exe + "\n"), nil
 		case "getent passwd dev | cut -d: -f6":
 			return []byte("/home/dev\n"), nil
@@ -131,6 +147,10 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 		case darwinEnvironmentRemote(pid):
 			return []byte("HOME=/home/dev\x00"), nil
 		}
+		if f.endpointAlias != "" && remote == f.endpointAlias {
+			f.endpointPolls++
+			return json.Marshal(report)
+		}
 		// Canonicalization is exact, not a substring that could make another
 		// executable match. Deploy's independent path probes still reach base.
 		if remote == resolveDeployCommand(f.exe) {
@@ -143,8 +163,8 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 			}
 			return out, err
 		}
-		relaunch := contextEndpoint[:len(contextEndpoint)-len(endpoint)] + relaunchCommand([]string{f.exe, "hub"}, "")
-		if remote == "systemctl restart evener-hub.service" || remote == "launchctl kickstart -k gui/1000/com.example.evener-hub" || (f.adhoc && remote == relaunch) {
+		relaunch := "cd /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; " + relaunchCommand(launchArgv, "")
+		if remote == "systemctl start evener-hub.service" || remote == "systemctl restart evener-hub.service" || remote == "launchctl kickstart -k gui/1000/com.example.evener-hub" || (f.adhoc && remote == relaunch) {
 			out, err := base(ctx, argv, in)
 			if err == nil || f.advisory {
 				f.mutated = true

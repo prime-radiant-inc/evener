@@ -123,7 +123,7 @@ func TestRemoteRestartRecoversStoppedReplacement(t *testing.T) {
 			if direct {
 				err = m.RestartForOperation(t.Context(), host, selectedRestartFacts())
 			} else {
-				err = m.recoverRestart(t.Context(), host, selectedRestartFacts(), "release-selected", m.pendingRestart(host.Name))
+				err = m.recoverSelectedRestart(t.Context(), host, selectedRestartFacts(), m.pendingRestart(host.Name))
 			}
 			if err != nil {
 				t.Fatal(err)

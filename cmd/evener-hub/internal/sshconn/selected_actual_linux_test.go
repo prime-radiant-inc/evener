@@ -50,7 +50,7 @@ func TestRemoteRestartActualDisposableHub(t *testing.T) {
 	}
 	// This is deliberately a supervisorless private PATH, not a stub systemctl.
 	// Every executable that exists here is the host's actual command.
-	for _, tool := range []string{"awk", "stat", "cat", "readlink", "ps", "id", "dirname", "basename", "realpath", "nohup", "lsof", "sed", "cksum", "sort", "grep"} {
+	for _, tool := range []string{"awk", "stat", "cat", "readlink", "ps", "id", "dirname", "basename", "realpath", "nohup", "lsof", "sed", "cksum", "sort", "grep", "uname", "env"} {
 		target, err := exec.LookPath(tool)
 		if err != nil {
 			if tool == "lsof" {
@@ -151,4 +151,24 @@ func TestRemoteRestartActualDisposableHub(t *testing.T) {
 		t.Fatal("restart attempted credential-bearing attachment")
 	}
 	t.Logf("actual default-config Linux hub replaced PID %d with PID %d, new boot, selected root, requested port zero, pending cleared, no attach", before.Running.PID, after.Running.PID)
+	// Only the SSH transport boundary is replaced. Ensure runs its actual
+	// preflight, selected endpoint command and real credential-bearing bridge.
+	fr.startFn = func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error) {
+		remote := strings.Join(argv[12:], " ")
+		local := append([]string{"/usr/bin/env", "-i"}, env...)
+		local = append(local, "/bin/bash", "-c", "cd "+strconv.Quote(root)+" && "+remote)
+		return (execRunner{}).Start(ctx, local, stderr)
+	}
+	ch, err := m.Ensure(ctx, host.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Client() == nil || len(fr.recordedStarts()) != 1 {
+		t.Fatal("Ensure did not initialize the actual bridge")
+	}
+	attached, err := endpoint()
+	if err != nil || attached.Running == nil || attached.Running.PID != after.Running.PID || attached.Running.BootID != after.Running.BootID {
+		t.Fatal("Ensure changed the selected successor instead of attaching")
+	}
+	t.Log("actual Ensure selected the successor and initialized its bridge without another restart")
 }

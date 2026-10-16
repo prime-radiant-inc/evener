@@ -7,7 +7,43 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
+
+func TestRemoteRestartDrainFailure(t *testing.T) {
+	for _, answer := range []string{pidAliveMarker, "unusable", "transport"} {
+		t.Run(answer, func(t *testing.T) {
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener"}
+			killed, probes := 0, 0
+			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+				switch remote := strings.Join(argv[12:], " "); remote {
+				case "lsof -p 4242 -a -d 1,2":
+					return nil, nil
+				case "kill -- 4242":
+					killed++
+					return nil, nil
+				case processAliveRemote("4242"):
+					probes++
+					if answer == "transport" {
+						return nil, errReplacementFixture
+					}
+					return []byte(answer), nil
+				default:
+					t.Errorf("undeclared command after drain failure %q", remote)
+					return nil, errors.New("undeclared drain command")
+				}
+			}}
+			f := modelSelectedProcess(t, fr, host.EvenerPath, "dev", "release-selected")
+			f.adhoc = true
+			m := newTestManager(t, testRegistry(t, host), fr, Options{sleep: func(context.Context, time.Duration) error { return context.Canceled }})
+			err := m.RestartForOperation(t.Context(), host, selectedRestartFacts())
+			if err == nil || killed != 1 || probes != 1 || m.pendingRestart(host.Name).selected == nil || len(fr.recordedStarts()) != 0 {
+				t.Fatalf("drain err=%v kills=%d probes=%d pending=%+v", err, killed, probes, m.pendingRestart(host.Name))
+			}
+		})
+	}
+}
 
 func TestRemoteRestartPreservesBinding(t *testing.T) {
 	for _, tc := range []struct{ name, config, args, env, query, launch string }{
@@ -51,14 +87,14 @@ func TestRemoteRestartPreservesBinding(t *testing.T) {
 			second[0].output = strings.ReplaceAll(second[0].output, "0.0.0.0:0", "127.0.0.2:0")
 			second[9].output = strings.ReplaceAll(second[9].output, "0.0.0.0:0", "127.0.0.2:0")
 			commands := first
-			commands = append(commands, ownerCommand{"lsof -p 4242 -a -d 1,2", ""})
+			commands = append(commands, ownerCommand{"lsof -p 4242 -a -d 1,2", "evener 4242 dev 1w REG 1,2 123 456 /home/dev/my hub.log\nevener 4242 dev 2w REG 1,2 123 456 /home/dev/my hub.log\n"})
 			commands = append(commands, second...)
 			env := "export HOME=/home/dev; "
 			if strings.Contains(tc.env, "EVENER_HUB_LISTEN_ADDR=") {
 				env = "export EVENER_HUB_LISTEN_ADDR=127.0.0.1:0; " + env
 			}
-			launch := "cd /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; " + env + "nohup /opt/evener hub" + tc.launch + " </dev/null >/dev/null 2>&1 &"
-			commands = append(commands, ownerCommand{"kill -- 4242", ""}, ownerCommand{processAliveRemote("4242"), pidGoneMarker + "\n"}, ownerCommand{launch, ""})
+			launch := "cd /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; " + env + "nohup /opt/evener hub" + tc.launch + " >>'/home/dev/my hub.log' 2>&1 </dev/null &"
+			commands = append(commands, ownerCommand{"kill -- 4242", ""}, ownerCommand{processAliveRemote("4242"), pidAliveMarker + "\n"}, ownerCommand{processAliveRemote("4242"), pidGoneMarker + "\n"}, ownerCommand{launch, ""})
 			commands = append(commands, prepare(true)...)
 			fr, index := ownerRunner(t, commands)
 			// Model a genuinely absent systemctl, not an empty listing being used to
@@ -72,11 +108,12 @@ func TestRemoteRestartPreservesBinding(t *testing.T) {
 				}
 				return out, err
 			}
-			m := newTestManager(t, testRegistry(t, host), fr, Options{})
+			sleeps := 0
+			m := newTestManager(t, testRegistry(t, host), fr, Options{sleep: func(context.Context, time.Duration) error { sleeps++; return nil }})
 			if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); err != nil {
 				t.Fatal(err)
 			}
-			if *index != len(commands) || m.pendingRestart(host.Name).selected != nil || len(fr.recordedStarts()) != 0 {
+			if sleeps != 1 || *index != len(commands) || m.pendingRestart(host.Name).selected != nil || len(fr.recordedStarts()) != 0 {
 				t.Fatalf("commands=%d/%d, pending retained or early attach", *index, len(commands))
 			}
 		})

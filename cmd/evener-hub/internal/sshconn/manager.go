@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/execsupport/syncio"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 // State is a channel lifecycle state. 04a's chain is
@@ -167,9 +168,8 @@ type Options struct {
 
 	// HubListenAddr is the optional server-listener override for fresh bootstrap.
 	// A host entry may override it with Addr. Attachment discovers the selected
-	// instance remotely and never consumes this value. The legacy restart/probe
-	// path still uses hostAddrFor and requires config/address pairing until its
-	// ownership and readiness migration is complete.
+	// instance remotely and never consumes this value. Existing selected owners
+	// retain their service/argv/environment listener intent.
 	HubListenAddr string
 
 	// Test seams.
@@ -451,58 +451,14 @@ type Manager struct {
 	ownerWitnesses  map[string]selectedOwner
 }
 
-// hubIdentity identifies a running hub from its /api/health body: the version it
-// reports, the build's backend_git_sha, and, when the body carries one, its
-// process start time. Version alone cannot tell two builds apart when both are
-// "dev" — an unstamped controller and an unstamped host — so the start time is
-// what proves a restart produced a new process rather than leaving the old one
-// serving; on the snapshot channel the version cannot tell two builds apart at
-// all, so the git SHA is what a snapshot pin compares.
-type hubIdentity struct {
-	version   string
-	gitSHA    string
-	startedAt time.Time
-}
-
-// sameProcessAs reports whether other is the same hub process as h, judged by
-// start time. A zero start time on either side proves nothing and is never read
-// as a match, so a health body without started_at falls back to the version
-// comparison its caller already makes.
-func (h hubIdentity) sameProcessAs(other hubIdentity) bool {
-	return !h.startedAt.IsZero() && h.startedAt.Equal(other.startedAt)
-}
-
-// differentProcessFrom reports whether h is PROVABLY a different process from
-// other: both start times must be known, and must differ. It is the strict
-// counterpart of sameProcessAs for the one caller that must decide whether a
-// recorded restart actually produced a replacement. sameProcessAs is false both
-// when the processes differ and when either identity is unknown (a health body
-// without started_at), so using it to settle a pending restart would let an old
-// hub with the expected version and no start timestamp clear the marker and be
-// attached to. An unknown identity on either side proves nothing and is treated
-// as unresolved: the restart stays pending and is retried.
-func (h hubIdentity) differentProcessFrom(other hubIdentity) bool {
-	return !h.startedAt.IsZero() && !other.startedAt.IsZero() && !h.startedAt.Equal(other.startedAt)
-}
-
-// pendingRestartState is a restart command recorded before it ran, together with
-// the identity of the hub process it replaces, so a later Ensure can tell whether
-// the restart actually produced a new process instead of trusting a version that
-// may not be unique.
+// pendingRestartState retains independently authorized launch intent before
+// replacement or first start. Commands are diagnostic only, never replayed.
 type pendingRestartState struct {
 	command  string
-	replaced hubIdentity
-	// selected binds replacement replay to its independently authorized owner.
-	// nil is the existing bootstrap producer, not a legacy restart permission.
 	selected *selectedOwner
 	version  string
 	gitSHA   string
-	// start records that this command STARTS a hub where none was serving (the
-	// bootstrap path, which refuses to run while a listener holds the address)
-	// rather than replacing a process. A recovered start has no predecessor to
-	// exclude, so its health verification accepts the expected version alone; a
-	// recovered replacement must still prove it replaced the process it recorded.
-	start bool
+	start    bool
 }
 
 // New builds a Manager over reg's validated hosts. opts.Runner defaults to the
@@ -1833,12 +1789,10 @@ func (m *Manager) clearHostCaches(name string) {
 // state transitions around it. Every branch is chosen by the one decision table
 // in ensureDecision; this function owns only the ordering and the recovery.
 //
-// The ladder guarantees three things the ad-hoc gates did not:
-//   - one probe pass, with every fact recorded as known or unknown honestly;
-//   - the deploy path is offered to every host before any terminal refusal, so a
-//     protocol-broken or flag-less host can still be upgraded over ssh;
-//   - a deploy or restart that leaves the host without a listener is retried by
-//     the next Ensure, matching ErrRestart's stated contract;
+// The ladder keeps the disk contract separate from the selected serving state:
+//   - endpoint-capable protocol-broken or flag-less hosts may be upgraded;
+//   - a deploy or restart that leaves the selected owner stopped retains intent
+//     for the next Ensure, matching ErrRestart's stated contract;
 //   - a deploy on a host with no hub present is a fresh install, not a restart:
 //     it falls through to the explicit-attach bootstrap (below) and a reconnect
 //     never turns it into a hub start.
@@ -1853,12 +1807,6 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// bare `evener` instead made version auto-match fail and re-deploy on every
 	// reconnect.
 	m.applyResolvedTarget(&host)
-	// Refuse an unusable hub address before any ssh command runs: the probe and
-	// restart paths below would otherwise address (and possibly kill) whatever
-	// holds the default port, or poll a port the bridge never dials.
-	if err := m.checkHostAddr(host); err != nil {
-		return nil, err
-	}
 	m.stateEvent(host.Name, StatePreflighting)
 	// Bound only the preflight here: deploy/restart below get deployLimit, and
 	// attach bounds its own handshake (initTimeout).
@@ -1879,68 +1827,23 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	m.applyResolvedTarget(&host)
 
 	expected := m.opts.controllerVersion()
-	// One probe of the hub that is actually RUNNING. ok is false when nothing
-	// answered or the body was not a hub health response: an unknown fact, never
-	// a hub with an empty version.
-	probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
-	running, runningKnown := m.probeRunningHub(probeCtx, host)
-	cancelProbe()
-	// Settlement judges the build the host will actually serve, exactly as
-	// recoverRestart and the restart waits do: a host that keeps its own build
-	// (hostBuildDiffers, no deploy configured) answers with its own version, not
-	// the controller's, and a snapshot controller's pin requires the running
-	// hub's backend_git_sha to match. Comparing against the controller's version
-	// alone would leave a recorded start on a keep-its-own-build host unsettled
-	// forever, and dropping the pin would let a wrong-commit hub satisfy the
-	// settlement the waits refuse.
-	servedVersion, servedPin := expectedServedBuild(facts, expected)
-	if pending := m.pendingRestart(host.Name); pending.selected == nil && runningKnown && running.version == servedVersion &&
-		hubBuildSHAMatches(running.gitSHA, servedPin) &&
-		(pending.start || running.differentProcessFrom(pending.replaced)) {
-		// A hub already serving exactly the expected build resolves whatever an
-		// earlier restart or start left outstanding; do not launch a second hub
-		// over it. A recorded START has no predecessor to exclude — bootstrapHub
-		// only ever starts a hub where nothing was serving — so the expected build
-		// (version and, on the snapshot channel, the pinned commit) alone settles
-		// it, exactly as recoverRestart judges a recovered start (a start's zero
-		// `replaced` can never satisfy differentProcessFrom, so the build match is
-		// the only thing that can clear it). A recorded REPLACEMENT must
-		// additionally be provably not the process it meant to replace: the version
-		// is not that proof, because two unstamped builds both report "dev", so a
-		// restart that never took would otherwise be cleared on the old process's
-		// answer and the next Ensure would attach to it. A start time that is
-		// missing on either side is not proof either: an old hub whose health body
-		// carries no started_at would otherwise clear the pending marker on the
-		// same answer, so the identity must be known on BOTH sides and must differ
-		// before the marker is cleared (differentProcessFrom).
-		m.clearPendingRestart(host.Name)
-	}
-
-	// A deploy replaces a hub only when one is present. The health probe is the
-	// cheap half of that question; when nothing answered but a deploy is on the
-	// table, ask whether a supervisor unit or a listener owns the hub port before
-	// deciding. This probe runs only for a deploy with no answering hub, so the
-	// common attach path pays nothing extra.
-	hubPresent := runningKnown
-	if !hubPresent && m.deployRequired(host.Name, facts, expected) {
-		// Bound the hub-presence probe like every other phase: hubIsPresent issues
-		// real ssh commands (systemctl list-units / launchctl list, then the port
-		// probe — lsof, ss, or the host's TCP tables) and otherwise inherits the
-		// attempt context, which for a supervisor reconnect is only
-		// WithCancel(m.baseCtx) with no deadline. A remote command that hangs
-		// (systemctl blocked on a stuck dbus, a probe stuck on NFS) would then hold
-		// the per-host lock forever and stall every later Ensure and reconnect for
-		// the host — exactly what attemptLimit exists to prevent.
-		presentCtx, cancelPresent := context.WithTimeout(ctx, m.opts.attemptLimit())
-		present, err := m.hubIsPresent(presentCtx, host, facts)
-		cancelPresent()
+	// Only the remote resolver selects a connection and serving generation.
+	var report hubendpoint.Report
+	if !facts.ExecutableMissing {
+		probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
+		report, err = m.resolveHostEndpoint(probeCtx, host, facts)
+		cancelProbe()
 		if err != nil {
 			return nil, err
 		}
-		hubPresent = present
 	}
-
-	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown, hubPresent)
+	runningKnown := report.Running != nil
+	runningVersion := ""
+	if runningKnown {
+		runningVersion = report.Running.Version
+	}
+	hubPresent := !facts.ExecutableMissing && report.State != "stopped"
+	deploy, restart := m.ensureDecision(host.Name, facts, expected, runningVersion, runningKnown, hubPresent)
 	// A deploy-only attempt finishes at the end of its deploy block; a planned
 	// restart leg runs under the same durable record, and a restart-only attempt
 	// mints its own record below.
@@ -1965,7 +1868,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		}
 		finishEnsureOp = finish
 		deployCtx, cancelDeploy := context.WithTimeout(ctx, m.opts.deployLimit())
-		resolvedTarget, err := m.deploy(deployCtx, host, facts)
+		resolvedTarget, err := m.deploySelected(deployCtx, host, facts)
 		cancelDeploy()
 		if err != nil {
 			if finishEnsureOp != nil {
@@ -1989,7 +1892,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		m.markDevDeployed(host.Name)
 		// Judge the build just installed on the fresh on-disk facts BEFORE the
 		// restart path. A wrong operator-supplied artifact is a permanent cause:
-		// the restart onto it fails retryably in waitHealthy (the process never
+		// the restart onto it fails retryably in selected readiness (the process never
 		// reports the expected version), which would mask the terminal refusal and
 		// leave the supervisor pushing and restarting forever without converging.
 		// Judging first makes the permanent cause the one that surfaces.
@@ -2006,6 +1909,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			}
 			return nil, err
 		}
+		restart = restart || m.pendingRestart(host.Name).selected != nil
 		if !restart {
 			// A deploy with no restart leg planned is over: finish where the
 			// deploy-only path always finished.
@@ -2044,9 +1948,9 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		if pending := m.pendingRestart(host.Name); pending.command != "" && !runningKnown {
 			// A previous restart killed the old hub and left no listener. There is
 			// no hub to kill now, so complete the recorded restart instead.
-			restartErr = m.recoverRestart(restartCtx, host, facts, expected, pending)
+			restartErr = m.recoverSelectedRestart(restartCtx, host, facts, pending)
 		} else {
-			restartErr = m.restartHub(restartCtx, host, facts, running)
+			restartErr = m.restartHub(restartCtx, host, facts)
 		}
 		cancelRestart()
 		if restartErr != nil {
@@ -2104,8 +2008,8 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// is left here attaches on the host's own build, and reports the difference
 	// where it accepts it — at the attach, so a passed-over bootstrap cannot leave a
 	// notice for an attach that never happened.
-	// First attach to a stopped host must be able to start the hub. The probe
-	// above only restarts a hub that is already answering, and the bridge is a
+	// First attach to a stopped host must be able to start the hub. Replacement
+	// above requires an existing selected owner, and the bridge is a
 	// client that must not start one, so a configured host whose hub is not
 	// running could never become usable. Bootstrap only for an explicit attach
 	// request (never a reconnect or the background snapshot walk, which is
@@ -2131,82 +2035,29 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	return m.attach(ctx, host, facts)
 }
 
-// bootstrapHub starts a host hub that is not running, the first-attach repair.
-// It refuses to start anything when a process already owns the configured
-// address (a second hub would race hub.lock), starts the identified supervisor's
-// unit when one is named unambiguously (systemd `start` / launchd `kickstart
-// -k`), otherwise the ops doc's detached ad hoc launch of the resolved
-// evener_path / `command -v evener`, and then waits for the expected build
-// exactly as the restart path does. A host with no resolvable executable and no
-// supervisor is refused with ErrRestart, so the first host action surfaces the
-// failure instead of attaching nothing.
+// bootstrapHub starts only an explicitly attached, stopped selected root. It
+// retains service or fresh ad-hoc intent and uses the shared recovery verifier.
 func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Preflight, expected string) error {
-	// The build this start must see is the one the host will actually run, not
-	// necessarily this controller's: expectedServedBuild.
-	startVersion, startPin := expectedServedBuild(facts, expected)
-	port := hubPort(m.hostAddr(host))
-	lp, err := m.probeListeners(ctx, host, port)
+	owner, err := m.resolveOwnedEndpoint(ctx, host, facts)
 	if err != nil {
 		return err
 	}
-	if len(lp.pids) > 0 || lp.present {
-		// Something already owns the address, even if it did not answer the health
-		// probe. Starting a second hub would race hub.lock; leave it to the attach
-		// attempt. An unnamed listener counts too: the port is held even when the
-		// host's probes cannot say by which process.
-		return nil
+	if owner.report.State != "stopped" {
+		return fmt.Errorf("%w: selected root is not stopped", errOwnerEvidence)
 	}
-
-	set, err := m.detectSupervisor(ctx, host, facts)
-	if err != nil {
-		return err
-	}
-	sup := set.live
-	if sup.kind == supervisorNone {
-		sup = set.dormant
-	}
-	if sup.kind != supervisorNone {
-		if remote, ok := sup.startRemote(facts.UID); ok {
-			// kickstart -k / start both bring the unit up; the recorded pending
-			// restart keeps the start recoverable if this attempt is interrupted.
-			m.setPendingStart(host.Name, remote)
-			out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
-			if runErr != nil && !sup.restartStatusIsAdvisory() {
-				return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
-			}
-			if err := m.waitStartedHealthy(ctx, host, startVersion, startPin); err != nil {
-				return err
-			}
-			m.clearPendingRestart(host.Name)
-			return nil
-		}
-	}
-
-	// Ad hoc: launch the resolved executable detached, discarding output (there is
-	// no recovered log for a hub that was not running).
-	target, err := m.expectedHubExecutable(ctx, host)
-	if err != nil {
-		return err
-	}
-	relaunch := relaunchCommand(hubBootstrapArgv(m.opts, host, target), "")
-	m.setPendingStart(host.Name, relaunch)
-	out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, relaunch), nil)
-	if runErr != nil {
-		return fmt.Errorf("%w: host %q bootstrap launch: %w: %s", ErrRestart, host.Name, runErr, tail(out))
-	}
-	if err := m.waitStartedHealthy(ctx, host, startVersion, startPin); err != nil {
-		return err
-	}
-	m.clearPendingRestart(host.Name)
-	return nil
+	version, pin := expectedServedBuild(facts, expected)
+	pending := m.setSelectedRestart(host, owner, "selected-start", version, pin)
+	pending.start = true
+	m.mu.Lock()
+	m.pendingRestarts[host.Name] = pending
+	m.mu.Unlock()
+	return m.recoverSelectedRestart(ctx, host, facts, pending)
 }
 
 // deployRequired reports whether the on-disk build must be replaced before the
 // host can attach: its launch-check version differs from the controller's, its
 // appwire protocol is incompatible, its launch flags are missing the required
-// one, or its contract could not be read at all. ensureOnce calls it before the
-// hub-presence probe, which is why it is a separate function from ensureDecision
-// rather than a private detail of it.
+// one, or its contract could not be read at all.
 func (m *Manager) deployRequired(name string, facts Preflight, expected string) bool {
 	protocolOK := facts.LaunchCheckKnown && facts.Protocol == appwire.ProtocolVersion
 	flagsOK := slices.Contains(facts.LaunchFlags, requiredLaunchFlag)
@@ -2243,14 +2094,13 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 }
 
 // ensureDecision is the one decision table for ensureOnce. Everything it needs
-// comes from a single preflight, a single /api/health probe, and the one
-// hub-presence probe ensureOnce runs when a deploy is on the table:
+// comes from the on-disk preflight, selected endpoint report and retained intent:
 //
 //   - deploy when the on-disk binary is not the build this controller requires:
 //     its launch-check version differs, its appwire protocol is incompatible,
 //     its launch flags are missing the required one, or its contract could not
 //     be read at all. The deploy runs over ssh, not appwire, so even a
-//     protocol-broken host is upgradable.
+//     endpoint-capable protocol-broken host is upgradable.
 //   - restart when a deploy replaces a hub that is actually present, a running
 //     hub answers with a build other than the expected one, or a previous
 //     restart left the host without a listener (a pending relaunch). A deploy
@@ -2261,7 +2111,7 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 //
 // No terminal refusal is decided here: the protocol and launch-contract gates
 // are judged by ensureOnce only after a deploy/restart has run.
-func (m *Manager) ensureDecision(name string, facts Preflight, expected string, running hubIdentity, runningKnown, hubPresent bool) (deploy, restart bool) {
+func (m *Manager) ensureDecision(name string, facts Preflight, expected, runningVersion string, runningKnown, hubPresent bool) (deploy, restart bool) {
 	deploy = m.deployRequired(name, facts, expected)
 	versionDiffers := hostBuildDiffers(facts, expected)
 	// Replace the RUNNING hub only when the binary a restart would launch (the
@@ -2272,32 +2122,9 @@ func (m *Manager) ensureDecision(name string, facts Preflight, expected string, 
 	// stale *process* whose on-disk binary already matches is exactly the case this
 	// covers. A deploy restarts only a hub that is present; with nothing present
 	// there is nothing to replace.
-	runningStale := runningKnown && running.version != expected && !versionDiffers
-	restart = (deploy && hubPresent) || runningStale || m.pendingRestart(name).command != ""
+	runningStale := runningKnown && runningVersion != expected && !versionDiffers
+	restart = (deploy && hubPresent) || (hubPresent && !runningKnown) || runningStale || m.pendingRestart(name).command != ""
 	return deploy, restart
-}
-
-// hubIsPresent reports whether a hub is present on host in a form a restart can
-// replace: a live supervisor unit that owns one, or a process holding the hub
-// port. A hub that answered /api/health is already known, so the caller passes
-// runningKnown in and this runs only when the health probe found nothing. It
-// separates a deploy that must replace a running hub from a fresh install on a
-// stopped host, and it is why a reconnect never starts a hub: with nothing
-// present ensureDecision chooses no restart at all, and the first-attach
-// bootstrap stays gated to an explicit request.
-func (m *Manager) hubIsPresent(ctx context.Context, host hostreg.Host, facts Preflight) (bool, error) {
-	set, err := m.detectSupervisor(ctx, host, facts)
-	if err != nil {
-		return false, err
-	}
-	if set.live.kind != supervisorNone {
-		return true, nil
-	}
-	cleared, err := m.portCleared(ctx, host, hubPort(m.hostAddr(host)))
-	if err != nil {
-		return false, err
-	}
-	return !cleared, nil
 }
 
 // refreshLaunchContract re-reads the on-disk launch contract after a deploy or
@@ -2310,6 +2137,7 @@ func (m *Manager) refreshLaunchContract(ctx context.Context, host hostreg.Host, 
 	if err != nil {
 		return facts, err
 	}
+	facts.ExecutableMissing = false
 	facts.HubEndpointSchema = refreshed.HubEndpointSchema
 	facts.LaunchCheckKnown = true
 	if err := endpointCapability(host, facts); err != nil {
@@ -3526,21 +3354,6 @@ func (m *Manager) pendingRestart(name string) pendingRestartState {
 		pending.selected = &owner
 	}
 	return pending
-}
-
-func (m *Manager) setPendingRestart(name, remote string, replaced hubIdentity) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.pendingRestarts[name] = pendingRestartState{command: remote, replaced: replaced}
-}
-
-// setPendingStart records a command that starts a hub where nothing was
-// serving. It is the bootstrap path's recording: there is no predecessor
-// identity to settle, and a later recovery must not require one.
-func (m *Manager) setPendingStart(name, remote string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.pendingRestarts[name] = pendingRestartState{command: remote, start: true}
 }
 
 func (m *Manager) clearPendingRestart(name string) {

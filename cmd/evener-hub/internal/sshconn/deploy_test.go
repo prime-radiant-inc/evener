@@ -439,7 +439,7 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
@@ -515,7 +515,7 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
@@ -538,7 +538,9 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
-	modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "oldsha", "newsha").sha = "newsha"
+	selected := modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "oldsha", "newsha")
+	selected.sha = "newsha"
+	selected.endpointAlias = "evener hub endpoint --json"
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
@@ -1353,7 +1355,7 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			if strings.Contains(joined, " evener launch-check") {
@@ -1385,6 +1387,8 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	selected := modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "newsha", "newsha")
+	selected.stopped, selected.adhoc = true, true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -1745,7 +1749,7 @@ func postDeployBuildRunner(t *testing.T, postDeploy string) *fakeRunner {
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
@@ -1892,6 +1896,7 @@ func TestDeployArtifactUnusableIsTerminal(t *testing.T) {
 			return nil, errors.New("curl: (7) Failed to connect")
 		},
 	)
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -1957,6 +1962,7 @@ func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) 
 			return []byte(`{"version":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },

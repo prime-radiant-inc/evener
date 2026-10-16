@@ -3,8 +3,11 @@ package sshconn
 import (
 	"context"
 	"fmt"
+	"path"
+	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 func (m *Manager) setSelectedRestart(host hostreg.Host, owner selectedOwner, command, version, pin string) pendingRestartState {
@@ -17,11 +20,19 @@ func (m *Manager) setSelectedRestart(host hostreg.Host, owner selectedOwner, com
 }
 
 func (m *Manager) restartSelected(ctx context.Context, host hostreg.Host, facts Preflight, owner selectedOwner, version, pin string) error {
+	pending, err := m.prepareSelectedRestart(ctx, host, facts, owner, version, pin)
+	if err != nil {
+		return err
+	}
+	return m.restartSupervised(ctx, host, facts, pending, owner.pid != "0")
+}
+
+func (m *Manager) prepareSelectedRestart(ctx context.Context, host hostreg.Host, facts Preflight, owner selectedOwner, version, pin string) (pendingRestartState, error) {
 	command, ok := owner.supervisor.restartRemote(facts.UID)
 	if owner.supervisor.kind != supervisorNone && !ok {
-		return fmt.Errorf("%w: selected supervisor cannot be addressed safely", errOwnerEvidence)
+		return pendingRestartState{}, fmt.Errorf("%w: selected supervisor cannot be addressed safely", errOwnerEvidence)
 	}
-	if owner.supervisor.kind == supervisorNone {
+	if owner.supervisor.kind == supervisorNone && owner.pid != "0" {
 		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "lsof -p "+owner.pid+" -a -d 1,2"), nil)
 		if err == nil {
 			owner.logPath, _ = parseLogPath(out)
@@ -31,10 +42,9 @@ func (m *Manager) restartSelected(ctx context.Context, host hostreg.Host, facts 
 	// Save before stop, including before a stop/drain timeout or lost SSH reply.
 	// Do not save a guessed actual port or a synthesized --addr.
 	if _, err := m.revalidateOwnedEndpoint(ctx, host, facts, owner); err != nil {
-		return err
+		return pendingRestartState{}, err
 	}
-	pending := m.setSelectedRestart(host, owner, command, version, pin)
-	return m.restartSupervised(ctx, host, facts, pending, true)
+	return m.setSelectedRestart(host, owner, command, version, pin), nil
 }
 
 func selectedRelaunch(owner selectedOwner) string {
@@ -165,3 +175,41 @@ func (m *Manager) waitSelectedSuccessor(ctx context.Context, host hostreg.Host, 
 	}
 	return fmt.Errorf("%w: selected successor PID, generation, boot or build not verified, version %q, want %q, backend_git_sha %q, want %q", ErrRestart, observedVersion, pending.version, observedSHA, pending.gitSHA)
 }
+
+// A free selected lock and independently absent selected service authorize only
+// fresh launch intent, never a guessed listener or replayed command.
+func (m *Manager) freshSelectedOwner(ctx context.Context, host hostreg.Host, report hubendpoint.Report) (selectedOwner, error) {
+	if addr := explicitHostAddr(m.opts, host); addr != "" {
+		if _, err := hubendpoint.ParseListenAddr(addr); err != nil {
+			return selectedOwner{}, fmt.Errorf("%w: host %q bootstrap listener: %w", ErrHostAddr, host.Name, err)
+		}
+	}
+	out, err := m.ownerRead(ctx, host, "pwd")
+	if err != nil {
+		return selectedOwner{}, err
+	}
+	cwd := strings.TrimSpace(string(out))
+	if !path.IsAbs(cwd) {
+		return selectedOwner{}, errOwnerEvidence
+	}
+	out, err = m.ownerRead(ctx, host, freshOwnerEnvironmentRemote)
+	if err != nil {
+		return selectedOwner{}, err
+	}
+	env, err := decodeOwnerEnvironment(out)
+	if err != nil {
+		return selectedOwner{}, err
+	}
+	target, err := m.expectedHubExecutable(ctx, host)
+	if err != nil {
+		return selectedOwner{}, err
+	}
+	argv := hubBootstrapArgv(m.opts, host, target)
+	owner := selectedOwner{host: host, pid: "0", report: report, cwd: cwd, env: env, argv: argv}
+	if err := m.checkOwnerConfig(ctx, host, argv, cwd, env, report); err != nil {
+		return selectedOwner{}, err
+	}
+	return owner, nil
+}
+
+const freshOwnerEnvironmentRemote = `if [ "${HOME+x}" = x ]; then printf '%s\0' "HOME=$HOME"; fi; if [ "${XDG_CONFIG_HOME+x}" = x ]; then printf '%s\0' "XDG_CONFIG_HOME=$XDG_CONFIG_HOME"; fi; if [ "${XDG_STATE_HOME+x}" = x ]; then printf '%s\0' "XDG_STATE_HOME=$XDG_STATE_HOME"; fi; if [ "${EVENER_HUB_LISTEN_ADDR+x}" = x ]; then printf '%s\0' "EVENER_HUB_LISTEN_ADDR=$EVENER_HUB_LISTEN_ADDR"; fi`

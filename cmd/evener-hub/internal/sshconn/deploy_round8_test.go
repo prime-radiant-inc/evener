@@ -76,7 +76,7 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			if strings.Contains(joined, " evener launch-check") {
@@ -115,6 +115,8 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	selected := modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "newsha", "newsha")
+	selected.stopped, selected.adhoc = true, true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },

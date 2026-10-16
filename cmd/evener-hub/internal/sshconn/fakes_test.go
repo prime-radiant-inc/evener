@@ -200,6 +200,8 @@ func cannedRun(overrides map[string][]byte) func(context.Context, []string, io.R
 			}
 		}
 		switch {
+		case strings.HasSuffix(joined, "hub endpoint --json"):
+			return []byte(`{"schema_version":1,"state":"running","config_path":"/home/dev/.config/evener/hub.toml","hub_state_root":"/home/dev/.local/state/evener","configured_listen_addr":"127.0.0.1:9180","listen_source":"default","running":{"schema_version":1,"boot_id":"canned-boot","pid":4242,"started_at":"2026-10-15T00:00:00Z","config_path":"/home/dev/.config/evener/hub.toml","hub_state_root":"/home/dev/.local/state/evener","requested_listen_addr":"127.0.0.1:9180","listen_source":"default","bound_addr":"127.0.0.1:9180","local_url":"http://127.0.0.1:9180","loopback_url":"http://127.0.0.1:9180","version":"dev"}}`), nil
 		case strings.HasSuffix(joined, "uname -s"):
 			return []byte("Linux\n"), nil
 		case strings.HasSuffix(joined, "uname -m"):

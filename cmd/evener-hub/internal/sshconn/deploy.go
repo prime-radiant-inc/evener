@@ -310,14 +310,75 @@ var errControllerDirty = errors.New("sshconn: controller build is a dirty tree")
 // build: the protocol, not the build label, decides whether it may attach.
 var errDeployUnstamped = errors.New("sshconn: deployed build is not stamped by this controller")
 
-// deploy installs a matching build on the host. The cross-compile + push path is
-// primary when a build source is configured; otherwise the installer fallback
-// runs on the host. It returns the resolved run target the manager must record as
-// host.EvenerPath: the canonical path the push installed to, or the installer's
-// run target. Both are non-empty on success, so the restart, health re-probe, and
-// attach paths address the binary that was actually installed instead of a bare
-// `evener` a fresh host's non-interactive PATH may not carry.
-func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
+// deploySelected captures and revalidates predecessor capability before any
+// installer can replace its pathname. Retained intent survives a failed install.
+func (m *Manager) deploySelected(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
+	m.applyResolvedTarget(&host)
+	if m.opts.DeployDisabled || (isDirtyVersion(m.opts.controllerVersion()) && !m.ownExecutableIsStagingPath()) {
+		return m.deploy(ctx, host, facts)
+	}
+	var check func() error
+	if !facts.ExecutableMissing {
+		if strings.TrimSpace(host.EvenerPath) == "" {
+			target, err := m.evenerOnPath(ctx, host)
+			if err != nil {
+				return "", err
+			}
+			if target == "" {
+				return "", fmt.Errorf("%w: installed executable no longer resolves", errOwnerEvidence)
+			}
+			host.EvenerPath = target
+			m.setResolvedTarget(host.Name, target)
+		}
+		owner, err := m.resolveOwnedEndpoint(ctx, host, facts)
+		if err != nil {
+			return "", err
+		}
+		if owner.pid != "0" {
+			if _, err := m.prepareSelectedRestart(ctx, host, facts, owner, m.opts.controllerVersion(), snapshotPinGitSHA()); err != nil {
+				return "", err
+			}
+		}
+		check = func() error { _, err := m.revalidateOwnedEndpoint(ctx, host, facts, owner); return err }
+	} else {
+		// Verified executable absence is the preflight's explicitly authorized fresh
+		// install path. Recheck absence at each write rather than inheriting it.
+		check = func() error {
+			_, err := m.probeLaunchCheck(ctx, host)
+			if errors.Is(err, ErrExecutableMissing) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("%w: executable appeared before fresh install", errOwnerEvidence)
+		}
+	}
+	target, err := m.deploy(ctx, host, facts, check)
+	if err != nil {
+		return "", err
+	}
+	if !facts.ExecutableMissing {
+		// The installer writes the canonical target, but the retained owner and
+		// service still name the original launch path, which may be a symlink.
+		return host.EvenerPath, nil
+	}
+	return target, nil
+}
+
+func checkInstall(checks []func() error) error {
+	for _, check := range checks {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deploy installs through push or the installer fallback and returns the resolved
+// run target for later endpoint inspection, restart and attachment. Production
+// callers enter through deploySelected to supply the pre-write owner checks.
+func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func() error) (string, error) {
 	// Deploying turned off wins over every deploy source: a hub started with
 	// -no-deploy installs nothing on a host, not even through the installer
 	// fallback a release or snapshot controller would otherwise use. The attach
@@ -373,7 +434,7 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 	// the push — -build-source cross-compiles, and an explicitly named artifact
 	// keeps its own terminal mismatch refusal, which names the flag to fix.
 	if m.canBuild() && !m.ownExecutableCannotServe(facts) {
-		return m.deployPush(ctx, host, facts)
+		return m.deployPush(ctx, host, facts, checks...)
 	}
 	if m.ownExecutableCannotServe(facts) {
 		// The only source is the own executable, the host runs another target, and
@@ -388,9 +449,9 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 			return "", fmt.Errorf("%w: host %q: this controller's own executable targets %s/%s but the host runs %s/%s, and the installer fallback has no published artifact to pin for this controller's build (a dev or dirty controller has none, and a release needs a stamped tag); %s",
 				errOwnExecutableCannotServe, host.Name, runtime.GOOS, runtime.GOARCH, facts.OS, facts.Arch, m.deployHelp())
 		}
-		return m.deployInstaller(ctx, host, facts)
+		return m.deployInstaller(ctx, host, facts, checks...)
 	}
-	return m.deployInstaller(ctx, host, facts)
+	return m.deployInstaller(ctx, host, facts, checks...)
 }
 
 // TargetMatches reports whether a build for buildOS/buildArch can serve a host
@@ -435,8 +496,11 @@ func (m *Manager) ownExecutableCannotServe(facts Preflight) bool {
 // on a fresh host that target is the installer default ~/.local/bin/evener, and
 // discarding it left the manager probing the literal `evener`, which the
 // non-interactive PATH cannot resolve.
-func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
-	target, err := m.deployTarget(ctx, host, facts)
+func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func() error) (string, error) {
+	if err := checkInstall(checks); err != nil {
+		return "", err
+	}
+	target, err := m.deployTarget(ctx, host, facts, checks...)
 	if err != nil {
 		return "", err
 	}
@@ -476,6 +540,9 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	info, err := f.Stat()
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q stat staged binary: %w", ErrDeploy, host.Name, err)
+	}
+	if err := checkInstall(checks); err != nil {
+		return "", err
 	}
 	if err := m.pushBinary(ctx, host, target, f, info.Size()); err != nil {
 		return "", err
@@ -569,7 +636,7 @@ func checkRunTarget(hostName, p string) error {
 // restart a hub running a different binary, and the on-disk target already
 // matches — so the deploy/restart pair loops forever. deployInstaller preserves
 // the same location (existingInstallableEvener); this is the push path's half.
-func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
+func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func() error) (string, error) {
 	if p := strings.TrimSpace(host.EvenerPath); p != "" {
 		// Before even the directory probe: a run target that cannot serve a hub
 		// is refused with no remote command at all (checkRunTarget).
@@ -586,10 +653,6 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Pre
 		// error. The resolver still follows an existing symlink and still refuses
 		// a directory, but canonicalizes a not-yet-existent file from its
 		// (existing) parent directory.
-		return m.resolveDeployOrCreateTarget(ctx, host, p)
-	}
-
-	if p := m.currentHubExecutableName(ctx, host); installableEvenerBasename(p) {
 		return m.resolveDeployOrCreateTarget(ctx, host, p)
 	}
 
@@ -872,7 +935,7 @@ func DeployRunTargetFor(host hostreg.Host, home string) (string, error) {
 // expected build before any restart or attach. A tag that resolves to a wrong or
 // moved artifact is a failed verification (a terminal ErrVersionMismatch), never
 // a retry of the same pinned ref and never an attach.
-func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
+func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func() error) (string, error) {
 	ref, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty, m.installerRemedy())
 	if err != nil {
 		return "", err
@@ -892,6 +955,9 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	}
 	bindir, shareBindir, runTarget, err := installerDirs(host, facts)
 	if err != nil {
+		return "", err
+	}
+	if err := checkInstall(checks); err != nil {
 		return "", err
 	}
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remoteinstall.Command(ref, "", bindir, shareBindir)), bytes.NewReader(remoteinstall.Script))
@@ -939,9 +1005,6 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 // on every upgrade. Canonical resolution is used elsewhere (hubExecutableMatches)
 // for identity; here the layout must be preserved.
 func (m *Manager) existingInstallableEvener(ctx context.Context, host hostreg.Host) string {
-	if exe := m.currentHubExecutableName(ctx, host); installableEvenerBasename(exe) {
-		return exe
-	}
 	p, err := m.evenerOnPath(ctx, host)
 	if err != nil || p == "" || !installableEvenerBasename(p) {
 		return ""

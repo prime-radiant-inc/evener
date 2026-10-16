@@ -436,13 +436,14 @@ func TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation(t *testi
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}}
+	modelSelectedProcess(t, fr, host.EvenerPath, "oldsha", dirtyControllerVersion)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirtyControllerVersion,
 		OwnExecutable:             true,
 		BuildBinary:               writeStageBinary,
 	})
 
-	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH})
+	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH, UID: "1000", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "oldsha"})
 	if err != nil {
 		t.Fatalf("DeployForOperation: %v", err)
 	}
@@ -543,6 +544,7 @@ func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 			return []byte(`{"version":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "othersha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirtyControllerVersion,
 		OwnExecutable:             true,
