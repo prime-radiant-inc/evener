@@ -204,15 +204,22 @@ describe("Composer", () => {
 		expect(pressable(tree, "Expand editor")).toBeDefined();
 	});
 
-	it("hides Stop while you type, so the slot is Send whenever there is text", () => {
+	// The caller decides Stop: only it sees the whole draft, text and images
+	// alike, so the composer renders whatever slot it is handed.
+	it("renders the slot's occupant the caller names, Send or Stop", () => {
 		const onStop = vi.fn();
-		const { props, tree } = composer({ value: "half a thought", stop: { onStop, disabled: false } });
-		expect(pressable(tree, "Stop")).toBeUndefined();
-		const send = pressable(tree, "Queue message");
+		const stopping = composer({ stop: { onStop, disabled: false } });
+		expect(pressable(stopping.tree, "Queue message")).toBeUndefined();
+		act(() => pressable(stopping.tree, "Stop")?.props.onPress());
+		expect(onStop).toHaveBeenCalledTimes(1);
+		expect(stopping.props.onSend).not.toHaveBeenCalled();
+
+		const sending = composer({ value: "half a thought" });
+		expect(pressable(sending.tree, "Stop")).toBeUndefined();
+		const send = pressable(sending.tree, "Queue message");
 		expect(send).toBeDefined();
 		act(() => send?.props.onPress());
-		expect(props.onSend).toHaveBeenCalledTimes(1);
-		expect(onStop).not.toHaveBeenCalled();
+		expect(sending.props.onSend).toHaveBeenCalledTimes(1);
 	});
 
 	it("keeps Send when the session cannot stop", () => {

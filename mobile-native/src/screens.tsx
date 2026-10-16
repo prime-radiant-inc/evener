@@ -1171,6 +1171,10 @@ export function ConversationScreen({
 			case "find":
 				setFind(newFind(""));
 				return;
+			case "stop":
+				// stop() shows its own outcome toast.
+				void stop();
+				return;
 			case "files":
 				openFiles();
 				return;
@@ -1252,6 +1256,7 @@ export function ConversationScreen({
 							sharedNotes: !!conversation?.capabilities.sharedNotes,
 							canAside,
 							canShutDown,
+							canStop: connected && !!permitted?.stop,
 							choose: (action) => chooseSessionActionRef.current(action),
 						})
 					: [],
@@ -3387,9 +3392,12 @@ export function ConversationScreen({
 								sendEnabled={sendEnabled}
 								// While the turn runs and the field is empty, Stop takes
 								// Send's slot: it can act only from a reachable hub (spec
-								// 8.5), and a stop already in flight disables it.
+								// 8.5), and a stop already in flight disables it. An image
+								// attachment keeps Send: an image-only draft is a message.
+								// The screen owns the whole emptiness test, since only it
+								// sees the images as well as the text.
 								stop={
-									connected && permitted?.stop
+									connected && permitted?.stop && draft.record.draft.trim() === "" && !draft.record.images?.length
 										? {
 												onStop: () => {
 													void stop();

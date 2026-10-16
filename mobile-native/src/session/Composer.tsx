@@ -29,9 +29,10 @@ export interface ComposerProps {
 	sendLabel: string;
 	sendEnabled: boolean;
 	onSend(): void;
-	/** Stop, while the agent works: it takes the slot where Send sits, but only
-	 * with an empty field, so text always leaves you a Send. Absent while the
-	 * turn cannot stop. `disabled` covers a stop already in flight. */
+	/** Stop, while the agent works: it takes the slot where Send sits. The
+	 * caller decides when, since only it knows the whole draft (the text here
+	 * and any images above); absent while the turn cannot stop. `disabled`
+	 * covers a stop already in flight. */
 	stop?: { onStop(): void; disabled: boolean };
 	onPhotoLibrary(): void;
 	onCamera(): void;
@@ -158,7 +159,7 @@ export function Composer({
 					<SymbolView name="plus" tintColor={palette.accentInk} size={20 * scale} />
 				</SymbolButton>
 				<View style={{ flex: 1, minWidth: 0 }}>{settings}</View>
-				{stop && value.trim() === "" ? (
+				{stop ? (
 					<StopButton disabled={stop.disabled} onPress={stop.onStop} />
 				) : (
 					<SendButton label={sendLabel} disabled={!sendEnabled} onPress={onSend} />
