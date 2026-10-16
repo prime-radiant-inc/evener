@@ -105,15 +105,17 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 	// canonical spelling.
 	candidates := []string{abs, resolveSymlinksBestEffort(abs)}
 	if rel != "" {
-		candidates = append(candidates, filepath.Clean(filepath.Join(root, rel)))
-		// The selected root may be spelled through a symlink while the mask is
-		// spelled through that root's canonical location (RootDir=/alias ->
-		// /real/wt/extra, mask at /real/wt/extra/secret). Joining the CANONICAL
-		// root with the literal in-root tail — without resolving symlinks inside
-		// that tail — spells the mask too, so a canonically spelled mask is still
-		// found after the captured root is deleted and recreated (issue #4703,
-		// roborev 42975).
-		candidates = append(candidates, filepath.Clean(filepath.Join(resolveDanglingSymlinks(root), rel)))
+		candidates = append(candidates,
+			filepath.Clean(filepath.Join(root, rel)),
+			// The selected root may be spelled through a symlink while the mask
+			// is spelled through that root's canonical location (RootDir=/alias
+			// -> /real/wt/extra, mask at /real/wt/extra/secret). Joining the
+			// CANONICAL root with the literal in-root tail — without resolving
+			// symlinks inside that tail — spells the mask too, so a canonically
+			// spelled mask is still found after the captured root is deleted and
+			// recreated (issue #4703, roborev 42975).
+			filepath.Clean(filepath.Join(resolveDanglingSymlinks(root), rel)),
+		)
 	} else {
 		candidates = append(candidates, filepath.Clean(filepath.Join(canonicalCwd, filepath.FromSlash(p))))
 	}
