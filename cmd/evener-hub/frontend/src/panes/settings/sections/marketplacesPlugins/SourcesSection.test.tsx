@@ -179,3 +179,104 @@ test("marketplace details remain reachable while plugin inventory is unavailable
   await user.click(await screen.findByRole("button", { name: /fixture-market/ }));
   expect(await screen.findByRole("dialog", { name: "fixture-market" })).toBeTruthy();
 });
+
+async function stageDirectory(user: ReturnType<typeof userEvent.setup>, path: string) {
+  await user.click(screen.getByRole("button", { name: /^New directory:/ }));
+  const input = await screen.findByRole("textbox", { name: "Path" });
+  await user.clear(input);
+  await user.type(input, path);
+  await user.keyboard("{Enter}");
+  await user.click(screen.getByRole("button", { name: "Use this folder" }));
+}
+
+test("a directory add awaiting validation cannot write after switching hosts", async () => {
+  const fake = connect();
+  fake.on("evener/host/list", () => ({
+    hosts: ["beta", "gamma"].map((name) => ({
+      name,
+      generation: 1,
+      incarnationId: name,
+      origin: "hub.toml",
+      attached: true,
+      midAttach: false,
+      removed: false,
+    })),
+  }));
+  let release: ((value: { path: string; valid: boolean }) => void) | undefined;
+  let hold = false;
+  fake.on("evener/host/request", (params) => {
+    const request = params as { host: string; method: string };
+    if (request.method === "evener/marketplace/list") return { marketplaces: [] } as never;
+    if (request.method === "evener/plugin/list" || request.method === "evener/plugin/checkUpdates")
+      return { plugins: [] } as never;
+    if (request.method === "evener/launch/getLayer") return { pluginDirs: [`/${request.host}/plugins`] } as never;
+    if (request.method === "evener/paths/complete") return { data: [] } as never;
+    if (request.method === "evener/path/validate")
+      return (
+        hold
+          ? new Promise((resolve) => {
+              release = resolve;
+            })
+          : { path: "/beta/new", valid: true }
+      ) as never;
+    if (request.method === "evener/launch/setLayer") return { effective: {}, layers: {}, provenance: {} } as never;
+    throw new Error(`Unexpected fixture method ${request.method}`);
+  });
+  setSettingsHost("beta");
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsHostScope />);
+  await user.click(screen.getByRole("radio", { name: /Sources/ }));
+  await screen.findByText("/beta/plugins");
+  await stageDirectory(user, "/beta/new");
+  hold = true;
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  expect(release).toBeTypeOf("function");
+  await user.selectOptions(screen.getByLabelText("Host"), "gamma");
+  await user.click(screen.getByRole("radio", { name: /Sources/ }));
+  await screen.findByText("/gamma/plugins");
+  await act(async () => release?.({ path: "/beta/new", valid: true }));
+  expect(
+    fake.calls.filter(
+      (call) =>
+        call.method === "evener/host/request" &&
+        (call.params as { method: string }).method === "evener/launch/setLayer",
+    ),
+  ).toEqual([]);
+});
+
+test("a replaced client's validation cannot authorize a directory write on its replacement", async () => {
+  const first = connect();
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await user.click(screen.getByRole("radio", { name: /Sources/ }));
+  await screen.findByText("/fixture/plugins");
+  await stageDirectory(user, "/fixture/new");
+  let release: ((value: { path: string; valid: boolean }) => void) | undefined;
+  first.on(
+    "evener/path/validate",
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  );
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  expect(release).toBeTypeOf("function");
+  const second = new FakeClient("ready");
+  second.on("evener/marketplace/list", () => ({ marketplaces: [] }));
+  second.on("evener/plugin/list", () => ({ plugins: [] }));
+  second.on("evener/launch/getLayer", () => ({ pluginDirs: ["/replacement/plugins"] }));
+  second.on("evener/launch/setLayer", () => ({ effective: {}, layers: {}, provenance: {} }));
+  await act(async () => connectionStore.getState().connect(second));
+  await screen.findByText("/replacement/plugins");
+  await act(async () => release?.({ path: "/fixture/new", valid: true }));
+  expect(first.calls.filter((call) => call.method === "evener/launch/setLayer")).toEqual([]);
+  expect(second.calls.filter((call) => call.method === "evener/launch/setLayer")).toEqual([]);
+  second.on("evener/paths/complete", () => ({ data: [] }));
+  second.on("evener/path/validate", () => ({ path: "/replacement/new", valid: true }));
+  await stageDirectory(user, "/replacement/new");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await screen.findByText("/replacement/new");
+  expect(second.calls.filter((call) => call.method === "evener/launch/setLayer").map((call) => call.params)).toEqual([
+    { cwd: "/", layer: "global", config: { pluginDirs: ["/replacement/plugins", "/replacement/new"] } },
+  ]);
+});
