@@ -333,7 +333,7 @@ dollar figure rather than a placeholder. A session recorded before this
 cut-over, with no instance name in its `ProfileID`, shows no cost in the
 hub's past-sessions list.
 
-## Web / TUI provider surfaces
+## Web provider surfaces
 
 The duplicate type-based Providers and Credentials screens are gone,
 replaced by one instance-aware CRUD screen

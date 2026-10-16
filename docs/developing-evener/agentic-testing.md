@@ -913,7 +913,7 @@ go run ./cmd/evener doctor transcript "$SID" --format outline --range last:20
 go run ./cmd/evener doctor transcript "$SID" --count delegate_send
 ```
 
-Useful when a scenario's web/TUI assertion is ambiguous. The on-disk
+Useful when a scenario's web assertion is ambiguous. The on-disk
 transcript is the daemon's authoritative record of what happened, but
 do not hand-parse transcript JSONL for comprehension; use
 `evener doctor transcript`. Raw `jsonl` reads are for byte-level replay

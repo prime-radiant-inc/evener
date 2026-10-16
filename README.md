@@ -78,7 +78,7 @@ that plugin and become available through the plugin path. User-global slash
 commands are read automatically from
 `${XDG_CONFIG_HOME:-$HOME/.config}/evener/commands` when present.
 Install does not create provider credentials. Hosted/auth-required providers
-can be configured through the hub or TUI credentials UI, supported provider
+can be configured through the hub credentials UI, supported provider
 environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth (which signs
 in to the separate `openai-codex` instance, not `openai`). Local/auth-none
 providers such as Ollama may not need credentials. The default credentials file
@@ -131,7 +131,7 @@ From a source checkout, run `make build-hub`, then `./evener` (default
 - **Workspace pane** with a two-tier conversation: messages (user pills + assistant body) at the primary reading tier, tool calls and diffs as muted margin annotations.
 - **New session** at `/new` — prompt-first, pick model and working dir, click Start.
 - **Fork from here**: every message you sent carries a fork button. Click it to branch the session at that point; the original message lands in the composer for you to edit, and the original line is preserved as a sibling fork.
-- **Aside**: `/aside` (TUI) or the *Aside: fork to side thread* palette command (web UI) forks the current session at its tip into a side thread with the same permissions and config — for asking a distracting question without derailing the main session.
+- **Aside**: the *Aside: fork to side thread* palette command (web UI) forks the current session at its tip into a side thread with the same permissions and config — for asking a distracting question without derailing the main session.
 - **Transparent resume**: click any closed session, type, send. The daemon spawns from where it left off — same identity throughout.
 - **⌘K search** (Ctrl+K on Linux) across live + past sessions.
 - **Settings** for theme (light/dark/system), notification preferences, and provider and MCP configuration.

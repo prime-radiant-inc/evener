@@ -203,7 +203,7 @@ Evener-owned OpenAI OAuth is user-scoped by default. With the service layout abo
 spawned sessions still store transcript/runtime state under per-project
 directories.
 
-## Browser And TUI Access
+## Browser Access
 
 For an SSH tunnel:
 
