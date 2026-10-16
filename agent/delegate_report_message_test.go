@@ -32,11 +32,7 @@ func assertDelegateReportMessage(t *testing.T, finish delegateFinish, want strin
 	if err := json.Unmarshal(finish.packet.StructuredResult, &got); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(output)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(raw, &expected); err != nil {
+	if err := json.Unmarshal(mustMarshalJSON(t, output), &expected); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(got, expected) {
@@ -179,9 +175,11 @@ func TestDelegateReportMessagePreservesAcceptedCommunicate(t *testing.T) {
 			if !accepted {
 				t.Fatal("report not accepted")
 			}
-			finish := stableDelegateFinish(sess, reply, nil)
+			var finish delegateFinish
 			if method {
 				finish = (&subagent{sess: sess}).stableDelegateFinish(reply, nil)
+			} else {
+				finish = stableDelegateFinish(sess, reply, nil)
 			}
 			assertDelegateReportMessage(t, finish, report, output)
 			if finish.outcome != delegatestore.OutcomeCompleted {
