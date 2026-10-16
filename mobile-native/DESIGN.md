@@ -332,7 +332,7 @@ This records the shipped Session, the screen a session opens to: one conversatio
 - **In the composer's place:** A session that runs an older Evener and needs a restart, or one that is paused, shows plain text with its one button instead.
 
 #### The Session sheet
-- **Shape:** A sheet that opens at large: the title and its state line, then grouped sections.
+- **Shape:** A sheet that opens at large: the title and its state line, then the session id in Menlo under its label (an unlabeled group, as the hub's details show its address), then grouped sections.
 - **Sections:** Where (host, project, folder in Menlo, branch), Model (the model and effort, and the vision model), Plugins ("10 plugins · chosen at start" and their names), Access (sandbox and network, when the hub reports them), Usage (tokens with their split, cost, work time, a context gauge with no compaction marker, and failed tool calls), Goal (edit, set or clear), Tasks, Notes & links, and Actions (Aside, Fork from latest, Compact context, Pin to category…, Archive, Shut down, and Delete for a saved session that isn't loaded). It shows only facts the thread carries.
 
 #### Notes & links

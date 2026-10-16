@@ -398,6 +398,7 @@ Controls row, left to right:
 Opened by tapping the title. A large-detent sheet:
 
 - **Title** (tap to rename) and state line.
+- **Session id:** the thread's own id, in Menlo under its label, as the first group (the web's details panel carries the same fact).
 - **Where:** host (with its connection dot), project, working directory (Menlo), branch or worktree lane.
 - **Model:** model and effort (tappable, same sheet as the composer chip); vision model if set.
 - **Plugins:** "10 plugins · chosen at start" and the list. Footer: "Plugins are chosen when a session starts. To change them, start a new session or fork this one."

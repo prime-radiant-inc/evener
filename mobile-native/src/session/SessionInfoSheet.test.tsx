@@ -44,6 +44,8 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 const palette = paletteFor("light");
 const HUB = "hub-1";
 const REF = "local:AbCdEfGhIjKlMnOpQrStUv";
+// The thread's own id, the part of REF after its host (the wire's Thread.ID).
+const SESSION_ID = "AbCdEfGhIjKlMnOpQrStUv";
 
 const NONE: ThreadCapabilities = {
 	send: true,
@@ -228,6 +230,17 @@ describe("what the sheet shows (spec 8.6)", () => {
 		// The host with its connection dot (spec 8.6).
 		const hostRow = tree.root.find((node) => node.props.accessibilityLabel === "Work hub, connected");
 		expect(hostRow.findByProps({ name: "circle.fill" }).props.tintColor).toBe(palette.alive);
+	});
+
+	it("shows the session id in Menlo, and VoiceOver reads it with its label", () => {
+		provide(conversation({ threadId: SESSION_ID }));
+		const tree = sheet();
+		expect(markers(tree, "group")).toContain("session");
+		const group = withTestID(tree, "group:session")[0];
+		const id = group.findByProps({ testID: "row-sub" });
+		expect(textOf(id)).toBe(SESSION_ID);
+		expect(styleOf(id)).toMatchObject({ fontFamily: "Menlo" });
+		expect(group.find((node) => node.props.accessible === true).props.accessibilityLabel).toContain(SESSION_ID);
 	});
 
 	it("labels its sections 12pt semibold uppercase in ink-mid", () => {
