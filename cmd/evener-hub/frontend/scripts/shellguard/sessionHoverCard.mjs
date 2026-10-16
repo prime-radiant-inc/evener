@@ -307,6 +307,35 @@ async function touchJourney(driver) {
   await driver.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 16, y: 20 }] });
   await driver.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await driver.waitPage("window.__sessionHoverGuard.card() === null", { label: "outside touch dismisses context" });
+
+  // A fresh long press after the dismissal reveals the card again: the window
+  // cancellation listeners belong to the gesture that opened the card, not to
+  // its lifetime, so a dismissed or cancelled gesture leaves the next one free
+  // to arm its own pair.
+  await driver.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y }] });
+  await settleCard(driver);
+  const refreshed = await measureCard(driver);
+  assertCard(refreshed, false);
+  await evaluate(
+    driver.send,
+    `(() => {
+    window.__sessionHoverClick = null;
+    document.addEventListener('click', event => {
+      window.__sessionHoverClick = { trusted: event.isTrusted };
+    }, { capture: true, once: true });
+  })()`,
+  );
+  await driver.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await driver.waitPage("window.__sessionHoverClick !== null", { label: "fresh long-press compatibility click" });
+  const freshClick = await evaluate(driver.send, "window.__sessionHoverClick");
+  const afterFreshPanes = await evaluate(driver.send, "window.overviewGuardState().panes");
+  if (!freshClick.trusted || JSON.stringify(beforePanes) !== JSON.stringify(afterFreshPanes)) {
+    throw new Error("fresh long press activated a session or lost its compatibility click");
+  }
+  await driver.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: 16, y: 20 }] });
+  await driver.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  await driver.waitPage("window.__sessionHoverGuard.card() === null", { label: "outside touch dismisses the refreshed card" });
+
   await driver.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: point.x, y: point.y }] });
   await driver.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
   await driver.waitPage(
@@ -315,7 +344,14 @@ async function touchJourney(driver) {
   );
   if (await evaluate(driver.send, "window.__sessionHoverGuard.card() !== null"))
     throw new Error("ordinary touch left a context card visible");
-  return { gap: card.row.top - card.card.bottom, card, compatibilityClick: click.trusted, ordinaryTap: true };
+  return {
+    gap: card.row.top - card.card.bottom,
+    card,
+    compatibilityClick: click.trusted,
+    refreshed,
+    refreshedCompatibilityClick: freshClick.trusted,
+    ordinaryTap: true,
+  };
 }
 
 // The page expression that collects a failure witness. The witness runs only
