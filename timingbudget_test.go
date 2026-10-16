@@ -830,12 +830,13 @@ func TestTimingBudgetKeepsTheClassMapOnlyWarnState(t *testing.T) {
 }
 
 // TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails pins the
-// 2026-10-14 ruling (issue #4615) against the checked-in testing-budget.json,
-// not a synthetic map: a member of a removed runner-bound class now warns on the
-// flat ceiling instead of failing, while a member of a kept class still fails
-// over its class ceiling. It reads the real budget file (the evener_test package
-// runs with the repo root as its working directory), so the removed half also
-// reds if a removed class creeps back in.
+// rulings that moved tests onto the flat warn-only ceiling, against the
+// checked-in testing-budget.json, not a synthetic map: a member of a removed
+// runner-bound class (2026-10-14, issue #4615) and a member moved off a kept
+// class (2026-10-16, issue #4699) both warn instead of failing, while a member
+// of a kept class still fails over its class ceiling. It reads the real budget
+// file (the evener_test package runs with the repo root as its working
+// directory), so each half also reds if a class membership creeps back in.
 func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.T) {
 	dir := t.TempDir()
 	for _, tc := range []struct {
@@ -858,6 +859,24 @@ func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.
 			seconds:  "20.00",
 			wantFail: true,
 		},
+		{
+			// Moved off the session-activity class on 2026-10-16 (#4699): it runs
+			// t.Parallel() in the agent package, so the package's parallel load sets
+			// its wall time (7.6-9.6s measured alone, 30.09-32.28s in CI).
+			name:    "member moved off a kept class warns",
+			pkg:     "primeradiant.com/evener/agent",
+			test:    "TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates",
+			seconds: "32.28",
+		},
+		{
+			// The same class's remaining members stay strict: moving one member
+			// off must not quiet the class.
+			name:     "kept session-activity member still fails",
+			pkg:      "primeradiant.com/evener/agent",
+			test:     "TestSessionActivityReportCaptureBudgetPreservesPageContinuation",
+			seconds:  "32.28",
+			wantFail: true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			measured := filepath.Join(dir, tc.test+".tsv")
@@ -865,13 +884,13 @@ func TestTimingBudgetRunnerBoundMemberWarnsWhileKeptClassMemberFails(t *testing.
 			out, err := runTimingBudgetFixture(t, measured, "testing-budget.json", dir, []string{"--check", "--strict"}, nil)
 			if !tc.wantFail {
 				if err != nil {
-					t.Fatalf("a removed runner-bound class member must warn, not fail (#4615):\n%s", out)
+					t.Fatalf("a member on the flat warn-only ceiling must warn, not fail (#4615, #4699):\n%s", out)
 				}
 				if !strings.Contains(out, "WARN") || !strings.Contains(out, tc.test) {
-					t.Fatalf("the removed class member was not reported on the flat ceiling:\n%s", out)
+					t.Fatalf("the warn-only member was not reported on the flat ceiling:\n%s", out)
 				}
 				if strings.Contains(out, "FAIL") {
-					t.Fatalf("the removed class member was still enforced as a failure:\n%s", out)
+					t.Fatalf("the warn-only member was still enforced as a failure:\n%s", out)
 				}
 				return
 			}
