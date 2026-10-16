@@ -2,10 +2,12 @@ import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@eve
 import { act, cleanup, render, renderHook, screen } from "@testing-library/react";
 import { createElement, createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { conversationPaneLifetime } from "../../../../shell/paneLifetime";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { type CommittedVirtualListLayout, VirtualList, type VirtualListHandle } from "../../../../widgets/virtuallist";
 import { mountReaderScene } from "../transcriptReaderTestUtils";
 import { installTranscriptGeometry } from "../transcriptReadingGeometryTestUtils";
+import { retainedTranscriptReadView } from "../transcriptReadView";
 import type { ScrollMetrics } from "./scrollMetrics";
 import {
   type CapturedTranscriptView,
@@ -4100,6 +4102,113 @@ describe("view-mode anchor preservation", () => {
 
     expect(el.scrollTop).toBe(462);
   });
+});
+
+test.each([
+  ["zero", "useful"],
+  ["shells", "useful"],
+  ["partial", "useful"],
+  ["zero", "empty"],
+  ["partial", "empty"],
+  ["shells", "reader-intent"],
+  ["shells", "disposed"],
+])("retained older placement waits for the opening through %s projection, settling %s", async (projection, outcome) => {
+  setLocalOpening("delayed-thread", true);
+  const geometry = { width: 500, viewportHeight: 300, rowHeights: [0, projection === "partial" ? 600 : 0] };
+  const external = installTranscriptGeometry(() => geometry);
+  const ref = createRef<VirtualListHandle>();
+  const lifetime = conversationPaneLifetime({
+    id: "delayed-retained-reader",
+    type: "transcript",
+    params: { ref: "delayed-thread" },
+    slot: "main",
+  });
+  const view = retainedTranscriptReadView(lifetime, "delayed-thread", "transcript");
+  let registration: ReturnType<typeof useTranscriptViewRegistration>;
+  const initial: CapturedTranscriptView = {
+    anchorId: "older-entry",
+    anchorOffset: -100,
+    normalizedOffset: 100 / 900,
+    followingBottom: false,
+    readingPoint: { entryHeight: 600, viewportHeight: 300, viewportWidth: 1000 },
+  };
+  function Reader({ ready }: { ready: boolean }) {
+    const useful = ready && outcome !== "empty";
+    const count = ready ? (useful ? 2 : 0) : projection !== "zero" ? 2 : 0;
+    registration = useTranscriptViewRegistration({
+      enabled: true,
+      id: "delayed-retained-reader",
+      logicalRef: "delayed-thread",
+      readView: view,
+      listRef: ref,
+      initialViewCapture: initial,
+      renderedRowCount: count,
+      anchorEntries: useful
+        ? [{ id: "older-entry", index: 0, sourceIndex: 0, isMessage: true }]
+        : !ready && projection === "partial"
+          ? [{ id: "latest-entry", index: 1, sourceIndex: 1, isMessage: true }]
+          : [],
+    });
+    return createElement(
+      "section",
+      { "data-testid": "transcript-virtual-list" },
+      createElement(VirtualList, {
+        ref,
+        count,
+        dynamic: true,
+        anchorToEnd: !registration.hasRetainedPlacement(),
+        estimateSize: () => 600,
+        getItemKey: (index) => index,
+        renderRow: (index) =>
+          useful || (!ready && projection === "partial" && index === 1)
+            ? createElement(
+                "div",
+                {
+                  "data-view-anchor-id": index === 0 ? "older-entry" : "latest-entry",
+                  "data-view-anchor-index": index,
+                  "data-view-anchor-source-index": index,
+                  "data-view-anchor-message": "true",
+                },
+                `Message ${index}`,
+              )
+            : null,
+        onLayout: registration.restoreAfterLayout,
+      }),
+    );
+  }
+  const mounted = render(createElement(Reader, { ready: false }));
+  try {
+    await act(async () => external.notify());
+    expect(ref.current?.getScrollElement()?.scrollTop).toBe(0);
+    expect(registration!.hasRetainedPlacement()).toBe(true);
+    if (outcome === "reader-intent") act(() => view.supersedePositioning());
+    if (outcome === "disposed") act(() => view.dispose());
+    geometry.rowHeights = [900, 600];
+    mounted.rerender(createElement(Reader, { ready: true }));
+    await act(async () => external.notify());
+    if (outcome === "useful" || outcome === "empty") expect(ref.current?.getScrollElement()?.scrollTop).toBe(0);
+    else {
+      // A newer choice is never replaced by the old reading point at settlement.
+      act(() => {
+        if (ref.current?.getScrollElement()) ref.current.getScrollElement()!.scrollTop = 400;
+      });
+    }
+    // Settlement alone must retry already committed geometry, without another
+    // resize, body publication or parent layout effect. Existing width reflow
+    // keeps 100/(600-300) of the new 900-300 usable reading depth: 200px.
+    await act(async () => setLocalOpening("delayed-thread", false));
+    expect(ref.current?.getScrollElement()?.scrollTop).toBe(outcome === "empty" ? 0 : outcome === "useful" ? 200 : 400);
+    expect(registration!.hasRetainedPlacement()).toBe(false);
+    if (outcome === "useful")
+      expect(
+        ref.current?.getScrollElement()?.querySelector('[data-view-anchor-id="older-entry"]')?.getBoundingClientRect()
+          .top,
+      ).toBe(-200);
+  } finally {
+    mounted.unmount();
+    view.dispose();
+    external.restore();
+  }
 });
 
 function renderRegistrationList() {

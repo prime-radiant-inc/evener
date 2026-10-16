@@ -65,9 +65,30 @@ is the source of truth for what it holds. The server transcript stays
 authoritative, and the [transcript repository](../../cmd/evener-hub/frontend/src/stores/transcriptRepository.ts)
 is the browser's single owner of recorded-history ingestion and persistence; it
 writes keyed item, turn and coverage rows to the existing `evener-session-cache`
-IndexedDB. A local open with complete cached coverage paints without an
-activation read, and one without it reconciles from the server through the
-existing bounded recovery. The legacy client-side cache is not migrated: old
+IndexedDB. First foreground opening of a background-only session restores the
+latest 200 bodies; older retained identities remain locally pageable. Within the
+same source revision, the repository remembers the oldest foreground-loaded
+position. Releasing the last foreground reader reclaims ended bodies under the
+existing resident and pending byte budgets, not that loaded boundary. A local
+reopen restores the required range, including complete tool payloads and
+explicit-empty bodies, while accepted newer versions win over the opening cut.
+A second foreground owner shares the established reader without opening again.
+
+The thread store owns the bounded local-opening hold and automatic source
+recovery. Complete current local coverage needs no activation read; usable
+retained bodies may also avoid a read under the existing authority rules even
+without a cache certificate. Body restoration alone creates no coverage,
+freshness or server cursor. Missing required bodies or metadata that cannot be
+reconstructed from retained history, failed writes and opening deadline expiry
+fall back to source recovery. The accepted baseline supplies the display and
+cursor for subsequent older paging and live updates. Reconnect and source changes
+still reconcile, retiring obsolete cursors. Clear, deletion, final release and
+superseded openings fence late publication, and the opening hold settles on
+success, recovery or cancellation. The pane's read view and scroll owner retain
+reading placement across responsive remounts; a genuine close and new pane still
+starts at latest.
+
+The legacy client-side cache is not migrated: old
 cached transcripts are discarded on upgrade and rebuilt from the server. Active
 unfinished output stays in memory and may exceed the background budget, and
 charged ended-body overage is an accepted exception. Clear from Settings
@@ -93,7 +114,11 @@ composer-height settlement after a pane widens, keeps the reading line where it
 was. The existing
 [transcript registration](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts)
 owns that intent; VirtualList owns measurement and committed geometry.
-Restoration waits for useful committed content and scroll read-back. Newer
+Mounted and remounted readers use the same reflow policy. Retained placement
+waits while the thread store's ref-scoped local opening restores bodies, then
+retries against accepted content and committed geometry. A settled empty or
+anchorless projection completes its normalized fallback instead of waiting for
+nonexistent entries. Restoration also waits for scroll read-back. Newer
 viewport scrolling or an explicit positioning command supersedes older work
 through the pane-lifetime [read view](../../cmd/evener-hub/frontend/src/panes/session/transcript/transcriptReadView.ts).
 Reflow preserves editor and neighboring-pane focus. Row-only height changes,

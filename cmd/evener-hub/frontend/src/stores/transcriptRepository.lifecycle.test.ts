@@ -170,6 +170,126 @@ function repository(cache: SessionEntryCache, options: RepoOptions = {}) {
   });
 }
 
+test.each(
+  (["live", "live-v2", "cancel", "replace"] as const).flatMap((change) =>
+    [false, true].map((abort) => ({ change, abort })),
+  ),
+)("paged foreground opening keeps its fixed cut during $change, abort=$abort", async ({ change, abort }) => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const repo = repository(fixture.cache);
+  const first = repo.attachReader();
+  expect(
+    repo.acceptRead(readOf([6, 7, 8], { olderCursor: "older" }), { lifetime: 1, readId: "read", boundary: "read" }),
+  ).toBe(true);
+  await repo.settled();
+  const page = pageOf([1, 2, 3, 4, 5], { length: 8 });
+  if (change === "live-v2") page.data[0]!.items![1]!.version = 1;
+  expect(
+    repo.acceptPage(page, {
+      lifetime: 1,
+      readId: "page",
+      boundary: "page",
+      requestCursor: "older",
+      before: { entry: 6, item: 0 },
+      authority: repo.getBaselineIdentity(),
+    }),
+  ).toBe(true);
+  await repo.settled();
+  const before = structuredClone(repo.getSnapshot()?.turns.flatMap((turn) => turn.items) ?? []);
+  expect(before).toHaveLength(8);
+  const updatedTwo = itemOf(2, change === "live-v2" ? 2 : 10, "updated-two");
+  const newNine = itemOf(9, 11, "new-nine");
+  if (change === "live-v2") expect(before.find((item) => item.transcriptKey === "item-2")?.version).toBe(1);
+  first.dispose();
+  expect(displayedPositions(repo.getSnapshot())).toEqual([]);
+  const reader = repo.attachReader();
+  let changed = false;
+  const openCursor = IDBObjectStore.prototype.openCursor;
+  const delivery = vi.spyOn(IDBObjectStore.prototype, "openCursor").mockImplementation(function (
+    this: IDBObjectStore,
+    ...args
+  ) {
+    const request = openCursor.apply(this, args);
+    if (this.name === "transcriptCoverage" && !changed) {
+      request.addEventListener(
+        "success",
+        () => {
+          if (changed) return;
+          changed = true;
+          if (change === "cancel") reader.dispose();
+          else if (change === "replace") {
+            expect(
+              repo.acceptRead(readOf([20, 21, 22], { authoritative: true }), {
+                lifetime: 1,
+                readId: "replacement",
+                boundary: "replacement",
+              }),
+            ).toBe(true);
+          } else {
+            expect(repo.accept(historyUpdate(2, updatedTwo.version!, "updated-two", 10), { lifetime: 1 })).toBe(true);
+            expect(repo.accept(historyUpdate(9, 11, "new-nine", 11), { lifetime: 1 })).toBe(true);
+          }
+          if (abort) queueMicrotask(() => this.transaction.abort());
+        },
+        { once: true },
+      );
+    }
+    return request;
+  });
+  try {
+    const opened = await reader.openLocal(3);
+    expect(changed).toBe(true);
+    await repo.settled();
+    if (change === "cancel") {
+      expect(opened.status).toBe("recovery-needed");
+      expect(opened.retainedRangeComplete).toBeUndefined();
+      expect(displayedPositions(repo.getSnapshot())).toEqual([]);
+    } else if (change === "replace") {
+      expect(opened.status).toBe("recovery-needed");
+      expect(opened.retainedRangeComplete).toBeUndefined();
+      expect(displayedPositions(repo.getSnapshot())).toEqual([20, 21, 22]);
+    } else if (abort) {
+      expect(opened.status).toBe("recovery-needed");
+      expect(opened.retainedRangeComplete).toBe(false);
+      expect(opened.model?.turns.flatMap((turn) => turn.items)).toEqual([updatedTwo, newNine]);
+    } else {
+      expect(opened.retainedRangeComplete).toBe(true);
+      type ExpectedItem = (typeof before)[number] | ThreadItem;
+      const expected = new Map<string | undefined, ExpectedItem>(before.map((item) => [item.transcriptKey, item]));
+      for (const item of [updatedTwo, newNine]) expected.set(item.transcriptKey, item);
+      const byPosition = (left: ExpectedItem, right: ExpectedItem) =>
+        (left.position?.entry ?? 0) - (right.position?.entry ?? 0);
+      expect(opened.model?.turns.flatMap((turn) => turn.items).sort(byPosition)).toEqual(
+        [...expected.values()].sort(byPosition),
+      );
+    }
+    reader.dispose();
+    const replacement = repo.attachReader();
+    try {
+      const restored = await replacement.openLocal(3);
+      const expectedPositions: Record<typeof change, number[]> = {
+        replace: [20, 21, 22],
+        live: [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        "live-v2": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        cancel: [1, 2, 3, 4, 5, 6, 7, 8],
+      };
+      expect(displayedPositions(restored.model)).toEqual(expectedPositions[change]);
+      if (change === "live" || change === "live-v2") {
+        const items = restored.model?.turns.flatMap((turn) => turn.items);
+        expect(items?.find((item) => item.transcriptKey === "item-2")).toEqual(updatedTwo);
+        expect(items?.find((item) => item.transcriptKey === "item-9")).toEqual(newNine);
+      }
+    } finally {
+      replacement.dispose();
+    }
+  } finally {
+    delivery.mockRestore();
+    reader.dispose();
+    repo.dispose();
+  }
+});
+
 test.each([undefined, ""])("opening during a held update preserves omitted payload, text=%j", async (text) => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);

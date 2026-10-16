@@ -321,6 +321,14 @@ export type TranscriptRetirementOutcome = { kind: "saved" | "stale" | "cancelled
 export interface TranscriptReaderResult {
   model?: ThreadModel;
   status: TranscriptReaderStatus;
+  /**
+   * Undefined: no retained foreground range was checked (including first
+   * promotion or a cancelled opening). True: every required keyed body and
+   * version was restored. False: usable partial content may be published, but
+   * the store must recover rather than accept its latest-window fallback.
+   * This is body completeness, not coverage or source authority.
+   */
+  retainedRangeComplete?: boolean;
   boundary?: number;
   before?: ThreadItemPosition;
   olderCursor?: string;
@@ -344,11 +352,13 @@ interface ReaderOpeningState {
   cacheRows: TranscriptItemRow<unknown>[];
   boundary: number;
   committedBoundary?: string;
+  latestWindowBoundary?: string;
   acceptedCoverageBoundary?: string;
   readId?: string;
   continuityId?: string;
   committedSnapshot?: number;
   sourceRevision: number;
+  foregroundStart?: ThreadItemPosition;
   hadPendingWrites: boolean;
   authorityValid: boolean;
 }
@@ -368,6 +378,9 @@ export class TranscriptRepository {
   #model: ThreadModel | undefined;
   #boundary = 0;
   #sourceRevision = 0;
+  // Identity-only range ownership survives foreground reader replacement, not
+  // source reconciliation. Background payload reclamation remains unchanged.
+  #foregroundStart: ThreadItemPosition | undefined;
   #localOlder: { before: ThreadItemPosition; floor: ThreadItemPosition; sourceRevision: number } | undefined;
   #replacementRevision = 0;
   #uncommittedReplacementFrom: ThreadItemPosition | undefined;
@@ -1253,11 +1266,21 @@ export class TranscriptRepository {
       cacheRows: [],
       boundary: this.#boundary,
       committedBoundary: this.#committedCoverageBoundary,
+      // A page certifies older content, never a latest window. Asking the cache
+      // for it scans bodies that the fallback would immediately discard. Capture
+      // this choice with the same boundary/revision, not mutable state after I/O.
+      latestWindowBoundary:
+        this.#committedCoverage?.revision === this.#sourceRevision &&
+        this.#committedCoverage.coverage.boundary === this.#committedCoverageBoundary &&
+        this.#committedCoverage.coverage.kind === "page"
+          ? undefined
+          : this.#committedCoverageBoundary,
       acceptedCoverageBoundary: this.#coverageBoundary,
       readId: this.#committedCoverageReadId,
       continuityId: this.#committedCoverageContinuityId,
       committedSnapshot: this.#committedCoverageSnapshot,
       sourceRevision: this.#sourceRevision,
+      foregroundStart: this.#foregroundStart,
       hadPendingWrites: this.#writes.size > 0,
       authorityValid: !this.#recoveryNeeded && !this.#seedAuthorityInvalid,
     });
@@ -1292,16 +1315,41 @@ export class TranscriptRepository {
           cut = captureOpeningState();
           openingState = cut;
         }
+        const foregroundStart = cut.foregroundStart;
+        const requestedForeground = foregroundStart
+          ? (cut.model?.history?.turns ?? cut.model?.turns ?? [])
+              .flatMap((turn) => turn.items)
+              .filter((item) => item.position && comparePosition(item.position, foregroundStart) >= 0)
+              .map((item) => ({ key: item.transcriptKey ?? item.id, version: item.version ?? 0 }))
+          : [];
+        const sourceRevisionAtOpen = cut.sourceRevision;
+        const authorityCurrent = () => sourceRevisionAtOpen === this.#sourceRevision;
+        const openingCurrent = () => active && this.#acceptsLifetime(lifetime) && authorityCurrent();
+        const checkRetainedRange = (model: ThreadModel | undefined): boolean | undefined => {
+          // An exception may follow cancellation or source replacement. Those
+          // results cannot judge the obsolete opening's retained requirements.
+          if (limit <= 0 || requestedForeground.length === 0 || !openingCurrent()) return undefined;
+          const displayed = new Map(
+            model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+          );
+          return requestedForeground.every((item) => {
+            const body = displayed.get(item.key);
+            return (
+              body !== undefined && (body.version ?? 0) >= item.version && !encodeTranscriptItem(body).identityOnly
+            );
+          });
+        };
         try {
+          // The limit bounds first promotion. Reopening a still-owned range
+          // must not silently turn it back into that initial latest window.
+          if (limit > 0) limit = Math.max(limit, requestedForeground.length);
           const openingCutBoundary = cut.boundary;
           const coverageBoundary = cut.committedBoundary;
           const acceptedBoundaryAtOpen = cut.acceptedCoverageBoundary;
-          const sourceRevisionAtOpen = cut.sourceRevision;
           // Suffix certificates are mutable per readId. Resolve the latest real
           // certificate and prove that it covers this reader's fixed cut.
-          let window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit, coverageBoundary);
-          const authorityCurrent = () => sourceRevisionAtOpen === this.#sourceRevision;
-          if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+          let window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit, cut.latestWindowBoundary);
+          if (!openingCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           if (this.#seedAuthorityInvalid) {
@@ -1314,7 +1362,7 @@ export class TranscriptRepository {
               stale: true,
             };
           }
-          if (!window.complete && coverageBoundary !== undefined) {
+          if (!window.complete && cut.latestWindowBoundary !== undefined) {
             window = { ...window, rows: [] };
             window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit);
           }
@@ -1369,14 +1417,14 @@ export class TranscriptRepository {
               window = { ...window, rows: [...boundedOlder, ...window.rows] };
             }
           }
-          if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+          if (!openingCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           cut.cacheRows = [...window.rows];
           window = { ...window, rows: [] };
           const turnIds = this.#turnIDsForRows(cut.cacheRows, cut.pendingRows);
           const turnMetadata = await this.#readTurnMetadata(turnIds);
-          if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+          if (!openingCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           // A committed Clear during the reads retires the snapshot's authority
@@ -1405,18 +1453,14 @@ export class TranscriptRepository {
             comparePosition(left.position, right.position),
           );
           const boundedRows = limit === 0 ? [] : localRows.slice(-limit);
-          const restored = this.#restoreWindow(
-            current,
-            boundedRows,
-            turnMetadata,
-            () => active && this.#acceptsLifetime(lifetime) && authorityCurrent(),
-          );
-          if (!restored || !active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
+          const restored = this.#restoreWindow(current, boundedRows, turnMetadata, openingCurrent);
+          if (!restored || !openingCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
           // A racing accepted model wins by item version; the stale query only fills absent slots.
           latest =
             this.#boundary > openingCutBoundary ? this.#mergeReaderModels(latest ?? current, restored) : restored;
+          const retainedRangeComplete = checkRetainedRange(latest);
           const oldestReturned = boundedRows[0]?.position;
           const certifiedStart = window.coverage[0]?.start;
           const localBefore =
@@ -1475,13 +1519,20 @@ export class TranscriptRepository {
           const before = heldBefore ?? localBefore;
           return {
             model: latest ?? current,
-            status,
+            status: retainedRangeComplete === false ? "recovery-needed" : status,
+            ...(retainedRangeComplete === undefined ? {} : { retainedRangeComplete }),
             boundary: this.#boundary,
             ...(before ? { before } : {}),
             olderCursor: window.serverCursor ?? current.olderCursor,
           };
         } catch {
-          return { model: latest, status: "recovery-needed", boundary: this.#boundary };
+          const retainedRangeComplete = checkRetainedRange(latest);
+          return {
+            model: latest,
+            status: "recovery-needed",
+            ...(retainedRangeComplete === undefined ? {} : { retainedRangeComplete }),
+            boundary: this.#boundary,
+          };
         } finally {
           releaseOpeningState(cut);
         }
@@ -1882,6 +1933,7 @@ export class TranscriptRepository {
 
   #advanceSourceRevision(): void {
     this.#sourceRevision++;
+    this.#foregroundStart = undefined;
     this.#baselineIdentity = this.#mintBaseline();
   }
 
@@ -2964,6 +3016,20 @@ export class TranscriptRepository {
   #publish(): void {
     this.#reconcileHandoffOverlay();
     if (this.#model) this.#model = hydratedDisplay(this.#model);
+    if (this.#readerCount > 0 && this.#model) {
+      for (const turn of this.#model.turns) {
+        for (const item of turn.items) {
+          if (
+            item.transcriptKey &&
+            item.position &&
+            (!this.#foregroundStart || comparePosition(item.position, this.#foregroundStart) < 0) &&
+            !encodeTranscriptItem(item).identityOnly
+          ) {
+            this.#foregroundStart = item.position;
+          }
+        }
+      }
+    }
     for (const listener of this.#listeners) listener();
   }
 }
