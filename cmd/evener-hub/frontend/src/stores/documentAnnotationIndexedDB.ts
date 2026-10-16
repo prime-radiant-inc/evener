@@ -29,7 +29,12 @@ import {
   type SaveReceipt,
 } from "@evener/appwire-client";
 import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/sourceState";
-import type { AppendAnnotationResult, BrowserDraftKey, BrowserDraftRepository } from "./browserDraftRepository";
+import type {
+  AppendAnnotationResult,
+  BrowserDraftKey,
+  BrowserDraftRepository,
+  CommittedAppendBacking,
+} from "./browserDraftRepository";
 import { type NamespaceRow, serializeSessionKey } from "./compositionRevision";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import {
@@ -273,6 +278,17 @@ interface PendingExpiry {
   ticketKey: DocumentKey;
 }
 
+// One append attempt whose completion the caller never observed, with the
+// composer seam captured before the append ran: the key and operation
+// identity replay the handoff, and the source and preparation reconcile
+// the live composer once the receipt is known applied.
+interface UncertainAppendRecord {
+  key: DocumentKey;
+  operationId: string;
+  source: ComposerSourceState;
+  preparation: ComposerPreparation;
+}
+
 function epochIdentity(lease: AcceptedSourceLease): string {
   return epochIdentityOf(annotationDocumentKey(lease.key), lease.namespaceIncarnation, lease.epoch);
 }
@@ -371,6 +387,16 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   readonly #suppressedEpochs = new Map<string, SuppressionEntry>();
   // Retained pending expiry fences awaiting real completion.
   readonly #pendingExpiries = new Map<string, PendingExpiry>();
+  // One append attempt per operation whose outcome the caller could not
+  // observe: the transaction may have committed (receipt applied, reference
+  // durable) while the live composer still holds its pre-append text. The
+  // retained source and preparation let the next pass that finds the receipt
+  // applied reconcile that composer from the committed backing. The record
+  // lives only until the operation's next observed outcome: an applied
+  // receipt reconciles or drops it, any other receipt state proves the
+  // attempt rolled back, and the applied receipt itself prevents a duplicate
+  // append.
+  readonly #uncertainAppends = new Map<string, UncertainAppendRecord>();
   // Keyed registrations, woken only after a committed change to their exact
   // document or namespace.
   readonly #subscriptions = new Set<AnnotationSubscription>();
@@ -433,8 +459,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
 
   close(): void {
     // Late work must not revive a closed registration; retire every listener and
-    // the peer channel before the connection.
+    // the peer channel before the connection. Retained uncertain appends hold
+    // composer seams that only a later handoff could reconcile - a closed
+    // repository runs none, so the records retire with it.
     this.#subscriptions.clear();
+    this.#uncertainAppends.clear();
     this.#unsubscribeDrafts();
     this.#channel.close();
     this.#connection.close();
@@ -1255,6 +1284,17 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     for (const { payload } of pending) {
       await this.handoff(payload.operation.lease.key, payload.operation.operationId);
     }
+    // A committed append whose completion went unobserved answers applied on
+    // replay, so the pending scan above skips it - recovery must not skip the
+    // now-applied operation. Replay every retained uncertain operation the
+    // scan did not already hand off: its receipt either proves the rollback
+    // (the record retires inside handoff) or answers applied, where the
+    // retained composer seam reconciles with the committed backing.
+    const handled = new Set(pending.map(({ payload }) => payload.operation.operationId));
+    for (const record of [...this.#uncertainAppends.values()]) {
+      if (handled.has(record.operationId)) continue;
+      await this.handoff(record.key, record.operationId);
+    }
   }
 
   // Browser-only outcome boundary: the underlying real pass runs first, then a
@@ -1410,10 +1450,32 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     try {
       receipt = await this.#readOperation(operationKey);
     } catch {
+      // The receipt is unobservable: any retained uncertain record for this
+      // operation survives for the next pass.
       return { state: "pending", reason: "owner-unavailable" };
     }
-    if (!receipt) return { state: "cancelled" };
-    if (receipt.state === "applied") return { state: "already-applied", draftRevision: receipt.draftRevision };
+    if (!receipt) {
+      this.#uncertainAppends.delete(operationKey);
+      return { state: "cancelled" };
+    }
+    if (receipt.state === "applied") {
+      // A committed append whose completion an earlier attempt never observed
+      // answers applied here with its composer unreconciled: the durable
+      // draft carries the reference while the live editor still holds its
+      // pre-append text. Retained reconciliation work - the source and
+      // preparation captured when the append faulted - updates the unchanged
+      // composer from the committed backing; the source's own ownership
+      // guard preserves newer edits, and the applied receipt prevents any
+      // duplicate append.
+      const reconciliation = await this.#reconcileUncertainAppend(operationKey, receipt.draftRevision);
+      if (reconciliation !== "faulted") this.#uncertainAppends.delete(operationKey);
+      return { state: "already-applied", draftRevision: receipt.draftRevision };
+    }
+    // The receipt is observably NOT applied: a previously uncertain attempt
+    // for this operation is proven rolled back, so its retained
+    // reconciliation work retires here. The append below re-observes its own
+    // outcome and re-retains only if this attempt in turn faults.
+    this.#uncertainAppends.delete(operationKey);
     if (receipt.state === "cancelled") return { state: "cancelled" };
     // An already-settled unclaimed handoff reports the permanent
     // owner-unavailable outcome; the saved annotation stays listed with its
@@ -1476,9 +1538,15 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         beforeAbortableCompletion: this.#options.beforeAbortableCompletion,
       });
     } catch {
-      // The append runner has already settled rollback; a failed transaction is
-      // the documented recoverable pending outcome, never a thrown error. The
-      // committed path below keeps its own observer boundaries.
+      // A thrown append is an outcome this call could not observe: the
+      // transaction may have committed - an unobserved completion leaves the
+      // receipt applied and the reference durable - or rolled back. Retain
+      // this attempt's composer seam so the next pass that finds the receipt
+      // applied reconciles the live composer from the committed backing
+      // instead of leaving the editor on its pre-append text while the
+      // durable draft moved on. The recoverable pending outcome and the
+      // caller's own retry semantics are unchanged.
+      this.#uncertainAppends.set(operationKey, { key, operationId, source, preparation });
       return { state: "pending", reason: "owner-unavailable" };
     }
     if (result.state === "applied") {
@@ -1490,6 +1558,43 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       return { state: "applied", draftRevision: result.draftRevision };
     }
     return result;
+  }
+
+  // Reconcile the live composer an uncertain append left behind: the receipt
+  // answers applied, so the retained source and preparation update that
+  // composer from the committed backing. The source's own ownership guard
+  // decides what publishing means - an unchanged composer adopts the
+  // committed value, a newer edit stays untouched, a disposed source answers
+  // nothing - so the reconciliation can never stomp live work. The wake the
+  // original commit never published settles readers now that the receipt is
+  // confirmed applied, whatever the composer does.
+  async #reconcileUncertainAppend(
+    operationKey: string,
+    draftRevision: number,
+  ): Promise<"reconciled" | "unreconcilable" | "faulted" | "none"> {
+    const retained = this.#uncertainAppends.get(operationKey);
+    if (!retained) return "none";
+    let backing: CommittedAppendBacking | null;
+    try {
+      backing = await this.#options.drafts.readAppendBacking(retained.preparation);
+    } catch {
+      // A transient read fault keeps the record: the receipt is applied, so
+      // only this reconciliation is still outstanding.
+      return "faulted";
+    }
+    this.#publishDocumentWake(annotationDocumentKey(retained.key));
+    if (
+      !backing ||
+      backing.token.namespaceIncarnation !== retained.preparation.token.namespaceIncarnation ||
+      backing.token.sessionRevision < draftRevision
+    ) {
+      // The committed lineage is gone or superseded: the annotation's
+      // copyable listing survives, but no composer state can be reconciled.
+      return "unreconcilable";
+    }
+    const { token, value } = backing;
+    invokeObserver(() => retained.source.acknowledgeAnnotation(retained.preparation, token, value));
+    return "reconciled";
   }
 
   async #readOperation(operationKey: string): Promise<AnnotationOperationRow | undefined> {
