@@ -32,7 +32,7 @@ func TestRemoteOwnerEnvironmentRealTools(t *testing.T) {
 					t.Skip("BusyBox unavailable, real Alpine SSH run remains required")
 				}
 			}
-			for _, name := range []string{"sh", "awk", "xargs"} {
+			for _, name := range []string{"sh", "awk", "xargs", "grep"} {
 				binary := busybox
 				if binary == "" {
 					var err error
@@ -60,6 +60,7 @@ func TestRemoteOwnerEnvironmentRealTools(t *testing.T) {
 				}, "HOME=/owned space\nsecond=part\x00XDG_CONFIG_HOME=\x00XDG_STATE_HOME=/state=a b\x00EVENER_HUB_LISTEN_ADDR=0.0.0.0:0\x00"},
 				{"absent", []string{"PRIVATE_TEST_SECRET=opaque\nHOME=/forged-home", "HOME_SUFFIX=not-a-home"}, ""},
 				{"empty", []string{"HOME=", "EVENER_HUB_LISTEN_ADDR="}, "HOME=\x00EVENER_HUB_LISTEN_ADDR=\x00"},
+				{"literal_bytes", []string{"HOME=/raw\xff\r\n\t=a", "PRIVATE_TEST_SECRET=opaque"}, "HOME=/raw\xff\r\n\t=a\x00"},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					cmd := exec.CommandContext(t.Context(), filepath.Join(tools, "sh"), "-c", ownerEnvironmentRemote("$$"))
@@ -78,6 +79,31 @@ func TestRemoteOwnerEnvironmentRealTools(t *testing.T) {
 					}
 				})
 			}
+			t.Run("child_argv_private", func(t *testing.T) {
+				observed := t.TempDir()
+				capture := filepath.Join(observed, "child-cmdlines")
+				// These real child wrappers read their own kernel cmdline, then
+				// exec the actual selected implementation without altering input.
+				for _, name := range []string{"sh", "awk", "xargs", "grep"} {
+					script := "#!/bin/sh\n/bin/cat /proc/$$/cmdline >> '" + capture + "'\nexec '" + filepath.Join(tools, name) + "' \"$@\"\n"
+					if err := os.WriteFile(filepath.Join(observed, name), []byte(script), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				cmd := exec.CommandContext(t.Context(), "/bin/sh", "-c", ownerEnvironmentRemote("$$"))
+				cmd.Env = []string{"PATH=" + observed, "PRIVATE_TEST_SECRET=sentinel-child-argv-only", "HOME=/selected"}
+				out, err := cmd.Output()
+				if err != nil || string(out) != "HOME=/selected\x00" {
+					t.Fatalf("observed real filter failed, error=%v", err)
+				}
+				argv, err := os.ReadFile(capture)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if bytes.Contains(argv, []byte("sentinel-child-argv-only")) {
+					t.Fatal("unrelated sentinel environment value became a real child's kernel-visible command argument")
+				}
+			})
 			t.Run("missing", func(t *testing.T) {
 				cmd := exec.CommandContext(t.Context(), filepath.Join(tools, "sh"), "-c", ownerEnvironmentRemote("2147483647"))
 				cmd.Env = []string{"PATH=" + tools}

@@ -216,10 +216,10 @@ func (m *Manager) rememberOwner(owner selectedOwner) {
 // Filter on the owning host before stdout crosses SSH. No unrelated environment
 // value reaches the controller. NUL boundaries preserve both presence and value.
 func ownerEnvironmentRemote(pid string) string {
-	// BusyBox awk does not support GNU awk's NUL record separator. xargs -0
-	// retains literal values, including newlines, without exporting other fields.
-	// Redirect directly so an unreadable environment cannot become empty success.
-	return "xargs -0 sh -c 'for value do case \"$value\" in HOME=*|XDG_CONFIG_HOME=*|XDG_STATE_HOME=*|EVENER_HUB_LISTEN_ADDR=*) printf \"%s\\000\" \"$value\";; esac; done' sh < /proc/" + pid + "/environ"
+	// Whole-record matching also rejects BusyBox's embedded-newline anchors.
+	// Keep unrelated data on stdin, never in another process's public argv.
+	// Open first, so no-match (1) cannot mask an unreadable input's shell status.
+	return "(exec 3< /proc/" + pid + "/environ || exit; LC_ALL=C grep -zEx '(HOME|XDG_CONFIG_HOME|XDG_STATE_HOME|EVENER_HUB_LISTEN_ADDR)=([[:space:]]|.)*' <&3; status=$?; [ \"$status\" -eq 0 ] || [ \"$status\" -eq 1 ])"
 }
 
 func (m *Manager) ownerEnvironment(ctx context.Context, host hostreg.Host, pid string) ([]string, error) {
