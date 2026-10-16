@@ -209,9 +209,62 @@ func TestSandboxMutations_MaskedPathUnderDeadRootKeepsMaskedDenial(t *testing.T)
 	if errors.Is(err, ErrWorkingDirectoryUnavailable) {
 		t.Fatalf("masked target under a dead root got the recovery error, want the masked denial: %v", err)
 	}
-	var denied *sandbox.DeniedError
-	if !errors.As(err, &denied) {
+	denied, ok := errors.AsType[*sandbox.DeniedError](err)
+	if !ok {
 		t.Fatalf("masked remove under a dead root = %v, want *sandbox.DeniedError", err)
+	}
+	if denied.ReasonKind != sandbox.DenialMasked || !denied.Sensitive {
+		t.Fatalf("masked remove denial = %+v, want DenialMasked and Sensitive", denied)
+	}
+}
+
+// T2d: the mask may be spelled through the canonical root while the target is
+// spelled through a symlinked ancestor. Under a dead root the masked denial —
+// and its Sensitive redaction — must still win over the recovery, or the
+// recovery would echo the masked target.
+func TestSandboxMutations_MaskedTargetUnderDeadSymlinkRootKeepsMaskedDenial(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	realParent := filepath.Join(base, "realdir")
+	home := filepath.Join(base, "home")
+	for _, d := range []string{realParent, home} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(realParent, filepath.Join(base, "link")); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(base, "link", "wt")
+	canonicalSecret := filepath.Join(realParent, "wt", "secret")
+	if err := os.MkdirAll(canonicalSecret, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rp, err := sandbox.Resolve(
+		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, DenylistAdd: []string{canonicalSecret}},
+		sbTestHost(home), worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := env.WriteFileRaw("seed.txt", []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(realParent, "wt")); err != nil {
+		t.Fatalf("remove canonical root: %v", err)
+	}
+	err = env.RemovePath("secret/file.txt")
+	if errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("masked target under a dead symlink-spelled root got the recovery error: %v", err)
+	}
+	denied, ok := errors.AsType[*sandbox.DeniedError](err)
+	if !ok {
+		t.Fatalf("masked remove under a dead symlink-spelled root = %v, want *sandbox.DeniedError", err)
+	}
+	if denied.ReasonKind != sandbox.DenialMasked || !denied.Sensitive {
+		t.Fatalf("masked remove denial = %+v, want DenialMasked and Sensitive", denied)
 	}
 }
 

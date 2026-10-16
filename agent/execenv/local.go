@@ -1742,7 +1742,7 @@ func readFileNotFoundSuggestion(absPath string) string {
 func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (string, error) {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
-		if err := e.requireLiveSandboxRootForRelative(sfs, path); err != nil {
+		if err := e.requireLiveSandboxRootForRelative(sfs, "write_file", path); err != nil {
 			return "", err
 		}
 		// Sandboxed: atomic temp+renameat beneath a writable-root fd (creating any
@@ -1816,7 +1816,7 @@ func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path st
 	defer sfs.release()
 	if sfs != nil {
 		if sandboxArm {
-			if derr := e.requireLiveSandboxRootForRelative(sfs, path); derr != nil {
+			if derr := e.requireLiveSandboxRootForRelative(sfs, "edit_file", path); derr != nil {
 				return "", derr
 			}
 		}

@@ -76,8 +76,12 @@ func errDeadWorkingDir(path, anchor string) error {
 // resolution — rearranging the directory is outside the sandbox's threat model
 // (docs/sandboxing.md, "Threat model"). It is a no-op for an absolute path, an
 // empty path, an empty RootDir, or a path that anchors on no writable root
-// (whose enforcement is a denial anyway).
-func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandboxFS, path string) error {
+// (whose enforcement is a denial anyway). Under a dead root, a masked or
+// git-protected target returns that target's own typed denial instead of the
+// recovery, so a masked secret keeps its redaction; the policy may spell the
+// mask through the canonical path while the target is spelled through a
+// symlinked ancestor, so both spellings are checked.
+func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandboxFS, tool, path string) error {
 	if sfs == nil {
 		return nil
 	}
@@ -90,14 +94,16 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 	if !ok {
 		return nil
 	}
-	// A masked or git-protected target is denied by the sandbox anyway; that
-	// typed denial (and, for a masked secret, its redaction) must win over this
-	// recovery, so the guard defers to it rather than shadowing it.
-	if sfs.underMaskedForWrite(abs) || sfs.underProtected(abs) {
-		return nil
-	}
 	if !sfs.rootDead(root) {
 		return nil
+	}
+	for _, cand := range []string{abs, resolveSymlinksBestEffort(abs)} {
+		if sfs.underMaskedForWrite(cand) {
+			return sfs.deny(tool, p, denyReasonMasked)
+		}
+		if sfs.underProtected(cand) {
+			return sfs.deny(tool, p, denyReasonProtected)
+		}
 	}
 	return errDeadWorkingDir(p, root)
 }
@@ -156,7 +162,7 @@ func (e *LocalExecutionEnvironment) ReadFileRawCtx(ctx context.Context, path str
 func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm os.FileMode) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
-		if err := e.requireLiveSandboxRootForRelative(sfs, path); err != nil {
+		if err := e.requireLiveSandboxRootForRelative(sfs, "apply_patch", path); err != nil {
 			return err
 		}
 		return sfs.writeFile("apply_patch", e.resolve(path), data, perm)
@@ -186,7 +192,7 @@ func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm 
 func (e *LocalExecutionEnvironment) RemovePath(path string) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
-		if err := e.requireLiveSandboxRootForRelative(sfs, path); err != nil {
+		if err := e.requireLiveSandboxRootForRelative(sfs, "apply_patch", path); err != nil {
 			return err
 		}
 		return sfs.remove("apply_patch", e.resolve(path))
@@ -222,10 +228,10 @@ func isAbsentRemove(err error) bool {
 func (e *LocalExecutionEnvironment) RenamePath(oldPath, newPath string) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
-		if err := e.requireLiveSandboxRootForRelative(sfs, oldPath); err != nil {
+		if err := e.requireLiveSandboxRootForRelative(sfs, "apply_patch", oldPath); err != nil {
 			return err
 		}
-		if err := e.requireLiveSandboxRootForRelative(sfs, newPath); err != nil {
+		if err := e.requireLiveSandboxRootForRelative(sfs, "apply_patch", newPath); err != nil {
 			return err
 		}
 		return sfs.rename("apply_patch", e.resolve(oldPath), e.resolve(newPath))
