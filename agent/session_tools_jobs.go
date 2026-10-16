@@ -9,7 +9,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
+	"primeradiant.com/evener/agent/activitybound"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -96,7 +98,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
-			return jobListTool(s, args, jobToolResultMaxChars(reg, "job_list"))
+			return jobListTool(s, args, jobListOutputMaxChars(reg))
 		},
 	}); err != nil {
 		return err
@@ -845,8 +847,7 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	if allowance > 1 {
 		result.DelegationAllowance = allowance
 	}
-	_ = maxChars
-	return tool.StateResult{Output: formatJobList(result), State: result}, nil
+	return tool.StateResult{Output: formatJobList(result, maxChars), State: result}, nil
 }
 
 func stableJobListCandidates(s *Session, jm *jobManager, filter listFilter, now time.Time) ([]jobListEntry, error) {
@@ -1048,29 +1049,67 @@ func jobListItemActivity(item jobListEntry) time.Time {
 	return time.Time{}
 }
 
-// formatJobList renders job_list as plain text: a schema header, then one job per
+type jobListLabel struct {
+	name, description string
+}
+
+// formatJobList budgets previews without changing the selected page or its state.
+// Only bounded prefixes are normalized, so formatting never scans a full brief.
+func formatJobList(out jobListResult, maxChars int) string {
+	labels := make([]jobListLabel, len(out.Items))
+	for i, j := range out.Items {
+		description := j.Description
+		if description == "" && j.Command != nil {
+			description = *j.Command
+		}
+		labels[i] = jobListLabel{
+			name:        collapseWhitespace(activitybound.Truncate(j.Name, activitybound.MaxLabelRunes)),
+			description: collapseWhitespace(activitybound.Truncate(description, activitybound.MaxLabelRunes)),
+		}
+	}
+	full := renderJobList(out, labels, activitybound.MaxLabelRunes)
+	if maxChars <= 0 || utf8.RuneCountInString(full) <= maxChars {
+		return full
+	}
+	// Fixed fields, including watches and footer, take precedence over previews.
+	// If they alone exceed the limit, leave truncation/recovery to the registry.
+	best := renderJobList(out, labels, 0)
+	if utf8.RuneCountInString(best) >= maxChars {
+		return best
+	}
+	low, high := 1, activitybound.MaxLabelRunes-1
+	for low <= high {
+		limit := low + (high-low)/2
+		candidate := renderJobList(out, labels, limit)
+		if utf8.RuneCountInString(candidate) <= maxChars {
+			best = candidate
+			low = limit + 1
+		} else {
+			high = limit - 1
+		}
+	}
+	return best
+}
+
+// renderJobList renders job_list as plain text: a schema header, then one job per
 // line — job_id, type, status, a label (description or shell command), and a
 // bracketed detail tail (started time, reason, exit code, size, resumability) —
 // then a count footer with the delegation allowance and any active/recent watches.
-func formatJobList(out jobListResult) string {
+func renderJobList(out jobListResult, labels []jobListLabel, labelLimit int) string {
 	var b strings.Builder
 	if len(out.Items) > 0 {
 		b.WriteString("# id  type  status  label  [started · reason · exit · bytes]\n")
 	}
-	for _, j := range out.Items {
+	for i, j := range out.Items {
 		fmt.Fprintf(&b, "%s  %s  %s", j.ID, j.Type, j.Status)
 		if j.Depth > 0 {
 			fmt.Fprintf(&b, "  depth=%d", j.Depth)
 		}
-		label := j.Description
-		if label == "" && j.Command != nil {
-			label = *j.Command
-		}
 		parts := make([]string, 0, 2)
-		if j.Name != "" {
-			parts = append(parts, j.Name)
+		if name := activitybound.Truncate(labels[i].name, labelLimit); name != "" {
+			parts = append(parts, name)
 		}
-		if label != "" {
+		if label := activitybound.Truncate(labels[i].description, labelLimit); label != "" {
 			parts = append(parts, label)
 		}
 		if len(parts) != 0 {
@@ -2700,6 +2739,15 @@ func marshalBoundedJSONWithFit(v any, maxChars int) (string, bool, error) {
 		return string(b), true, nil
 	}
 	return "", false, nil
+}
+
+func jobListOutputMaxChars(reg *tool.Registry) int {
+	if reg != nil {
+		if registered := reg.Get("job_list"); registered != nil {
+			return registered.Limit.MaxChars
+		}
+	}
+	return jobToolResultDefaultMaxChar
 }
 
 func jobToolResultMaxChars(reg *tool.Registry, name string) int {

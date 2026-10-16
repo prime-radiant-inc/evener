@@ -415,8 +415,8 @@ func FuzzJobtoolsFormat(f *testing.F) {
 		r := &jobtools_reader{data: data}
 
 		list := jobtools_buildListResult(r)
-		oracle.Deterministic(t, formatJobList, list, func(a, b string) bool { return a == b })
-		if s := formatJobList(list); !utf8.ValidString(s) {
+		oracle.Deterministic(t, func(out jobListResult) string { return formatJobList(out, jobToolResultDefaultMaxChar) }, list, func(a, b string) bool { return a == b })
+		if s := formatJobList(list, jobToolResultDefaultMaxChar); !utf8.ValidString(s) {
 			t.Fatalf("formatJobList produced invalid UTF-8")
 		}
 
