@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/apptranscript"
+	"primeradiant.com/evener/internal/transcriptindex"
 	"primeradiant.com/evener/llm"
 )
 
@@ -114,6 +115,15 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 	stateDir := filepath.Join(root, "projects", "project-bench-0000000000")
 	sessionID := "02wMz5Txv47YP64RR3B9YJ"
 	path := seedSyntheticPastSession(tb, stateDir, sessionID, "/tmp/project", rounds)
+	// The bench's subject is the *healthy* cold read — the full-transcript
+	// derived scans and the latest-40 projection — so build the sidecar up
+	// front, as a completed repair leaves it. Without one the read answers the
+	// #4343 refusal (history-failed at entry 0, the bench fatal #4654 took);
+	// assert it committed so a silent fixture failure cannot reintroduce that.
+	indexPastTranscriptForTest(tb, stateDir, sessionID)
+	if _, err := os.Stat(filepath.Join(transcriptindex.DirFor(path), "CURRENT")); err != nil {
+		tb.Fatalf("bench fixture sidecar did not build: %v", err)
+	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := idx.Rebuild(); err != nil {
 		tb.Fatal(err)
