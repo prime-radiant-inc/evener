@@ -21,7 +21,7 @@ import {
   LOCAL_COMPOSITION_DATABASE_VERSION,
 } from "../../../stores/localCompositionSchema";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
-import { holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
+import { holdNextWriteTransaction, settleRealTasks } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests } from "../../../stores/threads";
 import { getToasts, pushToast, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { createTestComposerSource } from "../testing/composerSource";
@@ -2115,6 +2115,120 @@ test("a resend settlement vetoed by a newer edit releases its consumed recovery 
   // releases it without a read: the newer work continues on the draft path.
   expect(source.getSnapshot().activeRecoveryId).toBeNull();
   expect(source.getRuntimeBacking()).toEqual({ kind: "draft" });
+});
+
+test("a recovery resend refuses a submission whose capture predates an acknowledged append", async () => {
+  const fixture = sourceFixture("source-state-append-during-preparation");
+  setMutationStorageForTests(fixture.outbox);
+  await fixture.repository.seedDraft(fixture.key, { text: "ordinary", skillNames: ["same"] });
+  const originalMentions = [{ kind: "command" as const, name: "same", offset: 18 }];
+  const originalInput = [
+    { type: "text" as const, text: "recovery original /same", mentions: originalMentions },
+    { type: "command" as const, name: "same" },
+  ];
+  const original = await fixture.outbox.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: originalInput },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: originalInput },
+    composerText: "recovery original /same",
+    composerMentions: originalMentions,
+  });
+  await fixture.outbox.transferToRecovery(original.clientMutationId, "rejected");
+  const source = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  await source.ready();
+  source.setActiveRecoveryId(original.clientMutationId);
+  const preparation = await source.prepareAnnotation();
+  if (!preparation) throw new Error("expected a recovery preparation");
+  expect(source.getSnapshot().text).toBe("recovery original /same");
+  // Hold the submission's durable row read so an annotation append lands
+  // while its preparation is in flight.
+  let releaseLoad: (() => void) | undefined;
+  const loadGate = new Promise<void>((resolve) => {
+    releaseLoad = resolve;
+  });
+  const realLoad = fixture.repository.load.bind(fixture.repository);
+  const heldLoad = vi.spyOn(fixture.repository, "load").mockImplementationOnce(async (key) => {
+    await loadGate;
+    return realLoad(key);
+  });
+  const submittedPromise = source.submissionDraft();
+  await settleRealTasks(() => heldLoad.mock.calls.length > 0);
+  // The append commits and acknowledges while the submission is held: the
+  // record gains the appended reference, the durable row advances one
+  // revision, and the source adopts the appended value and token without
+  // touching the capture's generation.
+  const appendedText = "recovery original /same\n\nappended reference";
+  await fixture.outbox.updateRecoveryInput(
+    original.clientMutationId,
+    [
+      { type: "text" as const, text: appendedText, mentions: originalMentions },
+      { type: "command" as const, name: "same" },
+    ],
+    [],
+    appendedText,
+    originalMentions,
+  );
+  source.acknowledgeAnnotation(
+    preparation,
+    { ...preparation.token, sessionRevision: preparation.token.sessionRevision + 1 },
+    {
+      text: appendedText,
+      skillNames: [],
+      mentions: [],
+    },
+  );
+  releaseLoad?.();
+  const submitted = await submittedPromise;
+  heldLoad.mockRestore();
+  // The held capture carries the pre-append payload alongside the post-append
+  // token - a combination only the append's interleave can produce.
+  expect(submitted.text).toBe("recovery original /same");
+  expect(submitted.stillOwnsEdit?.()).toBe(true);
+  // Consuming the recovery record under that stale capture would enqueue the
+  // pre-append payload and delete the appended reference with the record.
+  // The resend must refuse and keep the record.
+  const resendInput = [{ type: "text" as const, text: submitted.text }];
+  const resent = await fixture.outbox.resendRecovery(
+    original.clientMutationId,
+    {
+      targetRef: "root",
+      method: "turn/start",
+      payload: { ref: "root", input: resendInput },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: resendInput },
+      composerText: submitted.text,
+    },
+    source.recoveryWriteGuard(submitted),
+  );
+  expect(resent).toBeUndefined();
+  const record = await fixture.outbox.getRecovery(original.clientMutationId);
+  if (!record) throw new Error("expected the refused resend to keep the record");
+  expect(record.composerText).toBe(appendedText);
+  expect(source.getSnapshot().text).toBe(appendedText);
+  // A fresh capture includes the appended reference, and its own resend then
+  // consumes the record honestly.
+  await source.whenSettled();
+  const fresh = await source.submissionDraft();
+  expect(fresh.text).toBe(appendedText);
+  const freshInput = [{ type: "text" as const, text: appendedText }];
+  const consumed = await fixture.outbox.resendRecovery(
+    original.clientMutationId,
+    {
+      targetRef: "root",
+      method: "turn/start",
+      payload: { ref: "root", input: freshInput },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: freshInput },
+      composerText: appendedText,
+    },
+    source.recoveryWriteGuard(fresh),
+  );
+  if (!consumed) throw new Error("expected the fresh resend to consume the record");
+  expect(await fixture.outbox.getRecovery(original.clientMutationId)).toBeUndefined();
 });
 
 test("a backing replacement between an accepted resend and its settlement stays visible and does not recreate the recovery", async () => {

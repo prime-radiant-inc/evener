@@ -195,3 +195,57 @@ it("a faulted reconciliation read keeps the retry outcome pending", async () => 
   expect(f.source.getSnapshot().text).toBe(`ordinary /same\n\n${REFERENCE}`);
   readAppendBacking.mockRestore();
 });
+
+it("a peer recovery update cannot tear the reconciliation's backing pair", async () => {
+  const f = await fixture("uncertain-append-torn-pair");
+  f.source.setActiveRecoveryId("rec-1");
+  const hold = holdNextWriteTransaction(APPEND_STORES);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const outcome = f.repo.handoff(f.document, "op-1");
+  await hold.reached;
+  await vi.advanceTimersByTimeAsync(10_001);
+  expect(await outcome).toEqual({ state: "pending", reason: "owner-unavailable" });
+  vi.useRealTimers();
+  hold.release();
+  const peerText = `recovery /plan [image 1]\n\n${REFERENCE}\n\npeer edit`;
+  // The peer's recovery update commits while the reconciliation reads its
+  // backing: today the row and the record are read in separate transactions,
+  // so the adoption lands holding a token the row has already moved past. The
+  // next persistence after the reconcile is refused under that stale token,
+  // and the typed edit is lost while the composer and record diverge.
+  const realLoad = f.drafts.load.bind(f.drafts);
+  const heldLoad = vi.spyOn(f.drafts, "load").mockImplementationOnce(async (key) => {
+    const row = await realLoad(key);
+    await f.outbox.updateRecoveryInput(
+      "rec-1",
+      buildInput(
+        peerText,
+        [{ marker: 1, name: "one.png", mediaType: "image/png", data: "AQ==" }],
+        [],
+        ["plan"],
+        [{ kind: "command", name: "plan", offset: 9 }],
+      ),
+      [
+        {
+          presentationId: "image-1",
+          marker: 1,
+          name: "one.png",
+          mediaType: "image/png",
+          blob: new Blob([new Uint8Array([1])]),
+        },
+      ],
+      peerText,
+      [{ kind: "command", name: "plan", offset: 9 }],
+    );
+    return row;
+  });
+  await f.repo.retryPending("storage-recovered");
+  // The pair the reconciliation adopted must authorize the value it adopted:
+  // the next persistence after the reconcile carries the adopted token.
+  f.source.editor.write("typed after the reconcile", 24);
+  await f.source.whenSettled();
+  const record = await f.outbox.getRecovery("rec-1");
+  if (!record) throw new Error("record missing after the reconcile");
+  expect(record.composerText).toBe("typed after the reconcile");
+  heldLoad.mockRestore();
+});

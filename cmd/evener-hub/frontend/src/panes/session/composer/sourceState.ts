@@ -896,10 +896,24 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
   function recoveryWriteGuard(submitted: SubmittedDraft): RecoveryWriteGuard {
     const key = draftKey ?? browserDraftKey(ref);
     const token = submitted.settlementGuard?.token ?? { namespaceIncarnation: "", sessionRevision: 0 };
+    const captured = submitted.settlementGuard ? ownedCaptureGuards.get(submitted.settlementGuard) : undefined;
     return Object.freeze({
       key: Object.freeze({ namespace: Object.freeze({ ...key.namespace }), sessionRef: key.sessionRef }),
       token: Object.freeze({ ...token }),
-      stillAuthorized: () => ownsOriginalLocalCapture(submitted) && submitted.stillOwnsEdit?.() === true,
+      // A recovery record may be consumed only while the submission STILL IS
+      // the editor's current state. An annotation append acknowledged while
+      // the submission's preparation was held advances the shared edit
+      // revision and publishes the appended value without touching the
+      // capture's generation - so ownership alone would authorize consuming
+      // the record while enqueueing the older payload, deleting the appended
+      // reference with it. The full snapshot contract - edit revision, full
+      // value, replacement epoch and attachment identity - keeps the resend
+      // with the editor: it refuses, the record survives, and the appended
+      // reference stays durable for a fresh capture.
+      stillAuthorized: () =>
+        captured
+          ? ownsSubmissionSnapshot(submitted, captured.items)
+          : ownsOriginalLocalCapture(submitted) && submitted.stillOwnsEdit?.() === true,
     });
   }
   function ownsSubmissionSnapshot(submitted: SubmittedDraft, items: readonly PendingAttachment[]): boolean {

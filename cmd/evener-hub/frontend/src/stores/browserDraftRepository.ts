@@ -693,24 +693,35 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
   // The ordinary session row carries the committed token for BOTH backings: a
   // recovery append advances the row's revision while leaving its content
   // untouched, so the row plus the recovery record reconstruct exactly what
-  // the append committed. Null when either half is gone - the caller treats
+  // the append committed. The row and its backing's record are read in ONE
+  // transaction - a peer recovery update committing between two separate
+  // reads would leave the reconciliation adopting a token the row has already
+  // moved past, and the next persistence under that stale token refuses while
+  // the composer and record diverge. No lazy re-token happens here: a rotated
+  // incarnation fails the caller's lineage guard either way, so the pair is
+  // read, never written. Null when either half is gone - the caller treats
   // that append as unreconcilable, never as empty text.
   async readAppendBacking(preparation: ComposerPreparation): Promise<CommittedAppendBacking | null> {
     const recoveryId = preparation.backing.kind === "recovery" ? preparation.backing.recoveryId : null;
-    const row = this.load(preparation.key);
-    const recovery =
-      recoveryId !== null
-        ? this.#transaction([MUTATION_RECOVERY_STORE], "readonly", undefined, (transaction) =>
-            requestResult<MutationRecoveryRecord | undefined>(
-              transaction.objectStore(MUTATION_RECOVERY_STORE).get(recoveryId),
-            ),
-          )
-        : Promise.resolve(undefined);
-    const [committed, record] = await Promise.all([row, recovery]);
-    if (!committed) return null;
-    if (recoveryId === null) return { token: committed.token, value: committed };
-    if (!record) return null;
-    return { token: committed.token, value: recoveryComposerDraft(record) };
+    return this.#transaction(
+      [COMPOSER_DRAFTS_STORE, MUTATION_RECOVERY_STORE],
+      "readonly",
+      undefined,
+      async (transaction) => {
+        const [row, record] = await Promise.all([
+          readSessionRow(transaction, preparation.key),
+          recoveryId !== null
+            ? requestResult<MutationRecoveryRecord | undefined>(
+                transaction.objectStore(MUTATION_RECOVERY_STORE).get(recoveryId),
+              )
+            : Promise.resolve(undefined),
+        ]);
+        if (!row) return null;
+        if (recoveryId === null) return { token: row.token, value: publicSessionRow(row) };
+        if (!record) return null;
+        return { token: row.token, value: recoveryComposerDraft(record) };
+      },
+    );
   }
 
   async transferSupportedDrafts(
