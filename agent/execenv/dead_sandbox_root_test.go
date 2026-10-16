@@ -15,7 +15,7 @@ import (
 // session whose anchored directory is deleted out from under it must refuse a
 // relative mutation with the named recovery, instead of resolving beneath the
 // stale captured root descriptor. The descriptor route is used (see
-// capturedRootUnlinked): the discriminator is "the directory is unlinked", not
+// sandboxFS.rootDead): the discriminator is "the directory is unlinked", not
 // "the path is missing" — the confined-file root legitimately has a live
 // descriptor with an absent path (TestConfinedFileRecoveryCapturedHost).
 
@@ -136,6 +136,82 @@ func TestSandboxMutations_RefuseAfterDeadRootRecreated(t *testing.T) {
 	}
 	if got, rerr := os.ReadDir(worktree); rerr != nil || len(got) != 0 {
 		t.Fatalf("refused remove touched the recreated path: entries=%v err=%v", got, rerr)
+	}
+}
+
+// T2b: a root spelled through a symlinked ancestor (the policy root is
+// canonicalized) is still found and refused with the named recovery when it is
+// gone — otherwise the mutation would fall through to the sandbox's out-of-root
+// denial instead of the recovery (no silent success either way, but the wrong
+// error).
+func TestSandboxMutations_RefuseUnderDeadRootSpelledThroughSymlink(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	realParent := filepath.Join(base, "realdir")
+	home := filepath.Join(base, "home")
+	for _, d := range []string{realParent, home} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(realParent, filepath.Join(base, "link")); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(base, "link", "wt")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, sbTestHost(home), worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := env.WriteFileRaw("seed.txt", []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(realParent, "wt")); err != nil {
+		t.Fatalf("remove canonical worktree: %v", err)
+	}
+	if err := env.RemovePath("nested/file.txt"); !errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("remove under a dead symlink-spelled root = %v, want ErrWorkingDirectoryUnavailable", err)
+	}
+}
+
+// T2c: a masked (secret) target is denied by the sandbox, and that typed denial
+// must win over the dead-root recovery even under a dead root — the recovery
+// would echo the requested path where the masked denial redacts it.
+func TestSandboxMutations_MaskedPathUnderDeadRootKeepsMaskedDenial(t *testing.T) {
+	t.Parallel()
+	home := realTempDir(t)
+	worktree := filepath.Join(home, "project")
+	secretDir := filepath.Join(worktree, "secret")
+	if err := os.MkdirAll(secretDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rp, err := sandbox.Resolve(
+		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, DenylistAdd: []string{secretDir}},
+		sbTestHost(home), worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := env.WriteFileRaw("seed.txt", []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := os.RemoveAll(worktree); err != nil {
+		t.Fatalf("remove sandbox root: %v", err)
+	}
+	err = env.RemovePath("secret/file.txt")
+	if errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("masked target under a dead root got the recovery error, want the masked denial: %v", err)
+	}
+	var denied *sandbox.DeniedError
+	if !errors.As(err, &denied) {
+		t.Fatalf("masked remove under a dead root = %v, want *sandbox.DeniedError", err)
 	}
 }
 

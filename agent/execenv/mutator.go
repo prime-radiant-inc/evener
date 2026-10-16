@@ -85,14 +85,46 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 	if p == "" || filepath.IsAbs(p) || e.RootDir == "" {
 		return nil
 	}
-	root, _, ok := containingRoot(sfs.policy.FileTool.WriteRoots, e.resolve(p))
+	abs := filepath.Clean(e.resolve(p))
+	root, ok := e.sandboxAnchorRoot(abs, sfs.policy.FileTool.WriteRoots)
 	if !ok {
+		return nil
+	}
+	// A masked or git-protected target is denied by the sandbox anyway; that
+	// typed denial (and, for a masked secret, its redaction) must win over this
+	// recovery, so the guard defers to it rather than shadowing it.
+	if sfs.underMaskedForWrite(abs) || sfs.underProtected(abs) {
 		return nil
 	}
 	if !sfs.rootDead(root) {
 		return nil
 	}
 	return errDeadWorkingDir(p, root)
+}
+
+// sandboxAnchorRoot returns the writable root a resolved absolute path anchors
+// on. containingRoot answers the common case directly. When it cannot — the
+// path was spelled through a symlinked ancestor while the policy root was
+// canonicalized (the macOS /var → /private/var analogue), so its real-ancestor
+// fallback needs the root on disk and that root is exactly what has gone — the
+// relative path still anchors on RootDir, so fall back to the most specific
+// writable root that contains abs under best-effort (nearest-existing-ancestor)
+// symlink resolution. A path under no writable root still anchors on none, and
+// its own out-of-root denial stands.
+func (e *LocalExecutionEnvironment) sandboxAnchorRoot(abs string, roots []string) (string, bool) {
+	if root, _, ok := containingRoot(roots, abs); ok {
+		return root, true
+	}
+	best := ""
+	for _, r := range roots {
+		if pathWithinRoot(abs, r) && len(r) > len(best) {
+			best = r
+		}
+	}
+	if best != "" {
+		return best, true
+	}
+	return "", false
 }
 
 // ReadFileRaw returns the raw bytes of path subject to the active policy.
