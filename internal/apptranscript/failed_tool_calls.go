@@ -15,7 +15,10 @@ import (
 var ShellToolNames = transcript.ShellToolNames
 
 // FailedToolCallsFromFile counts how many of a session's tool calls failed,
-// over the WHOLE transcript.
+// over the WHOLE transcript. A compaction fold copy is not counted: it
+// re-appends a result the file already holds, and it projects no row and wears
+// no failure glyph, so counting it would disagree with the glyphs this rule
+// promises to match.
 //
 // It exists because a client cannot answer the question. thread/read windows
 // turns (turnLimit), so a count over the items a client holds covers whatever
@@ -68,6 +71,9 @@ func scanFailedToolCalls(path string, maxLineBytes int, fromEntryOrdinal int) (i
 	if err := narrowScan(path, maxLineBytes, 1,
 		decodeNarrowEntry[failedToolCallEntry]("tool calls"),
 		func(record failedToolCallEntry, ordinal int) error {
+			if record.Turn.OriginalOrdinal != nil {
+				return nil // a compaction fold copy: its original already counts
+			}
 			failures.observe(record.Turn.Message.Content, ordinal >= fromEntryOrdinal)
 			return nil
 		}); err != nil {
@@ -133,7 +139,8 @@ type failedToolCallEntry struct {
 		// Tool calls and tool results only ever appear on the assistant and
 		// tool-result kinds, so matching on the part itself is both narrower
 		// and immune to a new turn kind that carries them.
-		Message toolScanMessage `json:"message"`
+		Message         toolScanMessage `json:"message"`
+		OriginalOrdinal *uint64         `json:"original_ordinal"`
 	} `json:"turn"`
 }
 

@@ -7,16 +7,16 @@ import (
 
 // UsageTotalFromFile sums the per-turn token usage recorded across a WHOLE
 // transcript, so a session that never persisted a cumulative total in its meta
-// can still report an honest full-session figure.
+// can still report an honest full-session figure. A compaction fold copy is NOT
+// counted: it re-appends an entry the file already holds, and a duplicated line
+// is not a second spend.
 //
-// This is deliberately NOT derived from the turn index. Every other reader here
-// is windowed — LatestFromFile and PageFromFile project a bounded range and
-// nothing else — and a session total summed over a window is a partial figure
-// wearing a full-session label. The index records offsets and visibility, not
-// tokens, so answering "how many tokens did this session spend" means reading
-// the transcript's own usage blocks end to end. Bumping turnIndexVersion to
-// carry per-record usage would invalidate every sidecar on disk to save a scan
-// that this file memoizes anyway.
+// As of #4667 the transcript-index sidecar records each turn's usage, so a
+// daemonless read derives this total from the index
+// (transcriptindex.Index.DerivedTotals) and pays no scan. This function is the
+// fallback for a reader that holds no index, and the reference the derived
+// answer is tested against, so it reads the transcript's own usage blocks end
+// to end.
 //
 // fromEntryOrdinal is the 1-based entry ordinal at which the session's OWN
 // history begins, i.e. a fork child's SessionMeta.DivergenceTurn. A fork's
@@ -48,6 +48,9 @@ func scanUsageTotal(path string, maxLineBytes int, fromEntryOrdinal int) (*appwi
 	if err := narrowScan(path, maxLineBytes, fromEntryOrdinal,
 		decodeNarrowEntry[usageOnlyEntry]("usage"),
 		func(record usageOnlyEntry, _ int) error {
+			if record.Turn.OriginalOrdinal != nil {
+				return nil // a compaction fold copy: its original already counts
+			}
 			accumulated.add(record.Turn.Usage)
 			return nil
 		}); err != nil {
@@ -86,7 +89,8 @@ func (a *usageAccumulator) total() *appwire.EvenerUsage {
 // rather than paying to decode a whole turn's message content per line.
 type usageOnlyEntry struct {
 	Turn struct {
-		Usage llm.Usage `json:"usage"`
+		Usage           llm.Usage `json:"usage"`
+		OriginalOrdinal *uint64   `json:"original_ordinal"`
 	} `json:"turn"`
 }
 

@@ -57,6 +57,51 @@ func (x *Index) Latest(limit int) (Window, error) {
 // predates the kept update log, LatestSince returns ErrUpdateLogTruncated:
 // the window alone cannot be trusted, since held items outside it may have
 // changed and the caller has no way to tell.
+// ErrDerivedTotalsUnavailable reports that the sidecar cannot answer the
+// session's derived totals — the covered file held a line that did not decode.
+// A caller falls back to the transcript scan, which reports the same figures
+// unknown for the same reason, rather than present a value read past the damage.
+var ErrDerivedTotalsUnavailable = errors.New("transcript index cannot derive totals")
+
+// DerivedTotals returns the session's own-span token total and failed-tool-call
+// count from the turn records, for entries at or after fromEntryOrdinal (the
+// 1-based entry ordinal at which the session's own history begins, i.e. a fork
+// child's DivergenceTurn; 0 or 1 counts the whole file). Both figures were
+// computed by the build with the shared rules — usage summed per entry, failures
+// by agent/transcript.FailureCounter — so a cold read answers without rescanning
+// the transcript. Usage is nil when the counted span carried no token data,
+// matching UsageTotalFromFile.
+func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, error) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.meta.Quarantined {
+		return nil, 0, ErrDerivedTotalsUnavailable
+	}
+	var sum [4]int64
+	failed := 0
+	for slot := uint64(0); slot < x.turns.n; slot++ {
+		buf, err := x.turns.read(slot, 1)
+		if err != nil {
+			return nil, 0, err
+		}
+		record := decodeTurn(buf)
+		if int(record.FirstOrdinal)+1 < fromEntryOrdinal {
+			continue
+		}
+		for i := range sum {
+			sum[i] += record.Usage[i]
+		}
+		failed += int(record.FailedToolCalls)
+	}
+	cacheRead := int(sum[2])
+	return appwire.EvenerUsageFromLLM(llm.Usage{
+		InputTokens:     int(sum[0]),
+		OutputTokens:    int(sum[1]),
+		CacheReadTokens: &cacheRead,
+		TotalTokens:     int(sum[3]),
+	}), failed, nil
+}
+
 func (x *Index) LatestSince(limit int, held appwire.SnapshotIdentity) (Window, *Changes, error) {
 	limit, err := appwire.NormalizeTranscriptItemLimit(limit)
 	if err != nil {

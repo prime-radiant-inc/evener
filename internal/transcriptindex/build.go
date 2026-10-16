@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
@@ -74,6 +75,22 @@ type builder struct {
 	assistantOffset int64
 	models          map[string]strRef
 
+	// failures applies the shared failure rule as the builder feeds every entry
+	// in file order — the one bookkeeping the corrected file scans use, so the
+	// per-turn FailedToolCalls it records matches DerivedTotalsFromFile. A fold
+	// copy contributes nothing (the counter skips it), matching the scans. On
+	// an extension this counter starts empty; a nameless result whose call the
+	// extension did not see is unresolvable, so apply forces a full rebuild
+	// rather than record a count resolved from a guess.
+	failures *transcript.FailureCounter
+	// entryFailures is the failures the entry currently being applied settled,
+	// added to its turn's summary by stampTurn.
+	entryFailures uint32
+	// quarantined records that the covered file had a line that did not decode.
+	// The file scans error on such a line, so the derived path must report the
+	// totals unknown rather than a figure read past the damage.
+	quarantined bool
+
 	// commCalls and the lastAssistant* fields mirror ProjectTurn's
 	// ToolCallRegistry.CommRawArgs/LastAssistantText/LastAssistantTurnID:
 	// unlike names/calls, they are NOT reset at a new open legacy group,
@@ -125,11 +142,15 @@ func newBuilder(x *Index) builder {
 	return builder{
 		x: x, calls: map[string]uint64{}, names: map[string]toolName{}, open: map[string]uint64{}, models: map[string]strRef{},
 		commCalls: map[string]commState{}, seedBuf: map[string]string{}, regNames: map[string]string{}, regCommArgs: map[string]string{},
+		failures: transcript.NewFailureCounter(0),
 	}
 }
 
 // apply indexes the entry at ordinal, whose line is length bytes at offset.
 func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *schema.Turn) error {
+	before := b.failures.Count()
+	b.failures.Observe(*entry)
+	b.entryFailures = uint32(b.failures.Count() - before)
 	if entry.Format == schema.TurnFormatIdentity {
 		return b.applyIdentity(ordinal, offset, length, entry)
 	}
@@ -142,6 +163,7 @@ func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *sche
 // new-format entry does, so a legacy entry after it starts a turn of its own.
 func (b *builder) quarantine(ordinal uint64, offset int64, length uint32) error {
 	b.grouper = apptranscript.TurnGrouper{}
+	b.quarantined = true
 	slot, err := b.openTurn(unreadableTurnID(ordinal), turnKindUnreadable, ordinal, offset)
 	if err != nil {
 		return err
@@ -937,6 +959,7 @@ func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, off
 			return err
 		}
 	}
+	r.FailedToolCalls += b.entryFailures
 	r.Version = version
 	if err := b.x.turns.write(slot, encodeTurnInto(b.turnBuf[:], r)); err != nil {
 		return err

@@ -26,7 +26,7 @@ import (
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
-	formatVersion = 5
+	formatVersion = 6
 	projectionID  = "transcript-read-model-v7"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
@@ -212,6 +212,10 @@ type meta struct {
 	LastAssistantTurnID string       `json:"last_assistant_turn_id,omitempty"`
 	LastAssistantPos    persistedPos `json:"last_assistant_pos"`
 	LastAssistantKnown  bool         `json:"last_assistant_known,omitempty"`
+	// Quarantined records that the covered file held a line that did not
+	// decode. The file scans error on such a line, so DerivedTotals reports the
+	// totals unavailable rather than a figure read past the damage.
+	Quarantined bool `json:"quarantined,omitempty"`
 }
 
 // persistedPos is a transcript entry's position: the contributor fields
@@ -827,6 +831,7 @@ func (x *Index) restoreBuilder() error {
 	}
 	b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown = x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown
 	b.lastAssistantPos = x.meta.LastAssistantPos.contributor()
+	b.quarantined = x.meta.Quarantined
 	if x.meta.Open {
 		b.turnSlot = x.meta.TurnSlot
 		// The open legacy group's items are the newest records: any
@@ -1246,6 +1251,7 @@ func (x *Index) publishMeta() error {
 	x.meta.CommCalls = persistCommCalls(b.commCalls)
 	x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown = b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown
 	x.meta.LastAssistantPos = posOf(b.lastAssistantPos)
+	x.meta.Quarantined = b.quarantined
 	data, err := json.Marshal(x.meta)
 	if err != nil {
 		return err

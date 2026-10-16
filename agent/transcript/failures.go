@@ -111,12 +111,17 @@ func NewFailureCounter(fromEntryOrdinal int) *FailureCounter {
 }
 
 // Observe records one transcript entry's turn: it learns the tool names the
-// turn announces and counts the failures the turn settles.
+// turn announces and counts the failures the turn settles. A compaction fold
+// copy is re-appended after its original, so it takes its ordinal but settles
+// nothing — its original already counted.
 func (c *FailureCounter) Observe(turn schema.Turn) {
 	if c == nil {
 		return
 	}
 	c.ordinal++
+	if turn.OriginalOrdinal != nil {
+		return // a compaction fold copy: its original already counted
+	}
 	counting := c.ordinal >= c.from
 	for _, part := range turn.Message.Content {
 		switch {
