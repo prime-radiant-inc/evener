@@ -72,6 +72,34 @@ than trusting the driver's `contentPreserved`/`sentinelAfter` booleans. The only
 part of the legacy journey this guard does not cover is its sustained
 two-session batching apparatus.
 
+### Reading placement acceptance
+
+After reconnect paging, the driver positions the real rendered
+`BACKGROUND_HISTORY_27` turn and moves it with a native Chrome wheel gesture.
+It records the intersecting DOM row, within-row offset, visible payloads, scroll
+geometry and a read-only identity for the exact workspace pane record. Local
+hydration and the opening hold must settle before geometry is accepted.
+
+`responsive-reading` requires the same pane record and older row at 1440px and
+420px. Offset tolerance is two CSS pixels for integer scroll read-back rounding,
+not a different row or a meaningful reading displacement. `new-pane-latest`
+starts again at the older row, switches the main session through the real rail,
+requires that the old target record is absent, then reopens it through the rail.
+The new record must land at the true bottom with the producer's gap turn visible.
+Both cases are collected before the responsive assertion is evaluated, so a
+responsive failure cannot make the close control vacuously start at latest.
+
+The Go owner independently checks these raw records and the AppWire byte windows
+for zero target reads/pages. The unchanged `narrow-viewport` assertion still
+compares every recorded before/after body. Owner negative controls reject moved
+anchors, changed offsets, replaced/reused owners, absent DOM payloads, damaged
+bodies and missing evidence. The driver waits for the mobile host and an exposed
+rail row before clicking, rather than clicking stale desktop geometry mid-resize.
+
+Acceptance screenshots are `older-desktop.png`, `older-responsive.png`,
+`older-before-close.png` and `new-pane-latest.png`. Inspect their visible payloads
+as well as the raw records; a file's existence alone is not visual acceptance.
+
 ## Auth and proxy prerequisites
 
 - Hub and Vite share the hostname (`127.0.0.1`); cookies are port-agnostic, so

@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -324,6 +325,7 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 		"history-paging", "reopen-without-read", "further-paging",
 		"ws-broken", "gap-turn-completed", "reconnected-latest-window", "paged-back-sentinel",
 		"narrow-viewport", "two-tab-delete-fence", "two-tab-delete-refusal", "two-tab-clear-fence",
+		"responsive-reading", "new-pane-latest",
 		"done",
 	} {
 		if !backgroundMilestonePresent(milestones, name) {
@@ -620,6 +622,7 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 	}
 	assertBackgroundEntryPagingAndReconnect(t, fixture, opened.Ref, milestones)
 	assertBackgroundEntryNarrowViewport(t, milestones)
+	assertBackgroundReadingPlacement(t, milestones)
 	assertBackgroundEntryTwoTabFencing(t, milestones)
 	t.Logf("production-entry artifacts: %s (milestones, appwire-trace.jsonl, driver.log, screenshots and dumps)", fixture.artifact)
 }
@@ -886,6 +889,26 @@ func assertBackgroundEntryPagingAndReconnect(t *testing.T, fixture *skillGuardFi
 			t.Errorf("paged-back-sentinel: the range did not restore to the sentinel in order: %+v", backed)
 		}
 	}
+	for _, name := range []string{"responsive-reading", "narrow-viewport"} {
+		var opening struct {
+			TraceBefore int64 `json:"traceBefore"` //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+			TraceAfter  int64 `json:"traceAfter"`  //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+		}
+		if skillGuardMilestoneDetail(t, milestones, name, &opening) {
+			window := traceWindowBytes(t, trace, opening.TraceBefore, opening.TraceAfter)
+			reads, err := countTargetThreadReads(string(window), ref)
+			if err != nil {
+				t.Fatalf("decode %s read frames: %v", name, err)
+			}
+			pages, err := countTargetPageRequestsInWindow(string(window), ref)
+			if err != nil {
+				t.Fatalf("decode %s page frames: %v", name, err)
+			}
+			if reads != 0 || pages != 0 {
+				t.Errorf("%s: healthy local opening issued %d reads and %d older pages", name, reads, pages)
+			}
+		}
+	}
 }
 
 // backgroundAssertionSink is the part of *testing.T the entry owner assertions
@@ -954,6 +977,168 @@ func assertBackgroundEntryNarrowViewport(t backgroundAssertionSink, milestones [
 		if !backgroundPayloadContainsText(narrow.AfterPayload, backgroundGapTurn) {
 			t.Errorf("narrow-viewport: no after item carries the produced gap content %q", backgroundGapTurn)
 		}
+	}
+}
+
+// Independent acceptance of raw DOM geometry and workspace record identities.
+// The producer marker is fixed here, not taken from a driver's success flag.
+type backgroundReading struct {
+	Width        int     `json:"width"`
+	ScrollTop    float64 `json:"scrollTop"`    //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+	ScrollHeight float64 `json:"scrollHeight"` //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+	ClientHeight float64 `json:"clientHeight"` //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+	Anchor       struct {
+		ItemID string  `json:"itemId"` //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+		Offset float64 `json:"offset"`
+	} `json:"anchor"`
+	Panes []struct {
+		ID       string `json:"id"`
+		Identity int    `json:"identity"`
+	} `json:"panes"`
+	VisibleRows []struct {
+		ID   string `json:"id"`
+		Text string `json:"text"`
+	} `json:"visibleRows"` //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+}
+
+func assertBackgroundReadingPlacement(t backgroundAssertionSink, milestones []skillGuardMilestone) {
+	t.Helper()
+	var responsive struct {
+		Before        backgroundReading        `json:"before"`
+		After         backgroundReading        `json:"after"`
+		BeforePayload []backgroundItemIdentity `json:"beforePayload"` //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+		AfterPayload  []backgroundItemIdentity `json:"afterPayload"`  //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+	}
+	if backgroundMilestoneDetail(t, milestones, "responsive-reading", &responsive) {
+		if ok, why := backgroundPayloadPreserved(responsive.BeforePayload, responsive.AfterPayload); !ok {
+			t.Errorf("responsive-reading: loaded payload changed: %s", why)
+		}
+		before, after := responsive.Before, responsive.After
+		if before.Width != 1440 || after.Width != 420 || len(before.Panes) != 1 || len(after.Panes) != 1 {
+			t.Error("responsive-reading: missing desktop/mobile pane geometry")
+		} else if before.Panes[0] != after.Panes[0] || before.Panes[0].Identity == 0 {
+			t.Error("responsive-reading: logical pane record was replaced")
+		}
+		if before.Anchor.ItemID == "" || before.Anchor.ItemID != after.Anchor.ItemID || math.Abs(before.Anchor.Offset-after.Anchor.Offset) > 2 {
+			t.Error("responsive-reading: older row or within-row offset changed")
+		}
+		for _, reading := range []backgroundReading{before, after} {
+			if reading.ClientHeight <= 0 || reading.ScrollHeight-reading.ClientHeight-reading.ScrollTop <= reading.ClientHeight {
+				t.Error("responsive-reading: reader was not away from latest")
+			}
+			visible := false
+			for _, row := range reading.VisibleRows {
+				visible = visible || (row.ID == reading.Anchor.ItemID && strings.Contains(row.Text, "BACKGROUND_HISTORY_27"))
+			}
+			if !visible {
+				t.Error("responsive-reading: older producer payload missing from visible anchored row")
+			}
+		}
+	} else {
+		t.Error("responsive-reading: missing placement evidence")
+	}
+	var reopened struct {
+		Before      backgroundReading `json:"before"`
+		After       backgroundReading `json:"after"`
+		ClosedPanes []json.RawMessage `json:"closedPanes"` //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+	}
+	if backgroundMilestoneDetail(t, milestones, "new-pane-latest", &reopened) {
+		before, after := reopened.Before, reopened.After
+		if before.ClientHeight <= 0 || before.ScrollHeight-before.ClientHeight-before.ScrollTop <= before.ClientHeight {
+			t.Error("new-pane-latest: pre-close reader was not away from latest")
+		}
+		olderVisible := false
+		for _, row := range before.VisibleRows {
+			olderVisible = olderVisible || (row.ID == before.Anchor.ItemID && strings.Contains(row.Text, "BACKGROUND_HISTORY_27"))
+		}
+		if !olderVisible {
+			t.Error("new-pane-latest: pre-close older payload missing from visible anchored row")
+		}
+		if reopened.ClosedPanes == nil || len(reopened.ClosedPanes) != 0 || len(before.Panes) != 1 || len(after.Panes) != 1 {
+			t.Error("new-pane-latest: missing genuine close/new-pane evidence")
+		} else if before.Panes[0].Identity == after.Panes[0].Identity || after.Panes[0].Identity == 0 {
+			t.Error("new-pane-latest: reused old logical pane record")
+		}
+		if after.ClientHeight <= 0 || math.Abs(after.ScrollHeight-after.ClientHeight-after.ScrollTop) > 2 {
+			t.Error("new-pane-latest: new pane is not at the true bottom")
+		}
+		visible := false
+		for _, row := range after.VisibleRows {
+			visible = visible || strings.Contains(row.Text, backgroundGapTurn)
+		}
+		if !visible {
+			t.Error("new-pane-latest: latest producer payload missing from visible rows")
+		}
+	} else {
+		t.Error("new-pane-latest: missing placement evidence")
+	}
+}
+
+func TestBackgroundReadingPlacementOwnerRejectsDamage(t *testing.T) {
+	for _, damage := range []string{"none", "row", "offset", "owner", "visible payload", "body", "close omitted", "same owner reopen", "old placement reopen", "latest missing", "missing milestone"} {
+		t.Run(damage, func(t *testing.T) {
+			var before backgroundReading
+			if err := json.Unmarshal([]byte(`{"width":1440,"scrollTop":3000,"scrollHeight":10000,"clientHeight":700,"anchor":{"itemId":"turn-27","offset":16},"panes":[{"id":"pane-1","identity":1}],"visibleRows":[{"id":"turn-27","text":"BACKGROUND_HISTORY_27"}]}`), &before); err != nil {
+				t.Fatal(err)
+			}
+			clone := func(value backgroundReading) backgroundReading {
+				data, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var result backgroundReading
+				if err := json.Unmarshal(data, &result); err != nil {
+					t.Fatal(err)
+				}
+				return result
+			}
+			after := clone(before)
+			after.Width = 420
+			latest := clone(after)
+			latest.Panes[0].Identity = 2
+			latest.ScrollTop = 9300
+			latest.VisibleRows[0].Text = backgroundGapTurn
+			payload := []backgroundItemIdentity{{Text: "BACKGROUND_HISTORY_27"}}
+			responsive := map[string]any{"before": before, "after": after, "beforePayload": payload, "afterPayload": payload}
+			reopen := map[string]any{"before": clone(after), "after": latest, "closedPanes": []any{}}
+			switch damage {
+			case "row":
+				after.Anchor.ItemID = "wrong"
+			case "offset":
+				after.Anchor.Offset += 20
+			case "owner":
+				after.Panes[0].Identity = 2
+			case "visible payload":
+				after.VisibleRows[0].Text = ""
+			case "body":
+				responsive["afterPayload"] = []backgroundItemIdentity{{Text: ""}}
+			case "close omitted":
+				delete(reopen, "closedPanes")
+			case "same owner reopen":
+				latest.Panes[0].Identity = 1
+			case "old placement reopen":
+				latest.ScrollTop = 3000
+			case "latest missing":
+				latest.VisibleRows[0].Text = ""
+			}
+			responsive["after"], reopen["after"] = after, latest
+			var milestones []skillGuardMilestone
+			for name, detail := range map[string]any{"responsive-reading": responsive, "new-pane-latest": reopen} {
+				data, err := json.Marshal(detail)
+				if err != nil {
+					t.Fatal(err)
+				}
+				milestones = append(milestones, skillGuardMilestone{Milestone: name, Detail: data})
+			}
+			if damage == "missing milestone" {
+				milestones = nil
+			}
+			recorder := &backgroundFailureRecorder{}
+			assertBackgroundReadingPlacement(recorder, milestones)
+			if (len(recorder.failures) == 0) != (damage == "none") {
+				t.Fatalf("owner acceptance for %s: %v", damage, recorder.failures)
+			}
+		})
 	}
 }
 
