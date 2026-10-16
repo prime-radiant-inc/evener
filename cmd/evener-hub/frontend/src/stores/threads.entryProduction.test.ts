@@ -966,6 +966,7 @@ it.each(["complete", "missing-row", "missing-turn"] as const)(
       client.on("thread/read", (params) => ({
         ...response("local:a", turns.slice(-40)),
         snapshot: read.snapshot,
+        olderCursor: "recovered-older",
         authoritative: true,
         requestGeneration: params.requestGeneration,
       }));
@@ -981,23 +982,54 @@ it.each(["complete", "missing-row", "missing-turn"] as const)(
     }
     expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
     expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+    if (durability === "missing-row") {
+      client.on("thread/turns/list", (params) => {
+        expect(params.cursor).toBe("recovered-older");
+        return {
+          data: turns.slice(170, 210),
+          nextCursor: "recovered-deeper",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: read.snapshot,
+        };
+      });
+      await threadsStore.getState().loadOlderTurns("local:a");
+      expect(items()).toEqual(turns.slice(170).flatMap((turn) => turn.items));
+      expect(threadsStore.getState().threads.get("local:a")?.olderCursor).toBe("recovered-deeper");
+      const updated = { ...turns[249]!.items![0]!, version: 2, text: "recovered-live-payload" };
+      client.emitNotification({
+        method: "history/updated",
+        params: {
+          ref: "local:a",
+          threadId: "thread-a",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-a", length: 251 },
+          items: [updated],
+        },
+      });
+      await settleEntryTranscriptForTests("local:a");
+      expect(items()).toEqual([...turns.slice(170, 249).flatMap((turn) => turn.items), updated]);
+      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+      expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+    }
     threadsStore.getState().releaseThread("local:a");
     background.release();
   },
 );
 
 it.each([
-  { superseded: false, storageCost: false },
-  { superseded: true, storageCost: false },
-  { superseded: false, storageCost: true },
+  { superseded: false, storageCost: false, bodyCount: 250 },
+  { superseded: true, storageCost: false, bodyCount: 250 },
+  { superseded: false, storageCost: true, bodyCount: 190 },
 ])(
-  "post-reconnect multi-item reopen preserves payloads, superseded=$superseded storageCost=$storageCost",
-  async ({ superseded, storageCost }) => {
+  "post-reconnect multi-item reopen preserves $bodyCount payloads, superseded=$superseded storageCost=$storageCost",
+  async ({ superseded, storageCost, bodyCount }) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const storage = cache();
     setProductionEntryCacheForTests(storage);
     const recorded = Array.from(
-      { length: 190 },
+      { length: bodyCount },
       (_, index): ThreadItem => ({
         id: `recorded-${index}`,
         transcriptKey: `recorded-${index}`,
@@ -1008,7 +1040,8 @@ it.each([
         ...(index % 3 === 2
           ? {
               toolName: "exec_command",
-              arguments: { command: `fixture-${index}` },
+              argumentsJson: JSON.stringify({ command: `fixture-${index}` }),
+              text: "",
               output: `output-${index}`,
               status: "completed" as const,
             }
@@ -1026,8 +1059,8 @@ it.each([
       return [...turns.values()];
     };
     const latest = response("local:a", turnsFor(recorded.slice(-40)));
-    latest.snapshot = { incarnation: "inc-a", length: 400 };
-    latest.olderCursor = "150";
+    latest.snapshot = { incarnation: "inc-a", length: bodyCount * 2 + 20 };
+    latest.olderCursor = String(bodyCount - 40);
     const client = connect(latest);
     client.on("thread/read", (params) => ({ ...latest, requestGeneration: params.requestGeneration }));
     client.on("thread/turns/list", (params) => {
@@ -1049,7 +1082,9 @@ it.each([
     client.emitStateChange("reconnecting");
     client.emitStateChange("ready");
     await settleEntryTranscriptForTests("local:a");
-    for (let page = 0; page < 4; page++) await threadsStore.getState().loadOlderTurns("local:a");
+    for (let page = 0; page < Math.ceil((bodyCount - 40) / 40); page++) {
+      await threadsStore.getState().loadOlderTurns("local:a");
+    }
     await settleEntryTranscriptForTests("local:a");
     const items = () =>
       threadsStore
@@ -1057,7 +1092,7 @@ it.each([
         .threads.get("local:a")
         ?.turns.flatMap((turn) => turn.items);
     const before = structuredClone(items());
-    expect(before).toHaveLength(190);
+    expect(before).toEqual(recorded.map(({ argumentsJson, ...item }) => ({ ...item, argumentsJSON: argumentsJson })));
     const reads = client.calls.filter((call) => call.method === "thread/read").length;
     const pages = client.calls.filter((call) => call.method === "thread/turns/list").length;
     threadsStore.getState().releaseThread("local:a");

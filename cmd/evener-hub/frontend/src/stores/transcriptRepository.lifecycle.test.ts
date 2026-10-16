@@ -170,7 +170,7 @@ function repository(cache: SessionEntryCache, options: RepoOptions = {}) {
   });
 }
 
-test.each(["live", "cancel", "replace"] as const)(
+test.each(["live", "live-v2", "cancel", "replace"] as const)(
   "paged foreground opening keeps its fixed cut during %s",
   async (change) => {
     const fixture = createEntryCacheFixture();
@@ -181,8 +181,10 @@ test.each(["live", "cancel", "replace"] as const)(
       repo.acceptRead(readOf([6, 7, 8], { olderCursor: "older" }), { lifetime: 1, readId: "read", boundary: "read" }),
     ).toBe(true);
     await repo.settled();
+    const page = pageOf([1, 2, 3, 4, 5], { length: 8 });
+    if (change === "live-v2") page.data[0]!.items![1]!.version = 1;
     expect(
-      repo.acceptPage(pageOf([1, 2, 3, 4, 5], { length: 8 }), {
+      repo.acceptPage(page, {
         lifetime: 1,
         readId: "page",
         boundary: "page",
@@ -194,11 +196,13 @@ test.each(["live", "cancel", "replace"] as const)(
     await repo.settled();
     const before = structuredClone(repo.getSnapshot()?.turns.flatMap((turn) => turn.items) ?? []);
     expect(before).toHaveLength(8);
+    const updatedTwo = itemOf(2, change === "live-v2" ? 2 : 10, "updated-two");
+    const newNine = itemOf(9, 11, "new-nine");
+    if (change === "live-v2") expect(before.find((item) => item.transcriptKey === "item-2")?.version).toBe(1);
     first.dispose();
     expect(displayedPositions(repo.getSnapshot())).toEqual([]);
     const reader = repo.attachReader();
     let changed = false;
-    let liveItems: typeof before = [];
     const openCursor = IDBObjectStore.prototype.openCursor;
     const delivery = vi.spyOn(IDBObjectStore.prototype, "openCursor").mockImplementation(function (
       this: IDBObjectStore,
@@ -221,9 +225,8 @@ test.each(["live", "cancel", "replace"] as const)(
                 }),
               ).toBe(true);
             } else {
-              expect(repo.accept(historyUpdate(2, 10, "updated-two", 10), { lifetime: 1 })).toBe(true);
+              expect(repo.accept(historyUpdate(2, updatedTwo.version!, "updated-two", 10), { lifetime: 1 })).toBe(true);
               expect(repo.accept(historyUpdate(9, 11, "new-nine", 11), { lifetime: 1 })).toBe(true);
-              liveItems = structuredClone(repo.getSnapshot()?.turns.flatMap((turn) => turn.items) ?? []);
             }
           },
           { once: true },
@@ -245,9 +248,10 @@ test.each(["live", "cancel", "replace"] as const)(
         expect(displayedPositions(repo.getSnapshot())).toEqual([20, 21, 22]);
       } else {
         expect(opened.retainedRangeComplete).toBe(true);
-        const expected = new Map(before.map((item) => [item.transcriptKey, item]));
-        for (const item of liveItems) expected.set(item.transcriptKey, item);
-        const byPosition = (left: (typeof before)[number], right: (typeof before)[number]) =>
+        type ExpectedItem = (typeof before)[number] | ThreadItem;
+        const expected = new Map<string | undefined, ExpectedItem>(before.map((item) => [item.transcriptKey, item]));
+        for (const item of [updatedTwo, newNine]) expected.set(item.transcriptKey, item);
+        const byPosition = (left: ExpectedItem, right: ExpectedItem) =>
           (left.position?.entry ?? 0) - (right.position?.entry ?? 0);
         expect(opened.model?.turns.flatMap((turn) => turn.items).sort(byPosition)).toEqual(
           [...expected.values()].sort(byPosition),
@@ -260,10 +264,15 @@ test.each(["live", "cancel", "replace"] as const)(
         expect(displayedPositions(restored.model)).toEqual(
           change === "replace"
             ? [20, 21, 22]
-            : change === "live"
+            : change === "live" || change === "live-v2"
               ? [1, 2, 3, 4, 5, 6, 7, 8, 9]
               : [1, 2, 3, 4, 5, 6, 7, 8],
         );
+        if (change === "live" || change === "live-v2") {
+          const items = restored.model?.turns.flatMap((turn) => turn.items);
+          expect(items?.find((item) => item.transcriptKey === "item-2")).toEqual(updatedTwo);
+          expect(items?.find((item) => item.transcriptKey === "item-9")).toEqual(newNine);
+        }
       } finally {
         replacement.dispose();
       }
