@@ -285,7 +285,7 @@ func TestDelegateReportMessageReusedRuntime(t *testing.T) {
 	}
 	// Exhaust the input and its one delegate nudge's bare-text retries without
 	// reporting, then fail the following generation at the provider boundary.
-	for i := 0; i < 2*(maxBareTextRetries+1); i++ {
+	for range 2 * (maxBareTextRetries + 1) {
 		fixture.adapter.steps = append(fixture.adapter.steps, func(llm.Request) llm.Response {
 			return llm.Response{Message: llm.Assistant("Unreported generation")}
 		})
@@ -311,7 +311,7 @@ func TestDelegateReportMessageReusedRuntime(t *testing.T) {
 		current.mu.Lock()
 		result, runErr := current.result, current.err
 		current.mu.Unlock()
-		wantErr := error(errBareTextWithoutResultTool)
+		wantErr := errBareTextWithoutResultTool
 		if index == 1 {
 			wantErr = providerErr
 		}
