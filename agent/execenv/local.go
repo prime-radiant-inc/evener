@@ -1742,6 +1742,9 @@ func readFileNotFoundSuggestion(absPath string) string {
 func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (string, error) {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
+		if err := e.requireLiveSandboxRootForRelative(sfs, "write_file", path); err != nil {
+			return "", err
+		}
 		// Sandboxed: atomic temp+renameat beneath a writable-root fd (creating any
 		// missing parents beneath the same root); read-only mode / out-of-root /
 		// masked / git-protected targets return a typed denial.
@@ -1800,6 +1803,7 @@ func (e *LocalExecutionEnvironment) EditFileCtx(ctx context.Context, path string
 // read, so a cancelled edit ends a read parked on a stream.
 func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path string, oldString string, newString string, replaceAll bool, finish func(edited []byte) []byte) (string, error) {
 	sfs := e.sandbox()
+	sandboxArm := sfs != nil
 	var abs string
 	var b []byte
 	var err error
@@ -1811,6 +1815,11 @@ func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path st
 	}
 	defer sfs.release()
 	if sfs != nil {
+		if sandboxArm {
+			if derr := e.requireLiveSandboxRootForRelative(sfs, "edit_file", path); derr != nil {
+				return "", derr
+			}
+		}
 		// Deny an edit in a non-writable location up front (read-only mode, outside
 		// the writable roots, or a masked/git-protected surface) before reading, so
 		// the model gets a clean write denial rather than a match/not-found result.

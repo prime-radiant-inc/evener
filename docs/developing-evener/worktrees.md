@@ -238,8 +238,10 @@ These are documented trade-offs, not bugs:
   delegate spawn all refuse with an error naming the deleted path rather than failing
   with a raw `lstat`, and the file tools (`write_file`, `edit_file`, `apply_patch`)
   refuse a relative-path edit rather than recreating the deleted directory and writing
-  outside any checkout (this covers the unrestricted edit path; a file-tool-confined
-  session's captured sandbox root is a known gap). The recovery is to re-anchor the session at an existing
+  outside any checkout, on the unrestricted edit path and on a file-tool-confined
+  session's captured sandbox root alike (the confined arm judges the root's captured
+  descriptor: an unlinked directory refuses rather than resolving beneath it). The
+  recovery is to re-anchor the session at an existing
   directory (the main checkout) or run `git worktree` from the main checkout. When the
   session has no live restore root either — it was launched directly inside the
   deleted lane and never entered it through the tool — `list` cannot resolve a
