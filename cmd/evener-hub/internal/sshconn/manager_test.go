@@ -3314,6 +3314,23 @@ func TestCloseDuringReconnectPreflightEmitsNoExtraReconnecting(t *testing.T) {
 	}
 }
 
+// This signal is produced by the manager classifying its returned error, not by
+// the runner merely reaching or returning from the injection point.
+type observedTerminalReconnectError struct {
+	classified chan struct{}
+	once       sync.Once
+}
+
+func (*observedTerminalReconnectError) Error() string { return "terminal reconnect fixture" }
+
+func (e *observedTerminalReconnectError) Is(target error) bool {
+	if target != ErrProtocolIncompatible {
+		return false
+	}
+	e.once.Do(func() { close(e.classified) })
+	return true
+}
+
 // A terminal error found while Close is racing the supervisor's reconnect must
 // not surface as an EventFailed: shutdown reports no host failure, even when the
 // attempt also happened to find a terminal fault (here a protocol mismatch). The
@@ -3321,26 +3338,27 @@ func TestCloseDuringReconnectPreflightEmitsNoExtraReconnecting(t *testing.T) {
 // manager's own teardown must suppress the terminal announcement directly.
 func TestCloseRaceWithTerminalReconnectEmitsNoFailedEvent(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	terminal := &observedTerminalReconnectError{classified: make(chan struct{})}
 
 	var mu sync.Mutex
 	block := false
-	preflightEntered := make(chan struct{})
-	releasePreflight := make(chan struct{})
+	bridgeEntered := make(chan struct{})
+	releaseBridge := make(chan struct{})
 	var enteredOnce, releaseOnce sync.Once
-	canned := cannedRun(nil)
+	goodStart := goodStartFn(t)
 	fr := &fakeRunner{
-		runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		runFn: cannedRun(nil),
+		startFn: func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error) {
 			mu.Lock()
 			blocking := block
 			mu.Unlock()
-			if blocking && strings.Contains(strings.Join(argv, " "), "launch-check") {
-				enteredOnce.Do(func() { close(preflightEntered) })
-				<-releasePreflight
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`), nil
+			if blocking {
+				enteredOnce.Do(func() { close(bridgeEntered) })
+				<-releaseBridge
+				return nil, terminal
 			}
-			return canned(ctx, argv, stdin)
+			return goodStart(ctx, argv, stderr)
 		},
-		startFn: goodStartFn(t),
 	}
 	events := make(chan Event, 128)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
@@ -3350,7 +3368,7 @@ func TestCloseRaceWithTerminalReconnectEmitsNoFailedEvent(t *testing.T) {
 		sleep:       func(context.Context, time.Duration) error { return nil },
 		jitter:      func(d time.Duration) time.Duration { return d },
 	})
-	defer releaseOnce.Do(func() { close(releasePreflight) })
+	defer releaseOnce.Do(func() { close(releaseBridge) })
 
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
@@ -3362,12 +3380,12 @@ func TestCloseRaceWithTerminalReconnectEmitsNoFailedEvent(t *testing.T) {
 	mu.Unlock()
 	ch.markLost()
 	select {
-	case <-preflightEntered:
+	case <-bridgeEntered:
 	case <-time.After(5 * time.Second):
-		t.Fatal("the supervisor never reached a reconnect preflight")
+		t.Fatal("the supervisor never reached reconnect bridge Start")
 	}
 
-	// Begin shutdown while that preflight is still in flight: Close cancels the
+	// Begin shutdown while bridge Start is still in flight: Close cancels the
 	// base context and then waits for the supervisor.
 	closed := make(chan error, 1)
 	go func() { closed <- m.Close() }()
@@ -3377,17 +3395,22 @@ func TestCloseRaceWithTerminalReconnectEmitsNoFailedEvent(t *testing.T) {
 		t.Fatal("Close never canceled the base context")
 	}
 
-	// Release the preflight: it answers with a terminal protocol mismatch even
-	// though the manager is closing. Shutdown must not read that as a host
-	// failure.
-	releaseOnce.Do(func() { close(releasePreflight) })
+	// The terminal failure now comes after preflight, so cancellation cannot
+	// replace it before the reconnect loop classifies it. Shutdown must still
+	// suppress its Failed announcement.
+	releaseOnce.Do(func() { close(releaseBridge) })
 	select {
 	case err := <-closed:
 		if err != nil {
 			t.Fatalf("Close: %v", err)
 		}
 	case <-time.After(6 * time.Second):
-		t.Fatal("Close did not finish after the preflight returned")
+		t.Fatal("Close did not finish after bridge Start returned")
+	}
+	select {
+	case <-terminal.classified:
+	default:
+		t.Fatal("reconnect never classified the terminal error")
 	}
 	assertNoFailedEvent(t, events)
 }

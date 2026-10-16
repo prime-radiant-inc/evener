@@ -57,8 +57,8 @@ type Preflight struct {
 	// `launch-check --json` with a contract, independently of AppWire compatibility.
 	LaunchCheckKnown bool
 	// ExecutableMissing records the verified result of the dedicated executable
-	// probe (`test -x <run_path>`, or `command -v <run_path>` for a bare name):
-	// there is no evener executable at the host's resolved run target. It is
+	// probe (file presence for a path, or `command -v` for a bare name):
+	// there is no evener file at the host's resolved run target. It is
 	// surfaced as the ErrExecutableMissing sentinel where an error is needed;
 	// when a deploy path is configured, `Ensure` routes it into the
 	// deploy/install ladder, which creates the missing run target.
@@ -284,9 +284,9 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 					return pf, err2
 				}
 			}
-			// The dedicated probe verified that the resolved run target is not
-			// executable there, and the installer default did not hold a binary
-			// either: record the verified fact.
+			// The dedicated probe verified absence at the resolved run target,
+			// and the installer default held no file (or it disappeared before
+			// its presence probe): record the verified fact.
 			pf.ExecutableMissing = true
 		}
 		if m.canDeploy() && missing {
@@ -382,23 +382,22 @@ var errExecutableMissing = errors.New("sshconn: evener executable not found on t
 // (appwire.HubLaunchError) rather than a generic internal error.
 var ErrExecutableMissing = errExecutableMissing
 
-// executableProbeRemote builds the dedicated executable-presence probe for the
-// command launch-check would run: exit 0 when target exists and is executable
-// there, exit 1 when it is not. A path target is probed with `test -x`, the
-// spec's form; a bare name is probed with `command -v`, the PATH equivalent,
-// because `test -x evener` would test the login shell's cwd rather than the
-// PATH the bare word resolves through. The if/exit wrapper normalizes both forms
-// to the spec's 0/1 sentinel: `command -v` answers 127 — not 1 — for a name it
-// cannot find (dash and other shells), so without the wrapper the absent answer
-// would depend on the shell generation, and a status that double-duties as the
-// shell's own not-found code could not be told from the probe's.
+// executableProbeRemote distinguishes presence (0) from confirmed absence (1).
+// A selected path's file need not be executable or readable to be present. A
+// dangling symlink is also an installation, not fresh-host authorization. An
+// unsearchable ancestor yields 2 rather than claiming the selected file absent.
+// Bare names retain command -v lookup in the remote PATH, normalized to 0/1.
 func executableProbeRemote(target string) string {
 	word := shellquote.RemoteWord(target)
-	cond := "test -x " + word
 	if !strings.Contains(target, "/") {
-		cond = "command -v " + word + " >/dev/null 2>&1"
+		return "if command -v " + word + " >/dev/null 2>&1; then exit 0; else exit 1; fi"
 	}
-	return "if " + cond + "; then exit 0; else exit 1; fi"
+	return "if test -e " + word + " || test -L " + word + "; then exit 0; fi; p=" + word + `; while :; do
+case "$p" in */*) p=${p%/*}; [ -n "$p" ] || p=/ ;; *) p=. ;; esac
+if test -e "$p" || test -L "$p"; then
+  if test -d "$p" && test -x "$p"; then exit 1; else exit 2; fi
+fi
+done`
 }
 
 // runRemote runs a non-evener remote command, classifying a failure as an auth
