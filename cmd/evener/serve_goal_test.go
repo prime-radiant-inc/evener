@@ -87,8 +87,7 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 
 	entry := waitForServeTestRendezvous(t, runDir)
 
-	// Connect an appwire client to the daemon over the websocket RPC, the same
-	// way cmd/evener-tui/internal/hubstart dials the hub: DialWebSocket → NewClient
+	// Connect an appwire client to the daemon over the websocket RPC: DialWebSocket → NewClient
 	// → Start → Initialize.
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()

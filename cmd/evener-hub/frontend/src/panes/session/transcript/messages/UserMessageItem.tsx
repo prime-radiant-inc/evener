@@ -172,9 +172,7 @@ export function UserMessageView({
 // An item with no transcriptKey has no persisted transcript position, so it
 // names no divergence point and the action is simply not offered - the same
 // refusal this component already makes for a read-only pane with no
-// sessionRef, and the same stance cmd/evener-tui/hub_browse.go's
-// startForkDraft takes when TurnIndexFromID yields 0 ("fork requires
-// persisted transcript turn identity"). Guessing an entry is the one outcome
+// sessionRef. Guessing an entry is the one outcome
 // that must never happen.
 export const UserMessageItem = memo(function UserMessageItem({ item, sessionRef }: ItemRenderProps) {
   const transcriptKey = item.transcriptKey;
