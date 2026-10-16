@@ -28,6 +28,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { IDBObjectStore as FDBObjectStore } from "fake-indexeddb";
 import { beforeEach, expect, type MockInstance, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
+import { publishPaneDocumentMoved } from "../../shell/paneDocumentMoves";
 import { resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { createDocumentAnnotationRepository } from "../../stores/documentAnnotationIndexedDB";
@@ -1218,6 +1219,61 @@ test("a reopened reader's faulted reread fences another reader's pending handoff
   const draft = await f.drafts.load(f.key);
   expect(draft?.text).not.toContain("Reader 1 note");
   host2b.unmount();
+});
+
+// ---------------------------------------------------------------------------
+// Popout document moves (roborev: popping out an already loaded document moves
+// its existing DOM into another window's document without any React state
+// change, so the selection observer kept its listeners on the opener's
+// document and selections inside the popout never opened the comment box).
+// ---------------------------------------------------------------------------
+
+test("a popped-out reader keeps opening the comment box for selections in its own window", async () => {
+  const f = await fixture("popout-selection-rebind");
+  await settleBaseline(f);
+  const { ports } = annotationPorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const host = mountAnnotated(f, ports, client, "doc-popout-selection");
+  const work = documentReaderWork("doc-popout-selection", f.document, ports);
+  await waitForCurrentBoundMap(work, maps);
+
+  // Pop the loaded pane out: dockview adopts the group's existing DOM into the
+  // popout window's document - the same cross-document move an iframe's body
+  // performs here - and the popout host announces it through the same channel
+  // DockHost publishes on. React never re-renders for the adoption.
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  cleanupAfterTest(() => frame.remove());
+  const owner = frame.contentDocument;
+  const ownerWindow = frame.contentWindow;
+  if (!owner || !ownerWindow) throw new Error("missing iframe document");
+  owner.body.appendChild(host.container);
+  act(() => {
+    publishPaneDocumentMoved();
+  });
+
+  // A finished selection in the popout's own window opens the comment box:
+  // the press and the selection both belong to the popout document, exactly as
+  // they would for a user selecting prose inside the popped-out pane.
+  const paragraph = await within(host.container).findByText("First occurrence: same");
+  fireEvent.pointerDown(paragraph, PRIMARY_POINTER);
+  const node = paragraph.firstChild;
+  if (!node || node.nodeType !== Node.TEXT_NODE) throw new Error("missing source text node");
+  const range = owner.createRange();
+  range.setStart(node, 18);
+  range.setEnd(node, 22);
+  const selection = ownerWindow.getSelection();
+  if (!selection) throw new Error("selection unavailable");
+  selection.removeAllRanges();
+  selection.addRange(range);
+  fireEvent.pointerUp(paragraph, PRIMARY_POINTER);
+  await waitFor(() => {
+    if (!work.comment.capture) throw new Error("popout selection never captured");
+  });
+  expect(work.comment.capture?.sourceRange).toEqual(FIRST);
+  host.unmount();
 });
 
 // ---------------------------------------------------------------------------
