@@ -1025,6 +1025,129 @@ it.each(["complete", "missing-row", "missing-turn"] as const)(
   },
 );
 
+it.each([false, true])(
+  "aborted retained opening recovers only an incomplete live range, complete=%s",
+  async (complete) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const storage = cache();
+    setProductionEntryCacheForTests(storage);
+    const turns = Array.from({ length: 250 }, (_, index) => turn(`aborted-${index}`, index));
+    const read = response("local:a", turns);
+    read.snapshot = { incarnation: "inc-a", length: 250 };
+    const client = connect(read);
+    const background = acquireBackgroundThread("local:a");
+    await background.ready;
+    await settleEntryTranscriptForTests("local:a");
+    await threadsStore.getState().ensureThread("local:a");
+    const items = () =>
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items);
+    expect(items()).toEqual(turns.slice(-200).flatMap((turn) => turn.items));
+    await threadsStore.getState().loadOlderTurns("local:a");
+    await threadsStore.getState().loadOlderTurns("local:a");
+    expect(items()).toEqual(turns.flatMap((turn) => turn.items));
+    await settleEntryTranscriptForTests("local:a");
+    const reads = client.calls.filter((call) => call.method === "thread/read").length;
+    threadsStore.getState().releaseThread("local:a");
+    const updatedTurns = turns.map((turn) => ({
+      ...turn,
+      version: 2,
+      items: turn.items?.map((item) => ({ ...item, version: 2, text: `updated-${item.id}` })),
+    }));
+    const liveItems = updatedTurns.slice(complete ? 0 : 50).flatMap((turn) => turn.items ?? []);
+    const snapshot = { incarnation: "inc-a", length: 251 };
+    client.on("thread/read", (params) => {
+      expect(params.itemLimit).toBe(40);
+      return {
+        ...response("local:a", updatedTurns.slice(-40)),
+        snapshot,
+        olderCursor: "abort-recovery-older",
+        authoritative: true,
+        requestGeneration: params.requestGeneration,
+      };
+    });
+    let injected = false;
+    const openCursor = IDBIndex.prototype.openCursor;
+    const abortRead = vi.spyOn(IDBIndex.prototype, "openCursor").mockImplementation(function (this: IDBIndex, ...args) {
+      const request = openCursor.apply(this, args);
+      const transaction = this.objectStore.transaction;
+      if (!injected && transaction.mode === "readonly" && this.name === "historyKey_position") {
+        injected = true;
+        request.addEventListener(
+          "success",
+          () => {
+            // Let the cursor consumer queue its next request before aborting it.
+            queueMicrotask(() => {
+              client.emitNotification({
+                method: "history/updated",
+                params: {
+                  ref: "local:a",
+                  threadId: "thread-a",
+                  bootGeneration: "1",
+                  epoch: 1,
+                  snapshot,
+                  items: liveItems,
+                },
+              });
+              expect(items()).toEqual(liveItems);
+              transaction.abort();
+            });
+          },
+          { once: true },
+        );
+      }
+      return request;
+    });
+    try {
+      await threadsStore.getState().ensureThread("local:a");
+      await settleEntryTranscriptForTests("local:a");
+      expect(injected).toBe(true);
+      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + (complete ? 0 : 1));
+      expect(items()).toEqual(complete ? liveItems : updatedTurns.slice(-40).flatMap((turn) => turn.items));
+      expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+      expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+      if (!complete) {
+        client.on("thread/turns/list", (params) => {
+          expect(params.cursor).toBe("abort-recovery-older");
+          return {
+            data: updatedTurns.slice(170, 210),
+            nextCursor: "abort-recovery-deeper",
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot,
+          };
+        });
+        await threadsStore.getState().loadOlderTurns("local:a");
+        expect(items()).toEqual(updatedTurns.slice(170).flatMap((turn) => turn.items));
+        const lastLive = liveItems.at(-1);
+        if (!lastLive) throw new Error("missing live fixture item");
+        const later = { ...lastLive, version: 3, text: "continued-after-abort" };
+        client.emitNotification({
+          method: "history/updated",
+          params: {
+            ref: "local:a",
+            threadId: "thread-a",
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { ...snapshot, length: 252 },
+            items: [later],
+          },
+        });
+        await settleEntryTranscriptForTests("local:a");
+        expect(items()).toEqual([...updatedTurns.slice(170, 249).flatMap((turn) => turn.items), later]);
+        expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+        expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(1);
+      }
+    } finally {
+      abortRead.mockRestore();
+      threadsStore.getState().releaseThread("local:a");
+      background.release();
+    }
+  },
+);
+
 it.each([
   { superseded: false, storageCost: false, bodyCount: 250 },
   { superseded: true, storageCost: false, bodyCount: 250 },

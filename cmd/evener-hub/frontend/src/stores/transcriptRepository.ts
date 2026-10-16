@@ -1315,25 +1315,46 @@ export class TranscriptRepository {
           cut = captureOpeningState();
           openingState = cut;
         }
+        const foregroundStart = cut.foregroundStart;
+        const requestedForeground = foregroundStart
+          ? (cut.model?.history?.turns ?? cut.model?.turns ?? [])
+              .flatMap((turn) => turn.items)
+              .filter((item) => item.position && comparePosition(item.position, foregroundStart) >= 0)
+              .map((item) => ({ key: item.transcriptKey ?? item.id, version: item.version ?? 0 }))
+          : [];
+        const sourceRevisionAtOpen = cut.sourceRevision;
+        const authorityCurrent = () => sourceRevisionAtOpen === this.#sourceRevision;
+        const checkRetainedRange = (model: ThreadModel | undefined): boolean | undefined => {
+          // An exception may follow cancellation or source replacement. Those
+          // results cannot judge the obsolete opening's retained requirements.
+          if (
+            limit <= 0 ||
+            requestedForeground.length === 0 ||
+            !active ||
+            !this.#acceptsLifetime(lifetime) ||
+            !authorityCurrent()
+          )
+            return undefined;
+          const displayed = new Map(
+            model?.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
+          );
+          return requestedForeground.every((item) => {
+            const body = displayed.get(item.key);
+            return (
+              body !== undefined && (body.version ?? 0) >= item.version && !encodeTranscriptItem(body).identityOnly
+            );
+          });
+        };
         try {
-          const foregroundStart = cut.foregroundStart;
-          const requestedForeground = foregroundStart
-            ? (cut.model?.history?.turns ?? cut.model?.turns ?? [])
-                .flatMap((turn) => turn.items)
-                .filter((item) => item.position && comparePosition(item.position, foregroundStart) >= 0)
-                .map((item) => ({ key: item.transcriptKey ?? item.id, version: item.version ?? 0 }))
-            : [];
           // The limit bounds first promotion. Reopening a still-owned range
           // must not silently turn it back into that initial latest window.
           if (limit > 0) limit = Math.max(limit, requestedForeground.length);
           const openingCutBoundary = cut.boundary;
           const coverageBoundary = cut.committedBoundary;
           const acceptedBoundaryAtOpen = cut.acceptedCoverageBoundary;
-          const sourceRevisionAtOpen = cut.sourceRevision;
           // Suffix certificates are mutable per readId. Resolve the latest real
           // certificate and prove that it covers this reader's fixed cut.
           let window = await this.#cache.getLatestWindow(this.#binding.historyKey, limit, cut.latestWindowBoundary);
-          const authorityCurrent = () => sourceRevisionAtOpen === this.#sourceRevision;
           if (!active || !this.#acceptsLifetime(lifetime) || !authorityCurrent()) {
             return { model: latest ?? this.#model, status: "recovery-needed", boundary: this.#boundary };
           }
@@ -1450,18 +1471,7 @@ export class TranscriptRepository {
           // A racing accepted model wins by item version; the stale query only fills absent slots.
           latest =
             this.#boundary > openingCutBoundary ? this.#mergeReaderModels(latest ?? current, restored) : restored;
-          let retainedRangeComplete: boolean | undefined;
-          if (limit > 0 && requestedForeground.length > 0) {
-            const displayed = new Map(
-              latest.turns.flatMap((turn) => turn.items.map((item) => [item.transcriptKey ?? item.id, item] as const)),
-            );
-            retainedRangeComplete = requestedForeground.every((item) => {
-              const body = displayed.get(item.key);
-              return (
-                body !== undefined && (body.version ?? 0) >= item.version && !encodeTranscriptItem(body).identityOnly
-              );
-            });
-          }
+          const retainedRangeComplete = checkRetainedRange(latest);
           const oldestReturned = boundedRows[0]?.position;
           const certifiedStart = window.coverage[0]?.start;
           const localBefore =
@@ -1527,7 +1537,13 @@ export class TranscriptRepository {
             olderCursor: window.serverCursor ?? current.olderCursor,
           };
         } catch {
-          return { model: latest, status: "recovery-needed", boundary: this.#boundary };
+          const retainedRangeComplete = checkRetainedRange(latest);
+          return {
+            model: latest,
+            status: "recovery-needed",
+            ...(retainedRangeComplete === undefined ? {} : { retainedRangeComplete }),
+            boundary: this.#boundary,
+          };
         } finally {
           releaseOpeningState(cut);
         }
