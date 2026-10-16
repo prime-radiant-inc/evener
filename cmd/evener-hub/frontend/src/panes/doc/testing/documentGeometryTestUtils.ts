@@ -34,6 +34,14 @@ export function testDomRect(rect: TestRect): DOMRect {
   } as DOMRect;
 }
 
+// Realm-independent Text test: a popout adoption moves a node into another
+// document without changing its creating realm, so any realm's Text
+// constructor can misjudge an adopted node. nodeType 3 is the realm-free
+// test, and the predicate keeps the Text narrowing the old instanceof gave.
+function isTextNode(node: Node): node is Text {
+  return node.nodeType === 3;
+}
+
 interface PropertyInstall {
   target: object;
   key: string;
@@ -94,10 +102,7 @@ export class DocumentGeometrySeam {
       );
     ranges.forEach((range, index) => {
       const node = range.startContainer;
-      // Realm-safe: a foreign document (an iframe) has its own Text
-      // constructor, so the global one cannot see its nodes.
-      const TextCtor = node.ownerDocument?.defaultView?.Text ?? Text;
-      if (!(node instanceof TextCtor)) throw new Error("fragment start is not a text node");
+      if (!isTextNode(node)) throw new Error("fragment start is not a text node");
       let nodeRects = this.rectsByNode.get(node);
       if (!nodeRects) {
         nodeRects = new Map();
@@ -116,9 +121,7 @@ export class DocumentGeometrySeam {
 
   private rectsForRange(range: Range): TestRect[] {
     const node = range.startContainer;
-    // Realm-safe: a foreign document's text nodes are not the global Text.
-    const TextCtor = node.ownerDocument?.defaultView?.Text ?? Text;
-    if (!(node instanceof TextCtor)) return [];
+    if (!isTextNode(node)) return [];
     return this.rectsByNode.get(node)?.get(`${range.startOffset}:${range.endOffset}`) ?? [];
   }
 
