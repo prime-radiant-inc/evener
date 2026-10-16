@@ -44,6 +44,7 @@ type launchCheckModel struct {
 var supportedLaunchFlags = []string{"api-log"}
 
 type launchCheckResponse struct {
+	HubEndpointSchema int `json:"hub_endpoint_schema"`
 	// LaunchFlags is the CLI-capability half of the launch contract: a
 	// binary predating a flag omits it, which is itself the signal a
 	// launcher needs to reject the pairing up front instead of dying on an
@@ -75,9 +76,10 @@ func RunLaunchCheck(args []string, stdout, stderr io.Writer) error {
 	}
 
 	resp := launchCheckResponse{
-		LaunchFlags: supportedLaunchFlags,
-		Version:     buildinfo.Version(),
-		Protocol:    appwire.ProtocolVersion,
+		HubEndpointSchema: 1,
+		LaunchFlags:       supportedLaunchFlags,
+		Version:           buildinfo.Version(),
+		Protocol:          appwire.ProtocolVersion,
 	}
 	if *modelsOut {
 		models, diagnostics, err := launchCheckModels()
