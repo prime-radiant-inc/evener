@@ -58,6 +58,15 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
   let retryNeeded = false;
   let pendingDuringPass = false;
   let alive = true;
+  // Handoffs serialize: the composer source's preparation machinery is
+  // single-flight, so two concurrent handoffs to one composer can deadlock
+  // one another, and even when they interleave harmlessly the second
+  // preparation captures a revision the first is about to replace - its
+  // revision conflict then strands the reference behind a storage-success
+  // notification that already fired with no retry need to act on. Chaining
+  // behind every prior handoff and any running pass gives each handoff a
+  // fresh, settled preparation whose append is the only one in flight.
+  let handoffChain: Promise<unknown> = Promise.resolve();
   const id = (operation: PreparedAnnotation) =>
     annotationOperationKey(operation.lease.key.namespace, operation.operationId);
   // One operation-scoped cancellation handle per operation, alive only while a
@@ -131,7 +140,10 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     if (!alive) return Promise.resolve();
     if (pass) return pass;
     pendingDuringPass = false; // before assigning pass, never erase observations made while it runs
-    pass = Promise.resolve()
+    // The pass's persisted sweep drives handoffs at the repository level, so
+    // it joins the same chain: an in-flight direct handoff finishes first and
+    // the sweep never races it for the composer.
+    pass = handoffChain
       .then(async () => {
         for (const operation of [...failed.values()]) {
           if (!alive) return;
@@ -155,10 +167,20 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     save,
     retryPending,
     whenIdle: () => pass ?? Promise.resolve(),
-    handoff: async (key, operationId) => {
-      const result = await repo.handoff(key, operationId);
-      if (result.state === "pending") needRetry();
-      return result;
+    handoff: (key, operationId) => {
+      const prior = pass ? Promise.all([pass, handoffChain]) : handoffChain;
+      const run = prior.then(
+        () => repo.handoff(key, operationId),
+        () => repo.handoff(key, operationId),
+      );
+      handoffChain = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run.then((result) => {
+        if (result.state === "pending") needRetry();
+        return result;
+      });
     },
     storageSucceeded: () => {
       if (alive && retryNeeded && !pass) void retryPending("storage-recovered");
