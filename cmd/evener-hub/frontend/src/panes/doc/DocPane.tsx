@@ -28,6 +28,7 @@ import {
   rebindFileReference,
 } from "@evener/appwire-client/docContent";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { subscribePaneDocumentMoves } from "../../shell/paneDocumentMoves";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { usePaneVisible } from "../../shell/paneVisibility";
 import { documentPaneState, recordDocumentPaneState, useWorkspaceStore, workspaceStore } from "../../shell/workspace";
@@ -1048,19 +1049,40 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
   useEffect(() => {
     const root = contentElement;
     if (!root) return;
-    return observeFinishedDocumentSelections({
-      root,
-      getMap: () => {
-        const target = selectionTargetRef.current;
-        return target && target.state.status === "ok" ? target.map : null;
-      },
-      onFinish: (selection) => {
-        const target = selectionTargetRef.current;
-        if (target?.state.status !== "ok") return;
-        work.comment = selectCommentPassage(work.comment, buildCapture(selection, target.state.content));
-        publishReader(work);
-      },
+    let boundDocument = root.ownerDocument;
+    const observe = (): (() => void) =>
+      observeFinishedDocumentSelections({
+        root,
+        getMap: () => {
+          const target = selectionTargetRef.current;
+          return target && target.state.status === "ok" ? target.map : null;
+        },
+        onFinish: (selection) => {
+          const target = selectionTargetRef.current;
+          if (target?.state.status !== "ok") return;
+          work.comment = selectCommentPassage(work.comment, buildCapture(selection, target.state.content));
+          publishReader(work);
+        },
+      });
+    let dispose = observe();
+    // A popout moves this pane's existing DOM into another window's document
+    // without any React state change, so this effect never re-runs on its own
+    // and the observer would keep its listeners on the document the pane
+    // left: selections inside the popout window could never open the box.
+    // Rebind when a move the popout host announces actually changed the
+    // host's owning document - in either direction, opening the popout and
+    // closing it again.
+    const unsubscribe = subscribePaneDocumentMoves(() => {
+      const current = root.ownerDocument;
+      if (current === boundDocument) return;
+      dispose();
+      boundDocument = current;
+      dispose = observe();
     });
+    return () => {
+      unsubscribe();
+      dispose();
+    };
   }, [work, contentElement]);
 
   const status = commentStatus(work, epochViews);

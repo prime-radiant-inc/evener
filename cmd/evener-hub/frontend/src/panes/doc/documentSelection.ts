@@ -38,7 +38,6 @@ export interface ObserveFinishedDocumentSelectionsInput {
 export function observeFinishedDocumentSelections(input: ObserveFinishedDocumentSelectionsInput): () => void {
   const { root, getMap, onFinish } = input;
   const doc = root.ownerDocument;
-  const ownerWindow = doc.defaultView;
   let activePointer: number | null = null;
   // The selection the gesture started with, so a cancelled stream can tell
   // whether the selection it ends on is one the interaction made.
@@ -121,13 +120,16 @@ export function observeFinishedDocumentSelections(input: ObserveFinishedDocument
     if (selection) emit(selection);
   };
 
-  // Realm-safe containment: an iframe root's nodes are instances of that
-  // document's own Node constructor.
+  // Realm-agnostic containment. A popout adopts the pane's opener-created
+  // nodes into another window's document: the nodes keep their creating
+  // document's constructors for their whole lifetime, so an instanceof
+  // against ANY one document's Node - the current owner's or the global -
+  // cannot see moved nodes. nodeType is the realm-independent Node test,
+  // and contains is identity-based tree walking.
   const withinRoot = (target: EventTarget | null): boolean => {
     if (!target) return false;
-    const NodeCtor = ownerWindow?.Node;
-    const isNode = NodeCtor ? target instanceof NodeCtor : target instanceof Node;
-    return isNode && root.contains(target as Node);
+    const nodeType = (target as { nodeType?: number }).nodeType;
+    return nodeType !== undefined && root.contains(target as Node);
   };
 
   const onPointerDown = (event: PointerEvent): void => {
