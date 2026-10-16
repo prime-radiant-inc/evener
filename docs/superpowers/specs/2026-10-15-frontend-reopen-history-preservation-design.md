@@ -78,9 +78,21 @@ that result from the observed 94-item recovery path.
 - A healthy, authoritative local restore requires no activation `thread/read`
   or server older-page request. A missing certificate alone must not erase
   usable bodies that the existing authority rules allow the browser to retain.
-- Preserve the same logical pane's reading anchor and offset across responsive
-  host replacement. A genuine close followed by a new pane still lands at
-  latest under the existing scroll contract.
+- Preserve the same logical pane's semantic reading point across responsive
+  host replacement using the existing reflow policy. Width changes preserve
+  approximate progress through the entry's usable reading depth or its visible
+  tail, as documented in `docs/web-ui/README.md`. Mounted and remounted readers
+  follow the same policy; an identical pixel offset is not required when entry
+  geometry changes. Height-only changes retain the existing reading-line rule.
+  A genuine close followed by a new pane still lands at latest under the
+  existing scroll contract.
+- Placement must distinguish an in-flight local body restoration from a settled
+  empty or anchorless projection using the existing ref-scoped opening state.
+  Empty geometry or missing source candidates alone cannot establish readiness.
+  Keep retained placement pending while bodies are opening, then retry against
+  accepted content and committed geometry when that opening settles. Success,
+  recovery, cancellation and supersession must not leave an empty pane waiting
+  forever or let obsolete placement override newer reader intent.
 
 ### Keep bounded background operation
 
@@ -127,6 +139,11 @@ Inspect and change only the owning boundaries the reproduction establishes:
 - `cmd/evener-hub/frontend/src/stores/threads.ts`
 - Their focused tests, especially `threads.entryProduction.test.ts` and the
   repository's restoration tests.
+- The existing transcript placement owner in
+  `cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts`
+  and its composed `TranscriptBody` and `transcriptAnchors` tests. Preserve the
+  current reflow policy and reuse the store's opening state; add no readiness
+  owner, timeout or geometry-based substitute for that state.
 - Existing dev evidence surfaces and the background transcript guard only when
   needed to expose or assert real behavior. Keep assertions at least as strict.
 
@@ -186,6 +203,17 @@ producer checks. Do not weaken assertions, raise limits or add sleeps to hide
 the failure. Inspect a screenshot of the resulting narrow transcript and
 verify its retained older content through the rendered view, not only a model
 snapshot.
+
+Responsive placement evidence must identify the same semantic entry and measure
+its old and new geometry independently of the production capture/reflow helpers.
+Check the expected reading point under the existing progress/tail policy, visible
+older content and retained pane identity. A turn-wrapper offset is not a semantic
+entry offset. Keep negative controls for a wrong entry, wrong reading point and
+changed pane identity; do not substitute a loose offset tolerance. Compare mounted
+and remounted reflow, including short tails, tall entries that shrink, and height-only
+changes. Existing empty/anchorless fallback and reader-intent supersession controls
+remain binding. Only the new exact-pixel assertion is revised under this clarified
+contract; payload, producer, request-count and genuine-close/latest checks remain.
 
 Run targeted unit tests, frontend typechecking and touched-file Biome, then
 `make test-web` and the affected browser guards. Review scripts before relying

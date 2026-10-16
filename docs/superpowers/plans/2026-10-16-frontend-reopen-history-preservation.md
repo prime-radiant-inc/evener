@@ -18,6 +18,8 @@
 - A genuine reconnect or source change retains its existing reconciliation semantics.
 - Clear, deletion, final release and superseded openings continue to fence late results.
 - A genuine close followed by a new pane still lands at latest under the existing scroll contract.
+- Responsive remounts preserve the semantic reading point under the existing width-reflow and height-only rules, not unconditional identical pixels. Mounted and remounted readers use the same policy.
+- Placement readiness uses the existing ref-scoped local-opening state. Missing rows or source candidates do not distinguish pending restoration from settled empty content.
 - Native, TUI, server protocol, relay routing and daemon behavior are outside this repair.
 - Production deployment or restart requires separate authorization.
 - Keep relay changes and its uncommitted two-tab guard work out of this PR.
@@ -209,10 +211,21 @@ payloads before and after 420px reactivation and the daemon producer evidence.
 Confirm no unnecessary healthy-reopen read from raw AppWire trace. Observe
 older content in the rendered pane and inspect a screenshot with vision.
 Exercise a same-pane responsive remount at an older reading anchor, then a
-genuine close/new-pane open: the former retains its entry/offset and the latter
-lands at latest. Add a failing guard assertion first if that placement case
-lacks existing coverage. Keep real hub/daemons/IndexedDB and script only the
-external LLM boundary.
+genuine close/new-pane open: the former retains its semantic reading point
+under the existing reflow policy and the latter lands at latest. Independently
+measure semantic-entry geometry rather than equating a turn-wrapper offset
+with the production anchor. Keep wrong-entry, wrong-reading-point and changed
+pane-identity negative controls; use no loose offset tolerance. Keep real
+hub/daemons/IndexedDB and script only the external LLM boundary.
+
+For placement readiness, use the existing store opening state through the
+current registration owner. Cover temporary bodyless and partial projections
+versus settled empty/anchorless content, then completion on success, recovery,
+cancellation and supersession. Run `TranscriptBody.test.tsx` and
+`transcriptAnchors.test.tsx` alongside the hook/read-view/registry tests before
+the real browser check. Preserve their existing reflow, empty-content and
+reader-intent assertions. The cascade browser return/remount journey is also
+an affected placement check and must be attributed and verified before delivery.
 
 - [ ] **Run final affected gates sequentially.**
 
