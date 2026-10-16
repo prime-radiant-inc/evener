@@ -9,7 +9,7 @@ import {
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
+import { IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { deleteSession } from "../shell/rail/actions";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
@@ -908,6 +908,191 @@ it.each(["opening", "paging"])(
     threadsStore.getState().releaseThread("local:a");
     background.release();
     vi.useRealTimers();
+  },
+);
+
+it.each(["complete", "missing-row", "missing-turn"] as const)(
+  "reopening a paged background transcript preserves its loaded payloads (%s)",
+  async (durability) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const storage = cache();
+    setProductionEntryCacheForTests(storage);
+    const turns = Array.from({ length: 250 }, (_, index) => turn(`body-${index}`, index));
+    const read = response("local:a", turns);
+    read.snapshot = { incarnation: "inc-a", length: 250 };
+    const client = connect(read);
+    const background = acquireBackgroundThread("local:a");
+    await background.ready;
+    await settleEntryTranscriptForTests("local:a");
+    await threadsStore.getState().ensureThread("local:a");
+    const items = () =>
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items);
+    expect(items()).toEqual(turns.slice(-200).flatMap((turn) => turn.items));
+    await threadsStore.getState().loadOlderTurns("local:a");
+    await threadsStore.getState().loadOlderTurns("local:a");
+    const before = structuredClone(items());
+    expect(before).toHaveLength(250);
+    const reads = client.calls.filter((call) => call.method === "thread/read").length;
+    await settleEntryTranscriptForTests("local:a");
+    await threadsStore.getState().ensureThread("local:a");
+    threadsStore.getState().releaseThread("local:a");
+    expect(items()).toEqual(before);
+    threadsStore.getState().releaseThread("local:a");
+    if (durability !== "complete") {
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = factory.open(SESSION_CACHE_DATABASE_NAME);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      try {
+        const store = durability === "missing-row" ? "transcriptItems" : "transcriptTurns";
+        const transaction = database.transaction(store, "readwrite");
+        transaction.objectStore(store).delete([historyKey, "body-0"]);
+        await new Promise<void>((resolve, reject) => {
+          transaction.oncomplete = () => resolve();
+          transaction.onabort = () => reject(transaction.error);
+        });
+      } finally {
+        database.close();
+      }
+      if (durability === "missing-turn") {
+        // The accepted turn header still belongs to this repository. Losing
+        // its duplicate disk metadata must not erase otherwise usable bodies.
+        expect(await storage.getTurn(historyKey, "body-0")).toBeUndefined();
+      }
+      client.on("thread/read", (params) => ({
+        ...response("local:a", turns.slice(-40)),
+        snapshot: read.snapshot,
+        authoritative: true,
+        requestGeneration: params.requestGeneration,
+      }));
+    }
+    await threadsStore.getState().ensureThread("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    if (durability !== "missing-row") {
+      expect(items()).toEqual(before);
+      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+    } else {
+      expect(items()).toEqual(before?.slice(-40));
+      expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads + 1);
+    }
+    expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(0);
+    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+    threadsStore.getState().releaseThread("local:a");
+    background.release();
+  },
+);
+
+it.each([
+  { superseded: false, storageCost: false },
+  { superseded: true, storageCost: false },
+  { superseded: false, storageCost: true },
+])(
+  "post-reconnect multi-item reopen preserves payloads, superseded=$superseded storageCost=$storageCost",
+  async ({ superseded, storageCost }) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const storage = cache();
+    setProductionEntryCacheForTests(storage);
+    const recorded = Array.from(
+      { length: 190 },
+      (_, index): ThreadItem => ({
+        id: `recorded-${index}`,
+        transcriptKey: `recorded-${index}`,
+        turnId: `turn-${Math.floor(index / 3)}`,
+        version: index + 1,
+        position: { entry: index * 2, item: 0 },
+        type: index % 3 === 0 ? "userMessage" : index % 3 === 1 ? "agentMessage" : "toolCall",
+        ...(index % 3 === 2
+          ? {
+              toolName: "exec_command",
+              arguments: { command: `fixture-${index}` },
+              output: `output-${index}`,
+              status: "completed" as const,
+            }
+          : { text: `payload-${index}` }),
+      }),
+    );
+    const turnsFor = (items: ThreadItem[]): Turn[] => {
+      const turns = new Map<string, Turn>();
+      for (const item of items) {
+        const id = item.turnId ?? "";
+        const held = turns.get(id) ?? { id, version: 1, status: "completed", itemsView: "full", items: [] };
+        held.items?.push(item);
+        turns.set(id, held);
+      }
+      return [...turns.values()];
+    };
+    const latest = response("local:a", turnsFor(recorded.slice(-40)));
+    latest.snapshot = { incarnation: "inc-a", length: 400 };
+    latest.olderCursor = "150";
+    const client = connect(latest);
+    client.on("thread/read", (params) => ({ ...latest, requestGeneration: params.requestGeneration }));
+    client.on("thread/turns/list", (params) => {
+      const end = Number(params.cursor);
+      const start = Math.max(0, end - 40);
+      return {
+        data: turnsFor(recorded.slice(start, end)),
+        nextCursor: start > 0 ? String(start) : undefined,
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: latest.snapshot,
+      };
+    });
+    const background = acquireBackgroundThread("local:a");
+    await background.ready;
+    await settleEntryTranscriptForTests("local:a");
+    await threadsStore.getState().ensureThread("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    client.emitStateChange("reconnecting");
+    client.emitStateChange("ready");
+    await settleEntryTranscriptForTests("local:a");
+    for (let page = 0; page < 4; page++) await threadsStore.getState().loadOlderTurns("local:a");
+    await settleEntryTranscriptForTests("local:a");
+    const items = () =>
+      threadsStore
+        .getState()
+        .threads.get("local:a")
+        ?.turns.flatMap((turn) => turn.items);
+    const before = structuredClone(items());
+    expect(before).toHaveLength(190);
+    const reads = client.calls.filter((call) => call.method === "thread/read").length;
+    const pages = client.calls.filter((call) => call.method === "thread/turns/list").length;
+    threadsStore.getState().releaseThread("local:a");
+    // Model native storage service time at its external request boundary. Every
+    // two delivered body rows cost 1 ms, including rows later discarded by the
+    // caller. Real cache selection, transactions, and the 250 ms deadline run
+    // unchanged. The native diagnostic measured 106–152 ms for the discarded
+    // page-boundary lookup alone, before its subsequent restoration queries.
+    let bodyReads = 0;
+    const openCursor = IDBIndex.prototype.openCursor;
+    const cursorClock = storageCost
+      ? vi.spyOn(IDBIndex.prototype, "openCursor").mockImplementation(function (this: IDBIndex, ...args) {
+          const request = openCursor.apply(this, args);
+          if (this.name === "historyKey_position") {
+            request.addEventListener("success", () => {
+              if (request.result && ++bodyReads % 2 === 0) vi.advanceTimersByTime(1);
+            });
+          }
+          return request;
+        })
+      : undefined;
+    const opening = threadsStore.getState().ensureThread("local:a");
+    if (superseded) {
+      threadsStore.getState().releaseThread("local:a");
+      await threadsStore.getState().ensureThread("local:a");
+    }
+    await opening;
+    await settleEntryTranscriptForTests("local:a");
+    cursorClock?.mockRestore();
+    expect(items()).toEqual(before);
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+    expect(client.calls.filter((call) => call.method === "thread/turns/list")).toHaveLength(pages);
+    expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
+    threadsStore.getState().releaseThread("local:a");
+    background.release();
   },
 );
 
