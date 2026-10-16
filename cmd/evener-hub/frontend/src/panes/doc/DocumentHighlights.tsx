@@ -15,6 +15,7 @@
 // DOM and every listener is removed on unmount.
 import { type AnnotationView, formatAnnotationReference, type SourceRange } from "@evener/appwire-client";
 import { Fragment, useEffect, useRef, useState } from "react";
+import { subscribePaneDocumentMoves } from "../../shell/paneDocumentMoves";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { BoundDocumentMap } from "../../widgets/markdown/documentSourceMap";
 import styles from "./documentAnnotations.module.css";
@@ -44,6 +45,21 @@ function overlaps(a: SourceRange, b: SourceRange): boolean {
   return Math.max(a.start, b.start) < Math.min(a.end, b.end);
 }
 
+// Realm-independent node tests. A popout adopts the pane's opener-created
+// nodes into another window's document without changing their creating
+// realm: the nodes stay instances of the OPENER's constructors for their
+// whole lifetime, so an instanceof against the current document's
+// constructors - or the module globals - can never see them. nodeType is the
+// realm-independent Node test, and 1 is Element. Neither accepts null: a
+// focusout with no related target tests false, exactly as instanceof did.
+function isNode(target: EventTarget | null): target is Node {
+  return target !== null && (target as { nodeType?: number }).nodeType !== undefined;
+}
+
+function isElement(target: EventTarget | null): target is Element {
+  return target !== null && (target as { nodeType?: number }).nodeType === 1;
+}
+
 export function DocumentHighlights({ map, annotations, scrollElement, contentElement }: DocumentHighlightsProps) {
   const [fragments, setFragments] = useState<readonly HighlightFragment[]>([]);
   const [activeOperationId, setActiveOperationId] = useState<string | null>(null);
@@ -66,6 +82,22 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
     handledTap: null as { x: number; y: number; at: number } | null,
   });
 
+  // The pane's owning document can change under a live overlay: a popout
+  // adopts the existing DOM into another window's document without any React
+  // state change of its own. Track the document the scroll owner currently
+  // belongs to - re-checked whenever the popout host announces a move - so the
+  // listener effect below re-runs and rebinds to the document that now owns
+  // the prose, in either direction (opening the popout and closing it again).
+  const [observedDocument, setObservedDocument] = useState<Document | null>(null);
+  useEffect(() => {
+    const sync = (): void => {
+      const current = scrollElement.ownerDocument;
+      setObservedDocument((previous) => (previous === current ? previous : current));
+    };
+    sync();
+    return subscribePaneDocumentMoves(sync);
+  }, [scrollElement]);
+
   useEffect(() => {
     // Realm-safe constructors: a popped-out document renders in another window,
     // whose MouseEvent/Element/Node are DIFFERENT constructors from this
@@ -74,9 +106,11 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
     // coordinates from the second window resolve to nothing.
     const ownerDocument = scrollElement.ownerDocument;
     const view = ownerDocument.defaultView;
-    const ElementCtor = view?.Element ?? Element;
+    // MouseEvent stays constructor-derived: an EVENT is created by the
+    // document that dispatches it, so after a rebind the current document's
+    // constructor is the one popout events pass. Node and Element targets are
+    // tested realm-independently instead - see isNode/isElement.
     const MouseEventCtor = view?.MouseEvent ?? MouseEvent;
-    const NodeCtor = view?.Node ?? Node;
     const setActive = (operationId: string | null): void => {
       activeOperationIdRef.current = operationId;
       setActiveOperationId(operationId);
@@ -109,12 +143,12 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
       // An interaction on the note stack's own interactive surface (the
       // copyable pending reference) belongs to that surface: it never
       // reveals, switches or dismisses, so the reference's selection and
-      // copy path stay usable.
-      if (target instanceof NodeCtor && notesRef.current?.contains(target) === true) return;
-      let operationId =
-        target instanceof ElementCtor
-          ? (target.closest("[data-document-highlight]")?.getAttribute("data-operation-id") ?? null)
-          : null;
+      // copy path stay usable. The target test is realm-independent: the
+      // pane's nodes keep their opener constructors through an adoption.
+      if (isNode(target) && notesRef.current?.contains(target) === true) return;
+      let operationId = isElement(target)
+        ? (target.closest("[data-document-highlight]")?.getAttribute("data-operation-id") ?? null)
+        : null;
       if (!operationId && event instanceof MouseEventCtor) {
         const hover = (event.type === "mouseover" || event.type === "mousemove") && event.buttons === 0;
         if (hover || event.type === "click") operationId = bandAtPoint(event.clientX, event.clientY);
@@ -171,7 +205,8 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
       gesture.moved = false;
       // A press on the note's own interactive surface never arms a reveal or
       // a dismissal: its release and trailing click belong to that surface.
-      gesture.inNotes = event.target instanceof NodeCtor && notesRef.current?.contains(event.target) === true;
+      // Realm-independent for adopted nodes.
+      gesture.inNotes = isNode(event.target) && notesRef.current?.contains(event.target) === true;
       gesture.operationId = gesture.inNotes ? null : bandAtPoint(event.clientX, event.clientY);
     };
     const onPointerMove = (event: PointerEvent): void => {
@@ -214,8 +249,10 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
     // or into the note stack's own controls keeps the note.
     const onFocusOut = (event: FocusEvent): void => {
       const next = event.relatedTarget;
+      // Realm-independent for adopted nodes: an instanceof against the current
+      // document's Element cannot see the pane's opener-created nodes.
       if (
-        next instanceof ElementCtor &&
+        isElement(next) &&
         (next.closest("[data-document-highlight]") !== null || notesRef.current?.contains(next) === true)
       ) {
         return;
@@ -232,8 +269,9 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
       // A nested note control (the pending reference re-enables pointer events
       // for itself) must keep a wheel it can consume natively: only forward a
       // wheel that targets the non-hit-testable stack region, never one that
-      // targets an interactive descendant of the stack.
-      if (event.target instanceof NodeCtor && notes.contains(event.target)) return;
+      // targets an interactive descendant of the stack. Realm-independent for
+      // adopted nodes.
+      if (isNode(event.target) && notes.contains(event.target)) return;
       const rect = notes.getBoundingClientRect();
       if (
         event.clientX < rect.left ||
@@ -299,7 +337,11 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
       ownerDocument.removeEventListener("pointerup", onPointerUp);
       ownerDocument.removeEventListener("pointercancel", onPointerCancel);
     };
-  }, [map, annotations, scrollElement, contentElement]);
+    // observedDocument is the effect's rebind trigger: its value is exactly
+    // the scroll owner's current owning document, so a pane-document move
+    // re-runs this effect and every listener and constructor re-derives from
+    // the document that now owns the prose.
+  }, [map, annotations, scrollElement, contentElement, observedDocument]);
 
   // A band is `position: absolute`, so its `left`/`top` are measured from THIS
   // overlay's padding box, not the scroll owner's border box. The overlay travels

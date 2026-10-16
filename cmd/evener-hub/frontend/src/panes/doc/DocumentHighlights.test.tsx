@@ -27,6 +27,7 @@ import {
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode, useCallback, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { publishPaneDocumentMoved } from "../../shell/paneDocumentMoves";
 import { DocumentMarkdown } from "../../widgets/markdown/DocumentMarkdown";
 import type { BoundDocumentMap } from "../../widgets/markdown/documentSourceMap";
 import { DocumentHighlights } from "./DocumentHighlights";
@@ -1089,6 +1090,71 @@ test("reveals a saved band by hover coordinates inside a popped-out document's o
   act(() => {
     prose.dispatchEvent(
       new ownerWindow.MouseEvent("mouseover", { bubbles: true, cancelable: true, clientX: 30, clientY: 20 }),
+    );
+  });
+  expect(noteTexts(scroll)).toEqual(["note"]);
+  view.unmount();
+});
+
+// The pane can move to another document AFTER the overlay already bound: a
+// popout adopts the existing DOM without re-rendering React, so the bound
+// constructors and document listeners belong to the document the pane LEFT.
+// Hover and drag inside the moved document must still behave: the hover
+// reveals, and a drag stays a selection gesture whose trailing click reveals
+// nothing.
+test("reveals by hover and keeps a drag silent inside a document the reader moved to mid-life", () => {
+  const frame = document.createElement("iframe");
+  document.body.append(frame);
+  onUnmount(() => frame.remove());
+  const owner = frame.contentDocument;
+  const ownerWindow = frame.contentWindow as (Window & typeof globalThis) | null;
+  if (!owner || !ownerWindow) throw new Error("missing iframe document");
+  geometry.installWindow(ownerWindow);
+
+  // Bind in the OPENER document first: the overlay's constructors and
+  // document listeners are the opener's at this point.
+  const mapRef: { current: BoundDocumentMap | null } = { current: null };
+  const view = render(<Reader source={SOURCE} annotations={single} mapRef={mapRef} />);
+  onUnmount(() => view.unmount());
+  const scroll = screen.getByTestId("scroll") as HTMLDivElement;
+  geometry.setElementRect(scroll, SCROLL_RECT);
+  const map = mapRef.current;
+  if (!map) throw new Error("map not bound");
+  geometry.configure(map, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(scroll);
+  const band = bandFor(scroll, "op-1");
+  geometry.setElementRect(band, { left: 10, top: 10, right: 50, bottom: 30 });
+
+  // The popout adoption: the existing DOM moves into the other document, and
+  // the popout host announces the move through the same publish DockHost fires.
+  owner.body.appendChild(view.container);
+  act(() => {
+    publishPaneDocumentMoved();
+  });
+
+  // Hover coordinates inside the moved document reveal the note.
+  expect(noteTexts(scroll)).toEqual([]);
+  const prose = scroll.firstElementChild;
+  // The prose root was CREATED in the opener document - an adoption moves a
+  // node without changing its creating realm - so the opener's constructor is
+  // the one that sees it.
+  if (!(prose instanceof HTMLElement)) throw new Error("missing prose root");
+  act(() => {
+    prose.dispatchEvent(
+      new ownerWindow.MouseEvent("mouseover", { bubbles: true, cancelable: true, clientX: 30, clientY: 20 }),
+    );
+  });
+  expect(noteTexts(scroll)).toEqual(["note"]);
+
+  // A drag across the band stays a selection gesture: the press arms, the
+  // moves mark it, the release lands far away, and the trailing click - the
+  // one the browser fires at the release point - reveals nothing.
+  pointerEvent("pointerdown", prose, { pointerId: 61, clientX: 30, clientY: 20 });
+  pointerEvent("pointermove", prose, { pointerId: 61, clientX: 90, clientY: 80 });
+  pointerEvent("pointerup", prose, { pointerId: 61, clientX: 120, clientY: 120, buttons: 0 });
+  act(() => {
+    prose.dispatchEvent(
+      new ownerWindow.MouseEvent("click", { bubbles: true, cancelable: true, clientX: 120, clientY: 120 }),
     );
   });
   expect(noteTexts(scroll)).toEqual(["note"]);
