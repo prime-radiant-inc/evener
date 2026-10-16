@@ -25,7 +25,7 @@ import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { StrictMode, useEffect } from "react";
+import { lazy, StrictMode, useEffect } from "react";
 import { flushSync } from "react-dom";
 
 // Session-title queries in this file target navigation, so keep them scoped to
@@ -35,6 +35,9 @@ const rail = () => within(screen.getByTestId("rail"));
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { MotionProvider } from "../motion";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
+import DocPane from "../panes/doc/DocPane";
+import { subscribeDocumentReaderWork } from "../panes/doc/documentReadState";
+import type { DocParams } from "../panes/doc/openDoc";
 import { openDocBeside } from "../panes/doc/openDoc";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
@@ -46,6 +49,7 @@ import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
 import * as backgroundTranscriptsModule from "../stores/backgroundTranscripts";
+import { resetBrowserDraftRepositoryForTests } from "../stores/browserDraftRepository";
 import { connectionStore } from "../stores/connection";
 import { credentialsStore } from "../stores/credentials";
 import {
@@ -77,6 +81,7 @@ import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { resolveFocusedComposer } from "./holdhints/HoldHints";
 import { paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
+import { registerPaneForTests } from "./paneRegistry";
 import { navigate, refParam } from "./routing";
 import {
   documentPaneState,
@@ -1839,6 +1844,59 @@ test("StrictMode mount and cleanup/remount retire their predecessor and complete
     if (cleanupError !== undefined) primaryError = combineErrors(primaryError, cleanupError);
   }
   if (primaryError !== undefined) throw primaryError;
+});
+
+test("a mounted document reader survives StrictMode's replayed application teardown", async () => {
+  // The production annotation singleton needs a real IndexedDB universe; this
+  // suite installs none globally, so this test owns a fresh one and restores
+  // the ambient globals (and the draft singleton) when it finishes.
+  const previousIndexedDB = globalThis.indexedDB;
+  const previousKeyRange = globalThis.IDBKeyRange;
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
+  resetBrowserDraftRepositoryForTests();
+  onTestFinished(() => {
+    globalThis.indexedDB = previousIndexedDB;
+    globalThis.IDBKeyRange = previousKeyRange;
+    resetBrowserDraftRepositoryForTests();
+  });
+
+  // The StrictMode replay of AppShell's application-teardown effect runs at
+  // AppShell's INITIAL mount, and DockHost mounts every docked pane in the
+  // commit that follows its api-ready re-render - strictly after that replay,
+  // whatever the pane's registration shape (the production registry's
+  // import-on-first-render lazy and the dev file-links fixture's pre-resolved
+  // wrapper alike). This pins that ordering: a mounted document reader never
+  // meets the replayed teardown, so its registry entry must be alive here. If a
+  // DockHost or React change ever mounts panes inside the initial commit, this
+  // fails with "reader work not created" and the teardown needs replay
+  // survival - until then the replay cannot strand a dock-mounted reader.
+  const restoreDocPane = registerPaneForTests<DocParams>({
+    id: "doc",
+    title: (params) => params.path,
+    component: lazy(async () => ({ default: DocPane })),
+  });
+  onTestFinished(restoreDocPane);
+  await saveRealSessionLayout();
+
+  const view = render(
+    <StrictMode>
+      <AppShell client={new FakeClient("ready")} />
+    </StrictMode>,
+  );
+  onTestFinished(() => view.unmount());
+  // Settle the mount cascade (the restored panes and the reader's read loop)
+  // inside act before observing the registry.
+  await act(async () => {});
+  await act(async () => {});
+  const docPane = workspaceStore
+    .getState()
+    .panes.find((candidate) => (candidate.params as { path?: string } | undefined)?.path === "README.md");
+  if (!docPane) throw new Error("restored layout lacked the doc pane");
+  expect(() => {
+    const unsubscribe = subscribeDocumentReaderWork(docPane.id, () => {});
+    unsubscribe();
+  }).not.toThrow();
 });
 
 test("banner reflects reconnecting state when injected", async () => {

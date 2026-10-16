@@ -40,6 +40,9 @@ export function observeFinishedDocumentSelections(input: ObserveFinishedDocument
   const doc = root.ownerDocument;
   const ownerWindow = doc.defaultView;
   let activePointer: number | null = null;
+  // The selection the gesture started with, so a cancelled stream can tell
+  // whether the selection it ends on is one the interaction made.
+  let gestureStartRange: SourceRange | null = null;
   let shiftActive = false;
   let shiftBaseline: SourceRange | null = null;
   // The OS-owned selection a cancelled pointer stream leaves behind. The
@@ -136,6 +139,7 @@ export function observeFinishedDocumentSelections(input: ObserveFinishedDocument
     // cancellation left pending must not complete behind the new one.
     clearNativeSettle();
     activePointer = event.pointerId;
+    gestureStartRange = mappedRange();
   };
   const onPointerUp = (event: PointerEvent): void => {
     if (disposed || activePointer === null || event.pointerId !== activePointer) return;
@@ -145,11 +149,29 @@ export function observeFinishedDocumentSelections(input: ObserveFinishedDocument
   const onPointerCancel = (event: PointerEvent): void => {
     if (activePointer === null || event.pointerId !== activePointer) return;
     activePointer = null;
+    const start = gestureStartRange;
+    gestureStartRange = null;
+    const current = mappedRange();
     // The OS took the gesture over for its own selection: completing or
     // adjusting that selection arrives as selectionchange with no pointer
     // behind it, so the first such change arms the settle that completes it
     // once it stops changing.
-    nativeBaseline = mappedRange();
+    //
+    // A long-press can also land its selection BEFORE the cancel arrives:
+    // that selectionchange was ignored while the press was active, and a
+    // later identical change is suppressed against the retained baseline, so
+    // the cancel is the gesture's last event. When it ends on a newly
+    // selected passage - one that differs from the selection the gesture
+    // started at - the settle is armed here against that start, and the
+    // passage completes once it stops changing. Handle adjustments after the
+    // cancel keep re-deferring the armed settle exactly as they do when the
+    // selection arrives after the cancel.
+    if (current && (start === null || current.start !== start.start || current.end !== start.end)) {
+      nativeBaseline = start;
+      armNativeSettle();
+      return;
+    }
+    nativeBaseline = current;
   };
   const onKeyDown = (event: KeyboardEvent): void => {
     if (disposed || event.key !== "Shift" || shiftActive) return;

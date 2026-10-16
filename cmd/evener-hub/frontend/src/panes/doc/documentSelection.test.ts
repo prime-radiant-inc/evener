@@ -371,10 +371,11 @@ test("a cancelled or superseded interaction never emits a stale capture", () => 
   observe(root, holder.map as BoundDocumentMap, onFinish);
   const paragraph = firstParagraph(root);
 
-  // Cancellation while the interaction is still active.
+  // Cancellation over a pre-existing selection the gesture never changed:
+  // the press started with that passage already selected and the cancel left
+  // it untouched, so the cancelled stream emits no capture of its own.
+  selectText(root, "same", 1);
   pointer("pointerdown", paragraph);
-  selectText(root, "same");
-  selectionchange();
   pointer("pointercancel", paragraph);
   vi.advanceTimersByTime(FLUSH_MS);
   expect(onFinish).not.toHaveBeenCalled();
@@ -411,6 +412,30 @@ test("a cancelled touch stream completes through the native selection it leaves 
 
   expect(onFinish).toHaveBeenCalledTimes(1);
   expect(onFinish).toHaveBeenCalledWith(expected(FIRST));
+});
+
+test("a cancelled touch stream completes the selection its long-press established before the cancel", () => {
+  const { holder, root } = mountDocument(SOURCE);
+  const onFinish = vi.fn();
+  observe(root, holder.map as BoundDocumentMap, onFinish);
+  const paragraph = firstParagraph(root);
+
+  // The OS-owned long-press selection can land BEFORE the pointer stream
+  // cancels: while the press is active its selectionchange is ignored, so
+  // the cancel is the gesture's last event and must itself schedule the
+  // settle. The passage the user selected completes once it stops changing.
+  pointer("pointerdown", paragraph, "touch");
+  selectText(root, "same");
+  selectionchange(); // ignored while the press is active
+  pointer("pointercancel", paragraph, "touch");
+  vi.advanceTimersByTime(FLUSH_MS);
+  expect(onFinish).toHaveBeenCalledTimes(1);
+  expect(onFinish).toHaveBeenCalledWith(expected(FIRST));
+
+  // An identical later selection event re-opens nothing.
+  selectionchange();
+  vi.advanceTimersByTime(FLUSH_MS);
+  expect(onFinish).toHaveBeenCalledTimes(1);
 });
 
 test("native handle adjustments keep deferring the settle and complete once when they stop", () => {
