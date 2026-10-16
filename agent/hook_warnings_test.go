@@ -32,8 +32,7 @@ func sessionWarnings(t *testing.T, pluginDirs ...string) []events.WarningData {
 	t.Helper()
 	client := llm.NewClient()
 	workDir := t.TempDir()
-	cfg := SessionConfig{PluginDirs: pluginDirs}
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), cfg)
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{PluginDirs: pluginDirs, testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

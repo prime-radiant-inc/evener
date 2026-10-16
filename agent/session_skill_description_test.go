@@ -38,7 +38,7 @@ func TestSkillDescriptionSessionJourney(t *testing.T) {
 	}}
 	client := llm.NewClient()
 	client.Register(adapter)
-	sess, err := NewSession(client, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{PluginDirs: []string{pluginDir}})
+	sess, err := NewSession(client, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{PluginDirs: []string{pluginDir}, testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
