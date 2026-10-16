@@ -5,8 +5,8 @@ export type SettingsClusterId = "preferences" | "agents-models" | "extensions" |
 export interface SettingsSection {
   id: string;
   label: string;
-  /** Omitted for ungrouped top links. */
-  cluster?: SettingsClusterId;
+  searchTerms: readonly string[];
+  cluster: SettingsClusterId;
 }
 
 export interface SettingsCluster {
@@ -22,25 +22,55 @@ export const SETTINGS_CLUSTERS: SettingsCluster[] = [
 ];
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
-  { id: "theme", label: "Appearance", cluster: "preferences" },
-  { id: "transcript", label: "Conversation display", cluster: "preferences" },
-  { id: "keybindings", label: "Input & shortcuts", cluster: "preferences" },
-  { id: "notifications", label: "Notifications", cluster: "preferences" },
+  {
+    id: "theme",
+    searchTerms: ["theme", "font", "color", "density", "text size", "transcript width", "conversation width"],
+    label: "Appearance",
+    cluster: "preferences",
+  },
+  {
+    id: "transcript",
+    searchTerms: ["tokens", "thinking", "tool calls"],
+    label: "Conversation display",
+    cluster: "preferences",
+  },
+  {
+    id: "keybindings",
+    searchTerms: ["enter", "send", "keyboard", "keybindings"],
+    label: "Input & shortcuts",
+    cluster: "preferences",
+  },
+  { id: "notifications", searchTerms: ["sound", "audio", "alerts"], label: "Notifications", cluster: "preferences" },
   // --- Agents & models -----------------------------------------------
-  { id: "credentials", label: "Providers & credentials", cluster: "agents-models" },
-  { id: "agents", label: "Agents", cluster: "agents-models" },
-  { id: "agents-md", label: "AGENTS.md", cluster: "agents-models" },
-  { id: "launch-evener", label: "Evener launch", cluster: "agents-models" },
-  { id: "inrepo", label: "In-repo config", cluster: "agents-models" },
+  {
+    id: "credentials",
+    searchTerms: ["API key", "provider"],
+    label: "Providers & credentials",
+    cluster: "agents-models",
+  },
+  { id: "agents", searchTerms: ["model", "defaults"], label: "Agents", cluster: "agents-models" },
+  { id: "agents-md", searchTerms: ["instructions"], label: "AGENTS.md", cluster: "agents-models" },
+  { id: "launch-evener", searchTerms: ["launch options"], label: "Evener launch", cluster: "agents-models" },
+  { id: "inrepo", searchTerms: ["repository configuration"], label: "In-repo config", cluster: "agents-models" },
   // --- Extensions ------------------------------------------------------
-  { id: "plugins-manager", label: "Plugins", cluster: "extensions" },
-  { id: "skills", label: "Skill directories", cluster: "extensions" },
-  { id: "mcp", label: "MCP servers", cluster: "extensions" },
-  { id: "hosts", label: "Hosts", cluster: "system" },
-  { id: "mobile", label: "Devices", cluster: "system" },
-  { id: "hub", label: "Hub", cluster: "system" },
-  { id: "storage", label: "Storage", cluster: "system" },
-  { id: "about", label: "About", cluster: "system" },
+  {
+    id: "plugins-manager",
+    searchTerms: ["marketplace", "plugin directory", "plugin directories", "sources", "installed", "browse"],
+    label: "Plugins",
+    cluster: "extensions",
+  },
+  { id: "skills", searchTerms: ["skill directory"], label: "Skill directories", cluster: "extensions" },
+  { id: "mcp", searchTerms: ["tools", "server"], label: "MCP servers", cluster: "extensions" },
+  { id: "hosts", searchTerms: ["remote", "connections"], label: "Hosts", cluster: "system" },
+  { id: "mobile", searchTerms: ["pairing", "phone", "device"], label: "Devices", cluster: "system" },
+  {
+    id: "hub",
+    searchTerms: ["runtime", "listen", "origin", "TLS", "token", "workers"],
+    label: "Hub",
+    cluster: "system",
+  },
+  { id: "storage", searchTerms: ["cache", "index", "state directory"], label: "Storage", cluster: "system" },
+  { id: "about", searchTerms: ["version", "credits", "license"], label: "About", cluster: "system" },
 ];
 
 export const DEFAULT_SECTION_ID = "theme";
@@ -58,4 +88,9 @@ export function settingsSectionLabel(id: string): string {
 
 export function isKnownSettingsSection(id: string): boolean {
   return SETTINGS_SECTIONS.some((s) => s.id === id);
+}
+
+export function matchesSettingsSection(section: SettingsSection, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  return [section.label, ...section.searchTerms].some((term) => term.toLowerCase().includes(needle));
 }

@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import {
   DEFAULT_SECTION_ID,
   isKnownSettingsSection,
+  matchesSettingsSection,
   resolveSettingsSection,
   SETTINGS_CLUSTERS,
   SETTINGS_SECTIONS,
@@ -16,6 +17,19 @@ test("has exactly 17 navigation destinations", () => {
 test("every section id is unique", () => {
   const ids = SETTINGS_SECTIONS.map((s) => s.id);
   expect(new Set(ids).size).toBe(ids.length);
+});
+
+test.each([
+  ["", true],
+  ["   ", true],
+  ["  ExAm  ", true],
+  [" control ", true],
+  ["missing", false],
+  ["example control", false],
+])("matches labels and separate terms for query %s", (query, expected) => {
+  expect(
+    matchesSettingsSection({ id: "test", label: "Example", searchTerms: ["Control"], cluster: "preferences" }, query),
+  ).toBe(expected);
 });
 
 test("preferences lead the navigation in task order", () => {

@@ -1,7 +1,7 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { hostsStore } from "../../../../stores/hosts";
@@ -14,7 +14,6 @@ beforeEach(() => {
   hostsStore.getState().resetForTests();
   resetSettingsHostForTests();
 });
-afterEach(cleanup);
 
 function connect() {
   const fake = new FakeClient("ready");

@@ -71,7 +71,7 @@ function clusterHeaders(container: HTMLElement): (string | null)[] {
   return [...container.querySelectorAll("[data-section]")].map((header) => header.getAttribute("data-section"));
 }
 
-test("renders the 3 cluster headers", () => {
+test("renders the four task groups", () => {
   const { container } = render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   expect(clusterHeaders(container)).toEqual(["preferences", "agents-models", "extensions", "system"]);
 });
@@ -93,6 +93,71 @@ test("clicking a link calls onNavigate with that section's id", async () => {
 test("the filter input has an accessible name", () => {
   render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   expect(screen.getByRole("searchbox", { name: "Filter settings" })).toBeTruthy();
+});
+
+test.each([
+  ["font", "theme", "preferences"],
+  ["width", "theme", "preferences"],
+  [" ENTER ", "keybindings", "preferences"],
+  ["sound", "notifications", "preferences"],
+  ["tokens", "transcript", "preferences"],
+  ["marketplace", "plugins-manager", "extensions"],
+  ["plugin directory", "plugins-manager", "extensions"],
+  ["skill directory", "skills", "extensions"],
+  ["cache", "storage", "system"],
+  ["pairing", "mobile", "system"],
+])("finds %s and navigates to %s", async (query, id, cluster) => {
+  const user = userEvent.setup();
+  const onNavigate = vi.fn();
+  const { container } = render(<SettingsNav activeId={null} onNavigate={onNavigate} />);
+  await user.type(screen.getByRole("searchbox"), query);
+  expect(clusterHeaders(container)).toEqual([cluster]);
+  await user.click(screen.getByRole("button"));
+  expect(onNavigate).toHaveBeenCalledExactlyOnceWith(id);
+});
+
+test("no matches announces an empty state and clearing restores destination order", async () => {
+  const user = userEvent.setup();
+  const onNavigate = vi.fn();
+  const { container } = render(<SettingsNav activeId={null} onNavigate={onNavigate} />);
+  const filter = screen.getByRole("searchbox");
+  await user.type(filter, "no-such-control");
+  expect(screen.queryAllByRole("button")).toHaveLength(0);
+  expect(clusterHeaders(container)).toEqual([]);
+  expect(within(screen.getByRole("status")).getByTestId("empty-state").getAttribute("data-reason")).toBe("empty");
+  await user.clear(filter);
+  expect(screen.queryByRole("status")).toBeNull();
+  for (const button of screen.getAllByRole("button")) await user.click(button);
+  expect(onNavigate.mock.calls.map(([id]) => id)).toEqual([
+    "theme",
+    "transcript",
+    "keybindings",
+    "notifications",
+    "credentials",
+    "agents",
+    "agents-md",
+    "launch-evener",
+    "inrepo",
+    "plugins-manager",
+    "skills",
+    "mcp",
+    "hosts",
+    "mobile",
+    "hub",
+    "storage",
+    "about",
+  ]);
+});
+
+test("a keyword result supports keyboard activation", async () => {
+  const user = userEvent.setup();
+  const onNavigate = vi.fn();
+  render(<SettingsNav activeId={null} onNavigate={onNavigate} />);
+  await user.type(screen.getByRole("searchbox"), "font");
+  await user.tab();
+  expect(document.activeElement).toBe(screen.getByRole("button"));
+  await user.keyboard("{Enter}");
+  expect(onNavigate).toHaveBeenCalledExactlyOnceWith("theme");
 });
 
 test('filtering "agents" hides Appearance but keeps Agents', async () => {
