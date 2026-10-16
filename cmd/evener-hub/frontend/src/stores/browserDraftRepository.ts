@@ -170,6 +170,12 @@ export interface AppendAnnotationInput {
   sourceId: string;
   stillOwnsEdit: () => boolean;
   documentStillEligible: () => boolean;
+  // True when the candidate's epoch is confirmed-expired: the source change
+  // was proven and the epoch suppressed, but the expiry's fence write has not
+  // completed, so the candidate's durable row is still pending while it can
+  // never append. Such a predecessor must not block a healthy successor's
+  // FIFO. Absent when the caller holds no expiry knowledge.
+  epochConfirmedExpired?: (candidate: { documentKey: string; namespaceIncarnation: string; epoch: string }) => boolean;
   onAppendReadsIssued?: () => void;
   beforeFinalGuard?: () => void;
   beforeAbortableCompletion?: () => void;
@@ -520,6 +526,9 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         // handoff to the SAME destination identity blocks this append, so a
         // pending handoff captured for a different composer - or for an
         // ownerless destination no composer can ever claim - never starves it.
+        // A confirmed-expired predecessor is no blocker either: its own append
+        // can never run, and its still-pending row is only the expiry fence's
+        // unfinished write, so it must not hold a healthy successor hostage.
         if (
           allOperations.some(
             (candidate) =>
@@ -527,7 +536,8 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
               candidate.namespaceIncarnation === namespace.incarnation &&
               candidate.state === "pending" &&
               candidate.sessionSequence < operation.sessionSequence &&
-              sameHandoffDestination(candidate.destination, operation.destination),
+              sameHandoffDestination(candidate.destination, operation.destination) &&
+              input.epochConfirmedExpired?.(candidate) !== true,
           )
         ) {
           return { state: "pending", reason: "dirty-draft" };

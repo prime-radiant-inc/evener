@@ -3891,6 +3891,46 @@ it("one document's failed expiry fence does not block another document's pending
   expect(await f.repo.retryPendingWithOutcome("reader-open")).toEqual({ pending: false });
 });
 
+it("a confirmed-expired predecessor whose fence failed does not block a later handoff to the same recipient", async () => {
+  let failFence = true;
+  const f = await fixture("fifo-confirmed-expired-predecessor", {
+    beforeCommit: (operation) => {
+      if (operation === "expiry" && failFence) throw new Error("fence fault");
+    },
+  });
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+
+  // Document A holds an ordinary pending annotation under epoch A, addressed
+  // to the same composer as the later document's.
+  const documentA = { ...f.document, path: "A.md" };
+  const earlier = await acceptedOperation(f.repo, documentA, "op-earlier", "earlier note", f.destination);
+  await f.repo.saveAnnotation(earlier);
+
+  // Document A's source changes: the changed read confirms the expiry before
+  // its fence runs, and the fence faults, so the earlier annotation's durable
+  // row stays pending while its epoch is confirmed-suppressed.
+  const fenced = await f.repo.acceptRead(await f.repo.beginRead(documentA), docContent(`${SOURCE}X`, "rev-B"));
+  if (fenced.state !== "expiry-pending") throw new Error(`A's changed read should fence: ${fenced.state}`);
+
+  // A healthy document saves a LATER annotation to the same composer.
+  const documentB = { ...f.document, path: "B.md" };
+  const later = await acceptedOperation(f.repo, documentB, "op-later", "later note", f.destination);
+  await f.repo.saveAnnotation(later);
+
+  // The later handoff applies despite the confirmed-expired predecessor's
+  // still-pending row sitting earlier in the same recipient's FIFO.
+  expect((await f.repo.handoff(documentB, "op-later")).state).toBe("applied");
+
+  // The bypass never touches the predecessor's durable row: it stays exactly
+  // as the fault left it, pending for the expiry machinery to retire.
+  const [earlierRow] = (
+    await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)
+  ).filter((row) => row.operationId === "op-earlier");
+  expect(earlierRow?.state).toBe("pending");
+  failFence = false;
+  expect(await f.repo.retryPendingWithOutcome("reader-open")).toEqual({ pending: false });
+});
+
 it("issuing a newer read retires this adapter's superseded issued tickets", async () => {
   const f = await fixture("issued-reads-pruning");
   const otherDocument: DocumentKey = { ...f.document, path: "OTHER.md" };
