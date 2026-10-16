@@ -1439,6 +1439,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         sourceId: source.sourceId,
         stillOwnsEdit: () => source.ownsPreparation(preparation),
         documentStillEligible,
+        epochConfirmedExpired: (candidate) =>
+          this.#suppressedEpochs.get(
+            epochIdentityOf(candidate.documentKey, candidate.namespaceIncarnation, candidate.epoch),
+          )?.confirmed === true,
         onAppendReadsIssued: this.#options.onAppendReadsIssued,
         beforeFinalGuard: this.#options.beforeFinalGuard,
         beforeAbortableCompletion: this.#options.beforeAbortableCompletion,
