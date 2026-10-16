@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -39,6 +41,126 @@ func assertDelegateReportMessage(t *testing.T, finish delegateFinish, want strin
 	}
 	if !reflect.DeepEqual(got, expected) {
 		t.Errorf("structured result = %#v, want %#v", got, expected)
+	}
+}
+
+func TestDelegateReportMessageSurvivesDeliveryRecovery(t *testing.T) {
+	const report = "Importer findings\nparser.go:42 rejects missing seconds\nExporter unchecked"
+	output := communicateDefaultEnvelope("Parser summary", map[string]any{"line": 42})
+	output["artifacts"] = []string{"parser.go"}
+	for _, inline := range []bool{false, true} {
+		t.Run(map[bool]string{false: "owner after reopen", true: "synchronous"}[inline], func(t *testing.T) {
+			c, path := newDelegateControllerTestHarness(t, 1, 1)
+			seedDelegateControllerIdle(t, c, "dlg_target", "")
+			lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", inline)
+			sess := newCompetingCommunicateSession(t, nil)
+			execCommunicateCall(t, sess, "report", communicateArgsFor(nil, report, output))
+			reply, _ := sess.communicatedReply()
+			finish := stableDelegateFinish(sess, reply, nil)
+			plans, err := c.FinishGeneration(lease, finish)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !inline {
+				c = reopenDelegateController(t, c, path)
+				plans.deliveries = c.ReplayDeliveries()
+			}
+			pending := c.durable["dlg_target"].PendingDeliveries
+			if c.durable["dlg_target"].Generation != 1 || len(pending) != 1 || pending[0].Generation != 1 || pending[0].DeliveryID != "dlg_target/delivery/1" {
+				t.Fatalf("generation or delivery changed: %#v", c.durable["dlg_target"])
+			}
+			if len(plans.deliveries) != 1 || plans.deliveries[0].deliveryID != pending[0].DeliveryID || plans.deliveries[0].delegateID != "dlg_target" {
+				t.Fatalf("delivery plans = %#v", plans.deliveries)
+			}
+			plan := plans.deliveries[0]
+			assertDelegateReportMessage(t, delegateFinish{packet: &pending[0].Packet}, report, output)
+			ownerPath := transcriptPath(c.stateDir, "root-session")
+			writer, err := transcript.NewWriter(ownerPath, transcript.Header{SessionID: "root-session"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			receiver := coldDelegateDeliveryReceiver{stateDir: c.stateDir, transcriptRef: "local:root-session", now: c.now}
+			if _, err := deliverDelegatePacket(plan, receiver); err != nil {
+				t.Fatal(err)
+			}
+			if inline {
+				resolution := <-waiter.resolution
+				if resolution.packet == nil || resolution.commit == nil || resolution.fallback {
+					t.Fatalf("inline resolution = %#v", resolution)
+				}
+				assertDelegateReportMessage(t, delegateFinish{packet: resolution.packet}, report, output)
+				var result sendMessageResult
+				completeStableDelegateSendResult(&result, *resolution.packet)
+				if result.Output != report || result.Action != "completed" {
+					t.Fatalf("inline result = %#v", result)
+				}
+				var gotOutput, wantOutput any
+				if err := json.Unmarshal(mustMarshalJSON(t, result.StructuredResult), &gotOutput); err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(mustMarshalJSON(t, output), &wantOutput); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(gotOutput, wantOutput) {
+					t.Fatalf("inline structured result = %#v, want %#v", gotOutput, wantOutput)
+				}
+				if _, err := resolution.commit.Complete(true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// An acknowledged plan must not append another report, even after restart.
+			if _, err := deliverDelegatePacket(plan, receiver); err != nil {
+				t.Fatal(err)
+			}
+			c = reopenDelegateController(t, c, path)
+			if len(c.ReplayDeliveries()) != 0 || c.durable["dlg_target"].Generation != 1 || countDelegateRunFinished(t, c, "dlg_target") != 1 {
+				t.Fatal("acknowledged generation replayed or changed")
+			}
+			owner, entries, err := transcript.OpenWriterForSession(ownerPath, "root-session")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := owner.Close(); err != nil {
+				t.Fatal(err)
+			}
+			wantEntries := 1
+			if inline {
+				wantEntries = 0
+			}
+			if len(entries) != wantEntries {
+				t.Fatalf("owner transcript entries = %d, want %d", len(entries), wantEntries)
+			}
+			fold, err := readDelegateAttentionFold(ownerPath, "root-session")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if inline {
+				if len(fold.content) != 0 {
+					t.Fatalf("inline delivery also notified owner: %#v", fold.content)
+				}
+				return
+			}
+			if len(fold.content) != 1 {
+				t.Fatalf("owner report count = %d", len(fold.content))
+			}
+			content := fold.content[delegateAttentionID("dlg_target/delivery/1")].Text()
+			_, body, ok := strings.Cut(content, ">")
+			if !ok {
+				t.Fatal("notification has no body")
+			}
+			body, ok = strings.CutSuffix(body, "</delegate-notification>")
+			if !ok {
+				t.Fatal("notification has no closing tag")
+			}
+			var delivered delegatestore.TerminalPacket
+			if err := json.Unmarshal([]byte(body), &delivered); err != nil {
+				t.Fatal(err)
+			}
+			assertDelegateReportMessage(t, delegateFinish{packet: &delivered}, report, output)
+		})
 	}
 }
 
