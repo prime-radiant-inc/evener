@@ -85,6 +85,7 @@ export interface BrowserDraftRepository {
   ): Promise<DraftCommit>;
   clearSubmitted(key: BrowserDraftKey, submitted: SubmittedDraft): Promise<DraftSettlement>;
   appendAnnotation(input: AppendAnnotationInput): Promise<AppendAnnotationResult>;
+  readAppendBacking(preparation: ComposerPreparation): Promise<CommittedAppendBacking | null>;
   // "committed": this transfer imported what it could and recorded its markers
   // (or had nothing to inspect). "pending": the durable transfer write itself
   // faulted; the caller retries. "unavailable": the legacy scan faulted - this
@@ -151,7 +152,7 @@ const DRAFT_STORES = [COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE] as con
 const TRANSFER_STORES = [COMPOSER_DRAFTS_STORE, DRAFT_TRANSFERS_STORE, ANNOTATION_NAMESPACES_STORE] as const;
 // The one atomic append scope: the ordinary session row, the recovery record,
 // and every annotation store the append resolves or writes.
-const APPEND_STORES = [
+export const APPEND_STORES = [
   COMPOSER_DRAFTS_STORE,
   MUTATION_RECOVERY_STORE,
   ANNOTATION_OPERATIONS_STORE,
@@ -189,6 +190,17 @@ export type AppendAnnotationResult =
       token: DraftSessionToken;
       value: SkillEditorValue;
     };
+
+// The committed backing an append landed on: the ordinary session row's
+// current token with the backing's committed value (the row itself for a
+// draft backing, the recovery record's composer draft for a recovery
+// backing). Reconciling an append whose completion went unobserved reads
+// this instead of guessing; the token and value carry exactly what an
+// observed applied result would have acknowledged.
+export interface CommittedAppendBacking {
+  token: DraftSessionToken;
+  value: SkillEditorValue;
+}
 
 export function browserDraftKey(sessionRef: string, origin = location.origin): BrowserDraftKey {
   return { namespace: { kind: "browser", origin }, sessionRef };
@@ -626,6 +638,29 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
         };
       },
     );
+  }
+
+  // The ordinary session row carries the committed token for BOTH backings: a
+  // recovery append advances the row's revision while leaving its content
+  // untouched, so the row plus the recovery record reconstruct exactly what
+  // the append committed. Null when either half is gone - the caller treats
+  // that append as unreconcilable, never as empty text.
+  async readAppendBacking(preparation: ComposerPreparation): Promise<CommittedAppendBacking | null> {
+    const recoveryId = preparation.backing.kind === "recovery" ? preparation.backing.recoveryId : null;
+    const row = this.load(preparation.key);
+    const recovery =
+      recoveryId !== null
+        ? this.#transaction([MUTATION_RECOVERY_STORE], "readonly", undefined, (transaction) =>
+            requestResult<MutationRecoveryRecord | undefined>(
+              transaction.objectStore(MUTATION_RECOVERY_STORE).get(recoveryId),
+            ),
+          )
+        : Promise.resolve(undefined);
+    const [committed, record] = await Promise.all([row, recovery]);
+    if (!committed) return null;
+    if (recoveryId === null) return { token: committed.token, value: committed };
+    if (!record) return null;
+    return { token: committed.token, value: recoveryComposerDraft(record) };
   }
 
   async transferSupportedDrafts(
