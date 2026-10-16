@@ -1727,10 +1727,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	})
 	s.skills.Diagnostics = append(diagnostics, s.skills.Diagnostics...)
 	for _, diagnostic := range s.skills.Diagnostics {
-		s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
-			Code:    skillDiagnosticWarningCode(diagnostic.Category),
-			Message: fmt.Sprintf("skill %s [%s] %s: %s", diagnostic.Name, diagnostic.Category, diagnostic.Source, diagnostic.Message),
-		})
+		s.pendingHookWarnings = append(s.pendingHookWarnings, skillDiagnosticWarning(diagnostic))
 	}
 	s.pluginCommands = make(map[string]plugin.Command)
 
@@ -2519,13 +2516,25 @@ func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string
 		pluginName, shown, event)
 }
 
-func skillDiagnosticWarningCode(category string) string {
-	switch category {
-	case "allowed_tools_not_enforced", "unsupported_control", "missing_frontmatter_delimiter":
-		return events.WarningCodePluginCompatibility
-	default:
-		return ""
+func skillDiagnosticWarning(d skill.Diagnostic) events.WarningData {
+	target := d.Source
+	if d.Field != "" {
+		target += " (" + d.Field + ")"
 	}
+	warning := events.WarningData{
+		Source:  string(diagnostic.SourceEvener),
+		Code:    events.WarningCodeSkillDiagnostic,
+		Title:   "Skill diagnostic",
+		Message: fmt.Sprintf("skill %s [%s] %s: %s", d.Name, d.Category, d.Source, d.Message),
+		Hint:    fmt.Sprintf("Review %s. Source changes are picked up on the next catalog discovery or session startup. Other skills remain usable.", target),
+	}
+	switch d.Category {
+	case "allowed_tools_not_enforced", "unsupported_control", "missing_frontmatter_delimiter", "unquoted_description":
+		warning.Code = events.WarningCodePluginCompatibility
+		warning.Title = "Skill compatibility"
+		warning.Hint = fmt.Sprintf("Review %s when convenient. The source file was left unchanged.", target)
+	}
+	return warning
 }
 
 // commandUnenforcedFieldWarnings builds one diagnostic per plugin command that
