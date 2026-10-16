@@ -69,5 +69,8 @@ report and capable installed image. Unknown ownership/capability refuses
 without build/restart; unsupported images require manual migration. An
 interrupted kickstart is successful only if successor verification succeeds.
 See [the operations runbook](evener-hub-remote-operations.md#worktree-launchd-deployment)
-for bounds, recovery evidence and failure-state reporting. The script's harness
-uses disposable command fixtures, not actual macOS or SSH deployment.
+for bounds, recovery evidence and failure-state reporting. Build failures retain
+bounded stdout/stderr in a named owner-only temporary file, never in console
+output; remove its private directory after inspection. Successful builds remove
+it automatically. Treat the file as potentially secret-bearing. The script's
+harness uses disposable command fixtures, not actual macOS or SSH deployment.

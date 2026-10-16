@@ -9,6 +9,8 @@
 # Requires Node/npm, already required by make build-hub's frontend build.
 # Build replacement remains make build-hub's job. A failed restart does not
 # roll back the built file or delete endpoint evidence. See the remote runbook.
+# Build output is private, not printed. A failed build retains a named bounded
+# diagnostic file, remove its private directory after inspection. Success cleans it.
 set -euo pipefail
 label=''
 config=''
@@ -49,6 +51,7 @@ fi
 exec node - "$label" "$config" "$timeout" <<'JS'
 'use strict';
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const {spawn} = require('node:child_process');
 
@@ -80,12 +83,18 @@ function run(file, args, options = {}) {
         const cap = options.cap || 65536;
         const fail = message => { failure = failure || new Error(message); if (child.pid) stop(child); };
         const timer = setTimeout(() => fail('command deadline exceeded'), duration);
+        const record = chunk => {
+            if (options.diagnostic === undefined) return;
+            try { fs.writeFileSync(options.diagnostic, chunk.subarray(0, Math.max(0, cap-size))); }
+            catch (_) { fail('private build diagnostic write failed'); }
+        };
         child.stdout.on('data', chunk => {
+            record(chunk);
             size += chunk.length;
             if (size > cap) fail('command output limit exceeded');
-            else output.push(chunk);
+            else if (options.diagnostic === undefined) output.push(chunk);
         });
-        child.stderr.on('data', chunk => { size += chunk.length; if (size > cap) fail('command output limit exceeded'); });
+        child.stderr.on('data', chunk => { record(chunk); size += chunk.length; if (size > cap) fail('command output limit exceeded'); });
         child.on('error', () => { failure = new Error('required command could not start'); });
         // A child may exit while a descendant still holds the capture pipes.
         child.on('exit', () => stop(child));
@@ -96,6 +105,31 @@ function run(file, args, options = {}) {
             else resolve({text: Buffer.concat(output).toString('utf8'), code});
         });
     });
+}
+async function build(repo) {
+    // Arbitrary compiler/tool output can contain secrets. Keep it out of the
+    // terminal and separate from all service/environment inspection output.
+    let directory, fd;
+    try {
+        directory = fs.mkdtempSync(path.join(os.tmpdir(), 'evener-deploy-build-'));
+        fs.chmodSync(directory, 0o700);
+        fd = fs.openSync(path.join(directory, 'build.log'), 'wx', 0o600);
+        fs.fchmodSync(fd, 0o600);
+    } catch (_) {
+        if (fd !== undefined) fs.closeSync(fd);
+        if (directory) fs.rmSync(directory, {recursive: true, force: true});
+        throw new Error('cannot create private build diagnostics, no build attempted');
+    }
+    console.log('deploy-hub: private build diagnostics '+JSON.stringify(path.join(directory, 'build.log'))+
+        ', removed on successful build, otherwise remove the private directory after inspection');
+    let complete = false;
+    try {
+        await run('make', ['build-hub'], {cwd: repo, ms: 15*60*1000, cap: 8*1024*1024, diagnostic: fd});
+        complete = true;
+    } finally {
+        fs.closeSync(fd);
+        if (complete) { fs.unlinkSync(path.join(directory, 'build.log')); fs.rmdirSync(directory); }
+    }
 }
 const text = async (file, args, options) => (await run(file, args, options)).text.trim();
 function object(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
@@ -264,7 +298,7 @@ let binary, target, invocationCwd = process.cwd();
     const expected = sha + (dirty.text.trim() ? '-dirty' : '');
     console.log('deploy-hub: selected '+target+', predecessor PID '+oldPID);
     stage = 'build';
-    await run('make', ['build-hub'], {cwd: repo, ms: 15*60*1000, cap: 8*1024*1024}); built = true;
+    await build(repo); built = true;
     // Atomic replacement is owned by build-hub. Do not reuse the new pathname
     // as evidence about the predecessor. The matching live witness is retained
     // only within this invocation, never cached by PID alone.

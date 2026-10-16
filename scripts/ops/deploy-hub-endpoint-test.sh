@@ -12,8 +12,10 @@ python3 - "$script_dir/deploy-hub.sh" <<'PY'
 import json
 import os
 from pathlib import Path
+import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -114,6 +116,14 @@ if cmd == 'launchctl':
     else: refuse()
 elif cmd == 'make':
     if args != ['build-hub']: refuse()
+    print(f['build_stdout_marker'],flush=True)
+    print(f['build_stderr_marker'],file=sys.stderr,flush=True)
+    private_stream=sys.stdout if f.get('build_stdout_large') else sys.stderr
+    print(f['build_private_marker'],file=private_stream,flush=True)
+    if f.get('build_stdout_large') or f.get('build_stderr_large'):
+        stream=sys.stdout if f.get('build_stdout_large') else sys.stderr
+        stream.write('x'*(8*1024*1024+1024)); stream.flush()
+    if f.get('build_hang'): time.sleep(60)
     if f.get('build_fail'): sys.exit(7)
     # Boundary-only atomic replacement of the disposable executable symlink.
     replacement=p/'repo/next'; replacement.symlink_to(p/'dispatch'); replacement.replace(p/'repo/evener')
@@ -254,6 +264,10 @@ cases=[
  ('generation_changed',{'generation_change':True},[],False,(1,0)),
  ('service_vanished',{'vanished':True},[],False,(1,0)),
  ('build_failure',{'build_fail':True},[],False,(1,0)),
+ ('build_stdout_bound',{'build_stdout_large':True},[],False,(1,0)),
+ ('build_stderr_bound',{'build_stderr_large':True},[],False,(1,0)),
+ ('build_deadline',{'build_hang':True},[],False,(1,0)),
+ ('build_diagnostic_creation_failure',{'bad_tmpdir':True},[],False,(0,0)),
  ('wrong_successor_pid',{'successor_wrong_pid':True},[],False,(1,1)),
  ('unrelated_healthy_successor',{'unrelated_report':True},[],False,(1,1)),
  ('old_boot',{'old_boot':True},[],False,(1,1)),
@@ -283,6 +297,12 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
     for name, facts, args, success, effects in cases:
         p=root/name; p.mkdir(); (p/'repo/scripts/ops').mkdir(parents=True); (p/'bin').mkdir(); (p/'home').mkdir(); (p/'state/evener').mkdir(parents=True); (p/'config/evener').mkdir(parents=True); (p/'other-state/evener').mkdir(parents=True)
         script=p/'repo/scripts/ops/deploy-hub.sh'; script.write_bytes(source)
+        if facts.get('build_hang'):
+            # Exercise the real runner deadline without waiting 15 minutes.
+            # This one disposable copy changes only the internal time constant.
+            assert source.count(b'ms: 15*60*1000')==1
+            script.write_bytes(source.replace(b'ms: 15*60*1000',b'ms: 1000'))
+        facts={**facts,**{key:secrets.token_hex(24) for key in ['build_stdout_marker','build_stderr_marker','build_private_marker']}}
         original='addr = "[::]:0"\npublic_url = "https://publication.invalid"\n'
         if facts.get('custom_root'): original+='hub_state_root = "'+str(p/'custom-root')+'"\n'
         (p/'selected.toml').write_text(original); (p/'config/evener/hub.toml').write_text(original); (p/'other.toml').write_text('addr = "127.0.0.1:9180"\n')
@@ -296,6 +316,7 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
             executable=shutil.which(tool)
             if executable and not (tool=='node' and facts.get('no_node')) and not (tool=='npm' and facts.get('no_npm')): (p/'bin'/tool).symlink_to(executable)
         env={'PATH':str(p/'bin'),'HOME':str(p/'home'),'FIXTURE':str(p),'TMPDIR':str(p),'LC_ALL':'C','EVENER_HUB_LISTEN_ADDR':'AMBIENT_MUST_NOT_WIN','EVENER_HUB_ADDR':'REMOVED_MUST_NOT_LEAK','EVENER_HUB_URL':'https://ambient.invalid','EVENER_PROVIDERS_CONFIG':'SECRET_DO_NOT_PRINT','PRIVATE_SENTINEL':'SECRET_DO_NOT_PRINT','XDG_CONFIG_HOME':str(p/'wrong-config'),'XDG_STATE_HOME':str(p/'wrong-state')}
+        if facts.get('bad_tmpdir'): env['TMPDIR']=str(p/'selected.toml')
         # FIXTURE is a command-fixture locator, not a production configuration
         # seam. Pass it through the executable wrapper, not endpoint's env.
         dispatch.write_text(fixture.replace("p = pathlib.Path(os.environ['FIXTURE'])", 'p = pathlib.Path('+repr(str(p))+')'))
@@ -347,6 +368,29 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
                 assert call['env']==expected_env, 'ambient/environment contamination: '+str(call['env'])
                 assert call['cwd']==str(p/'repo'), 'wrong service working directory'
             assert b'SECRET_DO_NOT_PRINT' not in out+err, 'secret disclosed'
+            markers=[facts[key].encode() for key in ['build_stdout_marker','build_stderr_marker','build_private_marker']]
+            assert all(marker not in out+err for marker in markers), 'raw build output disclosed'
+            artifacts=list(p.glob('evener-deploy-build-*'))
+            failed_build=any(facts.get(key) for key in ['build_fail','build_stdout_large','build_stderr_large','build_hang'])
+            if failed_build:
+                assert len(artifacts)==1, 'private build evidence was not retained'
+                directory=artifacts[0]; diagnostic=directory/'build.log'
+                assert stat.S_IMODE(directory.stat().st_mode)==0o700 and directory.stat().st_uid==os.getuid(), 'diagnostic directory is not owner-only'
+                assert diagnostic.is_file() and not diagnostic.is_symlink(), 'diagnostic file missing or redirected'
+                assert stat.S_IMODE(diagnostic.stat().st_mode)==0o600 and diagnostic.stat().st_uid==os.getuid(), 'diagnostic file is not owner-only'
+                assert str(diagnostic).encode() in out+err, 'retained diagnostic path not named to operator'
+                evidence=diagnostic.read_bytes()
+                # At the cap, only the flooding stream's prefix is guaranteed
+                # to precede truncation, not data waiting in the other pipe.
+                retained=([markers[0],markers[2]] if facts.get('build_stdout_large') else
+                          [markers[1],markers[2]] if facts.get('build_stderr_large') else markers)
+                assert all(marker in evidence for marker in retained), 'opaque build diagnosis was discarded'
+                assert b'SECRET_DO_NOT_PRINT' not in evidence, 'service/environment inspection leaked into build evidence'
+                assert 0<len(evidence)<=8*1024*1024, 'diagnostic size exceeds combined build cap'
+                if facts.get('build_stdout_large') or facts.get('build_stderr_large'):
+                    assert len(evidence)==8*1024*1024, 'bounded build prefix was lost'
+            else:
+                assert not artifacts, 'successful or unattempted build left diagnostic files'
             assert not (p/'executed').exists(), 'unvalidated shell output executed'
             assert (p/'state/evener/sentinel').read_text()=='keep'
             assert (p/'other-state/evener/sentinel').read_text()=='other-keep'

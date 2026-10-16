@@ -197,8 +197,26 @@ ephemeral ports never become listener configuration.
 
 Inspection commands have five-second and combined 64-KiB stdout/stderr bounds.
 The build has a 15-minute and 8-MiB combined-output bound; `--timeout` (1–3600
-seconds) bounds successor verification. Errors omit raw command output so
-service environments and secrets do not enter diagnostics. Failure reports
+seconds) bounds successor verification. Console errors omit raw command output.
+Only build stdout/stderr is captured in `build.log` inside a new private
+`evener-deploy-build-*` directory under the operating system temporary directory
+(`TMPDIR` when set). The directory is mode `0700`, the file `0600`, and its path
+is printed before make starts. It may contain secrets: inspect it privately,
+never paste it wholesale into shared logs. Service/environment inspection
+output is not included. Both build streams share the 8-MiB capture limit, in
+arrival order; overflow retains only that prefix and stops the build's process
+group. A deadline also stops that group and retains the available partial log.
+
+On a nonzero build exit, output-limit failure or deadline, the script never
+kickstarts the service and reports build completion as false. The predecessor
+PID shown is the last inspected state, not a promise that the process or disk
+binary is unchanged. There is no rollback. Failed or interrupted builds leave
+the private log for diagnosis until you remove its named directory, or the
+operating system's temporary-file cleanup removes it. No automatic retention
+period is promised. A successful make removes its log and directory immediately,
+even if a later revalidation/restart fails. Diagnostic creation failure refuses
+before make; a diagnostic write failure stops the build and may leave a partial
+file. Failure reports
 the phase, last observed selected PID and whether build/restart completed or
 was attempted; it does not delete endpoint records or user work. Missing
 inspection evidence or an unresolvable launchd/ps representation refuses
