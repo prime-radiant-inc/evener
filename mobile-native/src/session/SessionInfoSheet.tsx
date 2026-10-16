@@ -167,6 +167,10 @@ function SessionInfoBody({
 				<StateLine session={session} runMs={host.runMs} />
 			</View>
 
+			<Group section="session">
+				<Row label="Session id" sub={session.threadId} machineSub />
+			</Group>
+
 			<Group section="where" label="Where">
 				<Row
 					icon="server.rack"
