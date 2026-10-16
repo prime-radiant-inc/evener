@@ -612,6 +612,10 @@ const WarningCodeContextWindowAssumed = "context_window_assumed"
 // transcript detail.
 const WarningCodePluginCompatibility = "plugin_compatibility"
 
+// WarningCodeSkillDiagnostic identifies a skill-source problem or collision.
+// Healthy skills remain usable; clients retain this warning at ordinary detail.
+const WarningCodeSkillDiagnostic = "skill_diagnostic"
+
 // WarningCodeMCPReconnected identifies a restored MCP connection. Clients show
 // it as quiet detail; the retried tool call reports its own outcome separately.
 const WarningCodeMCPReconnected = "mcp_reconnected"

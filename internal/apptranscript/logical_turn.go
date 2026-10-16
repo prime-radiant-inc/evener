@@ -140,6 +140,13 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		// projects nothing, though its line still takes an entry index.
 		return
 	}
+	if turn.OriginalOrdinal != nil {
+		// A compaction fold copy is model history for resume; its original
+		// already projects and already contributes its usage, so buffering the
+		// copy would double a turn's usage (and a session's derived total). It
+		// joins no group, matching the reference projector and the index.
+		return
+	}
 	// Project under the id of the group appendEntry will buffer the entry
 	// into: the same grouping decision, made on a copy so appendEntry still
 	// places the entry itself. A steering opener takes its own group's id,

@@ -39,7 +39,13 @@ change it, edit the catalog and/or the prose template
   believing the socket is open. Every hop therefore pings:
   - **Server side** (`internal/appserver`) pings the peer every 15 s and tears
     the connection down if no pong arrives within 10 s. This covers both server
-    roles — hub-for-browser and daemon-for-hub.
+    roles — hub-for-browser and daemon-for-hub. While request intake prevents
+    the receive loop from reading, the server skips new pings and disregards
+    a missing pong for an attempt that overlapped that pause. It lets an active
+    ping finish within its existing deadline: canceling a control-frame write
+    can close a healthy socket and cancel its pending requests. Heartbeats
+    resume automatically when the reader is available; real disconnects still
+    cancel connection-owned work.
   - **Go client side** (`appwire.Client`, used hub→daemon) runs the same ping
     loop via the optional `Pinger` transport capability.
   - **Browsers** can't send WebSocket ping frames from JS, so the web client

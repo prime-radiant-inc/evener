@@ -2166,13 +2166,16 @@ type cancelAfterRoutePublicationLease struct {
 func (l *cancelAfterRoutePublicationLease) ReadWithRoutePublication(
 	ctx context.Context,
 	params appwire.ThreadReadParams,
-	publish func(context.Context, appwire.Thread) error,
+	routes *appsource.RelayRoutePublication,
 ) (appsource.RelayReadResult, error) {
+	if routes != nil && routes.Begin != nil {
+		routes.Begin()
+	}
 	result, err := l.Read(ctx, params)
 	if err != nil {
 		return result, err
 	}
-	if err := publish(ctx, result.Response.Thread); err != nil {
+	if err := routes.Publish(ctx, result.Response.Thread); err != nil {
 		return appsource.RelayReadResult{}, err
 	}
 	close(l.published)
@@ -3389,11 +3392,14 @@ func routeAwareTestLease(lease appsource.RelaySessionLease) appsource.RelaySessi
 func (l *routePublishingTestLease) ReadWithRoutePublication(
 	ctx context.Context,
 	params appwire.ThreadReadParams,
-	publish func(context.Context, appwire.Thread) error,
+	routes *appsource.RelayRoutePublication,
 ) (appsource.RelayReadResult, error) {
+	if routes != nil && routes.Begin != nil {
+		routes.Begin()
+	}
 	result, err := l.Read(ctx, params)
-	if err == nil && publish != nil {
-		if err := publish(ctx, result.Response.Thread); err != nil {
+	if err == nil && routes != nil && routes.Publish != nil {
+		if err := routes.Publish(ctx, result.Response.Thread); err != nil {
 			return appsource.RelayReadResult{}, err
 		}
 	}
