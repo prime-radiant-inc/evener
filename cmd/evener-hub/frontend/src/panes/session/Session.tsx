@@ -23,6 +23,7 @@ import { workspaceStore } from "../../shell/workspace";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { Button, EmptyState, InlineNotice, Loader, PaneScaffold } from "../../widgets";
+import { docOpeningOriginFor } from "../doc/docOpeningContext";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
 import { RepoLocation } from "./composer/RepoLocation";
 import styles from "./session.module.css";
@@ -72,6 +73,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const lifetime = pane ? conversationPaneLifetime(pane) : null;
   const composerSource = lifetime?.composer ?? null;
   const readView = lifetime ? retainedTranscriptReadView(lifetime, ref, "session") : null;
+  // The opening origin every card/link in this pane's transcript captures: its
+  // own session source while alive, else an explicit read-only source pane.
+  const docOpeningOrigin = lifetime ? docOpeningOriginFor(lifetime, ref) : undefined;
   // A plain model read for the pane's own chrome (the repo location in the
   // status bar, the header title); hydration and retention belong to the
   // conversation body's claim.
@@ -135,8 +139,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       },
       keyboardScrollPaneId: paneId,
       sessionMenu: true,
+      docOpeningOrigin,
     }),
-    [readView, composerSource, paneId, paneFocused, ref],
+    [readView, composerSource, paneId, paneFocused, ref, docOpeningOrigin],
   );
 
   return (

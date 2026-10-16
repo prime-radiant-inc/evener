@@ -1,5 +1,35 @@
 import type { ComposerMention, InputItem } from "@evener/appwire-client";
+import type { DraftSessionToken } from "@evener/appwire-client/state/mutation";
+import type { SkillEditorValue } from "../panes/session/composer/skillDocument";
+import {
+  type BrowserDraftKey,
+  browserDraftKey,
+  createBrowserDraftRepository,
+  sameComposerValue,
+} from "./browserDraftRepository";
+import {
+  type NamespaceRow,
+  nextSessionRow,
+  putSessionRow,
+  readNamespaceRow,
+  readSessionRow,
+  type SessionRow,
+  sameSessionToken,
+  serializeNamespace,
+  serializeSessionKey,
+} from "./compositionRevision";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
+import {
+  ANNOTATION_NAMESPACES_STORE,
+  COMPOSER_DRAFTS_STORE,
+  LOCAL_COMPOSITION_DATABASE_NAME,
+  LOCAL_COMPOSITION_DATABASE_VERSION,
+  MUTATION_OPTIMISTIC_STORE,
+  MUTATION_OUTBOX_STORE,
+  MUTATION_RECOVERY_STORE,
+  MUTATION_SEQUENCES_STORE,
+  registerLocalCompositionSchema,
+} from "./localCompositionSchema";
 import { ownClientId } from "./mutationClientIdentity";
 import type {
   MutationAttachment,
@@ -54,23 +84,23 @@ export interface MutationOutboxIndexedDBOptions {
   onOpenDiagnostic?: (diagnostic: MutationOutboxOpenDiagnostic) => void;
 }
 
-const DATABASE_NAME = "evener-mutation-outbox";
-// Version 4 is a compatibility fence, not a schema migration: the upgrade
-// handler below is unchanged and purely additive. The deployed version-3 code
-// shares attempt evidence through the `attempted` flag alone, so its dispatch
-// never counts unresolved attempts and a refusal rollback in this build could
-// erase evidence the older tab's concurrent attempt still needs - this build
-// must not share a database with it. A version-3 open against this database
-// fails with VersionError, and the old tab fails closed (storage-unavailable
-// errors) instead of silently erasing attempt evidence: the safe
-// mixed-version state is a reload, never a silent share
-// (docs/design/stop-cancellation-outbox.md §8).
-const DATABASE_VERSION = 4;
-const OUTBOX_STORE = "outbox";
-const OPTIMISTIC_STORE = "optimistic";
-const RECOVERY_STORE = "recovery";
-const SEQUENCE_STORE = "sequences";
-const TARGET_SEQUENCE_INDEX = "byTargetSequence";
+const DATABASE_NAME = LOCAL_COMPOSITION_DATABASE_NAME;
+// The outbox rides the shared local composition database, so the schema file
+// owns the version fence and every store name below. Deployed outbox-only
+// builds still open this same database name at their own older versions, so
+// the fence reasons stack: the version-2 build reads a canceled row as a
+// non-submitting FIFO head and stalls the ref's queue, and the version-3
+// build shares attempt evidence through the `attempted` flag alone, so its
+// dispatch never counts unresolved attempts and a refusal rollback in this
+// build could erase evidence the older tab's concurrent attempt still needs.
+// A stale tab fails closed on the schema's VersionError instead of silently
+// stalling or erasing evidence - the safe mixed-version state is a reload,
+// never a silent share
+const DATABASE_VERSION = LOCAL_COMPOSITION_DATABASE_VERSION;
+const OUTBOX_STORE = MUTATION_OUTBOX_STORE;
+const OPTIMISTIC_STORE = MUTATION_OPTIMISTIC_STORE;
+const RECOVERY_STORE = MUTATION_RECOVERY_STORE;
+const SEQUENCE_STORE = MUTATION_SEQUENCES_STORE;
 const STORAGE_WAIT_MS = 10_000;
 
 // The unresolved-attempt baseline a record's own metadata proves. A missing
@@ -91,6 +121,33 @@ function priorUnresolvedAttempts(record: { unresolvedAttempts?: number; attempte
 // cross-store clientMutationId uniqueness check (#assertMutationIdAvailable)
 // reads and writes under one transaction.
 const ENQUEUE_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE, SEQUENCE_STORE];
+// The resend scope adds the composition stores: a resend both moves a recovery
+// record back to the outbox and advances the ref's session revision in the same
+// transaction.
+const RESEND_STORES = [
+  OUTBOX_STORE,
+  OPTIMISTIC_STORE,
+  RECOVERY_STORE,
+  SEQUENCE_STORE,
+  COMPOSER_DRAFTS_STORE,
+  ANNOTATION_NAMESPACES_STORE,
+];
+// A recovery edit/discard or a recovery-deleting settlement reads and writes the
+// ref's session row alongside the recovery record, in one transaction.
+const RECOVERY_WITH_SESSION_STORES = [RECOVERY_STORE, COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE];
+const SETTLEMENT_STORES = [
+  OUTBOX_STORE,
+  OPTIMISTIC_STORE,
+  RECOVERY_STORE,
+  COMPOSER_DRAFTS_STORE,
+  ANNOTATION_NAMESPACES_STORE,
+];
+// The settlement's record-only scope: all three record stores with no
+// composer store, so the legacy-draft migration gate never orders against it.
+// #settle's first attempt runs here and settles in place whenever the record
+// proves recovery-free; a record that would touch the session row escalates
+// from there to the full scope below.
+const SETTLEMENT_RECORD_STORES = [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE];
 
 // The outbox's own storage failures: an open the database refused or that
 // another tab's older schema blocked, or a connection superseded mid-open.
@@ -154,6 +211,79 @@ export function warnOpenDiagnostic(diagnostic: MutationOutboxOpenDiagnostic): vo
 export const DEFAULT_OPEN_DIAGNOSTIC: (diagnostic: MutationOutboxOpenDiagnostic) => void =
   import.meta.env.MODE === "test" ? () => {} : warnOpenDiagnostic;
 
+// A destructive or editing recovery write's optional fence: which browser
+// session key it targets, the durable session token the caller captured, and a
+// live callback evaluated once every read prerequisite has run and immediately
+// before any write. The key must agree with the record's own ref, so a guard
+// can never authorize a write against an unrelated row.
+export interface RecoveryWriteGuard {
+  key: BrowserDraftKey;
+  token: DraftSessionToken;
+  stillAuthorized: () => boolean;
+}
+
+// The guarded recovery update's optional ordinary consumption: the session
+// token, the complete ordinary value and a live ownership callback the
+// transaction checks after all reads. All three must match for the ordinary
+// row to be cleared; otherwise the ordinary value is preserved while the
+// recovery edit still commits.
+export interface RecoveryOrdinaryConsumption {
+  token: DraftSessionToken;
+  value: SkillEditorValue;
+  stillOwnsValue: () => boolean;
+}
+
+// The completed guarded recovery update: the record the write produced, and
+// the session token the SAME transaction's session write left on the ref's
+// durable row — the storage's own answer for the revision the completed write
+// produced, so a source records that fact instead of deriving it from its
+// guard. sessionToken is undefined only when an unguarded update consumed an
+// absent ordinary row and initialized no session row.
+export interface RecoveryInputUpdate {
+  record: MutationRecoveryRecord;
+  sessionToken: DraftSessionToken | undefined;
+}
+
+// The one mapping an update writes: input, the display it renders, attachments
+// and the composer text/mentions, preserving absent-versus-empty mentions and
+// the schema `version`. PURE, so updateRecoveryInput and Task 3 can share it
+// inside their own transactions without opening one from another.
+export function applyRecoveryInput(
+  record: MutationRecoveryRecord,
+  input: InputItem[],
+  attachments?: MutationAttachment[],
+  composerText?: string,
+  composerMentions?: readonly ComposerMention[],
+): MutationRecoveryRecord {
+  return {
+    ...record,
+    payload: { ...record.payload, input },
+    optimisticDisplay:
+      record.optimisticDisplay && typeof record.optimisticDisplay === "object"
+        ? { ...record.optimisticDisplay, input }
+        : { method: record.method, input },
+    attachments: attachments ?? record.attachments,
+    composerText: composerText ?? record.composerText,
+    composerMentions: composerText === undefined ? (composerMentions ?? record.composerMentions) : composerMentions,
+  };
+}
+
+// The browser session key a recovery record participates in: the record's own
+// targetRef under the ambient browser origin, and never a caller-supplied
+// origin that could fence an unrelated namespace.
+function recoverySessionKey(targetRef: string): BrowserDraftKey {
+  return browserDraftKey(targetRef);
+}
+
+// Whether a caller's guard targets this record's own browser session.
+function guardTargetsRecord(guard: RecoveryWriteGuard, targetRef: string): boolean {
+  return (
+    guard.key.namespace.kind === "browser" &&
+    guard.key.namespace.origin === location.origin &&
+    guard.key.sessionRef === targetRef
+  );
+}
+
 interface TargetSequence {
   targetRef: string;
   lastSequence: number;
@@ -179,6 +309,7 @@ function isCancelableByStop(record: MutationOutboxRecord): boolean {
 // ordering rather than a browser lease or leader election.
 export class MutationOutboxIndexedDB {
   readonly #connection: IDBConnection;
+  readonly #indexedDB: IDBFactory;
   readonly #databaseName: string;
   readonly #createMutationId: () => string;
   readonly #createPresentationId: () => string;
@@ -193,6 +324,7 @@ export class MutationOutboxIndexedDB {
   constructor(options: MutationOutboxIndexedDBOptions = {}) {
     const factory = options.indexedDB ?? globalThis.indexedDB;
     if (!factory) throw new Error("IndexedDB is unavailable");
+    this.#indexedDB = factory;
     this.#databaseName = options.databaseName ?? DATABASE_NAME;
     this.#createMutationId = options.createMutationId ?? createSecureUUID;
     this.#createPresentationId = options.createPresentationId ?? createSecureUUID;
@@ -205,7 +337,7 @@ export class MutationOutboxIndexedDB {
       databaseName: this.#databaseName,
       databaseVersion: DATABASE_VERSION,
       waitMs: STORAGE_WAIT_MS,
-      upgrade: (database) => this.#upgrade(database),
+      upgrade: (database, transaction) => this.#upgrade(database, transaction),
       errors: {
         open: () => new MutationStorageError("Unable to open mutation outbox"),
         superseded: () => new MutationStorageError("Mutation outbox connection was closed"),
@@ -601,11 +733,37 @@ export class MutationOutboxIndexedDB {
   }
 
   async settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean> {
+    return this.#settle(clientMutationId, { kind: "receipt", projectionState });
+  }
+
+  async settleApplied(clientMutationId: string): Promise<boolean> {
+    return this.#settle(clientMutationId, { kind: "applied" });
+  }
+
+  // Both canonical settlements share one engine, attempted in two scopes.
+  // The first attempt always opens the record-only scope and settles there
+  // whenever the record proves recovery-free: no composer store is in scope,
+  // so the legacy-draft migration gate never orders against it, an unrelated
+  // pending legacy transfer cannot block the settlement the dispatcher holds
+  // at the head of its queue, and the settlement still writes in one
+  // transaction. A settlement that would touch the ref's session row - its
+  // own recovery record, or the refused superseded note recovery rows it
+  // retires - commits nothing in that scope and escalates to the full scope,
+  // where the migration gate orders the legacy-draft transfer before the
+  // transaction that can initialize the row. A row initialized before the
+  // legacy draft transferred is exactly the stranding the gate exists to
+  // prevent.
+  async #settle(
+    clientMutationId: string,
+    settlement: { kind: "receipt"; projectionState: string } | { kind: "applied" },
+  ): Promise<boolean> {
+    const receipt = settlement.kind === "receipt" ? settlement : undefined;
     let settledSource: MutationRecord | undefined;
-    const settled = await this.#write(
-      [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE],
-      "settleReceipt",
-      async (transaction) => {
+    const scopedSettlement = async (
+      stores: string[],
+      sessionScope: boolean,
+    ): Promise<"settled" | "escalate" | "absent"> =>
+      this.#write(stores, receipt ? "settleReceipt" : undefined, async (transaction) => {
         const outbox = transaction.objectStore(OUTBOX_STORE);
         const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
         const recovery = transaction.objectStore(RECOVERY_STORE);
@@ -614,90 +772,122 @@ export class MutationOutboxIndexedDB {
           requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
           requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
         ]);
-        const source = outboxRecord ?? recoveryRecord ?? optimisticRecord;
-        if (!source) return false;
-        await this.#discardSupersededNoteRecovery(transaction, source);
-        settledSource = source;
-
-        // A "pending" receipt means accepted but not yet described by
-        // authoritative state. The daemon reports pending for exactly the
-        // mutations whose acceptance a read cannot yet prove - every
-        // input-bearing turn verb AND notes/human/set
-        // (acceptedClientMutationProjection) - and this store owes each of them
-        // a kept copy until reconcileIdentities settles it from a later read's
-        // authoritative ids. For the turn verbs the kept copy is the optimistic
-        // display itself (an input array renders the pending row); a note
-        // carries no display (production enqueues notes with null), but its kept
-        // copy is what tells humanNoteDrafts' post-retry lookup an accepted save
-        // is pending rather than settled-elsewhere. A receipt-only control (a
-        // Stop) settles terminal at acceptance and keeps no copy: its effect is
-        // already readable in the session's own state, so its pending receipts
-        // drop the row exactly as before.
-        const retainsAcceptedCopy =
-          projectionState === "pending" && (carriesOptimisticInput(source) || source.method === "notes/human/set");
-        if (retainsAcceptedCopy) {
-          // The accepted whitelist lives in the package's acceptedRecord so
-          // this adapter and native's build the same row.
-          await requestResult(optimistic.put(acceptedRecord(source)));
-        } else if (optimisticRecord) {
-          await requestResult(optimistic.delete(clientMutationId));
+        const source = receipt
+          ? (outboxRecord ?? recoveryRecord ?? optimisticRecord)
+          : (outboxRecord ?? optimisticRecord ?? recoveryRecord);
+        if (!source) return "absent";
+        if (!sessionScope) {
+          if (recoveryRecord !== undefined) return "escalate";
+          if (source.method === "notes/human/set") {
+            const records = await requestResult<MutationRecoveryRecord[]>(recovery.getAll());
+            if (records.some((record) => this.#isSupersededNoteRecovery(record, source))) return "escalate";
+          }
         }
-        if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-        if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
-        return true;
-      },
-    );
+        const supersededRemoved = sessionScope ? await this.#discardSupersededNoteRecovery(transaction, source) : 0;
+        settledSource = source;
+        await this.#settleRecordStores(transaction, {
+          clientMutationId,
+          source,
+          outboxRecord,
+          optimisticRecord,
+          projectionState: receipt?.projectionState,
+        });
+        if (recoveryRecord !== undefined) {
+          await requestResult(recovery.delete(clientMutationId));
+        }
+        // Only an actual recovery deletion advances the ref's session revision:
+        // an outbox- or optimistic-only settle changes no ordinary work.
+        if (sessionScope && (recoveryRecord !== undefined || supersededRemoved > 0)) {
+          const key = recoverySessionKey(source.targetRef);
+          const { namespace, row } = await this.#readSession(transaction, key);
+          const { writes } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
+          await Promise.all(writes);
+        }
+        return "settled";
+      });
+    let outcome = await scopedSettlement(SETTLEMENT_RECORD_STORES, false);
+    if (outcome === "escalate") outcome = await scopedSettlement(SETTLEMENT_STORES, true);
+    const settled = outcome === "settled";
     this.#discardSupersededCanceledNotesAfterSettle(settled ? settledSource : undefined);
     const settledRef = settledSource?.targetRef;
     if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
     return settled;
   }
 
-  async settleApplied(clientMutationId: string): Promise<boolean> {
-    let settledSource: MutationRecord | undefined;
-    const settled = await this.#write(
-      [OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE],
-      undefined,
-      async (transaction) => {
-        const outbox = transaction.objectStore(OUTBOX_STORE);
-        const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
-        const recovery = transaction.objectStore(RECOVERY_STORE);
-        const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
-          requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
-          requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
-          requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
-        ]);
-        if (!outboxRecord && !optimisticRecord && !recoveryRecord) return false;
-        const source = outboxRecord ?? optimisticRecord ?? recoveryRecord;
-        await this.#discardSupersededNoteRecovery(transaction, source);
-        if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-        if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
-        if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
-        settledSource = source;
-        return true;
-      },
+  // The record-store retirement every settlement performs in either scope:
+  // delete the settled id from whichever record store holds it, keeping an
+  // accepted copy only where a pending receipt owes one.
+  async #settleRecordStores(
+    transaction: IDBTransaction,
+    input: {
+      clientMutationId: string;
+      source: MutationRecord;
+      outboxRecord: MutationRecord | undefined;
+      optimisticRecord: MutationRecord | undefined;
+      projectionState: string | undefined;
+    },
+  ): Promise<void> {
+    const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
+    if (input.projectionState !== undefined) {
+      // A "pending" receipt means accepted but not yet described by
+      // authoritative state. The daemon reports pending for exactly the
+      // mutations whose acceptance a read cannot yet prove - every
+      // input-bearing turn verb AND notes/human/set
+      // (acceptedClientMutationProjection) - and this store owes each of them
+      // a kept copy until reconcileIdentities settles it from a later read's
+      // authoritative ids. For the turn verbs the kept copy is the optimistic
+      // display itself (an input array renders the pending row); a note
+      // carries no display (production enqueues notes with null), but its kept
+      // copy is what tells humanNoteDrafts' post-retry lookup an accepted save
+      // is pending rather than settled-elsewhere. A receipt-only control (a
+      // Stop) settles terminal at acceptance and keeps no copy: its effect is
+      // already readable in the session's own state, so its pending receipts
+      // drop the row exactly as before.
+      const retainsAcceptedCopy =
+        input.projectionState === "pending" &&
+        (carriesOptimisticInput(input.source) || input.source.method === "notes/human/set");
+      if (retainsAcceptedCopy) {
+        // The accepted whitelist lives in the package's acceptedRecord so
+        // this adapter and native's build the same row.
+        await requestResult(optimistic.put(acceptedRecord(input.source)));
+      } else if (input.optimisticRecord) {
+        await requestResult(optimistic.delete(input.clientMutationId));
+      }
+    } else if (input.optimisticRecord) {
+      await requestResult(optimistic.delete(input.clientMutationId));
+    }
+    if (input.outboxRecord) {
+      await requestResult(transaction.objectStore(OUTBOX_STORE).delete(input.clientMutationId));
+    }
+  }
+
+  // The supersede test the settlement's scope check and its discard share: a
+  // refused note recovery row earlier in the same ref's sequence.
+  #isSupersededNoteRecovery(record: MutationRecoveryRecord, source: MutationRecord): boolean {
+    return (
+      record.method === "notes/human/set" &&
+      record.targetRef === source.targetRef &&
+      record.intentSequence < source.intentSequence
     );
-    this.#discardSupersededCanceledNotesAfterSettle(settled ? settledSource : undefined);
-    const settledRef = settledSource?.targetRef;
-    if (settledRef !== undefined) this.#notifyQuietly(() => this.#settledListener?.(settledRef));
-    return settled;
   }
 
   // A later accepted note supersedes refused earlier text, not chat recovery
   // or unresolved transport. Retire it in the same canonical-settlement write.
-  async #discardSupersededNoteRecovery(transaction: IDBTransaction, source: MutationRecord | undefined): Promise<void> {
-    if (source?.method !== "notes/human/set") return;
+  async #discardSupersededNoteRecovery(
+    transaction: IDBTransaction,
+    source: MutationRecord | undefined,
+  ): Promise<number> {
+    if (source?.method !== "notes/human/set") return 0;
     const store = transaction.objectStore(RECOVERY_STORE);
     const records = await requestResult<MutationRecoveryRecord[]>(store.getAll());
+    let removed = 0;
     for (const record of records) {
-      if (
-        record.method === "notes/human/set" &&
-        record.targetRef === source.targetRef &&
-        record.intentSequence < source.intentSequence
-      ) {
+      if (this.#isSupersededNoteRecovery(record, source)) {
         await requestResult(store.delete(record.clientMutationId));
+        removed += 1;
       }
     }
+    return removed;
   }
 
   // The same supersede, for the ref's earlier stop-canceled note rows: a
@@ -872,15 +1062,31 @@ export class MutationOutboxIndexedDB {
     recoveryKind: MutationRecoveryKind,
     recoveryReason?: string,
   ): Promise<MutationRecoveryRecord | undefined> {
-    return this.#write([OUTBOX_STORE, RECOVERY_STORE], "transferToRecovery", async (transaction) => {
-      const outbox = transaction.objectStore(OUTBOX_STORE);
-      const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId));
-      if (!record) return undefined;
-      const recovery: MutationRecoveryRecord = { ...record, recoveryKind, recoveryReason };
-      await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
-      await requestResult(outbox.delete(clientMutationId));
-      return recovery;
-    });
+    return this.#write(
+      [OUTBOX_STORE, RECOVERY_STORE, COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE],
+      "transferToRecovery",
+      async (transaction) => {
+        const outbox = transaction.objectStore(OUTBOX_STORE);
+        const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId));
+        if (!record) return undefined;
+        const recovery: MutationRecoveryRecord = { ...record, recoveryKind, recoveryReason };
+        const key = recoverySessionKey(record.targetRef);
+        const { namespace, row } = await this.#readSession(transaction, key);
+        const { writes, sessionToken } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
+        // The transfer's own session write carried no edit, so the token it
+        // produced is the durable proof later preparations adopt in
+        // preference to guessing at a competing advance.
+        const transferred: MutationRecoveryRecord =
+          sessionToken === undefined ? recovery : { ...recovery, transferredSessionToken: sessionToken };
+        const allWrites = [
+          requestResult(transaction.objectStore(RECOVERY_STORE).put(transferred)),
+          requestResult(outbox.delete(clientMutationId)),
+          ...writes,
+        ];
+        await Promise.all(allWrites);
+        return transferred;
+      },
+    );
   }
 
   async getRecovery(clientMutationId: string): Promise<MutationRecoveryRecord | undefined> {
@@ -906,57 +1112,96 @@ export class MutationOutboxIndexedDB {
     attachments?: MutationAttachment[],
     composerText?: string,
     composerMentions?: readonly ComposerMention[],
-  ): Promise<MutationRecoveryRecord | undefined> {
-    return this.#write(RECOVERY_STORE, "updateRecoveryInput", async (transaction) => {
+    guard?: RecoveryWriteGuard,
+    consumeOrdinary?: RecoveryOrdinaryConsumption,
+  ): Promise<RecoveryInputUpdate | undefined> {
+    return this.#write(RECOVERY_WITH_SESSION_STORES, "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
       const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
       if (!record) return undefined;
-      const next: MutationRecoveryRecord = {
-        ...record,
-        payload: { ...record.payload, input },
-        optimisticDisplay:
-          record.optimisticDisplay && typeof record.optimisticDisplay === "object"
-            ? { ...record.optimisticDisplay, input }
-            : { method: record.method, input },
-        attachments: attachments ?? record.attachments,
-        composerText: composerText ?? record.composerText,
-        // Locations belong to composerText. A full replacement can omit them
-        // to clear old atoms, while a partial update preserves the pair.
-        composerMentions: composerText === undefined ? (composerMentions ?? record.composerMentions) : composerMentions,
-      };
-      await requestResult(store.put(next));
-      return next;
+      if (guard && !guardTargetsRecord(guard, record.targetRef)) return undefined;
+      const key = guard?.key ?? recoverySessionKey(record.targetRef);
+      const { namespace, row } = await this.#readSession(transaction, key);
+      if (guard) {
+        // Both the durable namespace incarnation and the captured session token
+        // must still match, and the live callback runs last before any write.
+        if (!namespace || !row) return undefined;
+        if (row.token.namespaceIncarnation !== namespace.incarnation) return undefined;
+        if (!sameSessionToken(row.token, guard.token)) return undefined;
+        if (!guard.stillAuthorized()) return undefined;
+      }
+      const next = applyRecoveryInput(record, input, attachments, composerText, composerMentions);
+      const { writes, sessionToken } = this.#issueSessionWrite(transaction, key, namespace, row, consumeOrdinary);
+      // The recovery edit and the session write are issued together, before
+      // either is awaited, so both are in flight in this one transaction.
+      const allWrites = [requestResult(store.put(next)), ...writes];
+      await Promise.all(allWrites);
+      return { record: next, sessionToken };
     });
   }
 
-  async discardRecovery(clientMutationId: string, shouldDiscard?: () => boolean): Promise<boolean> {
-    return this.#write(RECOVERY_STORE, "discardRecovery", async (transaction) => {
+  async discardRecovery(
+    clientMutationId: string,
+    shouldDiscard?: () => boolean,
+    guard?: RecoveryWriteGuard,
+  ): Promise<boolean> {
+    return this.#write(RECOVERY_WITH_SESSION_STORES, "discardRecovery", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
       const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
       if (!record) return false;
-      // Evaluate immediately at the durable deletion boundary, after every
-      // asynchronous prerequisite. Callers use this to invalidate a discard
-      // that became stale while it was waiting to reach storage.
+      if (guard && !guardTargetsRecord(guard, record.targetRef)) return false;
+      const key = guard?.key ?? recoverySessionKey(record.targetRef);
+      const { namespace, row } = await this.#readSession(transaction, key);
+      if (guard) {
+        if (!namespace || !row) return false;
+        if (row.token.namespaceIncarnation !== namespace.incarnation) return false;
+        if (!sameSessionToken(row.token, guard.token)) return false;
+      }
+      // Evaluate the existing predicate immediately at the durable deletion
+      // boundary, after every asynchronous prerequisite, and the guard's live
+      // callback last before any write.
       if (shouldDiscard && !shouldDiscard()) return false;
-      await requestResult(store.delete(clientMutationId));
+      if (guard && !guard.stillAuthorized()) return false;
+      const { writes } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
+      const allWrites = [requestResult(store.delete(clientMutationId)), ...writes];
+      await Promise.all(allWrites);
       return true;
     });
   }
 
-  async resendRecovery(clientMutationId: string, intent: MutationIntent): Promise<MutationOutboxRecord | undefined> {
+  async resendRecovery(
+    clientMutationId: string,
+    intent: MutationIntent,
+    guard?: RecoveryWriteGuard,
+  ): Promise<MutationOutboxRecord | undefined> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
-    return this.#write(ENQUEUE_STORES, "resendRecovery", async (transaction) => {
+    return this.#write(RESEND_STORES, "resendRecovery", async (transaction) => {
       const recoveryStore = transaction.objectStore(RECOVERY_STORE);
       const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(clientMutationId));
       if (!recovery) return undefined;
-      const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
+      if (guard && !guardTargetsRecord(guard, recovery.targetRef)) return undefined;
+      const key = guard?.key ?? recoverySessionKey(recovery.targetRef);
+      const { namespace, row } = await this.#readSession(transaction, key);
+      if (guard) {
+        if (!namespace || !row) return undefined;
+        if (row.token.namespaceIncarnation !== namespace.incarnation) return undefined;
+        if (!sameSessionToken(row.token, guard.token)) return undefined;
+      }
+      // Every allocation/uniqueness prerequisite is read before the guard's
+      // live callback; the sequence row itself is only written after it, so a
+      // refused resend leaves the ref's sequence untouched.
+      const sequenceStore = transaction.objectStore(SEQUENCE_STORE);
+      const sequenceRow = await requestResult<TargetSequence | undefined>(sequenceStore.get(intent.targetRef));
+      const intentSequence = (sequenceRow?.lastSequence ?? 0) + 1;
       const nextMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, nextMutationId);
       // The resend is the user's deliberate post-Stop send (§4's exemption),
       // so its fresh row captures the target's current epoch like any new
       // submission: its own refused redeliveries stay transient instead of
-      // fence-canceling against a Stop that predates the resend.
-      const stopEpoch = await this.#stopEpochOf(transaction, intent.targetRef);
+      // fence-canceling against a Stop that predates the resend. The sequence
+      // row read above already carries that epoch, so no second read opens an
+      // asynchronous window behind the live guard.
+      const stopEpoch = sequenceRow?.stopEpoch ?? 0;
       const attachments = intent.attachments.map((attachment) => ({
         ...attachment,
         presentationId: this.#createPresentationId(),
@@ -976,8 +1221,25 @@ export class MutationOutboxIndexedDB {
         attempted: false,
         stopEpochAtEnqueue: stopEpoch,
       };
-      await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
-      await requestResult(recoveryStore.delete(clientMutationId));
+      // The live guard is the last check before the writes issue, mirroring
+      // the update and discard paths: an edit, disposal or recovery-backing
+      // change on the source during the reads above must still refuse, with no
+      // asynchronous step left to race the refusal away.
+      if (guard && !guard.stillAuthorized()) return undefined;
+      const { writes } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
+      const allWrites = [
+        requestResult(
+          sequenceStore.put({
+            ...sequenceRow,
+            targetRef: intent.targetRef,
+            lastSequence: intentSequence,
+          } satisfies TargetSequence),
+        ),
+        requestResult(transaction.objectStore(OUTBOX_STORE).add(record)),
+        requestResult(recoveryStore.delete(clientMutationId)),
+        ...writes,
+      ];
+      await Promise.all(allWrites);
       return record;
     });
   }
@@ -996,22 +1258,72 @@ export class MutationOutboxIndexedDB {
     return undefined;
   }
 
-  #upgrade(database: IDBDatabase): void {
-    if (!database.objectStoreNames.contains(OUTBOX_STORE)) {
-      const outbox = database.createObjectStore(OUTBOX_STORE, { keyPath: "clientMutationId" });
-      outbox.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
+  // Read the ref's durable namespace and session row together: the namespace
+  // incarnation fences an explicit edit, and the session row carries the
+  // revision a recovery change advances.
+  async #readSession(
+    transaction: IDBTransaction,
+    key: BrowserDraftKey,
+  ): Promise<{ namespace: NamespaceRow | undefined; row: SessionRow | undefined }> {
+    const namespace = await readNamespaceRow(transaction, key.namespace);
+    const row = await readSessionRow(transaction, key);
+    return { namespace, row };
+  }
+
+  // Queue the session row write into the caller's transaction and return the
+  // pending request promises so the caller can issue every write before
+  // awaiting any of them (both recovery and composer writes are in flight
+  // together). A first actual change initializes an absent row at revision 1; a
+  // present row advances by one. With a consumption, the row is cleared only
+  // when the captured token, the complete ordinary value and the live ownership
+  // callback all match after the reads; otherwise the ordinary value is
+  // preserved verbatim.
+  #issueSessionWrite(
+    transaction: IDBTransaction,
+    key: BrowserDraftKey,
+    namespace: NamespaceRow | undefined,
+    row: SessionRow | undefined,
+    consumption: RecoveryOrdinaryConsumption | undefined,
+  ): { writes: Promise<unknown>[]; sessionToken: DraftSessionToken | undefined } {
+    if (row) {
+      const consumed =
+        consumption !== undefined &&
+        namespace !== undefined &&
+        row.token.namespaceIncarnation === namespace.incarnation &&
+        sameSessionToken(row.token, consumption.token) &&
+        sameComposerValue(row, consumption.value) &&
+        consumption.stillOwnsValue();
+      const next = consumed ? nextSessionRow(row, { text: "", skillNames: [] }) : nextSessionRow(row);
+      return { writes: [requestResult(putSessionRow(transaction, next))], sessionToken: { ...next.token } };
     }
-    if (!database.objectStoreNames.contains(OPTIMISTIC_STORE)) {
-      const optimistic = database.createObjectStore(OPTIMISTIC_STORE, { keyPath: "clientMutationId" });
-      optimistic.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
+    if (consumption) return { writes: [], sessionToken: undefined };
+    const incarnation = namespace?.incarnation ?? createSecureUUID();
+    const writes: Promise<unknown>[] = [];
+    if (!namespace) {
+      writes.push(
+        requestResult(
+          transaction
+            .objectStore(ANNOTATION_NAMESPACES_STORE)
+            .put({ namespaceKey: serializeNamespace(key.namespace), incarnation } satisfies NamespaceRow),
+        ),
+      );
     }
-    if (!database.objectStoreNames.contains(RECOVERY_STORE)) {
-      const recovery = database.createObjectStore(RECOVERY_STORE, { keyPath: "clientMutationId" });
-      recovery.createIndex(TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"]);
-    }
-    if (!database.objectStoreNames.contains(SEQUENCE_STORE)) {
-      database.createObjectStore(SEQUENCE_STORE, { keyPath: "targetRef" });
-    }
+    writes.push(
+      requestResult(
+        putSessionRow(transaction, {
+          serializedKey: serializeSessionKey(key),
+          key: { namespace: { kind: "browser", origin: key.namespace.origin }, sessionRef: key.sessionRef },
+          text: "",
+          skillNames: [],
+          token: { namespaceIncarnation: incarnation, sessionRevision: 1 },
+        }),
+      ),
+    );
+    return { writes, sessionToken: { namespaceIncarnation: incarnation, sessionRevision: 1 } };
+  }
+
+  #upgrade(database: IDBDatabase, transaction: IDBTransaction | null): void {
+    registerLocalCompositionSchema(database, transaction);
   }
 
   // Record one open failure path. The try/catch is the whole contract: a
@@ -1064,6 +1376,32 @@ export class MutationOutboxIndexedDB {
     // One attempt: a timeout fails this call (the caller retries by acting
     // again), and every later call attempts the open afresh.
     const database = await this.#connection.open();
+    if (mode === "readwrite" && stores.includes(COMPOSER_DRAFTS_STORE)) {
+      // Background recovery can precede the first composer. Finish migration
+      // before opening any transaction that can initialize its ordinary row.
+      // Reuse the existing transfer adapter over this same factory/database,
+      // and close this operation's handle even when migration remains pending.
+      // An UNAVAILABLE legacy scan - an unreadable legacy store - orders
+      // nothing: the transaction proceeds exactly as with no legacy store, so
+      // ordinary settlement never depends on legacy-storage health. A PENDING
+      // transfer is a fault on the transfer's own durable write: the caller
+      // retries by acting again.
+      let legacyStorage: Storage | undefined;
+      try {
+        legacyStorage = globalThis.localStorage;
+      } catch {
+        legacyStorage = undefined;
+      }
+      if (legacyStorage !== undefined) {
+        const drafts = createBrowserDraftRepository({ indexedDB: this.#indexedDB, databaseName: this.#databaseName });
+        try {
+          const transfer = await drafts.transferSupportedDrafts(browserDraftKey("").namespace);
+          if (transfer.state === "pending") throw new Error("Draft transfer is pending. Try again.");
+        } finally {
+          drafts.close();
+        }
+      }
+    }
     const transaction = database.transaction(stores, mode);
     const completed = transactionCompletion(transaction);
     let timer: ReturnType<typeof setTimeout> | undefined;

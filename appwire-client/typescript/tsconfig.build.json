@@ -13,6 +13,7 @@
   },
   "files": [
     "index.ts",
+    "annotationFingerprint.ts",
     "historyPaging.ts",
     "client.ts",
     "clientLike.ts",
@@ -72,6 +73,7 @@
     "stableDelegate.ts",
     "delegateDetails.ts",
     "docContent.ts",
+    "documentAnnotations.ts",
     "documentReadDemand.ts",
     "fileReferences.ts",
     "submitRouting.ts",

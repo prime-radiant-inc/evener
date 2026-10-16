@@ -54,6 +54,7 @@ export {
   watchName,
   watchRowID,
 } from "./activityRows";
+export { hashAnnotationText } from "./annotationFingerprint";
 export {
   APPROVAL_DECISION_EVENT_KIND,
   type ApprovalDecision,
@@ -206,6 +207,38 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // host, and a consumer that supplies one (or spies on the module) wants the
 // module itself, so it is published at the "./docContent" subpath instead.
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
+export type {
+  AcceptedReadResult,
+  AcceptedSourceLease,
+  AnnotationCommentWork,
+  AnnotationNamespace,
+  AnnotationRetryReason,
+  AnnotationView,
+  CapturedEvidence,
+  CapturedPassage,
+  DestinationProvenance,
+  DisplayFingerprint,
+  DocumentAnnotationRepository,
+  DocumentKey,
+  ExpiryReceipt,
+  HandoffResult,
+  PreparedAnnotation,
+  ReadTicket,
+  SaveReceipt,
+  SourcePosition,
+  SourceRange,
+} from "./documentAnnotations";
+export {
+  compareDisplayedSources,
+  contextForRange,
+  displayedFingerprint,
+  editCommentText,
+  formatAnnotationReference,
+  invalidateCommentCapture,
+  selectCommentPassage,
+  sourcePositions,
+  validateSourceRange,
+} from "./documentAnnotations";
 export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
 export { canonicalJson } from "./draftCheckpointPort";
 export { diffStats, editDiffText } from "./editDiff";

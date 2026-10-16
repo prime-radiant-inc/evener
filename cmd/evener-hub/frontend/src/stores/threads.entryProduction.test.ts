@@ -1913,7 +1913,10 @@ it("ordinary browser routes reads notifications paging reopen reconnect and fina
   expect(await lease.release()).toEqual({ kind: "saved" });
   expect(threadsStore.getState().threads.has(ref)).toBe(false);
   expect(await factory.databases()).toEqual([
-    { name: "evener-mutation-outbox", version: 4 },
+    // v5 is this branch's composer-drafts schema plus the annotation
+    // document+epoch indexes: localCompositionSchema owns the database
+    // version, and the drafts and annotation stores live in this database.
+    { name: "evener-mutation-outbox", version: 5 },
     { name: SESSION_CACHE_DATABASE_NAME, version: SESSION_CACHE_DATABASE_VERSION },
   ]);
 });

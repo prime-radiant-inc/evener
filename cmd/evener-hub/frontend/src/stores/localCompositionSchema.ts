@@ -1,0 +1,189 @@
+import type {
+  DestinationProvenance,
+  DocFileContent,
+  DocumentKey,
+  ExpiryReceipt,
+  PreparedAnnotation,
+} from "@evener/appwire-client";
+
+export const LOCAL_COMPOSITION_DATABASE_NAME = "evener-mutation-outbox";
+// Version 5 indexes the annotation evidence and payload stores by document
+// and epoch: the accepted-read, save-validation and expiry-deletion paths
+// query exactly their own document's rows instead of deserializing every
+// document's snapshots on each read.
+export const LOCAL_COMPOSITION_DATABASE_VERSION = 5;
+
+export const MUTATION_OUTBOX_STORE = "outbox";
+export const MUTATION_OPTIMISTIC_STORE = "optimistic";
+export const MUTATION_RECOVERY_STORE = "recovery";
+export const MUTATION_SEQUENCES_STORE = "sequences";
+export const MUTATION_TARGET_SEQUENCE_INDEX = "byTargetSequence";
+
+export const COMPOSER_DRAFTS_STORE = "composerDrafts";
+export const DRAFT_TRANSFERS_STORE = "draftTransfers";
+export const DRAFT_CONFLICTS_STORE = "draftConflicts";
+export const ANNOTATION_NAMESPACES_STORE = "annotationNamespaces";
+export const ANNOTATION_HEADS_STORE = "annotationHeads";
+export const ANNOTATION_EVIDENCE_STORE = "annotationEvidence";
+export const ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX = "annotationEvidenceByDocumentEpoch";
+export const ANNOTATION_PAYLOADS_STORE = "annotationPayloads";
+export const ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX = "annotationPayloadsByDocumentEpoch";
+export const ANNOTATION_OPERATIONS_STORE = "annotationOperations";
+export const ANNOTATION_SEQUENCES_STORE = "annotationSequences";
+export const ANNOTATION_EXPIRY_STORE = "annotationExpiry";
+
+// Row DTOs for the browser annotation stores. Version 4/keyPaths are unchanged;
+// only the shapes are named here so the adapter and the draft repository share
+// one definition. JSON key encoders are pure and live here so both modules can
+// import them without a cycle.
+export interface AnnotationHeadRow {
+  documentKey: string;
+  namespaceIncarnation: string;
+  epoch: string;
+  headRevision: number;
+  readGeneration: number;
+  displayedSnapshotId: string;
+  evidenceKey: string;
+}
+
+export interface AnnotationEvidenceRow {
+  evidenceKey: string;
+  documentKey: string;
+  epoch: string;
+  content: DocFileContent;
+}
+
+export interface AnnotationPayloadRow {
+  payloadKey: string;
+  documentKey: string;
+  epoch: string;
+  operation: PreparedAnnotation;
+}
+
+export interface AnnotationSequenceRow {
+  documentKey: string;
+  lastSequence: number;
+}
+
+export type AnnotationOperationRow = {
+  operationKey: string;
+  namespaceKey: string;
+  namespaceIncarnation: string;
+  documentKey: string;
+  sessionKey: string;
+  sessionSequence: number;
+  operationId: string;
+  epoch: string;
+} & (
+  | { state: "pending"; destination: DestinationProvenance; payloadKey: string }
+  | { state: "applied"; draftRevision: number }
+  | { state: "cancelled" }
+  // Terminal receipt of a handoff no composition owner can ever claim (an
+  // ownerless read-only, restored or native destination). The saved payload
+  // stays, so the annotation and its copyable reference remain listed; only
+  // the retry machinery stops treating the operation as pending work.
+  | { state: "unclaimed" }
+);
+
+export interface AnnotationExpiryRow {
+  expiryKey: string;
+  receipt: ExpiryReceipt;
+}
+
+function namespaceId(namespace: DocumentKey["namespace"]): string {
+  return namespace.kind === "browser" ? namespace.origin : namespace.hubId;
+}
+
+export function annotationNamespaceKey(namespace: DocumentKey["namespace"]): string {
+  return JSON.stringify([namespace.kind, namespaceId(namespace)]);
+}
+
+export function annotationOperationKey(namespace: DocumentKey["namespace"], id: string): string {
+  return JSON.stringify([namespace.kind, namespaceId(namespace), id]);
+}
+
+export function annotationDocumentKey(key: DocumentKey): string {
+  return JSON.stringify([key.namespace.kind, namespaceId(key.namespace), key.sessionRef, key.path]);
+}
+
+export function annotationExpiryKey(documentKey: string, epoch: string): string {
+  return JSON.stringify([documentKey, epoch]);
+}
+
+// True when two captured destinations name the same handoff recipient: the
+// exact identity `targetFor` resolves. A browser-origin destination names one
+// composer by its pane and composition owner; the ownerless kinds carry no
+// recipient identity beyond their kind. Append order stays strict FIFO within
+// one recipient only, so a pending handoff captured for one recipient never
+// starves a handoff captured for another.
+export function sameHandoffDestination(left: DestinationProvenance, right: DestinationProvenance): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "browser-origin" && right.kind === "browser-origin") {
+    return left.paneId === right.paneId && left.compositionOwnerId === right.compositionOwnerId;
+  }
+  return true;
+}
+
+export function registerLocalCompositionSchema(database: IDBDatabase, transaction: IDBTransaction | null): void {
+  if (!database.objectStoreNames.contains(MUTATION_OUTBOX_STORE)) {
+    const outbox = database.createObjectStore(MUTATION_OUTBOX_STORE, { keyPath: "clientMutationId" });
+    outbox.createIndex(MUTATION_TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
+  }
+  if (!database.objectStoreNames.contains(MUTATION_OPTIMISTIC_STORE)) {
+    const optimistic = database.createObjectStore(MUTATION_OPTIMISTIC_STORE, { keyPath: "clientMutationId" });
+    optimistic.createIndex(MUTATION_TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"], { unique: true });
+  }
+  if (!database.objectStoreNames.contains(MUTATION_RECOVERY_STORE)) {
+    const recovery = database.createObjectStore(MUTATION_RECOVERY_STORE, { keyPath: "clientMutationId" });
+    recovery.createIndex(MUTATION_TARGET_SEQUENCE_INDEX, ["targetRef", "intentSequence"]);
+  }
+  if (!database.objectStoreNames.contains(MUTATION_SEQUENCES_STORE)) {
+    database.createObjectStore(MUTATION_SEQUENCES_STORE, { keyPath: "targetRef" });
+  }
+  if (!database.objectStoreNames.contains(COMPOSER_DRAFTS_STORE)) {
+    database.createObjectStore(COMPOSER_DRAFTS_STORE, { keyPath: "serializedKey" });
+  }
+  if (!database.objectStoreNames.contains(DRAFT_TRANSFERS_STORE)) {
+    database.createObjectStore(DRAFT_TRANSFERS_STORE, { keyPath: "serializedKey" });
+  }
+  if (!database.objectStoreNames.contains(DRAFT_CONFLICTS_STORE)) {
+    const conflicts = database.createObjectStore(DRAFT_CONFLICTS_STORE, { keyPath: "conflictId" });
+    conflicts.createIndex("byDraftKey", "draftKey");
+  }
+  if (!database.objectStoreNames.contains(ANNOTATION_NAMESPACES_STORE)) {
+    database.createObjectStore(ANNOTATION_NAMESPACES_STORE, { keyPath: "namespaceKey" });
+  }
+  if (!database.objectStoreNames.contains(ANNOTATION_HEADS_STORE)) {
+    database.createObjectStore(ANNOTATION_HEADS_STORE, { keyPath: "documentKey" });
+  }
+  if (!database.objectStoreNames.contains(ANNOTATION_EVIDENCE_STORE)) {
+    database.createObjectStore(ANNOTATION_EVIDENCE_STORE, { keyPath: "evidenceKey" });
+  }
+  if (!database.objectStoreNames.contains(ANNOTATION_PAYLOADS_STORE)) {
+    database.createObjectStore(ANNOTATION_PAYLOADS_STORE, { keyPath: "payloadKey" });
+  }
+  if (!database.objectStoreNames.contains(ANNOTATION_OPERATIONS_STORE)) {
+    database.createObjectStore(ANNOTATION_OPERATIONS_STORE, { keyPath: "operationKey" });
+  }
+  if (!database.objectStoreNames.contains(ANNOTATION_SEQUENCES_STORE)) {
+    database.createObjectStore(ANNOTATION_SEQUENCES_STORE, { keyPath: "documentKey" });
+  }
+  if (!database.objectStoreNames.contains(ANNOTATION_EXPIRY_STORE)) {
+    database.createObjectStore(ANNOTATION_EXPIRY_STORE, { keyPath: "expiryKey" });
+  }
+  // The document+epoch indexes exist on fresh and upgraded databases alike:
+  // the version-change transaction covers stores this upgrade created and
+  // stores that already existed, and the guards make the step idempotent. A
+  // real version-change transaction always provides objectStore; a synthetic
+  // upgrade that models only the transaction's presence does not, and the
+  // step simply has no index work to do in that world.
+  const upgradeTransaction = typeof transaction?.objectStore === "function" ? transaction : undefined;
+  const evidenceStore = upgradeTransaction?.objectStore(ANNOTATION_EVIDENCE_STORE);
+  if (evidenceStore && !evidenceStore.indexNames.contains(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX)) {
+    evidenceStore.createIndex(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX, ["documentKey", "epoch"]);
+  }
+  const payloadsStore = upgradeTransaction?.objectStore(ANNOTATION_PAYLOADS_STORE);
+  if (payloadsStore && !payloadsStore.indexNames.contains(ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX)) {
+    payloadsStore.createIndex(ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX, ["documentKey", "epoch"]);
+  }
+}

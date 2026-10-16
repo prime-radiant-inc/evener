@@ -1,3 +1,4 @@
+import { disposeDocumentReaderWork } from "../panes/doc/documentReadState";
 import { type ComposerSourceState, createComposerSourceState } from "../panes/session/composer/sourceState";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import type { JobLogReader } from "../panes/transcript/jobLogReader";
@@ -89,6 +90,24 @@ export function disposeConversationPaneLifetime(pane: OpenPaneRecord): void {
   lifetimes.get(pane)?.dispose();
 }
 
+// The destination resolver for a saved browser note (Task 4). It reads the
+// EXISTING WeakMap and the current workspace record - never creating a lifetime
+// and never authorizing a closed or replaced source. A mismatched pane, a
+// disposed lifetime, a non-session source or a different displayed session all
+// resolve to null. The durable document key's namespace check belongs to the
+// annotation port that calls this, not here.
+export function retainedComposerSourceFor(
+  paneId: string,
+  sourceId: string,
+  sessionRef: string,
+): ComposerSourceState | null {
+  const pane = workspaceStore.getState().panes.find((record) => record.id === paneId);
+  const lifetime = pane ? lifetimes.get(pane) : undefined;
+  if (!lifetime?.alive || lifetime.sourceType !== "session" || lifetime.sourceRef !== sessionRef) return null;
+  const source = lifetime.composer;
+  return source?.alive && source.sourceId === sourceId ? source : null;
+}
+
 onPaneRetype((previous, replacement) => {
   const lifetime = lifetimes.get(previous);
   if (!lifetime) return;
@@ -101,6 +120,10 @@ onPaneRetype((previous, replacement) => {
 workspaceStore.subscribe((state, previous) => {
   if (state.panes === previous.panes) return;
   for (const pane of previous.panes) {
-    if (!state.panes.includes(pane)) disposeConversationPaneLifetime(pane);
+    if (state.panes.includes(pane)) continue;
+    disposeConversationPaneLifetime(pane);
+    // A committed document-viewer removal also retires that viewer's retained
+    // annotation work; a conversation-only WeakMap entry is simply absent.
+    if (pane.type === "doc") disposeDocumentReaderWork(pane.id);
   }
 });

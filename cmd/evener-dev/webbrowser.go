@@ -6,13 +6,14 @@ package dev
 // scripts/web/test-web-browser.sh keeps only the load-aware default for the
 // slot count and hands off here.
 //
-// The skill, cascade, background Jobs and retirement guards are never-signalled checks: each
-// is a go test (the retirement guard's behind `npm run`) whose driver, Chrome
-// and helper daemons are cleaned up by the test binary's own t.Cleanup, which a
-// TERM to go test would skip and a TERM to npm alone would orphan; an interrupt
-// waits for them instead. The skill and cascade guards also need the built
-// frontend (the hub serves the embedded dist), which the gate builds first
-// when it is missing.
+// The skill, cascade, background Jobs, annotation-journey and retirement
+// guards are never-signalled checks: each is a go test (the retirement
+// guard's behind `npm run`) whose driver, Chrome and helper daemons are
+// cleaned up by the test binary's own t.Cleanup, which a TERM to go test would
+// skip and a TERM to npm alone would orphan; an interrupt waits for them
+// instead. The skill, cascade, background Jobs and annotation-journey guards
+// also need the built frontend (the hub serves the embedded dist), which the
+// gate builds first when it is missing.
 
 import (
 	"fmt"
@@ -23,22 +24,24 @@ import (
 )
 
 // browserGuards is every guard in verdict order. The last four
-// (skillguard, cascadeguard, backgroundjobsguard, backgroundtranscriptguard) are the never-signalled
-// checks that also need the built production frontend (needsBuild);
-// retirementguard is never-signalled too, but needs no build. Keep the
-// building four last.
-var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "memoryguard", "skillguard", "cascadeguard", "backgroundjobsguard", backgroundTranscriptGuard}
+// (skillguard, cascadeguard, backgroundjobsguard, backgroundtranscriptguard,
+// docannotationjourney) are the never-signalled checks that also need the
+// built production frontend (needsBuild); retirementguard is never-signalled
+// too, but needs no build. Keep the building five last.
+var browserGuards = []string{"layoutguard", "overflowguard", "shellguard", "spawnguard", "transcriptscrollguard", "retirementguard", "mermaidguard", "memoryguard", "docannotationguard", "skillguard", "cascadeguard", "backgroundjobsguard", "backgroundtranscriptguard", "docannotationjourney"}
 
 const (
-	skillGuard      = "skillguard"
-	cascadeGuard    = "cascadeguard"
-	retirementGuard = "retirementguard"
+	skillGuard           = "skillguard"
+	cascadeGuard         = "cascadeguard"
+	retirementGuard      = "retirementguard"
+	backgroundJobsGuard  = "backgroundjobsguard"
+	docAnnotationGuard   = "docannotationguard"
+	docAnnotationJourney = "docannotationjourney"
 	// backgroundTranscriptGuard is the whole-journey guard: cmd/evener-hub's
 	// TestBackgroundTranscriptsEntrySliceBrowser (browserguard build tag) drives
 	// the real background-to-disk-to-pane journey in real Chrome through a real
 	// hub and two real `evener serve` daemons, on the production entry route.
 	backgroundTranscriptGuard = "backgroundtranscriptguard"
-	backgroundJobsGuard       = "backgroundjobsguard"
 )
 
 // newBrowserGate is the browser gate over its guards; the caller supplies
@@ -50,6 +53,21 @@ func newBrowserGate(slots int, buildFrontend bool) *webGate {
 		spec:          browserGuardSpec,
 		slots:         slots,
 		buildFrontend: buildFrontend,
+	}
+}
+
+// privateFrontendEnv is the hermetic browser-guard environment: a private
+// HOME and XDG tree under the guard's scratch root, no Node compile cache, and
+// the guard's own Vite dep cache (see browserGuardSpec's header).
+func privateFrontendEnv(root, vite string) []string {
+	return []string{
+		"HOME=" + filepath.Join(root, "home"),
+		"TMPDIR=" + filepath.Join(root, "tmp"),
+		"XDG_CONFIG_HOME=" + filepath.Join(root, "xdg-config"),
+		"XDG_CACHE_HOME=" + filepath.Join(root, "xdg-cache"),
+		"XDG_STATE_HOME=" + filepath.Join(root, "xdg-state"),
+		"NODE_DISABLE_COMPILE_CACHE=1",
+		vite,
 	}
 }
 
@@ -104,6 +122,40 @@ func browserGuardSpec(guard, root string) guardSpec {
 			privateGoHome:   true,
 			waitOnInterrupt: true,
 		}
+	case docAnnotationGuard:
+		// docannotationguard runs the small production-component cases
+		// (scripts/documentannotationguard/components.mjs) in real Chrome through
+		// Vite, like the mermaid guard: it mounts production components and CSS
+		// from source, so it does NOT need the built dist. The npm script keeps
+		// its launch uniform with the other frontend checks; evidence goes to a
+		// temporary directory under the guard's private scratch TMPDIR.
+		return guardSpec{
+			name: guard,
+			argv: []string{"npm", "run", "--silent", "documentannotationguard"},
+			dir:  frontendDir,
+			env:  privateFrontendEnv(root, vite),
+			// npm exits on TERM without stopping the script's children (the
+			// driver, Chrome and its Vite dev server), which an interrupt would
+			// orphan unless the whole group is signalled.
+			group: true,
+		}
+	case docAnnotationJourney:
+		// docannotationjourney is the full-stack annotation journey:
+		// cmd/evener-hub's TestDocumentAnnotationBrowserJourney (browserguard build
+		// tag) drives the production web app in real Chrome against a real hub and
+		// the real daemon it spawns, with only the LLM provider scripted. Like the
+		// skill and cascade guards it needs the built frontend (the hub serves the
+		// embedded dist) and a Go-owned unsignalled lifecycle, so its t.Cleanup
+		// joins the provider observer and reaps the daemon rather than an
+		// interrupt skipping it.
+		return guardSpec{
+			name:            guard,
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestDocumentAnnotationBrowserJourney$", "-count=1"},
+			dir:             ".",
+			env:             []string{vite},
+			needsBuild:      true,
+			waitOnInterrupt: true,
+		}
 	case backgroundTranscriptGuard:
 		// backgroundtranscriptguard's contract is cmd/evener-hub's
 		// TestBackgroundTranscriptsEntrySliceBrowser (browserguard build tag):
@@ -124,15 +176,7 @@ func browserGuardSpec(guard, root string) guardSpec {
 			name: guard,
 			argv: []string{"node", "scripts/" + guard + "/run.mjs"},
 			dir:  frontendDir,
-			env: []string{
-				"HOME=" + filepath.Join(root, "home"),
-				"TMPDIR=" + filepath.Join(root, "tmp"),
-				"XDG_CONFIG_HOME=" + filepath.Join(root, "xdg-config"),
-				"XDG_CACHE_HOME=" + filepath.Join(root, "xdg-cache"),
-				"XDG_STATE_HOME=" + filepath.Join(root, "xdg-state"),
-				"NODE_DISABLE_COMPILE_CACHE=1",
-				vite,
-			},
+			env:  privateFrontendEnv(root, vite),
 		}
 	}
 }

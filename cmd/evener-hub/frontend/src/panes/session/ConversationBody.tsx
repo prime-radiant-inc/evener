@@ -8,16 +8,17 @@ import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { hasQueuedNonSend, ownerRetainedRef, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, Cadence, EmptyState, InlineNotice, type VirtualListHandle, VisuallyHidden } from "../../widgets";
+import { DocOpeningProvider } from "../doc/docOpeningContext";
+import type { DocOpeningOrigin } from "../doc/openDoc";
 import { zoomPaneCoversConversation } from "../zoom/cascadeCoverage";
 import { SessionChrome } from "./chrome/SessionChrome";
 import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
-import { carryComposerDraft } from "./composer/draft";
 import { useBlockedMutationEntries, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
-import type { ComposerSourceState } from "./composer/sourceState";
+import { type ComposerSourceState, carryBrowserDraft } from "./composer/sourceState";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { PendingChips } from "./pending/PendingChips";
@@ -79,6 +80,12 @@ export interface ConversationSeat {
   // The session menu belongs to the conversation pane; a cascade column's
   // chrome owns its actions.
   sessionMenu?: boolean;
+  // The opening origin every card/link in this seat's transcript captures: a
+  // pane supplies its own session source's origin while alive, a cascade
+  // column supplies its displayed scope's. Absent means no provider - doc
+  // opens stay readable and session-bound, never silently assigned a
+  // same-ref owner.
+  docOpeningOrigin?: DocOpeningOrigin;
 }
 
 export interface ConversationParts {
@@ -167,7 +174,20 @@ export function ConversationBody({
   const resumedIdentity = useThreadsStore((s) => s.resumedIdentities.get(ref));
   useEffect(() => {
     if (resumedIdentity === undefined) return;
-    carryComposerDraft(ref, resumedIdentity);
+    // Carry this conversation's draft to the resumed identity (R09's "any
+    // newer draft is preserved"): the incoming composer is keyed by the new
+    // ref, so a message typed while the resume was in flight would otherwise
+    // be dropped. The carry first drains every live source's pending commits
+    // under the old ref - a draft typed during the resume can still be in a
+    // source's serial queue, and carrying the repository row before that
+    // queue lands would strand the typed text under the old ref. The seat's
+    // follow-up (the pane's route change, or the cascade reconciliation)
+    // does NOT wait for the carry: the incoming composer's hydration awaits
+    // any in-flight carry into its own key (awaitCarrySettled), so the pane
+    // can mount - and its dispatch triggers can join the in-flight dispatch
+    // run the resume drive already started - while the carried row is still
+    // writing. A storage fault keeps the source copy under the old ref.
+    void carryBrowserDraft(ref, resumedIdentity);
     const applied = seat.onResumedIdentity?.(resumedIdentity);
     if (applied !== false && !otherRetainedViewOf(ref, seat.viewFallbackId)) {
       threadsStore.getState().clearResumedIdentity(ref);
@@ -362,7 +382,14 @@ export function ConversationBody({
       <AskDockAnnouncements ref={ref} />
     </div>
   );
-  const transcript = <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>;
+  // The provider wraps the transcript subtree (where file cards and prose
+  // links actually render) with the seat's captured opening origin, without
+  // changing the seat's own frame.
+  const transcript = (
+    <DocOpeningProvider origin={seat.docOpeningOrigin}>
+      <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>
+    </DocOpeningProvider>
+  );
 
   const content = (
     <div className={styles.contentColumn}>

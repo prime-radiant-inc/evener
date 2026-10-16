@@ -1,0 +1,226 @@
+// Finished-selection detection for the browser reader (Task 5).
+//
+// Observes the root's OWNING document and window (never a global), so a
+// selection made inside a different browsing context (an iframe document) is
+// read from that context's own Selection. A finished gesture belongs to the
+// root's mount and to its recorded pointer: a press that begins outside the
+// root never arms, and only the arming pointer's release finishes or abandons
+// the interaction. A cancelled pointer stream hands the gesture to the OS: the
+// native selection it leaves behind completes when it stops changing, and a
+// later handle adjustment updates the captured passage the same way, so
+// long-press selection still opens the comment box. The subscription lives for the mount, not for a render:
+// revalidation reads rebind the map without cancelling an armed gesture, and
+// the release reads the map current at that moment, so a selection over
+// content that changed underneath it maps to nothing and emits no capture. A
+// keyboard completion needs an actual selection change during
+// the interaction, so pressing Shift without extending the selection does not
+// reopen a retained passage. Nothing here calls preventDefault, so the browser's
+// own selection, Copy, focus and handles stay usable.
+import type { SourceRange } from "@evener/appwire-client";
+import type { BoundDocumentMap } from "../../widgets/markdown/documentSourceMap";
+
+export interface FinishedDocumentSelection {
+  displayedSnapshotId: string;
+  mappingId: string;
+  sourceRange: SourceRange;
+  selectedRenderedText: string;
+}
+
+export interface ObserveFinishedDocumentSelectionsInput {
+  root: HTMLElement;
+  // The map is read at EVENT time, not subscription time: revalidations and
+  // re-binds must not cancel an armed gesture. Null when no accepted map is
+  // installed for the current display, which captures nothing.
+  getMap(): BoundDocumentMap | null;
+  onFinish(capture: FinishedDocumentSelection): void;
+}
+
+export function observeFinishedDocumentSelections(input: ObserveFinishedDocumentSelectionsInput): () => void {
+  const { root, getMap, onFinish } = input;
+  const doc = root.ownerDocument;
+  let activePointer: number | null = null;
+  // The selection the gesture started with, so a cancelled stream can tell
+  // whether the selection it ends on is one the interaction made.
+  let gestureStartRange: SourceRange | null = null;
+  let shiftActive = false;
+  let shiftBaseline: SourceRange | null = null;
+  // The OS-owned selection a cancelled pointer stream leaves behind. The
+  // baseline starts as the range the cancel interrupted and becomes each range
+  // a settle completes: a settle that lands on the identical range re-opens
+  // nothing, and the retained range is what a later handle-adjustment burst
+  // must differ from. The state ends when the selection collapses or another
+  // interaction replaces it.
+  let nativeBaseline: SourceRange | null | undefined;
+  let nativeTimer: ReturnType<typeof setTimeout> | null = null;
+  let disposed = false;
+
+  // How long the native selection must stop changing before it counts as
+  // settled: handle adjustments arrive as a selectionchange burst, and each
+  // one re-defers the settle so the passage completes once when they stop.
+  const NATIVE_SETTLE_MS = 250;
+
+  const clearNativeSettle = (): void => {
+    nativeBaseline = undefined;
+    if (nativeTimer !== null) {
+      clearTimeout(nativeTimer);
+      nativeTimer = null;
+    }
+  };
+
+  const armNativeSettle = (): void => {
+    if (nativeTimer !== null) clearTimeout(nativeTimer);
+    nativeTimer = setTimeout(() => {
+      nativeTimer = null;
+      if (disposed) return;
+      const baseline = nativeBaseline;
+      const current = mappedRange();
+      // The OS selection is gone: the interaction ends here, and a later
+      // change belongs to a new gesture rather than this one.
+      if (!current) {
+        nativeBaseline = undefined;
+        return;
+      }
+      // Retain ownership of the completed range: a handle-adjustment burst
+      // long after the first settle defers against it, so the captured
+      // passage follows the visible selection instead of freezing at the
+      // first settled range. The identical-range guard keeps an unchanged
+      // adjustment from re-opening the retained passage.
+      nativeBaseline = current;
+      if (baseline && baseline.start === current.start && baseline.end === current.end) return;
+      finish();
+    }, NATIVE_SETTLE_MS);
+  };
+
+  // The current verified nonempty mapped range, or null for an unmapped,
+  // collapsed or stale selection.
+  const mappedRange = (): SourceRange | null => {
+    const map = getMap();
+    const selection = doc.getSelection();
+    if (!map || !selection) return null;
+    const capture = map.capture(selection);
+    if (capture.state !== "mapped" || capture.sourceRange.end <= capture.sourceRange.start) return null;
+    return capture.sourceRange;
+  };
+
+  const emit = (selection: Selection): void => {
+    const map = getMap();
+    if (!map) return;
+    const capture = map.capture(selection);
+    if (capture.state !== "mapped" || capture.sourceRange.end <= capture.sourceRange.start) return;
+    onFinish({
+      displayedSnapshotId: map.identity.displayedSnapshotId,
+      mappingId: map.identity.mappingId,
+      sourceRange: capture.sourceRange,
+      selectedRenderedText: capture.selectedRenderedText,
+    });
+  };
+  const finish = (): void => {
+    if (disposed) return;
+    const selection = doc.getSelection();
+    if (selection) emit(selection);
+  };
+
+  // Realm-agnostic containment. A popout adopts the pane's opener-created
+  // nodes into another window's document: the nodes keep their creating
+  // document's constructors for their whole lifetime, so an instanceof
+  // against ANY one document's Node - the current owner's or the global -
+  // cannot see moved nodes. nodeType is the realm-independent Node test,
+  // and contains is identity-based tree walking.
+  const withinRoot = (target: EventTarget | null): boolean => {
+    if (!target) return false;
+    const nodeType = (target as { nodeType?: number }).nodeType;
+    return nodeType !== undefined && root.contains(target as Node);
+  };
+
+  const onPointerDown = (event: PointerEvent): void => {
+    if (disposed) return;
+    if (event.isPrimary === false) return;
+    if (event.button !== 0) return;
+    if (!withinRoot(event.target)) return;
+    // A new press owns the interaction: any settle the previous gesture's
+    // cancellation left pending must not complete behind the new one.
+    clearNativeSettle();
+    activePointer = event.pointerId;
+    gestureStartRange = mappedRange();
+  };
+  const onPointerUp = (event: PointerEvent): void => {
+    if (disposed || activePointer === null || event.pointerId !== activePointer) return;
+    activePointer = null;
+    finish();
+  };
+  const onPointerCancel = (event: PointerEvent): void => {
+    if (activePointer === null || event.pointerId !== activePointer) return;
+    activePointer = null;
+    const start = gestureStartRange;
+    gestureStartRange = null;
+    const current = mappedRange();
+    // The OS took the gesture over for its own selection: completing or
+    // adjusting that selection arrives as selectionchange with no pointer
+    // behind it, so the first such change arms the settle that completes it
+    // once it stops changing.
+    //
+    // A long-press can also land its selection BEFORE the cancel arrives:
+    // that selectionchange was ignored while the press was active, and a
+    // later identical change is suppressed against the retained baseline, so
+    // the cancel is the gesture's last event. When it ends on a newly
+    // selected passage - one that differs from the selection the gesture
+    // started at - the settle is armed here against that start, and the
+    // passage completes once it stops changing. Handle adjustments after the
+    // cancel keep re-deferring the armed settle exactly as they do when the
+    // selection arrives after the cancel.
+    if (current && (start === null || current.start !== start.start || current.end !== start.end)) {
+      nativeBaseline = start;
+      armNativeSettle();
+      return;
+    }
+    nativeBaseline = current;
+  };
+  const onKeyDown = (event: KeyboardEvent): void => {
+    if (disposed || event.key !== "Shift" || shiftActive) return;
+    shiftActive = true;
+    shiftBaseline = mappedRange();
+  };
+  const onKeyUp = (event: KeyboardEvent): void => {
+    if (disposed || event.key !== "Shift" || !shiftActive) return;
+    shiftActive = false;
+    const baseline = shiftBaseline;
+    shiftBaseline = null;
+    const current = mappedRange();
+    if (!current) return;
+    // A keyboard completion needs the selection to have actually changed during
+    // the interaction; the identical range is not a new passage, even when the
+    // same rendered word is selected at a different source range.
+    if (baseline && baseline.start === current.start && baseline.end === current.end) return;
+    finish();
+  };
+  // A selection change alone never completes a passage: while a press is
+  // active its own release owns completion. The one exception is the OS-owned
+  // selection a cancelled stream left behind - there each change re-defers
+  // the armed settle, so native handle adjustments stay usable and the
+  // passage completes once they stop.
+  const onSelectionChange = (): void => {
+    if (disposed || activePointer !== null || nativeBaseline === undefined) return;
+    armNativeSettle();
+  };
+
+  doc.addEventListener("pointerdown", onPointerDown);
+  doc.addEventListener("pointerup", onPointerUp);
+  doc.addEventListener("pointercancel", onPointerCancel);
+  doc.addEventListener("selectionchange", onSelectionChange);
+  doc.addEventListener("keydown", onKeyDown);
+  doc.addEventListener("keyup", onKeyUp);
+
+  return () => {
+    disposed = true;
+    activePointer = null;
+    shiftActive = false;
+    shiftBaseline = null;
+    clearNativeSettle();
+    doc.removeEventListener("pointerdown", onPointerDown);
+    doc.removeEventListener("pointerup", onPointerUp);
+    doc.removeEventListener("pointercancel", onPointerCancel);
+    doc.removeEventListener("selectionchange", onSelectionChange);
+    doc.removeEventListener("keydown", onKeyDown);
+    doc.removeEventListener("keyup", onKeyUp);
+  };
+}

@@ -1,0 +1,149 @@
+/* Comment-box controls for the browser reader's annotation surface (Task 5).
+ *
+ * Only the comment controls live here; the later selection/highlight checkpoint
+ * may extend this shared file. Every value references an existing design token
+ * (see src/styles/tokens.css). */
+.commentBox {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+}
+
+/* The retained captured passage the pending Send will annotate. It is inert
+ * literal text (never parsed markup), bounded so a long passage stays usable. */
+.passage {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border-left: 2px solid var(--accent-edge);
+  border-radius: var(--radius-control);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 6lh;
+  overflow-y: auto;
+}
+
+.label {
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-mid);
+}
+
+.status {
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+/* Saved-highlight overlay and note surface (Task 5 selection/highlight
+ * checkpoint). Band geometry (left/top/width/height) is set inline from the
+ * measured ranges; these rules carry only the decoration, stacking and the
+ * note surface. The overlay is a non-text sibling of the mapped prose. */
+.highlightOverlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: var(--z-raised);
+}
+
+.highlightBand {
+  position: absolute;
+  /* Non-hit-testable decoration: a hit-testable band would become the native
+   * Selection's anchor/endpoint when a drag crosses the saved passage, so the
+   * selection would run past it. Reveal access is resolved by pointer
+   * coordinates on the scroll owner; keyboard focus still reaches the band. */
+  pointer-events: none;
+  appearance: none;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  border-radius: var(--radius-chip);
+  /* A translucent wash, not the opaque --accent-bg fill: the band must mark the
+   * saved passage's extent without covering the selected glyphs. Transparency
+   * leaves the prose readable underneath while the tint stays distinguishable
+   * from unannotated text. */
+  background: color-mix(in oklab, var(--accent) 22%, transparent);
+  border: 1px solid var(--accent-edge);
+}
+
+.highlightBand:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.highlightNotes {
+  position: absolute;
+  left: var(--space-3);
+  right: var(--space-3);
+  bottom: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  /* The revealed note surface is also non-hit-testable, so an already revealed
+   * note can never intercept a selection press or release over the prose. A real
+   * wheel is forwarded to this stack by the component (its scrollbar is not
+   * hit-testable); the pending reference re-enables pointer events for itself
+   * below so it stays selectable and copyable. */
+  pointer-events: none;
+  /* The stack is bounded (inline maxWidth/maxHeight, measured against the
+   * visible scroll clip) and owns its own vertical scrolling, so long or
+   * multiple revealed notes stay readable at the reading position instead of
+   * running past the document's actual scroll body. */
+  overflow-y: auto;
+}
+
+/* A phone has no wheel for the component's forwarded scroll, so under a coarse
+ * pointer the revealed note surface accepts the gesture itself: hit-testable,
+ * panning vertically. The pending reference stays selectable either way, and
+ * fine pointers keep the non-hit-testable surface above, so a revealed note
+ * can never intercept a selection press or release over the prose. */
+@media (pointer: coarse) {
+  .highlightNotes {
+    pointer-events: auto;
+    touch-action: pan-y;
+  }
+}
+
+.annotationNote {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-control);
+  color: var(--ink-hi);
+  font-size: var(--font-size-caption);
+  white-space: pre-wrap;
+  /* Wrap unbroken tokens so a long single-word note cannot escape horizontally. */
+  overflow-wrap: anywhere;
+}
+
+/* The complete snapshot reference for a saved pending handoff: inert,
+ * selectable plain text the user can copy into a draft of their choice. Bounded
+ * so a long reference stays usable. */
+.annotationReference {
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* Re-enabled on the child so the complete reference stays selectable and
+   * copyable even though its non-hit-testable container ignores the pointer. */
+  pointer-events: auto;
+  user-select: text;
+  max-height: 12lh;
+  overflow-y: auto;
+}

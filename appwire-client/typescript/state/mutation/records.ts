@@ -41,6 +41,16 @@ export interface MutationAttachmentRef {
 export type MutationOutboxState = "submitting" | "blockedUnknown" | "canceled";
 export type MutationRecoveryKind = "rejected" | "orphaned";
 
+// The durable authority a composition session row carries: which namespace
+// incarnation it was last written under, and the monotonic revision that
+// session's explicit writes advance. A host compares two tokens for identity
+// (same incarnation AND same revision) — a revision from another incarnation
+// is not comparable authority.
+export interface DraftSessionToken {
+  readonly namespaceIncarnation: string;
+  readonly sessionRevision: number;
+}
+
 // One submission as the client made it. The attachment type is a parameter so
 // a host can carry its own bytes (the web's Blob) on the same record shape
 // without that type reaching this module.
@@ -130,6 +140,16 @@ export interface MutationRecoveryRecord<A extends MutationAttachmentRef = Mutati
   // this existed carry no reason, and because some recovery kinds (orphaned)
   // have no daemon message to carry.
   recoveryReason?: string;
+  // The session token the transfer's own session write produced for the
+  // ref's durable row: the one revision advance past a source's lineage that
+  // can PROVE it carried no edit, because a transfer preserves the row's
+  // ordinary value. A recovery edit, a discard or a resend moves the row past
+  // this baseline, so a preparation that observes the row exactly here can
+  // adopt the token knowing no competing edit produced it. Optional because
+  // records written before the field existed carry none, and a host whose
+  // transfers advance no session row has no token to record: such a record
+  // simply proves nothing.
+  transferredSessionToken?: DraftSessionToken;
 }
 
 // --- receipt settlement ------------------------------------------------------

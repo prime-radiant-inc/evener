@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { documentPaneState, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
+import { DocOpeningProvider } from "../../../doc/docOpeningContext";
 import "../../../doc";
 import "../../index";
 import { AgentMarkdown } from "./AgentMarkdown";
@@ -73,6 +74,7 @@ const thread: ThreadModel = {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   resetWorkspaceStoreForTests();
   markdownHtml.current = "";
 });
@@ -96,6 +98,32 @@ test("a file link inside a diagram gets no Open beside portal, while the same hr
   const diagram = screen.getByRole("link", { name: "diagram" });
   expect(diagram.getAttribute("href")).toBe("docs/report.md");
   expect(diagram.closest("[data-mermaid-diagram]")).not.toBeNull();
+});
+
+// The prose-link producer captures the opening origin exactly as the file-card
+// producer does, and the diagram exclusion is unchanged while it does: the
+// captured origin rides the openDocBeside request into the opened doc pane's
+// params, asserted through the real workspace like every test in this file.
+test("a prose file link under a browser-origin provider captures the origin and still leaves diagram links alone", () => {
+  markdownHtml.current =
+    '<p><a href="docs/report.md">prose</a></p>' +
+    '<div data-mermaid-diagram=""><a href="docs/report.md">diagram</a></div>';
+  const origin = { kind: "browser-origin" as const, paneId: "owner-pane", compositionOwnerId: "owner-A" };
+  const owner = workspaceStore.getState().openPane("session", { ref: thread.ref });
+  render(
+    <TranscriptRenderProvider thread={thread} sourcePaneId={owner}>
+      <DocOpeningProvider origin={origin}>
+        <AgentMarkdown source="x" />
+      </DocOpeningProvider>
+    </TranscriptRenderProvider>,
+  );
+  // Exactly one affordance - the prose link - even with the provider present.
+  expect(screen.getAllByRole("button", { name: "Open beside: docs/report.md" })).toHaveLength(1);
+  fireEvent.click(screen.getByRole("button", { name: "Open beside: docs/report.md" }));
+  const doc = workspaceStore.getState().panes.find((pane) => pane.type === "doc");
+  expect(doc && (doc.params as { origin?: unknown }).origin).toEqual(origin);
+  const diagram = screen.getByRole("link", { name: "diagram" });
+  expect(diagram.getAttribute("href")).toBe("docs/report.md");
 });
 
 test("generated filenames exclude diagram, pre, entity and existing anchor subtrees as token barriers", () => {

@@ -20,6 +20,7 @@ import { chromeStore, useChromeStore } from "./chromeStore";
 import styles from "./DockHost.module.css";
 import { PaneTab } from "./PaneTab";
 import { PopoutHeaderAction } from "./PopoutHeaderAction";
+import { publishPaneDocumentMoved } from "./paneDocumentMoves";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
 import { PaneVisibilityContext } from "./paneVisibility";
 import { refParam } from "./routing";
@@ -322,6 +323,16 @@ export function DockHost() {
       }, LAYOUT_SAVE_DEBOUNCE_MS);
     });
 
+    // A popout moves a group's existing DOM into the popout window's document,
+    // and closing it moves the DOM back - neither through React, so no pane
+    // effect re-runs on its own. Announce both moves so document-bound
+    // surfaces (the reader's selection observer) rebind to the document that
+    // now owns their nodes. The removal event is symmetric across a window
+    // close and a programmatic dock-back, and the service fires it only after
+    // the group has returned.
+    const popoutAddSub = api.onDidAddPopoutGroup(() => publishPaneDocumentMoved());
+    const popoutRemoveSub = api.onDidRemovePopoutGroup(() => publishPaneDocumentMoved());
+
     return () => {
       // A pending save is FLUSHED, not dropped. The debounce exists to
       // coalesce a gesture's many onDidLayoutChange bursts into one write
@@ -347,6 +358,8 @@ export function DockHost() {
       removeSub.dispose();
       activeSub.dispose();
       layoutSub.dispose();
+      popoutAddSub.dispose();
+      popoutRemoveSub.dispose();
       registerDockviewApi(null);
     };
   }, [api]);

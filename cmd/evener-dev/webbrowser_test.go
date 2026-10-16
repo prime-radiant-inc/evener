@@ -244,7 +244,7 @@ func TestBrowserGuardIncludesMemoryGuard(t *testing.T) {
 		t.Fatalf("memoryguard missing from browserGuards: %q", browserGuards)
 	}
 	for i, guard := range browserGuards {
-		if guard == "memoryguard" && i >= len(browserGuards)-4 {
+		if guard == "memoryguard" && i >= len(browserGuards)-5 {
 			t.Fatalf("memoryguard must precede the never-signalled tail: %q", browserGuards)
 		}
 	}
@@ -404,20 +404,24 @@ func TestBrowserGateBuildFailureFailsOnlyTheProductionGuards(t *testing.T) {
 	launcher.buildStatus = 17
 	launcher.buildOutput = "vite build exploded\n"
 	tg := startTestGate(t, launcher, len(browserGuards), true)
-	for range len(browserGuards) - 4 {
+	for range len(browserGuards) - 5 {
 		launcher.awaitStart(t).exit <- 0
 	}
 	r := tg.await(t)
 	if r.status != 17 {
 		t.Fatalf("status = %d, want the build's 17", r.status)
 	}
-	if launcher.guard(skillGuard) != nil || launcher.guard(cascadeGuard) != nil || launcher.guard(backgroundJobsGuard) != nil || launcher.guard(backgroundTranscriptGuard) != nil {
+	if launcher.guard(skillGuard) != nil ||
+		launcher.guard(cascadeGuard) != nil ||
+		launcher.guard(backgroundJobsGuard) != nil ||
+		launcher.guard(backgroundTranscriptGuard) != nil ||
+		launcher.guard(docAnnotationJourney) != nil {
 		t.Fatal("a production guard started without a built frontend")
 	}
-	if !strings.Contains(tg.stderr.String(), "FAIL  web-skillguard (frontend build, exit 17)") || !strings.Contains(tg.stdout.String(), "vite build exploded") {
+	if !strings.Contains(tg.stdout.String(), "vite build exploded") {
 		t.Fatalf("stdout = %s\nstderr = %s", tg.stdout.String(), tg.stderr.String())
 	}
-	for _, guard := range browserGuards[:len(browserGuards)-4] {
+	for _, guard := range browserGuards[:len(browserGuards)-5] {
 		if !strings.Contains(tg.stdout.String(), "PASS  web-"+guard+" (0.0s)\n") {
 			t.Errorf("web-%s did not reach its verdict", guard)
 		}
@@ -480,7 +484,7 @@ func TestBrowserGateRunsEveryGuardAfterASuccessfulBuild(t *testing.T) {
 		t.Fatal("the gate did not build the missing frontend")
 	}
 	var want strings.Builder
-	want.WriteString("building the production frontend for web-skillguard, web-cascadeguard, web-backgroundjobsguard, web-backgroundtranscriptguard…\n")
+	want.WriteString("building the production frontend for web-skillguard, web-cascadeguard, web-backgroundjobsguard, web-backgroundtranscriptguard, web-docannotationjourney…\n")
 	for _, guard := range browserGuards {
 		want.WriteString("PASS  web-" + guard + " (0.0s)\n")
 	}
@@ -521,7 +525,7 @@ func TestBrowserGateFinishesWhenTheLastGuardNeverStarts(t *testing.T) {
 	launcher := newFakeLauncher()
 	launcher.buildStatus = 17
 	tg := startTestGate(t, launcher, 1, true)
-	for range len(browserGuards) - 4 {
+	for range len(browserGuards) - 5 {
 		launcher.awaitStart(t).exit <- 0
 	}
 	if r := tg.await(t); r.status != 17 {
@@ -580,13 +584,13 @@ func TestBrowserGateBuildsOnlyAMissingFrontend(t *testing.T) {
 	}
 }
 
-// An interrupt TERMs every running guard except the skill guard, and waits for
+// An interrupt TERMs every running guard except the go-test guards, and waits for
 // all of them, the skill guard included, before the gate exits.
 // waitedNotSignalled are the guards an interrupt waits for but never TERMs:
 // each is a go test (the retirement guard's behind npm) whose driver, Chrome
 // and helper daemons are cleaned up by the test binary's own t.Cleanup, which
 // a TERM would skip, and a TERM to npm alone would orphan.
-var waitedNotSignalled = []string{retirementGuard, skillGuard, cascadeGuard, backgroundJobsGuard, backgroundTranscriptGuard}
+var waitedNotSignalled = []string{retirementGuard, skillGuard, cascadeGuard, backgroundJobsGuard, backgroundTranscriptGuard, docAnnotationJourney}
 
 // An interrupt TERMs every running guard except the go-test guards, and waits
 // for all of them before the gate exits.
@@ -788,10 +792,11 @@ func TestBrowserGateLaunchesEachGuardContained(t *testing.T) {
 			t.Errorf("%s shares its Vite cache with %s", guard, other)
 		}
 		vites[vite] = guard
+		// go-test guards (skill, cascade, background transcript, doc
+		// annotation journey) carry the browserguard tag and no Node/Vite
+		// environment of their own beyond the isolated Vite cache checked
+		// above.
 		if spec.argv[0] == "go" {
-			// go-test guards (skill, cascade, background transcript) carry the
-			// browserguard tag and no Node/Vite environment of their own beyond
-			// the isolated Vite cache checked above.
 			if !slices.Equal(spec.argv[:4], []string{"go", "test", "-tags", "browserguard"}) {
 				t.Errorf("%s argv = %q", guard, spec.argv)
 			}

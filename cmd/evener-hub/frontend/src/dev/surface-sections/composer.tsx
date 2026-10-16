@@ -18,9 +18,9 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { useEffect, useState } from "react";
 import { AskDock } from "../../panes/session/composer/askDock";
 import { Composer } from "../../panes/session/composer/Composer";
-import { writeDraft } from "../../panes/session/composer/draft";
 import { type ComposerSourceState, createComposerSourceState } from "../../panes/session/composer/sourceState";
 import { ClientProvider } from "../../shell/clientContext";
+import { browserDraftKey, getBrowserDraftRepository } from "../../stores/browserDraftRepository";
 import { putThreadModel } from "../../stores/threads";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
@@ -106,7 +106,7 @@ const askThread: Thread = fixtureThread(ASK_REF, {
   ],
 });
 
-function seedComposerFixtures(): void {
+async function seedComposerFixtures() {
   const now = Date.now();
   // putThreadModel is the store's membership path (index maintenance
   // included), so these fixture panes are routable by ref and threadId
@@ -120,7 +120,10 @@ function seedComposerFixtures(): void {
     hydrateThread({ thread: fixtureThread(DRAFTED_REF) } as ThreadReadResponse, DRAFTED_REF, now),
   );
   putThreadModel(ASK_REF, hydrateThread({ thread: askThread } as ThreadReadResponse, ASK_REF, now));
-  writeDraft(DRAFTED_REF, "One more thing - can you also add a CHANGELOG entry for this?");
+  return getBrowserDraftRepository().seedDraft(browserDraftKey(DRAFTED_REF), {
+    text: "One more thing - can you also add a CHANGELOG entry for this?",
+    skillNames: [],
+  });
 }
 
 function FixtureComposer({ ref }: { ref: string }) {
@@ -135,9 +138,31 @@ function FixtureComposer({ ref }: { ref: string }) {
 
 export default function ComposerSurfaceSection() {
   const [seeded, setSeeded] = useState(false);
+  const [seedError, setSeedError] = useState<string | null>(null);
   useEffect(() => {
-    seedComposerFixtures();
-    setSeeded(true);
+    let active = true;
+    void seedComposerFixtures().then(
+      (result) => {
+        if (!active) return;
+        switch (result.state) {
+          case "committed":
+          case "conflict":
+            // A conflict leaves the existing draft authoritative, never replaces it.
+            setSeeded(true);
+            break;
+          case "unavailable":
+            setSeedError("Couldn't save the composer fixture locally");
+            break;
+        }
+      },
+      () => {
+        if (!active) return;
+        setSeedError("Couldn't save the composer fixture locally");
+      },
+    );
+    return () => {
+      active = false;
+    };
   }, []);
 
   return (
@@ -150,6 +175,7 @@ export default function ComposerSurfaceSection() {
         itself off the seeded thread's transcript, the same way it would off a live ask_user call, and the composer's
         own input row hides while the question is pending.
       </p>
+      {seedError && <p role="alert">{seedError}</p>}
       <ClientProvider client={client}>
         {seeded && (
           <ThemeFlip>

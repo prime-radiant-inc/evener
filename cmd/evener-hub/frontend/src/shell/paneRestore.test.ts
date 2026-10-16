@@ -28,8 +28,16 @@
 // pane-presence assertions are the ones that must carry the net).
 import { bindFilePath } from "@evener/appwire-client/docContent";
 import type { DockviewApi } from "dockview-core";
-import { beforeEach, describe, expect, test } from "vitest";
+import { IDBFactory } from "fake-indexeddb";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { openDocBeside } from "../panes/doc/openDoc";
+import {
+  browserDraftKey,
+  getBrowserDraftRepository,
+  resetBrowserDraftRepositoryForTests,
+} from "../stores/browserDraftRepository";
+import { resetThreadsStoreForTests } from "../stores/threads";
+import { conversationPaneLifetime } from "./paneLifetime";
 import { paneFor } from "./paneRegistry";
 import {
   conversationOpenParentRef,
@@ -75,7 +83,74 @@ function asDockviewApi(fake: FakeDockviewApi): DockviewApi {
 }
 
 beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
+  resetBrowserDraftRepositoryForTests();
+  resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
+});
+afterEach(() => {
+  resetWorkspaceStoreForTests();
+  resetThreadsStoreForTests();
+  resetBrowserDraftRepositoryForTests();
+});
+
+test("a same-ID restored layout hydrates the full durable draft without persisting or reusing its source identity", async () => {
+  const ref = "restore-structured";
+  const key = browserDraftKey(ref);
+  const repository = getBrowserDraftRepository();
+  const value = {
+    text: "🙂 /same /same /same",
+    skillNames: ["same"],
+    commandNames: ["same"],
+    mentions: [
+      { kind: "command" as const, name: "same", offset: 3 },
+      { kind: "skill" as const, name: "same", offset: 9 },
+    ],
+  };
+  expect(await repository.seedDraft(key, value)).toMatchObject({ state: "committed" });
+  const before = await repository.load(key);
+  expect(before).toMatchObject(value);
+  const old = { id: "same-pane", type: "session" as const, slot: "main" as const, params: { ref } };
+  workspaceStore.setState({ panes: [old], focusedPaneId: old.id });
+  const lifetime = conversationPaneLifetime(old);
+  const source = lifetime.composer;
+  if (!source) throw new Error("Missing original composer source");
+  await source.ready();
+  expect(source.getSnapshot()).toMatchObject(value);
+  const saved = {
+    grid: { root: { type: "branch", data: [] } },
+    panels: {
+      "same-pane": { id: old.id, contentComponent: "default", params: { paneType: "session", paneParams: { ref } } },
+    },
+  };
+  expect(JSON.stringify(saved)).not.toContain(source.sourceId);
+  resetWorkspaceStoreForTests();
+  const fake = new FakeDockviewApi();
+  fake.serialized = saved;
+  fake.fromJSONBehavior = () => {
+    fake.panels = [{ id: old.id, params: { paneType: "session", paneParams: { ref } } }];
+    fake.activePanel = { id: old.id };
+  };
+  registerDockviewApi(asDockviewApi(fake));
+  expect(workspaceStore.getState().restoreLayout(saved)).toBe(true);
+  const restored = workspaceStore.getState().panes[0];
+  if (!restored) throw new Error("Missing restored pane");
+  expect(restored).toEqual(old);
+  expect(restored).not.toBe(old);
+  const replacement = conversationPaneLifetime(restored);
+  const replacementSource = replacement.composer;
+  if (!replacementSource) throw new Error("Missing restored composer source");
+  await replacementSource.ready();
+  await Promise.all([source.whenSettled(), replacementSource.whenSettled()]);
+  expect(lifetime.alive).toBe(false);
+  expect(replacement.serial).not.toBe(lifetime.serial);
+  expect(replacementSource.sourceId).not.toBe(source.sourceId);
+  expect(replacementSource.getSnapshot()).toMatchObject(value);
+  expect(await repository.load(key)).toEqual(before);
+  expect(restored).not.toHaveProperty("sourceId");
+  expect(restored.params).not.toHaveProperty("sourceId");
+  expect(workspaceStore.getState().layoutJSON()).toBe(saved);
+  expect(JSON.stringify(workspaceStore.getState().layoutJSON())).not.toContain(replacementSource.sourceId);
 });
 
 describe("boot-time registration lets a persisted layout with lazy panes restore", () => {
@@ -196,6 +271,116 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
         .map((pane) => paneFor(pane.type).title(pane.params, {})),
     ).toEqual(["Tasks · ref_a", "Details · ref_a"]);
   });
+});
+
+// A persisted doc panel may carry an explicit opening origin (Task 4). The
+// origin-less shape is the narrowly approved older form and stays readable; a
+// MALFORMED origin must be refused, not silently downgraded to that older form.
+// These cases drive the REAL restoreLayout -> readPanelParams -> doc.parseParams
+// path (no direct parseParams call), so a missing doc.parseParams shows up as an
+// actual panel that wrongly survived restore.
+describe("a persisted doc panel's opening origin is preserved or refused on restore", () => {
+  function restoreDocPanel(paneParams: unknown) {
+    const fake = new FakeDockviewApi();
+    const saved = {
+      grid: { root: { type: "branch", data: [] } },
+      panels: { p1: { id: "p1", contentComponent: "default", params: { paneType: "doc", paneParams } } },
+    };
+    fake.serialized = saved;
+    fake.fromJSONBehavior = () => {
+      fake.panels = [{ id: "p1", params: { paneType: "doc", paneParams } }];
+      fake.activePanel = { id: "p1" };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+    const ok = workspaceStore.getState().restoreLayout(workspaceStore.getState().layoutJSON());
+    return { fake, ok };
+  }
+
+  test("the approved older shape without origin restores unchanged", () => {
+    const params = { session: "ref_a", path: "notes.md", kind: "file" };
+    const { fake, ok } = restoreDocPanel(params);
+    expect(ok).toBe(true);
+    expect(workspaceStore.getState().panes).toEqual([{ id: "p1", type: "doc", params, slot: "main" }]);
+    expect(fake.panels.map((panel) => panel.id)).toEqual(["p1"]);
+  });
+
+  test("a valid browser-origin restores with its exact origin intact", () => {
+    const params = {
+      session: "ref_a",
+      path: "notes.md",
+      kind: "file",
+      origin: { kind: "browser-origin", paneId: "owner-pane", compositionOwnerId: "owner-A" },
+    };
+    const { fake, ok } = restoreDocPanel(params);
+    expect(ok).toBe(true);
+    expect(workspaceStore.getState().panes).toEqual([{ id: "p1", type: "doc", params, slot: "main" }]);
+    expect(fake.panels.map((panel) => panel.id)).toEqual(["p1"]);
+  });
+
+  test("a valid browser-readonly-session origin restores with its exact source pane", () => {
+    const params = {
+      session: "ref_a",
+      path: "notes.md",
+      kind: "file",
+      origin: { kind: "browser-readonly-session", sourcePaneId: "cascade-pane" },
+    };
+    const { fake, ok } = restoreDocPanel(params);
+    expect(ok).toBe(true);
+    expect(workspaceStore.getState().panes).toEqual([{ id: "p1", type: "doc", params, slot: "main" }]);
+    expect(fake.panels.map((panel) => panel.id)).toEqual(["p1"]);
+  });
+
+  test("a malformed origin is refused: the panel is skipped, not read as older origin-less data", () => {
+    const { fake, ok } = restoreDocPanel({
+      session: "ref_a",
+      path: "notes.md",
+      kind: "file",
+      origin: { kind: "bogus" },
+    });
+    expect(ok).toBe(true);
+    expect(workspaceStore.getState().panes).toEqual([]);
+    expect(fake.panels).toEqual([]);
+  });
+
+  test("a browser-origin missing its compositionOwnerId is refused", () => {
+    const { fake, ok } = restoreDocPanel({
+      session: "ref_a",
+      path: "notes.md",
+      kind: "file",
+      origin: { kind: "browser-origin", paneId: "owner-pane" },
+    });
+    expect(ok).toBe(true);
+    expect(workspaceStore.getState().panes).toEqual([]);
+    expect(fake.panels).toEqual([]);
+  });
+
+  test("a browser-readonly-session with an empty sourcePaneId is refused", () => {
+    const { fake, ok } = restoreDocPanel({
+      session: "ref_a",
+      path: "notes.md",
+      kind: "file",
+      origin: { kind: "browser-readonly-session", sourcePaneId: "" },
+    });
+    expect(ok).toBe(true);
+    expect(workspaceStore.getState().panes).toEqual([]);
+    expect(fake.panels).toEqual([]);
+  });
+});
+
+// The dedupe contract the origin change must not break: two openings of the SAME
+// session/path under DIFFERENT origins are two distinct destinations, while
+// identical params still focus the existing record. Driven through the real
+// workspaceStore.openPane the doc producer uses.
+test("the same file from two owners stays two distinct doc records, while identical params dedupe", () => {
+  const base = { session: "ref_a", path: "notes.md", kind: "file" };
+  const originA = { kind: "browser-origin", paneId: "pane-A", compositionOwnerId: "owner-A" };
+  const originB = { kind: "browser-origin", paneId: "pane-B", compositionOwnerId: "owner-B" };
+  const idA = workspaceStore.getState().openPane("doc", { ...base, origin: originA });
+  const idB = workspaceStore.getState().openPane("doc", { ...base, origin: originB });
+  expect(idB).not.toBe(idA);
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "doc")).toHaveLength(2);
+  expect(workspaceStore.getState().openPane("doc", { ...base, origin: originA })).toBe(idA);
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "doc")).toHaveLength(2);
 });
 
 test("a saved session-ref transcript pane restores as the live conversation pane", () => {

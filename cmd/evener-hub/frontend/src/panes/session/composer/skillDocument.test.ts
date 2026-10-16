@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendLiteralReference,
   documentPositionToTextOffset,
   materializeSkillReferences,
   parseSkillDocument,
+  type SkillEditorValue,
   serializeSkillDocument,
+  skillAtomMentions,
   textOffsetToDocumentPosition,
 } from "./skillDocument";
 
@@ -109,5 +112,122 @@ describe("skill document", () => {
     expect(textOffsetToDocumentPosition(doc, 6, 1)).toBe(4);
     expect(textOffsetToDocumentPosition(doc, -1)).toBe(0);
     expect(textOffsetToDocumentPosition(doc, 100)).toBe(6);
+  });
+});
+
+describe("appendLiteralReference", () => {
+  // Every expected text, offset and atom below is an independently declared
+  // literal; none is computed with the helper or parser under test. The parsed
+  // result is read back to prove the appended value actually carries those atoms.
+  function atomsOf(value: SkillEditorValue): Array<{ kind: string; name: string; text: string }> {
+    return parseSkillDocument(value)
+      .content.content.filter((node) => !node.isText)
+      .map((node) => ({
+        kind: node.type.name,
+        name: String(node.attrs.name),
+        text: `/${String(node.attrs.name)}`,
+      }));
+  }
+
+  it("keeps an absent mention set absent when the suffix infers no atom", () => {
+    const current = { text: "keep\n", skillNames: ["plan"] };
+    const result = appendLiteralReference(current, "See /other.");
+    // The input's own trailing newline is preserved ahead of the appended blank line.
+    expect(result).toEqual({ text: "keep\n\n\nSee /other.", skillNames: ["plan"] });
+    expect(Object.hasOwn(result, "mentions")).toBe(false);
+    expect(atomsOf(result)).toEqual([]);
+    expect(skillAtomMentions(parseSkillDocument(result))).toEqual([]);
+    expect(current).toEqual({ text: "keep\n", skillNames: ["plan"] });
+  });
+
+  it("pins only the original inferred location when the suffix would add a skill atom", () => {
+    const current = { text: "Run /plan", skillNames: ["plan", "review"] };
+    const result = appendLiteralReference(current, "See /review.");
+    expect(result).toEqual({
+      text: "Run /plan\n\nSee /review.",
+      skillNames: ["plan", "review"],
+      mentions: [{ kind: "skill", name: "plan", offset: 4 }],
+    });
+    // The appended `/review` stays literal: only the pinned original atom parses.
+    expect(atomsOf(result)).toEqual([{ kind: "skill", name: "plan", text: "/plan" }]);
+    expect(skillAtomMentions(parseSkillDocument(result))).toEqual([{ kind: "skill", name: "plan", offset: 4 }]);
+    expect(serializeSkillDocument(parseSkillDocument(result))).toEqual({
+      text: "Run /plan\n\nSee /review.",
+      skillNames: ["plan"],
+    });
+    expect(current).toEqual({ text: "Run /plan", skillNames: ["plan", "review"] });
+  });
+
+  it("pins an empty inferred set when a skill suffix first introduces an atom", () => {
+    const current = { text: "keep", skillNames: ["plan"] };
+    const result = appendLiteralReference(current, "See /plan.");
+    expect(result).toEqual({ text: "keep\n\nSee /plan.", skillNames: ["plan"], mentions: [] });
+    expect(atomsOf(result)).toEqual([]);
+    expect(skillAtomMentions(parseSkillDocument(result))).toEqual([]);
+    expect(current).toEqual({ text: "keep", skillNames: ["plan"] });
+  });
+
+  it("keeps a command suffix literal when only a command name is selected", () => {
+    const current = { text: "step", skillNames: [], commandNames: ["plan"] };
+    const result = appendLiteralReference(current, "Run /plan.");
+    expect(result).toEqual({
+      text: "step\n\nRun /plan.",
+      skillNames: [],
+      commandNames: ["plan"],
+      mentions: [],
+    });
+    expect(atomsOf(result)).toEqual([]);
+    expect(current).toEqual({ text: "step", skillNames: [], commandNames: ["plan"] });
+  });
+
+  it("keeps explicit empty and nonempty same-spelling skill/command mentions untouched", () => {
+    const explicitEmpty = { text: "step", skillNames: ["plan"], commandNames: ["plan"], mentions: [] };
+    const emptied = appendLiteralReference(explicitEmpty, "Run /plan.");
+    expect(emptied).toEqual({
+      text: "step\n\nRun /plan.",
+      skillNames: ["plan"],
+      commandNames: ["plan"],
+      mentions: [],
+    });
+    expect(atomsOf(emptied)).toEqual([]);
+
+    const explicitPinned = {
+      text: "/same and /same",
+      skillNames: ["same"],
+      commandNames: ["same"],
+      mentions: [
+        { kind: "skill" as const, name: "same", offset: 0 },
+        { kind: "command" as const, name: "same", offset: 10 },
+      ],
+    };
+    const pinned = appendLiteralReference(explicitPinned, "Trailing prose.");
+    expect(pinned).toEqual({ ...explicitPinned, text: "/same and /same\n\nTrailing prose." });
+    expect(atomsOf(pinned)).toEqual([
+      { kind: "skill", name: "same", text: "/same" },
+      { kind: "command", name: "same", text: "/same" },
+    ]);
+    expect(skillAtomMentions(parseSkillDocument(pinned))).toEqual([
+      { kind: "skill", name: "same", offset: 0 },
+      { kind: "command", name: "same", offset: 10 },
+    ]);
+    // The input's text and mention array are not mutated.
+    expect(explicitPinned.text).toBe("/same and /same");
+    expect(explicitPinned.mentions).toEqual([
+      { kind: "skill", name: "same", offset: 0 },
+      { kind: "command", name: "same", offset: 10 },
+    ]);
+  });
+
+  it("appends to empty text and preserves a generic extra field without mutating the input", () => {
+    const rich = { text: "", skillNames: [], attachments: [{ id: "a", kind: "image" }] };
+    const result = appendLiteralReference(rich, "Reference text.");
+    expect(result).toEqual({
+      text: "Reference text.",
+      skillNames: [],
+      attachments: [{ id: "a", kind: "image" }],
+    });
+    expect(result.attachments).toBe(rich.attachments);
+    expect(atomsOf(result)).toEqual([]);
+    expect(rich).toEqual({ text: "", skillNames: [], attachments: [{ id: "a", kind: "image" }] });
   });
 });
