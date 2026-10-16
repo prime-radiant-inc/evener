@@ -1,9 +1,10 @@
 package contextmgr
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -24,7 +25,7 @@ func canaryManager(t *testing.T) *Manager {
 	client.Register(&stubSummarizeAdapter{name: "openai", respFn: func(llm.Request) (llm.Response, error) {
 		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", http.StatusBadRequest, "invalid messages[1].content: "+summarizerCanary, nil, nil)
 	}})
-	cm := NewManager(testOpenAIProfileWithContextWindow(1000), client, cheapmodel.New(client))
+	cm := NewManager(testOpenAIProfileWithContextWindow(minSummarizingWindow), client, cheapmodel.New(client))
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
@@ -55,35 +56,49 @@ func warningsFrom() (func(events.EventKind, events.EventData), *[]events.Warning
 	}, &warnings
 }
 
-func requireBareSummarizerWarning(t *testing.T, warnings []events.WarningData, label string) {
+func requireSafeSummarizerWarning(t *testing.T, warnings []events.WarningData, code string) {
 	t.Helper()
 	found := false
 	for _, warning := range warnings {
-		if strings.Contains(warning.Message, summarizerCanary) {
-			t.Fatalf("warning %q carries the provider's body", warning.Message)
+		encoded, err := json.Marshal(warning)
+		if err != nil {
+			t.Fatal(err)
 		}
-		found = found || strings.HasPrefix(warning.Message, label)
+		if bytes.Contains(encoded, []byte(summarizerCanary)) {
+			t.Fatal("warning carries the provider's body")
+		}
+		if warning.Code == code {
+			found = true
+			if code == "summary_failure" {
+				if warning.SummaryFailure == nil || warning.SummaryFailure.Terminal.Kind != "invalid_request" || warning.SummaryFailure.Terminal.Status != 400 {
+					t.Fatalf("lost typed summary failure: %+v", warning)
+				}
+			} else if warning.SummaryFailure != nil {
+				t.Fatal("successful deterministic fallback became a summary failure")
+			}
+		}
 	}
 	if !found {
-		t.Fatalf("no %q warning in %+v", label, warnings)
+		t.Fatalf("no %q warning in %+v", code, warnings)
 	}
 }
 
 func TestSummarizerFailureWarningsLeaveTheProviderBodyOut(t *testing.T) {
+	t.Parallel()
 	t.Run("MaybeCompact", func(t *testing.T) {
 		cm := canaryManager(t)
 		cm.CheckpointThreshold = 2.0
 		history := canaryHistory()
 		emit, warnings := warningsFrom()
 		cm.MaybeCompact(context.Background(), &history, 0, emit)
-		requireBareSummarizerWarning(t, *warnings, "LLM summarization failed")
+		requireSafeSummarizerWarning(t, *warnings, "summary_failure")
 	})
 	t.Run("ForceCompact", func(t *testing.T) {
 		cm := canaryManager(t)
 		history := canaryHistory()
 		emit, warnings := warningsFrom()
 		cm.ForceCompact(context.Background(), &history, "", emit)
-		requireBareSummarizerWarning(t, *warnings, "LLM summarization failed")
+		requireSafeSummarizerWarning(t, *warnings, "summary_failure")
 	})
 	t.Run("predictive checkpoint", func(t *testing.T) {
 		cm := canaryManager(t)
@@ -93,7 +108,10 @@ func TestSummarizerFailureWarningsLeaveTheProviderBodyOut(t *testing.T) {
 		if err := NewCheckpointPredStrategy(cm).ManageContext(context.Background(), &history, 0, emit); err != nil {
 			t.Fatalf("ManageContext: %v", err)
 		}
-		requireBareSummarizerWarning(t, *warnings, "Predictive checkpoint failed")
+		requireSafeSummarizerWarning(t, *warnings, "context_budget")
+		if history[0].Kind != schema.TurnCheckpoint {
+			t.Fatal("deterministic checkpoint was not installed")
+		}
 	})
 	t.Run("predictive summarize", func(t *testing.T) {
 		cm := canaryManager(t)
@@ -103,12 +121,12 @@ func TestSummarizerFailureWarningsLeaveTheProviderBodyOut(t *testing.T) {
 		if err := NewCheckpointPredStrategy(cm).ManageContext(context.Background(), &history, 0, emit); err != nil {
 			t.Fatalf("ManageContext: %v", err)
 		}
-		requireBareSummarizerWarning(t, *warnings, "LLM summarization failed")
+		requireSafeSummarizerWarning(t, *warnings, "summary_failure")
 	})
 	t.Run("session log", func(t *testing.T) {
 		cm := canaryManager(t)
 		cm.CheckpointThreshold = 2.0
-		strategy, err := NewSessionLogStrategy(cm, &fakeStrategyHost{stateDir: t.TempDir(), id: "canary", profile: testOpenAIProfileWithContextWindow(1000)})
+		strategy, err := NewSessionLogStrategy(cm, &fakeStrategyHost{stateDir: t.TempDir(), id: "canary", profile: testOpenAIProfileWithContextWindow(minSummarizingWindow)})
 		if err != nil {
 			t.Fatalf("NewSessionLogStrategy: %v", err)
 		}
@@ -117,6 +135,19 @@ func TestSummarizerFailureWarningsLeaveTheProviderBodyOut(t *testing.T) {
 		if err := strategy.ManageContext(context.Background(), &history, 0, emit); err != nil {
 			t.Fatalf("ManageContext: %v", err)
 		}
-		requireBareSummarizerWarning(t, *warnings, "LLM summarization failed")
+		requireSafeSummarizerWarning(t, *warnings, "summary_failure")
+	})
+	t.Run("partner condensation", func(t *testing.T) {
+		base := canaryManager(t)
+		cm := NewManager(testOpenAIProfileWithContextWindow(100_000), base.client, base.cheap)
+		cm.Meta = *persistentMeta
+		cm.PreserveRecentTurns = 2
+		history := partnerFloodHistory(200, 1500, 80)
+		emit, warnings := warningsFrom()
+		cm.ForceCompact(context.Background(), &history, "", emit)
+		requireSafeSummarizerWarning(t, *warnings, "summary_failure")
+		if history[0].Kind != schema.TurnCheckpoint {
+			t.Fatal("failed condensation discarded the checkpoint")
+		}
 	})
 }

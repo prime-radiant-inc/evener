@@ -71,6 +71,13 @@ func ApplyTokenBudget(req Request, res registry.Resolved) (Request, TokenBudget,
 	return req, budget, nil
 }
 
+// SafetyReserveTokens is the input headroom ApplyTokenBudget reserves for a
+// model with the given context window, so a caller sizing a request to fit
+// that window can leave the same room.
+func SafetyReserveTokens(contextWindow int) int {
+	return tokenSafetyReserve(registry.Caps{ContextWindow: &contextWindow})
+}
+
 func tokenSafetyReserve(caps registry.Caps) int {
 	smallest := 0
 	if positiveLimit(caps.MaxInputTokens) {

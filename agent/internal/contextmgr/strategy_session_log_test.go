@@ -561,7 +561,7 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	}
 	client.Register(f)
 
-	profile := testOpenAIProfileWithContextWindow(1000)
+	profile := testOpenAIProfileWithContextWindow(minSummarizingWindow)
 	cm := NewManager(profile, client, cheapmodel.New(client))
 	// All thresholds very low so all layers fire.
 	cm.ObservationMaskThreshold = 0.0001

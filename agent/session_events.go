@@ -373,8 +373,8 @@ func (s *Session) emitDiagnosticWarning(data events.WarningData) {
 
 // sendEvent enriches and delivers data on the event stream, stamping the given
 // causal provenance onto the envelope, and returns the enriched payload alongside
-// the delivered envelope. It performs no side effects beyond the send; the
-// Notification hook decision belongs to the caller.
+// the delivered envelope. Summary failure metadata is also retained in the
+// process log; the Notification hook decision belongs to the caller.
 func (s *Session) sendEvent(kind events.EventKind, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
 	data, ev, _ := s.sendEventContext(context.Background(), kind, data, p)
 	return data, ev
@@ -503,6 +503,9 @@ func (s *Session) sendEventContext(ctx context.Context, kind events.EventKind, d
 		}
 	}
 	s.eventsMu.RUnlock()
+	if open && kind == events.EventWarning {
+		s.logSummaryFailure(data)
+	}
 	if open && s.descendantEvent != nil {
 		s.descendantEvent(ev)
 	}

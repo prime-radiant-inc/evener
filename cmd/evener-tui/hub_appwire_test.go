@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/internal/appserver"
@@ -155,6 +157,39 @@ func TestHubModelSurfacesStructuredWarningDiagnostic(t *testing.T) {
 	got := updated.(hubModel)
 	if len(got.session.messages) != 1 || got.session.messages[0].Kind != transcript.MsgSystem || got.session.messages[0].Text != "Provider error: openai error (status=429): rate limited" {
 		t.Fatalf("messages=%+v", got.session.messages)
+	}
+}
+
+func TestSummaryFailureWarningKeepsRouteInTUI(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "agent", "testdata", "summaryfailurewire", "events.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Warning events.WarningData `json:"warning"`
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	warning := fixture.Warning
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+	updated, _ := m.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyWarning, map[string]any{
+			"threadId": "th_1", "ref": "local:th_1", "message": warning.Message,
+			"source": warning.Source, "title": warning.Title, "hint": warning.Hint, "code": warning.Code,
+		}).Notification,
+	})
+	got := updated.(hubModel)
+	if len(got.session.messages) != 1 || got.session.messages[0].Kind != transcript.MsgSystem {
+		t.Fatalf("diagnostic messages = %+v", got.session.messages)
+	}
+	for _, identifier := range []string{"openai/summary-model-8af1", "429", "rate_limit"} {
+		if !strings.Contains(got.session.messages[0].Text, identifier) {
+			t.Errorf("terminal diagnostic lost %s", identifier)
+		}
 	}
 }
 

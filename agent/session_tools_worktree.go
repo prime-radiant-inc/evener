@@ -89,6 +89,19 @@ type worktreeState struct {
 	err             error
 }
 
+// worktreeAnchorGoneError reports that the session's recorded working directory
+// — the anchor every relative path resolves against — has been deleted out from
+// under a running session (issue #4671). It names the dead path and the recovery
+// so no surface leaks the bare resolve-project lstat, and no surface silently
+// recreates the directory.
+type worktreeAnchorGoneError struct{ path string }
+
+func (e *worktreeAnchorGoneError) Error() string {
+	return fmt.Sprintf(
+		"session working directory %s no longer exists; re-anchor the session to an existing directory (for example the main checkout) or run git worktree operations from the main checkout",
+		e.path)
+}
+
 // WorktreeResult is what a successful create returns to the handler and, via
 // the tool result, to the model (spec §3 step 9): the new worktree's absolute
 // path, its branch, the base commit it was cut from, and the resolved main
@@ -765,11 +778,26 @@ func (s *Session) worktreeControlEnv(mainRepoRoot string) (execenv.ExecutionEnvi
 	return control, nil
 }
 
-// worktreeStateSnapshot implements worktreeGuard.state() (spec §7). It reads the
-// mutable occupancy fields under s.mu, then resolves the canonical Project and
-// worktree root OUTSIDE the lock (project resolution may fork git; s.mu must
-// never be held across a subprocess — spec §7).
+// worktreeStateSnapshot implements worktreeGuard.state() (spec §7): the session
+// occupancy snapshot with the strict anchor policy that refuses a dead anchor
+// rather than falling back. See worktreeStateSnapshotWith.
 func (s *Session) worktreeStateSnapshot() worktreeState {
+	return s.worktreeStateSnapshotWith(false)
+}
+
+// worktreeStateSnapshotWith is worktreeStateSnapshot with an explicit
+// dead-anchor policy. It reads the mutable occupancy fields under s.mu, then
+// resolves the canonical Project and worktree root OUTSIDE the lock (project
+// resolution may fork git; s.mu must never be held across a subprocess — spec
+// §7). When the session's active working directory is not an existing
+// directory, a snapshot that does not allow a fallback carries the named
+// worktreeAnchorGoneError, so every caller fails honestly instead of leaking
+// the bare resolve-project lstat (issue #4671). allowAnchorFallback is set only
+// by `list`, which resolves the project from the live restore root so the lanes
+// that still exist are still enumerated. The fallback is deliberately NOT
+// global: it would otherwise silently re-enable close-time unlocking, the
+// residue sweep, and adopt/remove/prune under a dead anchor.
+func (s *Session) worktreeStateSnapshotWith(allowAnchorFallback bool) worktreeState {
 	s.mu.Lock()
 	local, _ := s.env.(*execenv.LocalExecutionEnvironment)
 	restore := s.worktreeRestoreEnv
@@ -778,19 +806,59 @@ func (s *Session) worktreeStateSnapshot() worktreeState {
 	s.mu.Unlock()
 
 	st := worktreeState{env: local, restoreEnv: restore, currentWorktree: current}
-	if local != nil {
-		project, err := resolveWorktreeProject(local, local.WorkingDirectory())
-		if err != nil {
-			st.err = err
+	if local == nil {
+		return st
+	}
+	// The anchor is the session's working directory; resolving project identity
+	// from a missing path is the lstat failure this guards against.
+	resolveEnv, resolvePath := local, local.WorkingDirectory()
+	if !directoryExists(resolvePath) {
+		restoreRoot := ""
+		if restore != nil {
+			restoreRoot = restore.WorkingDirectory()
+		}
+		if !allowAnchorFallback || restoreRoot == "" || !directoryExists(restoreRoot) {
+			st.err = &worktreeAnchorGoneError{path: resolvePath}
 			return st
 		}
-		st.project = project
-		if projectIsGitCheckout(project) {
-			st.mainRepoRoot = project.CanonicalPath
-			st.worktreeRoot, st.err = s.worktreeRootForProject(stateDir, project)
-		}
+		resolveEnv, resolvePath = restore, restoreRoot
+	}
+	project, err := resolveWorktreeProject(resolveEnv, resolvePath)
+	if err != nil {
+		st.err = err
+		return st
+	}
+	st.project = project
+	if projectIsGitCheckout(project) {
+		st.mainRepoRoot = project.CanonicalPath
+		st.worktreeRoot, st.err = s.worktreeRootForProject(stateDir, project)
 	}
 	return st
+}
+
+// worktreeAnchorGone returns the named dead-anchor error when the session's
+// active local working directory no longer exists, else nil. create and the
+// worktree-isolated delegate spawn both resolve their project and base commit
+// from that directory without going through worktreeStateSnapshot, so they
+// need the check directly (issue #4671).
+func (s *Session) worktreeAnchorGone() error {
+	local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		return nil
+	}
+	anchor := local.WorkingDirectory()
+	if directoryExists(anchor) {
+		return nil
+	}
+	return &worktreeAnchorGoneError{path: anchor}
+}
+
+// directoryExists reports whether path names an existing directory (following
+// symlinks). It is the dead-anchor test shared by the snapshot and the explicit
+// create/spawn checks.
+func directoryExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 func (st worktreeState) resolutionError(operation string) error {
@@ -1335,6 +1403,12 @@ func (s *Session) worktreeCreateCore(ctx context.Context, active *execenv.LocalE
 // order): the shared worktreeCreateCore (steps 1-6), then leaves any worktree
 // the session was already inside and finally enters the new one.
 func (s *Session) worktreeCreate(ctx context.Context, name, baseRef string) (WorktreeResult, error) {
+	// create resolves both its project and its base SHA from the active root
+	// (spec §2) without going through worktreeStateSnapshot, so a dead anchor is
+	// checked here: refusing names the dead path instead of leaking the lstat.
+	if err := s.worktreeAnchorGone(); err != nil {
+		return WorktreeResult{}, err
+	}
 	// Snapshot the active env once. Base resolution is against the ACTIVE root
 	// (the worktree if the session is in one, else the original root), while
 	// placement keys off the stable main repo root (spec §2).
@@ -2847,7 +2921,12 @@ func worktreePruneEntryToMap(e WorktreePruneEntry) map[string]any {
 // its lock/prunable state plus disposal-relevant staleness pulled from the
 // metadata sidecar and cheap git queries.
 func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error) {
-	st := s.worktreeStateSnapshot()
+	// list is read-only, so it is the one operation allowed to resolve the
+	// project from a live restore root when the session's own anchor is gone
+	// (issue #4671): the lanes that still exist are still enumerated, and the
+	// dead lane is simply absent from git's registry (or reported prunable when
+	// only its directory was removed).
+	st := s.worktreeStateSnapshotWith(true)
 	if err := st.resolutionError("list"); err != nil {
 		return nil, err
 	}

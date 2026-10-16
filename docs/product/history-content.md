@@ -73,3 +73,42 @@ Clients retain their own cached windows and drafts. The server owns selected-pag
 construction and history fencing; after a stale cursor, a client refreshes the
 latest selected window without discarding unsent work. Source/index repair and
 transport recovery remain owned by their existing subsystems.
+
+## Summary failure diagnostics
+
+A failed conversation summary leaves the existing history or the operation's
+deterministic checkpoint available. The authoritative transcript is unchanged.
+The next eligible compaction can install a valid summary and continue normal
+model work. Model selection, fallback eligibility, retry counts and warning
+visibility are unchanged; repeated failed compactions can still warn.
+
+Context management emits `summary_failure` with the selected provider/model,
+terminal failure category and available HTTP status in the existing warning
+message. Advice distinguishes a failed fast/cheap route from the session model,
+since changing the main model need not change an independently configured summary
+model. CLI, TUI, AppWire, browser, native and Notification hooks carry these
+existing message/title/hint fields without a new renderer or visibility policy.
+Predictive-checkpoint recovery retains its informational `context_budget` code.
+
+The runtime's typed `summary_failure` record separates the terminal route from
+prior failed routes. It includes controlled category, stage and validation reason
+values, validated HTTP status and retryability when known. Provider/model names
+come from routing, are bounded to 256 bytes each and have control characters
+removed from display. A pre-selection failure has no invented model identity.
+Provider messages, response bodies, raw error codes, prompts, summaries, headers
+and credentials are excluded. The client projection keeps its existing
+`raw.warning` fields: `code`, `source`, `title` and `hint`.
+
+The [session warning publisher](../../agent/summary_diagnostics.go) logs the safe
+record once with `code` and `session_id`, independently of the opt-in API logger.
+The daemon launcher's private stderr file is `run/logs/daemon-<session-id>.log`
+under its state root. A delegate sharing the root daemon's log still records its
+own session identity. The launcher retains the latest 1 MiB at launch; there is
+no continuous size cap during a run. This is best-effort process logging, without
+a new fsync-backed audit guarantee. An unavailable log sink does not suppress
+the warning or prevent later compaction. Plain CLI execution writes to stderr;
+its caller owns persistence.
+
+The [recorded summary failure fixture](../../agent/testdata/summaryfailurewire/README.md)
+exercises the real producer, projection, shared decoder and existing client
+warning surfaces, followed by successful summary installation.

@@ -584,9 +584,10 @@ func faultFsEnv(t *testing.T, plan *fault.Schedule, seed map[string]string) *Loc
 }
 
 func TestWriteFile_FaultArms(t *testing.T) {
-	// Over a window of single-op faults, WriteFile's MkdirAll and underlying
-	// write must both surface an error. Faulting the first op hits MkdirAll;
-	// later ops hit the OpenFile/Write of the content write.
+	// Over a window of single-op faults, WriteFile must surface an error. The
+	// first op is now the dead-anchor guard's Stat(RootDir); the next is
+	// MkdirAll and the following ones are the OpenFile/Write of the content
+	// write. Faulting any of them must make WriteFile error.
 	firstErr := false
 	laterErr := false
 	for k := range 6 {
