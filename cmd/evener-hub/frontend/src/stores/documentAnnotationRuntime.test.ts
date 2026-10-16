@@ -367,6 +367,100 @@ it("retries a handoff refused while the composer was typing once that edit's dra
   expect(f.source.getSnapshot().text).toBe(`${typedText}\n\n${secondReference}`);
 });
 
+it("disposal preserves the composer while handoffs are queued behind an in-flight one", async () => {
+  let appendStarted: (() => void) | undefined;
+  const appendStartedPromise = new Promise<void>((resolve) => {
+    appendStarted = resolve;
+  });
+  let observeAppend = false;
+  const f = await fixture("handoff-disposal-queued", {
+    onAppendReadsIssued: () => {
+      if (observeAppend) appendStarted?.();
+    },
+  });
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+  const runtime = createDocumentAnnotationRuntime(f.repo);
+  const retainedRuntime = runtime;
+  cleanupAfterTest(async () => {
+    retainedRuntime.dispose();
+    await retainedRuntime.whenIdle();
+  });
+  for (const [operationId, note] of [
+    ["op-first", "first note"],
+    ["op-second", "second note"],
+    ["op-third", "third note"],
+  ] as const) {
+    const operation = await acceptedOperation(f.repo, f.document, operationId, note, f.destination);
+    await f.repo.saveAnnotation(operation);
+  }
+  observeAppend = true;
+  const inflight = retainedRuntime.handoff(f.document, "op-first");
+  await appendStartedPromise; // op-first is mid-append; the append runner issued its reads
+  observeAppend = false;
+  const queued = retainedRuntime.handoff(f.document, "op-second"); // waits behind the in-flight one
+  retainedRuntime.dispose(); // application teardown: one handoff in flight, one queued
+  const [inflightResult, queuedResult] = await Promise.all([inflight, queued]);
+  expect(inflightResult.state).toBe("applied"); // the already-running handoff completes
+  expect(queuedResult).toEqual({ state: "cancelled" }); // the queued one must never reach the composer
+  await expect(retainedRuntime.handoff(f.document, "op-third")).resolves.toEqual({
+    state: "cancelled",
+  });
+  // Disposal preserved the durable draft: only the in-flight handoff's reference landed.
+  const firstRef = REFERENCE.replace('"Keep this scope."', '"first note"');
+  expect((await f.drafts.load(f.key))?.text).toBe(`ordinary /same\n\n${REFERENCE}\n\n${firstRef}`);
+  const receipts = await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE);
+  expect(receipts.find((row) => row.operationId === "op-second")?.state).toBe("pending");
+  expect(receipts.find((row) => row.operationId === "op-third")?.state).toBe("pending");
+});
+
+it("retries a recovery-backed handoff refused while typing once the recovery edit commits", async () => {
+  let runtime: DocumentAnnotationRuntime | undefined;
+  let interruptAppend = false;
+  const typedText = "typed in recovery while the annotation handed off";
+  const f = await fixture("refused-mid-typing-recovery-commit", {
+    beforeFinalGuard: () => {
+      if (!interruptAppend) return;
+      interruptAppend = false;
+      // The user types through the recovery edit path: markEdited's recovery
+      // branch marks the write durable-unsaved, and the detached persistence
+      // commits it into the recovery record through the mutation outbox.
+      f.source.editText(typedText);
+    },
+    onStorageSuccess: () => runtime?.storageSucceeded(),
+  });
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+  f.source.setActiveRecoveryId("rec-1");
+  runtime = createDocumentAnnotationRuntime(f.repo);
+  const retainedRuntime = runtime;
+  cleanupAfterTest(async () => {
+    retainedRuntime.dispose();
+    await retainedRuntime.whenIdle();
+  });
+  const operation = await acceptedOperation(f.repo, f.document, "op-2", "Second note.", f.destination);
+  await f.repo.saveAnnotation(operation);
+  interruptAppend = true;
+  await expect(retainedRuntime.handoff(f.document, "op-2")).resolves.toEqual({
+    state: "pending",
+    reason: "owner-unavailable",
+  });
+  // The interrupted typing settles into the durable recovery record on its own
+  // schedule; await that commit, which is the only notification the runtime
+  // gets: no reader-open, composer-open, foreground, or annotation action runs.
+  await vi.waitFor(async () => {
+    const committed = await f.outbox.getRecovery("rec-1");
+    expect(committed?.composerText).toContain(typedText);
+  });
+  await retainedRuntime.whenIdle();
+  const secondReference = REFERENCE.replace('"Keep this scope."', '"Second note."');
+  const record = await f.outbox.getRecovery("rec-1");
+  expect(record?.composerText).toBe(`${typedText}\n\n${secondReference}`);
+  const applied = (
+    await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)
+  ).find((row) => row.operationId === "op-2");
+  expect(applied).toMatchObject({ state: "applied" });
+  expect(f.source.getSnapshot().text).toBe(`${typedText}\n\n${secondReference}`);
+});
+
 it("invalidates failed work and disposal stops later storage and explicit retry triggers", async () => {
   let failSave = false,
     runtime: DocumentAnnotationRuntime | undefined;

@@ -123,6 +123,8 @@ export interface ComposerSourceState {
     consumeOrdinary?: RecoveryOrdinaryConsumption,
     onPersisted?: (guard: RecoveryWriteGuard) => void,
   ): Promise<void>;
+  /** Fires after a recovery edit's persistence commits (update or discard); cleared at disposal. */
+  subscribeRecoveryPersisted(listener: () => void): () => void;
   clearIfUnchanged(
     text: string,
     revision: number,
@@ -1219,6 +1221,29 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     return Object.freeze({ ...guard, token });
   }
 
+  // Recovery-edit commits notify their subscribers: the annotation repository
+  // arms this so a handoff refused while the composer was typing retries the
+  // moment the interrupted edit's persistence lands. Draft edits already carry
+  // an equivalent notification on the drafts repository; recovery edits commit
+  // through the mutation outbox, so the source is the one place both commit
+  // paths are observed. Listeners are isolated from one another's faults and
+  // never fire after disposal.
+  const recoveryPersistedListeners = new Set<() => void>();
+  function subscribeRecoveryPersisted(listener: () => void): () => void {
+    recoveryPersistedListeners.add(listener);
+    return () => {
+      recoveryPersistedListeners.delete(listener);
+    };
+  }
+  function publishRecoveryPersisted(): void {
+    for (const listener of [...recoveryPersistedListeners]) {
+      try {
+        listener();
+      } catch {
+        // A listener fault cannot change the committed recovery outcome.
+      }
+    }
+  }
   function queueRecoveryPersistence(
     clientMutationId: string,
     nextText: string,
@@ -1317,6 +1342,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
               const persistedGuard = acknowledgeRecoveryWrite(guard);
               if (pendingRecoveryWrite?.version === version && recoveryEdits === edits) pendingRecoveryWrite = null;
               onPersisted?.(persistedGuard);
+              publishRecoveryPersisted();
               if (
                 !disposed &&
                 activeRecoveryIdRef.current === clientMutationId &&
@@ -1346,6 +1372,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
               const persistedGuard = acknowledgeRecoveryWrite(guard, update?.sessionToken);
               if (pendingRecoveryWrite?.version === version && recoveryEdits === edits) pendingRecoveryWrite = null;
               onPersisted?.(persistedGuard);
+              publishRecoveryPersisted();
             }
             if (
               !disposed &&
@@ -1520,6 +1547,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     persistDraft,
     writeDraft,
     queueRecoveryPersistence,
+    subscribeRecoveryPersisted,
     persistRecoveryEffect,
     holdSubmittedAttachmentRetirement,
     clearSubmittedAttachments,
@@ -1581,6 +1609,12 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     dispose() {
       if (disposed) return;
       disposed = true;
+      recoveryPersistedListeners.clear();
+      const settles = draftSourceSettles.get(ref);
+      if (settles !== undefined) {
+        settles.delete(settleEntry);
+        if (settles.size === 0) draftSourceSettles.delete(ref);
+      }
       retirementHolds.clear();
       retirementPersistenceAttempt = null;
       if (pendingRetirement) {

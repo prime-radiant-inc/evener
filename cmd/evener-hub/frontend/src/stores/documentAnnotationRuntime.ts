@@ -168,10 +168,16 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     retryPending,
     whenIdle: () => pass ?? Promise.resolve(),
     handoff: (key, operationId) => {
+      // A disposed runtime owns no composer work: a handoff arriving after
+      // disposal, or waiting in the serialization chain when disposal lands,
+      // must answer cancelled instead of running against a repository whose
+      // connection can reopen and appending to a retained composer after
+      // application teardown.
+      if (!alive) return Promise.resolve<HandoffResult>({ state: "cancelled" });
       const prior = pass ? Promise.all([pass, handoffChain]) : handoffChain;
       const run = prior.then(
-        () => repo.handoff(key, operationId),
-        () => repo.handoff(key, operationId),
+        () => (alive ? repo.handoff(key, operationId) : Promise.resolve<HandoffResult>({ state: "cancelled" })),
+        () => (alive ? repo.handoff(key, operationId) : Promise.resolve<HandoffResult>({ state: "cancelled" })),
       );
       handoffChain = run.then(
         () => undefined,

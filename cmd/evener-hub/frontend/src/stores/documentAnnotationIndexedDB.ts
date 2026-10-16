@@ -374,6 +374,14 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // Keyed registrations, woken only after a committed change to their exact
   // document or namespace.
   readonly #subscriptions = new Set<AnnotationSubscription>();
+  // One recovery-commit notification armed per resolved composer source. A
+  // handoff refused while the composer was typing waits on that edit's
+  // persistence; recovery edits commit through the mutation outbox, which the
+  // drafts-repository subscription cannot observe, so the source's own
+  // recovery-persisted notification is routed through the same storage-success
+  // boundary. The WeakMap dies with the source, and a disposed source clears
+  // its listeners, so a closed repository can never be revived by one.
+  readonly #recoveryNotifications = new WeakMap<ComposerSourceState, () => void>();
   // Best-effort peer wakeups, scoped to this adapter's database.
   readonly #channel: AnnotationWakeChannel;
   readonly #channelSourceId = makeSourceId();
@@ -481,6 +489,15 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // repository. An observer fault cannot change the committed result.
   #notifyStorageSuccess(): void {
     invokeObserver(() => this.#options.onStorageSuccess?.());
+  }
+
+  // Arm the source's recovery-persisted notification once per source: every
+  // handoff (direct or replayed) passes here, so a recovery-typing refusal
+  // leaves the notification armed before the runtime ever needs it.
+  #armRecoveryCommitNotification(source: ComposerSourceState): void {
+    if (this.#recoveryNotifications.has(source)) return;
+    const unsubscribe = source.subscribeRecoveryPersisted(() => this.#notifyStorageSuccess());
+    this.#recoveryNotifications.set(source, unsubscribe);
   }
 
   // Test-only inspection of the adapter-local issued-ticket map: acceptance
@@ -1432,6 +1449,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     }
     const source = this.#options.targetFor(payload.operation.destination, key);
     if (!source) return { state: "pending", reason: "owner-unavailable" };
+    this.#armRecoveryCommitNotification(source);
     let preparation: ComposerPreparation | null;
     try {
       preparation = await source.prepareAnnotation();
