@@ -62,7 +62,7 @@ func (m *Manager) recoverSelectedRestart(ctx context.Context, host hostreg.Host,
 		if !sameLaunch(now, prior) {
 			return fmt.Errorf("%w: pending owner intent changed", errOwnerEvidence)
 		}
-		if now.generation != prior.generation {
+		if !sameProcess(now, prior) {
 			// A successful replacement may have outlived a lost SSH response. Verify
 			// that successor instead of needlessly restarting it again.
 			if selectedSuccessor(now, prior, pending.version, pending.gitSHA) {
@@ -143,7 +143,7 @@ func (m *Manager) revalidateStoppedService(ctx context.Context, host hostreg.Hos
 
 func selectedSuccessor(now, prior selectedOwner, version, pin string) bool {
 	running := now.report.Running
-	return running != nil && now.generation != prior.generation && sameLaunch(now, prior) && running.Version == version && hubBuildSHAMatches(running.BackendGitSHA, pin) && (prior.report.Running == nil || running.BootID != prior.report.Running.BootID)
+	return running != nil && !sameProcess(now, prior) && sameLaunch(now, prior) && running.Version == version && hubBuildSHAMatches(running.BackendGitSHA, pin) && (prior.report.Running == nil || running.BootID != prior.report.Running.BootID)
 }
 
 func (m *Manager) waitSelectedSuccessor(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState) error {

@@ -53,6 +53,9 @@ func (o selectedOwner) clone() selectedOwner {
 // explicit config selectors are resolved in the owner's cwd and narrow environment.
 // No mutation, listener-port query, authentication or daemon launch occurs here.
 func (m *Manager) resolveOwnedEndpoint(ctx context.Context, host hostreg.Host, facts Preflight) (selectedOwner, error) {
+	// Capture the same effective executable that revalidation and replay compare,
+	// including for Darwin and cold stopped services.
+	m.applyResolvedTarget(&host)
 	report, err := m.resolveHostEndpoint(ctx, host, facts)
 	if err != nil {
 		return selectedOwner{}, err
@@ -91,7 +94,6 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 	if err := m.checkHubOwner(ctx, host, pid); err != nil {
 		return selectedOwner{}, fmt.Errorf("%w: %w", errOwnerEvidence, err)
 	}
-	m.applyResolvedTarget(&host)
 	argv, err := m.recoverHubArgv(ctx, host, pid)
 	if err != nil {
 		return selectedOwner{}, fmt.Errorf("%w: %w", errOwnerEvidence, err)
@@ -180,7 +182,13 @@ func (m *Manager) revalidateOwnedEndpoint(ctx context.Context, host hostreg.Host
 }
 
 func sameOwner(now, prior selectedOwner) bool {
-	return now.host.Equal(prior.host) && now.host.Generation == prior.host.Generation && now.host.IncarnationID == prior.host.IncarnationID && now.host.PresenceEpoch == prior.host.PresenceEpoch && now.pid == prior.pid && now.generation == prior.generation && sameLaunch(now, prior)
+	return now.host.Equal(prior.host) && now.host.Generation == prior.host.Generation && now.host.IncarnationID == prior.host.IncarnationID && now.host.PresenceEpoch == prior.host.PresenceEpoch && sameProcess(now, prior) && sameLaunch(now, prior)
+}
+
+func sameProcess(now, prior selectedOwner) bool {
+	// Birth evidence can have second or tick precision, so it is not unique
+	// without the independently associated PID.
+	return now.pid == prior.pid && now.generation == prior.generation
 }
 
 func sameLaunch(now, prior selectedOwner) bool {

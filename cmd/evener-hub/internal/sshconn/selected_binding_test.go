@@ -84,7 +84,7 @@ func TestRemoteRestartPreservesBinding(t *testing.T) {
 }
 
 func TestRemoteRestartRejectsUnselectedSuccessor(t *testing.T) {
-	for _, change := range []string{"wrong PID", "reused generation", "old boot", "wrong build", "wrong config"} {
+	for _, change := range []string{"wrong PID", "unchanged PID and birth", "old boot", "wrong build", "wrong config"} {
 		t.Run(change, func(t *testing.T) {
 			host, first := ownerCommands(t)
 			_, second := ownerCommands(t)
@@ -93,8 +93,8 @@ func TestRemoteRestartRejectsUnselectedSuccessor(t *testing.T) {
 			case "wrong PID":
 				next[0].output = strings.ReplaceAll(next[0].output, `"pid":4343`, `"pid":5151`)
 				next = next[:2]
-			case "reused generation":
-				next[2].output, next[16].output = "kernel-boot\n12500\n", "kernel-boot\n12500\n"
+			case "unchanged PID and birth":
+				next = identitySuccessorCommands(t, "linux", true, true)
 			case "old boot":
 				next[0].output = strings.ReplaceAll(next[0].output, "boot-two", "boot-one")
 			case "wrong build":
