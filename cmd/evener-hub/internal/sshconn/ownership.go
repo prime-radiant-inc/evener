@@ -1,6 +1,7 @@
 package sshconn
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -30,25 +31,56 @@ type selectedOwner struct {
 	argv       []string
 	cwd        string
 	report     hubendpoint.Report
+	env        []string
+	definition string
+	logPath    string
+	domainUID  string
 }
 
-// resolveOwnedEndpoint establishes the independent Linux owner of the selected
-// root before probing its original image. An endpoint PID alone is never kill
-// authority. This bounded seam supports an absolute explicit config selector;
-// default/service-environment config selection needs its own context evidence.
+func (o selectedOwner) clone() selectedOwner {
+	o.host.Roots = slices.Clone(o.host.Roots)
+	o.argv = slices.Clone(o.argv)
+	o.env = slices.Clone(o.env)
+	if o.report.Running != nil {
+		running := *o.report.Running
+		o.report.Running = &running
+	}
+	return o
+}
+
+// resolveOwnedEndpoint associates the selected root with independent process and
+// service evidence. An endpoint PID alone is never kill authority. Default and
+// explicit config selectors are resolved in the owner's cwd and narrow environment.
 // No mutation, listener-port query, authentication or daemon launch occurs here.
 func (m *Manager) resolveOwnedEndpoint(ctx context.Context, host hostreg.Host, facts Preflight) (selectedOwner, error) {
 	report, err := m.resolveHostEndpoint(ctx, host, facts)
 	if err != nil {
 		return selectedOwner{}, err
 	}
-	if facts.OS != "linux" || !path.IsAbs(host.ConfigPath) || report.State == "stopped" {
-		return selectedOwner{}, fmt.Errorf("%w: host %q requires live Linux owner and absolute config selection", errOwnerEvidence, host.Name)
+	if report.State == "stopped" {
+		return m.resolveStoppedOwner(ctx, host, facts, report)
 	}
-	pid, err := m.selectedLockPID(ctx, host, report.HubStateRoot)
+	if facts.OS == "darwin" {
+		return m.resolveDarwinOwner(ctx, host, facts, report)
+	}
+	if facts.OS != "linux" {
+		return selectedOwner{}, fmt.Errorf("%w: host %q requires a live selected owner", errOwnerEvidence, host.Name)
+	}
+	pid, lockErr := m.selectedLockPID(ctx, host, report.HubStateRoot)
+	if lockErr == nil {
+		return m.resolveLinuxOwner(ctx, host, report, pid, true)
+	}
+	if ctx.Err() != nil {
+		return selectedOwner{}, ctx.Err()
+	}
+	pid, err = m.selectedServicePID(ctx, host, report)
 	if err != nil {
 		return selectedOwner{}, err
 	}
+	return m.resolveLinuxOwner(ctx, host, report, pid, false)
+}
+
+func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, report hubendpoint.Report, pid string, fromLock bool) (selectedOwner, error) {
 	if report.Running != nil && strconv.Itoa(report.Running.PID) != pid {
 		return selectedOwner{}, fmt.Errorf("%w: selected record PID differs from independent lock owner", errOwnerEvidence)
 	}
@@ -64,10 +96,6 @@ func (m *Manager) resolveOwnedEndpoint(ctx context.Context, host hostreg.Host, f
 	if err != nil {
 		return selectedOwner{}, fmt.Errorf("%w: %w", errOwnerEvidence, err)
 	}
-	config, ok := ownerConfigFlag(argv)
-	if !ok || config != report.ConfigPath {
-		return selectedOwner{}, fmt.Errorf("%w: process config does not match selected config", errOwnerEvidence)
-	}
 	cwdOut, err := m.ownerRead(ctx, host, "readlink /proc/"+pid+"/cwd")
 	if err != nil {
 		return selectedOwner{}, err
@@ -76,26 +104,60 @@ func (m *Manager) resolveOwnedEndpoint(ctx context.Context, host hostreg.Host, f
 	if !path.IsAbs(cwd) {
 		return selectedOwner{}, fmt.Errorf("%w: process working directory unavailable", errOwnerEvidence)
 	}
+	env, err := m.ownerEnvironment(ctx, host, pid)
+	if err != nil {
+		return selectedOwner{}, err
+	}
+	if err := m.checkOwnerConfig(ctx, host, argv, cwd, env, report); err != nil {
+		return selectedOwner{}, err
+	}
 	sup, err := m.supervisorForOwner(ctx, host, pid, argv, cwd)
 	if err != nil {
 		return selectedOwner{}, err
 	}
-	if err := m.probeOwnerImageCapability(ctx, host, pid); err != nil {
-		return selectedOwner{}, err
+	owner := selectedOwner{host: host, pid: pid, supervisor: sup, generation: before, argv: argv, cwd: cwd, env: env, report: report}
+	if sup.kind != supervisorNone {
+		owner.definition, err = m.serviceDefinition(ctx, host, sup)
+		if err != nil {
+			return selectedOwner{}, err
+		}
+	} else {
+		out, err := m.ownerRead(ctx, host, "cat /proc/"+pid+"/cgroup")
+		if err != nil {
+			return selectedOwner{}, err
+		}
+		for _, component := range strings.FieldsFunc(string(out), func(r rune) bool { return r == '/' || r == '\n' }) {
+			if strings.HasSuffix(component, ".service") && isEvenerHubName(component) {
+				return selectedOwner{}, fmt.Errorf("%w: selected process belongs to an unresolved service", errOwnerEvidence)
+			}
+		}
+	}
+	if report.Running == nil && !m.hasOwnerWitness(owner) {
+		if err := m.probeOwnerImageCapability(ctx, host, pid); err != nil {
+			return selectedOwner{}, err
+		}
 	}
 	after, err := m.ownerGeneration(ctx, host, pid)
 	if err != nil {
 		return selectedOwner{}, err
 	}
-	currentPID, err := m.selectedLockPID(ctx, host, report.HubStateRoot)
-	if err != nil {
-		return selectedOwner{}, err
+	currentPID := pid
+	if fromLock {
+		currentPID, err = m.selectedLockPID(ctx, host, report.HubStateRoot)
+		if err != nil {
+			return selectedOwner{}, err
+		}
+	} else {
+		currentSupervisor, err := m.supervisorForOwner(ctx, host, pid, argv, cwd)
+		if err != nil || currentSupervisor != sup || sup.kind == supervisorNone {
+			return selectedOwner{}, errOwnerEvidence
+		}
 	}
 	if before != after || currentPID != pid {
 		return selectedOwner{}, fmt.Errorf("%w: selected generation changed during inspection", errOwnerEvidence)
 	}
-	host.Roots = slices.Clone(host.Roots)
-	return selectedOwner{host: host, pid: pid, supervisor: sup, generation: before, argv: slices.Clone(argv), cwd: cwd, report: report}, nil
+	m.rememberOwner(owner)
+	return owner.clone(), nil
 }
 
 // revalidateOwnedEndpoint redoes ownership and original-image capability rather
@@ -111,10 +173,156 @@ func (m *Manager) revalidateOwnedEndpoint(ctx context.Context, host hostreg.Host
 	if err != nil {
 		return selectedOwner{}, err
 	}
-	if now.pid != prior.pid || now.generation != prior.generation || now.supervisor != prior.supervisor || now.cwd != prior.cwd || !slices.Equal(now.argv, prior.argv) || now.report.HubStateRoot != prior.report.HubStateRoot || (prior.report.Running != nil && now.report.Running != nil && prior.report.Running.BootID != now.report.Running.BootID) {
+	if !sameOwner(now, prior) || (prior.report.Running != nil && now.report.Running != nil && prior.report.Running.BootID != now.report.Running.BootID) {
 		return selectedOwner{}, fmt.Errorf("%w: selected owner changed", errOwnerEvidence)
 	}
 	return now, nil
+}
+
+func sameOwner(now, prior selectedOwner) bool {
+	return now.host.Equal(prior.host) && now.host.Generation == prior.host.Generation && now.host.IncarnationID == prior.host.IncarnationID && now.host.PresenceEpoch == prior.host.PresenceEpoch && now.pid == prior.pid && now.generation == prior.generation && sameLaunch(now, prior)
+}
+
+func sameLaunch(now, prior selectedOwner) bool {
+	return now.supervisor == prior.supervisor && now.domainUID == prior.domainUID && now.cwd == prior.cwd && slices.Equal(now.argv, prior.argv) && slices.Equal(now.env, prior.env) && now.definition == prior.definition && now.report.ConfigPath == prior.report.ConfigPath && now.report.HubStateRoot == prior.report.HubStateRoot
+}
+
+func (m *Manager) hasOwnerWitness(owner selectedOwner) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	prior, ok := m.ownerWitnesses[owner.host.Name]
+	return ok && sameOwner(owner, prior)
+}
+
+func (m *Manager) rememberOwner(owner selectedOwner) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ownerWitnesses == nil {
+		m.ownerWitnesses = make(map[string]selectedOwner)
+	}
+	m.ownerWitnesses[owner.host.Name] = owner.clone()
+}
+
+// Filter on the owning host before stdout crosses SSH. No unrelated environment
+// value reaches the controller. NUL boundaries preserve both presence and value.
+func ownerEnvironmentRemote(pid string) string {
+	return "awk 'BEGIN { RS=\"\\0\" } /^(HOME|XDG_CONFIG_HOME|XDG_STATE_HOME|EVENER_HUB_LISTEN_ADDR)=/ { printf \"%s%c\", $0, 0 }' /proc/" + pid + "/environ"
+}
+
+func (m *Manager) ownerEnvironment(ctx context.Context, host hostreg.Host, pid string) ([]string, error) {
+	out, err := m.ownerRead(ctx, host, ownerEnvironmentRemote(pid))
+	if err != nil {
+		return nil, err
+	}
+	return decodeOwnerEnvironment(out)
+}
+
+func decodeOwnerEnvironment(out []byte) ([]string, error) {
+	var env []string
+	seen := map[string]bool{}
+	for value := range bytes.SplitSeq(bytes.TrimSuffix(out, []byte{0}), []byte{0}) {
+		if len(value) == 0 {
+			continue
+		}
+		key, _, ok := strings.Cut(string(value), "=")
+		if !ok || seen[key] || !slices.Contains(ownerEnvKeys, key) {
+			return nil, fmt.Errorf("%w: ambiguous process environment", errOwnerEvidence)
+		}
+		seen[key] = true
+		env = append(env, string(value))
+	}
+	slices.Sort(env)
+	return env, nil
+}
+
+var ownerEnvKeys = []string{"HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "EVENER_HUB_LISTEN_ADDR"}
+
+func ownerContext(cwd string, env []string) string {
+	var remote strings.Builder
+	remote.WriteString("cd " + shellquote.RemoteWord(cwd) + " || exit; unset " + strings.Join(ownerEnvKeys, " ") + "; ")
+	for _, value := range env {
+		remote.WriteString("export " + shellquote.RemoteWord(value) + "; ")
+	}
+	return remote.String()
+}
+
+// Reuse the remote resolver in the process's cwd and narrow relevant environment,
+// not the SSH login defaults. It rereads current TOML, including intentional edits.
+func (m *Manager) checkOwnerConfig(ctx context.Context, host hostreg.Host, argv []string, cwd string, env []string, selected hubendpoint.Report) error {
+	args := []string{argv[0], "hub", "endpoint", "--json"}
+	if config, supplied := ownerConfigFlag(argv); supplied {
+		if path.IsAbs(config) && config != selected.ConfigPath {
+			return fmt.Errorf("%w: process config disagrees with selection", errOwnerEvidence)
+		}
+		args = append(args, "--config", config)
+	} else if hasConfigFlag(argv) {
+		return fmt.Errorf("%w: ambiguous config selector", errOwnerEvidence)
+	}
+	if addr, present := hubAddrFlag(argv); present {
+		args = append(args, "--addr", addr)
+	}
+	words := make([]string, len(args))
+	for i, arg := range args {
+		words[i] = shellquote.RemoteWord(arg)
+	}
+	out, err := m.ownerRead(ctx, host, ownerContext(cwd, env)+strings.Join(words, " "))
+	if err != nil {
+		return err
+	}
+	report, err := hubendpoint.DecodeReport(bytes.NewReader(out))
+	if err != nil || report.ConfigPath != selected.ConfigPath || report.HubStateRoot != selected.HubStateRoot {
+		return fmt.Errorf("%w: process config/root disagrees with selection", errOwnerEvidence)
+	}
+	return nil
+}
+
+func hasConfigFlag(argv []string) bool {
+	for _, arg := range argv[2:] {
+		if arg == "--config" || arg == "-config" || strings.HasPrefix(arg, "--config=") || strings.HasPrefix(arg, "-config=") {
+			return true
+		}
+	}
+	return false
+}
+
+// A definition checksum avoids exporting arbitrary supervisor environment values.
+// MainPID and other runtime properties are deliberately excluded. Changes to a
+// unit's launch settings invalidate a pending replacement, not listener TOML edits.
+func (m *Manager) serviceDefinition(ctx context.Context, host hostreg.Host, sup supervisor) (string, error) {
+	out, err := m.ownerRead(ctx, host, serviceDefinitionRemote(sup))
+	if err != nil {
+		return "", err
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 || len(fields)%2 != 0 {
+		return "", fmt.Errorf("%w: service definition unavailable", errOwnerEvidence)
+	}
+	for _, field := range fields {
+		if !isNumericUID(field) {
+			return "", fmt.Errorf("%w: service definition unavailable", errOwnerEvidence)
+		}
+	}
+	return strings.Join(fields, " "), nil
+}
+
+func serviceDefinitionRemote(sup supervisor) string {
+	remote := "systemctl"
+	if sup.kind == supervisorSystemdUser {
+		remote += " --user"
+	}
+	manager := remote
+	remote += " show --property=User,ExecStart,WorkingDirectory,Environment,EnvironmentFiles,PassEnvironment,UnsetEnvironment -- " + shellquote.RemoteWord(sup.label)
+	// ExecStart's runtime suffix contains changing PID/timestamps. Its path and
+	// argv, not that suffix, are definition context. Freeze environment-file
+	// contents too, since changing XDG_STATE_HOME can select a different owner.
+	return "definition=$(" + remote + ") || exit; printf '%s\\n' \"$definition\" | sed 's/ ; start_time=.*$/ ; }/' | cksum; " +
+		"manager_env=$(" + manager + " show-environment) || exit; printf '%s\\n' \"$manager_env\" | grep -E '^(HOME|XDG_CONFIG_HOME|XDG_STATE_HOME|EVENER_HUB_LISTEN_ADDR)=' | LC_ALL=C sort | cksum; " +
+		"files=$(printf '%s\\n' \"$definition\" | sed -n 's/^EnvironmentFiles=//p'); set -f; set -- $files; " +
+		"while [ \"$#\" -gt 0 ]; do [ \"$#\" -ge 2 ] || exit 1; file=$1; mode=$2; shift 2; " +
+		"case \"$file\" in /*) ;; *) exit 1 ;; esac; " +
+		"case \"$mode\" in '(ignore_errors=yes)'|'(ignore_errors=no)') ;; *) exit 1 ;; esac; " +
+		"if [ -f \"$file\" ]; then cksum < \"$file\" || exit; " +
+		"elif [ \"$mode\" = '(ignore_errors=yes)' ]; then printf '0 0\\n'; else exit 1; fi; done"
 }
 
 func (m *Manager) ownerRead(ctx context.Context, host hostreg.Host, remote string) ([]byte, error) {
@@ -126,7 +334,7 @@ func (m *Manager) ownerRead(ctx context.Context, host hostreg.Host, remote strin
 		return nil, ctx.Err()
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: host %q owner probe: %w", errOwnerEvidence, host.Name, err)
+		return out, fmt.Errorf("%w: host %q owner probe: %w", errOwnerEvidence, host.Name, err)
 	}
 	return out, nil
 }
@@ -229,7 +437,7 @@ func ownerConfigFlag(argv []string) (string, bool) {
 			}
 		}
 	}
-	return config, count == 1 && path.IsAbs(config)
+	return config, count == 1 && config != ""
 }
 
 func supervisorShowRemote(s supervisor) string {
@@ -243,7 +451,7 @@ func supervisorShowRemote(s supervisor) string {
 // Candidate listings are not authority. Resolve every visible candidate before
 // associating the selected lock owner, including the user scope when a system
 // service is live. An unresolved listing/definition never means ad-hoc fallback.
-func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid string, argv []string, cwd string) (supervisor, error) {
+func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid string, argv []string, cwd string, only ...supervisor) (supervisor, error) {
 	var candidates []supervisor
 	for _, scope := range []struct {
 		kind   supervisorKind
@@ -251,11 +459,17 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 	}{{supervisorSystemd, systemctlListUnits}, {supervisorSystemdUser, systemctlListUnitsUser}} {
 		out, err := m.ownerRead(ctx, host, scope.remote)
 		if err != nil {
-			return supervisor{}, err
+			if !supervisorListingAbsent(out) && (scope.kind != supervisorSystemdUser || !systemdUserBusAbsent(out)) {
+				return supervisor{}, err
+			}
+			continue
 		}
 		live, dormant := parseSystemdHubs(out)
 		for _, label := range append(live, dormant...) {
-			candidates = append(candidates, supervisor{kind: scope.kind, label: label})
+			candidate := supervisor{kind: scope.kind, label: label}
+			if len(only) == 0 || candidate == only[0] {
+				candidates = append(candidates, candidate)
+			}
 		}
 	}
 	var chosen supervisor
@@ -283,11 +497,11 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 		if fields["Id"] != candidate.label || !isNumericUID(fields["MainPID"]) {
 			return supervisor{}, fmt.Errorf("%w: service identity unavailable", errOwnerEvidence)
 		}
-		if strings.Count(fields["ExecStart"], "{ path=") != 1 {
-			return supervisor{}, fmt.Errorf("%w: service executable association is ambiguous", errOwnerEvidence)
-		}
 		if fields["MainPID"] != pid {
 			continue
+		}
+		if strings.Count(fields["ExecStart"], "{ path=") != 1 {
+			return supervisor{}, fmt.Errorf("%w: service executable association is ambiguous", errOwnerEvidence)
 		}
 		// systemctl's formatted argv is not a general shell serialization. Accept
 		// only an exact corroboration of the independently recovered NUL argv with
@@ -298,6 +512,9 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 			}
 		}
 		prefix := "{ path=" + argv[0] + " ; argv[]=" + strings.Join(argv, " ") + " ; "
+		if pid == "0" && !strings.HasPrefix(fields["ExecStart"], prefix) {
+			continue
+		}
 		user, ok := effectiveUserName(host)
 		if !ok {
 			userOut, err := m.ownerRead(ctx, host, "id -un")
@@ -315,10 +532,14 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 		}
 		workingDirectory := fields["WorkingDirectory"]
 		if workingDirectory == "" {
-			if candidate.kind == supervisorSystemdUser {
-				return supervisor{}, fmt.Errorf("%w: default user-service working directory requires home context", errOwnerEvidence)
-			}
 			workingDirectory = "/"
+			if candidate.kind == supervisorSystemdUser {
+				out, err := m.ownerRead(ctx, host, "getent passwd "+shellquote.RemoteWord(user)+" | cut -d: -f6")
+				if err != nil || !path.IsAbs(strings.TrimSpace(string(out))) {
+					return supervisor{}, fmt.Errorf("%w: user-service home unavailable", errOwnerEvidence)
+				}
+				workingDirectory = strings.TrimSpace(string(out))
+			}
 		}
 		if definitionUser != user || workingDirectory != cwd || !strings.HasPrefix(fields["ExecStart"], prefix) || !strings.HasSuffix(fields["ExecStart"], " }") {
 			return supervisor{}, fmt.Errorf("%w: service definition disagrees with selected process", errOwnerEvidence)
@@ -327,9 +548,6 @@ func (m *Manager) supervisorForOwner(ctx context.Context, host hostreg.Host, pid
 			return supervisor{}, fmt.Errorf("%w: multiple services associate with selected process", errOwnerEvidence)
 		}
 		chosen = candidate
-	}
-	if chosen.kind == supervisorNone && len(candidates) != 0 {
-		return supervisor{}, fmt.Errorf("%w: supervised candidates do not associate with selected owner", errOwnerEvidence)
 	}
 	return chosen, nil
 }

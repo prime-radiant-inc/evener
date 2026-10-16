@@ -256,6 +256,7 @@ func TestEnsureVersionDiffersDeploysRestartsThenAttaches(t *testing.T) {
 			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
 		},
 	}
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		OnEvent: func(ev Event) {
@@ -388,6 +389,7 @@ func TestEnsureDeploysBeforeEnforcingLaunchContract(t *testing.T) {
 		},
 		startFn: goodStartFn(t),
 	}
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		BuildBinary: func(_ context.Context, _, _, out string) error {
@@ -718,36 +720,16 @@ func TestWaitPortClearSurfacesProbeFailure(t *testing.T) {
 // stops the restart before any service is touched, rather than restarting
 // whichever unit happened to be listed first.
 func TestRestartHubRejectsAmbiguousSupervisor(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "list-units"):
-			return []byte("evener-hub.service loaded active running\nother-evener-hub.service loaded active running\n"), nil
-		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
-			return []byte("/opt/evener/bin/evener\n"), nil
-		default:
-			return nil, fmt.Errorf("unexpected remote command: %v", argv)
-		}
-	}}
-	m := newTestManager(t, testRegistry(t, host), fr, Options{
-		controllerVersionOverride: "newsha",
-		sleep:                     func(context.Context, time.Duration) error { return nil },
-	})
-
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
-	if !errors.Is(err, ErrRestart) {
-		t.Fatalf("err = %v, want ErrRestart for an ambiguous supervisor", err)
+	host, commands := ownerCommands(t)
+	commands[14].output = strings.ReplaceAll(commands[13].output, "evener-hub-selected.service", "evener-hub-user.service")
+	fr, _ := ownerRunner(t, commands[:15])
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	err := m.restartHub(t.Context(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1}, hubIdentity{})
+	if !errors.Is(err, errOwnerEvidence) {
+		t.Fatalf("restartHub=%v", err)
 	}
-	if !strings.Contains(err.Error(), "match") {
-		t.Fatalf("error does not explain the ambiguity: %v", err)
-	}
-	for _, argv := range fr.recordedRuns() {
-		if strings.Contains(strings.Join(argv, " "), "systemctl restart") {
-			t.Fatalf("ambiguous supervisor still issued a restart: %v", argv)
-		}
+	if m.pendingRestart(host.Name).selected != nil {
+		t.Fatal("ambiguous service gained mutation intent")
 	}
 }
 
@@ -784,18 +766,22 @@ func supervisorRestartRunner(restartErr error, health func(probe int) ([]byte, e
 // restart verification must not accept it. Before the fix, waitHealthy returned
 // on any non-empty body and restartHub reported success against the stale hub.
 func TestRestartHubRejectsStaleVersion(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr, _ := supervisorRestartRunner(nil, func(int) ([]byte, error) {
 		return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 	})
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "oldsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "newsha"}, hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart (stale version must fail the restart)", err)
+	}
+	if m.pendingRestart(host.Name).selected == nil {
+		t.Fatal("failed verification discarded selected intent")
 	}
 	if !strings.Contains(err.Error(), "oldsha") || !strings.Contains(err.Error(), "newsha") {
 		t.Fatalf("error does not name the stale and expected versions: %v", err)
@@ -806,17 +792,18 @@ func TestRestartHubRejectsStaleVersion(t *testing.T) {
 // surfaced even when the health endpoint reports the expected version: a
 // healthy-looking hub must not mask the command that failed to restart it.
 func TestRestartHubSurfacesFailedRestartCommand(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	restartErr := errors.New("exit status 1")
 	fr, _ := supervisorRestartRunner(restartErr, func(int) ([]byte, error) {
 		return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 	})
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "newsha"}, hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart (failed restart command must surface)", err)
 	}
@@ -830,23 +817,25 @@ func TestRestartHubSurfacesFailedRestartCommand(t *testing.T) {
 // only a later probe reports the deployed version. Verification must ignore the
 // stale responses and keep polling, not attach on the first answer.
 func TestRestartHubWaitsForOldHubToHandOver(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	fr, probes := supervisorRestartRunner(nil, func(probe int) ([]byte, error) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr, _ := supervisorRestartRunner(nil, func(probe int) ([]byte, error) {
 		if probe < 2 {
 			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		}
 		return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 	})
+	selected := modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
+	selected.delay = 2
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "newsha"}, hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v", err)
 	}
-	if *probes < 2 {
-		t.Fatalf("health probes = %d, want >= 2 (the stale response must not satisfy verification)", *probes)
+	if selected.successorPolls < 3 {
+		t.Fatalf("health probes = %d, want >= 2 (the stale response must not satisfy verification)", selected.successorPolls)
 	}
 }
 
@@ -1651,7 +1640,7 @@ func TestDetectSupervisorIgnoresStoppedUnits(t *testing.T) {
 // the health probe is the real check. Before the fix restartHub returned
 // ErrRestart without ever probing health.
 func TestRestartHubLaunchdKickstartStatusIsAdvisory(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	kickErr := errors.New("exit status 1")
 	probes := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
@@ -1672,15 +1661,17 @@ func TestRestartHubLaunchdKickstartStatusIsAdvisory(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}}
+	selected := modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
+	selected.darwin, selected.advisory = true, true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "newsha"}, hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v (a failed kickstart status must not mask a successful restart)", err)
 	}
-	if probes == 0 {
+	if selected.successorPolls == 0 {
 		t.Fatal("health was never probed after a failed kickstart status")
 	}
 }
@@ -1690,7 +1681,7 @@ func TestRestartHubLaunchdKickstartStatusIsAdvisory(t *testing.T) {
 // not take: the health probe is authoritative, but its failure names the command
 // that also failed.
 func TestRestartHubLaunchdKickstartFailureSurfacesWhenHealthFails(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	kickErr := errors.New("exit status 1")
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
@@ -1709,12 +1700,14 @@ func TestRestartHubLaunchdKickstartFailureSurfacesWhenHealthFails(t *testing.T) 
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}}
+	selected := modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "oldsha")
+	selected.darwin, selected.advisory = true, true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, hubIdentity{})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "newsha"}, hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart", err)
 	}
@@ -1834,6 +1827,7 @@ func TestEnsureRestartsWhenTheRunningHubVersionDiffers(t *testing.T) {
 		},
 		startFn: goodStartFn(t),
 	}
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		BuildBinary:               func(context.Context, string, string, string) error { return nil },
@@ -2118,6 +2112,7 @@ func TestRestartOnlyMismatchOnAnotherBuildAttaches(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -2267,6 +2262,7 @@ func TestPendingStartNotSettledForWrongSnapshotCommit(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -2410,6 +2406,7 @@ func TestBootstrapUnhealthyIsErrRestart(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -2742,6 +2739,7 @@ func TestEnsureDevBuildDeploysOncePerManager(t *testing.T) {
 				time.Date(2026, 1, 1, 0, call, 0, 0, time.UTC).Format(time.RFC3339))), nil
 		},
 	)
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "dev")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "dev",
 		BuildBinary: func(_ context.Context, _, _, out string) error {
@@ -2791,7 +2789,7 @@ func TestEnsureRestartRecoveryRetriesRelaunch(t *testing.T) {
 			return []byte("x86_64\n"), nil
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
-		case strings.Contains(joined, "XDG_STATE_HOME"):
+		case strings.Contains(joined, "XDG_STATE_HOME") && !strings.Contains(joined, "nohup"):
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
@@ -2846,6 +2844,8 @@ func TestEnsureRestartRecoveryRetriesRelaunch(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha").adhoc = true
 
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
@@ -3030,6 +3030,7 @@ func TestEnsureDeployPhaseHasItsOwnBudget(t *testing.T) {
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		attemptTimeout:            50 * time.Millisecond,
@@ -3106,6 +3107,8 @@ func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	selected := modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
+	selected.unavailable = true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -3121,6 +3124,7 @@ func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 		t.Fatalf("systemctl restarts after Ensure 1 = %d, want 1", restarts)
 	}
 
+	selected.unavailable, selected.stopped = false, true
 	ch, err := m.Ensure(context.Background(), "alpha")
 	if err != nil {
 		t.Fatalf("Ensure 2: %v (the pending supervisor restart must be retried)", err)
@@ -3251,6 +3255,7 @@ func TestEnsureKeepsPendingRestartWhenOldProcessStillServes(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "dev")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "dev",
 		BuildBinary:               writeStageBinary,
@@ -3573,7 +3578,7 @@ func TestDetectSupervisorResolvesFromTheSystemListingWithoutAUserBus(t *testing.
 // never started. Before the fix restartHub returned ErrRestart; now it starts the
 // inactive unit (a plain `systemctl restart` starts it) and verifies health.
 func TestRestartHubStartsAnInactiveSupervisorWhenThePortIsFree(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	port := hubPort(defaultHubAddr)
 	restarted, killed := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
@@ -3599,12 +3604,14 @@ func TestRestartHubStartsAnInactiveSupervisorWhenThePortIsFree(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}}
+	selected := modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
+	selected.stopped = true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "newsha"}, hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v (a stopped hub unit with a free port must be started)", err)
 	}
 	if !restarted {
@@ -3620,7 +3627,7 @@ func TestRestartHubStartsAnInactiveSupervisorWhenThePortIsFree(t *testing.T) {
 // port, because starting it would race hub.lock and leave the ad-hoc hub (on the
 // old build) still serving. The bare-process restart is the correct repair there.
 func TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	port := hubPort(defaultHubAddr)
 	killed, restarted := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
@@ -3661,12 +3668,14 @@ func TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}}
+	selected := modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
+	selected.adhoc, selected.dormant = true, true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "newsha"}, hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v", err)
 	}
 	if restarted {
@@ -3686,7 +3695,7 @@ func TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor(t *testing.T) {
 // test asserts it appears in no command the runner is asked to execute. Before
 // the restoration restartHub refused with ErrRestart and emitted no signal.
 func TestRestartHubFallsThroughOnUnsafeLaunchdLabel(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	port := hubPort(defaultHubAddr)
 	killed, relaunched := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
@@ -3725,12 +3734,14 @@ func TestRestartHubFallsThroughOnUnsafeLaunchdLabel(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}}
+	selected := modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
+	selected.adhoc, selected.darwin, selected.unsafeLabel = true, true, true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "newsha"}, hubIdentity{}); err != nil {
 		t.Fatalf("restartHub = %v, want nil (an unbuildable launchd command must fall through to the ad hoc path)", err)
 	}
 	if !killed {
@@ -3754,7 +3765,7 @@ func TestRestartHubFallsThroughOnUnsafeLaunchdLabel(t *testing.T) {
 // the recovered build, exactly as the pre-refusal path required. Before the
 // restoration restartHub refused with ErrRestart and emitted no signal.
 func TestRestartHubRestartsAdHocOnSupervisorlessHost(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	port := hubPort(defaultHubAddr)
 	killed, relaunched := false, false
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
@@ -3793,12 +3804,14 @@ func TestRestartHubRestartsAdHocOnSupervisorlessHost(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}}
+	selected := modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
+	selected.adhoc, selected.noSystemctl = true, true
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "newsha"}, hubIdentity{}); err != nil {
 		t.Fatalf("restartHub = %v, want nil (a supervisorless hub must restart through the ad hoc path)", err)
 	}
 	if !killed {

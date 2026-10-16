@@ -448,6 +448,7 @@ type Manager struct {
 	// listener, or that left the old process serving, leaves this set, and the
 	// next Ensure retries it.
 	pendingRestarts map[string]pendingRestartState
+	ownerWitnesses  map[string]selectedOwner
 }
 
 // hubIdentity identifies a running hub from its /api/health body: the version it
@@ -491,6 +492,11 @@ func (h hubIdentity) differentProcessFrom(other hubIdentity) bool {
 type pendingRestartState struct {
 	command  string
 	replaced hubIdentity
+	// selected binds replacement replay to its independently authorized owner.
+	// nil is the existing bootstrap producer, not a legacy restart permission.
+	selected *selectedOwner
+	version  string
+	gitSHA   string
 	// start records that this command STARTS a hub where none was serving (the
 	// bootstrap path, which refuses to run while a listener holds the address)
 	// rather than replacing a process. A recovered start has no predecessor to
@@ -1820,6 +1826,7 @@ func (m *Manager) clearHostCaches(name string) {
 	delete(m.devDeployed, name)
 	delete(m.resolvedTargets, name)
 	delete(m.pendingRestarts, name)
+	delete(m.ownerWitnesses, name)
 }
 
 // ensureOnce runs one full preflight-then-decide-then-attach sequence with the
@@ -1887,7 +1894,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// forever, and dropping the pin would let a wrong-commit hub satisfy the
 	// settlement the waits refuse.
 	servedVersion, servedPin := expectedServedBuild(facts, expected)
-	if pending := m.pendingRestart(host.Name); runningKnown && running.version == servedVersion &&
+	if pending := m.pendingRestart(host.Name); pending.selected == nil && runningKnown && running.version == servedVersion &&
 		hubBuildSHAMatches(running.gitSHA, servedPin) &&
 		(pending.start || running.differentProcessFrom(pending.replaced)) {
 		// A hub already serving exactly the expected build resolves whatever an
@@ -3513,7 +3520,12 @@ func (m *Manager) setResolvedTarget(name, target string) {
 func (m *Manager) pendingRestart(name string) pendingRestartState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.pendingRestarts[name]
+	pending := m.pendingRestarts[name]
+	if pending.selected != nil {
+		owner := pending.selected.clone()
+		pending.selected = &owner
+	}
+	return pending
 }
 
 func (m *Manager) setPendingRestart(name, remote string, replaced hubIdentity) {

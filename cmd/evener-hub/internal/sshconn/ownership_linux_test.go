@@ -106,12 +106,17 @@ func main(){
 	host := hostreg.Host{Name: "selected", SSH: currentUser.Username + "@disposable", EvenerPath: binary, ConfigPath: config}
 	report := remoteEndpointFixture(config, "127.0.0.1:19371", "fixture-boot")
 	report.HubStateRoot, report.Running.HubStateRoot, report.Running.PID = root, root, cmd.Process.Pid
+	report.State, report.Reason, report.Running = "unavailable", "unreachable", nil
 	endpoint := binary + " hub endpoint --json --config " + config
 	fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		remote := strings.Join(argv[12:], " ")
-		switch remote {
-		case endpoint:
+		if remote == endpoint {
 			return json.Marshal(report)
+		}
+		if strings.HasSuffix(remote, "; "+endpoint) {
+			return json.Marshal(report)
+		}
+		switch remote {
 		case "systemctl list-units --type=service --all --no-legend --plain", "systemctl --user list-units --type=service --all --no-legend --plain":
 			return nil, nil
 		}

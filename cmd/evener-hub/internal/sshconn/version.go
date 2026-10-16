@@ -554,18 +554,10 @@ func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts
 	}
 }
 
-// restartHub restarts the host's hub: after a deploy, to replace a stale process,
-// or to settle a restart or start an earlier attempt recorded. It prefers a
-// detected supervisor (launchd/systemd) and restarts it by unit or label;
-// otherwise — a hub with no supervisor, or one whose launchd restart command
-// cannot be built safely (no numeric uid, or a label outside the bare-safe set,
-// which is never interpolated into the remote shell) — it falls through to the
-// guarded ad hoc path: recover the listening pid, its argv, and its log, then
-// kill and relaunch. It never starts a second hub while the old one holds
-// hub.lock: the ad hoc path waits for the port to clear before relaunching.
-// replaced is the identity of the hub process this restart expects to replace, so
-// a non-unique version cannot make the old process look like a successful
-// replacement.
+// restartHub selects and revalidates the endpoint owner before replacing it.
+// Pending selected replacements share this engine even when the owner is stopped.
+// Bootstrap's legacy start-only pending producer remains until Task7b-callers.
+// replaced is retained for internal callers whose selection policy is adapted there.
 func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Preflight, replaced hubIdentity) error {
 	// Judge the restart against the build the host will actually serve, which is
 	// this controller's own only when a deploy converged the host on it
@@ -573,76 +565,60 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 	// recorded start, and it has to be: the two branches differ only in whether a
 	// hub happens to answer /api/health, so deriving the expectation per branch made
 	// one recorded start succeed or fail on that accident.
-	expectVersion, expectPin := expectedServedBuild(facts, m.opts.controllerVersion())
-	set, err := m.detectSupervisor(ctx, host, facts)
+	if pending := m.pendingRestart(host.Name); pending.selected != nil {
+		return m.recoverRestart(ctx, host, facts, m.opts.controllerVersion(), pending)
+	} else if pending.start {
+		// The bootstrap producer is adapted in Task7b-callers. Keep its existing
+		// start-only pending representation and recovery contract until then.
+		return m.recoverRestart(ctx, host, facts, m.opts.controllerVersion(), pending)
+	}
+	owner, err := m.resolveOwnedEndpoint(ctx, host, facts)
 	if err != nil {
 		return err
 	}
-	sup := set.live
-	if sup.kind == supervisorNone && set.dormant.kind != supervisorNone {
-		// A loaded-but-inactive evener hub unit owns this host's hub: restarting
-		// it starts it, which is the repair for a host left with no listener after
-		// a deploy, a crash, or a failed restart. Only do so while the hub port is
-		// free — with an ad hoc hub holding it, starting the unit would race
-		// hub.lock and leave the ad hoc hub (on the old build) still serving.
-		cleared, err := m.portCleared(ctx, host, hubPort(m.hostAddr(host)))
-		if err != nil {
-			return err
-		}
-		if cleared {
-			sup = set.dormant
-		}
-	}
-	if sup.kind != supervisorNone {
-		if remote, ok := sup.restartRemote(facts.UID); ok {
-			return m.restartSupervised(ctx, host, sup, remote, expectVersion, expectPin, replaced)
-		}
-		// The supervisor's restart command cannot be built safely, so fall through
-		// to the guarded ad hoc path without naming the label in any command.
-	}
-
-	// No supervisor owns the hub, so the guarded ad hoc restart is the only path
-	// that can run. A stopped host's cold bootstrap is unaffected: it is
-	// start-only (bootstrapHub) and never reaches this branch.
-	if err := m.restartBare(ctx, host, replaced); err != nil {
-		return err
-	}
-	if err := m.waitHealthy(ctx, host, expectVersion, expectPin, replaced); err != nil {
-		return err
-	}
-	// A healthy replacement is serving, so any relaunch this Manager recorded for
-	// this host is settled.
-	m.clearPendingRestart(host.Name)
-	return nil
+	version, pin := expectedServedBuild(facts, m.opts.controllerVersion())
+	return m.restartSelected(ctx, host, facts, owner, version, pin)
 }
 
-// restartSupervised runs a detected supervisor's restart command and verifies
-// the host hub afterwards. The restart command is recorded before it runs, so a
-// restart that leaves no listener is completed by the next Ensure.
-func (m *Manager) restartSupervised(ctx context.Context, host hostreg.Host, sup supervisor, remote, expectedVersion, expectedGitSHA string, replaced hubIdentity) error {
-	// Record the restart before running it, exactly as restartBare does: a
-	// restart that leaves no listener must be completed by the next Ensure.
-	// Without this a supervisor restart that failed with the on-disk version
-	// already matching left nothing for the decision ladder to retry, so the
-	// next Ensure attached (or failed to attach) against a host with no hub.
-	m.setPendingRestart(host.Name, remote, replaced)
-	out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
-	if runErr != nil && !sup.restartStatusIsAdvisory() {
-		// Surface the restart command's own failure even when the hub would
-		// answer a health probe: a healthy response alone cannot prove the
-		// restart took (the old process stays healthy through a failed
-		// `systemctl restart` when the user lacks sudo/polkit), so swallowing
-		// this cause is what let a failed restart look like success.
-		return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
+// restartSupervised executes the selected service intent, or its owned ad-hoc
+// replacement, and verifies the selected successor before clearing pending state.
+func (m *Manager) restartSupervised(ctx context.Context, host hostreg.Host, facts Preflight, pending pendingRestartState, predecessorLive bool) error {
+	owner := *pending.selected
+	if owner.supervisor.kind == supervisorLaunchd && facts.UID != owner.domainUID {
+		return fmt.Errorf("%w: selected launchd domain changed", errOwnerEvidence)
 	}
-	if err := m.waitHealthy(ctx, host, expectedVersion, expectedGitSHA, replaced); err != nil {
+	if owner.supervisor.kind == supervisorNone && predecessorLive {
+		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "kill -- "+owner.pid), nil)
+		if err != nil {
+			return fmt.Errorf("%w: selected stop: %w: %s", ErrRestart, err, tail(out))
+		}
+		// Unlike the old port-based path, an unrelated listener does not delay a
+		// selected replacement. Process exit releases its lock after graceful drain.
+		if err := m.waitProcessExit(ctx, host, owner.pid); err != nil {
+			return err
+		}
+	}
+	var command string
+	// Reconstruct from revalidated intent on every replay, never trust stored text.
+	if owner.supervisor.kind == supervisorNone {
+		command = selectedRelaunch(owner)
+	} else {
+		var ok bool
+		command, ok = owner.supervisor.restartRemote(facts.UID)
+		if !ok {
+			return fmt.Errorf("%w: selected supervisor domain unavailable", errOwnerEvidence)
+		}
+	}
+	out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, command), nil)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if runErr != nil && !owner.supervisor.restartStatusIsAdvisory() {
+		return fmt.Errorf("%w: selected replacement %s: %w: %s", ErrRestart, command, runErr, tail(out))
+	}
+	if err := m.waitSelectedSuccessor(ctx, host, facts, pending); err != nil {
 		if runErr != nil {
-			// launchd: docs note an interrupted `kickstart` can report failure
-			// even when the restart succeeded
-			// (docs/evener-hub-remote-operations.md:290-293), so its status is
-			// diagnostic, not authoritative. The health failure is the real
-			// cause; name the command failure alongside it.
-			return fmt.Errorf("%w: host %q %s: %w: %s: %w", ErrRestart, host.Name, remote, runErr, tail(out), err)
+			return fmt.Errorf("%w: advisory restart status %s: %w", err, command, runErr)
 		}
 		return err
 	}
@@ -657,6 +633,9 @@ func (m *Manager) restartSupervised(ctx context.Context, host hostreg.Host, sup 
 // hub to kill here, so it runs the recorded command directly and waits for the
 // expected build to answer.
 func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, facts Preflight, expected string, pending pendingRestartState) error {
+	if pending.selected != nil {
+		return m.recoverSelectedRestart(ctx, host, facts, pending)
+	}
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, pending.command), nil)
 	if err != nil {
 		return fmt.Errorf("%w: host %q restart recovery: %w: %s", ErrRestart, host.Name, err, tail(out))

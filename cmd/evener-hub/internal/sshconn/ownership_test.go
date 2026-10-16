@@ -12,8 +12,8 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
-// This stage deliberately tests the read-only owner boundary, not the old
-// restart implementation. No fixture accepts a mutation or a guessed-port probe.
+// Exact ordered external-process commands for selected ownership and restart.
+// No fixture accepts a guessed-port probe or credential read.
 type ownerCommand struct{ command, output string }
 
 func ownerCommands(t *testing.T) (hostreg.Host, []ownerCommand) {
@@ -30,12 +30,14 @@ func ownerCommands(t *testing.T) (hostreg.Host, []ownerCommand) {
 		{"canonical", "/opt/evener\n"},
 		{"canonical", "/opt/evener\n"},
 		{"readlink /proc/4242/cwd", "/srv\n"},
+		{ownerEnvironmentRemote("4242"), "HOME=/home/dev\x00"},
+		{"cd /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; /opt/evener hub endpoint --json --config /srv/selected.toml --addr '[::]:0'", mustOwnerJSON(t, report)},
 		{"systemctl list-units --type=service --all --no-legend --plain", "evener-hub-other.service loaded active running\nevener-hub-selected.service loaded active running\n"},
 		{"systemctl --user list-units --type=service --all --no-legend --plain", "evener-hub-user.service loaded active running\n"},
 		{"systemctl show --property=Id,MainPID,User,ExecStart,WorkingDirectory -- evener-hub-other.service", "Id=evener-hub-other.service\nMainPID=5151\nUser=dev\nExecStart={ path=/opt/evener ; argv[]=/opt/evener hub --config=/srv/other.toml ; ignore_errors=no ; }\nWorkingDirectory=/srv\n"},
 		{"systemctl show --property=Id,MainPID,User,ExecStart,WorkingDirectory -- evener-hub-selected.service", "Id=evener-hub-selected.service\nMainPID=4242\nUser=dev\nExecStart={ path=/opt/evener ; argv[]=/opt/evener hub --config=/srv/selected.toml --addr=[::]:0 ; ignore_errors=no ; }\nWorkingDirectory=/srv\n"},
 		{"systemctl --user show --property=Id,MainPID,User,ExecStart,WorkingDirectory -- evener-hub-user.service", "Id=evener-hub-user.service\nMainPID=6161\nUser=dev\nExecStart={ path=/opt/evener ; argv[]=/opt/evener hub --config=/srv/user.toml ; ignore_errors=no ; }\nWorkingDirectory=/srv\n"},
-		{"/proc/4242/exe launch-check --json", goodLaunchCheck},
+		{serviceDefinitionRemote(supervisor{kind: supervisorSystemd, label: "evener-hub-selected.service"}), "1234 567\n"},
 		{"generation", "kernel-boot\n12500\n"},
 		{"selected-lock", "4242\n"},
 	}
@@ -60,8 +62,12 @@ func ownerRunner(t *testing.T, commands []ownerCommand) (*fakeRunner, *int) {
 			if got != exact {
 				t.Fatalf("not a selected-root lock probe: %s", got)
 			}
-		case "generation":
-			if got != "cat /proc/sys/kernel/random/boot_id && s=$(cat /proc/4242/stat) && s=${s##*) } && set -- $s && [ \"$#\" -ge 20 ] && shift 19 && printf '%s\\n' \"$1\"" {
+		case "generation", "generation-next":
+			pid := "4242"
+			if want.command == "generation-next" {
+				pid = "4343"
+			}
+			if got != "cat /proc/sys/kernel/random/boot_id && s=$(cat /proc/"+pid+"/stat) && s=${s##*) } && set -- $s && [ \"$#\" -ge 20 ] && shift 19 && printf '%s\\n' \"$1\"" {
 				t.Fatalf("not a process generation probe: %s", got)
 			}
 		case "canonical":
@@ -160,15 +166,14 @@ func TestRemoteOwnerRejectsWrongAssociation(t *testing.T) {
 		{"wrong effective user", 3, "dev", "other"},
 		{"wrong config", 4, "/srv/selected.toml", "/srv/other.toml"},
 		{"wrong executable", 5, "/opt/evener", "/other/evener"},
-		{"wrong service user", 11, "User=dev", "User=other"},
-		{"wrong service config", 11, "/srv/selected.toml", "/srv/other.toml"},
-		{"wrong service cwd", 11, "WorkingDirectory=/srv", "WorkingDirectory=/other"},
-		{"unassociated supervisor", 11, "MainPID=4242", "MainPID=5151"},
-		{"ambiguous definition", 11, " }", " } { path=/other ; }"},
-		{"two associated services", 12, "MainPID=6161", "MainPID=4242"},
-		{"changed start ticks", 14, "12500", "12501"},
-		{"rebooted owner", 14, "kernel-boot", "other-boot"},
-		{"changed lock owner", 15, "4242", "5151"},
+		{"wrong service user", 13, "User=dev", "User=other"},
+		{"wrong service config", 13, "/srv/selected.toml", "/srv/other.toml"},
+		{"wrong service cwd", 13, "WorkingDirectory=/srv", "WorkingDirectory=/other"},
+		{"ambiguous definition", 13, " }", " } { path=/other ; }"},
+		{"two associated services", 14, "MainPID=6161", "MainPID=4242"},
+		{"changed start ticks", 16, "12500", "12501"},
+		{"rebooted owner", 16, "kernel-boot", "other-boot"},
+		{"changed lock owner", 17, "4242", "5151"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			host, commands := ownerCommands(t)
@@ -176,6 +181,9 @@ func TestRemoteOwnerRejectsWrongAssociation(t *testing.T) {
 				t.Fatal("invalid test input")
 			}
 			commands[tc.step].output = strings.ReplaceAll(commands[tc.step].output, tc.old, tc.replacement)
+			if tc.step == 1 {
+				commands = append(commands[:2], ownerCommand{systemctlListUnits, ""}, ownerCommand{systemctlListUnitsUser, ""})
+			}
 			fr, _ := ownerRunner(t, commands)
 			m := newTestManager(t, testRegistry(t, host), fr, Options{})
 			_, err := m.resolveOwnedEndpoint(t.Context(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1})
@@ -194,6 +202,7 @@ func TestRemoteOwnerDamagedMetadataStillSelectsOwner(t *testing.T) {
 	report := remoteEndpointFixture(host.ConfigPath, "127.0.0.1:19371", "boot-one")
 	report.State, report.Reason, report.Running = "unavailable", "lock_held_without_record", nil
 	commands[0].output = mustOwnerJSON(t, report)
+	commands = append(commands[:16], append([]ownerCommand{{"/proc/4242/exe launch-check --json", goodLaunchCheck}}, commands[16:]...)...)
 	fr, _ := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 	got, err := m.resolveOwnedEndpoint(t.Context(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1})
@@ -204,8 +213,9 @@ func TestRemoteOwnerDamagedMetadataStillSelectsOwner(t *testing.T) {
 
 func TestRemoteOwnerSelectsUserService(t *testing.T) {
 	host, commands := ownerCommands(t)
-	commands[11].output = strings.ReplaceAll(commands[11].output, "MainPID=4242", "MainPID=5151")
-	commands[12].output = "Id=evener-hub-user.service\nMainPID=4242\nUser=\nExecStart={ path=/opt/evener ; argv[]=/opt/evener hub --config=/srv/selected.toml --addr=[::]:0 ; ignore_errors=no ; }\nWorkingDirectory=/srv\n"
+	commands[13].output = strings.ReplaceAll(commands[13].output, "MainPID=4242", "MainPID=5151")
+	commands[14].output = "Id=evener-hub-user.service\nMainPID=4242\nUser=\nExecStart={ path=/opt/evener ; argv[]=/opt/evener hub --config=/srv/selected.toml --addr=[::]:0 ; ignore_errors=no ; }\nWorkingDirectory=/srv\n"
+	commands[15].command = serviceDefinitionRemote(supervisor{kind: supervisorSystemdUser, label: "evener-hub-user.service"})
 	fr, _ := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 	got, err := m.resolveOwnedEndpoint(t.Context(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1})
@@ -221,9 +231,10 @@ func TestRemoteOwnerRevalidation(t *testing.T) {
 			_, second := ownerCommands(t)
 			switch change {
 			case "generation":
-				second[2].output, second[14].output = "kernel-boot\n13000\n", "kernel-boot\n13000\n"
+				second[2].output, second[16].output = "kernel-boot\n13000\n", "kernel-boot\n13000\n"
 			case "root": // A different selected root cannot inherit authority from this snapshot.
 				second[0].output = strings.ReplaceAll(second[0].output, "/srv/state", "/srv/other-state")
+				second[9].output = strings.ReplaceAll(second[9].output, "/srv/state", "/srv/other-state")
 			case "boot":
 				second[0].output = strings.ReplaceAll(second[0].output, "boot-one", "boot-two")
 			case "listener":
@@ -232,7 +243,7 @@ func TestRemoteOwnerRevalidation(t *testing.T) {
 			// Changing the root requires another independent lock lookup. Keep the
 			// runner strict about the exact new root, not a default/old-port probe.
 			if change == "root" {
-				second[1].command, second[15].command = "other-lock", "other-lock"
+				second[1].command, second[17].command = "other-lock", "other-lock"
 			}
 			fr, _ := ownerRunner(t, append(first, second...))
 			m := newTestManager(t, testRegistry(t, host), fr, Options{})

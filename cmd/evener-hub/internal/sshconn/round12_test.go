@@ -240,6 +240,7 @@ func TestRound12PendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "dev")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "dev",
 		BuildBinary:               writeStageBinary,

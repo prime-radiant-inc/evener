@@ -71,6 +71,5 @@ func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, fac
 func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, facts Preflight) error {
 	restartCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
 	defer cancel()
-	running, _ := m.probeRunningHub(restartCtx, host)
-	return m.restartHub(restartCtx, host, facts, running)
+	return m.restartHub(restartCtx, host, facts, hubIdentity{})
 }

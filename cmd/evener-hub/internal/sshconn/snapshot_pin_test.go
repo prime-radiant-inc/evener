@@ -125,17 +125,18 @@ func TestRestartHubPinsSnapshotBuildFromBuildChannel(t *testing.T) {
 	t.Cleanup(func() { buildinfo.Channel, buildinfo.GitSHA = savedChannel, savedSHA })
 	buildinfo.Channel, buildinfo.GitSHA = "snapshot", "expectedsha"
 
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	newManager := func(body string) *Manager {
-		fr, _ := supervisorRestartRunner(nil, func(int) ([]byte, error) { return []byte(body), nil })
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	newManager := func(sha string) *Manager {
+		fr, _ := supervisorRestartRunner(nil, func(int) ([]byte, error) { return nil, nil })
+		modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha").sha = sha
 		return newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "newsha",
 			sleep:                     func(context.Context, time.Duration) error { return nil },
 		})
 	}
 
-	err := newManager(`{"version":"newsha","backend_git_sha":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`).
-		restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
+	err := newManager("othersha").
+		restartHub(context.Background(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "newsha"}, hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart (the version matched but the commit did not)", err)
 	}
@@ -143,8 +144,8 @@ func TestRestartHubPinsSnapshotBuildFromBuildChannel(t *testing.T) {
 		t.Fatalf("error does not name the mismatched build identity: %v", err)
 	}
 
-	if err := newManager(`{"version":"newsha","backend_git_sha":"expectedsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`).
-		restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := newManager("expectedsha").
+		restartHub(context.Background(), host, Preflight{OS: "linux", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "newsha"}, hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v (a matching snapshot commit must verify)", err)
 	}
 }

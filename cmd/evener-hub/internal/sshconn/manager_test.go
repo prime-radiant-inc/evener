@@ -404,6 +404,7 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 			"launch-check": []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"dev","launch_flags":["api-log"]}`),
 		}
 		fr := &fakeRunner{runFn: cannedRun(override), startFn: goodStartFn(t)}
+		modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 		m := newTestManager(t, testRegistry(t, host), fr, Options{})
 		testDeployRecorder(t, m)
 		testRestartRecorder(t, m)
@@ -433,6 +434,7 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			},
 		)
+		modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "newsha",
 			BuildBinary:               writeStageBinary,
@@ -464,6 +466,7 @@ func TestEnsureUnfilteredOlderProtocolReachesDeployPath(t *testing.T) {
 			},
 			startFn: goodStartFn(t),
 		}
+		modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 		m := newTestManager(t, testRegistry(t, host), fr, Options{})
 		testDeployRecorder(t, m)
 		testRestartRecorder(t, m)
@@ -493,6 +496,7 @@ func TestEnsureUnfilteredOlderProtocolReachesDeployPath(t *testing.T) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			},
 		)
+		modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "newsha",
 			BuildBinary:               writeStageBinary,
@@ -531,6 +535,7 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 					time.Date(2026, 1, 1, 0, call, 0, 0, time.UTC).Format(time.RFC3339))), nil
 			},
 		)
+		modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "dev")
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "dev",
 			BuildBinary: func(_ context.Context, _, _, out string) error {
@@ -569,6 +574,7 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 					time.Date(2026, 1, 1, 0, call, 0, 0, time.UTC).Format(time.RFC3339))), nil
 			},
 		)
+		modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "dev")
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "dev",
 			BuildBinary:               writeStageBinary,

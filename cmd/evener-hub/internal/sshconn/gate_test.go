@@ -325,6 +325,7 @@ func ensureDeployTestHarness(t *testing.T, restartErr error) (*Manager, *hostops
 	store := ensureDeployTestStore(t)
 	var recordID string
 	var seen []ensureCommandSighting
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		command := strings.Join(argv, " ")
@@ -473,6 +474,7 @@ func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostop
 	store := ensureDeployTestStore(t)
 	var recordID string
 	var seen []ensureCommandSighting
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		command := strings.Join(argv, " ")
@@ -591,6 +593,7 @@ func TestEnsureRestartOnlyRefusesWithoutARecorder(t *testing.T) {
 		},
 	)
 	var commands []string
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		commands = append(commands, strings.Join(argv, " "))
@@ -628,6 +631,7 @@ func TestEnsureDeployRefusesWithoutARecorder(t *testing.T) {
 		},
 	)
 	var commands []string
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	innerRun := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		commands = append(commands, strings.Join(argv, " "))

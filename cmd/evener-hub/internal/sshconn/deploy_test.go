@@ -459,6 +459,7 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
@@ -537,6 +538,7 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	modelSelectedProcess(t, fr, "/home/dev/.local/bin/evener", "oldsha", "newsha").sha = "newsha"
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
@@ -1800,6 +1802,7 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 	// bootstrap starts anything.
 	t.Run("a stopped host whose installed artifact reports another build", func(t *testing.T) {
 		fr := postDeployBuildRunner(t, "othersha")
+		modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "dev")
 		m := newTestManager(t, testRegistry(t, host), fr, opts)
 		testDeployRecorder(t, m)
 		testRestartRecorder(t, m)
@@ -1832,6 +1835,7 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			},
 		)
+		modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "dev")
 		m := newTestManager(t, testRegistry(t, host), fr, opts)
 		testDeployRecorder(t, m)
 		testRestartRecorder(t, m)
@@ -1853,6 +1857,7 @@ func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			},
 		)
+		modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 		m := newTestManager(t, testRegistry(t, host), fr, opts)
 		testDeployRecorder(t, m)
 		testRestartRecorder(t, m)
@@ -2059,6 +2064,7 @@ func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
+	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
