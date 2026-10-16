@@ -63,9 +63,6 @@ export interface BoardRowProps {
 	/** Non-zero while the row has just entered Needs you: each new value
 	 * washes it amber again (spec 7.3). */
 	wash?: number;
-	/** In select mode, whether the row is chosen: its mark column shows a
-	 * checkbox instead of its state. Undefined outside select mode. */
-	selected?: boolean;
 }
 
 /** Where a row's title starts: its 16pt padding, the 28pt mark column and
@@ -151,7 +148,6 @@ export function BoardRow({
 	onLongPress,
 	delayLongPress,
 	wash = 0,
-	selected,
 }: BoardRowProps): ReactElement {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -195,7 +191,7 @@ export function BoardRow({
 			testID={`board-row:${state}`}
 			accessibilityRole="button"
 			accessibilityLabel={label}
-			accessibilityState={selected === undefined ? { busy: dimmed } : { busy: dimmed, selected }}
+			accessibilityState={{ busy: dimmed }}
 			accessibilityActions={accessibilityActions}
 			onAccessibilityAction={onAccessibilityAction}
 			onPress={() => onOpen(row)}
@@ -215,24 +211,13 @@ export function BoardRow({
 		>
 			{wash ? <Wash key={wash} /> : null}
 			<View style={{ height: lineOne, justifyContent: "center" }}>
-				{selected === undefined ? (
-					<StateMark
-						state={state}
-						moving={moving}
-						connected={connected}
-						stuck={why?.stuck}
-						perMinute={activity?.minutes}
-					/>
-				) : (
-					// The mark column's 28pt, as StateMark's, so titles stay put.
-					<View style={{ width: 28, alignItems: "center" }}>
-						<SymbolView
-							name={selected ? "checkmark.circle.fill" : "circle"}
-							size={22}
-							tintColor={selected ? palette.accent : palette.inkLow}
-						/>
-					</View>
-				)}
+				<StateMark
+					state={state}
+					moving={moving}
+					connected={connected}
+					stuck={why?.stuck}
+					perMinute={activity?.minutes}
+				/>
 			</View>
 			<View style={{ flex: 1, minWidth: 0 }}>
 				<View style={{ flexDirection: "row", alignItems: "flex-start", columnGap: 8 }}>

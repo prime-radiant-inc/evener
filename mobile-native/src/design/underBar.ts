@@ -1,10 +1,23 @@
-// A list that runs under a bottom bar (the session's bottom bar, the Board's
-// toolbar), so the bar's glass has content under it (spec 16.3).
+// A list that runs under something floating at its end (the session's bottom
+// bar, the Board's compose button), so that thing has content under it
+// (spec 16.3).
 import { useCallback, useState } from "react";
-import { type LayoutChangeEvent, Platform } from "react-native";
+import { type LayoutChangeEvent, Platform, type ViewStyle } from "react-native";
 
 /** The gap between a bar and what floats above it (a toast, Next, "↓ new"). */
 export const FLOAT_GAP = 10;
+
+/** What a floating element wears so it reads as lifted off the page
+ * (spec 16.3): the shadow* props iOS draws, and the elevation Android draws
+ * instead. A round control (the Board's compose button) and a surface (a
+ * toast, a notice banner) take the same lift. */
+export const FLOATING_SHADOW: ViewStyle = {
+	shadowColor: "#000000",
+	shadowOpacity: 0.12,
+	shadowRadius: 12,
+	shadowOffset: { width: 0, height: 4 },
+	elevation: 3,
+};
 
 /** How a list keeps its end clear of a bar `barHeight` tall. On iOS the bar
  * is a content inset: the list's content size never depends on it, so the

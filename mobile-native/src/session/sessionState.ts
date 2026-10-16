@@ -7,10 +7,16 @@ import type { ThreadModel, SessionActivityCounts } from "@evener/appwire-client"
 import { taskSettledCount } from "@evener/appwire-client";
 import { type BoardState, hubTime } from "../board/attention";
 import { compactDuration, timeAgo } from "./format";
+import type { TrayLine } from "./trayLine";
 
 export interface SessionStateLine {
 	state: BoardState;
 	text: string;
+	/** While the agent works, what it is doing now, which the title draws as
+	 * the meter's companion: the running turn's live line, the same words the
+	 * tray used to show. Absent on every other state, and while the tray has
+	 * no line. */
+	live?: TrayLine;
 }
 
 export type StateSource = Pick<
@@ -24,8 +30,15 @@ export const SHUT_DOWN = new Set(["notLoaded", "closed", "ended"]);
 
 /** `runMs` is a subagent's time in its run, as its Subagents row shows it:
  * its screen says "Working" with that number rather than its current turn's,
- * so a subagent has one time everywhere. */
-export function sessionStateLine(session: StateSource, now: number, runMs?: number | null): SessionStateLine {
+ * so a subagent has one time everywhere. `live` is the running turn's own
+ * line (trayLine over the same source), shown in Working's place with the
+ * session's elapsed time kept after it. */
+export function sessionStateLine(
+	session: StateSource,
+	now: number,
+	runMs?: number | null,
+	live?: TrayLine | null,
+): SessionStateLine {
 	const type = session.status.type;
 	// This follows the Board's own attention order (board/attention.ts's
 	// boardState, which matches the hub's NeedsYouBand) exactly, so the two
@@ -42,9 +55,21 @@ export function sessionStateLine(session: StateSource, now: number, runMs?: numb
 	// Awaiting without a question: the turn ended on needs_response (#4093).
 	if (type === "awaiting") return { state: "needsYou", text: "Needs you" };
 	if (type === "active") {
-		if (typeof runMs === "number") return { state: "working", text: `Working · ${compactDuration(runMs)}` };
 		const started = hubTime(session.activeTurnStartedAt);
-		return { state: "working", text: started === null ? "Working" : `Working · ${compactDuration(now - started)}` };
+		// The running-turn elapsed, which the session's own clock reports: the
+		// subagent run's time when the screen has one, else the time since the
+		// turn started.
+		const elapsed = typeof runMs === "number" ? runMs : started === null ? null : now - started;
+		if (live) {
+			// A line that already carries its own clock keeps it alone.
+			if (live.timed || elapsed === null) return { state: "working", text: live.text, live };
+			return {
+				state: "working",
+				text: `${live.text} · ${compactDuration(elapsed)}`,
+				live,
+			};
+		}
+		return { state: "working", text: elapsed === null ? "Working" : `Working · ${compactDuration(elapsed)}` };
 	}
 	const ended = lastCompletion(session.turns);
 	return {

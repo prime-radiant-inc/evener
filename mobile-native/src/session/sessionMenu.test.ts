@@ -18,6 +18,7 @@ function menu(over: Partial<SessionMenuInput> = {}) {
 		sharedNotes: true,
 		canAside: true,
 		canShutDown: true,
+		canStop: true,
 		choose: (action) => chosen.push(action),
 		...over,
 	});
@@ -66,6 +67,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	it("lists every item in order when every condition holds", () => {
 		expect(labels(only(menu().items).menu.items)).toEqual([
 			"Detail level · Intent",
+			"Stop",
 			"Find in session",
 			"Files",
 			"Activity",
@@ -88,6 +90,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 
 	it("leaves Delete to the Session sheet", () => {
 		expect(chosenKinds()).toEqual([
+			"stop",
 			"find",
 			"files",
 			"activity",
@@ -100,6 +103,17 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 			"archive",
 			"shutDown",
 		]);
+	});
+
+	it("offers Stop only while the turn can be stopped", () => {
+		expect(labels(only(menu({ canStop: false }).items).menu.items)).not.toContain("Stop");
+		expect(labels(only(menu({ canStop: true }).items).menu.items)).toContain("Stop");
+	});
+
+	it("stops the turn from the menu, so a draft never blocks it", () => {
+		const { items, chosen } = menu({ canStop: true });
+		action(only(items).menu.items, "Stop").onPress();
+		expect(chosen).toEqual([{ kind: "stop" }]);
 	});
 
 	it.each([
@@ -151,7 +165,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	] as const)("shows nothing for %s when it is false", (condition, label) => {
 		const entries = only(menu({ [condition]: false }).items).menu.items;
 		expect(labels(entries)).not.toContain(label);
-		expect(entries).toHaveLength(11);
+		expect(entries).toHaveLength(12);
 	});
 
 	// Activity and Tasks both read the hub live, so both wait for a connection.
@@ -160,7 +174,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 		const kinds = chosenKinds({ connected: false });
 		expect(kinds).not.toContain("activity");
 		expect(kinds).not.toContain("tasks");
-		expect(entries).toHaveLength(10);
+		expect(entries).toHaveLength(11);
 	});
 
 	it("opens Files", () => {
@@ -180,6 +194,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	});
 
 	it.each([
+		["Stop", { kind: "stop" }],
 		["Find in session", { kind: "find" }],
 		["Activity", { kind: "activity" }],
 		["Tasks", { kind: "tasks" }],
@@ -201,8 +216,8 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 		expect(chosen).toEqual(DETAIL_LEVELS.map(({ level }) => ({ kind: "level", level })));
 	});
 
-	it("draws Shut down as destructive, and nothing else", () => {
+	it("draws Stop and Shut down as destructive, and nothing else", () => {
 		const entries = only(menu().items).menu.items;
-		expect(labels(entries.filter((entry) => entry.destructive))).toEqual(["Shut down"]);
+		expect(labels(entries.filter((entry) => entry.destructive))).toEqual(["Stop", "Shut down"]);
 	});
 });

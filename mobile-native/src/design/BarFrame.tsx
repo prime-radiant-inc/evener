@@ -1,10 +1,10 @@
-// The bar under a screen's content, above the home indicator: the Board's
-// toolbar (spec 7.1) and the session's bottom bar (spec 8.1). Full width, a
-// hairline on top, and a fill painted down to the screen's edge, with room
-// for the home indicator while the keyboard is down. With the keyboard up the
-// bar rides on the keyboard, which covers the indicator, so that room would
-// only float the bar's content above it; it closes frame by frame as the
-// keyboard rises, so the bar's content never drops when the keyboard starts.
+// The bar under a screen's content, above the home indicator: the session's
+// bottom bar (spec 8.1). Full width, a hairline on top, and a fill painted
+// down to the screen's edge, with room for the home indicator while the
+// keyboard is down. With the keyboard up the bar rides on the keyboard, which
+// covers the indicator, so that room would only float the bar's content above
+// it; it closes frame by frame as the keyboard rises, so the bar's content
+// never drops when the keyboard starts.
 //
 // The fill is the system's Liquid Glass (spec 16.3) where the device has it
 // (iOS 26 and later), and the opaque page color elsewhere and while Reduce

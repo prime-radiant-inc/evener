@@ -1,5 +1,5 @@
-// A list that runs under a bottom bar (the session's bar, the Board's
-// toolbar): how it keeps its end clear of the bar, and the bar's height.
+// A list that runs under a bottom bar (the session's bar, the Board's compose
+// button): how it keeps its end clear of the bar, and the bar's height.
 import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Platform } from "react-native";

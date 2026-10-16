@@ -27,7 +27,6 @@ import {
 	playedHaptics,
 	render,
 	renderedText,
-	textOf,
 	screenConnection,
 	settle,
 	unmountMountedTrees,
@@ -39,7 +38,7 @@ import { forgetHistoryForHub } from "./session/historyMemory";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
 import { SessionHeader } from "./session/SessionHeader";
-import { SessionTitle } from "./session/SessionTitle";
+import { LiveSessionTitle } from "./session/LiveSessionTitle";
 import { readerKey } from "./readerPosition";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
 import { sheetKey } from "./sheet/sheetHosts";
@@ -434,9 +433,10 @@ it("titles the header with the session's state, and opens its info on a press", 
 
 	const title = header().headerTitle;
 	if (typeof title !== "function") throw new Error("no header title component");
-	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof SessionTitle>>;
-	expect(element.type).toBe(SessionTitle);
-	expect(element.props).toMatchObject({ title: "Session", line: { state: "idle" } });
+	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof LiveSessionTitle>>;
+	expect(element.type).toBe(LiveSessionTitle);
+	expect(element.props.title).toBe("Session");
+	expect(element.props.store?.getState).toEqual(expect.any(Function));
 	act(() => element.props.onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
@@ -1004,11 +1004,11 @@ const busy = {
 	},
 } as unknown as Thread;
 
-// Spec 13.1: the tray names the hub's running-subagent count, the one the
-// Board's row names, polled for this session alone. The thread's own
+// Spec 13.1: the live status line names the hub's running-subagent count, the
+// one the Board's row names, polled for this session alone. The thread's own
 // delegates list only the subagent it started itself; the hub counts 3 at
 // every depth.
-it("names the hub's running-subagent count in the tray, as the Board's row does", async () => {
+it("names the hub's running-subagent count in the live status line, as the Board's row does", async () => {
 	const working = { ...busy, status: { type: "active" } } as Thread;
 	const { tree, requests } = mount(working, {
 		"evener/activity/read": { sessions: [{ ref, minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 3 }] },
@@ -1016,8 +1016,13 @@ it("names the hub's running-subagent count in the tray, as the Board's row does"
 	await settle();
 	const reads = requests.filter((request) => request.method === "evener/activity/read");
 	expect(reads.map((request) => request.params)).toContainEqual({ refs: [ref] });
-	const [tray] = withTestID(tree, "status-tray-line");
-	expect(tray && textOf(tray)).toMatch(/\b3\b/);
+	const title = header().headerTitle;
+	if (typeof title !== "function") throw new Error("no header title component");
+	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof LiveSessionTitle>>;
+	// The title reads the session itself and builds the live line, which names
+	// the running-subagent count the activity read carries.
+	const rendered = render(element);
+	expect(renderedText(rendered)).toContain("3");
 	await act(async () => tree.unmount());
 });
 
@@ -1649,9 +1654,12 @@ it.each([false, true])("jumping live cancels browse demand and preserves Find (F
 		openFind(tree, "unique search needle");
 		await advanceHistory(0);
 	}
-	const composer = tree.root.findAll((node) => typeof node.props.onJumpToLive === "function")[0];
-	expect(composer).toBeDefined();
-	act(() => composer.props.onJumpToLive());
+	// The live state line, in the nav bar title, is what jumps now. The title
+	// leaves the tree while Find is open, so render it from the header options.
+	const title = header().headerTitle;
+	if (typeof title !== "function") throw new Error("no header title component");
+	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof LiveSessionTitle>>;
+	act(() => element.props.onJumpToLive?.());
 	await advanceHistory(60_000);
 	expect(attempts).toBe(find ? 2 : 1);
 	expect(renderedText(tree).includes("unique search needle")).toBe(find);
@@ -1877,8 +1885,11 @@ it.each(["close Find", "jump live", "remove hub", "new binding"])(
 				act(() => bar.props.onDone());
 			}
 			if (stop === "jump live") {
-				const composer = journey.tree.root.find((node) => typeof node.props.onJumpToLive === "function");
-				act(() => composer.props.onJumpToLive());
+				// The live state line, in the nav bar title, is what jumps now.
+				const title = header().headerTitle;
+				if (typeof title !== "function") throw new Error("no header title component");
+				const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof LiveSessionTitle>>;
+				act(() => element.props.onJumpToLive?.());
 			}
 			journey.back();
 			if (stop === "remove hub") forgetHistoryForHub("hub-1");
