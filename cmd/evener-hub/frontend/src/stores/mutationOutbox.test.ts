@@ -4,11 +4,15 @@ import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { draftStorageKey } from "../panes/session/composer/draft";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import { parseSkillDocument, skillAtomMentions } from "../panes/session/composer/skillDocument";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import { browserDraftKey, createBrowserDraftRepository } from "./browserDraftRepository";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import { type MutationIntent, MutationOutbox } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { faultAfterEarlierDraftAndMarker } from "./testing/legacyDraftTransferFault";
 import { rewriteOutboxRowWithoutFields } from "./testing/legacyOutboxRows";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 
@@ -52,6 +56,19 @@ function intent(text: string, targetRef = TARGET): MutationIntent {
     },
     attachments: [],
     optimisticDisplay: { text },
+  };
+}
+
+function noteIntent(note: string): MutationIntent {
+  return {
+    targetRef: TARGET,
+    threadId: "thread-1",
+    method: "notes/human/set",
+    payload: { ref: TARGET, expectedInstanceId: "instance-1", note },
+    attachments: [],
+    // Production note intents carry no display (threads.ts's setHumanNote):
+    // nothing renders while a note waits on its canonical reflection.
+    optimisticDisplay: null,
   };
 }
 
@@ -125,6 +142,94 @@ describe("MutationOutboxIndexedDB", () => {
       });
       expect(await store.settleReceipt(persisted.clientMutationId, "pending")).toBe(true);
       expect(await store.getOutbox(persisted.clientMutationId)).toBeUndefined();
+    } finally {
+      delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  });
+
+  test("a settlement that writes no session row proceeds while an unrelated legacy transfer stays pending", async () => {
+    // The legacy draft belongs to a session this settlement never touches, and
+    // its transfer faults on its own durable write through the shared
+    // request-fault seam - a real duplicate-key ConstraintError aborts the
+    // transfer transaction, so the migration stays pending. An outbox-only
+    // settlement writes no session row, so it must not wait for that transfer:
+    // the dispatcher holds a settlement at the head of its queue while it
+    // retries, and behind a blocked settlement waits every later input.
+    const fault = faultAfterEarlierDraftAndMarker(new IDBFactory());
+    const store = new MutationOutboxIndexedDB({
+      indexedDB: fault.factory,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    const receipt = await store.enqueueIntent(intent("settle beside a pending legacy transfer"));
+    const applied = await store.enqueueIntent(intent("settle applied beside a pending legacy transfer"));
+    try {
+      const storage = new MemoryStorage();
+      installLocalStorage(storage);
+      storage.setItem(draftStorageKey("legacy-owner"), "legacy draft");
+      expect(await store.settleReceipt(receipt.clientMutationId, "pending")).toBe(true);
+      expect(await store.settleApplied(applied.clientMutationId)).toBe(true);
+      expect(await store.getOutbox(receipt.clientMutationId)).toBeUndefined();
+      expect(await store.getOutbox(applied.clientMutationId)).toBeUndefined();
+      // The settlement neither ran nor repaired the unrelated transfer: the
+      // legacy draft is still there, and its own next transfer still faults.
+      expect(storage.getItem(draftStorageKey("legacy-owner"))).toBe("legacy draft");
+      const probe = createBrowserDraftRepository({ indexedDB: fault.factory, databaseName });
+      try {
+        expect(await probe.transferSupportedDrafts(browserDraftKey("").namespace)).toEqual({ state: "pending" });
+      } finally {
+        probe.close();
+      }
+    } finally {
+      delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  });
+
+  test("a recovery-bearing settlement still waits for a pending legacy transfer", async () => {
+    const fault = faultAfterEarlierDraftAndMarker(new IDBFactory());
+    const store = new MutationOutboxIndexedDB({
+      indexedDB: fault.factory,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    const persisted = await store.enqueueIntent(intent("settle a recovery record beside a pending transfer"));
+    await store.transferToRecovery(persisted.clientMutationId, "rejected");
+    try {
+      const storage = new MemoryStorage();
+      installLocalStorage(storage);
+      storage.setItem(draftStorageKey("legacy-owner"), "legacy draft");
+      // Retiring the recovery record writes the ref's session row, which is
+      // exactly what the migration orders against: a row initialized before
+      // the legacy draft transferred would strand it. This settlement keeps
+      // waiting for the transfer, and the caller retries by acting again.
+      await expect(store.settleReceipt(persisted.clientMutationId, "pending")).rejects.toThrow();
+      expect(await store.getRecovery(persisted.clientMutationId)).toBeDefined();
+      expect(storage.getItem(draftStorageKey("legacy-owner"))).toBe("legacy draft");
+    } finally {
+      delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  });
+
+  test("a settlement that retires superseded note recovery still waits for a pending legacy transfer", async () => {
+    const fault = faultAfterEarlierDraftAndMarker(new IDBFactory());
+    const store = new MutationOutboxIndexedDB({
+      indexedDB: fault.factory,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    const refused = await store.enqueueIntent(noteIntent("refused earlier note"));
+    await store.transferToRecovery(refused.clientMutationId, "rejected");
+    const accepted = await store.enqueueIntent(noteIntent("later accepted note"));
+    try {
+      const storage = new MemoryStorage();
+      installLocalStorage(storage);
+      storage.setItem(draftStorageKey("legacy-owner"), "legacy draft");
+      // Retiring the earlier refused note advances the ref's session row, so
+      // the later note's settlement keeps the composer store in scope and
+      // waits for the transfer with it.
+      await expect(store.settleReceipt(accepted.clientMutationId, "pending")).rejects.toThrow();
+      expect(await store.getRecovery(refused.clientMutationId)).toBeDefined();
+      expect(await store.getOutbox(accepted.clientMutationId)).toBeDefined();
     } finally {
       delete (globalThis as { localStorage?: Storage }).localStorage;
     }
