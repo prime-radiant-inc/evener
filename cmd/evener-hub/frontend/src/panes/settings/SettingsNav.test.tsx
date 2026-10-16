@@ -37,7 +37,7 @@ test("the selected nav item's text uses the AA-derived --accent-ink, not the raw
 });
 
 test("renders a nav landmark labelled Settings sections", () => {
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   expect(screen.getByRole("navigation", { name: "Settings sections" })).toBeTruthy();
 });
 
@@ -60,7 +60,6 @@ test("navigation activates every destination in the approved group order", async
     "plugins",
     "skills",
     "mcp",
-    "general",
     "hosts",
     "mobile",
     "hub",
@@ -74,48 +73,48 @@ function clusterHeaders(container: HTMLElement): (string | null)[] {
 }
 
 test("renders the 3 cluster headers", () => {
-  const { container } = render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  const { container } = render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   expect(clusterHeaders(container)).toEqual(["preferences", "agents-models", "extensions", "system"]);
 });
 
 test("the active section's link carries aria-current=page; others don't", () => {
   render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   expect(screen.getByRole("button", { name: "Appearance" }).getAttribute("aria-current")).toBe("page");
-  expect(screen.getByRole("button", { name: "General" }).getAttribute("aria-current")).toBeNull();
+  expect(screen.getByRole("button", { name: "Storage" }).getAttribute("aria-current")).toBeNull();
 });
 
 test("clicking a link calls onNavigate with that section's id", async () => {
   const user = userEvent.setup();
   const onNavigate = vi.fn();
-  render(<SettingsNav activeId="general" onNavigate={onNavigate} />);
+  render(<SettingsNav activeId="theme" onNavigate={onNavigate} />);
   await user.click(screen.getByRole("button", { name: "Hub" }));
   expect(onNavigate).toHaveBeenCalledWith("hub");
 });
 
 test("the filter input has an accessible name", () => {
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   expect(screen.getByRole("searchbox", { name: "Filter settings" })).toBeTruthy();
 });
 
-test('filtering "agents" hides General but keeps Agents', async () => {
+test('filtering "agents" hides Appearance but keeps Agents', async () => {
   const user = userEvent.setup();
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   await user.type(screen.getByRole("searchbox", { name: "Filter settings" }), "agents");
 
-  expect(screen.queryByRole("button", { name: "General" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Appearance" })).toBeNull();
   expect(screen.getByRole("button", { name: "Agents" })).toBeTruthy();
 });
 
 test("filtering is case-insensitive", async () => {
   const user = userEvent.setup();
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   await user.type(screen.getByRole("searchbox", { name: "Filter settings" }), "APPEARANCE");
   expect(screen.getByRole("button", { name: "Appearance" })).toBeTruthy();
 });
 
 test("a cluster header hides once every one of its links is filtered out", async () => {
   const user = userEvent.setup();
-  const { container } = render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  const { container } = render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   await user.type(screen.getByRole("searchbox", { name: "Filter settings" }), "storage");
 
   // Storage matches, so its cluster stays; nothing in the other two matches.
@@ -124,14 +123,14 @@ test("a cluster header hides once every one of its links is filtered out", async
 
 test("clearing the filter re-shows every link", async () => {
   const user = userEvent.setup();
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   const filter = screen.getByRole("searchbox", { name: "Filter settings" });
   await user.type(filter, "storage");
-  expect(screen.queryByRole("button", { name: "General" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Appearance" })).toBeNull();
 
   await user.clear(filter);
 
-  expect(screen.getByRole("button", { name: "General" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Appearance" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Storage" })).toBeTruthy();
 });
 
@@ -146,7 +145,7 @@ test("clearing the filter re-shows every link", async () => {
 // own --tap-min checks.
 
 test("every section link carries a drill-in chevron affordance, decorative only", () => {
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   const links = screen.getAllByRole("button");
   expect(links).toHaveLength(SETTINGS_SECTIONS.length);
   for (const link of links) {

@@ -37,7 +37,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: "plugins", label: "Plugin directories", cluster: "extensions" },
   { id: "skills", label: "Skill directories", cluster: "extensions" },
   { id: "mcp", label: "MCP servers", cluster: "extensions" },
-  { id: "general", label: "General", cluster: "system" },
   { id: "hosts", label: "Hosts", cluster: "system" },
   { id: "mobile", label: "Devices", cluster: "system" },
   { id: "hub", label: "Hub", cluster: "system" },

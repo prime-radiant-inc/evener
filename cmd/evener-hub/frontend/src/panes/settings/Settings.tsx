@@ -19,7 +19,6 @@ import { AboutSection } from "./sections/about";
 import { AgentsSection } from "./sections/agents";
 import { AgentsDocHostScope } from "./sections/agentsDoc";
 import { CredentialsHostScope } from "./sections/credentials/CredentialsHostScope";
-import { GeneralSection } from "./sections/general";
 import { HostsSection } from "./sections/hosts";
 import { HubSection } from "./sections/hub";
 import { InputShortcutsSection } from "./sections/inputShortcuts";
@@ -81,7 +80,6 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   plugins: PluginsDirsHostScope,
   skills: SkillsDirsHostScope,
   mcp: McpSectionWired,
-  general: GeneralSection,
   theme: ThemeSection,
   transcript: TranscriptSection,
   notifications: NotificationsSection,

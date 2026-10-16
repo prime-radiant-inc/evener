@@ -37,7 +37,7 @@ test("renders State dir (from storage, not hub), Run dir (from hub), and the sta
   expect(settingsFieldHelp("hub-config")).not.toBeNull();
 });
 
-test("Hub config's dd carries no 'edit to change' dim hint (unlike General's own row)", async () => {
+test("Hub config renders its path without a separate value hint", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => ({ hub: {}, storage: {} }) as SettingsOverviewResponse);
 
@@ -74,6 +74,7 @@ test("renders the Past index row with its size and a pluralized live session cou
   await waitFor(() => expect(settingsFieldIds()).toContain("past-index"));
   expect(within(settingsFieldValue("past-index")).getByText("size-from-hub")).toBeTruthy();
   expect(screen.getByText(/Currently tracking 3 sessions\./)).toBeTruthy();
+  expect(settingsFieldValue("past-results-per-page").textContent).toBe("20");
 });
 
 test("pluralizes 'session' (not 'sessions') when the count is exactly 1", async () => {
@@ -126,4 +127,14 @@ test("a hub-reported WireError shows that error's friendly form", async () => {
   await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
   const notice = document.querySelector('[role="status"][data-reason="unavailable"]');
   expect(notice?.textContent).toContain(friendlyErrorMessage(err));
+});
+
+test("preserves the wire zero default when an existing index omits its per-page counter", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => ({
+    hub: { daemonIdleTimeoutMillis: 3600000, pastIndex: { path: "/fixture/past.db" } },
+  }));
+  render(<StorageSection />);
+  await waitFor(() => expect(settingsFieldIds()).toContain("past-index"));
+  expect(settingsFieldValue("past-results-per-page").textContent).toBe("0");
 });

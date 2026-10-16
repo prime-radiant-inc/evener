@@ -9,8 +9,8 @@ import {
   settingsSectionLabel,
 } from "./sections";
 
-test("has exactly 19 navigation destinations during migration", () => {
-  expect(SETTINGS_SECTIONS).toHaveLength(19);
+test("has exactly 18 navigation destinations during migration", () => {
+  expect(SETTINGS_SECTIONS).toHaveLength(18);
 });
 
 test("every section id is unique", () => {
@@ -38,8 +38,8 @@ test('the "extensions" cluster has exactly these 4 sections, in order, right aft
 
 test('the "daemon" cluster has exactly these 5 sections, in order, last', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "system");
-  expect(cluster.map((s) => s.id)).toEqual(["general", "hosts", "mobile", "hub", "storage", "about"]);
-  expect(SETTINGS_SECTIONS.slice(13, 19)).toEqual(cluster);
+  expect(cluster.map((s) => s.id)).toEqual(["hosts", "mobile", "hub", "storage", "about"]);
+  expect(SETTINGS_SECTIONS.slice(13, 18)).toEqual(cluster);
 });
 
 test('"about" is the very last section overall', () => {
@@ -85,6 +85,8 @@ test.each([
   [undefined, null, "theme"],
   [undefined, "notifications", "notifications"],
   ["display", "notifications", "theme"],
+  ["general", "notifications", "theme"],
+  [undefined, "general", "theme"],
   ["unrecognized", "notifications", "theme"],
   ["project", "theme", "project"],
   [undefined, "project", "theme"],
