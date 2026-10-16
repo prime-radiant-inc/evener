@@ -21,6 +21,11 @@ const (
 	maxBytesPerAppend = 512 << 10
 )
 
+// scanBufferHeader is the header shared by this file's fixtures.
+func scanBufferHeader() transcript.Header {
+	return transcript.Header{SessionID: "th_scan_buffer", CreatedAt: fixtureClock, ProfileID: "openai", Model: "gpt-test"}
+}
+
 // scanBufferFixture is sixteen tiny valid entry lines, enough for one
 // append-and-catch-up per line without any large-record noise.
 func scanBufferFixture() fixture {
@@ -32,18 +37,20 @@ func scanBufferFixture() fixture {
 			lines = append(lines, entryLine(assistant(text(fmt.Sprintf("answer %d", i)))))
 		}
 	}
-	return fixture{
-		header: transcript.Header{SessionID: "th_scan_buffer", CreatedAt: fixtureClock, ProfileID: "openai", Model: "gpt-test"},
-		lines:  lines,
-	}
+	return fixture{header: scanBufferHeader(), lines: lines}
 }
 
-// TestSmallAppendAllocationBudget is a resource regression for the scan reader
-// alone: a tiny append must not allocate a megabyte of scratch. It warms the
-// index over the header so every measured catch-up is an extension scan, then
-// sums runtime.MemStats.TotalAlloc across sixteen append-and-catch-up pairs and
-// checks the entry count, committed length and returned content the fixture
-// defines.
+// TestSmallAppendAllocationBudget is a resource regression for the
+// append-and-catch-up path: a tiny append must not allocate a megabyte of
+// scratch. It warms the index over the header so every measured catch-up is an
+// extension scan, then sums runtime.MemStats.TotalAlloc across sixteen
+// append-and-catch-up pairs. The measurement spans the whole path — the
+// aggregate of the scan reader and every other per-catch-up allocation — not
+// the reader alone; the reader is the dominant term the budget targets.
+//
+// The measurement runs before the preservation assertions, and the allocation
+// budget is checked last, so a PRESERVATION failure on the unoptimized reader
+// is reportable without the budget Fatalf aborting first.
 func TestSmallAppendAllocationBudget(t *testing.T) {
 	path, lines := writeHeaderOnly(t, scanBufferFixture())
 	if len(lines) != appends {
@@ -61,9 +68,6 @@ func TestSmallAppendAllocationBudget(t *testing.T) {
 	var after runtime.MemStats
 	runtime.ReadMemStats(&after)
 	allocatedBytes := after.TotalAlloc - before.TotalAlloc
-	if allocatedBytes >= appends*maxBytesPerAppend {
-		t.Fatalf("allocated %d bytes for %d tiny appends", allocatedBytes, appends)
-	}
 
 	info, err := os.Stat(path)
 	if err != nil {
@@ -76,21 +80,24 @@ func TestSmallAppendAllocationBudget(t *testing.T) {
 		t.Fatalf("entry count = %d, want %d", x.meta.Entries, len(lines))
 	}
 	assertSampledWindows(t, x, path)
+
+	if allocatedBytes >= appends*maxBytesPerAppend {
+		t.Fatalf("allocated %d bytes for %d tiny appends", allocatedBytes, appends)
+	}
 }
 
 // BenchmarkCatchUpSmallAppends times one append-and-catch-up. Encoding and
 // appending happen with the timer stopped, so the reported cost and bytes are
 // the catch-up scan's own: a buffer sized to the unread section must not charge
-// a full megabyte for a tiny line. Payloads span the 4 KiB floor, a mid-size
-// record and a record larger than the reader ever buffers. -benchtime=100x
-// bounds each run to 100 iterations and validates the final content.
+// a full megabyte for a tiny line. Payloads cover the 4 KiB floor and a
+// mid-size record, plus a 128 KiB record that stays below the 1 MiB ceiling;
+// the 2 MiB TestScanReaderSpanningRecord covers spanning the ceiling.
+// -benchtime=100x bounds each run to 100 iterations and validates the final
+// content.
 func BenchmarkCatchUpSmallAppends(b *testing.B) {
 	for _, size := range []int{64, 4 << 10, 128 << 10} {
 		b.Run(strconv.Itoa(size), func(b *testing.B) {
-			path := filepath.Join(b.TempDir(), "session.transcript.jsonl")
-			if err := os.WriteFile(path, encodeHeader(b, scanBufferFixture().header), 0o600); err != nil {
-				b.Fatal(err)
-			}
+			path, _ := writeHeaderOnly(b, fixture{header: scanBufferHeader()})
 			x := openIndex(b, path, filepath.Join(b.TempDir(), "index"))
 			payload := strings.Repeat("x", size)
 			b.ResetTimer()
@@ -122,14 +129,8 @@ func BenchmarkCatchUpSmallAppends(b *testing.B) {
 // line, so the scan reader's floor is what reads it.
 func TestScanSmallReaderPreservesPartialTail(t *testing.T) {
 	fx := namedResults()
-	header, lines := fx.encode(t)
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	if err := os.WriteFile(path, header, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, line := range lines[:len(lines)-1] {
-		appendBytes(t, path, line)
-	}
+	path, lines := writeHeaderOnly(t, fx)
+	appendBytes(t, path, joinLines(lines[:len(lines)-1]))
 	last := lines[len(lines)-1]
 	appendBytes(t, path, last[:len(last)/2])
 	x := openIndex(t, path, t.TempDir())
@@ -154,7 +155,7 @@ func TestScanSmallReaderPreservesPartialTail(t *testing.T) {
 // that resumes from the sidecar.
 func TestScanReaderSpanningRecord(t *testing.T) {
 	fx := fixture{
-		header: scanBufferFixture().header,
+		header: scanBufferHeader(),
 		lines: []fixtureLine{
 			entryLine(user("before the big record")),
 			entryLine(assistant(text(strings.Repeat("y", 2<<20)))),
@@ -167,8 +168,7 @@ func TestScanReaderSpanningRecord(t *testing.T) {
 	}
 	dir := t.TempDir()
 	x := openIndex(t, path, dir)
-	appendBytes(t, path, lines[0])
-	appendBytes(t, path, lines[1])
+	appendBytes(t, path, joinLines(lines[:2]))
 	catchUp(t, x)
 	appendBytes(t, path, lines[2])
 	catchUp(t, x)
