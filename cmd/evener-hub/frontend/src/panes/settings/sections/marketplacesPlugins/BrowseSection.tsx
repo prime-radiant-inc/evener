@@ -190,11 +190,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
       <ul aria-label="Marketplace browse tree" className={CLASS.tree}>
         {marketplaces.length === 0 ? (
           <li>
-            <EmptyState
-              size="compact"
-              reason="empty"
-              title="No marketplaces registered. Add one from the Marketplaces tab."
-            />
+            <EmptyState size="compact" reason="empty" title="No marketplaces registered. Add one from Sources." />
           </li>
         ) : trimmedQuery !== "" && filterLoading ? (
           <li>

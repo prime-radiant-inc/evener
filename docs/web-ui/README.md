@@ -55,6 +55,8 @@ tokens, marketplace and plugin directory. Results open the owning page.
 Appearance is the default. Explicit unknown or retired `general`, `display`
 and `plugins` section URLs open Appearance, without aliases or a remembered
 section overriding that request. A host-qualified URL retains its host scope.
+AppShell replaces retired or unknown URLs before placing their settings pane,
+so mobile URL synchronization cannot restore retired params or discard Forward history.
 Project settings remain reachable through their project route.
 
 On phones, settings opens as a full-width list. Drilling into a page and using

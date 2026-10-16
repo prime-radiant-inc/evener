@@ -4465,6 +4465,39 @@ test("navigating to /settings/{section} shows that section, replacing main setti
   expect(workspaceStore.getState().focusedPaneId).toBe("settings-main");
 });
 
+test.each(["general", "display", "plugins", "unknown-section"])(
+  "mobile Back to retired settings %s replaces history and preserves Forward",
+  async (section) => {
+    vi.stubGlobal("innerWidth", 390);
+    installMobileViewport();
+    const search = section === "plugins" ? "?host=beta" : "";
+    window.history.pushState({ retained: section }, "", `/settings/${section}${search}`);
+    window.history.pushState({}, "", `/settings/hub${search}`);
+    render(<AppShell client={new FakeClient("ready")} />);
+    await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ section: "hub" }));
+    const push = vi.spyOn(window.history, "pushState");
+    const replace = vi.spyOn(window.history, "replaceState");
+
+    try {
+      act(() => window.history.back());
+      await waitFor(() => expect(window.location.pathname).toBe("/settings/theme"));
+      expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ section: "theme" });
+      expect(window.location.search).toBe(search);
+      expect(window.history.state).toEqual({ retained: section });
+      expect(push).not.toHaveBeenCalled();
+      expect(replace).toHaveBeenCalledTimes(1);
+
+      act(() => window.history.forward());
+      await waitFor(() => expect(window.location.pathname).toBe("/settings/hub"));
+      await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ section: "hub" }));
+      expect(push).not.toHaveBeenCalled();
+    } finally {
+      push.mockRestore();
+      replace.mockRestore();
+    }
+  },
+);
+
 test("deep-linking to bare /settings opens the settings pane on its default (Appearance) section", async () => {
   window.history.pushState({}, "", "/settings");
   render(<AppShell client={new FakeClient("ready")} />);
