@@ -1,11 +1,8 @@
-# ended-session-metrics-tui-and-web: an ended session's work time/tokens/cost surface via both the TUI details drawer and the web details panel
+# ended-session-metrics: an ended session's work time/tokens/cost surface via the web details panel
 
 **What this covers**: the WS2 gap Track C fills — an ended (non-live) session's
 metrics were previously only inferable from raw transcript files. This
-exercises both surfaces added/extended to close that gap: the TUI
-`/details` palette command (`cmd/evener-tui/details_drawer.go`,
-`hub_command_registry.go:197-202`'s `fetchCurrentHubSession`) and the web
-Session-details panel's ended-session rows
+exercises the web Session-details panel's ended-session rows
 (`cmd/evener-hub/frontend/src/panes/session/chrome/DetailsPanel.tsx:183-196`).
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Session operations"
@@ -68,11 +65,6 @@ replaces them is one AppWire thread object and one React panel — see steps 3 a
    `[data-testid="status-row-cost"]` inside `EndedSummary`
    (`StatusRow.tsx:250-279`) — so `strip` cross-checks the panel for free.
 
-5. **[TUI]** Launch `evener tui --hub-addr <host:port> --auth-token <token>
-   --no-auto-start-hub` (flags: `cmd/evener-tui/internal/hubstart/hub_start.go:78-85`),
-   navigate Dashboard → project → the ended session's row → Enter to open it,
-   open the command palette, select `/details`, Enter.
-
 ## Expected
 
 - **Step 3 (exact, browser-free)**: `status.type` is `ended`,
@@ -87,33 +79,26 @@ replaces them is one AppWire thread object and one React panel — see steps 3 a
   contains the same work-time and cost text. Falsification: a row is absent
   while step 3 shows a real figure for it, or the panel and the strip
   disagree.
-- **Step 5 (TUI)**: the details drawer shows `Work:` and `Tokens:` lines
-  (`details_drawer.go:64-72`) with the same real values (cost is TUI-scope-out
-  per the WS2 plan — the TUI gap-fill was tokens/work time, not cost).
-  Falsification: the drawer shows blank/zero `Work:`/`Tokens:` for an ended
-  session that has real recorded usage.
-
 ## Cleanup
 
-- None beyond step 2's shutdown (already ends the session). Kill the TUI's
-  tmux session and the hub by the PID you captured; delete the isolated
-  `$HOME` and the `$run` scratch dir when done with the whole Y2 run.
+- None beyond step 2's shutdown (already ends the session). Kill the hub by
+  the PID you captured; delete the isolated `$HOME` and the `$run` scratch
+  dir when done with the whole Y2 run.
 
 ## Sharp edges
 
-- **A row that renders nothing is an honest answer, not a missing row.** Both
-  surfaces omit a figure the wire never measured rather than printing a
+- **A row that renders nothing is an honest answer, not a missing row.** The
+  panel omits a figure the wire never measured rather than printing a
   fabricated one: `DetailsPanel` gates each row on the value's presence, and
   `formatWorkDuration` clamps a real sub-second duration up to `1s` — which
   is correct for a measurement and a lie for the absence of one
   (`StatusRow.tsx:236-249`). A falsy cost (the daemon's honest "unknown")
   renders nothing rather than `~$0.00`. Check step 3's REST object before
   calling an absent row a regression.
-- **The two renderers round differently.** The web panel and the TUI drawer
-  format the same underlying counts through different formatters, so
-  `2k` vs `2.3k` and `13k` vs `12k` between them is expected precision
-  drift, not a data discrepancy. Assert against step 3's raw integers when
-  the two disagree.
+- **The panel's formatter rounds.** The web panel presents the wire's
+  counts through a display formatter, so assert against step 3's raw
+  integers when a displayed figure looks rounded rather than treating the
+  rounding as a data discrepancy.
 - **State vocabulary**: the normalized-state model (`hubapi/attention.go`)
   defines both `idle` (display word "Idle") and `awaiting` (display word
   "Needs you") as distinct terminal states for a still-live session. `idle`
@@ -129,8 +114,3 @@ replaces them is one AppWire thread object and one React panel — see steps 3 a
   the hub advertises Send and ChangeModel for a cold exited thread and
   resumes it behind either call. A clickable model chip on an ended session
   is the design, not a stale control.
-- Observed but out of scope: the TUI drawer's status badge reads `NOTLOADED`
-  rather than `ENDED` for a past session, and its `Turns:` (transcript-entry
-  count) differs from the web panel's user-turn count. Both look like
-  pre-existing TUI/past-index label and counting quirks unrelated to Track
-  C's cost/settings work; noted for visibility, not fixed by this card.

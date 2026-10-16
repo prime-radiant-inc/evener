@@ -1,8 +1,7 @@
 # model-picker-dated-snapshot-sorts-last: bare family id before its dated snapshot, within a provider
 
-**What this covers**: Track B Tasks 4 (`sortModelDescriptors`,
-`cmd/evener-hub/app_models.go`, over `isDatedSnapshotModelID`)
-and 11 (TUI `modelPickerItems`, `cmd/evener-tui/hub_commands.go#modelPickerItems`) —
+**What this covers**: Track B Task 4 (`sortModelDescriptors`,
+`cmd/evener-hub/app_models.go`, over `isDatedSnapshotModelID`) —
 within one provider's group, a bare model id (e.g. `claude-opus-4-6`)
 must render before its dated snapshot (`claude-opus-4-6-20251101`),
 regardless of the order the live listing returned them in.
@@ -46,13 +45,10 @@ list.
    `registry.StripDatedSuffix`) — must come after every id in that run that
    doesn't. Providers themselves sort ascending (`sortModelDescriptors`,
    `app_models.go`).
-2. Same check through the TUI's own path: `modelPickerItems` applies the
-   identical predicate over `buildModelPickerItems`'s unordered output
-   (`cmd/evener-tui/hub_commands.go#modelPickerItems`).
 
 ### Browser (does the rendered list preserve it)
 
-3. Open `/settings/launch-evener`, click the model field's trigger (the
+2. Open `/settings/launch-evener`, click the model field's trigger (the
    `<button>` whose accessible name ends `— change model`,
    `widgets/modelCatalog/index.tsx#ModelCatalog`), and read the listbox in
    DOM order:
@@ -73,14 +69,6 @@ list.
    (`cmd/evener-hub/internal/launchconfig/schema.go:85,87`). Open the one
    whose block label reads exactly `Model`; only one panel is open at a
    time, so the listbox query above is unambiguous once it is.
-4. In a tmux session running `evener tui --hub-addr 127.0.0.1:$PORT`,
-   press `n` (opens the spawn form focused on Prompt,
-   `cmd/evener-tui/hub_keys.go:95`, `hub_spawn.go:300-311`), then
-   `BTab BTab` to reach the Model field (field order is
-   Prompt/Harness/Model/Dir, `cmd/evener-tui/hub_model.go:27-30`, and
-   focus wraps backwards through Dir — `advanceSpawnFocus`,
-   `hub_spawn.go#advanceSpawnFocus`), then `Enter` to open the picker overlay;
-   `capture-pane`.
 
 ## Expected
 
@@ -88,13 +76,9 @@ list.
   precedes `claude-opus-4-6-20251101`, and no dated id appears before a
   bare one in the same run. Falsify: any dated id ahead of a bare id
   within one provider, or the provider runs interleaved.
-- **Step 3**: the `role="option"` rows appear in exactly step 1's order.
+- **Step 2**: the `role="option"` rows appear in exactly step 1's order.
   Falsify: the DOM order differs from the JSON order — the picker is
   re-sorting, which it must not do.
-- **Step 4**: under the provider's uppercased group header
-  (`strings.ToUpper(item.Group)`,
-  `cmd/evener-tui/internal/tuipick/model_picker.go:165-167`) the bare row
-  precedes the dated row.
 - Note the display names are prettified and the dated suffix is
   *stripped from the label*, so the two rows read identically
   (`prettifyModelDisplayName`, `app_models.go#prettifyModelDisplayName`, and its test
@@ -147,15 +131,11 @@ build, via:
   {anthropic, claude-opus-4-6}, {openai, gpt-5.2}], nil)` returns the
   anthropic group in order `[claude-opus-4-6, claude-opus-4-6-20251101]`
   regardless of input order.
-- `TestModelPickerItems_SortsDatedSnapshotLastWithinProvider`
-  (`cmd/evener-tui/hub_model_picker_items_test.go#TestModelPickerItems_SortsDatedSnapshotLastWithinProvider`) — the same
-  assertion for the TUI's `modelPickerItems`.
 
-Both are still the fallback when no dated pair is reachable:
+That is still the fallback when no dated pair is reachable:
 
 ```bash
 go test ./cmd/evener-hub/ -run TestEnrichModelDescriptors_UsesPrettifiedDisplayNameAndSortsDatedLast
-go test ./cmd/evener-tui/ -run TestModelPickerItems_SortsDatedSnapshotLastWithinProvider
 ```
 
 Step 1 above is the part of that gap the rewrite closes: it needs a
@@ -167,7 +147,7 @@ can reach.
 If `lunarouter`'s tunnel is restored, or Anthropic OAuth credentials are
 added to this hub's isolated `$XDG_STATE_HOME/evener/auth/anthropic.json`
 (mirroring the `openai.json` pattern used elsewhere in this set), re-run
-steps 1-4 against a provider group containing a known Anthropic
+steps 1-2 against a provider group containing a known Anthropic
 dated-snapshot family (`claude-opus-4-6` / `claude-opus-4-6-20251101`,
 or `claude-opus-4-7` / `claude-opus-4-7-20260416` — both present in
 `llm/data/litellm_model_catalog.json` with identical metadata on the
@@ -175,8 +155,8 @@ bare and dated entries).
 
 ## Cleanup
 
-Kill the hub by the PID you captured and the tmux session you named;
-remove your `$run` dir. Nothing is spawned by this card.
+Kill the hub by the PID you captured; remove your `$run` dir. Nothing is
+spawned by this card.
 
 ## Sharp edges
 
@@ -184,9 +164,8 @@ remove your `$run` dir. Nothing is spawned by this card.
   unscoped AppWire `model/list`, while the spawn picker uses the
   harness/cwd-scoped call. Both go through `hubModelList` and
   `enrichModelListResponse` in `cmd/evener-hub/app_models.go`, which applies
-  `sortModelDescriptors` after enrichment. The TUI applies the corresponding
-  `modelPickerItems` ordering to its response. Assert group-wide ordering on
-  either web picker or the TUI; a difference points to the caller or renderer,
+  `sortModelDescriptors` after enrichment. Assert group-wide ordering on
+  either web picker; a difference points at the caller or renderer,
   not an intentional scope distinction.
 - **`role="presentation"` is two different things.** The listbox uses it
   for provider/`Recent` group heads *and* for unavailable-provider lines

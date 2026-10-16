@@ -87,7 +87,7 @@ hermetic workdirs, the AGENTS.md pacing trick for keeping a turn in
 `processing`, the synchronous-vs-async DOM assertion shape for
 optimistic-rendering scenarios, tmux form-fill conventions
 (`BTab` / `C-u` / `-l`), stderr-probe debugging when an assertion
-fails, the rebuild matrix across daemon / hub / web / TUI, and the
+fails, the rebuild matrix across daemon / hub / web, and the
 over-specification trap (when a scenario describes a path that
 production gating prevents).
 
