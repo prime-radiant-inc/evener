@@ -39,6 +39,7 @@ func FuzzApSkillFileParse(f *testing.F) {
 		"",
 		"---\n",
 		"name: a\ndescription: d\n---\nbody\n",
+		"---\nname: a\ndescription: LEGACY: fixture\nuser-invocable: false\n---\nbody\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
@@ -79,12 +80,12 @@ func FuzzApSkillFileParse(f *testing.F) {
 			// Derive the expected body through the same recovery Load applies, or a
 			// recovered delimiterless input would disagree on the body.
 			bodySource, _ := recoverMissingOpeningDelimiter(data)
-			doc, perr := frontmatter.Parse(string(bodySource))
-			if perr != nil {
-				t.Fatalf("frontmatter reparse failed after discovery: %v", perr)
+			_, expectedBody, framed := frontmatter.Split(string(bodySource))
+			if !framed {
+				t.Fatal("discovered skill has no complete frontmatter")
 			}
-			if body != doc.Body {
-				t.Fatalf("LoadSkillBody body mismatch for %q:\n got=%q\n want=%q", meta.Name, body, doc.Body)
+			if body != expectedBody {
+				t.Fatalf("LoadSkillBody body mismatch for %q:\n got=%q\n want=%q", meta.Name, body, expectedBody)
 			}
 
 			// ResolveSkillContent by exact name returns the same body.
