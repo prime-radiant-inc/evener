@@ -98,6 +98,7 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
     return subscribePaneDocumentMoves(sync);
   }, [scrollElement]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: observedDocument is a deliberate trigger-only dep, re-running the binding when the pane's document moves
   useEffect(() => {
     // Realm-safe constructors: a popped-out document renders in another window,
     // whose MouseEvent/Element/Node are DIFFERENT constructors from this
