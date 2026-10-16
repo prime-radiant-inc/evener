@@ -1063,8 +1063,8 @@ func formatJobList(out jobListResult, maxChars int) string {
 			description = *j.Command
 		}
 		labels[i] = jobListLabel{
-			name:        strings.Join(strings.Fields(activitybound.Truncate(j.Name, activitybound.MaxLabelRunes)), " "),
-			description: strings.Join(strings.Fields(activitybound.Truncate(description, activitybound.MaxLabelRunes)), " "),
+			name:        collapseWhitespace(activitybound.Truncate(j.Name, activitybound.MaxLabelRunes)),
+			description: collapseWhitespace(activitybound.Truncate(description, activitybound.MaxLabelRunes)),
 		}
 	}
 	full := renderJobList(out, labels, activitybound.MaxLabelRunes)
