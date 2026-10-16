@@ -95,8 +95,8 @@ func TestBackgroundDriverLifetime(t *testing.T) {
 	t.Run("a driver that completes on its own is not cancelled", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		done, finished := startBackgroundDriverChild(t, ctx, "clean", "")
-		exitErr, timedOut, joined := awaitBackgroundDriver(t, backgroundDriverForceKillDelay, backgroundDriverJoinReserve, cancel, done, finished)
+		done, finished := startBackgroundDriverChild(ctx, t, "clean", "")
+		timedOut, joined, exitErr := awaitBackgroundDriver(t, backgroundDriverForceKillDelay, backgroundDriverJoinReserve, cancel, done, finished)
 		if timedOut || !joined || exitErr != nil {
 			t.Fatalf("clean driver: exitErr=%v timedOut=%v joined=%v; want nil, false, true", exitErr, timedOut, joined)
 		}
@@ -105,8 +105,8 @@ func TestBackgroundDriverLifetime(t *testing.T) {
 	t.Run("an immediate command failure is reported, not a timeout", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		done, finished := startBackgroundDriverChild(t, ctx, "fail-now", "")
-		exitErr, timedOut, joined := awaitBackgroundDriver(t, backgroundDriverForceKillDelay, backgroundDriverJoinReserve, cancel, done, finished)
+		done, finished := startBackgroundDriverChild(ctx, t, "fail-now", "")
+		timedOut, joined, exitErr := awaitBackgroundDriver(t, backgroundDriverForceKillDelay, backgroundDriverJoinReserve, cancel, done, finished)
 		if timedOut || !joined || exitErr == nil {
 			t.Fatalf("failing driver: exitErr=%v timedOut=%v joined=%v; want a non-nil error, false, true", exitErr, timedOut, joined)
 		}
@@ -116,10 +116,10 @@ func TestBackgroundDriverLifetime(t *testing.T) {
 		ready := filepath.Join(t.TempDir(), "ready")
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		done, finished := startBackgroundDriverChild(t, ctx, "ignore-term", ready)
+		done, finished := startBackgroundDriverChild(ctx, t, "ignore-term", ready)
 		waitBackgroundDriverReady(t, ready)
 		start := time.Now()
-		exitErr, timedOut, joined := awaitBackgroundDriver(t, 100*time.Millisecond, backgroundDriverJoinReserve, cancel, done, finished)
+		timedOut, joined, exitErr := awaitBackgroundDriver(t, 100*time.Millisecond, backgroundDriverJoinReserve, cancel, done, finished)
 		if !timedOut {
 			t.Fatalf("a driver that never exits must report a timeout")
 		}
@@ -138,7 +138,7 @@ func TestBackgroundDriverLifetime(t *testing.T) {
 // startBackgroundDriverChild launches the re-executed test binary as a fake
 // driver under the real cancellation setup. It kills and reaps the child before
 // the test returns, reporting any cleanup failure rather than swallowing it.
-func startBackgroundDriverChild(t *testing.T, ctx context.Context, mode, ready string) (<-chan error, <-chan struct{}) {
+func startBackgroundDriverChild(ctx context.Context, t *testing.T, mode, ready string) (<-chan error, <-chan struct{}) {
 	t.Helper()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestBackgroundDriverLifetimeFakeDriver$")
 	configureBackgroundDriverCommand(cmd)
@@ -235,7 +235,7 @@ func TestBackgroundDriverOwnedControls(t *testing.T) {
 	t.Run("an admitted clean driver completes and is reaped", func(t *testing.T) {
 		var finishedCh <-chan struct{}
 		err := runOwnedBackgroundDriver(t, time.Time{}, false, lt, func(ctx context.Context) (<-chan error, <-chan struct{}) {
-			done, finished := startBackgroundDriverChild(t, ctx, "clean", "")
+			done, finished := startBackgroundDriverChild(ctx, t, "clean", "")
 			finishedCh = finished
 			return done, finished
 		})
@@ -254,7 +254,7 @@ func TestBackgroundDriverOwnedControls(t *testing.T) {
 		var finishedCh <-chan struct{}
 		deadline := time.Now().Add(lt.Join + lt.Cleanup + 200*time.Millisecond)
 		err := runOwnedBackgroundDriver(t, deadline, true, lt, func(ctx context.Context) (<-chan error, <-chan struct{}) {
-			done, finished := startBackgroundDriverChild(t, ctx, "ignore-term", ready)
+			done, finished := startBackgroundDriverChild(ctx, t, "ignore-term", ready)
 			finishedCh = finished
 			waitBackgroundDriverReady(t, ready)
 			return done, finished

@@ -36,6 +36,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -247,10 +249,10 @@ func backgroundDriverBudget(deadline time.Time, hasDeadline bool, lt backgroundD
 // budget runs out it cancels the driver. timedOut reports the timeout and
 // joined reports whether the process was observed to exit, so the caller never
 // treats a timeout as success.
-func awaitBackgroundDriver(t *testing.T, budget, joinReserve time.Duration, cancel context.CancelFunc, done <-chan error, finished <-chan struct{}) (exitErr error, timedOut, joined bool) {
+func awaitBackgroundDriver(t *testing.T, budget, joinReserve time.Duration, cancel context.CancelFunc, done <-chan error, finished <-chan struct{}) (timedOut, joined bool, exitErr error) {
 	select {
 	case exitErr = <-done:
-		return exitErr, false, true
+		return false, true, exitErr
 	case <-time.After(budget):
 	}
 	cancel()
@@ -258,7 +260,7 @@ func awaitBackgroundDriver(t *testing.T, budget, joinReserve time.Duration, canc
 	if joined {
 		exitErr = <-done
 	}
-	return exitErr, true, joined
+	return true, joined, exitErr
 }
 
 // backgroundDriverLaunch starts one driver run and returns its completion and
@@ -280,7 +282,7 @@ func runOwnedBackgroundDriver(t *testing.T, deadline time.Time, hasDeadline bool
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done, finished := launch(ctx)
-	exitErr, timedOut, joined := awaitBackgroundDriver(t, budget, lt.Join, cancel, done, finished)
+	timedOut, joined, exitErr := awaitBackgroundDriver(t, budget, lt.Join, cancel, done, finished)
 	if timedOut {
 		if !joined {
 			return fmt.Errorf("driver did not stop after cancel and a %s join", lt.Join)
@@ -334,8 +336,8 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 	}
 	var baseline struct {
 		Ref               string `json:"ref"`
-		EntryRows         int    `json:"entryRows"`
-		LegacyRecordCount int    `json:"legacyRecordCount"`
+		EntryRows         int    `json:"entryRows"`         //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field entryRows.
+		LegacyRecordCount int    `json:"legacyRecordCount"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field legacyRecordCount.
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "entry-baseline", &baseline) {
 		t.Fatal("entry baseline milestone missing")
@@ -348,12 +350,12 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 	}
 	var opened struct {
 		Ref                 string `json:"ref"`
-		TraceBefore         int64  `json:"traceBefore"`
-		TraceAfter          int64  `json:"traceAfter"`
-		ActivationReads     int    `json:"activationReads"`
-		ActivationPages     int    `json:"activationPages"`
+		TraceBefore         int64  `json:"traceBefore"`     //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field traceBefore.
+		TraceAfter          int64  `json:"traceAfter"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field traceAfter.
+		ActivationReads     int    `json:"activationReads"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field activationReads.
+		ActivationPages     int    `json:"activationPages"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field activationPages.
 		Running             bool   `json:"running"`
-		LiveBeforePersisted bool   `json:"liveBeforePersisted"`
+		LiveBeforePersisted bool   `json:"liveBeforePersisted"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field liveBeforePersisted.
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "entry-opened", &opened) {
 		t.Fatal("entry opened milestone missing")
@@ -398,17 +400,17 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 		t.Errorf("trace has no initial subscribed background read for target: %+v", target)
 	}
 	var completed struct {
-		DOMCounts               map[string]int `json:"domCounts"`
-		RenderedOutputRegions   int            `json:"renderedOutputRegions"`
-		ShellRows               int            `json:"shellRows"`
-		RenderedOutputText      string         `json:"renderedOutputText"`
-		RenderedToolItemCount   int            `json:"renderedToolItemCount"`
-		RendererToNativeMatches bool           `json:"rendererToNativeMatches"`
-		ProducerItemsCovered    bool           `json:"producerItemsCovered"`
-		NativeEntryRows         int            `json:"nativeEntryRows"`
-		NativeTurnRows          int            `json:"nativeTurnRows"`
-		NativeCoverageRows      int            `json:"nativeCoverageRows"`
-		NativeLegacyRows        int            `json:"nativeLegacyRows"`
+		DOMCounts               map[string]int `json:"domCounts"`               //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field domCounts.
+		RenderedOutputRegions   int            `json:"renderedOutputRegions"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field renderedOutputRegions.
+		ShellRows               int            `json:"shellRows"`               //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field shellRows.
+		RenderedOutputText      string         `json:"renderedOutputText"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field renderedOutputText.
+		RenderedToolItemCount   int            `json:"renderedToolItemCount"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field renderedToolItemCount.
+		RendererToNativeMatches bool           `json:"rendererToNativeMatches"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field rendererToNativeMatches.
+		ProducerItemsCovered    bool           `json:"producerItemsCovered"`    //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field producerItemsCovered.
+		NativeEntryRows         int            `json:"nativeEntryRows"`         //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field nativeEntryRows.
+		NativeTurnRows          int            `json:"nativeTurnRows"`          //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field nativeTurnRows.
+		NativeCoverageRows      int            `json:"nativeCoverageRows"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field nativeCoverageRows.
+		NativeLegacyRows        int            `json:"nativeLegacyRows"`        //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field nativeLegacyRows.
 	}
 	if !skillGuardMilestoneDetail(t, milestones, "entry-completed", &completed) {
 		t.Fatal("entry completed milestone missing")
@@ -441,37 +443,37 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 	var audit struct {
 		RenderedSentinelRows []struct {
 			ID     string `json:"id"`
-			TurnID string `json:"turnId"`
+			TurnID string `json:"turnId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field turnId.
 			Text   string `json:"text"`
-		} `json:"renderedSentinelRows"`
+		} `json:"renderedSentinelRows"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field renderedSentinelRows.
 		RecordedRendererItems []struct {
 			ID            string `json:"id"`
-			TurnID        string `json:"turnId"`
+			TurnID        string `json:"turnId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field turnId.
 			Type          string `json:"type"`
 			Text          string `json:"text"`
 			Output        string `json:"output"`
 			Arguments     string `json:"arguments"`
 			Status        string `json:"status"`
-			CallID        string `json:"callId"`
-			TranscriptKey string `json:"transcriptKey"`
+			CallID        string `json:"callId"`        //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field callId.
+			TranscriptKey string `json:"transcriptKey"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field transcriptKey.
 			Version       int    `json:"version"`
 			Position      struct {
 				Entry int `json:"entry"`
 				Item  int `json:"item"`
 				Sub   int `json:"sub"`
 			} `json:"position"`
-		} `json:"recordedRendererItems"`
+		} `json:"recordedRendererItems"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field recordedRendererItems.
 		NativeItems []struct {
-			TranscriptKey string `json:"transcriptKey"`
+			TranscriptKey string `json:"transcriptKey"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field transcriptKey.
 			Item          struct {
 				ID        string `json:"id"`
-				TurnID    string `json:"turnId"`
+				TurnID    string `json:"turnId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field turnId.
 				Type      string `json:"type"`
 				Text      string `json:"text"`
 				Output    string `json:"output"`
-				Arguments string `json:"argumentsJSON"`
+				Arguments string `json:"argumentsJSON"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field argumentsJSON.
 				Status    string `json:"status"`
-				CallID    string `json:"callId"`
+				CallID    string `json:"callId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field callId.
 				Version   int    `json:"version"`
 				Position  struct {
 					Entry int `json:"entry"`
@@ -484,12 +486,12 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 				Item  int `json:"item"`
 				Sub   int `json:"sub"`
 			} `json:"position"`
-		} `json:"nativeItems"`
+		} `json:"nativeItems"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field nativeItems.
 		NativeTurns []struct {
-			TurnID string `json:"turnId"`
-		} `json:"nativeTurns"`
+			TurnID string `json:"turnId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field turnId.
+		} `json:"nativeTurns"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field nativeTurns.
 		NativeCoverage []struct {
-			RangeID string `json:"rangeId"`
+			RangeID string `json:"rangeId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field rangeId.
 			Kind    string `json:"kind"`
 			Start   *struct {
 				Entry int `json:"entry"`
@@ -500,12 +502,12 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 				Item  int `json:"item"`
 			} `json:"end"`
 			Boundary string `json:"boundary"`
-		} `json:"nativeCoverage"`
+		} `json:"nativeCoverage"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field nativeCoverage.
 		RenderedOutputRegion struct {
-			OutputRegions int      `json:"outputRegions"`
-			ShellRows     int      `json:"shellRows"`
+			OutputRegions int      `json:"outputRegions"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field outputRegions.
+			ShellRows     int      `json:"shellRows"`     //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field shellRows.
 			Outputs       []string `json:"outputs"`
-		} `json:"renderedOutputRegion"`
+		} `json:"renderedOutputRegion"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field renderedOutputRegion.
 	}
 	auditData, err := os.ReadFile(filepath.Join(fixture.artifact, "entry-audit.json"))
 	if err != nil {
@@ -636,11 +638,11 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 func assertBackgroundEntryTwoTabFencing(t *testing.T, milestones []skillGuardMilestone) {
 	t.Helper()
 	var delFence struct {
-		ADeletedRefs       bool `json:"aDeletedRefs"`
-		BSuppressed        bool `json:"bSuppressed"`
-		BJoinedDeletedRefs bool `json:"bJoinedDeletedRefs"`
-		DurableBefore      int  `json:"durableBefore"`
-		DurableRemoved     bool `json:"durableRemoved"`
+		ADeletedRefs       bool `json:"aDeletedRefs"`       //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field aDeletedRefs.
+		BSuppressed        bool `json:"bSuppressed"`        //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field bSuppressed.
+		BJoinedDeletedRefs bool `json:"bJoinedDeletedRefs"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field bJoinedDeletedRefs.
+		DurableBefore      int  `json:"durableBefore"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field durableBefore.
+		DurableRemoved     bool `json:"durableRemoved"`     //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field durableRemoved.
 	}
 	if skillGuardMilestoneDetail(t, milestones, "two-tab-delete-fence", &delFence) {
 		if !delFence.ADeletedRefs {
@@ -657,8 +659,8 @@ func assertBackgroundEntryTwoTabFencing(t *testing.T, milestones []skillGuardMil
 		}
 	}
 	var delRefusal struct {
-		RoutePresent  bool `json:"routePresent"`
-		RowsAfterOpen int  `json:"rowsAfterOpen"`
+		RoutePresent  bool `json:"routePresent"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field routePresent.
+		RowsAfterOpen int  `json:"rowsAfterOpen"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field rowsAfterOpen.
 	}
 	if skillGuardMilestoneDetail(t, milestones, "two-tab-delete-refusal", &delRefusal) {
 		if delRefusal.RoutePresent {
@@ -669,8 +671,8 @@ func assertBackgroundEntryTwoTabFencing(t *testing.T, milestones []skillGuardMil
 		}
 	}
 	var clearFence struct {
-		EpochBefore *int `json:"epochBefore"`
-		EpochAfter  *int `json:"epochAfter"`
+		EpochBefore *int `json:"epochBefore"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field epochBefore.
+		EpochAfter  *int `json:"epochAfter"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field epochAfter.
 		Suppressed  bool `json:"suppressed"`
 	}
 	if skillGuardMilestoneDetail(t, milestones, "two-tab-clear-fence", &clearFence) {
@@ -698,14 +700,14 @@ func assertBackgroundEntryPagingAndReconnect(t *testing.T, fixture *skillGuardFi
 		t.Fatalf("read real AppWire trace for paging/reconnect: %v", err)
 	}
 	var paging struct {
-		TraceBefore        int64  `json:"traceBefore"`
-		TraceAfter         int64  `json:"traceAfter"`
-		InitialOlderCursor string `json:"initialOlderCursor"`
+		TraceBefore        int64  `json:"traceBefore"`        //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field traceBefore.
+		TraceAfter         int64  `json:"traceAfter"`         //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field traceAfter.
+		InitialOlderCursor string `json:"initialOlderCursor"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field initialOlderCursor.
 		Pages              int    `json:"pages"`
-		RemainingCursor    string `json:"remainingCursor"`
-		PagesComplete      bool   `json:"pagesComplete"`
-		LaterSentinel      string `json:"laterSentinel"`
-		LaterRendered      bool   `json:"laterRendered"`
+		RemainingCursor    string `json:"remainingCursor"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field remainingCursor.
+		PagesComplete      bool   `json:"pagesComplete"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field pagesComplete.
+		LaterSentinel      string `json:"laterSentinel"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field laterSentinel.
+		LaterRendered      bool   `json:"laterRendered"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field laterRendered.
 	}
 	if skillGuardMilestoneDetail(t, milestones, "history-paging", &paging) {
 		window := traceWindowBytes(t, trace, paging.TraceBefore, paging.TraceAfter)
@@ -727,17 +729,17 @@ func assertBackgroundEntryPagingAndReconnect(t *testing.T, fixture *skillGuardFi
 		}
 	}
 	var reopen struct {
-		TraceBefore              int64    `json:"traceBefore"`
-		TraceAfter               int64    `json:"traceAfter"`
+		TraceBefore              int64    `json:"traceBefore"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field traceBefore.
+		TraceAfter               int64    `json:"traceAfter"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field traceAfter.
 		Cursor                   string   `json:"cursor"`
-		RestoredCursor           string   `json:"restoredCursor"`
-		CursorRetentionExercised bool     `json:"cursorRetentionExercised"`
+		RestoredCursor           string   `json:"restoredCursor"`           //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field restoredCursor.
+		CursorRetentionExercised bool     `json:"cursorRetentionExercised"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field cursorRetentionExercised.
 		Reads                    int      `json:"reads"`
 		Pages                    int      `json:"pages"`
-		PageRequestCursors       []string `json:"pageRequestCursors"`
-		OlderDemand              bool     `json:"olderDemand"`
-		RetainedItemsPresent     bool     `json:"retainedItemsPresent"`
-		RestoredHasSentinel      bool     `json:"restoredHasSentinel"`
+		PageRequestCursors       []string `json:"pageRequestCursors"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field pageRequestCursors.
+		OlderDemand              bool     `json:"olderDemand"`          //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field olderDemand.
+		RetainedItemsPresent     bool     `json:"retainedItemsPresent"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field retainedItemsPresent.
+		RestoredHasSentinel      bool     `json:"restoredHasSentinel"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field restoredHasSentinel.
 	}
 	if skillGuardMilestoneDetail(t, milestones, "reopen-without-read", &reopen) {
 		window := traceWindowBytes(t, trace, reopen.TraceBefore, reopen.TraceAfter)
@@ -784,14 +786,14 @@ func assertBackgroundEntryPagingAndReconnect(t *testing.T, fixture *skillGuardFi
 		}
 	}
 	var further struct {
-		TraceBefore     int64 `json:"traceBefore"`
-		TraceAfter      int64 `json:"traceAfter"`
+		TraceBefore     int64 `json:"traceBefore"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field traceBefore.
+		TraceAfter      int64 `json:"traceAfter"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field traceAfter.
 		Pages           int   `json:"pages"`
-		AlreadyComplete bool  `json:"alreadyComplete"`
-		NoDuplicates    bool  `json:"noDuplicates"`
-		HistoryOrdered  bool  `json:"historyOrdered"`
-		HistoryCount    int   `json:"historyCount"`
-		ExpectedCount   int   `json:"expectedCount"`
+		AlreadyComplete bool  `json:"alreadyComplete"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field alreadyComplete.
+		NoDuplicates    bool  `json:"noDuplicates"`    //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field noDuplicates.
+		HistoryOrdered  bool  `json:"historyOrdered"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field historyOrdered.
+		HistoryCount    int   `json:"historyCount"`    //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field historyCount.
+		ExpectedCount   int   `json:"expectedCount"`   //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field expectedCount.
 	}
 	if skillGuardMilestoneDetail(t, milestones, "further-paging", &further) {
 		window := traceWindowBytes(t, trace, further.TraceBefore, further.TraceAfter)
@@ -814,7 +816,7 @@ func assertBackgroundEntryPagingAndReconnect(t *testing.T, fixture *skillGuardFi
 	}
 	var broken struct {
 		Disconnected  bool `json:"disconnected"`
-		ClosedSockets int  `json:"closedSockets"`
+		ClosedSockets int  `json:"closedSockets"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field closedSockets.
 	}
 	if skillGuardMilestoneDetail(t, milestones, "ws-broken", &broken) {
 		if !broken.Disconnected {
@@ -823,7 +825,7 @@ func assertBackgroundEntryPagingAndReconnect(t *testing.T, fixture *skillGuardFi
 	}
 	var gap struct {
 		Sentinel string `json:"sentinel"`
-		TurnID   string `json:"turnId"`
+		TurnID   string `json:"turnId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field turnId.
 	}
 	if skillGuardMilestoneDetail(t, milestones, "gap-turn-completed", &gap) {
 		producerData, err := os.ReadFile(filepath.Join(fixture.artifact, "target-producer-transcript.jsonl"))
@@ -841,11 +843,11 @@ func assertBackgroundEntryPagingAndReconnect(t *testing.T, fixture *skillGuardFi
 		}
 	}
 	var reconnect struct {
-		TraceBefore int64  `json:"traceBefore"`
-		TraceAfter  int64  `json:"traceAfter"`
-		NewReads    int    `json:"newReads"`
-		CursorAfter string `json:"cursorAfter"`
-		HasGap      bool   `json:"hasGap"`
+		TraceBefore int64  `json:"traceBefore"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field traceBefore.
+		TraceAfter  int64  `json:"traceAfter"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field traceAfter.
+		NewReads    int    `json:"newReads"`    //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field newReads.
+		CursorAfter string `json:"cursorAfter"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field cursorAfter.
+		HasGap      bool   `json:"hasGap"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field hasGap.
 	}
 	if skillGuardMilestoneDetail(t, milestones, "reconnected-latest-window", &reconnect) {
 		window := traceWindowBytes(t, trace, reconnect.TraceBefore, reconnect.TraceAfter)
@@ -874,9 +876,9 @@ func assertBackgroundEntryPagingAndReconnect(t *testing.T, fixture *skillGuardFi
 	}
 	var backed struct {
 		Pages           int  `json:"pages"`
-		NoDuplicates    bool `json:"noDuplicates"`
-		SentinelPresent bool `json:"sentinelPresent"`
-		HistoryOrdered  bool `json:"historyOrdered"`
+		NoDuplicates    bool `json:"noDuplicates"`    //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field noDuplicates.
+		SentinelPresent bool `json:"sentinelPresent"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field sentinelPresent.
+		HistoryOrdered  bool `json:"historyOrdered"`  //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field historyOrdered.
 	}
 	if skillGuardMilestoneDetail(t, milestones, "paged-back-sentinel", &backed) {
 		if backed.Pages < 1 {
@@ -944,12 +946,12 @@ func assertBackgroundEntryNarrowViewport(t backgroundAssertionSink, milestones [
 	t.Helper()
 	var narrow struct {
 		Width            int                      `json:"width"`
-		BeforeItems      int                      `json:"beforeItems"`
-		AfterItems       int                      `json:"afterItems"`
-		ContentPreserved bool                     `json:"contentPreserved"`
-		SentinelAfter    bool                     `json:"sentinelAfter"`
-		BeforePayload    []backgroundItemIdentity `json:"beforePayload"`
-		AfterPayload     []backgroundItemIdentity `json:"afterPayload"`
+		BeforeItems      int                      `json:"beforeItems"`      //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field beforeItems.
+		AfterItems       int                      `json:"afterItems"`       //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field afterItems.
+		ContentPreserved bool                     `json:"contentPreserved"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field contentPreserved.
+		SentinelAfter    bool                     `json:"sentinelAfter"`    //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field sentinelAfter.
+		BeforePayload    []backgroundItemIdentity `json:"beforePayload"`    //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field beforePayload.
+		AfterPayload     []backgroundItemIdentity `json:"afterPayload"`     //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field afterPayload.
 	}
 	if backgroundMilestoneDetail(t, milestones, "narrow-viewport", &narrow) {
 		if narrow.Width != 420 {
@@ -983,11 +985,18 @@ func assertBackgroundEntryNarrowViewport(t backgroundAssertionSink, milestones [
 // Independent acceptance of raw DOM geometry and workspace record identities.
 // The producer marker is fixed here, not taken from a driver's success flag.
 type backgroundReading struct {
-	Width        int     `json:"width"`
-	ScrollTop    float64 `json:"scrollTop"`    //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
-	ScrollHeight float64 `json:"scrollHeight"` //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
-	ClientHeight float64 `json:"clientHeight"` //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
-	Anchor       struct {
+	Width         int     `json:"width"`
+	ScrollTop     float64 `json:"scrollTop"`     //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+	ScrollHeight  float64 `json:"scrollHeight"`  //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+	ClientHeight  float64 `json:"clientHeight"`  //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+	ViewportWidth float64 `json:"viewportWidth"` //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
+	Semantic      struct {
+		ID     string  `json:"id"`
+		Offset float64 `json:"offset"`
+		Height float64 `json:"height"`
+		Text   string  `json:"text"`
+	} `json:"semantic"`
+	Anchor struct {
 		ItemID string  `json:"itemId"` //nolint:tagliatelle // Matches the JavaScript browser evidence contract.
 		Offset float64 `json:"offset"`
 	} `json:"anchor"`
@@ -1019,8 +1028,17 @@ func assertBackgroundReadingPlacement(t backgroundAssertionSink, milestones []sk
 		} else if before.Panes[0] != after.Panes[0] || before.Panes[0].Identity == 0 {
 			t.Error("responsive-reading: logical pane record was replaced")
 		}
-		if before.Anchor.ItemID == "" || before.Anchor.ItemID != after.Anchor.ItemID || math.Abs(before.Anchor.Offset-after.Anchor.Offset) > 2 {
-			t.Error("responsive-reading: older row or within-row offset changed")
+		if before.Anchor.ItemID == "" || before.Anchor.ItemID != after.Anchor.ItemID || before.Semantic.ID == "" || before.Semantic.ID != after.Semantic.ID {
+			t.Error("responsive-reading: older semantic entry changed")
+		}
+		// The fixture reads inside a short entry. Its bottom's distance from the
+		// viewport top is the visible-tail reading point, measured independently
+		// in each DOM rather than supplied by the production placement helper.
+		if before.ViewportWidth <= 0 || after.ViewportWidth <= 0 || before.ViewportWidth == after.ViewportWidth ||
+			before.Semantic.Height <= 0 || before.Semantic.Height >= before.ClientHeight || before.Semantic.Offset >= 0 ||
+			after.Semantic.Height <= 0 || after.Semantic.Offset > 0 || after.Semantic.Height+after.Semantic.Offset <= 0 ||
+			math.Abs((before.Semantic.Height+before.Semantic.Offset)-(after.Semantic.Height+after.Semantic.Offset)) > 2 {
+			t.Error("responsive-reading: semantic visible-tail reading point changed")
 		}
 		for _, reading := range []backgroundReading{before, after} {
 			if reading.ClientHeight <= 0 || reading.ScrollHeight-reading.ClientHeight-reading.ScrollTop <= reading.ClientHeight {
@@ -1032,6 +1050,9 @@ func assertBackgroundReadingPlacement(t backgroundAssertionSink, milestones []sk
 			}
 			if !visible {
 				t.Error("responsive-reading: older producer payload missing from visible anchored row")
+			}
+			if !strings.Contains(reading.Semantic.Text, "BACKGROUND_HISTORY_27") {
+				t.Error("responsive-reading: older producer payload missing from semantic entry")
 			}
 		}
 	} else {
@@ -1075,12 +1096,17 @@ func assertBackgroundReadingPlacement(t backgroundAssertionSink, milestones []sk
 }
 
 func TestBackgroundReadingPlacementOwnerRejectsDamage(t *testing.T) {
-	for _, damage := range []string{"none", "row", "offset", "owner", "visible payload", "body", "close omitted", "same owner reopen", "old placement reopen", "latest missing", "missing milestone"} {
+	for _, damage := range []string{"none", "row", "semantic entry", "offset", "fixed offset", "semantic payload", "missing geometry", "owner", "visible payload", "body", "source key", "version", "position", "close omitted", "same owner reopen", "old placement reopen", "latest missing", "missing milestone"} {
 		t.Run(damage, func(t *testing.T) {
 			var before backgroundReading
 			if err := json.Unmarshal([]byte(`{"width":1440,"scrollTop":3000,"scrollHeight":10000,"clientHeight":700,"anchor":{"itemId":"turn-27","offset":16},"panes":[{"id":"pane-1","identity":1}],"visibleRows":[{"id":"turn-27","text":"BACKGROUND_HISTORY_27"}]}`), &before); err != nil {
 				t.Fatal(err)
 			}
+			before.ViewportWidth = 1097
+			before.Semantic.ID = "user-27"
+			before.Semantic.Offset = -16
+			before.Semantic.Height = 109.125
+			before.Semantic.Text = "BACKGROUND_HISTORY_27"
 			clone := func(value backgroundReading) backgroundReading {
 				data, err := json.Marshal(value)
 				if err != nil {
@@ -1094,24 +1120,50 @@ func TestBackgroundReadingPlacementOwnerRejectsDamage(t *testing.T) {
 			}
 			after := clone(before)
 			after.Width = 420
+			after.ViewportWidth = 388
+			after.Semantic.Offset = -32
+			after.Semantic.Height = 125.125
 			latest := clone(after)
 			latest.Panes[0].Identity = 2
 			latest.ScrollTop = 9300
 			latest.VisibleRows[0].Text = backgroundGapTurn
-			payload := []backgroundItemIdentity{{Text: "BACKGROUND_HISTORY_27"}}
+			var payload []backgroundItemIdentity
+			if err := json.Unmarshal([]byte(`[{"text":"BACKGROUND_HISTORY_27","transcriptKey":"user-27","version":1,"position":{"entry":27,"item":0}}]`), &payload); err != nil {
+				t.Fatal(err)
+			}
 			responsive := map[string]any{"before": before, "after": after, "beforePayload": payload, "afterPayload": payload}
 			reopen := map[string]any{"before": clone(after), "after": latest, "closedPanes": []any{}}
 			switch damage {
 			case "row":
 				after.Anchor.ItemID = "wrong"
 			case "offset":
-				after.Anchor.Offset += 20
+				after.Semantic.Offset += 20
+			case "semantic entry":
+				after.Semantic.ID = "agent-27"
+			case "fixed offset":
+				after.Semantic.Offset = -16
+			case "semantic payload":
+				after.Semantic.Text = ""
+			case "missing geometry":
+				after.Semantic.Height = 0
 			case "owner":
 				after.Panes[0].Identity = 2
 			case "visible payload":
 				after.VisibleRows[0].Text = ""
 			case "body":
 				responsive["afterPayload"] = []backgroundItemIdentity{{Text: ""}}
+			case "source key", "version", "position":
+				damaged := payload[0]
+				if damage == "source key" {
+					damaged.TranscriptKey = nil
+				}
+				if damage == "version" {
+					damaged.Version = nil
+				}
+				if damage == "position" {
+					damaged.Position = nil
+				}
+				responsive["afterPayload"] = []backgroundItemIdentity{damaged}
 			case "close omitted":
 				delete(reopen, "closedPanes")
 			case "same owner reopen":
@@ -1144,7 +1196,7 @@ func TestBackgroundReadingPlacementOwnerRejectsDamage(t *testing.T) {
 
 func TestTraceWindowBytesEmpty(t *testing.T) {
 	for _, offset := range []int64{0, 2, 4} {
-		t.Run(fmt.Sprint(offset), func(t *testing.T) {
+		t.Run(strconv.FormatInt(offset, 10), func(t *testing.T) {
 			if got := traceWindowBytes(t, []byte("abc\n"), offset, offset); len(got) != 0 {
 				t.Fatalf("empty window returned %q", got)
 			}
@@ -1199,7 +1251,7 @@ func targetPageRequestCursorsInWindow(data []byte, ref string) ([]string, error)
 		}
 		var params struct {
 			Ref      string `json:"ref"`
-			ThreadID string `json:"threadId"`
+			ThreadID string `json:"threadId"` //nolint:tagliatelle // Matches the AppWire JSON field threadId.
 			Cursor   string `json:"cursor"`
 		}
 		if err := json.Unmarshal(f.Params, &params); err != nil {
@@ -1252,13 +1304,20 @@ func readWindowContainsText(data []byte, value string) (bool, error) {
 // are its body. The driver records these for the narrow-viewport before and after
 // models so the Go owner can compare the bodies itself.
 type backgroundItemIdentity struct {
-	TurnID    *string `json:"turnId"`
-	ID        *string `json:"id"`
-	Type      *string `json:"type"`
-	Text      string  `json:"text"`
-	Output    string  `json:"output"`
-	Arguments *string `json:"arguments"`
-	Status    *string `json:"status"`
+	TurnID        *string `json:"turnId"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field turnId.
+	ID            *string `json:"id"`
+	Type          *string `json:"type"`
+	Text          string  `json:"text"`
+	Output        string  `json:"output"`
+	Arguments     *string `json:"arguments"`
+	Status        *string `json:"status"`
+	TranscriptKey *string `json:"transcriptKey"` //nolint:tagliatelle // Matches the recorded JavaScript browser evidence field transcriptKey.
+	Version       *int    `json:"version"`
+	Position      *struct {
+		Entry int `json:"entry"`
+		Item  int `json:"item"`
+		Sub   int `json:"sub"`
+	} `json:"position"`
 }
 
 func backgroundNullableEqual(a, b *string) bool {
@@ -1275,7 +1334,9 @@ func backgroundItemEqual(a, b backgroundItemIdentity) bool {
 		a.Text == b.Text &&
 		a.Output == b.Output &&
 		backgroundNullableEqual(a.Arguments, b.Arguments) &&
-		backgroundNullableEqual(a.Status, b.Status)
+		backgroundNullableEqual(a.Status, b.Status) &&
+		backgroundNullableEqual(a.TranscriptKey, b.TranscriptKey) &&
+		reflect.DeepEqual(a.Version, b.Version) && reflect.DeepEqual(a.Position, b.Position)
 }
 
 // backgroundPayloadPreserved RE-DERIVES the driver's narrow-viewport
@@ -1332,7 +1393,7 @@ func backgroundGapTurnID(transcript string) (string, error) {
 			} `json:"message"`
 		} `json:"turn"`
 	}
-	for _, line := range strings.Split(transcript, "\n") {
+	for line := range strings.SplitSeq(transcript, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -1721,7 +1782,7 @@ func decodeTraceFrames(data []byte) ([]traceFrame, error) {
 		Frame      *string `json:"frame"`
 	}
 	var frames []traceFrame
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -1794,9 +1855,9 @@ func targetTraceEvidenceFor(frames []traceFrame, ref string) (targetTraceEvidenc
 		}
 		var params struct {
 			Ref       string `json:"ref"`
-			ThreadID  string `json:"threadId"`
+			ThreadID  string `json:"threadId"` //nolint:tagliatelle // Matches the AppWire JSON field threadId.
 			Subscribe bool   `json:"subscribe"`
-			Replace   bool   `json:"replaceSubscription"`
+			Replace   bool   `json:"replaceSubscription"` //nolint:tagliatelle // Matches the AppWire JSON field replaceSubscription.
 		}
 		if len(req.Params) > 0 {
 			if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -1813,7 +1874,7 @@ func targetTraceEvidenceFor(frames []traceFrame, ref string) (targetTraceEvidenc
 				ev.Subscribed = true
 			}
 			var result struct {
-				OlderCursor *string `json:"olderCursor"`
+				OlderCursor *string `json:"olderCursor"` //nolint:tagliatelle // Matches the AppWire JSON field olderCursor.
 			}
 			if err := json.Unmarshal(f.Result, &result); err != nil {
 				return ev, fmt.Errorf("malformed thread/read result: %w", err)
@@ -1823,7 +1884,7 @@ func targetTraceEvidenceFor(frames []traceFrame, ref string) (targetTraceEvidenc
 			}
 		case "thread/turns/list":
 			var result struct {
-				NextCursor *string `json:"nextCursor"`
+				NextCursor *string `json:"nextCursor"` //nolint:tagliatelle // Matches the AppWire JSON field nextCursor.
 			}
 			if err := json.Unmarshal(f.Result, &result); err != nil {
 				return ev, fmt.Errorf("malformed thread/turns/list result: %w", err)
@@ -1857,7 +1918,7 @@ func countTargetPageRequestsInWindow(window, targetRef string) (int, error) {
 		}
 		var params struct {
 			Ref      string `json:"ref"`
-			ThreadID string `json:"threadId"`
+			ThreadID string `json:"threadId"` //nolint:tagliatelle // Matches the AppWire JSON field threadId.
 		}
 		if err := json.Unmarshal(f.Params, &params); err != nil {
 			return 0, fmt.Errorf("malformed thread/turns/list params: %w", err)
@@ -1878,7 +1939,7 @@ func countTargetThreadReads(window, targetRef string) (int, error) {
 		Ref string `json:"ref"`
 	}
 	count := 0
-	for _, line := range strings.Split(window, "\n") {
+	for line := range strings.SplitSeq(window, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -1917,7 +1978,7 @@ func backgroundReadMilestones(path string) ([]skillGuardMilestone, error) {
 		return nil, err
 	}
 	var out []skillGuardMilestone
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

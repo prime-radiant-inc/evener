@@ -76,13 +76,16 @@ two-session batching apparatus.
 
 After reconnect paging, the driver positions the real rendered
 `BACKGROUND_HISTORY_27` turn and moves it with a native Chrome wheel gesture.
-It records the intersecting DOM row, within-row offset, visible payloads, scroll
-geometry and a read-only identity for the exact workspace pane record. Local
+It records the intersecting DOM row and semantic entry, entry offset and height,
+viewport dimensions, visible payloads and the exact workspace pane record. Local
 hydration and the opening hold must settle before geometry is accepted.
 
 `responsive-reading` requires the same pane record and older row at 1440px and
-420px. Offset tolerance is two CSS pixels for integer scroll read-back rounding,
-not a different row or a meaningful reading displacement. `new-pane-latest`
+420px, including the same semantic entry. The fixture reads a short entry's tail:
+the independently measured entry bottom stays at the same viewport reading line
+even when its height and top offset change. Neither oracle calls the production
+capture/reflow helper. Tolerance remains two CSS pixels for integer scroll
+read-back rounding, not a different entry or reading point. `new-pane-latest`
 starts again at the older row, switches the main session through the real rail,
 requires that the old target record is absent, then reopens it through the rail.
 The new record must land at the true bottom with the producer's gap turn visible.
@@ -90,9 +93,11 @@ Both cases are collected before the responsive assertion is evaluated, so a
 responsive failure cannot make the close control vacuously start at latest.
 
 The Go owner independently checks these raw records and the AppWire byte windows
-for zero target reads/pages. The unchanged `narrow-viewport` assertion still
-compares every recorded before/after body. Owner negative controls reject moved
-anchors, changed offsets, replaced/reused owners, absent DOM payloads, damaged
+for zero target reads/pages. Both resize payload records retain source keys,
+versions and positions alongside every complete body. The `narrow-viewport`
+assertion still compares every recorded before/after body. Owner negative controls reject moved
+semantic entries, changed reading points (including fixed offsets after reflow),
+replaced/reused owners, absent DOM payloads, damaged
 bodies and missing evidence. The driver waits for the mobile host and an exposed
 rail row before clicking, rather than clicking stale desktop geometry mid-resize.
 

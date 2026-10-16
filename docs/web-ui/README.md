@@ -114,7 +114,11 @@ composer-height settlement after a pane widens, keeps the reading line where it
 was. The existing
 [transcript registration](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts)
 owns that intent; VirtualList owns measurement and committed geometry.
-Restoration waits for useful committed content and scroll read-back. Newer
+Mounted and remounted readers use the same reflow policy. Retained placement
+waits while the thread store's ref-scoped local opening restores bodies, then
+retries against accepted content and committed geometry. A settled empty or
+anchorless projection completes its normalized fallback instead of waiting for
+nonexistent entries. Restoration also waits for scroll read-back. Newer
 viewport scrolling or an explicit positioning command supersedes older work
 through the pane-lifetime [read view](../../cmd/evener-hub/frontend/src/panes/session/transcript/transcriptReadView.ts).
 Reflow preserves editor and neighboring-pane focus. Row-only height changes,

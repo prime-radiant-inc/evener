@@ -30,23 +30,29 @@ describe("real journey placement acceptance", () => {
   const older = () => ({
     width: 1440, panes: [{ id: "pane-1", identity: 1 }],
     anchor: { itemId: "turn-27", offset: 16 },
+    semantic: { id: "user-27", offset: -16, height: 109.125, text: "BACKGROUND_HISTORY_27" },
+    viewportWidth: 1097,
     scrollTop: 3000, scrollHeight: 10000, clientHeight: 700,
     visibleRows: [{ id: "turn-27", text: "BACKGROUND_HISTORY_27" }],
   });
-  const mobile = () => ({ ...older(), width: 420 });
+  const mobile = () => ({ ...older(), width: 420, viewportWidth: 388,
+    semantic: { ...older().semantic, offset: -32, height: 125.125 } });
   const latest = () => ({ ...mobile(), panes: [{ id: "pane-2", identity: 2 }],
     scrollTop: 9300, visibleRows: [{ id: "turn-62", text: "BACKGROUND_GAP_TURN" }] });
 
-  test("accepts the same older row and rounded offset, then a new pane at latest", () => {
+  test("accepts the same semantic tail after changed entry height, then a new pane at latest", () => {
     const after = mobile();
-    after.anchor.offset += 1;
+    after.semantic.offset += 1;
     expect(() => assertResponsiveReading(older(), after, "BACKGROUND_HISTORY_27")).not.toThrow();
     expect(() => assertNewPaneLatest(mobile(), latest())).not.toThrow();
   });
 
   test.each([
     ["lost older row", value => { value.anchor.itemId = "turn-62"; }],
-    ["offset shifted", value => { value.anchor.offset += 20; }],
+    ["wrong semantic entry in same turn", value => { value.semantic.id = "agent-27"; }],
+    ["reading point shifted", value => { value.semantic.offset += 20; }],
+    ["unchanged pixel offset despite reflow", value => { value.semantic.offset = -16; }],
+    ["semantic geometry absent", value => { value.semantic = null; }],
     ["new logical owner", value => { value.panes[0].identity = 2; }],
     ["payload absent from DOM", value => { value.visibleRows[0].text = ""; }],
     ["already at latest", value => { value.scrollTop = 9300; }],

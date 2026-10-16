@@ -514,6 +514,13 @@ function itemIdentity(item) {
   };
 }
 
+// Preserve source metadata in the raw reopen/resize evidence as well as bodies.
+// Keep wire-window normalization separate: its reconciliation contract is unchanged.
+function recordedItemIdentity(item) {
+  return { ...itemIdentity(item), transcriptKey: item.transcriptKey ?? null,
+    version: item.version ?? null, position: item.position ?? null };
+}
+
 // Ordered structured equality over items, in order.
 function orderedHistoryEqual(expected, actual) {
   if (expected.length !== actual.length) return false;
@@ -1458,8 +1465,8 @@ async function runEntryProductionJourney(driver) {
   driver.milestone("responsive-reading", {
     before: readingBefore, after: readingAfter, sentinel: laterPageSentinel,
     traceBefore: narrowTraceBefore, traceAfter: traceBytes(),
-    beforePayload: (narrowBefore?.items ?? []).map(itemIdentity),
-    afterPayload: ((await readTargetDomain(driver, SESSION_B))?.items ?? []).map(itemIdentity),
+    beforePayload: (narrowBefore?.items ?? []).map(recordedItemIdentity),
+    afterPayload: ((await readTargetDomain(driver, SESSION_B))?.items ?? []).map(recordedItemIdentity),
     entry: await evaluate(driver.send, `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(SESSION_B)})`),
   });
   await driver.screenshot("older-responsive");
@@ -1499,8 +1506,8 @@ async function runEntryProductionJourney(driver) {
     sentinelAfter,
     // The full before/after item identities, so the Go owner can compare the
     // bodies independently of this driver-computed boolean.
-    beforePayload: (narrowBefore?.items ?? []).map(itemIdentity),
-    afterPayload: (narrowAfter?.items ?? []).map(itemIdentity),
+    beforePayload: (narrowBefore?.items ?? []).map(recordedItemIdentity),
+    afterPayload: (narrowAfter?.items ?? []).map(recordedItemIdentity),
   });
   if (!contentPreserved) {
     throw new Error(
@@ -2104,13 +2111,19 @@ async function transcriptState(driver, ref) {
         anchor = { itemId: best.row.getAttribute("data-row-id"), offset: Math.round(best.offset) };
       }
       const port = el?.getBoundingClientRect();
+      const entries = el ? [...el.querySelectorAll("[data-view-anchor-id]")].map(entry => {
+        const rect = entry.getBoundingClientRect();
+        return { id: entry.getAttribute("data-view-anchor-id"), offset: rect.top - port.top,
+          height: rect.height, text: entry.textContent ?? "" };
+      }).filter(entry => entry.height > 0 && entry.offset + entry.height > 0 && entry.offset < el.clientHeight) : [];
+      const semantic = entries.find(entry => entry.offset <= 0) ?? entries[0] ?? null;
       const visibleRows = port ? rowEls.filter(row => {
         const rect = row.getBoundingClientRect();
         return rect.bottom > port.top && rect.top < port.bottom;
       }).map(row => ({ id: row.getAttribute("data-row-id"), text: row.textContent ?? "" })) : [];
       return { rows: rowEls.length, scrollTop: el ? el.scrollTop : null, anchor,
         scrollHeight: el?.scrollHeight ?? null, clientHeight: el?.clientHeight ?? null,
-        width: innerWidth, visibleRows,
+        width: innerWidth, viewportWidth: el?.clientWidth ?? null, semantic, visibleRows,
         panes: window.backgroundTranscriptEvidence?.panes?.(${JSON.stringify(ref)}) ?? [] };
     })()`,
   );
@@ -2179,15 +2192,24 @@ async function positionOlderReading(driver, ref, sentinel) {
 }
 
 function assertResponsiveReading(before, after, sentinel) {
-  // Two CSS px cover integer scrollTop/read-back rounding, not a different row
-  // or meaningful displacement. The selected short fixture row does not wrap.
+  // This fixture reads a short semantic entry's visible tail. Measure that
+  // tail directly in both DOMs, independently of production capture helpers.
+  // A changed box height changes the offset, not the tail's reading line.
+  // Two CSS px cover integer scroll read-back, not a different reading point.
+  const oldEntry = before.semantic;
+  const newEntry = after.semantic;
   if (before.width !== 1440 || after.width !== 420 ||
       before.panes.length !== 1 || after.panes.length !== 1 ||
       before.panes[0].identity !== after.panes[0].identity ||
       before.panes[0].id !== after.panes[0].id ||
       !before.anchor.itemId || before.anchor.itemId !== after.anchor.itemId ||
-      !Number.isFinite(before.anchor.offset) || !Number.isFinite(after.anchor.offset) ||
-      Math.abs(before.anchor.offset - after.anchor.offset) > 2 ||
+      !oldEntry?.id || oldEntry.id !== newEntry?.id ||
+      !Number.isFinite(oldEntry.offset) || !Number.isFinite(newEntry.offset) ||
+      !(oldEntry.height > 0 && oldEntry.height < before.clientHeight && oldEntry.offset < 0) ||
+      !(newEntry.height > 0 && newEntry.offset <= 0 && newEntry.offset + newEntry.height > 0) ||
+      !(before.viewportWidth > 0 && after.viewportWidth > 0 && before.viewportWidth !== after.viewportWidth) ||
+      Math.abs((oldEntry.offset + oldEntry.height) - (newEntry.offset + newEntry.height)) > 2 ||
+      !oldEntry.text.includes(sentinel) || !newEntry.text.includes(sentinel) ||
       before.scrollHeight - before.clientHeight - before.scrollTop <= before.clientHeight ||
       after.scrollHeight - after.clientHeight - after.scrollTop <= after.clientHeight ||
       !before.visibleRows.some(row => row.id === before.anchor.itemId && row.text.includes(sentinel)) ||

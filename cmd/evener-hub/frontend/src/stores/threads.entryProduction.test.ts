@@ -9,9 +9,15 @@ import {
 import { currentRead } from "@evener/appwire-client/testing/currentTranscript";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, render } from "@testing-library/react";
 import { IDBFactory, IDBIndex, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
+import { createElement, createRef } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { useStore } from "zustand";
+import { useTranscriptViewRegistration } from "../panes/session/transcript/flow/useTranscriptScroll";
+import { installTranscriptGeometry } from "../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { deleteSession } from "../shell/rail/actions";
+import { VirtualList, type VirtualListHandle } from "../widgets";
 import { installBackgroundTranscriptOptionsForTests } from "./backgroundTranscriptOptions";
 import { connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
@@ -598,6 +604,7 @@ it.each(["release", "delete", "Clear"] as const)(
       } else await clearCachedSessions();
       releaseLookup?.();
       await opening;
+      expect(threadsStore.getState().localOpenings.has("local:a")).toBe(false);
       const readCount = client.calls.filter((call) => call.method === "thread/read").length;
       expect(readCount).toBe(retirement === "Clear" ? 1 : 0);
       expect(JSON.stringify(threadsStore.getState().threads.get("local:a")) ?? "").not.toContain("window-1");
@@ -1116,8 +1123,15 @@ it.each([
       : undefined;
     const opening = threadsStore.getState().ensureThread("local:a");
     if (superseded) {
+      const originalToken = threadsStore.getState().localOpenings.get("local:a");
+      expect(originalToken).toBeDefined();
       threadsStore.getState().releaseThread("local:a");
-      await threadsStore.getState().ensureThread("local:a");
+      const replacement = threadsStore.getState().ensureThread("local:a");
+      const replacementToken = threadsStore.getState().localOpenings.get("local:a");
+      expect(replacementToken).toBeGreaterThan(originalToken!);
+      await opening;
+      expect(threadsStore.getState().localOpenings.get("local:a")).toBe(replacementToken);
+      await replacement;
     }
     await opening;
     await settleEntryTranscriptForTests("local:a");
@@ -1130,6 +1144,107 @@ it.each([
     background.release();
   },
 );
+
+it("production opening publishes its hold before child measurement and settles accepted placement", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect(response("local:a", [turn("older", 1), turn("latest", 2)]));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const reads = client.calls.filter((call) => call.method === "thread/read").length;
+  const publications: { pending: boolean; bodies: number }[] = [];
+  const unsubscribe = threadsStore.subscribe((state) =>
+    publications.push({
+      pending: state.localOpenings.has("local:a"),
+      bodies: state.threads.get("local:a")?.turns.flatMap((turn) => turn.items).length ?? 0,
+    }),
+  );
+  const geometry = installTranscriptGeometry(() => ({
+    width: 500,
+    viewportHeight: 300,
+    rowHeights: (threadsStore.getState().threads.get("local:a")?.turns ?? []).map((turn, index) =>
+      turn.items.length ? (index === 0 ? 900 : 600) : 0,
+    ),
+  }));
+  const listRef = createRef<VirtualListHandle>();
+  const measurements: { pending: boolean; top: number }[] = [];
+  function Reader() {
+    const model = useStore(threadsStore, (state) => state.threads.get("local:a"));
+    const turns = model?.turns ?? [];
+    const registration = useTranscriptViewRegistration({
+      enabled: true,
+      id: "production-opening-reader",
+      logicalRef: "local:a",
+      listRef,
+      initialViewCapture: {
+        anchorId: "older",
+        anchorOffset: -100,
+        normalizedOffset: 100 / 900,
+        followingBottom: false,
+        readingPoint: { entryHeight: 600, viewportHeight: 300, viewportWidth: 1000 },
+      },
+      renderedRowCount: turns.length,
+      anchorEntries: turns.flatMap((turn, index) =>
+        turn.items.map((item) => ({ id: item.id, index, sourceIndex: index, isMessage: true })),
+      ),
+    });
+    return createElement(
+      "section",
+      { "data-testid": "transcript-virtual-list" },
+      createElement(VirtualList, {
+        ref: listRef,
+        count: turns.length,
+        dynamic: true,
+        estimateSize: () => 600,
+        anchorToEnd: !registration.hasRetainedPlacement(),
+        renderRow: (index) =>
+          turns[index]?.items.map((item) =>
+            createElement(
+              "div",
+              {
+                key: item.id,
+                "data-view-anchor-id": item.id,
+                "data-view-anchor-index": index,
+                "data-view-anchor-source-index": index,
+                "data-view-anchor-message": "true",
+              },
+              item.text,
+            ),
+          ),
+        onLayout: (layout) => {
+          registration.restoreAfterLayout(layout);
+          measurements.push({
+            pending: threadsStore.getState().localOpenings.has("local:a"),
+            top: listRef.current?.getScrollElement()?.scrollTop ?? -1,
+          });
+        },
+      }),
+    );
+  }
+  const opening = threadsStore.getState().ensureThread("local:a");
+  const mounted = render(createElement(Reader));
+  try {
+    expect(publications[0]).toEqual({ pending: true, bodies: 0 });
+    expect(measurements.some((entry) => entry.pending)).toBe(true);
+    expect(measurements.filter((entry) => entry.pending).every((entry) => entry.top === 0)).toBe(true);
+    await act(async () => {
+      await opening;
+      await settleEntryTranscriptForTests("local:a");
+      geometry.notify();
+    });
+    expect(publications.some((entry) => entry.pending && entry.bodies === 2)).toBe(true);
+    expect(publications.at(-1)).toEqual({ pending: false, bodies: 2 });
+    expect(listRef.current?.getScrollElement()?.scrollTop).toBe(200);
+    expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+  } finally {
+    mounted.unmount();
+    geometry.restore();
+    unsubscribe();
+    threadsStore.getState().releaseThread("local:a");
+    background.release();
+  }
+});
 
 it("a second foreground claim preserves its established reader without another local opening", async () => {
   const storage = cache();
