@@ -82,7 +82,7 @@ func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, 
 			if err != nil {
 				return err
 			}
-			for i := uint64(0); i < count; i++ {
+			for i := range count {
 				record := decodeTurn(buf[i*turnRecordSize:])
 				if record.Kind == turnKindUnreadable {
 					// A line that did not decode; the scan errors on it, so the
