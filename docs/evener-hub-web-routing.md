@@ -62,6 +62,15 @@ receipt. Clients reconcile the returned invalidation targets through AppWire.
 
 ## Session snapshot and live delivery
 
+For a live local `thread/read`,
+[`mergePastThreadForRead`](../cmd/evener-hub/app_threadread.go) fills missing
+metadata from the saved session. Non-nil live tasks and diagnostics are
+authoritative, including empty values: the merge does not load their saved
+counterparts. In particular, live diagnostics bypass saved delegate-journal and
+child attention-transcript reconstruction. Absent live fields retain their
+saved fallbacks, and saved turns are projected only when requested and the live
+read supplied none. Remote reads never merge this hub's local saved state.
+
 The [hub relay](../cmd/evener-hub/app_relay.go) shares one canonical upstream
 connection across a session and its descendant routes. The
 [source relay](../cmd/evener-hub/internal/appsource/relay_session.go) serializes

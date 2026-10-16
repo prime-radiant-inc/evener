@@ -557,7 +557,11 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	// A live window is authoritative. Read saved turns only as the compatibility
 	// fallback for a live source that returned none; the metadata merged below
 	// does not use pastThreadForRead's full-transcript usage or failure scans.
-	past, err := pastEntryThread(ctx, cfg, entry, includePastTurns)
+	past, err := projectPastEntryThread(ctx, cfg, entry, pastEntryThreadProjection{
+		turns:       includePastTurns,
+		tasks:       live.Evener.Tasks == nil,
+		diagnostics: live.Evener.Diagnostics == nil,
+	})
 	if err != nil {
 		return appwire.Thread{}, err
 	}
@@ -1121,34 +1125,51 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 }
 
 func pastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) (appwire.Thread, error) {
+	return projectPastEntryThread(ctx, cfg, entry, pastEntryThreadProjection{turns: includeTurns, tasks: true, diagnostics: true})
+}
+
+// A live merge requests only missing fields. In particular, reconstructing
+// discarded diagnostics would read the root delegate journal and eligible child
+// attention transcripts even when the daemon already supplied the authority.
+type pastEntryThreadProjection struct {
+	turns       bool
+	tasks       bool
+	diagnostics bool
+}
+
+func projectPastEntryThread(ctx context.Context, cfg hubcore.WebConfig, entry hubcore.PastEntry, projection pastEntryThreadProjection) (appwire.Thread, error) {
 	thread, err := pastEntryThreadForList(ctx, cfg, entry)
 	if err != nil {
 		return appwire.Thread{}, err
 	}
-	thread.Evener.Tasks = persistedTaskAggregate(entry.StateDir, entry.Meta.ID)
-	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(ctx, entry)
-	if err != nil {
-		return appwire.Thread{}, err
+	if projection.tasks {
+		thread.Evener.Tasks = persistedTaskAggregate(entry.StateDir, entry.Meta.ID)
 	}
-	if len(delegates) != 0 || len(delegateDiagnostics) != 0 {
-		if thread.Evener.Diagnostics == nil {
-			thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
+	if projection.diagnostics {
+		delegates, delegateDiagnostics, err := pastEntryDelegateStatus(ctx, entry)
+		if err != nil {
+			return appwire.Thread{}, err
 		}
-		for _, delegate := range delegates {
-			projected := appwire.SlimDelegateForRoster(appwireDelegateFromAgentStatus(delegate))
-			projected.Diagnostics = append(projected.Diagnostics, delegateDiagnostics...)
-			thread.Evener.Diagnostics.Delegates = append(thread.Evener.Diagnostics.Delegates, projected)
+		if len(delegates) != 0 || len(delegateDiagnostics) != 0 {
+			if thread.Evener.Diagnostics == nil {
+				thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{}
+			}
+			for _, delegate := range delegates {
+				projected := appwire.SlimDelegateForRoster(appwireDelegateFromAgentStatus(delegate))
+				projected.Diagnostics = append(projected.Diagnostics, delegateDiagnostics...)
+				thread.Evener.Diagnostics.Delegates = append(thread.Evener.Diagnostics.Delegates, projected)
+			}
+			// delegateDiagnostics must reach the wire independently of whether
+			// any delegate exists to also carry a copy on its own Diagnostics
+			// above: a diagnostic about the shared delegates.jsonl itself (e.g.
+			// delegatestore.ErrLineTooLong, which degrades to zero delegates)
+			// has no delegate to attach to, so
+			// appwire.EvenerDiagnostics.DelegateDiagnostics is the only vessel
+			// that can still carry it to the wire.
+			thread.Evener.Diagnostics.DelegateDiagnostics = append(thread.Evener.Diagnostics.DelegateDiagnostics, delegateDiagnostics...)
 		}
-		// delegateDiagnostics must reach the wire independently of whether
-		// any delegate exists to also carry a copy on its own Diagnostics
-		// above: a diagnostic about the shared delegates.jsonl itself (e.g.
-		// delegatestore.ErrLineTooLong, which degrades to zero delegates)
-		// has no delegate to attach to, so
-		// appwire.EvenerDiagnostics.DelegateDiagnostics is the only vessel
-		// that can still carry it to the wire.
-		thread.Evener.Diagnostics.DelegateDiagnostics = append(thread.Evener.Diagnostics.DelegateDiagnostics, delegateDiagnostics...)
 	}
-	if includeTurns {
+	if projection.turns {
 		thread.Turns, err = pastEntryTurns(cfg, entry)
 		if err != nil {
 			return appwire.Thread{}, err
