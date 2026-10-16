@@ -1135,6 +1135,92 @@ test("a faulted reread of an unchanged adopted epoch keeps that epoch's lease an
 });
 
 // ---------------------------------------------------------------------------
+// Reopened-reader displayed evidence (roborev: a reopened reader displays
+// accepted content and persisted pending annotations but retains no attempt,
+// comment or save of its own, so a raw reread that proved a change suppressed
+// no epoch - and a later retry appended another reader's obsolete reference
+// before the paced reread fenced it).
+// ---------------------------------------------------------------------------
+
+test("a reopened reader's faulted reread fences another reader's pending handoff behind a changed source", async () => {
+  let failAppend = false;
+  const f = await fixture("authority-reopened-displayed-evidence", {
+    beforeAbortableCompletion: () => {
+      if (failAppend) throw new Error("append storage fault");
+    },
+  });
+  await settleBaseline(f);
+  const { ports } = annotationPorts(f);
+  const client = connectFakeClient();
+  const changedSource = `${SOURCE}\nCHANGED`;
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const listReads = observeListAnnotations(f.repo);
+
+  // Reader 1 saves an annotation whose handoff stays pending: the append
+  // faults at the real completion boundary, so the durable pending row and
+  // its receipt outlive the reader that saved them.
+  failAppend = true;
+  const host1 = mountAnnotated(f, ports, client, "doc-reopened-a");
+  const work1 = documentReaderWork("doc-reopened-a", f.document, ports);
+  await waitForCurrentBoundMap(work1, maps);
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Reader 1 note." } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  const saved = await waitFor(() => {
+    if (!work1.saved) throw new Error("reader-1 save never settled");
+    return work1.saved;
+  });
+  const savedEpoch = saved.lease.epoch;
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  const pending = (await f.repo.listAnnotations(f.document)).find(
+    (view) => view.operation.operationId === saved.operationId,
+  );
+  expect(pending?.handoff.state).toBe("pending");
+  host1.unmount();
+
+  // Reader 2 REOPENS the document: a fresh viewer with no attempted, composed
+  // or saved work of its own, displaying accepted content under the same
+  // epoch as the persisted pending annotation.
+  const host2 = mountAnnotated(f, ports, client, "doc-reopened-b");
+  const work2 = documentReaderWork("doc-reopened-b", f.document, ports);
+  await waitForCurrentBoundMap(work2, maps);
+  expect(work2.lease?.epoch).toBe(savedEpoch);
+  expect(work2.attempted).toBeNull();
+  expect(work2.saved).toBeNull();
+  host2.unmount();
+
+  // The source changes, and reader 2's next read cycle faults at the real
+  // beginRead boundary while the raw fetch of the changed source succeeds.
+  mockRead.mockResolvedValue(docContent(changedSource, "rev-B"));
+  const armed = { value: true };
+  faultBeginReadTransaction(armed);
+  cleanupAfterTest(() => {
+    armed.value = false;
+  });
+  const host2b = mountAnnotated(f, ports, client, "doc-reopened-b");
+  await within(host2b.container).findByText("CHANGED");
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+
+  // The displayed lease's own evidence proves the change: the honest
+  // expiry-pending phase, and the displayed epoch fenced so the other
+  // reader's pending handoff can no longer append its obsolete reference.
+  expect(work2.phase).toBe("expiry-pending");
+  failAppend = false;
+  const handoff = await f.repo.handoff(f.document, saved.operationId);
+  expect(handoff.state).toBe("cancelled");
+  const draft = await f.drafts.load(f.key);
+  expect(draft?.text).not.toContain("Reader 1 note");
+  host2b.unmount();
+});
+
+// ---------------------------------------------------------------------------
 // Stale-ticket recovery (roborev: a stale ticket silently ended the read
 // without recovery, leaving a concurrently mounted pane on its loading
 // skeleton forever).
