@@ -183,5 +183,5 @@ appwire/providers carve-outs intentionally stay camelCase:
   `// evener:naming-ignore` with a pointer back to the upstream format.
 
 Hub REST/SSE shapes that previously leaked
-camelCase have all migrated: REST request bodies use `turn_id` and the
+camelCase have all migrated: REST request bodies use `turn_id`, and the
 appwire-defined `NotificationRef` type carries the wire shape directly.

@@ -68,7 +68,7 @@ func NeedsResponse(state string, askPending bool) bool {
 }
 
 // StateWord returns the display word for a normalized attention state, used by
-// clients (displayWord). askPending selects the word for awaiting:
+// clients. askPending selects the word for awaiting:
 // "Question waiting" for a pending question, "Needs you" for a turn that
 // ended on needs_response (#4093). It is ignored for every other state.
 func StateWord(state string, askPending bool) string {

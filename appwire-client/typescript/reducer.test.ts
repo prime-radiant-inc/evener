@@ -6308,8 +6308,8 @@ test("warning with bare-string `warning` and no top-level message renders that s
 // A warning frame that carries no message anywhere renders the frame itself,
 // not a blank row — the same contract appwire/warning.go's EffectiveMessage/
 // DecodeWarningParams enforces server-side ("no message anywhere renders the
-// frame itself, not a bare title"): a
-// malformed or message-less warning must stay visible, or a producer's typo
+// frame itself, not a bare title"): a malformed or message-less warning must
+// stay visible, or a producer's typo
 // vanishes silently instead of surfacing as the diagnosis it is. Bounded
 // because the frame's shape is unknown on the wire and can carry anything.
 test.each([

@@ -192,6 +192,11 @@ and its owning guide in that change. Keep the user-task table and diagram aligne
 with the rows. Link to stable source paths and named responsibilities; avoid line
 numbers and duplicated protocol field lists in this map.
 
+The `S`-IDs are stable keys, not a dense sequence: a retired subsystem leaves a
+gap (S04 is a retired client surface) and the surviving IDs are never renumbered,
+because every other doc and row references them by number. Add a new subsystem at
+the next unused ID rather than renumbering.
+
 For a failure path, be able to name the retained intent, the authoritative state,
 the smallest affected scope, the component that detects recovery, and the event
 that resumes work. If the implementation has no such owner or event, record the

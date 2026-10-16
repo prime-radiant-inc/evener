@@ -75,6 +75,7 @@ Most scenarios assume:
 - the auth token at `$HOME/.evener/auth-token` (that isolated `$HOME`,
   never Jesse's real one)
 - the `superpowers-chrome:browsing` skill available for browser steps
+- the Bash tool available for CLI steps
 - `~/go/bin/kata` for issue lookups
 
 When a scenario needs different state (e.g. no daemon running, OAuth

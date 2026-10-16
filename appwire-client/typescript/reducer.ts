@@ -4586,8 +4586,7 @@ function warningMessage(params: WarningParams): string {
 
 // A frame with no message anywhere is surfaced as the frame itself
 // (appwire/warning.go's DecodeWarningParams: "a malformed warning is visible
-// instead of silent" — the Go side pins the same
-// contract server-side). Bounded because params is unknown on the wire and
+// instead of silent"). Bounded because params is unknown on the wire and
 // can carry anything; this is package-level code feeding both hosts, and
 // neither host's own display bound can be assumed to run before something
 // else reads item.text.

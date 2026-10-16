@@ -123,7 +123,7 @@ in the context card.
 ## Sharp edges
 
 - **The AskPending propagation gap this card used to document is FIXED — step
-  5 is now a regression guard, not a repro.** The card previously reported
+  6 is now a regression guard, not a repro.** The card previously reported
   that only the NeedsYou copy of a rail row carried `ask_pending`, that the
   project-group copy read "Your move" while the session was genuinely
   ask-pending. Neither holds against current source. `buildTree` resolves the

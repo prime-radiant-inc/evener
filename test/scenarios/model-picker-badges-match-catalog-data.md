@@ -4,8 +4,8 @@
 reasoning/web-search/context-window/max-output/price) for a real, live,
 catalogued model — cross-checked against the typed AppWire `model/list`
 response and the embedded catalog's raw LiteLLM data
-(`llm/data/litellm_model_catalog.json`) — across the web spawn picker, web
-settings picker, and their compact metadata rows.
+(`llm/data/litellm_model_catalog.json`) — across the web spawn picker and web
+settings picker.
 
 The typed `model/list` response is the single source for both web pickers.
 Rich descriptor fields are optional so a provider can return only its

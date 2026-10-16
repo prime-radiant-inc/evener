@@ -110,7 +110,7 @@ handle, and the effort control is no longer read-only — see Sharp edges.
   Don't treat one as evidence about the other; assert each against the model
   it is actually reading.
 - **The control renders nothing at all when there are no levels**
-  (`StatusRow.tsx:126`). On a non-reasoning model, step 1's `eval` returns
+  (`StatusRow.tsx:126`). On a non-reasoning model, step 3's `eval` returns
   `control: false` with `readout`/`selectValue` `undefined` — that is the
   correct answer, not a failed query. The wrapper
   `[data-testid="status-row-effort"]` (`:132`) is the hook to assert that

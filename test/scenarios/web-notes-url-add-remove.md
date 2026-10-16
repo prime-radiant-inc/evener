@@ -262,7 +262,7 @@ above is what keeps this run's sessions out of them.
   `UrlsRemoveResponse` carries no state by wire design; the push is the
   authority. A test that reads the removed id out of the response is testing
   a field that must not exist.
-- **`/url-remove` takes a bare id with no picker** (Task 8 minor 5 carried
+- **`urls/remove` takes a bare id with no picker** (Task 8 minor 5 carried
   watch item). On the web the id is embedded in the row and button testids
   (step 5's pairing), so a human can pair row to id from the DOM even though
   the rendered text alone does not show it.

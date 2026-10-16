@@ -36,7 +36,7 @@ replaces them is one AppWire thread object and one React panel — see steps 3 a
    `state:"ended"`, `live:false`.
 
 3. **[browser-free] The exact numbers, from the wire.** The same AppWire thread
-   object carries every figure both UIs render, so the arithmetic assertion
+   object carries every figure the web panel renders, so the arithmetic assertion
    belongs here rather than in a DOM read:
    ```json
    {"id":3,"method":"thread/read",
