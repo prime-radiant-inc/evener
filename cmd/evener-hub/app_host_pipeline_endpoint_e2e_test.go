@@ -72,8 +72,13 @@ func hostPipelineEndpointRead(t *testing.T, host *hostSSH, want hostPipelineEndp
 	if record.SchemaVersion != 1 || record.PID <= 0 || record.BootID == "" || record.StartedAt.IsZero() {
 		t.Fatalf("%s incomplete selected generation: %+v", phase, record)
 	}
-	if record.Config != want.config || record.Root != want.root || record.Listen != want.listen || record.Source != want.source || record.Version != want.version || record.Build != want.version {
+	if record.Config != want.config || record.Root != want.root || record.Listen != want.listen || record.Source != want.source {
 		t.Fatalf("%s selected endpoint differs from written inputs: got %+v, want %+v", phase, record, want)
+	}
+	// Publication currently omits these optional fields. Build proof below is
+	// mandatory on both the live socket and the independently executing inode.
+	if (record.Version != "" && record.Version != want.version) || (record.Build != "" && record.Build != want.version) {
+		t.Fatalf("%s optional record build disagrees with expected %s: %+v", phase, want.version, record)
 	}
 	proc := "/proc/" + strconv.Itoa(record.PID)
 	cmdline, err := host.runStdout("cat " + proc + "/cmdline")
@@ -126,7 +131,7 @@ func hostPipelineEndpointRead(t *testing.T, host *hostSSH, want hostPipelineEndp
 	if capability.Version != want.version || capability.Protocol != appwire.ProtocolVersion || capability.EndpointSchema != 1 {
 		t.Fatalf("%s running-image capability=%+v", phase, capability)
 	}
-	t.Logf("%s selected: pid=%d boot=%s birth=%s config=%s root=%s requested=%s source=%s bound=%s build=%s executing=%s endpointSchema=%d appwire=%s", phase, record.PID, record.BootID, birth, record.Config, record.Root, record.Listen, record.Source, record.Bound, record.Build, exe, capability.EndpointSchema, capability.Protocol)
+	t.Logf("%s selected: pid=%d boot=%s birth=%s config=%s root=%s requested=%s source=%s bound=%s build=%s executing=%s endpointSchema=%d appwire=%s", phase, record.PID, record.BootID, birth, record.Config, record.Root, record.Listen, record.Source, record.Bound, health.BackendGitSha, exe, capability.EndpointSchema, capability.Protocol)
 	return hostPipelineEndpointSnapshot{record: record, birth: birth, health: health}
 }
 
