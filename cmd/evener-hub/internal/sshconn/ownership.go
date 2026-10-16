@@ -216,10 +216,58 @@ func (m *Manager) rememberOwner(owner selectedOwner) {
 // Filter on the owning host before stdout crosses SSH. No unrelated environment
 // value reaches the controller. NUL boundaries preserve both presence and value.
 func ownerEnvironmentRemote(pid string) string {
-	// Whole-record matching also rejects BusyBox's embedded-newline anchors.
-	// Keep unrelated data on stdin, never in another process's public argv.
-	// Open first, so no-match (1) cannot mask an unreadable input's shell status.
-	return "(exec 3< /proc/" + pid + "/environ || exit; LC_ALL=C grep -zEx '(HOME|XDG_CONFIG_HOME|XDG_STATE_HOME|EVENER_HUB_LISTEN_ADDR)=([[:space:]]|.)*' <&3; status=$?; [ \"$status\" -eq 0 ] || [ \"$status\" -eq 1 ])"
+	// Decimal byte tokens avoid optional grep -z and awk NUL-RS support. END
+	// cannot be forged by encoded input and is emitted only after a successful
+	// read, so the final parser propagates upstream failure without pipefail.
+	// Stream values, retaining only a possible selected key, never data in argv.
+	return "(exec 3< /proc/" + pid + "/environ || exit\n" + `
+    { LC_ALL=C od -An -v -tu1 <&3 && printf 'END\n'; } |
+    LC_ALL=C awk '
+        $0 == "END" {
+            if (done || active) { bad = 1; exit 1 }
+            done = 1
+            next
+        }
+        {
+            if (done) { bad = 1; exit 1 }
+            for (i = 1; i <= NF; i++) {
+                if ($i !~ /^[0-9]+$/ || $i + 0 > 255) {
+                    bad = 1
+                    exit 1
+                }
+                b = $i + 0
+                if (b == 0) {
+                    if (mode == 1) printf "%c", 0 | "cat"
+                    key = ""
+                    mode = 0
+                    active = 0
+                } else {
+                    active = 1
+                    if (mode == 1) {
+                        printf "%c", b | "cat"
+                    } else if (mode == 0) {
+                        if (b == 61) {
+                            if (key == "HOME" || key == "XDG_CONFIG_HOME" ||
+                                key == "XDG_STATE_HOME" || key == "EVENER_HUB_LISTEN_ADDR") {
+                                printf "%s=", key | "cat"
+                                emitted = 1
+                                mode = 1
+                            } else mode = 2
+                        } else if (length(key) < length("EVENER_HUB_LISTEN_ADDR")) {
+                            key = key sprintf("%c", b)
+                        } else mode = 2
+                    }
+                }
+            }
+        }
+        END {
+            # BusyBox awk does not reliably report direct stdout write errors.
+            # cat has constant argv, receives only selected bytes, and checks writes.
+            if (emitted && close("cat") != 0) exit 1
+            if (bad || !done || active) exit 1
+        }
+    '
+)`
 }
 
 func (m *Manager) ownerEnvironment(ctx context.Context, host hostreg.Host, pid string) ([]string, error) {
