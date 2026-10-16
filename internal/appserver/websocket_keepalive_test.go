@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -120,44 +121,43 @@ func TestWebSocketKeepaliveStopsOnContextCancel(t *testing.T) {
 }
 
 func TestWebSocketKeepaliveDefersActivePingWhileReaderIsUnavailable(t *testing.T) {
-	ctx, stop := context.WithCancel(t.Context())
-	defer stop()
-	gate := newWebSocketReadGate()
-	pinger := &deferrablePinger{started: make(chan int64, 2)}
-	canceled := make(chan struct{}, 1)
+	synctest.Test(t, func(t *testing.T) {
+		ctx, stop := context.WithCancel(t.Context())
+		defer stop()
+		gate := newWebSocketReadGate()
+		pinger := &deferrablePinger{started: make(chan int64, 2)}
+		canceled := make(chan struct{}, 1)
+		ticker := newControlledKeepaliveTicker()
 
-	go runWebSocketKeepalive(ctx, pinger, func() { canceled <- struct{}{} }, gate, time.Millisecond, time.Second)
-	select {
-	case got := <-pinger.started:
-		if got != 1 {
+		go runWebSocketKeepaliveWithTicker(ctx, pinger, func() { canceled <- struct{}{} }, gate, time.Second, ticker, nil)
+		ticker.Tick()
+		if got := <-pinger.started; got != 1 {
 			t.Fatalf("first ping = %d, want 1", got)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("first ping did not start")
-	}
 
-	gate.readerUnavailable()
-	select {
-	case <-canceled:
-		t.Fatal("deferred ping canceled the connection")
-	default:
-	}
+		gate.readerUnavailable()
+		// Let the bounded attempt expire while the receive loop cannot read
+		// its pong. Backpressure must not be mistaken for a dead peer.
+		time.Sleep(time.Second)
+		synctest.Wait()
+		select {
+		case <-canceled:
+			t.Fatal("deferred ping canceled the connection")
+		default:
+		}
 
-	gate.readerAvailable()
-	select {
-	case got := <-pinger.started:
-		if got != 2 {
+		gate.readerAvailable()
+		ticker.Tick()
+		if got := <-pinger.started; got != 2 {
 			t.Fatalf("second ping = %d, want 2", got)
 		}
-		stop()
-	case <-time.After(time.Second):
-		t.Fatal("second ping did not start")
-	}
-	select {
-	case <-canceled:
-		t.Fatal("deferred ping canceled the connection")
-	default:
-	}
+		synctest.Wait()
+		select {
+		case <-canceled:
+			t.Fatal("keepalive canceled the connection after reader recovery")
+		default:
+		}
+	})
 }
 
 func TestWebSocketKeepaliveSkipsPingsWhileReaderIsUnavailable(t *testing.T) {

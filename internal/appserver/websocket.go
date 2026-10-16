@@ -90,7 +90,9 @@ func (g *webSocketReadGate) readerUnavailable() {
 	g.available = false
 	if g.active != nil {
 		g.active.deferred = true
-		g.active.cancel()
+		// A Ping may still be writing its control frame. Canceling that write
+		// closes the underlying socket, so let the bounded attempt finish and
+		// ignore a missing pong while our reader could not receive it.
 	}
 	g.mu.Unlock()
 }
