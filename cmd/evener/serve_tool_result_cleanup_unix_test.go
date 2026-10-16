@@ -40,11 +40,13 @@ const (
 // foregroundCleanupReport is the child's structured protocol, decoded by the
 // outer test. It is deliberately not parsed from human-facing output.
 type foregroundCleanupReport struct {
-	Stage         string `json:"stage"`
-	Failed        bool   `json:"failed"`
-	Joined        bool   `json:"joined"`
-	ShellPID      int    `json:"shell_pid"`
-	ShellIdentity string `json:"shell_identity"`
+	Stage              string `json:"stage"`
+	Failed             bool   `json:"failed"`
+	Joined             bool   `json:"joined"`
+	ShellPID           int    `json:"shell_pid"`
+	ShellIdentity      string `json:"shell_identity"`
+	DescendantPID      int    `json:"descendant_pid"`
+	DescendantIdentity string `json:"descendant_identity"`
 }
 
 func isForegroundCleanupFailureStage(stage string) bool {
@@ -88,13 +90,22 @@ func TestServeForegroundCleanupHelperProcess(t *testing.T) {
 	// fixture still performs in cleanup does not erase the failure point.
 	failed := false
 	checkpoint := func(observed, shellPIDPath string) {
+		// Record the shell and its deterministic child ONCE, at the first
+		// checkpoint where they are observable (shell-started, while the shell is
+		// still gated). Re-reading at a later checkpoint could pick up a PID
+		// reused after the process died and authorize touching an unrelated one.
 		if shellPIDPath != "" {
-			if pid, ok := readForegroundShellPID(shellPIDPath); ok {
-				report.ShellPID = pid
-				// Record identity while the process is still the fixture's, so a
-				// later PID reuse can never authorize touching a different one.
-				if identity, ok := ownedProcessIdentity(pid); ok {
-					report.ShellIdentity = identity
+			if report.ShellPID == 0 {
+				if pid, ok := readForegroundShellPID(shellPIDPath); ok {
+					report.ShellPID = pid
+					report.ShellIdentity, _ = ownedProcessIdentity(pid)
+				}
+			}
+			if report.DescendantPID == 0 {
+				childPath := filepath.Join(filepath.Dir(shellPIDPath), foregroundShellChildPIDFilename)
+				if pid, ok := readForegroundShellPID(childPath); ok {
+					report.DescendantPID = pid
+					report.DescendantIdentity, _ = ownedProcessIdentity(pid)
 				}
 			}
 		}
@@ -163,10 +174,29 @@ func runForegroundCleanupCase(t *testing.T, stage string) {
 	if !ok {
 		t.Fatalf("child wrote no protocol report at %s\noutput:\n%s", reportPath, output())
 	}
-	// Read the survivor before any assertion, and register its removal, so a
-	// failing red run still cleans up the process it proved leaked.
-	survived := report.ShellPID != 0 && ownedProcessSurvives(report.ShellPID, report.ShellIdentity, 2*time.Second)
-	t.Cleanup(func() { killOwnedProcess(report.ShellPID, report.ShellIdentity) })
+	// shell-started, provider-waiting and normal completion must carry the
+	// recorded shell and descendant identity: missing evidence must not pass
+	// silently. serve-started fails before the shell exists, so PID 0 is right
+	// there.
+	if stage != foregroundCleanupServeStarted {
+		if report.ShellPID == 0 || report.ShellIdentity == "" {
+			t.Fatalf("missing shell evidence at %s: pid=%d identity=%q\noutput:\n%s",
+				stage, report.ShellPID, report.ShellIdentity, output())
+		}
+		if report.DescendantPID == 0 || report.DescendantIdentity == "" {
+			t.Fatalf("missing descendant evidence at %s: pid=%d identity=%q\noutput:\n%s",
+				stage, report.DescendantPID, report.DescendantIdentity, output())
+		}
+	}
+	// Read the survivors before any assertion, and register their removal, so a
+	// failing red run still cleans up the processes it proved leaked. Only
+	// identity-verified owned PIDs are touched; the sentinel never is.
+	shellSurvived := ownedProcessSurvives(report.ShellPID, report.ShellIdentity, 2*time.Second)
+	descendantSurvived := ownedProcessSurvives(report.DescendantPID, report.DescendantIdentity, 2*time.Second)
+	t.Cleanup(func() {
+		killOwnedProcess(report.ShellPID, report.ShellIdentity)
+		killOwnedProcess(report.DescendantPID, report.DescendantIdentity)
+	})
 
 	if wantFailure {
 		// The child's OBSERVED stage must equal the requested checkpoint: this is
@@ -187,9 +217,13 @@ func runForegroundCleanupCase(t *testing.T, stage string) {
 	if !report.Joined {
 		t.Fatalf("fixture did not join serve at the %s checkpoint\noutput:\n%s", stage, output())
 	}
-	if survived {
+	if shellSurvived {
 		t.Fatalf("fixture shell %d (identity %q) survived the %s checkpoint cleanup\noutput:\n%s",
 			report.ShellPID, report.ShellIdentity, stage, output())
+	}
+	if descendantSurvived {
+		t.Fatalf("fixture shell descendant %d (identity %q) survived the %s checkpoint cleanup\noutput:\n%s",
+			report.DescendantPID, report.DescendantIdentity, stage, output())
 	}
 	if !sentinel.alive() {
 		t.Fatal("cleanup escaped fixture ownership: the outer sentinel process was killed")
@@ -213,6 +247,13 @@ func waitForForegroundCleanupChild(t *testing.T, cmd *exec.Cmd, output func() st
 		t.Fatalf("helper wait: %v\noutput:\n%s", err, output())
 		return -1
 	case <-timeout.C:
+		// Kill and join the helper before reading the buffers: os/exec's copy
+		// goroutines write childOut/childErr until Wait returns, so reading them
+		// earlier races an unsynchronized bytes.Buffer.
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		<-done
 		t.Fatalf("helper never exited\noutput:\n%s", output())
 		return -1
 	}
@@ -293,23 +334,28 @@ func ownedProcessIdentity(pid int) (string, bool) {
 	return identity, ok
 }
 
-func ownedProcessAliveWithIdentity(pid int, identity string) bool {
-	got, alive, ok := processSnapshot(pid)
-	if !ok || !alive {
+// ownedProcessExistsWithIdentity reports whether the process currently exists
+// (running OR an unreaped zombie) with the recorded identity. Existence, not
+// liveness, is what a leaked fixture process is measured by: a zombie has not
+// been reaped, so it must count as a survivor rather than as clean. An empty
+// identity never matches, so an unrecorded pair is never treated as gone.
+func ownedProcessExistsWithIdentity(pid int, identity string) bool {
+	if pid <= 0 || identity == "" {
 		return false
 	}
-	return identity == "" || got == identity
+	got, _, ok := processSnapshot(pid)
+	return ok && got == identity
 }
 
-// ownedProcessSurvives reports whether the process is still alive after a
-// grace period, so a just-reaped fixture shell is not mistaken for a survivor.
+// ownedProcessSurvives reports whether the process still exists after a grace
+// period, so a just-reaped fixture shell is not mistaken for a survivor.
 func ownedProcessSurvives(pid int, identity string, grace time.Duration) bool {
-	if pid <= 0 {
+	if pid <= 0 || identity == "" {
 		return false
 	}
 	deadline := time.Now().Add(grace)
 	for {
-		if !ownedProcessAliveWithIdentity(pid, identity) {
+		if !ownedProcessExistsWithIdentity(pid, identity) {
 			return false
 		}
 		if time.Now().After(deadline) {
@@ -319,13 +365,18 @@ func ownedProcessSurvives(pid int, identity string, grace time.Duration) bool {
 	}
 }
 
-// killOwnedProcess kills only the process whose identity still matches the one
-// recorded while it was alive, so a reused PID is never authorized.
-func killOwnedProcess(pid int, identity string) {
-	if !ownedProcessAliveWithIdentity(pid, identity) {
-		return
+// killOwnedProcess kills only a process whose recorded identity is non-empty and
+// still matches the current one, so an empty or mismatched identity never
+// authorizes a kill. It reports whether it signaled.
+func killOwnedProcess(pid int, identity string) bool {
+	if pid <= 0 || identity == "" {
+		return false
 	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	got, _, ok := processSnapshot(pid)
+	if !ok || got != identity {
+		return false
+	}
+	return syscall.Kill(pid, syscall.SIGKILL) == nil
 }
 
 type foregroundCleanupSentinel struct{ process *os.Process }
@@ -394,4 +445,68 @@ func waitForZombie(t *testing.T, pid int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("process %d never became an unreaped zombie", pid)
+}
+
+// TestKillOwnedProcessRequiresRecordedIdentity pins the fail-closed kill: an
+// empty or mismatched recorded identity must never authorize touching a live
+// process, while a matching identity does clean its owned target.
+func TestKillOwnedProcessRequiresRecordedIdentity(t *testing.T) {
+	sentinel := startForegroundCleanupSentinel(t)
+
+	// (i) An empty identity must never authorize a kill.
+	if killOwnedProcess(sentinel.process.Pid, "") {
+		t.Fatal("empty recorded identity authorized a kill")
+	}
+	if !sentinel.alive() {
+		t.Fatal("empty recorded identity killed a live sentinel")
+	}
+
+	// (ii) A mismatched identity must never authorize a kill.
+	identity, ok := ownedProcessIdentity(sentinel.process.Pid)
+	if !ok {
+		t.Fatal("could not read the sentinel identity")
+	}
+	if killOwnedProcess(sentinel.process.Pid, identity+"-not-the-sentinel") {
+		t.Fatal("mismatched recorded identity authorized a kill")
+	}
+	if !sentinel.alive() {
+		t.Fatal("mismatched recorded identity killed a live sentinel")
+	}
+
+	// (iii) A matching identity does clean its owned target.
+	if !killOwnedProcess(sentinel.process.Pid, identity) {
+		t.Fatal("matching recorded identity did not kill the owned target")
+	}
+	_, _ = sentinel.process.Wait()
+	if _, _, ok := processSnapshot(sentinel.process.Pid); ok {
+		t.Fatal("killed owned target was not reaped")
+	}
+}
+
+// TestOwnedProcessSurvivesCountsAnUnreapedZombie pins that a leaked fixture
+// process is measured by existence, not liveness: a killed-but-unreaped child is
+// a zombie that survives for the guard's purpose, so it must be reported as a
+// survivor rather than as clean.
+func TestOwnedProcessSurvivesCountsAnUnreapedZombie(t *testing.T) {
+	cmd := exec.Command("sleep", "600")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start zombie fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	identity, ok := ownedProcessIdentity(cmd.Process.Pid)
+	if !ok {
+		t.Fatal("could not read the zombie fixture identity")
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill zombie fixture: %v", err)
+	}
+	waitForZombie(t, cmd.Process.Pid)
+	if !ownedProcessSurvives(cmd.Process.Pid, identity, 200*time.Millisecond) {
+		t.Fatal("an unreaped zombie was reported clean; a lingering zombie must count as a survivor")
+	}
 }

@@ -47,6 +47,14 @@ const (
 	foregroundShellColdReattach foregroundShellServeMode = "cold-reattach"
 )
 
+// The fixture shell and its deterministic child each publish their PID under
+// these names in the fixture working directory. They are shared with the Unix
+// cleanup regression, which derives the child's path from the shell's.
+const (
+	foregroundShellPIDFilename      = "shell.pid"
+	foregroundShellChildPIDFilename = "shell-child.pid"
+)
+
 type serveShellNotificationSignals struct {
 	started       chan struct{}
 	completed     chan struct{}
@@ -181,16 +189,22 @@ func runServeForegroundShellPersistenceCaseWithCheckpoint(t *testing.T, mode for
 		t.Fatalf("mkdir transcript directory: %v", err)
 	}
 
-	// The fixture shell publishes its own PID before it waits, so the seam and
-	// the outer regression can identify the process a failing run must not
-	// outlive. The PID file is private to the fixture's working directory.
-	shellPIDPath := filepath.Join(workDir, "shell.pid")
+	// The fixture shell publishes its own PID and its deterministic long-lived
+	// child's PID before it waits, so the seam and the outer regression can
+	// identify the exact processes a failing run must not outlive. The background
+	// child shares the shell's process group, so the product's group-directed
+	// cancellation reaps both. The PID files are private to the working directory.
+	shellPIDPath := filepath.Join(workDir, foregroundShellPIDFilename)
+	shellChildPIDPath := filepath.Join(workDir, foregroundShellChildPIDFilename)
 	gatePath := filepath.Join(workDir, "shell-release")
+<<<<<<< HEAD
 	// The loop also has a deadline: cleanup writes the gate file, but t.TempDir
 	// removes the workspace immediately afterwards, so a loop that misses that
 	// window must not poll a vanished path forever (#4078). The wall-clock
 	// deadline is far beyond this test's 15s context.
-	shellCommand := fmt.Sprintf("printf '%%s' $$ > %s; deadline=$((SECONDS+60)); while [ ! -f %s ] && [ \"$SECONDS\" -lt \"$deadline\" ]; do sleep 0.01; done; printf shell-complete", strconv.Quote(shellPIDPath), strconv.Quote(gatePath))
+	shellCommand := fmt.Sprintf(
+		"sleep 600 & printf '%%s' \"$!\" > %s; printf '%%s' $$ > %s; deadline=$((SECONDS+60)); while [ ! -f %s ] && [ \"$SECONDS\" -lt \"$deadline\" ]; do sleep 0.01; done; printf shell-complete",
+		strconv.Quote(shellChildPIDPath), strconv.Quote(shellPIDPath), strconv.Quote(gatePath))
 	// The shell loop polls for this file. The explicit release below follows the
 	// earlier rendezvous and setup assertions, not the tool round: that write is
 	// what lets the round complete. If an earlier assertion fails, the loop would
@@ -232,15 +246,6 @@ func runServeForegroundShellPersistenceCaseWithCheckpoint(t *testing.T, mode for
 	}
 
 	serveResult := make(chan error, 1)
-	go func() {
-		serveResult <- runServeWithDeps([]string{
-			"--model", "openai/gpt-test",
-			"--addr", "127.0.0.1:0",
-			"--dir", workDir,
-			"--state-dir", stateDir,
-			"--run-dir", runDir,
-		}, deps)
-	}()
 
 	// One idempotent cleanup, registered before serve can fail. Its body releases
 	// the shell gate and the second provider gate, cancels the fixture context,
@@ -261,6 +266,16 @@ func runServeForegroundShellPersistenceCaseWithCheckpoint(t *testing.T, mode for
 		}
 	})
 	t.Cleanup(cleanup)
+
+	go func() {
+		serveResult <- runServeWithDeps([]string{
+			"--model", "openai/gpt-test",
+			"--addr", "127.0.0.1:0",
+			"--dir", workDir,
+			"--state-dir", stateDir,
+			"--run-dir", runDir,
+		}, deps)
+	}()
 
 	// Emitted before the rendezvous: the serve-started failure case must cancel
 	// and join a serve that has not yet registered, the earliest failure point.
@@ -307,6 +322,9 @@ func runServeForegroundShellPersistenceCaseWithCheckpoint(t *testing.T, mode for
 	}
 	if _, ok := waitForFileContent(shellPIDPath, 10*time.Second); !ok {
 		t.Fatalf("foreground shell never wrote its PID file %s", shellPIDPath)
+	}
+	if _, ok := waitForFileContent(shellChildPIDPath, 10*time.Second); !ok {
+		t.Fatalf("foreground shell never wrote its child PID file %s", shellChildPIDPath)
 	}
 	checkpoint("shell-started", shellPIDPath)
 	if err := os.WriteFile(gatePath, []byte("release"), 0o600); err != nil {
