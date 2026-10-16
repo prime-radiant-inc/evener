@@ -47,9 +47,52 @@ func (e *LocalExecutionEnvironment) requireLiveWorkingDirForRelative(path string
 	if info, err := e.filesystem().Stat(e.RootDir); err == nil && info.IsDir() {
 		return nil
 	}
+	return errDeadWorkingDir(p, e.RootDir)
+}
+
+// errDeadWorkingDir builds the named-recovery refusal a relative mutation gets
+// when the directory it anchors on has gone: it names the requested path and
+// the dead anchor and tells the caller to re-anchor. Shared by the plain arm's
+// requireLiveWorkingDirForRelative (issue #4671) and the sandbox arm's
+// requireLiveSandboxRootForRelative (issue #4680) so both surfaces report one
+// shape.
+func errDeadWorkingDir(path, anchor string) error {
 	return fmt.Errorf(
 		"%s: working directory %s is not an existing directory; re-anchor the session to an existing directory or operate from a valid working directory (%w)",
-		p, e.RootDir, ErrWorkingDirectoryUnavailable)
+		path, anchor, ErrWorkingDirectoryUnavailable)
+}
+
+// requireLiveSandboxRootForRelative refuses a relative-path mutation whose
+// sandbox root's directory is gone — deleted out from under a running
+// file-tool-confined session (issue #4680). The plain arm's path-based check
+// above cannot be used on this arm: the confined-file root used for memory
+// storage deliberately carries a live descriptor whose logical path does not
+// exist, so the descriptor must tell "unlinked" from "path missing"
+// (sandboxFS.rootDead). A root never opened yet is opened here, so a relative
+// mutation against a session that never wrote under its root still refuses with
+// the named recovery rather than the bare ENOENT (or the silent no-op a
+// best-effort remove would otherwise report). A renamed-away or swap-recreated
+// root keeps a positive link count and is left to the normal fd-anchored
+// resolution — rearranging the directory is outside the sandbox's threat model
+// (docs/sandboxing.md, "Threat model"). It is a no-op for an absolute path, an
+// empty path, an empty RootDir, or a path that anchors on no writable root
+// (whose enforcement is a denial anyway).
+func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandboxFS, path string) error {
+	if sfs == nil {
+		return nil
+	}
+	p := strings.TrimSpace(path)
+	if p == "" || filepath.IsAbs(p) || e.RootDir == "" {
+		return nil
+	}
+	root, _, ok := containingRoot(sfs.policy.FileTool.WriteRoots, e.resolve(p))
+	if !ok {
+		return nil
+	}
+	if !sfs.rootDead(root) {
+		return nil
+	}
+	return errDeadWorkingDir(p, root)
 }
 
 // ReadFileRaw returns the raw bytes of path subject to the active policy.
@@ -81,6 +124,9 @@ func (e *LocalExecutionEnvironment) ReadFileRawCtx(ctx context.Context, path str
 func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm os.FileMode) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
+		if err := e.requireLiveSandboxRootForRelative(sfs, path); err != nil {
+			return err
+		}
 		return sfs.writeFile("apply_patch", e.resolve(path), data, perm)
 	}
 	abs := e.resolve(path)
@@ -108,6 +154,9 @@ func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm 
 func (e *LocalExecutionEnvironment) RemovePath(path string) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
+		if err := e.requireLiveSandboxRootForRelative(sfs, path); err != nil {
+			return err
+		}
 		return sfs.remove("apply_patch", e.resolve(path))
 	}
 	abs := e.resolve(path)
@@ -141,6 +190,12 @@ func isAbsentRemove(err error) bool {
 func (e *LocalExecutionEnvironment) RenamePath(oldPath, newPath string) error {
 	if sfs := e.sandbox(); sfs != nil {
 		defer sfs.release()
+		if err := e.requireLiveSandboxRootForRelative(sfs, oldPath); err != nil {
+			return err
+		}
+		if err := e.requireLiveSandboxRootForRelative(sfs, newPath); err != nil {
+			return err
+		}
 		return sfs.rename("apply_patch", e.resolve(oldPath), e.resolve(newPath))
 	}
 	oldAbs := e.resolve(oldPath)

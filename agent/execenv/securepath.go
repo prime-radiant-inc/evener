@@ -127,6 +127,25 @@ func (s *sandboxFS) isGranted(abs string) bool {
 	return s.grant != "" && abs == s.grant
 }
 
+// rootDead reports whether root is gone from beneath a running session: its
+// descriptor references a directory unlinked from the filesystem (link count
+// zero), or, for a root never opened yet, its path no longer names a directory.
+// A root that openRootDir cannot open for a policy reason (a carve-out swapped
+// for a symlink) is NOT dead — that is the operation's own refusal to report, so
+// it is left for the normal resolution and never replaced with this one. A live
+// directory whose logical path merely happens to be missing (a rename swap, or
+// the confined-file root of TestConfinedFileRecoveryCapturedHost, which is
+// pre-opened and cached at construction) keeps a positive link count and opens
+// normally, so it is not dead either. rootFd caches the descriptor it returns,
+// exactly as the subsequent operation would.
+func (s *sandboxFS) rootDead(root string) bool {
+	fd, err := s.rootFd(root)
+	if err != nil {
+		return isAbsentRemove(err)
+	}
+	return fdUnlinked(fd)
+}
+
 // newSandboxFS builds a sandboxFS for a file-tool-confining resolved policy. The
 // caller (e.sandbox()) guarantees policy != nil and policy.FileToolConfined().
 //

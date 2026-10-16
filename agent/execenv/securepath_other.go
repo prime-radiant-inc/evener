@@ -60,6 +60,10 @@ func (s *sandboxFS) rootFd(root string) (int, error) {
 	return -1, errSandboxUnsupported()
 }
 
+// fdUnlinked is the no-descriptor stand-in: no sandboxFS is ever built here (see
+// the file comment), so there is no root descriptor whose link count to judge.
+func fdUnlinked(fd int) bool { return false }
+
 func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 	return nil, errSandboxUnsupported()
 }
