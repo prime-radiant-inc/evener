@@ -45,6 +45,15 @@
     "scheme": "https"
   },
   {
+    "name": "canonical IPv4 literal",
+    "raw": "http://127.0.0.1:9180",
+    "origin": "http://127.0.0.1:9180",
+    "rpc_url": "ws://127.0.0.1:9180/rpc",
+    "hostname": "127.0.0.1",
+    "port": 9180,
+    "scheme": "http"
+  },
+  {
     "name": "IPv6 loopback",
     "raw": "http://[::1]:9180/",
     "origin": "http://[::1]:9180",
@@ -152,6 +161,11 @@
     "error": {"code": "wildcard", "field": "host"}
   },
   {
+    "name": "Unicode IPv4 wildcard after IDNA",
+    "raw": "http://０.０.０.０",
+    "error": {"code": "wildcard", "field": "host"}
+  },
+  {
     "name": "IPv4 wildcard with trailing dot",
     "raw": "http://0.0.0.0.:9180",
     "error": {"code": "wildcard", "field": "host"}
@@ -169,6 +183,16 @@
   {
     "name": "ambiguous abbreviated numeric host",
     "raw": "http://127.1",
+    "error": {"code": "host", "field": "host"}
+  },
+  {
+    "name": "Unicode abbreviated numeric host after IDNA",
+    "raw": "http://１２７.１",
+    "error": {"code": "host", "field": "host"}
+  },
+  {
+    "name": "Unicode full numeric host after IDNA",
+    "raw": "http://１２７.０.０.１",
     "error": {"code": "host", "field": "host"}
   },
   {

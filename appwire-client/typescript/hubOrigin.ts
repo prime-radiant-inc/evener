@@ -91,6 +91,11 @@ export function parseHubOrigin(raw: string): string {
     invalid("host", "host");
   }
   if (!url.hostname || url.username || url.password) invalid("host", "host");
+  // IDNA can turn Unicode digits into IPv4 after the raw-host checks. Only
+  // a literal canonical dotted IPv4 address may normalize to an IPv4 host.
+  if (url.hostname === "0.0.0.0") invalid("wildcard", "host");
+  if (!authority.startsWith("[") && /^\d+\.\d+\.\d+\.\d+$/.test(url.hostname) && url.hostname !== rawHost)
+    invalid("host", "host");
   if (url.hostname === "[::]") invalid("wildcard", "host");
   // URL.hostname includes IPv6 brackets; WHATWG keeps mapped IPv6 in hex form.
   if (url.hostname === "[::ffff:0:0]") invalid("wildcard", "host");
