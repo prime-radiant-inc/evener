@@ -724,6 +724,11 @@ func (x *Index) extend(length int64) error {
 			return x.rebuild(length, x.meta.Incarnation)
 		}
 	}
+	// Release the failure counter's call names, as buildNew does at the end of
+	// a full build: an extension that kept them would retain one entry per tool
+	// call for the handle's whole life. A later extension then resolves only
+	// what it sees itself and marks a turn inexact when a name it needs is gone.
+	x.builder.failures.Reset()
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	if x.meta.PendingCommunicate && !x.builder.lastAssistantKnown {
 		// A communicate call just became pending with lastAssistantText
