@@ -156,7 +156,13 @@ export interface ComposerSourceState {
   getRuntimeBacking(): DraftBackingIdentity;
   prepareAnnotation(): Promise<ComposerPreparation | null>;
   ownsPreparation(preparation: ComposerPreparation): boolean;
-  acknowledgeAnnotation(preparation: ComposerPreparation, token: DraftSessionToken, value: SkillEditorValue): void;
+  // The value a recovery append committed carries the record's own
+  // attachments; the acknowledgment reconciles the staged set with them.
+  acknowledgeAnnotation(
+    preparation: ComposerPreparation,
+    token: DraftSessionToken,
+    value: SkillEditorValue & { attachments?: readonly PendingAttachment[] },
+  ): void;
   submissionDraft(value?: SkillEditorValue, opts?: { tolerateStorageFault?: boolean }): Promise<SubmittedDraft>;
   ownsSubmissionSnapshot(submitted: SubmittedDraft, items: readonly PendingAttachment[]): boolean;
   recoveryWriteGuard(submitted: SubmittedDraft): RecoveryWriteGuard;
@@ -679,7 +685,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
   function acknowledgeAnnotation(
     preparation: ComposerPreparation,
     token: DraftSessionToken,
-    value: SkillEditorValue,
+    value: SkillEditorValue & { attachments?: readonly PendingAttachment[] },
   ): void {
     if (ownsPreparation(preparation)) {
       // The append is an accepted edit through this source: it owns the ref's
@@ -690,6 +696,29 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       // erasing the reference while the operation stays marked applied.
       markDraftEdited(ref);
       ownedDraftRevisionRef.current = readDraftRevision(ref);
+      // A recovery append commits the record's own attachments, and a peer may
+      // have replaced one between this preparation and the commit - most of
+      // all when the completion went unobserved and the reconciliation arrives
+      // a whole retry later. The staged set still holds the superseded bytes,
+      // and the next persistence would write them back under the newly adopted
+      // token. Reconcile the staged set with the committed value exactly as a
+      // restore does, and remember the reconciled value so the echo this store
+      // change triggers cannot advance the revision for a value the record
+      // already holds.
+      if (preparation.backing.kind === "recovery") {
+        const committed = (value.attachments ?? []).map((attachment) => ({ ...attachment }));
+        if (!samePendingAttachments(operations.items, committed)) {
+          reconciledRecovery = {
+            id: preparation.backing.recoveryId,
+            text: value.text,
+            skillNames: value.skillNames,
+            ...(value.commandNames ? { commandNames: value.commandNames } : {}),
+            ...(value.mentions ? { mentions: value.mentions.map((mention) => ({ ...mention })) } : {}),
+            items: committed,
+          };
+          operations.replaceWithSettled(committed);
+        }
+      }
       publishValue(cloneValue(value));
       draftToken = { ...token };
       return;
@@ -869,10 +898,16 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     const guard = submitted.settlementGuard;
     if (!guard) return { cleared: false, draftUnchanged: false, persistence: "committed" };
     if (submitted.stillOwnsEdit && !submitted.stillOwnsEdit()) {
-      // An edit already present at settlement entry keeps its full value, but
-      // this sender's accepted resend has consumed the old recovery backing.
-      // Release it without a read, token refresh, attachment clear or draft save.
+      // An edit already present at settlement entry keeps its full value. This
+      // sender's accepted RESEND consumed the old recovery backing, so the veto
+      // releases it without a read, token refresh, attachment clear or draft
+      // save - but a built-in command settlement consumed nothing: its record
+      // survives the command, and the newer work that vetoed the settlement
+      // belongs to that surviving record. Releasing here would detach it into
+      // draft-only state, invalidate the queued recovery writes, and leave the
+      // recovery copy behind the next send.
       if (
+        opts?.command !== true &&
         guard.backing.kind === "recovery" &&
         isOwnCapture(submitted) &&
         recoveryReplacementEpochRef.current === ownedCaptureGuards.get(guard)?.replacementEpoch &&

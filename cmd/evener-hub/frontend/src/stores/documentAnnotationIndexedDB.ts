@@ -1302,7 +1302,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // whether any handoff is still pending. The read-only observation never emits
   // onStorageSuccess; the underlying pass keeps its own producer boundaries.
   retryPendingWithOutcome(reason: AnnotationRetryReason): Promise<BrowserAnnotationRetryOutcome> {
-    return retryBrowserAnnotationsWithOutcome(this, this.#connection, reason);
+    return retryBrowserAnnotationsWithOutcome(this, this.#connection, reason, () => this.#uncertainAppends.size > 0);
   }
 
   // Reset rotates ONE browser namespace's annotation incarnation and removes only
@@ -1727,6 +1727,11 @@ export async function retryBrowserAnnotationsWithOutcome(
   repository: DocumentAnnotationRepository,
   connection: IDBConnection,
   reason: AnnotationRetryReason,
+  // Outstanding reconciliation work for appends whose completion went
+  // unobserved: a receipt that answers applied never appears in the pending
+  // scan below, but a faulted reconciliation read leaves the live composer
+  // stale and must keep the runtime's shared retry intent alive.
+  hasRetainedReconciliation: () => boolean = () => false,
 ): Promise<BrowserAnnotationRetryOutcome> {
   await repository.retryPending(reason);
   const database = await connection.open();
@@ -1756,7 +1761,9 @@ export async function retryBrowserAnnotationsWithOutcome(
       ]),
       deadline,
     ]);
-    return { pending: operations.some((operation) => operation.state === "pending") };
+    return {
+      pending: operations.some((operation) => operation.state === "pending") || hasRetainedReconciliation(),
+    };
   } catch (error) {
     if (!timedOut) {
       tryAbortTransaction(transaction);
