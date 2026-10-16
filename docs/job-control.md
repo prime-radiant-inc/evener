@@ -966,6 +966,23 @@ Rules:
 - Shell items contain both `id` and `job_id=job_...`, process/output metadata,
   and typed `parent_delegate_id` when a delegate owns the shell.
 
+The model-facing text uses single-line previews of names and descriptions (or
+the shell command when no description is present). Each preview is at most 200
+Unicode code points, including its omission indicator. Whitespace is collapsed
+only after taking that bounded prefix. The renderer shrinks previews further to
+fit the registered character budget, normally 20,000, while keeping selected
+identities, ordering, pagination, fixed metadata and watch information intact.
+It does not change the structured `items`, stored descriptors or full briefs.
+Use the existing detail and transcript reads for complete evidence, subject to
+their own output limits.
+
+If the fixed content alone exceeds the character budget, the renderer omits
+previews and leaves truncation and full-output recovery to the tool registry.
+Line-limit overrides still apply. A nonpositive registered character limit
+removes the page cap, but keeps the 200-code-point preview bound; configuration
+overrides accept only positive limits. The registry's repeat-call guidance is
+appended after output limiting and can exceed the page budget.
+
 Good inventory example:
 
 ```json

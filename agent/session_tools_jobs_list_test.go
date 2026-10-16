@@ -67,7 +67,7 @@ func TestJobListRowIsLean(t *testing.T) {
 	if item.ID != record.JobID || item.Type != string(jobstore.JobShell) || item.TranscriptRef == nil || *item.TranscriptRef != shellTranscriptRef(record.JobID) || item.Resumable != nil {
 		t.Fatalf("lean shell row = %#v", item)
 	}
-	rendered := formatJobList(result)
+	rendered := formatJobList(result, jobToolResultDefaultMaxChar)
 	for _, banned := range []string{"transcript_ref", "resumable", "visible_to_session_id", "null", "{"} {
 		if strings.Contains(rendered, banned) {
 			t.Fatalf("lean job_list output contains %q:\n%s", banned, rendered)

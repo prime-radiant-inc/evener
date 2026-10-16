@@ -1275,6 +1275,17 @@ held — while the same test passed at the previous head, whose 67-line diff was
 cross-compile. Their members now fall back to the flat `perTestCeilingSeconds`
 and warn-only in every mode, exactly like the rest of the unclassified backlog.
 
+One member of a kept class moved to that same warn-only default on 2026-10-16
+(issue #4699). `TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates`
+folds 200k events and pages through every one of them, and it runs `t.Parallel()`
+in the `agent` package, so its wall time tracks that package's parallel load
+rather than its own code. The sighting: measured alone it takes 7.6-9.6s on a
+workstation at load 17, while CI read 30.09-32.28s for the same code, and the
+`agent` package gained 174 test declarations in the days after the
+`session-activity` class was blessed, so whether a run landed on either side of
+its 30s ceiling was a coin toss. The class keeps its other two members, and their
+ceilings stay strict.
+
 Two further classes are deliberately absent. **bounded-wait unit** has no ceiling of its
 own yet: a wall ceiling on a test whose whole job is to sit out a wait mostly
 measures the runner, so its members stay unclassified on the flat number below.

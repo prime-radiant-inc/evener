@@ -38,8 +38,15 @@
 #     Their members now keep the flat perTestCeilingSeconds and stay warn-only,
 #     like the rest of the unclassified backlog; the sighting was #4615's
 #     TestCrossCompileWindows at 52.26s over its 15s class ceiling on a 67-line
-#     diff in internal/transcriptindex that could not cost 37 seconds. Two
-#     further classes are deliberately absent: bounded-wait unit has no class yet
+#     diff in internal/transcriptindex that could not cost 37 seconds. A
+#     2026-10-16 follow-up (issue #4699) moved one member of a KEPT class,
+#     TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates, onto
+#     that same flat warn-only ceiling: it folds 200k events and runs
+#     t.Parallel() in the agent package, so the package's parallel load, not
+#     its own code, sets its wall time (7.6-9.6s measured alone at load 17
+#     against 30.09-32.28s in CI), and it sat on either side of its 30s class
+#     ceiling run to run. The class keeps its other two members. Two further
+#     classes are deliberately absent: bounded-wait unit has no class yet
 #     by ruling, so its members stay on the flat ceiling; the web repo-audit test
 #     was a class of one and #4608 split it into one case per slice rather than
 #     blessing it.
