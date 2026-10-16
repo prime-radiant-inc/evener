@@ -166,6 +166,7 @@ import {
 import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
+import { composerShowsStop } from "./session/composerSlot";
 import { ComposerFocus } from "./session/composerFocus";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
@@ -1077,6 +1078,10 @@ export function ConversationScreen({
 	const canAside = connected && service !== null && !!conversation?.capabilities.forkFromTurn;
 	const canShutDown =
 		controls !== null && !!conversation?.capabilities.shutdown && !SHUT_DOWN.has(conversation.status.type);
+	// Whether the running turn can be stopped, derived here so the header menu
+	// can depend on the boolean rather than on the conversation object, which
+	// changes on every streamed frame.
+	const canStop = connected && conversation !== null && conversationControls(conversation).stop;
 	function openAside(ref: string, title: string) {
 		Keyboard.dismiss();
 		navigation.push("Conversation", {
@@ -1256,7 +1261,7 @@ export function ConversationScreen({
 							sharedNotes: !!conversation?.capabilities.sharedNotes,
 							canAside,
 							canShutDown,
-							canStop: connected && !!permitted?.stop,
+							canStop,
 							choose: (action) => chooseSessionActionRef.current(action),
 						})
 					: [],
@@ -1305,6 +1310,7 @@ export function ConversationScreen({
 		conversation?.capabilities.sharedNotes,
 		canAside,
 		canShutDown,
+		canStop,
 	]);
 	const currentName = snapshot.conversation?.name;
 	useEffect(() => {
@@ -3397,7 +3403,12 @@ export function ConversationScreen({
 								// The screen owns the whole emptiness test, since only it
 								// sees the images as well as the text.
 								stop={
-									connected && permitted?.stop && draft.record.draft.trim() === "" && !draft.record.images?.length
+									composerShowsStop({
+										connected,
+										canStop,
+										text: draft.record.draft,
+										images: draft.record.images?.length ?? 0,
+									})
 										? {
 												onStop: () => {
 													void stop();
