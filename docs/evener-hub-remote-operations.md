@@ -149,3 +149,60 @@ Managed lifecycle decisions resolve the selected executable, configuration and s
 Restarts revalidate selected intent and wait for a verified successor PID/birth, boot and build with the expected service association. Every readiness poll resolves the endpoint again, so wildcard and port-zero listeners can move without freezing an old bound port into configuration. Attachment then discovers and verifies that new endpoint before sending a credential. A non-loopback-only listener is an attachment limitation, not permission to change the server configuration.
 
 An explicit attach may start a stopped selected owner. Existing service definitions are preserved. Only a fresh ad-hoc start applies `[[hosts]].addr` (ahead of the internal `HubListenAddr` default) as listener intent. With neither override, current remote config/defaults apply. Failed first starts and stopped replacements retain selected intent for root, registration and service revalidation, rather than replaying stored shell text or guessing from another port. This retry state lives only in the manager process, separate from durable operation receipts. Recorder hooks, operation identities and the per-host gate still cover the lifecycle.
+
+## Worktree launchd deployment
+
+If Hub was submitted to launchd as its own job, `scripts/ops/deploy-hub.sh`
+automates the rebuild-and-restart sequence for the current worktree:
+
+```bash
+scripts/ops/deploy-hub.sh --label com.example.evener-hub --config /absolute/path/to/hub.toml --timeout 30
+```
+
+The script requires the Node/npm toolchain already used by `make build-hub`.
+It manages only an existing `gui/UID` launchd job whose executable is this
+worktree's `evener`. Without `--label`, exactly one evener-like label must
+exist. `--config` is optional and must agree with the service's selection; it
+does not change the service. The script rejects its old `--addr` option.
+
+Before building, it associates the job's PID, effective user, argv, working
+directory, relevant environment and endpoint config/state root. It invokes
+`hub endpoint --json` with that context, not the calling shell's listener or
+config overrides. Two labels sharing a binary do not share service identity.
+The selected definition and process are revalidated after `make build-hub`
+and immediately before `kickstart -k` of that label alone. Build retains the
+existing atomic executable replacement, with no rollback claim on failure.
+
+Health availability and restart authority are separate. A healthy associated
+report proves that running generation's endpoint capability. With damaged or
+unreachable metadata, recovery instead needs the selected process's open
+state-root lock file and an executable text mapping matching the inspected
+binary's device/inode, plus schema-1 `launch-check --json`. The mapping is
+corroboration under the same-user accidental-wrong-instance boundary, not
+kernel lock or hostile-user attestation. A newer file at the same pathname
+does not prove old-image capability. Unknown association/provenance refuses
+before build/restart; a positively unsupported image requires manual migration.
+A stopped selected job with a stopped endpoint and capable installed image
+can be started, including on a retry after a failed replacement. No retry
+receipt or capability cache is persisted by this script.
+
+Success requires fresh selected endpoint reports with the new service PID,
+changed process generation, changed boot when previously known, expected git
+version (including `-dirty`) and backend SHA, and the same config/root. Reports
+are re-queried during readiness, including when port zero gets a new port.
+An interrupted kickstart's status is advisory only when this independent
+successor proof succeeds. Neither a default listener nor `public_url` is
+probed. The service definition and environment are never rewritten, and actual
+ephemeral ports never become listener configuration.
+
+Inspection commands have five-second and combined 64-KiB stdout/stderr bounds.
+The build has a 15-minute and 8-MiB combined-output bound; `--timeout` (1–3600
+seconds) bounds successor verification. Errors omit raw command output so
+service environments and secrets do not enter diagnostics. Failure reports
+the phase, last observed selected PID and whether build/restart completed or
+was attempted; it does not delete endpoint records or user work. Missing
+inspection evidence or an unresolvable launchd/ps representation refuses
+rather than guessing. The disposable test is
+`bash scripts/ops/deploy-hub-endpoint-test.sh` (Python 3 test prerequisite).
+It exercises the actual script under strict command fixtures, not real macOS
+launchd or SSH.

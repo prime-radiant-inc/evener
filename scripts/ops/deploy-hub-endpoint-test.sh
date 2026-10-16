@@ -1,0 +1,365 @@
+#!/usr/bin/env bash
+# Command-boundary tests of the actual launchd worktree deploy script.
+# No real launchctl, build, SSH or hub is invoked. Requires Python 3 and Node.
+set -euo pipefail
+case "${1:-}" in
+-h|--help) printf '%s\n' 'Usage: bash scripts/ops/deploy-hub-endpoint-test.sh' 'Runs disposable strict command-boundary tests, not a macOS end-to-end deployment.'; exit 0 ;;
+'') ;;
+*) exit 2 ;;
+esac
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+python3 - "$script_dir/deploy-hub.sh" <<'PY'
+import json
+import os
+from pathlib import Path
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+
+# Copy exact inputs before running. Cases own private HOME, repo/config/state,
+# and a closed PATH. Real git only seeds/build-identifies the disposable repo.
+source = Path(sys.argv[1]).read_bytes()
+def interrupted(*_):
+    raise KeyboardInterrupt
+for signum in [signal.SIGTERM,signal.SIGHUP]: signal.signal(signum,interrupted)
+native_ps=shutil.which('ps')
+def invoke(argv,p,env):
+    proc=subprocess.Popen(argv,cwd=p/'repo',env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+    timed_out=False; leaks=[]
+    try:
+        try: out,err=proc.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            timed_out=True
+            os.killpg(proc.pid,signal.SIGKILL)
+            out,err=proc.communicate(timeout=2)
+        rows=[json.loads(line) for line in (p/'calls.jsonl').read_text().splitlines()] if (p/'calls.jsonl').exists() else []
+        pids={row['pid'] for row in rows}
+        if (p/'orphan_pid').exists(): pids.add(int((p/'orphan_pid').read_text()))
+        if pids:
+            probe=subprocess.run([native_ps,'-p',','.join(map(str,pids)),'-o','pid=,stat='],capture_output=True,text=True,timeout=2)
+            assert probe.returncode in [0,1], 'owned process cleanup inspection failed'
+            leaks=[line for line in probe.stdout.splitlines() if len(line.split())==2 and not line.split()[1].startswith('Z')]
+        return proc.returncode,out,err,timed_out,leaks
+    finally:
+        # Stop ONLY this invocation and groups minted by its command wrappers.
+        # This also cleans a defective script on timeout or an interrupt.
+        groups={proc.pid}
+        if (p/'calls.jsonl').exists():
+            for line in (p/'calls.jsonl').read_text().splitlines():
+                row=json.loads(line)
+                if row['group']==row['pid']: groups.add(row['group'])
+        for group in groups:
+            try: os.killpg(group,signal.SIGKILL)
+            except ProcessLookupError: pass
+        proc.communicate(timeout=2)
+fixture = r'''#!/usr/bin/env python3
+import json, os, pathlib, subprocess, sys, time
+p = pathlib.Path(os.environ['FIXTURE'])
+f = json.loads((p/'facts.json').read_text())
+cmd, args = pathlib.Path(sys.argv[0]).name, sys.argv[1:]
+s = json.loads((p/'state.json').read_text())
+with (p/'calls.jsonl').open('a') as out:
+    call={'cmd':cmd, 'args':args, 'pid':os.getpid(), 'group':os.getpgrp()}
+    if cmd=='evener':
+        call['env']={k:v for k,v in os.environ.items() if k in ['HOME','XDG_CONFIG_HOME','XDG_STATE_HOME','EVENER_HUB_LISTEN_ADDR','EVENER_HUB_ADDR','EVENER_HUB_URL','EVENER_PROVIDERS_CONFIG','PRIVATE_SENTINEL']}
+        call['cwd']=os.getcwd()
+    out.write(json.dumps(call)+'\n')
+def refuse():
+    (p/'violation').write_text(json.dumps([cmd,args]))
+    sys.exit(97)
+def save(): (p/'state.json').write_text(json.dumps(s))
+def argv():
+    flags=[] if f.get('default_config') else ['--config='+str(p/'selected.toml')]
+    if not f.get('env_listener') and not f.get('toml_listener'): flags+=['--addr='+f.get('listener','[::]:0')]
+    if f.get('separate_flags'):
+        flags=[x for word in flags for x in [word.split('=',1)[0],word.split('=',1)[1]]]
+    if f.get('subcommand'): flags=['endpoint','--json']
+    return [str(p/'repo/evener'),'hub']+flags
+def endpoint_args():
+    flags=[] if f.get('default_config') else ['--config',str(p/'selected.toml')]
+    if not f.get('env_listener') and not f.get('toml_listener'): flags+=['--addr',f.get('listener','[::]:0')]
+    return ['hub','endpoint','--json']+flags
+if cmd == 'launchctl':
+    if args == ['list']:
+        print('PID\tStatus\tLabel\n101\t0\tcom.test.evener-selected')
+        if not f.get('auto_single'): print('202\t0\tcom.test.evener-other')
+    elif args == ['print', 'gui/'+str(os.getuid())+'/com.test.evener-selected']:
+        if s['built'] and f.get('vanished'): sys.exit(1)
+        if f.get('pid_change_before_build') and s.get('reports'): s['pid']=404; save()
+        program=str(p/'repo/evener')
+        if f.get('wrong_program'): program=str(p/'other/evener')
+        print('gui/test = {\n\tprogram = '+program+'\n\tworking directory = '+str(p/'repo'))
+        print('\targuments = {')
+        for arg in argv(): print('\t\t'+arg)
+        print('\t}\n\tinherited environment = {\n\t\tHOME => '+str(p/'home')+'\n\t\tXDG_CONFIG_HOME => '+str(p/'config')+'\n\t\tXDG_STATE_HOME => '+str(p/'state')+'\n\t}')
+        print('\tenvironment = {\n\t\tPRIVATE_SENTINEL => SECRET_DO_NOT_PRINT')
+        if f.get('env_listener') or f.get('flag_and_env'): print('\t\tEVENER_HUB_LISTEN_ADDR => 0.0.0.0:0')
+        if f.get('empty_listener'): print('\t\tEVENER_HUB_LISTEN_ADDR => ')
+        if f.get('retired_service_env'): print('\t\tEVENER_HUB_ADDR => SECRET_DO_NOT_PRINT')
+        if s['built'] and f.get('definition_change'): print('\t\tXDG_STATE_HOME => '+str(p/'other-state'))
+        print('\t}')
+        if s['pid']: print('\tpid = '+str(s['pid']))
+        print('}')
+    elif args == ['print', 'gui/'+str(os.getuid())+'/com.test.evener-other']:
+        print('gui/other = {\n\tprogram = '+str(p/'repo/evener')+'\n\tworking directory = '+str(p/'repo'))
+        print('\targuments = {\n\t\t'+str(p/'repo/evener')+'\n\t\thub\n\t\t--config='+str(p/'other.toml')+'\n\t}')
+        print('\tenvironment = {\n\t\tHOME => '+str(p/'home')+'\n\t\tXDG_STATE_HOME => '+str(p/'other-state')+'\n\t}\n\tpid = 202\n}')
+    elif args == ['kickstart','-k','gui/'+str(os.getuid())+'/com.test.evener-selected']:
+        s['pid']=0 if f.get('stopped_after_kick') else (101 if f.get('unchanged_process') else 303)
+        s['restarted']=True
+        save()
+        if f.get('kick_fail'): sys.exit(9)
+    else: refuse()
+elif cmd == 'make':
+    if args != ['build-hub']: refuse()
+    if f.get('build_fail'): sys.exit(7)
+    # Boundary-only atomic replacement of the disposable executable symlink.
+    replacement=p/'repo/next'; replacement.symlink_to(p/'dispatch'); replacement.replace(p/'repo/evener')
+    s['built']=True; save()
+    if f.get('toml_edit'):
+        (p/'selected.toml').write_text('addr = "0.0.0.0:0"\n')
+elif cmd == 'ps':
+    pid=str(s['pid'])
+    if f.get('generation_change') and s['built'] and s['pid']==101: birth='Fri Oct 16 08:01:00 2026'
+    else: birth='Fri Oct 16 08:00:00 2026'
+    if args==['-p',pid,'-o','uid=']: print(os.getuid()+1 if f.get('wrong_user') else os.getuid())
+    elif args==['-p',pid,'-o','lstart=']: print(birth)
+    elif args==['-p',pid,'-ww','-o','command=']: print(' '.join(argv())+(' unexpected' if f.get('wrong_argv') else ''))
+    else: refuse()
+elif cmd == 'lsof':
+    if args==['-a','-p',str(s['pid']),'-d','cwd','-Fn']: print('p'+str(s['pid'])+'\nn'+str(p/'other' if f.get('wrong_cwd') else p/'repo'))
+    elif args[:4]==['-a','-p',str(s['pid']),'-Fn'] and args[4:] in [[str(p/'state/evener/hub.lock')],[str(p/'other-state/evener/hub.lock')],[str(p/'custom-root/hub.lock')]]:
+        lock=p/'custom-root/hub.lock' if f.get('custom_root') else p/'state/evener/hub.lock'
+        if f.get('missing_root_evidence') or args[4]!=str(lock): sys.exit(1)
+        print('p'+str(s['pid'])+'\nn'+str(lock))
+    elif args==['-a','-p',str(s['pid']),'-d','txt','-F','Di']:
+        st=(p/'repo/evener').stat()
+        print('p'+str(s['pid'])+'\nftxt\nD0x'+format(st.st_dev,'x')+'\ni'+str(st.st_ino+(1 if f.get('old_image_mismatch') else 0)))
+    else: refuse()
+elif cmd == 'evener':
+    if args == ['launch-check','--json']:
+        if f.get('capability_invalid'): print('{not-json'); sys.exit(0)
+        print(json.dumps({'hub_endpoint_schema':0 if f.get('unsupported') else 1,'version':'old','protocol':'evener-appwire-v7'}))
+    elif args == endpoint_args():
+        if f.get('empty_listener'):
+            if os.environ.get('EVENER_HUB_LISTEN_ADDR')=='': sys.exit(1)
+        if f.get('hang'): time.sleep(60)
+        if f.get('orphan_pipe'):
+            child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])
+            (p/'orphan_pid').write_text(str(child.pid))
+            sys.exit(0)
+        if f.get('legacy_endpoint'): sys.stderr.write('SECRET_DO_NOT_PRINT'); sys.exit(2)
+        if f.get('stderr_large'): sys.stderr.write('SECRET_DO_NOT_PRINT'*4000)
+        if f.get('invalid_json'): print('{not-json'); sys.exit(0)
+        if f.get('array_json'): print('[]'); sys.exit(0)
+        if f.get('secret_error'): sys.stderr.write('SECRET_DO_NOT_PRINT'); sys.exit(8)
+        new=s.get('restarted',False) and s['pid']>0
+        if new:
+            s['successor_queries']=s.get('successor_queries',0)+1; save()
+        config=p/'config/evener/hub.toml' if f.get('default_config') else p/'selected.toml'
+        root=p/'other-state/evener' if (s['built'] and f.get('root_change')) or f.get('unavailable_wrong_root') else p/'state/evener'
+        if f.get('custom_root'): root=p/'custom-root'
+        source='env' if f.get('env_listener') else ('config' if f.get('toml_listener') else 'flag')
+        report={'schema_version':2 if f.get('schema') else 1,'state':'running','config_path':str(config),'config_exists':True,'hub_state_root':str(root),'configured_listen_addr':f.get('listener','[::]:0'),'listen_source':source,'public_url':'https://publication.invalid'}
+        unavailable=f.get('unavailable') or f.get('damaged') or f.get('unsupported') or f.get('old_image_mismatch') or f.get('capability_invalid') or f.get('unavailable_wrong_root') or f.get('missing_root_evidence')
+        if not s['pid']: report.update(state='stopped')
+        elif not new and unavailable: report.update(state='unavailable',reason='invalid_record' if f.get('damaged') else 'unreachable')
+        elif new and f.get('port_refresh') and s['successor_queries']==1: report.update(state='unavailable',reason='unreachable')
+        else:
+            pid=s['pid'] if new else 101
+            if f.get('wrong_pid') or (new and f.get('successor_wrong_pid')): pid=202
+            boot='new-boot' if new else 'old-boot'
+            if new and f.get('old_boot'): boot='old-boot'
+            s['reports']=s.get('reports',0)+1; save()
+            port=19472+s['reports'] if new else 19471
+            local='http://[::1]:'+str(port) if f.get('listener','[::]:0').startswith('[') else 'http://127.0.0.1:'+str(port)
+            report['running']={'schema_version':1,'pid':pid,'boot_id':boot,'started_at':'2026-10-16T08:00:00Z','config_path':str(config),'hub_state_root':str(root),'requested_listen_addr':f.get('listener','[::]:0'),'listen_source':source,'bound_addr':'[::]:'+str(port),'local_url':local,'loopback_url':local,'version':f['version'] if new else 'old','backend_git_sha':f['sha'] if new else 'old'}
+            if new and f.get('stale'): report['running'].update(pid=101,boot_id='old-boot')
+            if new and f.get('wrong_build'): report['running']['version']='wrong'
+            if new and f.get('wrong_sha'): report['running']['backend_git_sha']='wrong'
+            if new and f.get('missing_build'): report['running'].pop('version')
+            if new and f.get('missing_boot'): report['running'].pop('boot_id')
+            if new and f.get('running_wrong_root'): report['running']['hub_state_root']=str(p/'other-state/evener')
+            if new and f.get('running_wrong_config'): report['running']['config_path']=str(p/'other.toml')
+            if new and f.get('unrelated_report'):
+                report.update(config_path=str(p/'other.toml'),hub_state_root=str(p/'other-state/evener'))
+                report['running'].update(pid=202,config_path=str(p/'other.toml'),hub_state_root=str(p/'other-state/evener'),boot_id='other-boot')
+            if f.get('injection'): report['running']['boot_id']=('new-' if new else 'old-')+'$(touch '+str(p/'executed')+')'
+        if f.get('bad_state'): report['state']='unknown'
+        if f.get('wrong_config'): report['config_path']=str(p/'other.toml')
+        if f.get('stdout_large'): report['padding']='x'*70000
+        print(json.dumps(report))
+    else: refuse()
+elif cmd == 'curl':
+    # Permit only the legacy command for the recorded red run, NEVER network.
+    if args != ['-fsS','--max-time','3','http://127.0.0.1:9180/api/health']: refuse()
+    print(json.dumps({'version':f['version'],'started_at':'2026-10-16T08:00:00Z'}))
+else: refuse()
+'''
+# Independent expected outcomes and effects, not generated from production logic.
+# Last column: (build calls, selected kickstart calls).
+cases=[
+ ('selected_endpoint',{},[],True,(1,1)),
+ ('two_labels_shared_executable',{},[],True,(1,1)),
+ ('dirty_worktree',{'dirty':True},[],True,(1,1)),
+ ('custom_state_root',{'custom_root':True,'unavailable':True},[],True,(1,1)),
+ ('explicit_config',{},['--config','@config'],True,(1,1)),
+ ('separate_service_flags',{'separate_flags':True},[],True,(1,1)),
+ ('default_config',{'default_config':True,'toml_listener':True},[],True,(1,1)),
+ ('default_explicit_config',{'default_config':True},['--config','@default'],True,(1,1)),
+ ('wildcard_ipv4',{'listener':'0.0.0.0:0'},[],True,(1,1)),
+ ('ipv6',{'listener':'[::]:0'},[],True,(1,1)),
+ ('port_zero_refresh',{'port_refresh':True},[],True,(1,1)),
+ ('environment_listener',{'env_listener':True},[],True,(1,1)),
+ ('flag_over_environment',{'flag_and_env':True},[],True,(1,1)),
+ ('intentional_toml_edit',{'toml_listener':True,'toml_edit':True},[],True,(1,1)),
+ ('unresponsive',{'unavailable':True},[],True,(1,1)),
+ ('damaged',{'damaged':True},[],True,(1,1)),
+ ('unavailable_wrong_root',{'unavailable_wrong_root':True},[],False,(0,0)),
+ ('missing_root_evidence',{'missing_root_evidence':True},[],False,(0,0)),
+ ('stopped',{'stopped':True},[],True,(1,1)),
+ ('failed_replacement_stopped_retry',{'stopped_after_kick':True,'retry_stopped':True},[],True,(2,2)),
+ ('interrupted_kickstart',{'kick_fail':True},[],True,(1,1)),
+ ('inert_shell_output',{'injection':True},[],True,(1,1)),
+ ('auto_single',{'auto_single':True},['@auto'],True,(1,1)),
+ ('auto_ambiguous',{},['@auto'],False,(0,0)),
+ ('retired_addr',{},['--addr','127.0.0.1:9180'],False,(0,0)),
+ ('retired_addr_equals',{},['--addr=127.0.0.1:9180'],False,(0,0)),
+ ('config_mismatch',{},['--config','@other'],False,(0,0)),
+ ('wrong_pid',{'wrong_pid':True},[],False,(0,0)),
+ ('wrong_program',{'wrong_program':True},[],False,(0,0)),
+ ('wrong_user',{'wrong_user':True},[],False,(0,0)),
+ ('wrong_argv',{'wrong_argv':True},[],False,(0,0)),
+ ('not_a_daemon',{'subcommand':True},[],False,(0,0)),
+ ('pid_changed_before_build',{'pid_change_before_build':True},[],False,(0,0)),
+ ('wrong_cwd',{'wrong_cwd':True},[],False,(0,0)),
+ ('wrong_config',{'wrong_config':True},[],False,(0,0)),
+ ('unsupported',{'unsupported':True},[],False,(0,0)),
+ ('unsupported_legacy_cli',{'unsupported':True,'legacy_endpoint':True},[],False,(0,0)),
+ ('unproved_old_image',{'old_image_mismatch':True},[],False,(0,0)),
+ ('unknown_capability',{'unavailable':True,'capability_invalid':True},[],False,(0,0)),
+ ('invalid_json',{'invalid_json':True},[],False,(0,0)),
+ ('array_json',{'array_json':True},[],False,(0,0)),
+ ('unsupported_schema',{'schema':True},[],False,(0,0)),
+ ('invalid_state',{'bad_state':True},[],False,(0,0)),
+ ('stdout_bound',{'stdout_large':True},[],False,(0,0)),
+ ('stderr_bound',{'stderr_large':True},[],False,(0,0)),
+ ('execution_bound',{'hang':True},[],False,(0,0)),
+ ('descendant_pipe_bound',{'orphan_pipe':True},[],False,(0,0)),
+ ('secret_safe_failure',{'secret_error':True},[],False,(0,0)),
+ ('definition_changed',{'definition_change':True},[],False,(1,0)),
+ ('root_changed',{'root_change':True},[],False,(1,0)),
+ ('generation_changed',{'generation_change':True},[],False,(1,0)),
+ ('service_vanished',{'vanished':True},[],False,(1,0)),
+ ('build_failure',{'build_fail':True},[],False,(1,0)),
+ ('wrong_successor_pid',{'successor_wrong_pid':True},[],False,(1,1)),
+ ('unrelated_healthy_successor',{'unrelated_report':True},[],False,(1,1)),
+ ('old_boot',{'old_boot':True},[],False,(1,1)),
+ ('unchanged_process',{'unchanged_process':True},[],False,(1,1)),
+ ('stale_generation',{'stale':True},[],False,(1,1)),
+ ('wrong_build',{'wrong_build':True},[],False,(1,1)),
+ ('wrong_sha',{'wrong_sha':True},[],False,(1,1)),
+ ('missing_build',{'missing_build':True},[],False,(1,1)),
+ ('missing_boot',{'missing_boot':True},[],False,(1,1)),
+ ('wrong_successor_root',{'running_wrong_root':True},[],False,(1,1)),
+ ('wrong_successor_config',{'running_wrong_config':True},[],False,(1,1)),
+ ('stopped_after_restart',{'stopped_after_kick':True},[],False,(1,1)),
+ ('no_node',{'no_node':True},[],False,(0,0)),
+ ('no_npm',{'no_npm':True},[],False,(0,0)),
+ ('empty_service_listener',{'empty_listener':True},[],False,(0,0)),
+ ('retired_service_environment',{'retired_service_env':True},[],False,(0,0)),
+ ('help_without_node',{'no_node':True},['@help'],True,(0,0)),
+]
+for option in ['--label','--config','--timeout']:
+    for value in [None,'','--help']:
+        cases.append(('missing_'+option[2:]+'_'+str(value),{},['@raw',option]+([] if value is None else [value]),False,(0,0)))
+for value in ['0','-1','x','1.5','999999999999999999999999']:
+    cases.append(('timeout_'+value,{},['--timeout',value],False,(0,0)))
+failures=[]
+with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SCRATCH_DIR')) as root:
+    root=Path(root)
+    for name, facts, args, success, effects in cases:
+        p=root/name; p.mkdir(); (p/'repo/scripts/ops').mkdir(parents=True); (p/'bin').mkdir(); (p/'home').mkdir(); (p/'state/evener').mkdir(parents=True); (p/'config/evener').mkdir(parents=True); (p/'other-state/evener').mkdir(parents=True)
+        script=p/'repo/scripts/ops/deploy-hub.sh'; script.write_bytes(source)
+        original='addr = "[::]:0"\npublic_url = "https://publication.invalid"\n'
+        if facts.get('custom_root'): original+='hub_state_root = "'+str(p/'custom-root')+'"\n'
+        (p/'selected.toml').write_text(original); (p/'config/evener/hub.toml').write_text(original); (p/'other.toml').write_text('addr = "127.0.0.1:9180"\n')
+        (p/'state/evener/sentinel').write_text('keep'); (p/'other-state/evener/sentinel').write_text('other-keep')
+        (p/'custom-root').mkdir(); (p/'custom-root/sentinel').write_text('custom-keep')
+        dispatch=p/'dispatch'; dispatch.write_text(fixture); dispatch.chmod(0o755)
+        for tool in ['launchctl','make','curl','ps','lsof']:
+            (p/'bin'/tool).symlink_to(dispatch)
+        (p/'repo/evener').symlink_to(dispatch)
+        for tool in ['bash','python3','node','npm','git','id','awk','grep','sed','jq','stat','date','sleep','head','wc','cat','mktemp','rm','dirname']:
+            executable=shutil.which(tool)
+            if executable and not (tool=='node' and facts.get('no_node')) and not (tool=='npm' and facts.get('no_npm')): (p/'bin'/tool).symlink_to(executable)
+        env={'PATH':str(p/'bin'),'HOME':str(p/'home'),'FIXTURE':str(p),'TMPDIR':str(p),'LC_ALL':'C','EVENER_HUB_LISTEN_ADDR':'AMBIENT_MUST_NOT_WIN','EVENER_HUB_ADDR':'REMOVED_MUST_NOT_LEAK','EVENER_HUB_URL':'https://ambient.invalid','EVENER_PROVIDERS_CONFIG':'SECRET_DO_NOT_PRINT','PRIVATE_SENTINEL':'SECRET_DO_NOT_PRINT','XDG_CONFIG_HOME':str(p/'wrong-config'),'XDG_STATE_HOME':str(p/'wrong-state')}
+        # FIXTURE is a command-fixture locator, not a production configuration
+        # seam. Pass it through the executable wrapper, not endpoint's env.
+        dispatch.write_text(fixture.replace("p = pathlib.Path(os.environ['FIXTURE'])", 'p = pathlib.Path('+repr(str(p))+')'))
+        def git(*words):
+            return subprocess.check_output([shutil.which('git'),*words],cwd=p/'repo',env=env,stderr=subprocess.DEVNULL,text=True).strip()
+        git('init','-q'); git('config','user.name','Fixture'); git('config','user.email','fixture@invalid'); git('add','scripts/ops/deploy-hub.sh'); git('commit','-qm','fixture')
+        sha=git('rev-parse','--short','HEAD')
+        if facts.get('dirty'): script.write_bytes(source+b'\n# disposable tracked worktree edit\n')
+        version=sha+('-dirty' if facts.get('dirty') else '')
+        (p/'facts.json').write_text(json.dumps({'version':version,'sha':sha,**facts}))
+        (p/'state.json').write_text(json.dumps({'pid':0 if facts.get('stopped') else 101,'other_pid':202,'built':False}))
+        # Successful paths spawn many real Python command shims. Keep their
+        # scheduling allowance distinct from the short negative readiness tests.
+        budget='8' if success else '2'
+        base=['--label','com.test.evener-selected','--timeout',budget]
+        if '@raw' in args: args=[a for a in args if a!='@raw']; base=[]
+        elif '@auto' in args: args=[]; base=['--timeout',budget]
+        elif '@help' in args: args=['--help']; base=[]
+        substitutions={'@config':str(p/'selected.toml'),'@default':str(p/'config/evener/hub.toml'),'@other':str(p/'other.toml')}
+        argv=['bash',str(script)]+base+[substitutions.get(a,a) for a in args]
+        returncode,out,err,timed_out,leaks=invoke(argv,p,env)
+        if facts.get('retry_stopped'):
+            first_calls=[json.loads(line) for line in (p/'calls.jsonl').read_text().splitlines()]
+            assert returncode!=0 and not timed_out and not leaks and json.loads((p/'state.json').read_text())['pid']==0
+            assert sum(c['cmd']=='make' for c in first_calls)==1
+            assert sum(c['cmd']=='launchctl' and c['args'][0]=='kickstart' for c in first_calls)==1
+            facts['stopped_after_kick']=False
+            (p/'facts.json').write_text(json.dumps({'version':version,'sha':sha,**facts}))
+            returncode,more_out,more_err,timed_out,leaks=invoke(argv,p,env); out+=more_out; err+=more_err
+        calls=[json.loads(line) for line in (p/'calls.jsonl').read_text().splitlines()] if (p/'calls.jsonl').exists() else []
+        try:
+            assert not timed_out, 'execution exceeded harness bound'
+            assert not leaks, 'live command processes remained: '+str(leaks)
+            assert not (p/'violation').exists(), 'undeclared command: '+(p/'violation').read_text() if (p/'violation').exists() else ''
+            actual=(sum(c['cmd']=='make' for c in calls),sum(c['cmd']=='launchctl' and c['args'][0]=='kickstart' for c in calls))
+            assert actual==effects, f'build/restart effects={actual}, expected={effects}'
+            assert (returncode==0)==success, f'exit={returncode}, expected success={success}'
+            assert not any(c['cmd']=='curl' for c in calls), 'guessed health destination probed'
+            endpoints=[c for c in calls if c['cmd']=='evener' and c['args'][:3]==['hub','endpoint','--json']]
+            if effects==(1,1):
+                assert len(endpoints)>=3, 'selected endpoint not re-resolved before/after restart'
+                build=next(i for i,c in enumerate(calls) if c['cmd']=='make')
+                assert any(c in endpoints for c in calls[:build]), 'build preceded endpoint authorization'
+            for call in endpoints:
+                expected_env={'HOME':str(p/'home'),'XDG_CONFIG_HOME':str(p/'config'),'XDG_STATE_HOME':str(p/'state')}
+                if facts.get('env_listener') or facts.get('flag_and_env'): expected_env['EVENER_HUB_LISTEN_ADDR']='0.0.0.0:0'
+                if facts.get('empty_listener'): expected_env['EVENER_HUB_LISTEN_ADDR']=''
+                if facts.get('definition_change') and call['env'].get('XDG_STATE_HOME')==str(p/'other-state'): expected_env['XDG_STATE_HOME']=str(p/'other-state')
+                assert call['env']==expected_env, 'ambient/environment contamination: '+str(call['env'])
+                assert call['cwd']==str(p/'repo'), 'wrong service working directory'
+            assert b'SECRET_DO_NOT_PRINT' not in out+err, 'secret disclosed'
+            assert not (p/'executed').exists(), 'unvalidated shell output executed'
+            assert (p/'state/evener/sentinel').read_text()=='keep'
+            assert (p/'other-state/evener/sentinel').read_text()=='other-keep'
+            assert (p/'custom-root/sentinel').read_text()=='custom-keep'
+            state=json.loads((p/'state.json').read_text()); assert state['other_pid']==202, 'unselected service changed'
+            if success and effects[1]>0: assert state['pid']==303
+            if facts.get('port_refresh'): assert state['successor_queries']>=2, 'successor endpoint not rediscovered'
+            assert (p/'selected.toml').read_text()==('addr = "0.0.0.0:0"\n' if facts.get('toml_edit') else original), 'listener/config was rewritten'
+            print('PASS '+name)
+        except AssertionError as e: failures.append((name,str(e),out,err))
+for name,reason,out,err in failures:
+    print('FAIL '+name+': '+reason)
+    print((out+err).decode(errors='replace')[:4000])
+if failures: sys.exit(1)
+print(str(len(cases))+' actual-script command-boundary cases passed, no macOS services executed.')
+PY

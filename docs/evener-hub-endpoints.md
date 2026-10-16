@@ -40,3 +40,34 @@ The SSH manager probes `launch-check --json` without `--protocol` and requires `
 Ensure, automatic deploy, explicit deploy and restart resolve the selected executable/config and state root. Config-only host registrations need no paired `addr`. Presence comes from selected report state and independent process/service ownership, not a guessed default port. Before an install writes the executable, the manager authorizes and retains the predecessor's capability and launch intent. A new on-disk binary cannot prove the old running image capable. Readiness polls resolve fresh reports and verify the successor's PID/birth, boot, build and service association before attachment.
 
 `[[hosts]].addr` and the internal `HubListenAddr` option are listener overrides only for an explicitly authorized fresh ad-hoc bootstrap. The per-host value wins. An existing selected service keeps its launch definition, and intentional restart uses current TOML unless retained flags or environment override it. Port zero may assign a new destination on each start. Failed starts and stopped replacements retain selected intent for revalidation and retry in the manager's memory, not as durable operation storage. An unrelated listener neither authorizes nor blocks the selected lifecycle by port alone.
+
+## Worktree launchd deployment
+
+`scripts/ops/deploy-hub.sh [--label LABEL] [--config PATH] [--timeout N]` builds
+and replaces one existing launchd-managed worktree hub. Its former `--addr`
+health override is rejected. The optional config must agree with the selected
+service, including default-path selection under that service's environment.
+Node/npm are existing build prerequisites; no jq or Python runtime is needed
+by the deployment script.
+
+Selection binds the launchd definition, effective user, PID/birth, argv, working
+directory and config/state root before build, then revalidates before restart.
+Only HOME, XDG_CONFIG_HOME, XDG_STATE_HOME and EVENER_HUB_LISTEN_ADDR are carried
+into endpoint inspection. Caller overrides do not redirect it. The executable
+validates listener syntax and supplies live readiness through
+`hub endpoint --json`; the script neither parses a second URL grammar nor
+probes a guessed/default/public URL. Success requires the selected successor's
+new generation, boot, expected version/backend SHA and original root.
+Readiness re-queries reports, so wildcard/IPv6 and fresh port-zero assignments
+do not become persisted launch settings. Current TOML listener changes remain
+intentional inputs, subject to unchanged config/root selection.
+
+An unresponsive or damaged selected service can recover with independently
+corroborated root and old-image capability. A replaced disk pathname alone
+cannot supply that evidence. A stopped selected job can start with a stopped
+report and capable installed image. Unknown ownership/capability refuses
+without build/restart; unsupported images require manual migration. An
+interrupted kickstart is successful only if successor verification succeeds.
+See [the operations runbook](evener-hub-remote-operations.md#worktree-launchd-deployment)
+for bounds, recovery evidence and failure-state reporting. The script's harness
+uses disposable command fixtures, not actual macOS or SSH deployment.
