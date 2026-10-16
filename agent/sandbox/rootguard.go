@@ -99,6 +99,17 @@ func (g RootGuard) Permit(root string) string {
 		}
 	}
 	if fi, err := os.Stat(root); err == nil {
+		// The depth floor above judges the CANONICAL spelling, but macOS's own
+		// top-level system directories are symlinks (/var -> /private/var), so a
+		// configured "/var" arrives here as "/private/var" — two components, and
+		// the floor lets it through. Ask the filesystem instead: a candidate that
+		// a one-component path under "/" names the SAME FILE is a top-level
+		// directory however it is spelled, and is refused. os.SameFile keeps this
+		// exact: "/private/var" matches "/var" (one file), while a real
+		// "/some/dir/var" beside an unrelated top-level "/var" does not.
+		if top, terr := os.Stat(filepath.Join(string(filepath.Separator), filepath.Base(root))); terr == nil && os.SameFile(fi, top) {
+			return "" // a top-level directory reached through a symlink
+		}
 		for _, anchor := range g.sharedTree {
 			if os.SameFile(fi, anchor) { // the same directory, differently spelled
 				return ""

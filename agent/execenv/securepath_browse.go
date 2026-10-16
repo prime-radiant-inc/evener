@@ -643,13 +643,45 @@ func walkSkipsPseudoDir(root, dir string) bool {
 	return isPseudoFsPath(dir) && !isPseudoFsPath(root)
 }
 
-// grepRootIsPseudo reports whether the walk root itself resolves inside a
-// pseudo root: a search rooted there is a deliberate request to search that
-// tree, and every regular file it reads is a stream whose descriptor must
-// keep the nonblocking flag. A root that cannot be resolved is not one.
+// pseudoFsPathResolved reports whether path names pseudo-filesystem content
+// once BOTH it and the pseudo roots are resolved through symlinks. The textual
+// isPseudoFsPath alone is not spelling-independent: a pseudo root reached
+// through a symlinked ancestor — the tests stub one under macOS /tmp, itself a
+// link to /private/tmp — is reported by the kernel under the canonical parent,
+// so a resolved candidate and a textually spelled root would never match. Only
+// the once-per-search callers resolve (grepRootIsPseudo, grepTakesNativeArm,
+// pseudoStreamed); the per-directory walk skip keeps the textual form so a walk
+// pays no syscall per directory. A path or root that cannot be resolved keeps
+// its textual spelling.
+func pseudoFsPathResolved(path string) bool {
+	if isPseudoFsPath(path) {
+		return true
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	for _, root := range pseudoFsRoots {
+		canon := root
+		if r, rerr := filepath.EvalSymlinks(root); rerr == nil {
+			canon = r
+		}
+		if resolved == canon || strings.HasPrefix(resolved, canon+string(filepath.Separator)) {
+			if root == "/dev" && (resolved == "/dev/shm" || strings.HasPrefix(resolved, "/dev/shm/")) {
+				return false
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// grepRootIsPseudo reports whether the walk root itself names pseudo-filesystem
+// content, under any spelling: a search rooted there is a deliberate request to
+// search that tree, and every regular file it reads is a stream whose descriptor
+// must keep the nonblocking flag.
 func grepRootIsPseudo(root string) bool {
-	resolved, err := filepath.EvalSymlinks(root)
-	return err == nil && isPseudoFsPath(resolved)
+	return pseudoFsPathResolved(root)
 }
 
 // grepReachesPseudoRoot reports whether a walk from the absolute directory
@@ -928,8 +960,7 @@ func (f grepAdmitFS) pseudoStreamed(full string) bool {
 	if info, err := os.Lstat(full); err != nil || info.Mode()&os.ModeSymlink == 0 {
 		return false
 	}
-	resolved, err := filepath.EvalSymlinks(full)
-	return err == nil && isPseudoFsPath(resolved)
+	return pseudoFsPathResolved(full)
 }
 
 // ReadDir and Stat forward to the wrapped filesystem rather than letting
@@ -956,15 +987,16 @@ func (f grepAdmitFS) Stat(name string) (fs.FileInfo, error) {
 // device), and a named file over the read cap (the native arm skips it, as
 // both arms skip an oversized file found in a walk).
 func grepTakesNativeArm(dir string) bool {
-	if isPseudoFsPath(dir) || grepReachesPseudoRoot(dir) {
+	if pseudoFsPathResolved(dir) || grepReachesPseudoRoot(dir) {
 		return true
 	}
 	// A symlink alias can spell pseudo-filesystem content as an ordinary
 	// path — /tmp/proc-alias -> /proc — so classify what the target resolves
-	// to as well: os.Stat follows the alias and reports a small regular
-	// file. Resolution walks ancestors and leaf alike and needs no
+	// to as well: pseudoFsPathResolved above covers the content case under any
+	// spelling, and this covers a target that resolves to an ANCESTOR of a
+	// pseudo root. Resolution walks ancestors and leaf alike and needs no
 	// permission beyond stat.
-	if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil && (isPseudoFsPath(resolved) || grepReachesPseudoRoot(resolved)) {
+	if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil && grepReachesPseudoRoot(resolved) {
 		return true
 	}
 	info, err := os.Stat(dir)
