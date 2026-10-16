@@ -164,7 +164,7 @@ func TestBackgroundTranscriptsEntrySliceBrowser(t *testing.T) {
 }
 
 // runBackgroundDriverMode launches the Node driver. --hub-url is the fixture
-// hub's base URL; the driver sets EVENER_HUB_ADDR from it before starting Vite
+// hub's base URL; the driver sets EVENER_HUB_URL from it before starting Vite
 // so the dev server's proxy forwards /rpc and the hub HTTP routes.
 // --control-path-a/-b are the two helpers' control files, so a phase release
 // reaches the daemon that owns the driven session. entrySlice adds

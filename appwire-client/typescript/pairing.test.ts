@@ -38,6 +38,23 @@ describe("device pairing invitations", () => {
     bad[4] = 4;
     expect(() => decodeInvitation(bad)).toThrow();
   });
+  it("rejects ambiguous destinations without changing the pairing wire restrictions", () => {
+    for (const origin of [
+      "https://hub.test/a/..",
+      "https://hub.test?",
+      "https://hub.test#",
+      "https://hub.test:0",
+      "http://0.0.0.0:9180",
+      "http://127.1",
+      "http://hub.test\\evil",
+      "http://hub.test\n",
+      "https://agent:secret-value@hub.test",
+    ]) {
+      expect(() => encodeInvitation({ ...invitation, origin })).toThrow();
+    }
+    const mapped = { ...invitation, origin: "http://[::ffff:7f00:1]" };
+    expect(decodeInvitation(encodeInvitation(mapped)).origin).toBe(mapped.origin);
+  });
   it("binds encrypted approval to this key, invitation and destination", () => {
     const claim = createPairingClaim(invitation, new Uint8Array(32).fill(7));
     const sender = nacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(9));

@@ -1,4 +1,5 @@
 import nacl from "tweetnacl";
+import { parseHubOrigin } from "./hubOrigin";
 import type { DevicePairingInvitation } from "./types.gen";
 
 export type { DevicePairingInvitation } from "./types.gen";
@@ -25,7 +26,7 @@ function fromHex(value: string, maximum: number): Uint8Array {
   return Uint8Array.from({ length: value.length / 2 }, (_, i) => Number.parseInt(value.slice(i * 2, i * 2 + 2), 16));
 }
 function destination(invitation: DevicePairingInvitation) {
-  const url = new URL(invitation.origin);
+  const url = new URL(parseHubOrigin(invitation.origin));
   const tls = url.protocol === "https:";
   const host = url.hostname.replace(/^\[|\]$/g, "");
   if (
@@ -84,7 +85,7 @@ export function decodeInvitation(bytes: Uint8Array): DevicePairingInvitation {
     throw new Error("Invalid pairing destination.");
   const result = {
     invitation: toHex(bytes.slice(9, 33)),
-    origin: new URL(`${flags & 2 ? "https" : "http"}://${host.includes(":") ? `[${host}]` : host}:${port}`).origin,
+    origin: parseHubOrigin(`${flags & 2 ? "https" : "http"}://${host.includes(":") ? `[${host}]` : host}:${port}`),
     tailnet: Boolean(flags & 1),
     expiresAt: 0,
   };

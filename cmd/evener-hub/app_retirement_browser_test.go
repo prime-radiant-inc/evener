@@ -871,7 +871,7 @@ func TestRetirementBrowser(t *testing.T) {
 		"RETIREMENT_RESTART_TURN_ID="+restartDraftTurnID,
 		"RETIREMENT_ARTIFACT_DIR="+artifactDir,
 		// The guard's Vite dev server proxies /rpc to this fixture Hub.
-		"EVENER_HUB_ADDR="+hub.URL,
+			"EVENER_HUB_URL="+hub.URL,
 	)
 	// Run from cmd/evener-hub so relative paths in the runner (e.g. "frontend/…")
 	// resolve correctly. The CWD of the current test binary is already

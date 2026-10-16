@@ -289,7 +289,7 @@ func TestDocumentFileLinksBrowser(t *testing.T) {
 	}
 	defer raw.Close()
 	cmd := exec.CommandContext(context.Background(), "node", "frontend/scripts/documentfilelinksguard/run.mjs")
-	cmd.Env = append(os.Environ(), "EVENER_HUB_ADDR="+server.URL, "DOCUMENT_FILE_LINKS_CWD="+cwd, "DOCUMENT_FILE_LINKS_REF="+ref,
+	cmd.Env = append(os.Environ(), "EVENER_HUB_URL="+server.URL, "DOCUMENT_FILE_LINKS_CWD="+cwd, "DOCUMENT_FILE_LINKS_REF="+ref,
 		"DOCUMENT_FILE_LINKS_CHILD_CWD="+childCWD, "DOCUMENT_FILE_LINKS_CHILD_REF="+childRef,
 		"DOCUMENT_FILE_LINKS_ARTIFACT_DIR="+artifacts, "DOCUMENT_FILE_LINKS_TOKEN="+token)
 	cmd.Stdout = io.MultiWriter(os.Stdout, raw)
