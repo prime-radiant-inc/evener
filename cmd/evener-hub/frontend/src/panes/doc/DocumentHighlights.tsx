@@ -88,7 +88,10 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
   // belongs to - re-checked whenever the popout host announces a move - so the
   // listener effect below re-runs and rebinds to the document that now owns
   // the prose, in either direction (opening the popout and closing it again).
-  const [observedDocument, setObservedDocument] = useState<Document | null>(null);
+  // The state starts at the owner document so an ordinary mount performs no
+  // state write at all: only a real document move during the overlay's life
+  // updates it, keeping mount-path effect flushes out of act windows.
+  const [observedDocument, setObservedDocument] = useState<Document | null>(() => scrollElement.ownerDocument);
   useEffect(() => {
     const sync = (): void => {
       const current = scrollElement.ownerDocument;
