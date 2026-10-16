@@ -12,6 +12,7 @@ import type {
   AnnotationCommentWork,
   AnnotationRetryReason,
   AnnotationView,
+  CapturedPassage,
   DestinationProvenance,
   DocumentKey,
   PreparedAnnotation,
@@ -34,6 +35,15 @@ export interface DocumentReaderWork {
   attempted: PreparedAnnotation | null;
   attemptedComment: AnnotationCommentWork | null;
   lease: AcceptedSourceLease | null;
+  // The evidence of the content this reader currently displays under its
+  // accepted lease, synthesized at the acceptance that installed it. A later
+  // faulted reread can prove a source change against the DISPLAYED content
+  // even when this reader never attempted, composed or saved anything of its
+  // own - a reopened reader displays accepted content and persisted pending
+  // annotations that another reader saved - and the proven change must
+  // suppress the displayed lease's epoch so that pending handoff cannot
+  // append its obsolete reference behind the changed source.
+  displayed: { lease: AcceptedSourceLease; evidence: CapturedPassage["evidence"] } | null;
   // The last save THIS reader committed, set when its receipt lands and kept
   // across the handoff: its capture is the retained evidence a later fault
   // branch needs to prove a source change against the saved operation, and
@@ -150,6 +160,7 @@ export function documentReaderWork(
     attempted: null,
     attemptedComment: null,
     lease: null,
+    displayed: null,
     saved: null,
     commentSelection: null,
     phase: "reading",

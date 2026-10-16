@@ -228,6 +228,30 @@ function savedEvidenceFor(work: DocumentReaderWork): CapturedPassage["evidence"]
   return saved.capture.evidence;
 }
 
+// The evidence of the content the pane displays under its accepted lease,
+// synthesized at the acceptance that installed it.
+function displayedLeaseEvidence(content: DocFileContent): CapturedPassage["evidence"] {
+  return {
+    ...(content.revision !== undefined ? { wholeRevision: content.revision } : {}),
+    fingerprint: displayedFingerprint(content.text, content.truncated),
+  };
+}
+
+// The displayed lease's own evidence: it exists even for a reopened reader
+// that never attempted, composed or saved anything itself, and it proves a
+// change against exactly the authority the pane shows. Like the save's
+// evidence it is scoped to the current authority - a displayed lease from an
+// epoch this reader has already replaced proves nothing about the adopted
+// epoch's content.
+function displayedEvidenceFor(work: DocumentReaderWork): CapturedPassage["evidence"] | undefined {
+  const displayed = work.displayed;
+  const authority = work.lease ?? work.attempted?.lease ?? null;
+  if (!displayed || !authority) return undefined;
+  if (displayed.lease.namespaceIncarnation !== authority.namespaceIncarnation) return undefined;
+  if (displayed.lease.epoch !== authority.epoch) return undefined;
+  return displayed.evidence;
+}
+
 // The status the pane-level indicator and the comment box share. `saved` and
 // `saved, pending draft` come from ACTUAL annotation views; a retained attempt
 // or a newer unsaved comment keeps the honest `unsaved` state. A preserved
@@ -435,6 +459,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
     (phase: DocumentReaderWork["phase"]) => {
       const retired = work.lease ?? work.attempted?.lease ?? null;
       work.lease = null;
+      work.displayed = null;
       work.attempted = null;
       work.attemptedComment = null;
       work.phase = phase;
@@ -624,7 +649,11 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // identity. The discard runs FIRST and its own fault falls back to the
         // interim retention below - work, capture and durable row retire
         // together or not at all.
-        const evidence = work.attempted?.capture.evidence ?? work.comment.capture?.evidence ?? savedEvidenceFor(work);
+        const evidence =
+          work.attempted?.capture.evidence ??
+          work.comment.capture?.evidence ??
+          savedEvidenceFor(work) ??
+          displayedEvidenceFor(work);
         if (evidence && evidenceProvesChange(content, evidence)) {
           const attempted = work.attempted;
           if (attempted) {
@@ -648,6 +677,19 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
           // completes. The recovery acceptance's own changed read then
           // installs the durable fence.
           if (work.saved) ports.repository.suppressEpochForExpiry(work.saved.lease);
+          // The DISPLAYED lease fences the same way, but only when this
+          // branch retired no attempt of its own: a discarded attempt's
+          // pending row went terminal (cancelled), so its annotation keeps
+          // its copyable-reference window until the expiry machinery deletes
+          // the payload. A reader with no attempt - a reopened reader showing
+          // accepted content and another reader's persisted pending
+          // annotations - still has appendable pending work behind the
+          // changed source, and the displayed lease is the only authority a
+          // proven change can retire for it.
+          if (!attempted) {
+            const displayedLease = work.displayed?.lease ?? null;
+            if (displayedLease) ports.repository.suppressEpochForExpiry(displayedLease);
+          }
           // No ticket was issued, so no fence recorded and no repository
           // expiry work exists to ever wake this reader: the outcome must
           // stay transient, keeping the demand's paced retry alive until a
@@ -675,7 +717,11 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         accepted = await ports.repository.acceptRead(ticket, content);
       } catch {
         if (!attempt.isCurrent()) return "success";
-        const evidence = work.attempted?.capture.evidence ?? work.comment.capture?.evidence ?? savedEvidenceFor(work);
+        const evidence =
+          work.attempted?.capture.evidence ??
+          work.comment.capture?.evidence ??
+          savedEvidenceFor(work) ??
+          displayedEvidenceFor(work);
         if (evidence && evidenceProvesChange(content, evidence)) {
           // The ticket this acceptance held is gone with the throw, so no
           // fence can ever record this expiry: retiring the in-memory attempt
@@ -705,6 +751,19 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
           // the recovery acceptance's own changed read installs the durable
           // fence.
           if (work.saved) ports.repository.suppressEpochForExpiry(work.saved.lease);
+          // The DISPLAYED lease fences the same way, but only when this
+          // branch retired no attempt of its own: a discarded attempt's
+          // pending row went terminal (cancelled), so its annotation keeps
+          // its copyable-reference window until the expiry machinery deletes
+          // the payload. A reader with no attempt - a reopened reader showing
+          // accepted content and another reader's persisted pending
+          // annotations - still has appendable pending work behind the
+          // changed source, and the displayed lease is the only authority a
+          // proven change can retire for it.
+          if (!attempted) {
+            const displayedLease = work.displayed?.lease ?? null;
+            if (displayedLease) ports.repository.suppressEpochForExpiry(displayedLease);
+          }
           // A DEFINITE change to the annotated source is confirmed expiry even
           // though acceptance threw: retire the stale capture/attempt into the
           // honest expiry-pending phase. The throw also means no fence
@@ -795,6 +854,11 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
           ports.runtime.invalidate(key, priorAuthority);
         }
         work.lease = accepted.lease;
+        // Retain the displayed content's own evidence with the lease it
+        // installed: a later faulted reread can prove a change against what
+        // this pane actually displays even when this reader never attempted,
+        // composed or saved anything of its own.
+        work.displayed = { lease: accepted.lease, evidence: displayedLeaseEvidence(content) };
         work.phase = work.attempted ? "unsaved" : "reading";
         suspendAuthority(false);
         setIdentity({ displayedSnapshotId: accepted.lease.displayedSnapshotId, mappingId: createSecureUUID() });

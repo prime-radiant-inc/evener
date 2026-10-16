@@ -343,7 +343,11 @@ export function DocumentHighlights({ map, annotations, scrollElement, contentEle
       {overlayRect &&
         fragments.map((fragment) => (
           <button
-            key={`${fragment.operationId}:${fragment.rect.left}:${fragment.rect.top}:${fragment.rect.right}:${fragment.rect.bottom}`}
+            // The key is the annotation and the fragment's measured slot, never
+            // its geometry: scrolling and reflow move the band through `style`
+            // alone, so the focused passage keeps its button and keyboard focus
+            // survives every geometry-only re-measure.
+            key={`${fragment.operationId}:${fragment.ordinal}`}
             type="button"
             // The band is a decoration for opening its saved note, not a control
             // whose label is the note text.

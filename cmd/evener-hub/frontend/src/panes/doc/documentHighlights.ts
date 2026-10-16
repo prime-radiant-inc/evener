@@ -15,6 +15,13 @@ export interface HighlightTarget {
 
 export interface HighlightFragment {
   operationId: string;
+  // This piece's slot in its annotation's measured rect sequence. The slot is
+  // stable while the rendered content keeps its layout structure: scrolling,
+  // resize and reflow move a fragment's rect but keep its enumeration, so a
+  // band's React key survives geometry-only updates and keyboard focus is not
+  // dropped. Clipped-out rects still consume their slot, so survivors keep
+  // their ordinals when a scroll moves pieces in and out of the clip.
+  ordinal: number;
   rect: DOMRectReadOnly;
 }
 
@@ -39,9 +46,12 @@ export function measureDocumentHighlights(
 ): readonly HighlightFragment[] {
   const fragments: HighlightFragment[] = [];
   for (const target of targets) {
+    let slot = 0;
     for (const range of map.rangesFor(target.sourceRange)) {
       const rects = range.getClientRects();
       for (let index = 0; index < rects.length; index += 1) {
+        const ordinal = slot;
+        slot += 1;
         const rect = rects[index];
         if (!rect) continue;
         const left = Math.max(rect.left, clip.left);
@@ -49,7 +59,7 @@ export function measureDocumentHighlights(
         const right = Math.min(rect.right, clip.right);
         const bottom = Math.min(rect.bottom, clip.bottom);
         if (right > left && bottom > top) {
-          fragments.push({ operationId: target.operationId, rect: clippedRect(left, top, right, bottom) });
+          fragments.push({ operationId: target.operationId, ordinal, rect: clippedRect(left, top, right, bottom) });
         }
       }
     }

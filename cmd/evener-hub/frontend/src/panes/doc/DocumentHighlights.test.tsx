@@ -529,6 +529,33 @@ test("recomputes bands after scroll and resize changes", () => {
   view.unmount();
 });
 
+test("keeps keyboard focus on a band across a scroll that only moves its geometry", () => {
+  const { view, map, scroll } = renderReader(single);
+  const overlay = scroll.lastElementChild;
+  if (!(overlay instanceof HTMLElement)) throw new Error("missing positioned overlay");
+  geometry.setElementRect(overlay, { left: 0, top: 0, right: 200, bottom: 100 });
+  geometry.configure(map, FIRST, [[FIRST_RECT]]);
+  fireEvent.scroll(scroll);
+  const band = bandFor(scroll, "op-1");
+  act(() => {
+    band.focus();
+  });
+  expect(document.activeElement).toBe(band);
+
+  // A scroll moves the passage's geometry without changing the annotation or
+  // the rendered content. The band's rectangle changes with it, but its
+  // identity must not: a key derived from the geometry replaces the focused
+  // button and drops keyboard focus even though the passage stays visible.
+  geometry.configure(map, FIRST, [[{ left: 10, top: 50, right: 20, bottom: 60 }]]);
+  fireEvent.scroll(scroll);
+
+  const after = bandFor(scroll, "op-1");
+  expect(after).toBe(band); // the same button kept its identity
+  expect(after.style.top).toBe("50px"); // the geometry really moved
+  expect(document.activeElement).toBe(after); // keyboard focus survived the move
+  view.unmount();
+});
+
 test("recomputes bands when the pane element itself changes size (no window or visualViewport event)", () => {
   const { observers, fire } = installResizeObserverCapability();
   const { view, map, scroll } = renderReader(single);

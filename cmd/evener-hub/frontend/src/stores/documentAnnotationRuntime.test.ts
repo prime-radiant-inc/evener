@@ -461,6 +461,51 @@ it("retries a recovery-backed handoff refused while typing once the recovery edi
   expect(f.source.getSnapshot().text).toBe(`${typedText}\n\n${secondReference}`);
 });
 
+it("keeps recovery typing persistable when it lands after the append's final guard", async () => {
+  let runtime: DocumentAnnotationRuntime | undefined;
+  let typeAfterFinalGuard = false;
+  const typedText = "typed in recovery after the append accepted the preparation";
+  const f = await fixture("recovery-typing-after-final-guard", {
+    beforeAbortableCompletion: () => {
+      if (!typeAfterFinalGuard) return;
+      typeAfterFinalGuard = false;
+      // The user types through the recovery edit path AFTER the append's final
+      // guard accepted the preparation, so the append commits and the typing
+      // is queued against the pre-append token. The acknowledgment must still
+      // record the append's committed revision and keep the typing persistable.
+      f.source.editText(typedText);
+    },
+    onStorageSuccess: () => runtime?.storageSucceeded(),
+  });
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+  f.source.setActiveRecoveryId("rec-1");
+  runtime = createDocumentAnnotationRuntime(f.repo);
+  const retainedRuntime = runtime;
+  cleanupAfterTest(async () => {
+    retainedRuntime.dispose();
+    await retainedRuntime.whenIdle();
+  });
+  const operation = await acceptedOperation(f.repo, f.document, "op-2", "Second note.", f.destination);
+  await f.repo.saveAnnotation(operation);
+  typeAfterFinalGuard = true;
+  await expect(retainedRuntime.handoff(f.document, "op-2")).resolves.toMatchObject({
+    state: "applied",
+  });
+  // The typed text persists through the append's committed revision on its
+  // own schedule: no reader-open, composer-open, or foreground gesture runs,
+  // and the typing's own queued write captured a token the append has left
+  // behind, so only an acknowledgment that records the committed revision can
+  // re-queue it.
+  await vi.waitFor(async () => {
+    const committed = await f.outbox.getRecovery("rec-1");
+    expect(committed?.composerText).toBe(typedText);
+  });
+  // The interrupted source can prepare again: the pending marker cleared with
+  // the re-queued write, so a later resend no longer refuses.
+  const preparation = await f.source.prepareAnnotation();
+  expect(preparation).not.toBeNull();
+});
+
 it("invalidates failed work and disposal stops later storage and explicit retry triggers", async () => {
   let failSave = false,
     runtime: DocumentAnnotationRuntime | undefined;

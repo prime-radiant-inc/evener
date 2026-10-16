@@ -739,17 +739,46 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     token: DraftSessionToken,
     value: SkillEditorValue,
   ): void {
-    if (!ownsPreparation(preparation)) return;
-    // The append is an accepted edit through this source: it owns the ref's
-    // draft revision exactly as an ordinary accepted edit does. A retained
-    // same-ref source still holding pre-append text then fails ownsDraft(), so
-    // its delayed write (a submitted attachment cleanup after a late image
-    // decode) refuses instead of rebasing over the appended revision and
-    // erasing the reference while the operation stays marked applied.
-    markDraftEdited(ref);
-    ownedDraftRevisionRef.current = readDraftRevision(ref);
-    publishValue(cloneValue(value));
+    if (ownsPreparation(preparation)) {
+      // The append is an accepted edit through this source: it owns the ref's
+      // draft revision exactly as an ordinary accepted edit does. A retained
+      // same-ref source still holding pre-append text then fails ownsDraft(), so
+      // its delayed write (a submitted attachment cleanup after a late image
+      // decode) refuses instead of rebasing over the appended revision and
+      // erasing the reference while the operation stays marked applied.
+      markDraftEdited(ref);
+      ownedDraftRevisionRef.current = readDraftRevision(ref);
+      publishValue(cloneValue(value));
+      draftToken = { ...token };
+      return;
+    }
+    // A recovery edit accepted after the append's final guard owns the visible
+    // editor, so the appended value must not publish over the newer typing -
+    // but the append still committed on this preparation's lineage, and the
+    // lineage is intact exactly when the backing and the captured durable
+    // revision are still current. Record the committed revision and re-queue
+    // the typed edit's persistence from the live editor: its own queued write
+    // captured the pre-append token and can no longer pass the storage guard,
+    // so without this the newer text stays visible but can never persist, and
+    // the pending marker refuses every later preparation (a resend included).
+    // The appended reference drops from the composer on this interleave exactly
+    // as it does on the ordinary backing's conflict-retry drain; the saved
+    // annotation and its copyable reference stay listed either way.
+    if (
+      disposed ||
+      preparation.backing.kind !== "recovery" ||
+      !sameBacking(runtimeBacking, preparation.backing) ||
+      draftToken === null ||
+      draftToken.namespaceIncarnation !== preparation.token.namespaceIncarnation ||
+      draftToken.sessionRevision !== preparation.token.sessionRevision
+    ) {
+      return;
+    }
     draftToken = { ...token };
+    const recoveryId = activeRecoveryIdRef.current;
+    if (recoveryId !== null) {
+      void persistRecoveryEffect(recoveryId, textRef.current, operations.toInputAttachments(), skillNamesRef.current);
+    }
   }
   // Every settlement guard THIS source produced, so the submission-committed
   // listener can tell its OWN capture from another same-ref source's, whose
