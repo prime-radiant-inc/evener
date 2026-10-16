@@ -141,9 +141,14 @@ func (e *LocalExecutionEnvironment) sandboxAnchor(abs, canonicalCwd, p string, r
 			containRel[r] = rl
 		}
 	}
+	bestCanon := ""
 	consider := func(r string) {
-		if len(r) > len(root) {
-			root, rel = r, containRel[r]
+		// Specificity is judged on the CANONICAL root, not the raw spelling: a
+		// broader grant reached through a longer symlink alias must not outrank a
+		// shorter canonical workspace root beneath it.
+		canon := resolveDanglingSymlinks(r)
+		if root == "" || len(canon) > len(bestCanon) {
+			root, rel, bestCanon = r, containRel[r], canon
 		}
 	}
 	for r := range containRel {
@@ -162,31 +167,45 @@ func (e *LocalExecutionEnvironment) sandboxAnchor(abs, canonicalCwd, p string, r
 
 // resolveDanglingSymlinks resolves path through symlinks even when the eventual
 // target no longer exists: os.Readlink still reports each link's target, so a
-// link left dangling by a root's deletion — including an ANCESTOR link of the
-// path — is followed to its final spelling. Each component is resolved in turn
-// (a hop cap bounds a cyclic chain), and the result is then resolved best-effort
-// through its nearest existing ancestor.
+// link left dangling by a root's deletion is followed to its final spelling.
+// A work queue walks components in order; when a component is a symlink its
+// target's OWN components are pushed to the front, so a multi-component target
+// (middle/sub) is walked the same way and a link inside a link target is
+// resolved too. maxLinks bounds a cyclic chain. The result is then resolved
+// best-effort through its nearest existing ancestor.
 func resolveDanglingSymlinks(path string) string {
-	const maxHops = 16
-	parts := strings.Split(strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)), string(filepath.Separator))
+	const maxLinks = 16
 	cur := string(filepath.Separator)
-	for _, comp := range parts {
+	pending := pathComponents(path)
+	links := 0
+	for len(pending) > 0 {
+		comp := pending[0]
+		pending = pending[1:]
 		if comp == "" || comp == "." {
 			continue
 		}
 		cur = filepath.Join(cur, comp)
-		for range maxHops {
-			target, err := os.Readlink(cur)
-			if err != nil {
-				break
-			}
-			if !filepath.IsAbs(target) {
-				target = filepath.Join(filepath.Dir(cur), target)
-			}
-			cur = filepath.Clean(target)
+		target, err := os.Readlink(cur)
+		if err != nil {
+			continue
 		}
+		links++
+		if links > maxLinks {
+			continue
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(cur), target)
+		}
+		target = filepath.Clean(target)
+		cur = string(filepath.Separator)
+		pending = append(pathComponents(target), pending...)
 	}
 	return resolveSymlinksBestEffort(cur)
+}
+
+// pathComponents splits an absolute path into its non-root components.
+func pathComponents(path string) []string {
+	return strings.Split(strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)), string(filepath.Separator))
 }
 
 // ReadFileRaw returns the raw bytes of path subject to the active policy.

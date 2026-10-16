@@ -218,6 +218,90 @@ func TestSandboxMutations_MaskedPathUnderDeadRootKeepsMaskedDenial(t *testing.T)
 	}
 }
 
+// T2l: a broader grant reached through a LONGER symlink alias must not outrank
+// the shorter canonical workspace root beneath it, or deleting the workspace
+// lets a relative write recreate it beneath the broader grant.
+func TestSandboxMutations_LongerAliasGrantDoesNotHideDeadRoot(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	realParent := filepath.Join(base, "r")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(realParent, "wt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "long-parent-alias")
+	if err := os.Symlink(realParent, alias); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(alias, "wt")
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, sbTestHost(home), worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// Grant the broader parent through its longer alias spelling, ahead of the
+	// canonical workspace root.
+	rp.FileTool.WriteRoots = append([]string{alias}, rp.FileTool.WriteRoots...)
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := env.WriteFileRaw("seed.txt", []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(realParent, "wt")); err != nil {
+		t.Fatalf("remove workspace root: %v", err)
+	}
+	if err := env.WriteFileRaw("nested/file.txt", []byte("x"), 0o644); !errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("write under a dead workspace with a longer alias grant = %v, want ErrWorkingDirectoryUnavailable", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(realParent, "wt")); !os.IsNotExist(statErr) {
+		t.Fatalf("write recreated the deleted workspace beneath the alias grant: %v", statErr)
+	}
+}
+
+// T2m: a symlink whose target is a MULTI-COMPONENT path (start → middle/sub,
+// middle → root) must be walked component by component, so the anchor is
+// recovered after the root is deleted rather than falling through to the
+// outside-root denial.
+func TestSandboxMutations_RefuseUnderDeadRootThroughMultiComponentLinkTarget(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	root := filepath.Join(base, "root")
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(root, filepath.Join(base, "middle")); err != nil {
+		t.Fatal(err)
+	}
+	cwd := filepath.Join(base, "start")
+	if err := os.Symlink("middle/sub", cwd); err != nil {
+		t.Fatal(err)
+	}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, sbTestHost(home), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(cwd)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("remove canonical root: %v", err)
+	}
+	err = env.RemovePath("nested/file.txt")
+	if !errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("remove under a dead root through a multi-component link target = %v, want ErrWorkingDirectoryUnavailable", err)
+	}
+}
+
 // T2e: after the captured root is recreated and a masked entry inside it is made
 // a symlink pointing away from the mask, full symlink resolution follows the
 // link off the mask while the ancestor-spelled target keeps the alias. The
