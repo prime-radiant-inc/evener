@@ -64,13 +64,30 @@ func TestDerivedTotalsNeverDisagreeAfterAnExtension(t *testing.T) {
 	x := openIndex(t, path, dir)
 	defer x.Close() //nolint:errcheck // read-only test handle
 
+	// The qualifier must live in the same record as the count it qualifies, so a
+	// crash between the record flush and any later meta write cannot leave the
+	// count authoritative without it. Assert it on the committed records.
+	inexactInRecords := false
+	for slot := uint64(0); slot < x.turns.n; slot++ {
+		buf, err := x.turns.read(slot, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decodeTurn(buf).FailedInexact {
+			inexactInRecords = true
+		}
+	}
+	if !inexactInRecords {
+		t.Fatal("no committed turn record carried the inexact qualifier with its count")
+	}
+
 	gotUsage, gotFailures, derivedErr := x.DerivedTotals(0)
 	if !errors.Is(derivedErr, ErrDerivedTotalsUnavailable) {
 		// The extension extended (rebuilt would be exact); the guard must report
 		// the totals unavailable so the caller falls back to the scan, never a
 		// figure the scan would not produce.
 		sanityUsage, sanityFailures, _ := apptranscript.NewTurnCache().DerivedTotalsFromFile(path, testMaxLineBytes, 0)
-		t.Fatalf("DerivedTotals after an inexact extension = (%+v, %d) err=%v, want ErrDerivedTotalsUnavailable (scan says %+v, %d; inexact=%v rebuilds=%d)",
-			gotUsage, gotFailures, derivedErr, sanityUsage, sanityFailures, x.meta.FailuresInexact, x.rebuilds)
+		t.Fatalf("DerivedTotals after an inexact extension = (%+v, %d) err=%v, want ErrDerivedTotalsUnavailable (scan says %+v, %d; rebuilds=%d)",
+			gotUsage, gotFailures, derivedErr, sanityUsage, sanityFailures, x.rebuilds)
 	}
 }

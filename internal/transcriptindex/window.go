@@ -73,9 +73,6 @@ func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, 
 	// snapshot another handle may have extended or rebuilt, exactly as the
 	// window readers do (readWindow/x.locked).
 	err := x.locked(false, func() error {
-		if x.meta.FailuresInexact {
-			return ErrDerivedTotalsUnavailable
-		}
 		for start := uint64(0); start < x.turns.n; start += chunk {
 			count := min(uint64(chunk), x.turns.n-start)
 			buf, err := x.turns.read(start, int(count))
@@ -104,6 +101,13 @@ func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, 
 				}
 				for j := range sum {
 					sum[j] += record.Usage[j]
+				}
+				if record.FailedInexact {
+					// This turn's failure count was computed without a name it
+					// needed, so the total cannot match the scan. The bit rides
+					// in the same record as the count, so a crash cannot leave
+					// the count authoritative without it.
+					return ErrDerivedTotalsUnavailable
 				}
 				failed += int(record.FailedToolCalls)
 			}

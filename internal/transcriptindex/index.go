@@ -212,11 +212,6 @@ type meta struct {
 	LastAssistantTurnID string       `json:"last_assistant_turn_id,omitempty"`
 	LastAssistantPos    persistedPos `json:"last_assistant_pos"`
 	LastAssistantKnown  bool         `json:"last_assistant_known,omitempty"`
-	// FailuresInexact records a build that met a nameless tool result it could
-	// not resolve, so its per-turn failed-tool-call counts may not match a full
-	// scan. DerivedTotals then reports the failure total unavailable rather than
-	// a figure read from a guess.
-	FailuresInexact bool `json:"failures_inexact,omitempty"`
 }
 
 // persistedPos is a transcript entry's position: the contributor fields
@@ -832,7 +827,6 @@ func (x *Index) restoreBuilder() error {
 	}
 	b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown = x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown
 	b.lastAssistantPos = x.meta.LastAssistantPos.contributor()
-	b.failuresInexact = x.meta.FailuresInexact
 	if x.meta.Open {
 		b.turnSlot = x.meta.TurnSlot
 		// The open legacy group's items are the newest records: any
@@ -1030,6 +1024,11 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	// Only the open turn's names are kept past a build: memory stays bounded
 	// by the open turn, and errRebuild covers the rest.
 	x.builder.global = nil
+	// The failure counter's call names follow the same rule: released at the
+	// end of the build, so a long-lived index does not retain one entry per
+	// tool call. A later extension resolves only the calls it sees itself and
+	// marks a turn's count inexact when a nameless result's call is gone.
+	x.builder.failures.Reset()
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	// The kill seam lives inside writeMeta, after the record flushes: killing
 	// here instead would exit before anything reached the files.
@@ -1252,7 +1251,6 @@ func (x *Index) publishMeta() error {
 	x.meta.CommCalls = persistCommCalls(b.commCalls)
 	x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown = b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown
 	x.meta.LastAssistantPos = posOf(b.lastAssistantPos)
-	x.meta.FailuresInexact = b.failuresInexact
 	data, err := json.Marshal(x.meta)
 	if err != nil {
 		return err

@@ -170,3 +170,26 @@ func (c *FailureCounter) Count() int {
 	}
 	return c.count
 }
+
+// Reset drops the names and count the counter has learned. A caller that has
+// finished consuming it — the transcript-index builder at the end of a build —
+// releases the per-call state so a long-lived index does not retain one entry
+// per tool call of the whole session. A later extension then resolves only the
+// calls it sees itself, and reports a nameless result it cannot resolve.
+func (c *FailureCounter) Reset() {
+	if c == nil {
+		return
+	}
+	c.toolNames = map[string]string{}
+	c.count = 0
+}
+
+// Len is how many tool calls the counter currently retains names for. A caller
+// that must bound memory — the transcript-index builder — uses it to show the
+// state is released once a build no longer needs it.
+func (c *FailureCounter) Len() int {
+	if c == nil {
+		return 0
+	}
+	return len(c.toolNames)
+}

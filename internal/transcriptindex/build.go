@@ -88,13 +88,12 @@ type builder struct {
 	// entryFailures is the failures the entry currently being applied settled,
 	// added to its turn's summary by stampTurn.
 	entryFailures uint32
-	// failuresInexact records that the build met a nameless tool result whose
-	// announcing call it could not resolve. A full build never does; an
-	// extension does when the call lies in the covered prefix, and then its
-	// per-turn counts cannot be trusted to match a full scan. Persisted so
-	// DerivedTotals reports the failure total unavailable and the read falls
-	// back to the scan rather than present a figure it could not compute.
-	failuresInexact bool
+	// entryInexact reports that the entry currently being applied met a nameless
+	// tool result whose announcing call the build could not resolve. A full
+	// build never does; an extension does when the call lies in the covered
+	// prefix. It rides on the turn's own FailedInexact bit, so the qualifier
+	// commits atomically with the count it qualifies.
+	entryInexact bool
 
 	// commCalls and the lastAssistant* fields mirror ProjectTurn's
 	// ToolCallRegistry.CommRawArgs/LastAssistantText/LastAssistantTurnID:
@@ -160,9 +159,7 @@ func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *sche
 		return nil
 	}
 	before := b.failures.Count()
-	if b.failures.ObserveEntry(*entry) {
-		b.failuresInexact = true
-	}
+	b.entryInexact = b.failures.ObserveEntry(*entry)
 	b.entryFailures = uint32(b.failures.Count() - before)
 	if entry.Format == schema.TurnFormatIdentity {
 		return b.applyIdentity(ordinal, offset, length, entry)
@@ -972,6 +969,9 @@ func (b *builder) stampTurn(slot uint64, entry *schema.Turn, ordinal uint64, off
 		}
 	}
 	r.FailedToolCalls += b.entryFailures
+	if b.entryInexact {
+		r.FailedInexact = true
+	}
 	r.Version = version
 	if err := b.x.turns.write(slot, encodeTurnInto(b.turnBuf[:], r)); err != nil {
 		return err
