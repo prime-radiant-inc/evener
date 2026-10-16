@@ -46,18 +46,32 @@ func TestRemoteRestartDrainFailure(t *testing.T) {
 }
 
 func TestRemoteRestartPreservesBinding(t *testing.T) {
-	for _, tc := range []struct{ name, config, args, env, query, launch string }{
-		{"default, environment absent", "/home/dev/.config/evener/hub.toml", "", "HOME=/home/dev\x00", "", ""},
-		{"equals flags override environment", "/srv/selected.toml", "\x00--config=/srv/selected.toml\x00--addr=[::]:0", "HOME=/home/dev\x00EVENER_HUB_LISTEN_ADDR=127.0.0.1:0\x00", " --config /srv/selected.toml --addr '[::]:0'", " --config=/srv/selected.toml '--addr=[::]:0'"},
-		{"environment override, no listener flag", "/srv/selected.toml", "\x00--config\x00/srv/selected.toml", "HOME=/home/dev\x00EVENER_HUB_LISTEN_ADDR=127.0.0.1:0\x00", " --config /srv/selected.toml", " --config /srv/selected.toml"},
+	for _, tc := range []struct {
+		name, config, args, env, query, launch, logPath string
+		psHeader                                        bool
+	}{
+		{name: "default, environment absent", config: "/home/dev/.config/evener/hub.toml", env: "HOME=/home/dev\x00"},
+		{name: "equals flags override environment", config: "/srv/selected.toml", args: "\x00--config=/srv/selected.toml\x00--addr=[::]:0", env: "HOME=/home/dev\x00EVENER_HUB_LISTEN_ADDR=127.0.0.1:0\x00", query: " --config /srv/selected.toml --addr '[::]:0'", launch: " --config=/srv/selected.toml '--addr=[::]:0'"},
+		{name: "environment override, no listener flag", config: "/srv/selected.toml", args: "\x00--config\x00/srv/selected.toml", env: "HOME=/home/dev\x00EVENER_HUB_LISTEN_ADDR=127.0.0.1:0\x00", query: " --config /srv/selected.toml", launch: " --config /srv/selected.toml"},
+		{name: "exact NUL config space, no ps", config: "/srv/my hub.toml", args: "\x00--config\x00/srv/my hub.toml", env: "HOME=/home/dev\x00", query: " --config '/srv/my hub.toml'", launch: " --config '/srv/my hub.toml'"},
+		{name: "leading COMMAND header relaunch", config: "/srv/selected.toml", args: "\x00--config\x00/srv/selected.toml", env: "HOME=/home/dev\x00", query: " --config /srv/selected.toml", launch: " --config /srv/selected.toml", psHeader: true},
+		{name: "metacharacter recovered log", config: "/srv/selected.toml", args: "\x00--config\x00/srv/selected.toml", env: "HOME=/home/dev\x00", query: " --config /srv/selected.toml", launch: " --config /srv/selected.toml", logPath: "/home/dev/hub.log;printf marker"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			host, _ := ownerCommands(t)
 			host.ConfigPath = tc.config
+			logPath := tc.logPath
+			if logPath == "" {
+				logPath = "/home/dev/my hub.log"
+			}
 			prepare := func(successor bool) []ownerCommand {
 				_, commands := ownerCommands(t)
 				commands = append(commands[:10], ownerCommand{systemctlListUnits, ""}, ownerCommand{systemctlListUnitsUser, ""}, ownerCommand{"cat /proc/4242/cgroup", "0::/user.slice/session.scope\n"}, commands[16], commands[17])
-				commands[0].command = "/opt/evener hub endpoint --json --config " + tc.config
+				configWord := tc.config
+				if strings.Contains(configWord, " ") {
+					configWord = "'" + configWord + "'"
+				}
+				commands[0].command = "/opt/evener hub endpoint --json --config " + configWord
 				commands[4].output = "/opt/evener\x00hub" + tc.args + "\x00"
 				commands[8].output = tc.env
 				exports := "export HOME=/home/dev; "
@@ -79,21 +93,31 @@ func TestRemoteRestartPreservesBinding(t *testing.T) {
 						commands[i].output = strings.ReplaceAll(commands[i].output, `"version":"dev"`, `"version":"release-selected"`)
 					}
 				}
+				if tc.psHeader {
+					pid := "4242"
+					if successor {
+						pid = "4343"
+					}
+					commands[4].output = ""
+					ps := ownerCommand{"ps -p " + pid + " -ww -o command=", "COMMAND\n/opt/evener hub --config /srv/selected.toml\n"}
+					commands = append(commands[:5], append([]ownerCommand{ps}, commands[5:]...)...)
+				}
 				return commands
 			}
 			first, second := prepare(false), prepare(false)
 			// Current TOML is intentionally edited between identification and mutation.
 			// It must not freeze the old listener, or inject its actual assigned port.
-			second[0].output = strings.ReplaceAll(second[0].output, "0.0.0.0:0", "127.0.0.2:0")
-			second[9].output = strings.ReplaceAll(second[9].output, "0.0.0.0:0", "127.0.0.2:0")
+			for i := range second {
+				second[i].output = strings.ReplaceAll(second[i].output, "0.0.0.0:0", "127.0.0.2:0")
+			}
 			commands := first
-			commands = append(commands, ownerCommand{"lsof -p 4242 -a -d 1,2", "evener 4242 dev 1w REG 1,2 123 456 /home/dev/my hub.log\nevener 4242 dev 2w REG 1,2 123 456 /home/dev/my hub.log\n"})
+			commands = append(commands, ownerCommand{"lsof -p 4242 -a -d 1,2", "evener 4242 dev 1w REG 1,2 123 456 " + logPath + "\nevener 4242 dev 2w REG 1,2 123 456 " + logPath + "\n"})
 			commands = append(commands, second...)
 			env := "export HOME=/home/dev; "
 			if strings.Contains(tc.env, "EVENER_HUB_LISTEN_ADDR=") {
 				env = "export EVENER_HUB_LISTEN_ADDR=127.0.0.1:0; " + env
 			}
-			launch := "cd /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; " + env + "nohup /opt/evener hub" + tc.launch + " >>'/home/dev/my hub.log' 2>&1 </dev/null &"
+			launch := "cd /srv || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; " + env + "nohup /opt/evener hub" + tc.launch + " >>'" + logPath + "' 2>&1 </dev/null &"
 			commands = append(commands, ownerCommand{"kill -- 4242", ""}, ownerCommand{processAliveRemote("4242"), pidAliveMarker + "\n"}, ownerCommand{processAliveRemote("4242"), pidGoneMarker + "\n"}, ownerCommand{launch, ""})
 			commands = append(commands, prepare(true)...)
 			fr, index := ownerRunner(t, commands)

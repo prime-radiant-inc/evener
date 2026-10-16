@@ -102,12 +102,14 @@ func (m *Manager) recoverSelectedRestart(ctx context.Context, host hostreg.Host,
 			return err
 		}
 		for _, def := range defs {
-			if err := m.hubExecutableMatches(ctx, host, def.program); err != nil {
+			matches, err := m.launchdOwnerMatches(ctx, host, def, report)
+			if err != nil {
+				return err
+			}
+			if !matches {
 				continue
 			}
-			if err := m.checkOwnerConfig(ctx, host, def.argv, def.cwd, def.env, report); err == nil {
-				return fmt.Errorf("%w: stopped launch now supervised", errOwnerEvidence)
-			}
+			return fmt.Errorf("%w: stopped launch now supervised", errOwnerEvidence)
 		}
 	} else {
 		sup, err := m.supervisorForOwner(ctx, host, "0", prior.argv, prior.cwd)

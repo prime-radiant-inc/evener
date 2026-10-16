@@ -238,7 +238,12 @@ func (m *Manager) resolveDarwinOwner(ctx context.Context, host hostreg.Host, fac
 	} else if !equalStrings(argv, def.argv) {
 		return selectedOwner{}, errOwnerEvidence
 	}
-	owner := selectedOwner{host: host, pid: pid, supervisor: sup, generation: generation, argv: argv, cwd: def.cwd, env: def.env, report: report, definition: launchdIntent(def), domainUID: facts.UID}
+	owner := selectedOwner{host: host, pid: pid, supervisor: sup, generation: generation, argv: argv, cwd: def.cwd, env: def.env, report: report}
+	// Ad-hoc launch identity is argv, cwd and environment, just as for a fresh
+	// start. Domain and service definition identify launchd ownership only.
+	if sup.kind != supervisorNone {
+		owner.definition, owner.domainUID = launchdIntent(def), facts.UID
+	}
 	// A witness is scoped to birth plus the entire independently selected launch,
 	// never a PID alone. Without continuity, re-establish mapped-image capability.
 	if report.Running == nil && !m.hasOwnerWitness(owner) {

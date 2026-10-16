@@ -44,6 +44,19 @@ func serviceWords(out []byte) (map[string]string, []string, error) {
 	return fields, argv, nil
 }
 
+// Only positive selection mismatch makes a launchd candidate unrelated. Unknown
+// executable/config evidence cannot authorize either a cold start or a replay.
+func (m *Manager) launchdOwnerMatches(ctx context.Context, host hostreg.Host, def launchdDefinition, report hubendpoint.Report) (bool, error) {
+	err := m.hubExecutableMatches(ctx, host, def.program)
+	if err == nil {
+		err = m.checkOwnerConfig(ctx, host, def.argv, def.cwd, def.env, report)
+	}
+	if errors.Is(err, errOwnerSelectionMismatch) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // A stopped service with no retained operation can be started only after the
 // service itself is resolved to this config/root. No predecessor capability is
 // inferred: there is no predecessor, and disk capability was checked by endpoint.
@@ -55,17 +68,12 @@ func (m *Manager) resolveStoppedOwner(ctx context.Context, host hostreg.Host, fa
 		}
 		var chosen *selectedOwner
 		for sup, def := range defs {
-			if err := m.hubExecutableMatches(ctx, host, def.program); err != nil {
-				if errors.Is(err, errOwnerSelectionMismatch) {
-					continue
-				}
+			matches, err := m.launchdOwnerMatches(ctx, host, def, report)
+			if err != nil {
 				return selectedOwner{}, err
 			}
-			if err := m.checkOwnerConfig(ctx, host, def.argv, def.cwd, def.env, report); err != nil {
-				if errors.Is(err, errOwnerSelectionMismatch) {
-					continue
-				}
-				return selectedOwner{}, err
+			if !matches {
+				continue
 			}
 			if def.pid != "0" {
 				return selectedOwner{}, fmt.Errorf("%w: selected stopped root has a live service", errOwnerEvidence)
