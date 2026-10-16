@@ -461,6 +461,110 @@ func TestSandboxMutations_OverlappingGrantDoesNotHideDeadRoot(t *testing.T) {
 	}
 }
 
+// T2j: the cwd can sit below a dangling ANCESTOR symlink. With /alias → the
+// workspace root and cwd /alias/sub, deleting the root dangles /alias; only the
+// COMPLETE RootDir is a symlink in the simple case, so the anchor must be
+// recovered by resolving the ancestor link while keeping "sub" literal.
+func TestSandboxMutations_RefuseUnderDeadRootBelowDanglingAncestorSymlink(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	realRoot := filepath.Join(base, "real", "wt")
+	if err := os.MkdirAll(filepath.Join(realRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realRoot, filepath.Join(base, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	cwd := filepath.Join(base, "alias", "sub")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, sbTestHost(home), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(cwd)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := env.WriteFileRaw("seed.txt", []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := os.RemoveAll(realRoot); err != nil {
+		t.Fatalf("remove canonical root: %v", err)
+	}
+	err = env.RemovePath("nested/file.txt")
+	if !errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("remove under a dead root below a dangling ancestor symlink = %v, want ErrWorkingDirectoryUnavailable", err)
+	}
+}
+
+// T2k: a checkout rooted at the writable root, cwd reached through an ancestor
+// symlink, and a component of the cwd itself (sub) replaced by an in-root
+// symlink pointing outside. Resolving the cwd whole follows that link and loses
+// the literal path, so the literal tail beneath the captured root must still
+// match the mask.
+func TestSandboxMutations_MaskedTargetUnderRecreatedRootInRootSymlinkKeepsMaskedDenial(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	outside := filepath.Join(base, "outside")
+	realRoot := filepath.Join(base, "real", "wt")
+	if err := os.MkdirAll(filepath.Join(realRoot, "sub", "secret"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(realRoot, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{home, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join(base, "real"), filepath.Join(base, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	canonicalSecret := filepath.Join(realRoot, "sub", "secret")
+	cwd := filepath.Join(base, "alias", "wt", "sub")
+	rp, err := sandbox.Resolve(
+		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, DenylistAdd: []string{canonicalSecret}},
+		sbTestHost(home), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(cwd)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := env.WriteFileRaw("seed.txt", []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := os.RemoveAll(realRoot); err != nil {
+		t.Fatalf("remove canonical root: %v", err)
+	}
+	if err := os.MkdirAll(realRoot, 0o755); err != nil {
+		t.Fatalf("recreate root path: %v", err)
+	}
+	// `sub` is a cwd component inside the writable root; replace it with a link
+	// pointing away from the mask.
+	if err := os.Symlink(outside, filepath.Join(realRoot, "sub")); err != nil {
+		t.Fatalf("plant in-root cwd-component symlink: %v", err)
+	}
+	err = env.RemovePath("secret/file.txt")
+	if errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("masked target under a recreated root with an in-root symlink got the recovery error: %v", err)
+	}
+	denied, ok := errors.AsType[*sandbox.DeniedError](err)
+	if !ok {
+		t.Fatalf("masked remove = %v, want *sandbox.DeniedError", err)
+	}
+	if denied.ReasonKind != sandbox.DenialMasked || !denied.Sensitive {
+		t.Fatalf("masked remove denial = %+v, want DenialMasked and Sensitive", denied)
+	}
+}
+
 // T2d: the mask may be spelled through the canonical root while the target is
 // spelled through a symlinked ancestor. Under a dead root the masked denial —
 // and its Sensitive redaction — must still win over the recovery, or the

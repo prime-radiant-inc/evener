@@ -90,14 +90,8 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 		return nil
 	}
 	abs := filepath.Clean(e.resolve(p))
-	// RootDir resolved through symlinks — dangling ones included, which is the
-	// state once its root is deleted — names the session's anchor. The canonical
-	// spelling of the target appends the requested relative tail literally; no
-	// symlink INSIDE the tree is followed, so a masked entry redirected by an
-	// in-tree symlink still matches its mask.
 	canonicalCwd := resolveDanglingSymlinks(e.RootDir)
-	canonicalAbs := filepath.Clean(filepath.Join(canonicalCwd, filepath.FromSlash(p)))
-	root, ok := e.sandboxAnchorRoot(canonicalCwd, canonicalAbs, sfs.policy.FileTool.WriteRoots)
+	root, rel, ok := e.sandboxAnchor(abs, canonicalCwd, p, sfs.policy.FileTool.WriteRoots)
 	if !ok {
 		return nil
 	}
@@ -105,8 +99,17 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 		return nil
 	}
 	// The mask may be spelled through the canonical root while the target is
-	// spelled through a symlinked ancestor, so check every spelling.
-	for _, cand := range []string{abs, canonicalAbs, resolveSymlinksBestEffort(abs)} {
+	// spelled through a symlinked ancestor, so check every spelling. rel is the
+	// literal in-root tail (it never follows a symlink inside the tree) when the
+	// per-root containment could derive it; otherwise fall back to the cwd's
+	// canonical spelling.
+	candidates := []string{abs, resolveSymlinksBestEffort(abs)}
+	if rel != "" {
+		candidates = append(candidates, filepath.Clean(filepath.Join(root, rel)))
+	} else {
+		candidates = append(candidates, filepath.Clean(filepath.Join(canonicalCwd, filepath.FromSlash(p))))
+	}
+	for _, cand := range candidates {
 		if sfs.underMaskedForWrite(cand) {
 			return sfs.deny(tool, p, denyReasonMasked)
 		}
@@ -117,47 +120,73 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 	return errDeadWorkingDir(p, root)
 }
 
-// sandboxAnchorRoot returns the writable root the session's working directory
-// anchors on: the most specific (longest) writable root that contains the
-// session's cwd, or the target's canonical spelling when the cwd is itself
-// outside every root. It deliberately does NOT use containingRoot: that returns
-// the FIRST matching root, so an overlapping broader grant (a live parent of a
-// deleted workspace) would answer for the dead one and the mutation would
-// recreate the workspace beneath the broader grant. Both paths are judged under
-// best-effort (nearest-existing-ancestor) symlink resolution, so a root spelled
-// through a symlinked ancestor still matches after it is deleted. A cwd under no
-// writable root anchors on none, and its own out-of-root denial stands.
-func (e *LocalExecutionEnvironment) sandboxAnchorRoot(canonicalCwd, canonicalAbs string, roots []string) (string, bool) {
-	best := ""
+// sandboxAnchor returns the writable root a relative target anchors on and the
+// literal in-root tail when one can be derived. Two independent answers combine:
+//
+//   - containingRoot, run per root, resolves only ANCESTORS and keeps the tail
+//     literal, so it spells the mask correctly even when a symlink inside the
+//     root points elsewhere. It cannot match a root no longer on disk.
+//   - The session's cwd resolved through symlinks (dangling and ancestor
+//     components included) names the anchor even after its root is deleted, and
+//     matching the cwd under a root keeps an overlapping broader grant — a live
+//     parent of the deleted workspace — from answering for the dead one.
+//
+// The most specific (longest) root either answer matches wins. rel is filled
+// from the per-root containingRoot answer for that root; a root matched only by
+// the cwd has none. A target under no writable root anchors on none.
+func (e *LocalExecutionEnvironment) sandboxAnchor(abs, canonicalCwd, p string, roots []string) (root, rel string, ok bool) {
+	containRel := map[string]string{}
 	for _, r := range roots {
-		if (pathWithinRoot(canonicalCwd, r) || pathWithinRoot(canonicalAbs, r)) && len(r) > len(best) {
-			best = r
+		if _, rl, mok := containingRoot([]string{r}, abs); mok {
+			containRel[r] = rl
 		}
 	}
-	if best != "" {
-		return best, true
+	consider := func(r string) {
+		if len(r) > len(root) {
+			root, rel = r, containRel[r]
+		}
 	}
-	return "", false
+	for r := range containRel {
+		consider(r)
+	}
+	for _, r := range roots {
+		if pathWithinRoot(canonicalCwd, r) {
+			consider(r)
+		}
+	}
+	if root == "" {
+		return "", "", false
+	}
+	return root, rel, true
 }
 
 // resolveDanglingSymlinks resolves path through symlinks even when the eventual
 // target no longer exists: os.Readlink still reports each link's target, so a
-// chain left dangling by a root's deletion is followed to its final spelling.
-// The hop cap bounds a cyclic chain, after which the tail is resolved
-// best-effort through its nearest existing ancestor.
+// link left dangling by a root's deletion — including an ANCESTOR link of the
+// path — is followed to its final spelling. Each component is resolved in turn
+// (a hop cap bounds a cyclic chain), and the result is then resolved best-effort
+// through its nearest existing ancestor.
 func resolveDanglingSymlinks(path string) string {
 	const maxHops = 16
-	for i := 0; i < maxHops; i++ {
-		target, err := os.Readlink(path)
-		if err != nil {
-			break
+	parts := strings.Split(strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)), string(filepath.Separator))
+	cur := string(filepath.Separator)
+	for _, comp := range parts {
+		if comp == "" || comp == "." {
+			continue
 		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(path), target)
+		cur = filepath.Join(cur, comp)
+		for range maxHops {
+			target, err := os.Readlink(cur)
+			if err != nil {
+				break
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(cur), target)
+			}
+			cur = filepath.Clean(target)
 		}
-		path = filepath.Clean(target)
 	}
-	return resolveSymlinksBestEffort(path)
+	return resolveSymlinksBestEffort(cur)
 }
 
 // ReadFileRaw returns the raw bytes of path subject to the active policy.
