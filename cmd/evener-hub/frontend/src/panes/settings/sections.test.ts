@@ -3,19 +3,14 @@ import { expect, test } from "vitest";
 import {
   DEFAULT_SECTION_ID,
   isKnownSettingsSection,
+  resolveSettingsSection,
   SETTINGS_CLUSTERS,
   SETTINGS_SECTIONS,
   settingsSectionLabel,
 } from "./sections";
 
-// Section inventory verified against templates/partials/settings.html:13-31
-// (15 exact after Codex launch controls were removed) - see the wave-7
-// floor doc's own citation of that range - plus
-// four sections with no legacy counterpart, "keybindings", "about", "mobile", and
-// "agents-md" (see sections.ts's own doc comment).
-
-test("has exactly 20 sections", () => {
-  expect(SETTINGS_SECTIONS).toHaveLength(20);
+test("has exactly 19 navigation destinations during migration", () => {
+  expect(SETTINGS_SECTIONS).toHaveLength(19);
 });
 
 test("every section id is unique", () => {
@@ -23,35 +18,28 @@ test("every section id is unique", () => {
   expect(new Set(ids).size).toBe(ids.length);
 });
 
-test("the 6 ungrouped sections are general/theme/transcript/display/notifications/keybindings, in this order, first", () => {
-  const ungrouped = SETTINGS_SECTIONS.filter((s) => s.cluster === undefined);
-  expect(ungrouped.map((s) => s.id)).toEqual([
-    "general",
-    "theme",
-    "transcript",
-    "display",
-    "notifications",
-    "keybindings",
-  ]);
-  expect(SETTINGS_SECTIONS.slice(0, 6)).toEqual(ungrouped);
+test("preferences lead the navigation in task order", () => {
+  const preferences = SETTINGS_SECTIONS.filter((s) => s.cluster === "preferences");
+  expect(preferences.map((s) => s.id)).toEqual(["theme", "transcript", "keybindings", "notifications"]);
+  expect(SETTINGS_SECTIONS.slice(0, 4)).toEqual(preferences);
 });
 
 test('the "agents-models" cluster has exactly these 5 sections, in order, right after the ungrouped ones', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "agents-models");
   expect(cluster.map((s) => s.id)).toEqual(["credentials", "agents", "agents-md", "launch-evener", "inrepo"]);
-  expect(SETTINGS_SECTIONS.slice(6, 11)).toEqual(cluster);
+  expect(SETTINGS_SECTIONS.slice(4, 9)).toEqual(cluster);
 });
 
 test('the "extensions" cluster has exactly these 4 sections, in order, right after "agents-models"', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "extensions");
   expect(cluster.map((s) => s.id)).toEqual(["plugins-manager", "plugins", "skills", "mcp"]);
-  expect(SETTINGS_SECTIONS.slice(11, 15)).toEqual(cluster);
+  expect(SETTINGS_SECTIONS.slice(9, 13)).toEqual(cluster);
 });
 
 test('the "daemon" cluster has exactly these 5 sections, in order, last', () => {
-  const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "daemon");
-  expect(cluster.map((s) => s.id)).toEqual(["hosts", "hub", "mobile", "storage", "about"]);
-  expect(SETTINGS_SECTIONS.slice(15, 20)).toEqual(cluster);
+  const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "system");
+  expect(cluster.map((s) => s.id)).toEqual(["general", "hosts", "mobile", "hub", "storage", "about"]);
+  expect(SETTINGS_SECTIONS.slice(13, 19)).toEqual(cluster);
 });
 
 test('"about" is the very last section overall', () => {
@@ -59,7 +47,7 @@ test('"about" is the very last section overall', () => {
 });
 
 test("SETTINGS_CLUSTERS lists the 3 labeled clusters in nav order, each with a label", () => {
-  expect(SETTINGS_CLUSTERS.map((c) => c.id)).toEqual(["agents-models", "extensions", "daemon"]);
+  expect(SETTINGS_CLUSTERS.map((c) => c.id)).toEqual(["preferences", "agents-models", "extensions", "system"]);
   for (const cluster of SETTINGS_CLUSTERS) expect(cluster.label).not.toBe("");
 });
 
@@ -73,7 +61,8 @@ test("every section's cluster field (when set) references a real cluster id", ()
 test("DEFAULT_SECTION_ID names a real, ungrouped section", () => {
   const match = SETTINGS_SECTIONS.find((s) => s.id === DEFAULT_SECTION_ID);
   expect(match).toBeDefined();
-  expect(match?.cluster).toBeUndefined();
+  expect(match?.id).toBe("theme");
+  expect(match?.cluster).toBe("preferences");
 });
 
 test("settingsSectionLabel resolves a known id to that section's own label", () => {
@@ -90,4 +79,17 @@ test("settingsSectionLabel falls back to the raw id for an unknown section (e.g.
 test("isKnownSettingsSection distinguishes real ids from unknown ones", () => {
   expect(isKnownSettingsSection("hub")).toBe(true);
   expect(isKnownSettingsSection("not-a-real-section")).toBe(false);
+});
+
+test.each([
+  [undefined, null, "theme"],
+  [undefined, "notifications", "notifications"],
+  ["display", "notifications", "theme"],
+  ["unrecognized", "notifications", "theme"],
+  ["project", "theme", "project"],
+  [undefined, "project", "theme"],
+  [undefined, "display", "theme"],
+  ["hub", "notifications", "hub"],
+] as const)("resolves explicit %s and remembered %s to %s", (explicit, remembered, expected) => {
+  expect(resolveSettingsSection(explicit, remembered)).toBe(expected);
 });

@@ -519,12 +519,6 @@ export function KeybindingsSection() {
 
   return (
     <div className={CLASS.root}>
-      <p className={CLASS.intro}>
-        {editable
-          ? "Click a shortcut to change it; Enter saves and Escape cancels. Changes sync to this hub. Bindings marked Customized come from this hub's synced overrides."
-          : "The keyboard shortcuts currently in effect. Bindings marked Customized come from this hub's synced overrides."}
-      </p>
-
       {/* The WCAG 2.1.4 character-key turn-off (the p4 plan's Design
           decision 3): off unregisters the "?" cheatsheet trigger, leaving
           every shortcut on a modifier chord. Browser-local (prefs store),
@@ -533,8 +527,14 @@ export function KeybindingsSection() {
         label="Character-key shortcuts"
         checked={characterKeyTriggers}
         onChange={(value) => prefsStore.getState().setCharacterKeyTriggers(value)}
-        description="When on, pressing ? outside a text field opens the keyboard shortcuts overlay. Turn off to keep every shortcut on a modifier chord."
+        description="Saved in this browser. When on, pressing ? outside a text field opens the keyboard shortcuts overlay. Turn off to keep every shortcut on a modifier chord."
       />
+
+      <p className={CLASS.intro}>
+        {editable
+          ? "Keyboard shortcuts sync to this hub. Click a shortcut to change it; Enter saves and Escape cancels. Bindings marked Customized come from this hub's synced overrides."
+          : "Keyboard shortcuts use this hub's synced overrides. The shortcuts currently in effect are shown below."}
+      </p>
 
       {status !== undefined && (
         <p className={CLASS.status} role="status" data-reason={status.reason}>
