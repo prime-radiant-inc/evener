@@ -473,6 +473,12 @@ export function reanimatedModuleMock() {
 		},
 		LinearTransition: transition,
 		// An animated style is its worklet's result at render time.
+		//
+		// This runs the updater as ordinary JS, as the real worklet runtime
+		// cannot be reached here (vitest applies no worklets transform). It
+		// therefore cannot catch an update that calls an app function, which
+		// Reanimated refuses on the UI runtime: compute any such value outside
+		// useAnimatedStyle and capture it instead.
 		useAnimatedStyle: <T,>(updater: () => T) => updater(),
 	};
 }

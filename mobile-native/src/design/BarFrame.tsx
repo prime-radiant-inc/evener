@@ -50,10 +50,14 @@ export function BarFrame({
 }) {
 	const { palette } = useColors();
 	const { bottom } = useSafeAreaInsets();
+	// The room is computed here, on the JS thread: the animated style below runs
+	// as a worklet on the UI runtime, which cannot call an ordinary function.
+	// It is constant per inset, so the worklet only scales it by the keyboard.
+	const room = indicatorRoom(bottom);
 	// How far the keyboard has risen, 0 to 1, on every frame of its move.
 	const { progress } = useReanimatedKeyboardAnimation();
 	const indicatorRoomStyle = useAnimatedStyle(() => ({
-		paddingBottom: indicatorRoom(bottom) * (1 - progress.value),
+		paddingBottom: room * (1 - progress.value),
 	}));
 	// Asked apart on purpose: whether the device has the glass picks the host
 	// view and never changes while the app runs; whether the bar wears it now
