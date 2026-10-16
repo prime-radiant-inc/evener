@@ -6,8 +6,9 @@
 // root's mount and to its recorded pointer: a press that begins outside the
 // root never arms, and only the arming pointer's release finishes or abandons
 // the interaction. A cancelled pointer stream hands the gesture to the OS: the
-// native selection it leaves behind completes once it stops changing, so
-// long-press selection and handle adjustments still open the comment box. The subscription lives for the mount, not for a render:
+// native selection it leaves behind completes when it stops changing, and a
+// later handle adjustment updates the captured passage the same way, so
+// long-press selection still opens the comment box. The subscription lives for the mount, not for a render:
 // revalidation reads rebind the map without cancelling an armed gesture, and
 // the release reads the map current at that moment, so a selection over
 // content that changed underneath it maps to nothing and emits no capture. A
@@ -42,8 +43,11 @@ export function observeFinishedDocumentSelections(input: ObserveFinishedDocument
   let shiftActive = false;
   let shiftBaseline: SourceRange | null = null;
   // The OS-owned selection a cancelled pointer stream leaves behind. The
-  // baseline is the range the cancel interrupted; a settle that lands on the
-  // identical range re-opens nothing (the same rule the keyboard path keeps).
+  // baseline starts as the range the cancel interrupted and becomes each range
+  // a settle completes: a settle that lands on the identical range re-opens
+  // nothing, and the retained range is what a later handle-adjustment burst
+  // must differ from. The state ends when the selection collapses or another
+  // interaction replaces it.
   let nativeBaseline: SourceRange | null | undefined;
   let nativeTimer: ReturnType<typeof setTimeout> | null = null;
   let disposed = false;
@@ -67,9 +71,19 @@ export function observeFinishedDocumentSelections(input: ObserveFinishedDocument
       nativeTimer = null;
       if (disposed) return;
       const baseline = nativeBaseline;
-      nativeBaseline = undefined;
       const current = mappedRange();
-      if (!current) return;
+      // The OS selection is gone: the interaction ends here, and a later
+      // change belongs to a new gesture rather than this one.
+      if (!current) {
+        nativeBaseline = undefined;
+        return;
+      }
+      // Retain ownership of the completed range: a handle-adjustment burst
+      // long after the first settle defers against it, so the captured
+      // passage follows the visible selection instead of freezing at the
+      // first settled range. The identical-range guard keeps an unchanged
+      // adjustment from re-opening the retained passage.
+      nativeBaseline = current;
       if (baseline && baseline.start === current.start && baseline.end === current.end) return;
       finish();
     }, NATIVE_SETTLE_MS);
