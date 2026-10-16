@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -94,14 +95,69 @@ func TestSkillDescriptionSyntax(t *testing.T) {
 			if err != nil || d.Unavailable || d.Meta.Description != tt.description {
 				t.Fatalf("description=%q want=%q unavailable=%v err=%v", d.Meta.Description, tt.description, d.Unavailable, err)
 			}
-			recovered := false
-			for _, diag := range diagnostics {
-				recovered = recovered || diag.Category == "unquoted_description"
-			}
+			recovered := slices.ContainsFunc(diagnostics, func(d Diagnostic) bool { return d.Category == "unquoted_description" })
 			if recovered != tt.recovered {
 				t.Fatalf("recovered=%v want=%v diagnostics=%+v", recovered, tt.recovered, diagnostics)
 			}
 		})
+	}
+}
+
+func TestSkillDescriptionRecoveryMappingBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, block string
+		valid       bool
+	}{
+		{"flow controls", "{\nname: fixture,\ndescription: LEGACY: fixture, user-invocable: false, disable-model-invocation: true\n}", false},
+		{"flow invalid control", "{\nname: fixture,\ndescription: LEGACY: fixture, user-invocable: 'false'\n}", false},
+		{"flow invalid tools", "{\nname: fixture,\ndescription: LEGACY: fixture, allowed-tools: [true]\n}", false},
+		{"nested flow description", "name: fixture\n'description': top-level prose\nmetadata: {\ndescription: LEGACY: nested prose\n}", false},
+		{"valid flow controls", "{\nname: fixture,\ndescription: 'LEGACY: fixture', user-invocable: false, disable-model-invocation: true\n}", true},
+		{"alias duplicate user control", "name: fixture\ndescription: LEGACY: fixture\nmetadata: &key user-invocable\n*key: 'false'\nuser-invocable: true", false},
+		{"alias duplicate model control", "name: fixture\ndescription: LEGACY: fixture\nmetadata: &key disable-model-invocation\n*key: 'true'\ndisable-model-invocation: false", false},
+		{"alias duplicate tools", "name: fixture\ndescription: LEGACY: fixture\nmetadata: &key allowed-tools\n*key: [true]\nallowed-tools: [read_file]", false},
+		{"anchored duplicate key", "name: fixture\ndescription: LEGACY: fixture\n&key user-invocable: 'false'\n*key: true", false},
+		{"nested alias duplicate", "name: fixture\ndescription: LEGACY: fixture\nmetadata:\n  key: &key nested\n  *key: one\n  nested: two", false},
+		{"valid alias controls", "name: fixture\ndescription: LEGACY: fixture\nmetadata: {user-key: &user user-invocable, model-key: &model disable-model-invocation}\n*user: false\n*model: true", true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			source := "---\n" + tt.block + "\n---\nBODY_472\n"
+			path := portableWriteSkill(t, dir, "fixture", source)
+			d, _, err := Parse([]byte(source), path)
+			if (err == nil) != tt.valid || d.Unavailable == tt.valid {
+				t.Errorf("Parse valid=%v unavailable=%v err=%v", tt.valid, d.Unavailable, err)
+			}
+			loaded, _, err := Load(d)
+			if (err == nil) != tt.valid {
+				t.Errorf("Load valid=%v err=%v", tt.valid, err)
+			}
+			if tt.valid && (d.Controls.UserInvocable || !d.Controls.DisableModelInvocation || loaded.Descriptor.Controls != d.Controls) {
+				t.Errorf("controls changed: parsed=%+v loaded=%+v", d.Controls, loaded.Descriptor.Controls)
+			}
+			catalog := Discover(nil, DiscoverOptions{HomeDir: t.TempDir(), ExtraDirs: []string{dir}})
+			isFixture := func(d Descriptor) bool { return d.Meta.SkillFile == path }
+			if slices.ContainsFunc(catalog.ModelEntries(), isFixture) || slices.ContainsFunc(catalog.UserEntries(), isFixture) {
+				t.Error("restricted or invalid skill advertised")
+			}
+			unchanged, err := os.ReadFile(path)
+			if err != nil || string(unchanged) != source {
+				t.Fatalf("source rewritten: %q err=%v", unchanged, err)
+			}
+		})
+	}
+}
+
+func TestSkillDescriptionRecoveryPreservesAliasMergeKey(t *testing.T) {
+	t.Parallel()
+	source := "---\nname: fixture\ndescription: LEGACY: fixture\nmetadata: &key <<\n*key: {user-invocable: false, disable-model-invocation: true}\n---\nBODY_472\n"
+	d, _, err := Parse([]byte(source), filepath.Join(t.TempDir(), "SKILL.md"))
+	if err != nil || d.Unavailable {
+		t.Fatalf("unavailable=%v err=%v", d.Unavailable, err)
+	}
+	if !d.Controls.UserInvocable || d.Controls.DisableModelInvocation {
+		t.Fatalf("alias key interpreted as a merge: %+v", d.Controls)
 	}
 }
 
