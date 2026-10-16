@@ -44,8 +44,8 @@ func seed100ToolsRangeB(t *testing.T) {
 		Jobs:          []jobListEntry{{JobID: "job", Type: "shell", Status: "done", Depth: 2, Command: &command, Reason: &reason, ExitCode: &exit, TotalBytes: 4, Resumable: &resumable}},
 		Watches:       []watchListEntry{{ID: "w", Source: "job", Condition: "done"}},
 		RecentWatches: []recentWatchEntry{{ID: "rw", Source: "job", EndReason: "fired", Deliveries: 2}},
-	})
-	_ = formatJobList(jobListResult{})
+	}, jobToolResultDefaultMaxChar)
+	_ = formatJobList(jobListResult{}, jobToolResultDefaultMaxChar)
 	_ = shortTimestamp("")
 	_ = shortTimestamp("invalid")
 	_ = shortTimestamp(frozenTestTime.Format("2006-01-02T15:04:05.999999999Z07:00"))

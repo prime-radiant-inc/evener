@@ -338,7 +338,7 @@ func TestFormatJobStop(t *testing.T) {
 func TestFormatJobList(t *testing.T) {
 	t.Parallel()
 	// Empty list.
-	got := formatJobList(jobListResult{Count: 0})
+	got := formatJobList(jobListResult{Count: 0}, jobToolResultDefaultMaxChar)
 	if !strings.Contains(got, "No jobs") {
 		t.Fatalf("empty list: %q", got)
 	}
@@ -371,7 +371,7 @@ func TestFormatJobList(t *testing.T) {
 			},
 		},
 		Total: 2,
-	})
+	}, jobToolResultDefaultMaxChar)
 	if !strings.Contains(got, "job_1") || !strings.Contains(got, "echo hello") {
 		t.Fatalf("list with items missing data: %q", got)
 	}
@@ -393,7 +393,7 @@ func TestFormatJobList(t *testing.T) {
 		},
 		Total:  5,
 		Offset: 2,
-	})
+	}, jobToolResultDefaultMaxChar)
 	if !strings.Contains(got, "showing 3-3 of 5") {
 		t.Fatalf("pagination missing: %q", got)
 	}
@@ -404,7 +404,7 @@ func TestFormatJobList(t *testing.T) {
 		Items:  []jobListEntry{},
 		Total:  3,
 		Offset: 10,
-	})
+	}, jobToolResultDefaultMaxChar)
 	if !strings.Contains(got, "showing none of 3") {
 		t.Fatalf("past end missing: %q", got)
 	}
@@ -421,7 +421,7 @@ func TestFormatJobList(t *testing.T) {
 			Jobs:   3,
 			Drives: 1,
 		},
-	})
+	}, jobToolResultDefaultMaxChar)
 	if !strings.Contains(got, "turn slots") {
 		t.Fatalf("turn slots missing: %q", got)
 	}
@@ -433,7 +433,7 @@ func TestFormatJobList(t *testing.T) {
 			{ID: "job_1", Type: "shell", Status: "running", TotalBytes: 10},
 		},
 		DelegationAllowance: 3,
-	})
+	}, jobToolResultDefaultMaxChar)
 	if !strings.Contains(got, "delegation_allowance: 3") {
 		t.Fatalf("delegation allowance missing: %q", got)
 	}
