@@ -11,6 +11,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import {
+  assertNewPaneLatest,
+  assertResponsiveReading,
   BUDGET_LIMITS,
   budgetFailures,
   collectProductionPeak,
@@ -23,6 +25,57 @@ import {
   targetPagingEvidence,
   traceBytes,
 } from "./run.mjs";
+
+describe("real journey placement acceptance", () => {
+  const older = () => ({
+    width: 1440, panes: [{ id: "pane-1", identity: 1 }],
+    anchor: { itemId: "turn-27", offset: 16 },
+    semantic: { id: "user-27", offset: -16, height: 109.125, text: "BACKGROUND_HISTORY_27" },
+    viewportWidth: 1097,
+    scrollTop: 3000, scrollHeight: 10000, clientHeight: 700,
+    visibleRows: [{ id: "turn-27", text: "BACKGROUND_HISTORY_27" }],
+  });
+  const mobile = () => ({ ...older(), width: 420, viewportWidth: 388,
+    semantic: { ...older().semantic, offset: -32, height: 125.125 } });
+  const latest = () => ({ ...mobile(), panes: [{ id: "pane-2", identity: 2 }],
+    scrollTop: 9300, visibleRows: [{ id: "turn-62", text: "BACKGROUND_GAP_TURN" }] });
+
+  test("accepts the same semantic tail after changed entry height, then a new pane at latest", () => {
+    const after = mobile();
+    after.semantic.offset += 1;
+    expect(() => assertResponsiveReading(older(), after, "BACKGROUND_HISTORY_27")).not.toThrow();
+    expect(() => assertNewPaneLatest(mobile(), latest())).not.toThrow();
+  });
+
+  test.each([
+    ["lost older row", value => { value.anchor.itemId = "turn-62"; }],
+    ["wrong semantic entry in same turn", value => { value.semantic.id = "agent-27"; }],
+    ["reading point shifted", value => { value.semantic.offset += 20; }],
+    ["unchanged pixel offset despite reflow", value => { value.semantic.offset = -16; }],
+    ["semantic geometry absent", value => { value.semantic = null; }],
+    ["new logical owner", value => { value.panes[0].identity = 2; }],
+    ["payload absent from DOM", value => { value.visibleRows[0].text = ""; }],
+    ["already at latest", value => { value.scrollTop = 9300; }],
+    ["absent anchor", value => { value.anchor.itemId = null; }],
+  ])("rejects responsive %s", (_name, damage) => {
+    const after = mobile();
+    damage(after);
+    expect(() => assertResponsiveReading(older(), after, "BACKGROUND_HISTORY_27")).toThrow();
+  });
+
+  test.each([
+    ["same logical owner", value => { value.panes[0].identity = 1; }],
+    ["stale older placement", value => { value.scrollTop = 3000; }],
+    ["latest absent from DOM", value => { value.visibleRows = []; }],
+  ])("rejects new pane with %s", (_name, damage) => {
+    const after = latest();
+    damage(after);
+    expect(() => assertNewPaneLatest(mobile(), after)).toThrow();
+  });
+  test("rejects a vacuous close control that already read latest", () => {
+    expect(() => assertNewPaneLatest(latest(), latest())).toThrow();
+  });
+});
 
 const dir = mkdtempSync(path.join(tmpdir(), "bgtrace-evidence-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));

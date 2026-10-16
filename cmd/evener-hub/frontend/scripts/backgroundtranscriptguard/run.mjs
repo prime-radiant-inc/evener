@@ -595,6 +595,13 @@ function itemIdentity(item) {
   };
 }
 
+// Preserve source metadata in the raw reopen/resize evidence as well as bodies.
+// Keep wire-window normalization separate: its reconciliation contract is unchanged.
+function recordedItemIdentity(item) {
+  return { ...itemIdentity(item), transcriptKey: item.transcriptKey ?? null,
+    version: item.version ?? null, position: item.position ?? null };
+}
+
 // Ordered structured equality over items, in order.
 function orderedHistoryEqual(expected, actual) {
   if (expected.length !== actual.length) return false;
@@ -1023,6 +1030,7 @@ async function main() {
       await runTwoTabFencing(driver, cdpEndpoint, harnessUrl);
     } finally {
       try {
+        await driver.screenshot("final");
         await driver.dumpState?.("final");
       } catch {
         /* best-effort dump */
@@ -1516,10 +1524,38 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   }
 
   // ---- narrow-viewport repeat activation: compare real content before/after ----
+  await positionOlderReading(driver, SESSION_B, laterPageSentinel);
+  const readingBefore = await settledReading(driver, SESSION_B);
+  await driver.screenshot("older-desktop");
   const narrowBefore = await readTargetDomain(driver, SESSION_B);
+  const narrowTraceBefore = traceBytes();
   await applyViewport(driver.send, NARROW_VIEWPORT);
+  await driver.waitPage(`Boolean(document.querySelector("[data-stacked-pane-type='session']"))`, {
+    label: "the same session has mounted in the mobile host",
+  });
+  const readingAfter = await settledReading(driver, SESSION_B);
+  driver.milestone("responsive-reading", {
+    before: readingBefore, after: readingAfter, sentinel: laterPageSentinel,
+    traceBefore: narrowTraceBefore, traceAfter: traceBytes(),
+    beforePayload: (narrowBefore?.items ?? []).map(recordedItemIdentity),
+    afterPayload: ((await readTargetDomain(driver, SESSION_B))?.items ?? []).map(recordedItemIdentity),
+    entry: await evaluate(driver.send, `window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(SESSION_B)})`),
+  });
+  await driver.screenshot("older-responsive");
+  // Start the close control away from latest even when responsive preservation
+  // is broken, so a new-pane-at-latest observation cannot be vacuous. The
+  // responsive assertion remains mandatory below, after collecting both cases.
+  await positionOlderReading(driver, SESSION_B, laterPageSentinel);
+  const closedReading = await settledReading(driver, SESSION_B);
+  await driver.screenshot("older-before-close");
   await openSessionInCurrentShell(driver, SESSION_A);
+  const closedPanes = await evaluate(driver.send, `window.backgroundTranscriptEvidence.panes(${JSON.stringify(SESSION_B)})`);
+  if (closedPanes.length !== 0) throw new Error("switching the main session did not retire the target pane");
   await openSessionInCurrentShell(driver, SESSION_B);
+  const newReading = await settledReading(driver, SESSION_B);
+  driver.milestone("new-pane-latest", { before: closedReading, closedPanes, after: newReading });
+  await driver.screenshot("new-pane-latest");
+  assertNewPaneLatest(closedReading, newReading);
   await waitForPaneText(
     driver,
     SESSION_B,
@@ -1534,14 +1570,16 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   const sentinelAfter = domainContent(narrowAfter).includes(GAP_SENTINEL);
   driver.milestone("narrow-viewport", {
     width: NARROW_VIEWPORT.width,
+    traceBefore: narrowTraceBefore,
+    traceAfter: traceBytes(),
     beforeItems: beforeItems.length,
     afterItems: afterItems.length,
     contentPreserved,
     sentinelAfter,
     // The full before/after item identities, so the Go owner can compare the
     // bodies independently of this driver-computed boolean.
-    beforePayload: (narrowBefore?.items ?? []).map(itemIdentity),
-    afterPayload: (narrowAfter?.items ?? []).map(itemIdentity),
+    beforePayload: (narrowBefore?.items ?? []).map(recordedItemIdentity),
+    afterPayload: (narrowAfter?.items ?? []).map(recordedItemIdentity),
   });
   if (!contentPreserved) {
     throw new Error(
@@ -1551,6 +1589,7 @@ async function runEntryProductionJourney(driver, harnessUrl) {
   if (!sentinelAfter) {
     throw new Error("narrow-viewport repeat activation lost the produced content after re-activation");
   }
+  assertResponsiveReading(readingBefore, readingAfter, laterPageSentinel);
   await applyViewport(driver.send, VIEWPORT);
 
   driver.milestone("done", { mode: "entry-production" });
@@ -1644,6 +1683,10 @@ async function waitForRestoredDomain(driver, ref, sentinel, timeoutMs = 30000) {
 // through the tree-drawer trigger. The guarantee - a real rail-row activation
 // that re-focuses the session - is identical.
 async function openSessionInCurrentShell(driver, ref) {
+  await driver.waitPage(`(() => {
+    const mobile = matchMedia("(max-width: 899px)").matches;
+    return mobile === Boolean(document.querySelector("[data-stacked-pane-type]"));
+  })()`, { label: "the responsive host has committed" });
   const rowSelector = `[data-session-ref='${ref}']`;
   const rowVisible = async () =>
     evaluate(
@@ -1658,6 +1701,13 @@ async function openSessionInCurrentShell(driver, ref) {
       if (await rowVisible()) break;
     }
   }
+  await driver.waitPage(`(() => {
+    const row = document.querySelector(${JSON.stringify(rowSelector)});
+    if (!row) return false;
+    const rect = row.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 &&
+      row.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+  })()`, { label: "the session row is exposed for the click" });
   await driver.click(rowSelector);
   await driver.waitPage(
     `(() => document.querySelector(${JSON.stringify(driver.composerSelector(ref))}) !== null ? true : null)()`,
@@ -2132,9 +2182,124 @@ async function transcriptState(driver, ref) {
         // The real transcript row exposes data-row-id (TranscriptBody.tsx:422/438/483).
         anchor = { itemId: best.row.getAttribute("data-row-id"), offset: Math.round(best.offset) };
       }
-      return { rows: rowEls.length, scrollTop: el ? el.scrollTop : null, anchor };
+      const port = el?.getBoundingClientRect();
+      const entries = el ? [...el.querySelectorAll("[data-view-anchor-id]")].map(entry => {
+        const rect = entry.getBoundingClientRect();
+        return { id: entry.getAttribute("data-view-anchor-id"), offset: rect.top - port.top,
+          height: rect.height, text: entry.textContent ?? "" };
+      }).filter(entry => entry.height > 0 && entry.offset + entry.height > 0 && entry.offset < el.clientHeight) : [];
+      const semantic = entries.find(entry => entry.offset <= 0) ?? entries[0] ?? null;
+      const visibleRows = port ? rowEls.filter(row => {
+        const rect = row.getBoundingClientRect();
+        return rect.bottom > port.top && rect.top < port.bottom;
+      }).map(row => ({ id: row.getAttribute("data-row-id"), text: row.textContent ?? "" })) : [];
+      return { rows: rowEls.length, scrollTop: el ? el.scrollTop : null, anchor,
+        scrollHeight: el?.scrollHeight ?? null, clientHeight: el?.clientHeight ?? null,
+        width: innerWidth, viewportWidth: el?.clientWidth ?? null, semantic, visibleRows,
+        panes: window.backgroundTranscriptEvidence?.panes?.(${JSON.stringify(ref)}) ?? [] };
     })()`,
   );
+}
+
+// Observe committed DOM geometry, not a model claim. Repeated observations must
+// agree before acceptance, including composer/virtualizer measurement changes.
+async function settledReading(driver, ref) {
+  await evaluate(driver.send, `window.backgroundTranscriptEvidence.entrySettled(${JSON.stringify(ref)})`);
+  await driver.waitPage(`!window.backgroundTranscriptEvidence.entryRoute(${JSON.stringify(ref)}).localOpening`, {
+    label: "the local opening hold has settled",
+  });
+  let previous;
+  let stable = 0;
+  let last;
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    await evaluate(driver.send, "new Promise(resolve => requestAnimationFrame(() => resolve(true)))");
+    last = await transcriptState(driver, ref);
+    const signature = JSON.stringify(last);
+    stable = last.clientHeight > 0 && last.anchor.itemId && signature === previous ? stable + 1 : 0;
+    if (stable >= 3) return last;
+    previous = signature;
+  }
+  throw new Error(`reading geometry never settled: ${JSON.stringify(last)}`);
+}
+
+async function positionOlderReading(driver, ref, sentinel) {
+  const domain = await readTargetDomain(driver, ref);
+  const item = domain.items.find(item => item.text === sentinel);
+  if (!item) throw new Error(`older fixture item absent: ${sentinel}`);
+  const result = await evaluate(driver.send, `(async () => {
+    const port = ${SCROLL_PORT_EXPR(ref)};
+    if (!port) throw new Error("older reading has no scroll port");
+    const deadline = performance.now() + 15000;
+    let aligned = 0;
+    port.scrollTop = 0;
+    while (performance.now() < deadline) {
+      await new Promise(requestAnimationFrame);
+      const row = [...port.querySelectorAll("[data-testid='transcript-row']")]
+        .find(row => row.textContent.includes(${JSON.stringify(sentinel)}));
+      if (row) {
+        const delta = row.getBoundingClientRect().top - port.getBoundingClientRect().top + 8;
+        aligned = Math.abs(delta) <= 1 ? aligned + 1 : 0;
+        if (aligned >= 3) return true;
+        port.scrollTop += delta;
+      } else {
+        aligned = 0;
+        port.scrollTop += port.clientHeight / 2;
+      }
+    }
+    throw new Error("older fixture row never rendered");
+  })()`);
+  if (!result) throw new Error("older reading gesture failed");
+  const box = await evaluate(driver.send, `(() => {
+    const port = ${SCROLL_PORT_EXPR(ref)};
+    const rect = port.getBoundingClientRect();
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, top: port.scrollTop };
+  })()`);
+  await driver.send("Input.dispatchMouseEvent", {
+    type: "mouseWheel", x: box.x, y: box.y, deltaX: 0, deltaY: 8,
+  });
+  await driver.waitPage(`(${SCROLL_PORT_EXPR(ref)}).scrollTop > ${box.top}`, {
+    label: "the native wheel moves the older reader",
+  });
+}
+
+function assertResponsiveReading(before, after, sentinel) {
+  // This fixture reads a short semantic entry's visible tail. Measure that
+  // tail directly in both DOMs, independently of production capture helpers.
+  // A changed box height changes the offset, not the tail's reading line.
+  // Two CSS px cover integer scroll read-back, not a different reading point.
+  const oldEntry = before.semantic;
+  const newEntry = after.semantic;
+  if (before.width !== 1440 || after.width !== 420 ||
+      before.panes.length !== 1 || after.panes.length !== 1 ||
+      before.panes[0].identity !== after.panes[0].identity ||
+      before.panes[0].id !== after.panes[0].id ||
+      !before.anchor.itemId || before.anchor.itemId !== after.anchor.itemId ||
+      !oldEntry?.id || oldEntry.id !== newEntry?.id ||
+      !Number.isFinite(oldEntry.offset) || !Number.isFinite(newEntry.offset) ||
+      !(oldEntry.height > 0 && oldEntry.height < before.clientHeight && oldEntry.offset < 0) ||
+      !(newEntry.height > 0 && newEntry.offset <= 0 && newEntry.offset + newEntry.height > 0) ||
+      !(before.viewportWidth > 0 && after.viewportWidth > 0 && before.viewportWidth !== after.viewportWidth) ||
+      Math.abs((oldEntry.offset + oldEntry.height) - (newEntry.offset + newEntry.height)) > 2 ||
+      !oldEntry.text.includes(sentinel) || !newEntry.text.includes(sentinel) ||
+      before.scrollHeight - before.clientHeight - before.scrollTop <= before.clientHeight ||
+      after.scrollHeight - after.clientHeight - after.scrollTop <= after.clientHeight ||
+      !before.visibleRows.some(row => row.id === before.anchor.itemId && row.text.includes(sentinel)) ||
+      !after.visibleRows.some(row => row.id === after.anchor.itemId && row.text.includes(sentinel))) {
+    throw new Error(`responsive older reading changed: ${JSON.stringify({ before, after })}`);
+  }
+}
+
+function assertNewPaneLatest(before, after) {
+  if (before.panes.length !== 1 ||
+      before.scrollHeight - before.clientHeight - before.scrollTop <= before.clientHeight ||
+      !before.visibleRows.some(row => row.id === before.anchor.itemId && row.text.includes(historySentinel(LATER_PAGE))) ||
+      after.panes.length !== 1 || after.panes[0].identity === before.panes[0].identity ||
+      after.clientHeight <= 0 || !Number.isFinite(after.scrollTop) ||
+      Math.abs(after.scrollHeight - after.clientHeight - after.scrollTop) > 2 ||
+      !after.visibleRows.some(row => row.text.includes(GAP_SENTINEL))) {
+    throw new Error(`new pane did not open at latest: ${JSON.stringify({ before, after })}`);
+  }
 }
 
 // Owning holder capture (finding 5): the loaded domain, its cursor and the real
@@ -2370,6 +2535,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 // Test seam. Shared with the reader-author's separate tree for integration.
 export {
   accumulatePeak,
+  assertNewPaneLatest,
+  assertResponsiveReading,
   BUDGET_LIMITS,
   batchingCheckpointSatisfied,
   budgetFailures,

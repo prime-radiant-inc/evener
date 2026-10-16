@@ -932,6 +932,9 @@ async function openEntryTranscript(ref: string): Promise<boolean> {
       fixture.localBefore = result.before;
       publishEntryTranscriptModel(ref);
     }
+    // A previously loaded range can exceed the initial 200-body promotion.
+    // Keep its usable partial display, but do not certify it via a smaller tail.
+    if (result.retainedRangeComplete === false) return false;
     if (result.status !== "recovery-needed") return true;
     // Cache proof can be unavailable while the live model already carries the
     // complete requested window. Recover missing bodies, not merely a missing
