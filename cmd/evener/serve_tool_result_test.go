@@ -255,8 +255,10 @@ func runServeForegroundShellPersistenceCaseWithCheckpoint(t *testing.T, mode for
 	})
 	t.Cleanup(cleanup)
 
-	entry := waitForServeTestRendezvous(t, runDir)
+	// Emitted before the rendezvous: the serve-started failure case must cancel
+	// and join a serve that has not yet registered, the earliest failure point.
 	checkpoint("serve-started", shellPIDPath)
+	entry := waitForServeTestRendezvous(t, runDir)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String()

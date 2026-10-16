@@ -30,6 +30,8 @@ const (
 	foregroundCleanupServeStarted    = "serve-started"
 	foregroundCleanupShellStarted    = "shell-started"
 	foregroundCleanupProviderWaiting = "provider-waiting"
+	// The join observation the fixture emits after serve returns.
+	foregroundCleanupJoined = "joined"
 	// The normal-completion selector: enables the helper without selecting a
 	// failure stage, so the child drives the fixture to its own clean exit.
 	foregroundCleanupNormalStage = "normal"
@@ -65,7 +67,7 @@ func TestServeForegroundCleanupHelperProcess(t *testing.T) {
 	if reportPath == "" {
 		t.Fatalf("%s is not set", foregroundCleanupReportEnv)
 	}
-	report := &foregroundCleanupReport{Stage: stage}
+	report := &foregroundCleanupReport{}
 	// Registered first, so it runs last: the fixture's own cleanup (registered
 	// during the fixture) joins serve before this records t.Failed().
 	t.Cleanup(func() {
@@ -81,6 +83,10 @@ func TestServeForegroundCleanupHelperProcess(t *testing.T) {
 	})
 
 	failureSelected := isForegroundCleanupFailureStage(stage)
+	// Stage is what the fixture OBSERVED, never the requested selector: the last
+	// observation wins, and a checkpoint that fails freezes it so the join the
+	// fixture still performs in cleanup does not erase the failure point.
+	failed := false
 	checkpoint := func(observed, shellPIDPath string) {
 		if shellPIDPath != "" {
 			if pid, ok := readForegroundShellPID(shellPIDPath); ok {
@@ -92,10 +98,14 @@ func TestServeForegroundCleanupHelperProcess(t *testing.T) {
 				}
 			}
 		}
-		if observed == "joined" {
+		if observed == foregroundCleanupJoined {
 			report.Joined = true
 		}
-		if failureSelected && observed == stage {
+		if !failed {
+			report.Stage = observed
+		}
+		if failureSelected && observed == stage && !failed {
+			failed = true
 			t.Fatalf("foreground fixture reached the %s checkpoint", stage)
 		}
 	}
@@ -159,12 +169,17 @@ func runForegroundCleanupCase(t *testing.T, stage string) {
 	t.Cleanup(func() { killOwnedProcess(report.ShellPID, report.ShellIdentity) })
 
 	if wantFailure {
+		// The child's OBSERVED stage must equal the requested checkpoint: this is
+		// non-vacuous because report.Stage is recorded from observations, not
+		// seeded from the selector.
 		if exitCode != 1 || !report.Failed || report.Stage != stage {
 			t.Fatalf("wrong child outcome for %s: exit=%d failed=%v stage=%q\noutput:\n%s",
 				stage, exitCode, report.Failed, report.Stage, output())
 		}
 	} else {
-		if exitCode != 0 || report.Failed || report.Stage != stage {
+		// Normal completion never fails a checkpoint, so the last stage observed
+		// is the join.
+		if exitCode != 0 || report.Failed || report.Stage != foregroundCleanupJoined {
 			t.Fatalf("normal child outcome: exit=%d failed=%v stage=%q\noutput:\n%s",
 				exitCode, report.Failed, report.Stage, output())
 		}
@@ -228,29 +243,47 @@ func readForegroundShellPID(path string) (int, bool) {
 // processSnapshot returns a stable identity for the process and whether it is a
 // live, non-zombie process. ok is false when no identity can be read, which is
 // also the case once the process has been reaped.
-func processSnapshot(pid int) (identity string, alive bool, ok bool) {
+func processStat(pid int) (state byte, identity string, ok bool) {
 	if pid <= 0 {
-		return "", false, false
+		return 0, "", false
 	}
 	if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
 		if i := strings.LastIndex(string(data), ")"); i >= 0 {
 			fields := strings.Fields(string(data)[i+1:])
-			if len(fields) >= 20 {
-				return "proc:" + fields[19], fields[0] != "Z", true
+			if len(fields) >= 20 && len(fields[0]) > 0 {
+				return fields[0][0], "proc:" + fields[19], true
 			}
 		}
 	}
 	out, err := exec.Command("ps", "-o", "lstart=", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
-		return "", false, false
+		return 0, "", false
 	}
 	line := strings.TrimSpace(string(out))
 	if line == "" {
-		return "", false, false
+		return 0, "", false
 	}
 	fields := strings.Fields(line)
 	stat := fields[len(fields)-1]
-	return "ps:" + strings.Join(fields[:len(fields)-1], " "), !strings.HasPrefix(stat, "Z"), true
+	if len(stat) == 0 {
+		return 0, "", false
+	}
+	return stat[0], "ps:" + strings.Join(fields[:len(fields)-1], " "), true
+}
+
+func processSnapshot(pid int) (identity string, alive bool, ok bool) {
+	state, identity, ok := processStat(pid)
+	if !ok {
+		return "", false, false
+	}
+	return identity, state != 'Z', true
+}
+
+// processState reports the single-letter process state, or ok=false when the
+// process cannot be observed.
+func processState(pid int) (byte, bool) {
+	state, _, ok := processStat(pid)
+	return state, ok
 }
 
 func ownedProcessIdentity(pid int) (string, bool) {
@@ -310,9 +343,53 @@ func startForegroundCleanupSentinel(t *testing.T) *foregroundCleanupSentinel {
 	return &foregroundCleanupSentinel{process: cmd.Process}
 }
 
+// alive reports whether the sentinel is a live, non-zombie process. A bare
+// Signal(0) succeeds on an unreaped zombie, which would make the ownership guard
+// a false negative if cleanup had killed the sentinel.
 func (s *foregroundCleanupSentinel) alive() bool {
 	if s.process == nil {
 		return false
 	}
-	return s.process.Signal(syscall.Signal(0)) == nil
+	_, alive, ok := processSnapshot(s.process.Pid)
+	return ok && alive
+}
+
+// TestForegroundCleanupSentinelLivenessRejectsZombie pins the zombie-aware
+// liveness the outer guard depends on. A killed-but-unreaped child is the exact
+// state a name-wide or group-wide kill would leave the sentinel in, so a guard
+// that accepts a zombie cannot fail when cleanup escapes fixture ownership.
+func TestForegroundCleanupSentinelLivenessRejectsZombie(t *testing.T) {
+	cmd := exec.Command("sleep", "600")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start zombie fixture: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	sentinel := &foregroundCleanupSentinel{process: cmd.Process}
+	if !sentinel.alive() {
+		t.Fatal("sentinel liveness rejected a running process")
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill zombie fixture: %v", err)
+	}
+	waitForZombie(t, cmd.Process.Pid)
+	if sentinel.alive() {
+		t.Fatal("sentinel liveness accepted an unreaped zombie; the ownership guard is a false negative")
+	}
+}
+
+func waitForZombie(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if state, ok := processState(pid); ok && state == 'Z' {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("process %d never became an unreaped zombie", pid)
 }
