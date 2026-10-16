@@ -159,12 +159,12 @@ func (l *relaySessionLease) Read(ctx context.Context, params appwire.ThreadReadP
 func (l *relaySessionLease) ReadWithRoutePublication(
 	ctx context.Context,
 	params appwire.ThreadReadParams,
-	publish func(context.Context, appwire.Thread) error,
+	routes *RelayRoutePublication,
 ) (RelayReadResult, error) {
 	if l == nil || l.session == nil {
 		return RelayReadResult{}, appwire.SessionUnavailable("relay session is unavailable")
 	}
-	return l.session.readWithRoutePublication(ctx, params, publish)
+	return l.session.readWithRoutePublication(ctx, params, routes)
 }
 
 func (l *relaySessionLease) Listen(ctx context.Context) (<-chan RelayDelivery, error) {
@@ -245,7 +245,7 @@ func (s *relaySession) read(ctx context.Context, params appwire.ThreadReadParams
 func (s *relaySession) readWithRoutePublication(
 	ctx context.Context,
 	params appwire.ThreadReadParams,
-	publishRoutes func(context.Context, appwire.Thread) error,
+	routes *RelayRoutePublication,
 ) (RelayReadResult, error) {
 	select {
 	case <-ctx.Done():
@@ -286,6 +286,17 @@ func (s *relaySession) readWithRoutePublication(
 	s.capture = capture
 	s.mu.Unlock()
 
+	// Both routing callbacks run outside the source lock. A panicking owner
+	// must still release the capture and serialized command for later reads.
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			s.cancelCapture(capture)
+			panic(recovered)
+		}
+	}()
+	if routes != nil && routes.Begin != nil {
+		routes.Begin()
+	}
 	readParams := params
 	readParams.Subscribe = true
 	response, err := connection.client.ThreadRead(ctx, readParams)
@@ -296,7 +307,7 @@ func (s *relaySession) readWithRoutePublication(
 		}
 		return RelayReadResult{}, localDaemonSubscribeReadError(err)
 	}
-	if publishRoutes != nil {
+	if routes != nil && routes.Publish != nil {
 		s.mu.Lock()
 		valid := !s.closed && s.capture == capture && s.connection == connection && capture.cutSeen
 		if valid {
@@ -311,15 +322,7 @@ func (s *relaySession) readWithRoutePublication(
 			s.cancelCapture(capture)
 			return RelayReadResult{}, appwire.SessionUnavailable("relay connection ended before route publication")
 		}
-		publicationErr := func() (err error) {
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					s.cancelCapture(capture)
-					panic(recovered)
-				}
-			}()
-			return publishRoutes(ctx, response.Thread)
-		}()
+		publicationErr := routes.Publish(ctx, response.Thread)
 		if publicationErr != nil {
 			s.cancelCapture(capture)
 			return RelayReadResult{}, publicationErr

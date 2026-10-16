@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/afero"
@@ -18,6 +19,38 @@ import (
 // resolves relative paths against the working directory without restricting
 // unrestricted off sessions to that root. Allocated scratch keeps its own
 // fd-anchored contract.
+
+// ErrWorkingDirectoryUnavailable reports that a relative-path mutation was
+// refused because the environment's working directory is not an existing
+// directory — deleted, or otherwise not a usable directory. A deleted directory
+// must never be recreated by a write that silently lands outside any checkout
+// (issue #4671). Absolute-path mutations never raise it.
+var ErrWorkingDirectoryUnavailable = errors.New("working directory unavailable")
+
+// requireLiveWorkingDirForRelative refuses a relative-path mutation when the
+// environment's working directory is not an existing directory, so a write
+// cannot silently recreate a deleted directory and land outside any checkout
+// (issue #4671). It
+// is called only on the plain, unrestricted mutation arm — the one that
+// joins the working directory and `MkdirAll`s parents — because that is the
+// path that recreates a deleted directory. The sandbox and scratch arms resolve
+// through a captured root descriptor; the scratch arm in particular serves the
+// confined-file root, whose logical path may legitimately not exist while its
+// captured descriptor is live, so a working-directory liveness check cannot be
+// applied there. It is a no-op for an absolute path, an empty path, or an empty
+// RootDir (whose relative handling is already a bare join).
+func (e *LocalExecutionEnvironment) requireLiveWorkingDirForRelative(path string) error {
+	p := strings.TrimSpace(path)
+	if p == "" || filepath.IsAbs(p) || e.RootDir == "" {
+		return nil
+	}
+	if info, err := e.filesystem().Stat(e.RootDir); err == nil && info.IsDir() {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s: working directory %s is not an existing directory; re-anchor the session to an existing directory or operate from a valid working directory (%w)",
+		p, e.RootDir, ErrWorkingDirectoryUnavailable)
+}
 
 // ReadFileRaw returns the raw bytes of path subject to the active policy.
 func (e *LocalExecutionEnvironment) ReadFileRaw(path string) ([]byte, error) {
@@ -55,6 +88,9 @@ func (e *LocalExecutionEnvironment) WriteFileRaw(path string, data []byte, perm 
 		defer sfs.release()
 		return sfs.writeFile("apply_patch", abs, data, perm)
 	}
+	if err := e.requireLiveWorkingDirForRelative(path); err != nil {
+		return err
+	}
 	abs, err := e.resolveWrite(path)
 	if err != nil {
 		return err
@@ -78,6 +114,9 @@ func (e *LocalExecutionEnvironment) RemovePath(path string) error {
 	if sfs := e.scratchSandboxFor(abs); sfs != nil {
 		defer sfs.release()
 		return sfs.remove("apply_patch", abs)
+	}
+	if err := e.requireLiveWorkingDirForRelative(path); err != nil {
+		return err
 	}
 	abs, err := e.resolveWrite(path)
 	if err != nil {
@@ -121,8 +160,14 @@ func (e *LocalExecutionEnvironment) RenamePath(oldPath, newPath string) error {
 		return fmt.Errorf("%s: cannot rename into the session scratch root from outside that root", newPath)
 	}
 	var err error
+	if err := e.requireLiveWorkingDirForRelative(oldPath); err != nil {
+		return err
+	}
 	oldAbs, err = e.resolveWrite(oldPath)
 	if err != nil {
+		return err
+	}
+	if err := e.requireLiveWorkingDirForRelative(newPath); err != nil {
 		return err
 	}
 	newAbs, err = e.resolveWrite(newPath)

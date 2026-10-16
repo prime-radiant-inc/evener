@@ -1758,6 +1758,9 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 		}
 		return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
 	}
+	if err := e.requireLiveWorkingDirForRelative(path); err != nil {
+		return "", err
+	}
 	abs, err := e.resolveWrite(path)
 	if err != nil {
 		return "", err
@@ -1816,6 +1819,9 @@ func (e *LocalExecutionEnvironment) EditFileWithCtx(ctx context.Context, path st
 		}
 		b, err = sfs.readFileCtx(ctx, "edit_file", abs)
 	} else {
+		if err := e.requireLiveWorkingDirForRelative(path); err != nil {
+			return "", err
+		}
 		abs, err = e.resolveWrite(path)
 		if err != nil {
 			return "", err

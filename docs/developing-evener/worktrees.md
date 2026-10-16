@@ -229,3 +229,18 @@ These are documented trade-offs, not bugs:
   is the one thing whose non-occupancy it can attest without guessing. A lane `prune`
   skips keeps its lock, and another session's marker has no liveness signal at all and
   still needs a deliberate unlock.
+- **A session whose working directory is deleted out from under it refuses honestly.**
+  If the lane a session is standing in is removed from the main checkout while the
+  session keeps running, the session's working directory no longer exists, and every
+  relative path resolves against a path that is gone. `list` still enumerates the
+  managed lanes, resolving project identity from the session's recorded restore root;
+  `create`, `switch`, `exit`, `adopt`, `remove`, `prune`, and a worktree-isolated
+  delegate spawn all refuse with an error naming the deleted path rather than failing
+  with a raw `lstat`, and the file tools (`write_file`, `edit_file`, `apply_patch`)
+  refuse a relative-path edit rather than recreating the deleted directory and writing
+  outside any checkout (this covers the unrestricted edit path; a file-tool-confined
+  session's captured sandbox root is a known gap). The recovery is to re-anchor the session at an existing
+  directory (the main checkout) or run `git worktree` from the main checkout. When the
+  session has no live restore root either — it was launched directly inside the
+  deleted lane and never entered it through the tool — `list` cannot resolve a
+  repository to ask, so it refuses the same named error as the rest.

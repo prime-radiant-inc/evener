@@ -620,8 +620,82 @@ func assertBackgroundEntrySlice(t *testing.T, fixture *skillGuardFixture, milest
 	}
 	assertBackgroundEntryPagingAndReconnect(t, fixture, opened.Ref, milestones)
 	assertBackgroundEntryNarrowViewport(t, milestones)
+	assertBackgroundTwoTabLive(t, milestones, producer)
 	assertBackgroundEntryTwoTabFencing(t, milestones)
 	t.Logf("production-entry artifacts: %s (milestones, appwire-trace.jsonl, driver.log, screenshots and dumps)", fixture.artifact)
+}
+
+func assertBackgroundTwoTabLive(t *testing.T, milestones []skillGuardMilestone, producer backgroundEntryProducer) {
+	t.Helper()
+	type renderedRow struct {
+		ID     string `json:"id"`
+		TurnID string `json:"turnId"`
+		Text   string `json:"text"`
+	}
+	var live struct {
+		Tabs []struct {
+			BeforeRows []renderedRow `json:"beforeRows"`
+			AfterRows  []renderedRow `json:"afterRows"`
+			Items      []struct {
+				backgroundItemIdentity
+				CallID string `json:"callId"`
+			} `json:"items"`
+			Output string `json:"output"`
+		} `json:"tabs"`
+	}
+	if !skillGuardMilestoneDetail(t, milestones, "two-tab-live", &live) {
+		t.Fatal("two-tab live evidence missing")
+	}
+	if len(live.Tabs) != 2 {
+		t.Fatalf("live browser evidence has %d tabs, want 2", len(live.Tabs))
+	}
+	for index, tab := range live.Tabs {
+		for phase, rows := range [][]renderedRow{tab.BeforeRows, tab.AfterRows} {
+			var text string
+			for _, row := range rows {
+				if row.ID == "" || row.TurnID != producer.assistantTurnID {
+					t.Errorf("tab %d phase %d rendered a different producer: %+v", index, phase, row)
+				}
+				text += row.Text
+			}
+			if strings.Count(text, backgroundBeforeEviction) != 1 || strings.Count(text, backgroundAfterEviction) != phase {
+				t.Errorf("tab %d phase %d has missing or duplicate live output: %q", index, phase, text)
+			}
+			if phase == 1 && strings.Index(text, backgroundBeforeEviction) > strings.Index(text, backgroundAfterEviction) {
+				t.Errorf("tab %d reversed the producer output", index)
+			}
+		}
+		textMatches, toolMatches := 0, 0
+		seen := make(map[string]bool)
+		for _, item := range tab.Items {
+			if item.ID == nil || *item.ID == "" || seen[*item.ID] {
+				t.Errorf("tab %d has a missing or duplicate item identity: %+v", index, item)
+			} else {
+				seen[*item.ID] = true
+			}
+			if item.TurnID == nil || *item.TurnID != producer.assistantTurnID {
+				t.Errorf("tab %d recorded a foreign turn: %+v", index, item)
+			}
+			if strings.Contains(item.Text, producer.assistantText) {
+				textMatches++
+			}
+			if item.CallID == producer.toolCallID && item.Output == producer.toolResultOutput {
+				toolMatches++
+			}
+		}
+		if textMatches != 1 || toolMatches != 1 || tab.Output != producer.toolResultOutput {
+			t.Errorf("tab %d disagrees with durable producer: text=%d tool=%d output=%q", index, textMatches, toolMatches, tab.Output)
+		}
+	}
+	first, second := live.Tabs[0].Items, live.Tabs[1].Items
+	if len(first) != len(second) || len(first) == 0 {
+		t.Fatalf("two-tab item counts differ or are empty: %d/%d", len(first), len(second))
+	}
+	for index := range first {
+		if !backgroundItemEqual(first[index].backgroundItemIdentity, second[index].backgroundItemIdentity) || first[index].CallID != second[index].CallID {
+			t.Errorf("two-tab ordered item identity differs at %d: %+v / %+v", index, first[index], second[index])
+		}
+	}
 }
 
 // assertBackgroundEntryTwoTabFencing reads the two-real-tab Clear/delete fence
