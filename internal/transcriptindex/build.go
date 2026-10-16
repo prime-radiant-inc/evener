@@ -88,6 +88,13 @@ type builder struct {
 	// entryFailures is the failures the entry currently being applied settled,
 	// added to its turn's summary by stampTurn.
 	entryFailures uint32
+	// failuresInexact records that the build met a nameless tool result whose
+	// announcing call it could not resolve. A full build never does; an
+	// extension does when the call lies in the covered prefix, and then its
+	// per-turn counts cannot be trusted to match a full scan. Persisted so
+	// DerivedTotals reports the failure total unavailable and the read falls
+	// back to the scan rather than present a figure it could not compute.
+	failuresInexact bool
 
 	// commCalls and the lastAssistant* fields mirror ProjectTurn's
 	// ToolCallRegistry.CommRawArgs/LastAssistantText/LastAssistantTurnID:
@@ -147,7 +154,9 @@ func newBuilder(x *Index) builder {
 // apply indexes the entry at ordinal, whose line is length bytes at offset.
 func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *schema.Turn) error {
 	before := b.failures.Count()
-	b.failures.Observe(*entry)
+	if b.failures.ObserveEntry(*entry) {
+		b.failuresInexact = true
+	}
 	b.entryFailures = uint32(b.failures.Count() - before)
 	if entry.Format == schema.TurnFormatIdentity {
 		return b.applyIdentity(ordinal, offset, length, entry)

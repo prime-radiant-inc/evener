@@ -118,6 +118,23 @@ func (c *FailureCounter) Observe(turn schema.Turn) {
 	if c == nil {
 		return
 	}
+	c.observe(turn, nil)
+}
+
+// ObserveEntry is Observe for a caller that must learn whether a nameless tool
+// result's name was resolvable from the calls seen so far. It reports true when
+// one was not: a counter restored from persisted state (the transcript-index
+// builder's extension path) then cannot count such a result the same way a full
+// scan does, and must not present a figure it could not compute.
+func (c *FailureCounter) ObserveEntry(turn schema.Turn) (unresolved bool) {
+	if c == nil {
+		return false
+	}
+	c.observe(turn, &unresolved)
+	return unresolved
+}
+
+func (c *FailureCounter) observe(turn schema.Turn, unresolved *bool) {
 	c.ordinal++
 	if turn.OriginalOrdinal != nil {
 		return // a compaction fold copy: its original already counted
@@ -133,7 +150,11 @@ func (c *FailureCounter) Observe(turn schema.Turn) {
 			}
 			name := part.ToolResult.Name
 			if name == "" {
-				name = c.toolNames[part.ToolResult.ToolCallID]
+				resolved, ok := c.toolNames[part.ToolResult.ToolCallID]
+				if !ok && unresolved != nil {
+					*unresolved = true
+				}
+				name = resolved
 			}
 			if FailedToolResult(name, part.ToolResult.IsError, part.ToolResult.ToolState) {
 				c.count++

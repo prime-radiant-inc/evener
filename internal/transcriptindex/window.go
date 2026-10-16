@@ -69,28 +69,40 @@ func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, 
 	const chunk = 256
 	var sum [4]int64
 	failed := 0
-	for start := uint64(0); start < x.turns.n; start += chunk {
-		count := min(uint64(chunk), x.turns.n-start)
-		buf, err := x.turns.read(start, int(count))
-		if err != nil {
-			return nil, 0, err
+	// Read under the shared sidecar lock so the records describe the same
+	// snapshot another handle may have extended or rebuilt, exactly as the
+	// window readers do (readWindow/x.locked).
+	err := x.locked(false, func() error {
+		if x.meta.FailuresInexact {
+			return ErrDerivedTotalsUnavailable
 		}
-		for i := uint64(0); i < count; i++ {
-			record := decodeTurn(buf[i*turnRecordSize:])
-			if record.Kind == turnKindUnreadable {
-				// A line that did not decode; the scan errors on it, so the
-				// derived totals are unknown. Checked for every record, as the
-				// scan decodes every line regardless of the cut.
-				return nil, 0, ErrDerivedTotalsUnavailable
+		for start := uint64(0); start < x.turns.n; start += chunk {
+			count := min(uint64(chunk), x.turns.n-start)
+			buf, err := x.turns.read(start, int(count))
+			if err != nil {
+				return err
 			}
-			if int(record.FirstOrdinal)+1 < fromEntryOrdinal {
-				continue
+			for i := uint64(0); i < count; i++ {
+				record := decodeTurn(buf[i*turnRecordSize:])
+				if record.Kind == turnKindUnreadable {
+					// A line that did not decode; the scan errors on it, so the
+					// totals are unknown. Checked for every record, as the scan
+					// decodes every line regardless of the cut.
+					return ErrDerivedTotalsUnavailable
+				}
+				if int(record.FirstOrdinal)+1 < fromEntryOrdinal {
+					continue
+				}
+				for j := range sum {
+					sum[j] += record.Usage[j]
+				}
+				failed += int(record.FailedToolCalls)
 			}
-			for j := range sum {
-				sum[j] += record.Usage[j]
-			}
-			failed += int(record.FailedToolCalls)
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, 0, err
 	}
 	cacheRead := int(sum[2])
 	return appwire.EvenerUsageFromLLM(llm.Usage{
