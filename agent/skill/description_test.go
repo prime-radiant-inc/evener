@@ -120,6 +120,11 @@ func TestSkillDescriptionRecoveryMappingBoundaries(t *testing.T) {
 		{"anchored duplicate key", "name: fixture\ndescription: LEGACY: fixture\n&key user-invocable: 'false'\n*key: true", false},
 		{"nested alias duplicate", "name: fixture\ndescription: LEGACY: fixture\nmetadata:\n  key: &key nested\n  *key: one\n  nested: two", false},
 		{"valid alias controls", "name: fixture\ndescription: LEGACY: fixture\nmetadata: {user-key: &user user-invocable, model-key: &model disable-model-invocation}\n*user: false\n*model: true", true},
+		{"encoded duplicate control", "name: fixture\ndescription: LEGACY: fixture\n!!binary dXNlci1pbnZvY2FibGU=: 'false'\nuser-invocable: true", false},
+		{"encoded alias duplicate control", "name: fixture\ndescription: LEGACY: fixture\nmetadata: &key !!binary dXNlci1pbnZvY2FibGU=\n*key: 'false'\nuser-invocable: true", false},
+		{"nested encoded duplicate", "name: fixture\ndescription: LEGACY: fixture\nmetadata:\n  !!binary bmVzdGVk: one\n  nested: two", false},
+		{"nested numeric duplicate", "name: fixture\ndescription: LEGACY: fixture\nmetadata: {0x1: one, 1: two}", false},
+		{"distinct nested keys", "name: fixture\ndescription: LEGACY: fixture\nuser-invocable: false\ndisable-model-invocation: true\nmetadata: {null: one, '': two}", true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
