@@ -284,3 +284,53 @@ func assertHostPipelineRetiredPort(t *testing.T, host *hostSSH, hostDir, ready, 
 	assertHostPipelinePIDListener(t, host, pid, oldPort)
 	t.Logf("port-zero successor changed %s -> %s, unrelated owned holder PID %d retains predecessor port", before, after, pid)
 }
+
+// Diagnostic-only wrapper: observe only the credential-free selected-lock
+// command, forwarding exact stdout, stderr and exit status. No argv is rewritten.
+func installHostPipelineLockTrace(t *testing.T) {
+	t.Helper()
+	realSSH, err := exec.LookPath("ssh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	trace := filepath.Join(dir, "lock-trace")
+	script := fmt.Sprintf(`#!/bin/sh
+matched=false
+for a in "$@"; do
+ case "$a" in *"stat -Lc"*"/hub.lock"*"/proc/locks"*) matched=true; command=$a;; esac
+done
+if ! "$matched"; then exec %s "$@"; fi
+out=$(mktemp %s/out.XXXXXX) || exit 97
+err=$(mktemp %s/err.XXXXXX) || exit 97
+%s "$@" >"$out" 2>"$err"
+status=$?
+{ printf 'command=%%s\nstatus=%%s\nstdout=[' "$command" "$status"; cat "$out"; printf ']\nstderr=['; cat "$err"; printf ']\n'; } >> %s
+cat "$out"
+cat "$err" >&2
+rm "$out" "$err"
+exit "$status"
+`, shellquote.RemoteWord(realSSH), shellquote.RemoteWord(dir), shellquote.RemoteWord(dir), shellquote.RemoteWord(realSSH), shellquote.RemoteWord(trace))
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() {
+		data, err := os.ReadFile(trace)
+		if err != nil {
+			t.Logf("lock trace read: %v", err)
+			return
+		}
+		t.Logf("actual product selected-lock trace:\n%s", data)
+	})
+}
+
+func hostPipelineLockDiagnostic(t *testing.T, host *hostSSH, selected hostPipelineEndpointSnapshot, phase string) {
+	t.Helper()
+	r := selected.record
+	script := "printf 'root inode/device: '; stat -Lc '%d %i %f %n' " + shellquote.RemoteWord(r.Root+"/hub.lock") +
+		"; printf 'kernel lock rows:\\n'; cat /proc/locks; printf 'selected generation:\\n'; cat /proc/" + strconv.Itoa(r.PID) + "/stat; " +
+		"printf 'selected lock descriptors:\\n'; lsof -nP -a -p " + strconv.Itoa(r.PID) + " -Fn " + shellquote.RemoteWord(r.Root+"/hub.lock")
+	out, err := host.run(script)
+	t.Logf("%s lock diagnosis: root=%s selectedPID=%d boot=%s birth=%s status=%v\n%s", phase, r.Root, r.PID, r.BootID, selected.birth, err, out)
+}

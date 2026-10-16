@@ -158,6 +158,7 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 		dest = container.alias
 		user = "" // the per-run ssh_config names the container's root user
 		t.Logf("container host: name=%s id=%s alias=%s loopback port=%d", container.name, container.id, container.alias, container.port)
+		installHostPipelineLockTrace(t)
 	}
 
 	host := newHostSSH(t, dest, user)
@@ -307,6 +308,12 @@ func runHostPipelineEndpointCase(t *testing.T, endpointCase hostPipelineEndpoint
 			t.Fatal("unrelated default-port hub satisfied selected readiness")
 		}
 		assertHostPipelineRemoteMarker(ctx, t, client, host, hostName, marker, markerContents)
+		hostPipelineLockDiagnostic(t, host, beforeSelected, "before-deploy")
+		t.Cleanup(func() {
+			if t.Failed() {
+				hostPipelineLockDiagnostic(t, host, beforeSelected, "failed-case")
+			}
+		})
 	} else {
 		beforeHealth = hostPipelineHostHealth(t, host, addr)
 	}
