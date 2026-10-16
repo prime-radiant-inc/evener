@@ -324,6 +324,49 @@ it.each(["draft", "recovery"] as const)(
   },
 );
 
+it("retries a handoff refused while the composer was typing once that edit's draft commit lands", async () => {
+  let runtime: DocumentAnnotationRuntime | undefined;
+  let interruptAppend = false;
+  const typedText = "typed while the annotation handed off";
+  const f = await fixture("refused-mid-typing-draft-commit", {
+    beforeFinalGuard: () => {
+      if (!interruptAppend) return;
+      interruptAppend = false;
+      // The user types: the explicit edit lands while the handoff's append is
+      // between its final boundary and the ownership guard, so the append
+      // loses the preparation and the handoff stays pending.
+      f.source.acceptEdit({ text: typedText, skillNames: [], mentions: [] });
+    },
+    onStorageSuccess: () => runtime?.storageSucceeded(),
+  });
+  expect((await f.repo.handoff(f.document, "op-1")).state).toBe("applied");
+  runtime = createDocumentAnnotationRuntime(f.repo);
+  const retainedRuntime = runtime;
+  cleanupAfterTest(async () => {
+    retainedRuntime.dispose();
+    await retainedRuntime.whenIdle();
+  });
+  const operation = await acceptedOperation(f.repo, f.document, "op-2", "Second note.", f.destination);
+  await f.repo.saveAnnotation(operation);
+  interruptAppend = true;
+  await expect(retainedRuntime.handoff(f.document, "op-2")).resolves.toEqual({
+    state: "pending",
+    reason: "owner-unavailable",
+  });
+  // The interrupted typing settles into the durable draft on its own schedule.
+  // Its commit is the only notification the runtime gets: no reader-open,
+  // composer-open, foreground return, or annotation action is issued here.
+  await f.source.whenSettled();
+  await retainedRuntime.whenIdle();
+  const secondReference = REFERENCE.replace('"Keep this scope."', '"Second note."');
+  expect((await f.drafts.load(f.key))?.text).toBe(`${typedText}\n\n${secondReference}`);
+  const applied = (
+    await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)
+  ).find((row) => row.operationId === "op-2");
+  expect(applied).toMatchObject({ state: "applied" });
+  expect(f.source.getSnapshot().text).toBe(`${typedText}\n\n${secondReference}`);
+});
+
 it("invalidates failed work and disposal stops later storage and explicit retry triggers", async () => {
   let failSave = false,
     runtime: DocumentAnnotationRuntime | undefined;

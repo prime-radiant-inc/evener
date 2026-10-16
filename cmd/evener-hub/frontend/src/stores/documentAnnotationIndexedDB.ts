@@ -378,6 +378,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   readonly #channel: AnnotationWakeChannel;
   readonly #channelSourceId = makeSourceId();
   readonly #keyRange: typeof IDBKeyRange | undefined;
+  readonly #unsubscribeDrafts: () => void;
 
   constructor(options: DocumentAnnotationOptions) {
     const indexedDB = options.indexedDB ?? globalThis.indexedDB;
@@ -413,12 +414,20 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       },
       reportDiagnostic: () => undefined,
     });
+    // A refused handoff waits on the composer's own persistence: the draft or
+    // recovery write that dirtied the preparation must, once committed, wake
+    // the pending-handoff retry. Every draft and recovery commit lands through
+    // this same drafts repository, so its commit notification - not only this
+    // adapter's own transactions - is storage progress the runtime retries
+    // against, coalesced by the runtime's single-pass design.
+    this.#unsubscribeDrafts = options.drafts.subscribe(() => this.#notifyStorageSuccess());
   }
 
   close(): void {
     // Late work must not revive a closed registration; retire every listener and
     // the peer channel before the connection.
     this.#subscriptions.clear();
+    this.#unsubscribeDrafts();
     this.#channel.close();
     this.#connection.close();
   }
@@ -467,8 +476,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   }
 
   // Observational storage-success boundary: called only AFTER an authority
-  // transaction completes, outside every transaction. An observer fault cannot
-  // change the committed result.
+  // transaction completes, outside every transaction, and after every draft or
+  // recovery commit the composer persists through the shared drafts
+  // repository. An observer fault cannot change the committed result.
   #notifyStorageSuccess(): void {
     invokeObserver(() => this.#options.onStorageSuccess?.());
   }
