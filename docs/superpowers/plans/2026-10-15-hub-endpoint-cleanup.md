@@ -10,9 +10,13 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-15-hub-endpoint-cleanup-design.md`
 
+## Approved scope amendment: TUI retirement
+
+Jesse approved subagent-driven execution, then on 2026-10-16 chose to drop remaining TUI-specific work in favor of the separate TUI removal. Do not add TUI implementation, tests or documentation. Task 8 proves startup, endpoint discovery, authenticated AppWire, restart and preserved user data through surviving non-TUI clients. Keep shared endpoint and credential contracts intact. Reconcile already committed TUI changes with the removal branch during integration; this task does not implement a replacement terminal interface or duplicate the deletion. This amendment controls over the original task text below.
+
 ## Global Constraints
 
-- Jesse chose to retain server `--addr`/`-addr` and TOML `addr`, cleanly rename client/public settings, require origin-only URLs, and allow explicit-local-URL autostart only when unchanged local configuration matches. Implementation awaits spec review and execution-method selection.
+- Jesse chose to retain server `--addr`/`-addr` and TOML `addr`, cleanly rename client/public settings, require origin-only URLs, and allow explicit-local-URL autostart only when unchanged local configuration matches. The approved TUI-retirement amendment limits remaining client work to surviving consumers.
 - Listener precedence: supplied CLI flag > present environment variable > present TOML key > default.
 - Default listener: `127.0.0.1:9180`. Numeric listener ports: `0..65535`. Client URL ports: `1..65535`.
 - Retained server names: `--addr`/`-addr`, TOML `addr`. New names: `EVENER_HUB_LISTEN_ADDR`, `--hub-url`, `EVENER_HUB_URL`, `public_url`.

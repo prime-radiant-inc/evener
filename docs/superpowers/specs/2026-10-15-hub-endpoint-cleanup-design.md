@@ -2,7 +2,13 @@
 
 ## Status and decision gates
 
-This is a proposed design for Jesse's request to make hub binding and connection configuration consistent. Jesse has settled setting-name migration, origin-only URLs, matching-only local autostart and browser-login output below. Implementation waits for final spec review and execution-method selection. Planning does not authorize changing a running hub, editing Jesse's configuration, or deploying a binary.
+Jesse approved this design and subagent-driven implementation. It does not authorize changing a running production hub, editing Jesse's configuration, or deploying a production binary.
+
+### Approved scope amendment: TUI retirement
+
+On 2026-10-16, Jesse chose to drop remaining TUI-specific work because the TUI is being removed separately, without a replacement. Preserve shared endpoint, credential, hub, SSH, browser and native work. Prove the remaining startup, discovery, authenticated AppWire, restart and preservation journey through non-TUI clients. Do not add TUI tests or documentation, or introduce a replacement terminal interface. Reconcile previously committed TUI changes with the separate removal during integration rather than deleting that work here.
+
+This amendment supersedes the remaining TUI-specific obligations below. Their original text records the approved starting scope; it does not require new TUI work. Shared credential isolation, listener preservation and endpoint lifecycle obligations still apply to surviving consumers.
 
 1. **Migration decision: keep server names, clean cutover elsewhere.** Jesse chose to retain hub `--addr`/`-addr` and top-level TOML `addr` as the canonical listener settings. Rename the client and advertised-origin settings, reject their old names with a migration diagnostic, and add no compatibility aliases. The new server environment variable is `EVENER_HUB_LISTEN_ADDR`.
 2. **URL decision: origins only.** Jesse chose to accept `http://host[:port]` and `https://host[:port]`, optionally with a root slash. Reject URL prefixes instead of silently stripping them. This removes existing TUI and `hubapi` prefix support; browser, native and pairing already assume root-origin routing. End-to-end prefix support is outside this cleanup.
