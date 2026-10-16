@@ -17,10 +17,12 @@ import (
 // TestDerivedTotalsNeverDisagreeAfterAnExtension pins the safety property the
 // extension path must keep: after the covered sidecar is extended, DerivedTotals
 // either reports the totals unavailable or agrees with the scan — it never
-// presents a figure the scan would not. An extension that cannot resolve a
-// nameless result whose announcing call is in the covered prefix sets the
-// FailuresInexact guard; the shapes that would otherwise mis-count here rebuild
-// instead, and either way no disagreeing figure escapes.
+// presents a figure the scan would not.
+//
+// The FailuresInexact guard exists for an extension that cannot resolve a
+// nameless result for a call in the covered prefix. Every shape probed here
+// (legacy and identity) instead rebuilds — rebuilding is exact — so the guard is
+// defense in depth and this test pins the invariant rather than one mechanism.
 func TestDerivedTotalsNeverDisagreeAfterAnExtension(t *testing.T) {
 	header := transcript.Header{SessionID: "s", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"}
 	identity := func(turn schema.Turn) schema.Turn {
@@ -45,11 +47,21 @@ func TestDerivedTotalsNeverDisagreeAfterAnExtension(t *testing.T) {
 	if err := os.WriteFile(path, append(append([]byte(nil), fxHeader...), joinLines(lines[:2])...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	x := openIndex(t, path, t.TempDir())
-	defer x.Close() //nolint:errcheck // test handle
-
+	// Build the prefix under one handle, then close it so the extension runs
+	// against a restored builder with no call names of its own — the condition
+	// an inexact count would arise from.
+	prefix := openIndex(t, path, t.TempDir())
+	if err := prefix.Close(); err != nil {
+		t.Fatal(err)
+	}
 	appendBytes(t, path, joinLines(lines[2:]))
-	catchUp(t, x)
+	extended := openIndex(t, path, t.TempDir())
+	if err := extended.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	x := openIndex(t, path, t.TempDir())
+	defer x.Close() //nolint:errcheck // read-only test handle
 
 	gotUsage, gotFailures, derivedErr := x.DerivedTotals(0)
 	if errors.Is(derivedErr, ErrDerivedTotalsUnavailable) {

@@ -153,6 +153,12 @@ func newBuilder(x *Index) builder {
 
 // apply indexes the entry at ordinal, whose line is length bytes at offset.
 func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *schema.Turn) error {
+	if entry.OriginalOrdinal != nil {
+		// A compaction fold copy re-appends an entry the file already holds.
+		// The projection and the corrected derived scans skip it, so it takes
+		// its ordinal and contributes no turn, usage, or failure.
+		return nil
+	}
 	before := b.failures.Count()
 	if b.failures.ObserveEntry(*entry) {
 		b.failuresInexact = true

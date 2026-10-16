@@ -71,3 +71,36 @@ func TestDerivedTotalsMatchScan(t *testing.T) {
 		}
 	}
 }
+
+// A fold copy is normally identity-format, but the parity guarantee must hold
+// whatever its format: the index and the corrected scan both skip it. This
+// pins a legacy fold copy, which the builder's format dispatch would otherwise
+// count through stampTurn.
+func TestDerivedTotalsExcludeLegacyFoldCopies(t *testing.T) {
+	header := transcript.Header{SessionID: "s", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"}
+	answer := withUsage(assistant(text("answer")), 2, 2, 0, 4)
+	copyOfAnswer := answer
+	ordinal := uint64(1)
+	copyOfAnswer.OriginalOrdinal = &ordinal
+	fx := fixture{name: "legacy-fold", header: header, lines: []fixtureLine{
+		entryLine(user("q")),    // legacy, opens turn t1
+		entryLine(answer),       // legacy answer
+		entryLine(copyOfAnswer), // legacy fold copy of the answer
+	}}
+
+	path := writeFixture(t, fx)
+	x := openIndex(t, path, t.TempDir())
+	defer x.Close() //nolint:errcheck // read-only test handle
+
+	gotUsage, gotFailures, err := x.DerivedTotals(0)
+	if err != nil {
+		t.Fatalf("DerivedTotals: %v", err)
+	}
+	wantUsage, wantFailures, err := apptranscript.NewTurnCache().DerivedTotalsFromFile(path, testMaxLineBytes, 0)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if !reflect.DeepEqual(gotUsage, wantUsage) || gotFailures != wantFailures {
+		t.Fatalf("derived (%+v, %d) != scan (%+v, %d) for a legacy fold copy", gotUsage, gotFailures, wantUsage, wantFailures)
+	}
+}
