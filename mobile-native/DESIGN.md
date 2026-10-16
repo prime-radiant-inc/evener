@@ -238,13 +238,13 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 - **Shape:** Open 48-unit rows with a top hairline and a trailing chevron.
 - **Behavior:** One per pinned category (with a pin glyph, its name and count), even an empty one, since a category is a place; then Projects and Archived when they hold anything. Each opens its own screen. This is a placeholder for the inline treatment a later PR brings.
 
-### The bottom toolbar and its connection status
-- **Shape:** A 50-unit bar on the page color with a top hairline.
-- **Behavior:** The center shows the connection status only when it is not live: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" once it has been down 30 seconds, or "Update needed" at once, and never "Reconnecting…", when the hub speaks an incompatible protocol version. A live connection shows nothing there. Trailing is New session, a 44-unit `square.and.pencil` glyph in accent-ink that opens the New session sheet (below), disabled (not hidden) while disconnected.
+### The floating compose button
+- **Shape:** A 56-unit accent circle floating over the Board's end, 16 units in from the trailing edge and clear of the home indicator, with a centered `square.and.pencil` in the fill's on-color. The Board insets and pads its end by the button's room (its circle, its edge and the home indicator), and the toast floats above it.
+- **Behavior:** Opens the New session sheet (below); disabled (not hidden, dimmed) while disconnected. The Board carries no connection status of its own: the fleet meter grays while the hub is away, the rows keep their last state, and each control that needs the hub is disabled or holds its action, so a bar announcing the drop would be redundant chrome.
 
 ### The notice row
 - **Shape:** Sits on the page like a row: a mark, one sentence, a bottom hairline.
-- **Behavior:** Today's only notice is the incompatible-version warning, "This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.", shown with an amber `exclamationmark.triangle.fill` mark. The row takes no action of its own; the toolbar's status carries the matching "Update needed" wording.
+- **Behavior:** Today's only notice is the incompatible-version warning, "This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.", shown with an amber `exclamationmark.triangle.fill` mark. The row takes no action of its own.
 
 ### Skeleton, empty and failed-first-read states
 - **Skeleton:** Three still placeholder rows, 64 units tall with a 10-unit rounded fill, on the very first load only.
@@ -287,7 +287,7 @@ This records the shipped Session, the screen a session opens to: one conversatio
 - **⋯ menu:** A native menu: Detail level (with the five levels inline), Stop (destructive, only while the turn can be stopped — where the turn stays stoppable once a draft fills the composer's slot), Find in session, then Files, Subagents, Tasks and Notes & links, each only when it can act, Session info, Ask aside… (when the session can fork and the hub is reachable), Pin to category…, Archive, and Shut down (destructive, only when it can). Delete lives in the Session sheet.
 
 #### The connection bar, context chips and notes bar
-- **Connection bar:** A 24pt line of 13pt ink-low text under the nav bar, with the Board toolbar's words: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" after 30, and "Update needed" at once when the hub speaks an incompatible protocol version. A live connection shows nothing.
+- **Connection bar:** A 24pt line of 13pt ink-low text under the nav bar: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" after 30, and "Update needed" at once when the hub speaks an incompatible protocol version. A live connection shows nothing.
 - **Context chips:** 32pt capsules (16-unit radius, 1pt border, inset fill) in one sideways-scrolling row, each only when it has content: Subagents with its count and "2 failed" in danger ink (`person.2`), Files with its count and a blue dot when a document is new or changed (`doc.text`), Tasks "3/7" (`checklist`, settled: done plus cancelled), Goal (`target`, amber when blocked) and Queue with its depth (`tray`). Subagents and Tasks open live sheets, so they hide while disconnected; the others always show. Dragging the list down more than 8pt from where the scroll last turned slides the row up in 200ms, behind the connection bar when it shows and behind the nav bar otherwise; any upward scroll, or reaching the top, brings it back. Scrolls the app makes itself (restoring your place, following the latest message) never hide it. The slide is a transform, so the list and your place in it never move.
 - **Notes bar:** One 32pt line under the chips, in the same sliding row: "Your note: …" with a person glyph, else "Agent's note: …" with a sparkles glyph, else the one link's label or "3 links", 15pt in ink-hi, with a trailing "3 links" in 13pt ink-mid when a note shows beside links. It shows only when the hub offers shared notes and there is something to preview. Tapping it opens Notes & links.
 

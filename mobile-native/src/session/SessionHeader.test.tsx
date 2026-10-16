@@ -21,7 +21,7 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-// The connection status (BoardToolbar's, spec 14) reads the provider.
+// The connection status (spec 14) reads the provider.
 vi.mock("../ConnectionProvider", () => ({
 	useConnection: () => ({ state: "ready", fatal: false, downSince: null, lastLiveAt: null }),
 }));

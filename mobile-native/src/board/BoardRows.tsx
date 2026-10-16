@@ -24,15 +24,13 @@ export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel"
 
 /** One Board row, swipeable and with a long-press menu. `archived` rows sit
  * in an archived tier. `onSwipeActive` hears the row's swipe actions open
- * and close. In select mode (`selected` defined) the row neither swipes nor
- * opens a menu: it shows its checkbox, and a press chooses it. */
+ * and close. */
 export function BoardListRow({
 	item,
 	variant,
 	moving,
 	archived = false,
 	wash,
-	selected,
 	context,
 	onSwipeActive,
 }: {
@@ -41,7 +39,6 @@ export function BoardListRow({
 	moving: boolean;
 	archived?: boolean;
 	wash?: number;
-	selected?: boolean;
 	context: RowContext;
 	onSwipeActive?: (active: boolean) => void;
 }): ReactElement {
@@ -61,7 +58,6 @@ export function BoardListRow({
 		wash,
 		...shared,
 	};
-	if (selected !== undefined) return <BoardRow {...row} selected={selected} />;
 	return (
 		<SwipeRow leading={leading} trailing={trailing} onActiveChange={onSwipeActive}>
 			<RowMenu item={item} hostLabel={shared.hostLabel} {...menu(item, archived)}>
