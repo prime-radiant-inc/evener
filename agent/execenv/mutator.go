@@ -90,13 +90,14 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 		return nil
 	}
 	abs := filepath.Clean(e.resolve(p))
-	// The canonical spelling of the target: RootDir resolved through symlinks —
-	// dangling ones included, which is the state once its root is deleted — with
-	// the requested relative tail appended literally. No symlink INSIDE the tree
-	// is followed, so a masked entry redirected by an in-tree symlink still
-	// matches its mask.
-	canonicalAbs := filepath.Clean(filepath.Join(resolveDanglingSymlinks(e.RootDir), filepath.FromSlash(p)))
-	root, ok := e.sandboxAnchorRoot(abs, canonicalAbs, sfs.policy.FileTool.WriteRoots)
+	// RootDir resolved through symlinks — dangling ones included, which is the
+	// state once its root is deleted — names the session's anchor. The canonical
+	// spelling of the target appends the requested relative tail literally; no
+	// symlink INSIDE the tree is followed, so a masked entry redirected by an
+	// in-tree symlink still matches its mask.
+	canonicalCwd := resolveDanglingSymlinks(e.RootDir)
+	canonicalAbs := filepath.Clean(filepath.Join(canonicalCwd, filepath.FromSlash(p)))
+	root, ok := e.sandboxAnchorRoot(canonicalCwd, canonicalAbs, sfs.policy.FileTool.WriteRoots)
 	if !ok {
 		return nil
 	}
@@ -116,26 +117,21 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 	return errDeadWorkingDir(p, root)
 }
 
-// sandboxAnchorRoot returns the writable root a resolved absolute path anchors
-// on. containingRoot answers the common case directly. When it cannot — the
-// path was spelled through a symlinked ancestor (or through a symlinked RootDir)
-// while the policy root was canonicalized, so its real-ancestor fallback needs
-// the root on disk and that root is exactly what has gone — the relative path
-// still anchors on RootDir, so fall back to the most specific writable root that
-// contains abs or canonicalAbs (RootDir's symlink-resolved spelling plus the
-// literal tail) under best-effort, nearest-existing-ancestor resolution. A path
-// under no writable root still anchors on none, and its own out-of-root denial
-// stands.
-func (e *LocalExecutionEnvironment) sandboxAnchorRoot(abs, canonicalAbs string, roots []string) (string, bool) {
-	if root, _, ok := containingRoot(roots, abs); ok {
-		return root, true
-	}
+// sandboxAnchorRoot returns the writable root the session's working directory
+// anchors on: the most specific (longest) writable root that contains the
+// session's cwd, or the target's canonical spelling when the cwd is itself
+// outside every root. It deliberately does NOT use containingRoot: that returns
+// the FIRST matching root, so an overlapping broader grant (a live parent of a
+// deleted workspace) would answer for the dead one and the mutation would
+// recreate the workspace beneath the broader grant. Both paths are judged under
+// best-effort (nearest-existing-ancestor) symlink resolution, so a root spelled
+// through a symlinked ancestor still matches after it is deleted. A cwd under no
+// writable root anchors on none, and its own out-of-root denial stands.
+func (e *LocalExecutionEnvironment) sandboxAnchorRoot(canonicalCwd, canonicalAbs string, roots []string) (string, bool) {
 	best := ""
-	for _, candidate := range []string{abs, canonicalAbs} {
-		for _, r := range roots {
-			if pathWithinRoot(candidate, r) && len(r) > len(best) {
-				best = r
-			}
+	for _, r := range roots {
+		if (pathWithinRoot(canonicalCwd, r) || pathWithinRoot(canonicalAbs, r)) && len(r) > len(best) {
+			best = r
 		}
 	}
 	if best != "" {

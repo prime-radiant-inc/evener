@@ -416,6 +416,51 @@ func TestSandboxMutations_RefuseUnderDeadRootThroughCwdSymlinkChain(t *testing.T
 	}
 }
 
+// T2i: an overlapping broader writable grant must not hide the deleted specific
+// workspace root. With both /real and /real/wt writable and the cwd spelled
+// /link/wt, deleting /real/wt must still refuse rather than let a relative write
+// recreate wt beneath the live /real grant.
+func TestSandboxMutations_OverlappingGrantDoesNotHideDeadRoot(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	realParent := filepath.Join(base, "realdir")
+	home := filepath.Join(base, "home")
+	for _, d := range []string{realParent, home} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(realParent, filepath.Join(base, "link")); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(base, "link", "wt")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, sbTestHost(home), worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	// Add the live parent as a broader writable grant, ahead of the workspace so
+	// a first-match lookup would choose it.
+	rp.FileTool.WriteRoots = append([]string{realParent}, rp.FileTool.WriteRoots...)
+	env := NewLocalExecutionEnvironment(worktree)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := env.WriteFileRaw("seed.txt", []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(realParent, "wt")); err != nil {
+		t.Fatalf("remove workspace root: %v", err)
+	}
+	if err := env.WriteFileRaw("nested/file.txt", []byte("x"), 0o644); !errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("write under a dead workspace with a live broader grant = %v, want ErrWorkingDirectoryUnavailable", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(realParent, "wt")); !os.IsNotExist(statErr) {
+		t.Fatalf("write recreated the deleted workspace beneath the broader grant: %v", statErr)
+	}
+}
+
 // T2d: the mask may be spelled through the canonical root while the target is
 // spelled through a symlinked ancestor. Under a dead root the masked denial —
 // and its Sensitive redaction — must still win over the recovery, or the
