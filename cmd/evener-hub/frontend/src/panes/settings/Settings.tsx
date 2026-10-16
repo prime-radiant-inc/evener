@@ -29,7 +29,6 @@ import { McpSectionHostScope } from "./sections/mcp";
 import { MobileSection } from "./sections/mobile";
 import { NotificationsSection } from "./sections/notifications";
 import { PlaceholderSection } from "./sections/PlaceholderSection";
-import { PluginsDirsHostScope } from "./sections/pluginsDirs";
 import { ProjectHostScope } from "./sections/project";
 import { SkillsDirsHostScope } from "./sections/skillsDirs";
 import { StorageSection } from "./sections/storage";
@@ -77,7 +76,6 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   inrepo: InRepoHostScope,
   project: ProjectHostScope,
   "plugins-manager": MarketplacesPluginsHostScope,
-  plugins: PluginsDirsHostScope,
   skills: SkillsDirsHostScope,
   mcp: McpSectionWired,
   theme: ThemeSection,

@@ -9,8 +9,8 @@ import {
   settingsSectionLabel,
 } from "./sections";
 
-test("has exactly 18 navigation destinations during migration", () => {
-  expect(SETTINGS_SECTIONS).toHaveLength(18);
+test("has exactly 17 navigation destinations", () => {
+  expect(SETTINGS_SECTIONS).toHaveLength(17);
 });
 
 test("every section id is unique", () => {
@@ -24,29 +24,29 @@ test("preferences lead the navigation in task order", () => {
   expect(SETTINGS_SECTIONS.slice(0, 4)).toEqual(preferences);
 });
 
-test('the "agents-models" cluster has exactly these 5 sections, in order, right after the ungrouped ones', () => {
+test('the "agents-models" cluster has exactly these 5 sections, in order, right after preferences', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "agents-models");
   expect(cluster.map((s) => s.id)).toEqual(["credentials", "agents", "agents-md", "launch-evener", "inrepo"]);
   expect(SETTINGS_SECTIONS.slice(4, 9)).toEqual(cluster);
 });
 
-test('the "extensions" cluster has exactly these 4 sections, in order, right after "agents-models"', () => {
+test('the "extensions" cluster has exactly these 3 sections, in order, right after "agents-models"', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "extensions");
-  expect(cluster.map((s) => s.id)).toEqual(["plugins-manager", "plugins", "skills", "mcp"]);
-  expect(SETTINGS_SECTIONS.slice(9, 13)).toEqual(cluster);
+  expect(cluster.map((s) => s.id)).toEqual(["plugins-manager", "skills", "mcp"]);
+  expect(SETTINGS_SECTIONS.slice(9, 12)).toEqual(cluster);
 });
 
-test('the "daemon" cluster has exactly these 5 sections, in order, last', () => {
+test('the "system" cluster has exactly these 5 sections, in order, last', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "system");
   expect(cluster.map((s) => s.id)).toEqual(["hosts", "mobile", "hub", "storage", "about"]);
-  expect(SETTINGS_SECTIONS.slice(13, 18)).toEqual(cluster);
+  expect(SETTINGS_SECTIONS.slice(12, 17)).toEqual(cluster);
 });
 
 test('"about" is the very last section overall', () => {
   expect(SETTINGS_SECTIONS[SETTINGS_SECTIONS.length - 1]?.id).toBe("about");
 });
 
-test("SETTINGS_CLUSTERS lists the 3 labeled clusters in nav order, each with a label", () => {
+test("SETTINGS_CLUSTERS lists the 4 labeled clusters in nav order, each with a label", () => {
   expect(SETTINGS_CLUSTERS.map((c) => c.id)).toEqual(["preferences", "agents-models", "extensions", "system"]);
   for (const cluster of SETTINGS_CLUSTERS) expect(cluster.label).not.toBe("");
 });
@@ -58,7 +58,7 @@ test("every section's cluster field (when set) references a real cluster id", ()
   }
 });
 
-test("DEFAULT_SECTION_ID names a real, ungrouped section", () => {
+test("DEFAULT_SECTION_ID names the Appearance preference", () => {
   const match = SETTINGS_SECTIONS.find((s) => s.id === DEFAULT_SECTION_ID);
   expect(match).toBeDefined();
   expect(match?.id).toBe("theme");
@@ -86,6 +86,9 @@ test.each([
   [undefined, "notifications", "notifications"],
   ["display", "notifications", "theme"],
   ["general", "notifications", "theme"],
+  ["plugins", "notifications", "theme"],
+  [undefined, "plugins", "theme"],
+  ["plugins-manager", "notifications", "plugins-manager"],
   [undefined, "general", "theme"],
   ["unrecognized", "notifications", "theme"],
   ["project", "theme", "project"],

@@ -57,7 +57,6 @@ test("navigation activates every destination in the approved group order", async
     "launch-evener",
     "inrepo",
     "plugins-manager",
-    "plugins",
     "skills",
     "mcp",
     "hosts",

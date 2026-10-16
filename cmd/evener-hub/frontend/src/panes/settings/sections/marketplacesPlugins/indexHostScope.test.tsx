@@ -48,6 +48,7 @@ const MARKETPLACE: MarketplaceEntry = {
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
+  fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -109,6 +110,7 @@ test("a remote selection shows THAT host's own marketplaces and plugins, never t
   });
   fake.on("evener/host/request", (params) => {
     const forwarded = params as { host: string; method: string };
+    if (forwarded.method === "evener/launch/getLayer") return { pluginDirs: [] } as never;
     expect(forwarded.host).toBe("beta");
     if (forwarded.method === "evener/marketplace/list") return { marketplaces: [MARKETPLACE] } as never;
     if (forwarded.method === "evener/plugin/list") return { plugins: [plugin("beta-linter")] } as never;
@@ -136,6 +138,7 @@ test("a remote plugin mutation goes through the proxy, never this hub's plugin m
   }
   fake.on("evener/host/request", (params) => {
     const forwarded = params as { host: string; method: string };
+    if (forwarded.method === "evener/launch/getLayer") return { pluginDirs: [] } as never;
     expect(forwarded.host).toBe("beta");
     if (forwarded.method === "evener/marketplace/list") return { marketplaces: [MARKETPLACE] } as never;
     if (forwarded.method === "evener/plugin/list") return { plugins: [plugin("beta-linter")] } as never;
@@ -190,6 +193,7 @@ test("a marketplace draft does not carry across a host switch", async () => {
   }
   fake.on("evener/host/request", (params) => {
     const forwarded = params as { host: string; method: string };
+    if (forwarded.method === "evener/launch/getLayer") return { pluginDirs: [] } as never;
     if (forwarded.method === "evener/marketplace/list") {
       return { marketplaces: [forwarded.host === "beta" ? BETA_MARKETPLACE : GAMMA_MARKETPLACE] } as never;
     }
@@ -202,7 +206,7 @@ test("a marketplace draft does not carry across a host switch", async () => {
   render(<MarketplacesPluginsHostScope />);
   const user = userEvent.setup();
 
-  await user.click(await screen.findByRole("radio", { name: /Marketplaces \(1\)/ }));
+  await user.click(await screen.findByRole("radio", { name: /Sources \(1\)/ }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   const betaDialog = await screen.findByRole("dialog", { name: "acme-plugins" });
   const betaName = within(betaDialog).getByLabelText("Name") as HTMLInputElement;
@@ -215,7 +219,7 @@ test("a marketplace draft does not carry across a host switch", async () => {
   // Nothing of beta's editor survives the switch...
   expect(screen.queryByRole("dialog")).toBeNull();
   // ...and gamma's own editor seeds from GAMMA's entry, not from that draft.
-  await user.click(await screen.findByRole("radio", { name: /Marketplaces \(1\)/ }));
+  await user.click(await screen.findByRole("radio", { name: /Sources \(1\)/ }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   const gammaDialog = await screen.findByRole("dialog", { name: "acme-plugins" });
   expect((within(gammaDialog).getByLabelText("Name") as HTMLInputElement).value).toBe("acme-plugins");

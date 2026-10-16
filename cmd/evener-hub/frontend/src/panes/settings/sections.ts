@@ -34,7 +34,6 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: "inrepo", label: "In-repo config", cluster: "agents-models" },
   // --- Extensions ------------------------------------------------------
   { id: "plugins-manager", label: "Plugins", cluster: "extensions" },
-  { id: "plugins", label: "Plugin directories", cluster: "extensions" },
   { id: "skills", label: "Skill directories", cluster: "extensions" },
   { id: "mcp", label: "MCP servers", cluster: "extensions" },
   { id: "hosts", label: "Hosts", cluster: "system" },

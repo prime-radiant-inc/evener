@@ -15,7 +15,7 @@ import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetSettingsHostForTests, settingsHostStore } from "../../stores/settingsHost";
 import Settings from "./Settings";
 
-test.each(["display", "general", "unrecognized"])(
+test.each(["display", "general", "plugins", "unrecognized"])(
   "replaces explicit %s with Appearance while preserving the URL host",
   (section) => {
     prefsStore.getState().setLastSettingsSection("notifications");
