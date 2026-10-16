@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/frontmatter"
 )
 
 // LoadedSkill is one validated source version of a discovered skill.
@@ -64,7 +63,7 @@ func Load(d Descriptor) (LoadedSkill, []Diagnostic, error) {
 	// and with the restored delimiter when it recovered one, so the body never
 	// repeats the frontmatter as instructions.
 	bodySource, _ := recoverMissingOpeningDelimiter(data)
-	document, err := frontmatter.Parse(string(bodySource))
+	document, _, err := parseSkillDocument(bodySource)
 	if err != nil {
 		return LoadedSkill{}, diagnostics, fmt.Errorf("parsing skill frontmatter: %w", err)
 	}

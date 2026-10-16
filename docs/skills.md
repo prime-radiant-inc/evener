@@ -64,8 +64,27 @@ in the same way as the other preserved-metadata notes. A block that starts with
 a heading or prose, or that does not carry both a non-blank `name` and a
 non-blank `description`, is not recovered. A file saved with CRLF (or lone CR)
 line endings reads like an LF one either way, and its delivered body ends its
-lines in `\n`. Every other malformed shape stays an
-`invalid_frontmatter` diagnostic and the skill stays unavailable.
+lines in `\n`.
+
+If ordinary YAML parsing fails, Evener also recovers a single top-level,
+single-line, unquoted description containing colon-space, such as
+`description: LEGACY: use this skill`. Recovery quotes only that description
+in memory and requires the complete metadata block to decode as one mapping.
+It preserves comments and refuses continuation lines, YAML syntax such as
+quotes or tags, duplicate keys, unrelated malformed content and trailing
+documents. Already-valid YAML keeps its ordinary interpretation. Invocation
+controls remain strict. Recovery reports an `unquoted_description`
+compatibility diagnostic at Full transcript detail.
+
+Discovery and activation share these recoveries. Neither rewrites the source;
+activation delivers the complete body, and source digests cover the original
+bytes. Unrecoverable metadata leaves only that skill unavailable. The session
+emits a `skill_diagnostic` warning with source-specific guidance for malformed
+skills, invalid controls and collisions, rather than a session failure or daemon
+repair advice. CLI, web and native clients consume the shared warning fields.
+Correcting a source restores availability at the next catalog discovery or
+session startup. Retained descriptors revalidate current bytes when loaded;
+there is no live filesystem watcher.
 
 `allowed-tools` may be one string or an ordered array of strings. Evener
 preserves it and diagnoses that it is not enforced: it neither grants nor
