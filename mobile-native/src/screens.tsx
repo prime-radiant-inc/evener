@@ -84,7 +84,6 @@ import {
 	type NativeMutationHost,
 } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import { type SessionSeed, seedFromSession } from "./newSession/launchSetup";
 import { readerPositions } from "./nativeReaderPosition";
 import { MessageDocuments } from "./reader/DocumentChip";
 import { documentReferences, fileWrites, writtenPaths } from "./reader/documentReferences";
@@ -260,9 +259,8 @@ export type Routes = {
 	Sessions: undefined;
 	/** The Hub sheet (spec 12), a modal holding its own stack of pages. */
 	Hub: NavigatorScreenParams<HubRoutes>;
-	/** New session (spec 11), a modal holding its own stack of pages. `like`
-	 * opens it on a session's setup ("New session like this"). */
-	NewSession: { hubId: string; hubName: string; like?: SessionSeed };
+	/** New session (spec 11), a modal holding its own stack of pages. */
+	NewSession: { hubId: string; hubName: string };
 	/** openedBy says Next opened this session (ruling 2), so Next from it
 	 * replaces it. slideFrom says the title's swipe opened it as the
 	 * previous ("left") or next ("right") session in Live order, the side it
@@ -1193,16 +1191,6 @@ export function ConversationScreen({
 			case "aside":
 			case "archive":
 				void runSessionAction(action.kind).then(showSessionToast);
-				return;
-			case "like":
-				// Ruling 24: the sheet opens on this session's host, folder, model
-				// and effort; the menu shows only once the session has loaded.
-				if (!conversation) return;
-				navigation.navigate("NewSession", {
-					hubId: route.params.hubId,
-					hubName: activeProfile?.name ?? "Hub",
-					like: seedFromSession(route.params.ref, conversation),
-				});
 				return;
 			case "shutDown":
 				if (!controls) return;

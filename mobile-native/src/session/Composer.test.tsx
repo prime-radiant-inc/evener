@@ -80,6 +80,39 @@ describe("Composer", () => {
 		expect(props.onChangeText).toHaveBeenCalledWith("hello");
 	});
 
+	it("rests a single line tall while empty and unfocused, and a full field otherwise", () => {
+		const height = (tree: ReactTestRenderer) => fields(tree)[0]?.props.style.minHeight;
+		// Empty and unfocused: one line, so the composer is short.
+		const { props, tree } = composer();
+		expect(height(tree)).toBe(24);
+		// Touching the field opens it to the full tap target.
+		act(() => fields(tree)[0]?.props.onFocus());
+		expect(height(tree)).toBe(44);
+		act(() => fields(tree)[0]?.props.onBlur());
+		expect(height(tree)).toBe(24);
+		// A draft keeps it open, focused or not.
+		act(() => tree.update(<Composer {...props} value="half a thought" />));
+		expect(height(tree)).toBe(44);
+		// Whitespace is a draft too: the field visibly holds it, so it stays open.
+		act(() => tree.update(<Composer {...props} value="   " />));
+		expect(height(tree)).toBe(44);
+	});
+
+	// The Send/Stop target stays the controls row's 44pt whichever way the field
+	// rests, so the composer always holds that target (Jesse's ruling).
+	it("keeps a 44pt Send target under a resting field", () => {
+		const { tree } = composer();
+		expect(fields(tree)[0]?.props.style.minHeight).toBe(24);
+		const send = pressable(tree, "Queue message");
+		expect(send?.props.style({ pressed: false })).toMatchObject({ width: 44, height: 44 });
+	});
+	it("sits close to the screen's bottom, with a small margin under the card", () => {
+		const { tree } = composer();
+		// The card's own margin; the frame under it owns the home-indicator room.
+		const card = tree.root.find((node) => node.props.testID === "composer-card");
+		expect(card.props.style).toMatchObject({ marginBottom: 4 });
+	});
+
 	it("carries the send label on a paper airplane and sends when enabled", () => {
 		const { props, tree } = composer();
 		const send = pressable(tree, "Queue message");

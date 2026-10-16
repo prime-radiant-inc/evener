@@ -22,7 +22,6 @@ export type SessionMenuAction =
 				| "notes"
 				| "info"
 				| "aside"
-				| "like"
 				| "pin"
 				| "archive"
 				| "shutDown";
@@ -88,7 +87,6 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 		...(input.canAside
 			? [item("Ask aside…", "aside", { description: "A side question in its own session; this one keeps working" })]
 			: []),
-		item("New session like this", "like"),
 		item("Pin to category…", "pin"),
 		item("Archive", "archive"),
 		...(input.canShutDown ? [item("Shut down", "shutDown", { destructive: true })] : []),

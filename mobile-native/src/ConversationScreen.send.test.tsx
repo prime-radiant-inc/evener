@@ -48,6 +48,7 @@ import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { FindBar } from "./session/FindBar";
 import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
+import { indicatorRoom } from "./design/BarFrame";
 import { SessionHeader } from "./session/SessionHeader";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
@@ -3549,13 +3550,16 @@ describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
 	const bar = (tree: ReactTestRenderer) =>
 		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
 	const homeIndicator = () => useSafeAreaInsets().bottom;
+	/** The room the bar reserves: the home indicator less its trim, so the
+	 * composer sits close to the bottom edge (BarFrame INDICATOR_TRIM). */
+	const room = () => indicatorRoom(homeIndicator());
 
 	it("runs to the screen's bottom edge under a hairline, and keeps the composer above the home indicator", async () => {
 		const { tree } = await mount(thread("ref-bar", "active"));
 		// The screen leaves the bottom safe area to the bar, which paints it.
 		const [screen] = tree.root.findAll((node) => String(node.type) === "SafeAreaView");
 		expect(screen?.props.edges).not.toContain("bottom");
-		expect(flatStyle(bar(tree))).toMatchObject({ borderTopWidth: 0.5, paddingBottom: homeIndicator() });
+		expect(flatStyle(bar(tree))).toMatchObject({ borderTopWidth: 0.5, paddingBottom: room() });
 		// The tray and the composer ride in it, so the bar's padding lifts them
 		// clear of the home indicator.
 		expect(
@@ -3569,7 +3573,7 @@ describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
 		act(() => keyboard.show());
 		expect(flatStyle(bar(tree)).paddingBottom).toBe(0);
 		act(() => keyboard.hide());
-		expect(flatStyle(bar(tree)).paddingBottom).toBe(homeIndicator());
+		expect(flatStyle(bar(tree)).paddingBottom).toBe(room());
 	});
 
 	it("lays the bar over the transcript's end, so the transcript runs under it", async () => {

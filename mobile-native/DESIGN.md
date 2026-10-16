@@ -325,7 +325,7 @@ This records the shipped Session, the screen a session opens to: one conversatio
 - **Approval:** "Wants to write outside the workspace" with an amber hand, the tool and its target in Menlo (a path wraps only at its slashes), the session's scope ("This session can only write inside its project folder."), then "Allow this file only" (with "It will ask again for the next one") and Deny. There is no redirect, and the composer stays away while an approval waits.
 
 #### The composer
-- **Shape:** One rounded field (22-unit radius, 1pt border, raised fill: `#FCFBF8` light, `#232320` dark) holding the text, which grows to six lines and then offers the full-screen editor, then one controls row: +, the model chip, and the trailing slot - Stop or Send.
+- **Shape:** One rounded field (22-unit radius, 1pt border, raised fill: `#FCFBF8` light, `#232320` dark) holding the text, which rests one line tall while empty and unfocused and opens to its full 44pt when you touch it or type, grows to six lines and then offers the full-screen editor, then one controls row: +, the model chip, and the trailing slot - Stop or Send. The card sits close to the screen's bottom edge: a 4pt margin under it, over the trimmed home-indicator room the bar reserves. The controls row always holds the 44pt Send/Stop target, so the composer carries that target however the field rests.
 - **Send:** A 44pt paper airplane on the accent fill. Its placeholder and VoiceOver label say what it will do: "Message" and Send, "Tell the agent something…" and Queue message while the agent works, "Message to resume" and Send and resume on a shut-down session, "Answer or ask…" and Send answer while a question is open.
 - **Stop:** While the agent works and the draft is empty (no text and no image), Stop (`stop.fill` on the danger fill, in the same 44pt slot) replaces Send: with nothing to send, stopping is the immediate action. Any text or an attached image brings Send back. Stop needs the hub, so it hides while disconnected, and is disabled while a stop is in flight.
 - **+ menu:** Photo library, Camera, and Commands and skills, which opens a sheet of the built-in commands, then skills and plugin commands grouped by plugin; a choice puts its "/name" at the start of the draft.
@@ -334,7 +334,7 @@ This records the shipped Session, the screen a session opens to: one conversatio
 
 #### The Session sheet
 - **Shape:** A sheet that opens at large: the title and its state line, then grouped sections.
-- **Sections:** Where (host, project, folder in Menlo, branch), Model (the model and effort, and the vision model), Plugins ("10 plugins · chosen at start" and their names), Access (sandbox and network, when the hub reports them), Usage (tokens with their split, cost, work time, a context gauge with no compaction marker, and failed tool calls), Goal (edit, set or clear), Tasks, Notes & links, and Actions (Aside, Fork from latest, Compact context, Pin to category…, Archive, Shut down, and Delete for a saved session that isn't loaded). It shows only facts the thread carries.
+- **Sections:** Where (host, project, folder in Menlo, branch, and the session id — its ref in Menlo, which a tap copies), Model (the model and effort, and the vision model), Plugins ("10 plugins · chosen at start" and their names), Access (sandbox and network, when the hub reports them), Usage (tokens with their split, cost, work time, a context gauge with no compaction marker, and failed tool calls), Goal (edit, set or clear), Tasks, Notes & links, and Actions (Aside, Fork from latest, Compact context, Pin to category…, Archive, Shut down, and Delete for a saved session that isn't loaded). It shows only facts the thread carries.
 
 #### Notes & links
 - **Shape:** A sheet that opens at large with three groups: Your note, Agent and Links.
@@ -385,7 +385,7 @@ This records the two shipped sheets: New session, where a session is set up and 
 
 ### New session
 - **Header:** "Cancel", the title "New session", and "Start" (semibold). Start reads in ink-low and does nothing while something holds it.
-- **Opening:** Like a session when "New session like this" opened it; else the saved draft, when it has a project, a prompt or an image; else the newest start remembered on this hub (host, project, model, effort, plugins, access and the options); else the hub's most recent project once the hub lists them.
+- **Opening:** The saved draft, when it has a project, a prompt or an image; else the newest start remembered on this hub (host, project, model, effort, plugins, access and the options); else the hub's most recent project once the hub lists them.
 - **The prompt:** First, focused on open: SF Pro 17 with the placeholder "What should the agent do?", growing to six lines and then scrolling, with its image thumbnails and a "+" that attaches images.
 - **Why Start waits:** A danger footer under the prompt says it in a sentence: "paradise-park is offline. Connect it or choose another host.", "paradise-park is no longer a host on this hub. Choose another host.", a chosen model the host's list couldn't confirm ("Choose Hub default to start."), or each chosen plugin with a blocking problem. The row to blame turns danger ink. A missing project blames Project quietly. When the hub refuses a start, its reason shows the same way and the sheet stays.
 - **WHERE:**

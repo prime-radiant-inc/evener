@@ -77,6 +77,10 @@ export function Composer({
 	// measured height catches long lines that wrap. The half line of slack
 	// keeps rounding in the measurement from offering the editor at six.
 	const overflows = value.split("\n").length > MAX_LINES || contentHeight > (MAX_LINES + 0.5) * lineHeight;
+	// An empty field you aren't in rests one line tall, so the composer stays
+	// small until you reach for it: focusing it, or any character at all
+	// (whitespace included, which the field visibly holds), keeps it open.
+	const resting = !focused && value === "";
 	function openAddMenu() {
 		const choices = [
 			{ text: "Photo library", onPress: onPhotoLibrary },
@@ -92,9 +96,10 @@ export function Composer({
 	}
 	return (
 		<View
+			testID="composer-card"
 			style={{
 				marginHorizontal: 16,
-				marginBottom: 8,
+				marginBottom: 4,
 				padding: 8,
 				gap: 4,
 				borderWidth: 1,
@@ -129,7 +134,7 @@ export function Composer({
 						color: palette.inkHi,
 						fontSize: 17 * scale,
 						lineHeight,
-						minHeight: 44,
+						minHeight: resting ? lineHeight : 44,
 						// At the largest text sizes six lines would crowd out the
 						// transcript, so the field also stops at a third of the window.
 						maxHeight: Math.min(MAX_LINES * lineHeight, windowHeight / 3),

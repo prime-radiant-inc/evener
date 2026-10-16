@@ -53,41 +53,25 @@ const remembered = (host: string, cwd: string): LaunchSetup => ({
 	overrides: {},
 });
 
-it("applies a session's seed when it opens like a session", () => {
-	const { store } = setup({ cwd: "/home/jesse/git/docs", prompt: "a draft" });
-	openForm(store, remembered("local", "/home/jesse/git/evener"), {
-		host: "paradise-park",
-		cwd: "/Users/jesse/git/evener",
-		model: "lunaroute/glm-5.3-vision",
-		effort: "high",
-	});
-	expect(store.getState()).toMatchObject({
-		source: "paradise-park",
-		cwd: "/Users/jesse/git/evener",
-		reasoning: "high",
-		prompt: "a draft",
-	});
-});
-
 it("leaves a draft with a project or a prompt as it stands", () => {
 	const { store } = setup({ cwd: "/home/jesse/git/docs" });
-	openForm(store, remembered("paradise-park", "/Users/jesse/git/evener"), undefined);
+	openForm(store, remembered("paradise-park", "/Users/jesse/git/evener"));
 	expect(store.getState()).toMatchObject({ source: "local", cwd: "/home/jesse/git/docs" });
 	const prompted = setup({ prompt: "fix the flaky test" }).store;
-	openForm(prompted, remembered("paradise-park", "/Users/jesse/git/evener"), undefined);
+	openForm(prompted, remembered("paradise-park", "/Users/jesse/git/evener"));
 	expect(prompted.getState()).toMatchObject({ source: "local", cwd: "", prompt: "fix the flaky test" });
 });
 
 it("leaves a draft holding only an image as it stands", () => {
 	const { store } = setup({ images: [{ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" }] });
-	openForm(store, remembered("paradise-park", "/Users/jesse/git/evener"), undefined);
+	openForm(store, remembered("paradise-park", "/Users/jesse/git/evener"));
 	expect(store.getState()).toMatchObject({ source: "local", cwd: "" });
 	expect(store.getState().images).toHaveLength(1);
 });
 
 it("opens an empty form on the last remembered start", () => {
 	const { store } = setup();
-	openForm(store, remembered("paradise-park", "/Users/jesse/git/evener"), undefined);
+	openForm(store, remembered("paradise-park", "/Users/jesse/git/evener"));
 	expect(store.getState()).toMatchObject({
 		source: "paradise-park",
 		cwd: "/Users/jesse/git/evener",
@@ -98,7 +82,7 @@ it("opens an empty form on the last remembered start", () => {
 
 it("takes the hub's most recent project when nothing was ever started here", async () => {
 	const { store, service, requests } = setup(null, ["/home/jesse/git/evener", "/home/jesse/git/docs"]);
-	const stop = openForm(store, null, undefined);
+	const stop = openForm(store, null);
 	expect(store.getState().cwd).toBe("");
 	store.getState().bind(service);
 	await store.getState().loadMetadata();
@@ -111,7 +95,7 @@ it("takes the hub's most recent project when nothing was ever started here", asy
 
 it("keeps a project chosen before the hub's recent projects arrive", async () => {
 	const { store, service } = setup(null, ["/home/jesse/git/evener"]);
-	const stop = openForm(store, null, undefined);
+	const stop = openForm(store, null);
 	await store.getState().setCwd("/home/jesse/git/docs", false);
 	store.getState().bind(service);
 	await store.getState().loadMetadata();
@@ -120,12 +104,9 @@ it("keeps a project chosen before the hub's recent projects arrive", async () =>
 	stop();
 });
 
-it("leaves a form whose start is on its way as it is, even opened like a session (#3104)", () => {
+it("leaves a form whose start is on its way as it is (#3104)", () => {
 	const { store } = setup({ cwd: "/home/jesse/git/evener", prompt: "go" });
 	store.setState({ submitting: true });
-	openForm(store, remembered("paradise-park", "/Users/jesse/git/evener"), {
-		host: "paradise-park",
-		cwd: "/Users/jesse/git/docs",
-	});
+	openForm(store, remembered("paradise-park", "/Users/jesse/git/evener"));
 	expect(store.getState()).toMatchObject({ source: "local", cwd: "/home/jesse/git/evener", prompt: "go" });
 });

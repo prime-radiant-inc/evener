@@ -15,14 +15,7 @@ import { LOCAL_HOST } from "@evener/appwire-client";
 import type { NewSessionService } from "../../mobile/src/services/newSession";
 import { type CreationDraft, type CreationDraftRepository, creationDraftMetadata } from "./creationDraftRepository";
 import { type DraftImageData, imageInput } from "./draftImages";
-import {
-	type LaunchSetup,
-	modelFromId,
-	moveToHost,
-	type SessionSeed,
-	setupOf,
-	withOwnedOverrides,
-} from "./newSession/launchSetup";
+import { type LaunchSetup, modelFromId, moveToHost, setupOf, withOwnedOverrides } from "./newSession/launchSetup";
 
 /** Why Start holds a draft whose start may exist. Every message that leaves
  * such a draft ends with it, so the form shows one line that says what to do. */
@@ -84,7 +77,6 @@ interface Form {
 	submit(): Promise<Outcome>;
 	changeHost(host: string, hostLabel: string): Promise<void>;
 	applySetup(setup: LaunchSetup): void;
-	applySeed(seed: SessionSeed): void;
 	/** Cancel's "Delete draft": the saved draft goes and the form empties. */
 	discard(): void;
 	/** A start of this very draft may already exist (it couldn't be
@@ -160,8 +152,8 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 	// Bumped by every host change and every move, so only the newest host
 	// change says when it has finished placing the project.
 	let hostMoves = 0;
-	// A session's model named the way it reports it, waiting for the host's
-	// model list to find it (applySeed). A move drops it, so it never lands in
+	// A saved per-launch model named the way it reports it, waiting for the
+	// host's model list to find it. A move drops it, so it never lands in
 	// another project's or host's list.
 	let pendingModelId: string | null = null;
 	// The draft's content when its start became unconfirmed (isUnconfirmedDraft),
@@ -177,10 +169,10 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			saving = false;
 		}
 	}
-	/** The form moves: to another host or project, the latest start, a seed, or an
+	/** The form moves: to another host or project, the latest start, or an
 	 * empty form after a start. Answers for the old place are dropped, a
-	 * session's model waiting for them goes, and a host change still answering
-	 * stops placing the project. */
+	 * waiting model goes, and a host change still answering stops placing the
+	 * project. */
 	function movePlacement(): number {
 		hostMoves++;
 		pendingModelId = null;
@@ -188,7 +180,7 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 		return ++placement;
 	}
 	/** Puts a model list read for the form's host and project on the form:
-	 * the chosen model stays when the list still has it (or a seeded one takes
+	 * the chosen model stays when the list still has it (or a pending one takes
 	 * its place), and the effort stays when that model still offers it. */
 	function listModels(
 		result: { data: ModelDescriptor[]; recent?: ModelDescriptor[] },
@@ -609,23 +601,6 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 			if (setup.host !== previous.source) void get().loadMetadata();
 			void get().loadModels(true);
 		},
-		applySeed(seed) {
-			const previous = get();
-			if (previous.submitting) return;
-			movePlacement();
-			pendingModelId = seed.model ?? null;
-			set({
-				source: seed.host,
-				...(seed.host !== previous.source ? { projects: [] } : {}),
-				cwd: seed.cwd,
-				hostNote: null,
-				model: null,
-				reasoning: seed.effort ?? "",
-				launchOverrides: withoutModelChoice(previous.launchOverrides),
-			});
-			if (seed.host !== previous.source) void get().loadMetadata();
-			void get().loadModels(true);
-		},
 		retired: false,
 		retire() {
 			// Retired first, so unbinding persists nothing: the hub's drafts are
@@ -737,9 +712,9 @@ export function createNewSessionStore(hubId: string, storage?: DraftStorage) {
 				if (draft) {
 					const { unconfirmed, source, harness: _harness, launchOverrides, ...fields } = draft;
 					// A per-launch model or effort, which only an older build could set,
-					// becomes the form's own choice, as a session's does (applySeed): the
-					// host's list finds the model, or the form says Hub default and sends
-					// none, so the form never shows one model while sending another.
+					// becomes the form's own choice: the host's list finds the model,
+					// or the form says Hub default and sends none, so the form never
+					// shows one model while sending another.
 					const savedModel = launchOverrides.model?.trim();
 					const savedEffort = launchOverrides.reasoningEffort?.trim();
 					if (savedModel) pendingModelId = savedModel;

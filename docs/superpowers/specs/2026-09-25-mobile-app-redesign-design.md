@@ -497,7 +497,7 @@ Overall: close. Fix the ordering and go.
 
 ## 11. New session
 
-A full-height sheet from the Board's New session button (or the ⋯ menu's "New session like this" on a session, which copies its setup).
+A full-height sheet from the Board's New session button. (Superseded 2026-10-16: the ⋯ menu's "New session like this", which copied a session's setup, is removed. See `mobile-native/DESIGN.md`.)
 
 ```
 Cancel          New session          Start

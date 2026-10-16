@@ -21,6 +21,19 @@ import { systemGlassAvailable, useSystemGlass } from "./systemGlass";
 const AnimatedGlassView = Animated.createAnimatedComponent(GlassView);
 const AnimatedView = Animated.createAnimatedComponent(View);
 
+/** How much of the home indicator's room the bar gives back, so a screen's own
+ * control (the Session's composer) sits close to the bottom edge. The floor
+ * keeps that much room on a device whose inset is small or absent. */
+export const INDICATOR_TRIM = 12;
+export const INDICATOR_ROOM_FLOOR = 4;
+
+/** The room a screen's bar reserves for the home indicator: the inset less the
+ * trim, never below the floor. The bar and the tests that pin it both read
+ * this, so the formula has one home. */
+export function indicatorRoom(bottom: number): number {
+	return Math.max(INDICATOR_ROOM_FLOOR, bottom - INDICATOR_TRIM);
+}
+
 export function BarFrame({
 	children,
 	style,
@@ -39,7 +52,9 @@ export function BarFrame({
 	const { bottom } = useSafeAreaInsets();
 	// How far the keyboard has risen, 0 to 1, on every frame of its move.
 	const { progress } = useReanimatedKeyboardAnimation();
-	const indicatorRoom = useAnimatedStyle(() => ({ paddingBottom: bottom * (1 - progress.value) }));
+	const indicatorRoomStyle = useAnimatedStyle(() => ({
+		paddingBottom: indicatorRoom(bottom) * (1 - progress.value),
+	}));
 	// Asked apart on purpose: whether the device has the glass picks the host
 	// view and never changes while the app runs; whether the bar wears it now
 	// also waits on Reduce Transparency and only switches the effect (see the
@@ -65,13 +80,13 @@ export function BarFrame({
 			testID={testID}
 			glassEffectStyle={glass ? "regular" : "none"}
 			colorScheme="auto"
-			style={[frame, indicatorRoom]}
+			style={[frame, indicatorRoomStyle]}
 			onLayout={onLayout}
 		>
 			{children}
 		</AnimatedGlassView>
 	) : (
-		<AnimatedView testID={testID} style={[frame, indicatorRoom]} onLayout={onLayout}>
+		<AnimatedView testID={testID} style={[frame, indicatorRoomStyle]} onLayout={onLayout}>
 			{children}
 		</AnimatedView>
 	);

@@ -10,6 +10,7 @@ import { useState } from "react";
 import { Alert, Pressable, Text, TextInput, View } from "react-native";
 import { taskSettledCount } from "@evener/appwire-client";
 import { markFor } from "../board/StateMark";
+import { copyText } from "../clipboard";
 import { space } from "../design/tokens";
 import { useReadingType } from "../display/displayContext";
 import type { MobileConversation } from "../projectedRows";
@@ -179,6 +180,17 @@ function SessionInfoBody({
 				{where.project ? <Row icon="folder" label={where.project} /> : null}
 				<Row machineLabel label={wrapAfterSlashes(where.directory)} accessibilityLabel={where.directory} />
 				{where.branch ? <Row icon="arrow.triangle.branch" label={where.branch} /> : null}
+				{/* The session's id, which the hub's ref names. Tapping copies it,
+				    so it can be pasted where a session is named. */}
+				<Row
+					machineLabel
+					label={session.ref}
+					// A copy glyph, not the chevron: the chevron means the row opens
+					// a page, and this one copies.
+					icon="doc.on.doc"
+					accessibilityLabel={`Session id, ${session.ref}`}
+					onPress={() => void copyText(session.ref)}
+				/>
 			</Group>
 
 			<Group section="model" label="Model">

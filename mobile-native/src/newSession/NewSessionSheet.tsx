@@ -50,7 +50,7 @@ export function NewSessionSheet(props: NativeStackScreenProps<Routes, "NewSessio
 }
 
 function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSession">) {
-	const { hubId, hubName, like } = route.params;
+	const { hubId, hubName } = route.params;
 	const { activeProfile, client, state, renderClient } = useRetainedScreenConnection(hubId);
 	const sheetStackOptions = useSheetStackOptions();
 	const ready = activeProfile?.id === hubId && isReady(state) && !!client;
@@ -64,8 +64,8 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 	useEffect(() => {
 		if (opened.current || !storageLoaded) return;
 		opened.current = true;
-		stopOpening.current = openForm(store, memory.lastSetup(), like);
-	}, [store, memory, like, storageLoaded]);
+		stopOpening.current = openForm(store, memory.lastSetup());
+	}, [store, memory, storageLoaded]);
 	useEffect(() => () => stopOpening.current(), []);
 
 	const bindTo = ready && client ? client : null;
