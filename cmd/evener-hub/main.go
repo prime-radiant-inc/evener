@@ -266,6 +266,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if len(args) > 0 && args[0] == "endpoint" {
 		return runEndpoint(args[1:], deps.stdout, stderr, deps)
 	}
+	if len(args) > 0 && args[0] == "login-url" {
+		return runLoginURL(args[1:], deps.stdout, stderr, deps)
+	}
 
 	opts, err := parseHubOptions(args, stderr)
 	if err != nil {
@@ -975,14 +978,19 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		}
 	}()
 
-	// Build a usable auth URL. If the bind addr is 0.0.0.0 or ::, replace
-	// it with a hostname the operator can reach the hub at.
-	authHost := advertisedHubHost(boundAddr, hubHostname)
-	browserAddress := "http://" + authHost
-	_, _ = fmt.Fprintf(stderr, "[hub] Browser address: %s\n", browserAddress)
-	_, _ = fmt.Fprintf(stderr, "[hub] Private sign-in link: %s\n", hubedge.AuthURLFor(browserAddress, authToken))
-	_, _ = fmt.Fprintln(stderr, "[hub] Keep this terminal running while you use Evener in the browser.")
 	_, _ = fmt.Fprintf(stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, boundAddr, runDir)
+	_, _ = fmt.Fprintf(stderr, "[hub] configured listener: %s (%s)\n", record.RequestedListenAddr, record.ListenSource)
+	if origin, originErr := browserLoginOrigin(record, hubHostname); originErr == nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] Browser address: %s (local: %s)\n", origin, record.LocalURL)
+		if isTerminalWriter(stderr) {
+			link, _ := browserLoginURL(record, hubHostname, authToken)
+			_, _ = fmt.Fprintf(stderr, "[hub] Private sign-in link (treat as a password): %s\n", link)
+		}
+	} else {
+		_, _ = fmt.Fprintf(stderr, "[hub] cannot advertise browser origin: %v\n", originErr)
+	}
+	_, _ = fmt.Fprintln(stderr, "[hub] Keep this terminal running while you use Evener in the browser.")
+	_, _ = fmt.Fprintln(stderr, "[hub] retrieve a browser login URL deliberately with evener hub login-url [--config PATH]; treat it as a password")
 	_, _ = fmt.Fprintf(stderr, "[hub] Auth token file: %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
 	if err := deps.serve(ctx, srv); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
@@ -1153,6 +1161,8 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 		fs.PrintDefaults()
 		_, _ = fmt.Fprintf(stderr, "\nSubcommands:\n")
 		_, _ = fmt.Fprintf(stderr, "  attach --stdio\tproxy AppWire between the hub's loopback /rpc and stdin/stdout\n")
+		_, _ = fmt.Fprintf(stderr, "  endpoint --json [--config PATH]\tinspect the selected hub without credentials\n")
+		_, _ = fmt.Fprintf(stderr, "  login-url [--config PATH]\tprint a password-like browser login link for the running hub\n")
 		_, _ = fmt.Fprintf(stderr, "\nEnvironment variables:\n")
 		printHubEnvVars(stderr)
 	}

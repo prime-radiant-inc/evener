@@ -73,6 +73,18 @@ func TestDevicePairingUsesSelectedOrigin(t *testing.T) {
 	}
 }
 
+func TestInvitationOverrideCanonicalOrigin(t *testing.T) {
+	p := newDevicePairings(hubcore.WebConfig{AuthToken: "synthetic-credential", PublicURL: "https://default.example.test"})
+	invitation, err := p.create(appwire.DevicePairingCreateParams{Origin: "HTTPS://BÜCHER.EXAMPLE:443/"})
+	if err != nil || invitation.Origin != "https://xn--bcher-kva.example" {
+		t.Fatalf("explicit normalized invitation: %+v, %v", invitation, err)
+	}
+	mapped, err := p.create(appwire.DevicePairingCreateParams{Origin: "http://[::ffff:192.0.2.1]"})
+	if err != nil || mapped.Origin != "http://[::ffff:c000:201]" {
+		t.Fatalf("shared IPv6 canonical form: %+v, %v", mapped, err)
+	}
+}
+
 func TestDevicePairingRejectsUnsupportedCredentials(t *testing.T) {
 	for _, tc := range []struct{ name, token string }{
 		{"empty", ""}, {"too long", strings.Repeat("a", 512)},
