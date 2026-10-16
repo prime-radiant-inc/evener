@@ -66,6 +66,10 @@ type sandboxFS struct {
 
 	mu      sync.Mutex
 	rootFds map[string]int // canonical root path → cached O_DIRECTORY fd
+	// rootKeys memoizes each raw root spelling's canonical cache key, so an
+	// equivalent spelling found on the hot path costs one map lookup. Policy
+	// roots are fixed for the layer's lifetime.
+	rootKeys map[string]string
 	// staleFds are carve-out root fds dropped from rootFds once they no longer
 	// held their pinned place. An operation may still be using one, so they
 	// are closed once the layer drains (release) or closes, not at once; no
@@ -162,7 +166,31 @@ func newSandboxFS(p *sandbox.ResolvedPolicy, scratchDir string) *sandboxFS {
 		granted := p.WithSessionScratch(scratchDir)
 		policy = &granted
 	}
-	return &sandboxFS{policy: policy, rootFds: map[string]int{}}
+	return &sandboxFS{policy: policy, rootFds: map[string]int{}, rootKeys: map[string]string{}}
+}
+
+// canonicalRootKey returns the cache key for a root: its canonical directory
+// spelling. Two roots that name the same directory — a workspace root and a
+// symlink alias of it — therefore share ONE cached descriptor, so the dead-root
+// answer (rootDead) comes from the descriptor the operation will actually use
+// and a check through one spelling cannot disagree with a use through another
+// (issue #4703, roborev 42975). The caller holds s.mu. The answer is memoized per
+// raw spelling.
+func (s *sandboxFS) canonicalRootKey(root string) string {
+	if k, ok := s.rootKeys[root]; ok {
+		return k
+	}
+	k := resolveDanglingSymlinks(root)
+	s.rootKeys[root] = k
+	return k
+}
+
+// adoptRootFd seeds the cache with an already-open root descriptor, keyed by the
+// root's canonical identity so an equivalent spelling later shares it.
+func (s *sandboxFS) adoptRootFd(root string, fd int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rootFds[s.canonicalRootKey(root)] = fd
 }
 
 // newScratchSandboxFS builds the narrow fd-anchored layer used by an
