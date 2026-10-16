@@ -111,6 +111,43 @@ func TestHubBearerOriginIsolation(t *testing.T) {
 	}
 }
 
+func TestHubBearerRefusesTLSDowngradeRedirect(t *testing.T) {
+	t.Parallel()
+	const bearer = "tls-downgrade-sentinel"
+	var selectedBearer, downgradeRequests atomic.Int32
+	downgrade := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		downgradeRequests.Add(1)
+		if r.Header.Get("Authorization") != "" {
+			t.Error("HTTP downgrade target received a bearer")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer downgrade.Close()
+	selected := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer "+bearer {
+			selectedBearer.Add(1)
+		}
+		http.Redirect(w, r, downgrade.URL+"/target", http.StatusFound)
+	}))
+	defer selected.Close()
+	origin, err := ParseOrigin(selected.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := HTTPClientWithBearer(selected.Client(), bearer, origin, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Get(selected.URL + "/protected")
+	if err == nil {
+		_ = response.Body.Close()
+		t.Fatal("followed selected TLS origin redirect")
+	}
+	if selectedBearer.Load() != 1 || downgradeRequests.Load() != 0 {
+		t.Fatalf("selected bearer requests=%d, downgrade target requests=%d", selectedBearer.Load(), downgradeRequests.Load())
+	}
+}
+
 func TestHubBearerVerifiesEveryConnectionAndRejectsPortReplacement(t *testing.T) {
 	t.Parallel()
 	const token = "port-replacement-sentinel"
