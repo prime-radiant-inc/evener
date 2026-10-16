@@ -88,10 +88,6 @@ type builder struct {
 	// entryFailures is the failures the entry currently being applied settled,
 	// added to its turn's summary by stampTurn.
 	entryFailures uint32
-	// quarantined records that the covered file had a line that did not decode.
-	// The file scans error on such a line, so the derived path must report the
-	// totals unknown rather than a figure read past the damage.
-	quarantined bool
 
 	// commCalls and the lastAssistant* fields mirror ProjectTurn's
 	// ToolCallRegistry.CommRawArgs/LastAssistantText/LastAssistantTurnID:
@@ -165,7 +161,6 @@ func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *sche
 // new-format entry does, so a legacy entry after it starts a turn of its own.
 func (b *builder) quarantine(ordinal uint64, offset int64, length uint32) error {
 	b.grouper = apptranscript.TurnGrouper{}
-	b.quarantined = true
 	slot, err := b.openTurn(unreadableTurnID(ordinal), turnKindUnreadable, ordinal, offset)
 	if err != nil {
 		return err

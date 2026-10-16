@@ -410,20 +410,27 @@ func answerPastTranscriptIndexError(entry hubcore.PastEntry, err error) error {
 func pastEntryLatestItems(ctx context.Context, entry hubcore.PastEntry, limit int, held *appwire.SnapshotIdentity) (pastItemPage, error) {
 	var page pastItemPage
 	err := withPastTranscriptIndex(ctx, entry, func(index *transcriptindex.Index) error {
+		var window transcriptindex.Window
+		var changes *transcriptindex.Changes
 		if held == nil {
-			window, err := index.Latest(limit)
-			page = pastItemPageFromWindow(entry, window)
-			page.Derived = pastIndexDerivedTotals(index, entry)
-			return err
-		}
-		window, changes, err := index.LatestSince(limit, *held)
-		if errors.Is(err, transcriptindex.ErrUpdateLogTruncated) {
-			return appwire.TranscriptItemCursorStale()
+			var err error
+			if window, err = index.Latest(limit); err != nil {
+				return err
+			}
+		} else {
+			var err error
+			window, changes, err = index.LatestSince(limit, *held)
+			if errors.Is(err, transcriptindex.ErrUpdateLogTruncated) {
+				return appwire.TranscriptItemCursorStale()
+			}
+			if err != nil {
+				return err
+			}
 		}
 		page = pastItemPageFromWindow(entry, window)
 		page.Derived = pastIndexDerivedTotals(index, entry)
 		page.Changes = changes
-		return err
+		return nil
 	})
 	return page, err
 }
@@ -1381,13 +1388,7 @@ var pastDerivedTotalsScan = func(path string, fromEntryOrdinal int) (*appwire.Ev
 // as before.
 func stampDerivedTotalsWith(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread, derived *pastDerivedTotals) appwire.Thread {
 	if derived != nil {
-		if thread.Evener.Usage == nil && derived.usage != nil {
-			thread.Evener.Usage = derived.usage
-			thread.Evener.Cost = appwire.EstimateCost(pastEntryCost(cfg, entry), derived.usage)
-		}
-		failures := derived.failures
-		thread.Evener.FailedToolCalls = &failures
-		return thread
+		return stampTotals(cfg, entry, thread, derived.usage, derived.failures)
 	}
 	if thread.Evener.Usage != nil {
 		return stampDerivedFailureCount(entry, thread)
@@ -1396,7 +1397,15 @@ func stampDerivedTotalsWith(cfg hubcore.WebConfig, entry hubcore.PastEntry, thre
 	if err != nil {
 		return thread
 	}
-	if total != nil {
+	return stampTotals(cfg, entry, thread, total, failures)
+}
+
+// stampTotals stamps a derived token total and failure count under the
+// precedence the scan path has always held: the meta cumulative usage wins, so
+// a derived usage fills in only when it is absent, while the failure count is
+// always stamped.
+func stampTotals(cfg hubcore.WebConfig, entry hubcore.PastEntry, thread appwire.Thread, total *appwire.EvenerUsage, failures int) appwire.Thread {
+	if thread.Evener.Usage == nil && total != nil {
 		thread.Evener.Usage = total
 		thread.Evener.Cost = appwire.EstimateCost(pastEntryCost(cfg, entry), total)
 	}

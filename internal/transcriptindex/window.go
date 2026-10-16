@@ -66,24 +66,31 @@ var ErrDerivedTotalsUnavailable = errors.New("transcript index cannot derive tot
 func (x *Index) DerivedTotals(fromEntryOrdinal int) (*appwire.EvenerUsage, int, error) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	if x.meta.Quarantined {
-		return nil, 0, ErrDerivedTotalsUnavailable
-	}
+	const chunk = 256
 	var sum [4]int64
 	failed := 0
-	for slot := uint64(0); slot < x.turns.n; slot++ {
-		buf, err := x.turns.read(slot, 1)
+	for start := uint64(0); start < x.turns.n; start += chunk {
+		count := min(uint64(chunk), x.turns.n-start)
+		buf, err := x.turns.read(start, int(count))
 		if err != nil {
 			return nil, 0, err
 		}
-		record := decodeTurn(buf)
-		if int(record.FirstOrdinal)+1 < fromEntryOrdinal {
-			continue
+		for i := uint64(0); i < count; i++ {
+			record := decodeTurn(buf[i*turnRecordSize:])
+			if record.Kind == turnKindUnreadable {
+				// A line that did not decode; the scan errors on it, so the
+				// derived totals are unknown. Checked for every record, as the
+				// scan decodes every line regardless of the cut.
+				return nil, 0, ErrDerivedTotalsUnavailable
+			}
+			if int(record.FirstOrdinal)+1 < fromEntryOrdinal {
+				continue
+			}
+			for j := range sum {
+				sum[j] += record.Usage[j]
+			}
+			failed += int(record.FailedToolCalls)
 		}
-		for i := range sum {
-			sum[i] += record.Usage[i]
-		}
-		failed += int(record.FailedToolCalls)
 	}
 	cacheRead := int(sum[2])
 	return appwire.EvenerUsageFromLLM(llm.Usage{
