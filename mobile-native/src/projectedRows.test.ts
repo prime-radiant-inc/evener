@@ -8,6 +8,10 @@ import {
 } from "@evener/appwire-client";
 import { toolWireStep } from "@evener/appwire-client/testing/toolWireFixtures";
 import {
+	summaryFailureWireFixture,
+	summaryFailureWireRead,
+} from "@evener/appwire-client/testing/summaryFailureWireFixtures";
+import {
 	memoryContextWireItem,
 	memoryContextWireItems,
 } from "@evener/appwire-client/testing/memoryContextWireFixtures";
@@ -103,6 +107,28 @@ function asksFor(callId: string): ReadonlyMap<string, AskQuestionRef[]> {
 }
 
 describe("projectedRow — item entries", () => {
+	it("retains a recorded summary failure at every visibility level", () => {
+		const fixture = summaryFailureWireFixture();
+		const model = hydrateThread(summaryFailureWireRead(), "local:summary-fixture", 0);
+		for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+			const rows = projectTimeline(model, new Map(), makeTranscriptDisplayConfig({ kind: "preset", level }));
+			const warning = rows.find((row) => row.id === fixture.item.id);
+			expect(warning).toMatchObject({
+				kind: "notice",
+				family: "warning",
+				tone: "attention",
+				text: fixture.warning.message,
+				hint: fixture.warning.hint,
+			});
+			if (warning?.kind !== "notice") throw new Error("producer warning lost its notice row");
+			for (const identifier of ["openai/summary-model-8af1", "429", "rate_limit"])
+				expect(warning.text).toContain(identifier);
+			expect(rows.some((row) => row.id === fixture.recovery.id)).toBe(false);
+		}
+		const full = makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { systemEvents: true });
+		expect(projectTimeline(model, new Map(), full).some((row) => row.id === fixture.recovery.id)).toBe(true);
+	});
+
 	it.each(["warning", "systemMessage"])("MCP recovery through %s is quiet full-detail history", (type) => {
 		const warning = { code: WarningCodeMCPReconnected };
 		const model = {

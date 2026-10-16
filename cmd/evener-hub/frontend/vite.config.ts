@@ -136,6 +136,7 @@ export default defineConfig({
         path.join(__dirname, "..", "testdata"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "notificationwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "systemeventwire"),
+        path.join(__dirname, "..", "..", "..", "agent", "testdata", "summaryfailurewire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "toolwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "subagentwire"),
         path.join(__dirname, "..", "..", "..", "agent", "testdata", "memorycontextwire"),

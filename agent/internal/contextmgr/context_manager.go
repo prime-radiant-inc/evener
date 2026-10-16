@@ -1751,6 +1751,59 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 	return renderCheckpointConversation(partner), summarized
 }
 
+// minSummarizingWindow is the smallest context window compaction summarizes
+// on. A 50,000-token window leaves a summarizer request about 36,000 tokens
+// of input (a quarter of the window for the reply, then the client's safety
+// reserve), well above what a request carries: at most maxHistoryChars of
+// history (~20,000 tokens) plus the summary instructions. Smaller windows are
+// not worth sizing requests for; on them the checkpoint stands (#4321).
+const minSummarizingWindow = 50_000
+
+// summarizingWindowUsable reports whether every route a summary may take
+// accepts at least the input a minSummarizingWindow-token window allows. Below
+// that the deterministic checkpoint, which keeps the partner's messages and
+// an earlier summary, stands instead of a summary. Unknown windows impose
+// nothing.
+func summarizingWindowUsable(prof *provider.Profile) bool {
+	if prof == nil {
+		return true
+	}
+	least := summarizerInputLimit(minSummarizingWindow, 0)
+	// The session model and the configured cheap model it falls back from.
+	for _, route := range [][2]int{
+		{prof.ContextWindowSize(), prof.MaxInputTokens()},
+		{prof.CheapContextWindowSize(), prof.CheapMaxInputTokens()},
+	} {
+		if input := summarizerInputLimit(route[0], route[1]); input > 0 && input < least {
+			return false
+		}
+	}
+	return true
+}
+
+// summarizerInputLimit is how many tokens of input a summarizer request may
+// carry on a model with this window and input cap (0 for unknown): what the
+// window leaves after a quarter for the reply, held to the input cap, less the
+// safety reserve the client keeps on top of the input. It is 0 when neither
+// is known.
+func summarizerInputLimit(window, maxInput int) int {
+	limit := 0
+	if window > 0 {
+		limit = window - window/4
+	}
+	if maxInput > 0 && (limit == 0 || maxInput < limit) {
+		limit = maxInput
+	}
+	if limit == 0 {
+		return 0
+	}
+	smallest := window
+	if maxInput > 0 && (smallest == 0 || maxInput < smallest) {
+		smallest = maxInput
+	}
+	return max(limit-llm.SafetyReserveTokens(smallest), 1)
+}
+
 // condensePartnerMessages fits the partner's messages a summary will not quote
 // (each a line of text) into budget characters for the summarizer's input.
 // When they overflow it, they are summarized in batches of at most budget
@@ -1758,8 +1811,10 @@ func partnerMessagesMarkdown(history []schema.Turn, cutoff int, resultToolName s
 // batch summaries are condensed the same way until they fit, so every message
 // reaches a summarizer however many there are. If they will not shrink to fit,
 // it fails rather than cut any short.
-func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, budget int) (string, error) {
+func (cm *Manager) condensePartnerMessages(ctx context.Context, prof *provider.Profile, lines []string, budget int) (string, error) {
 	const maxRounds = 4 // each round shrinks the text; four reach any realistic volume
+	var route summarizationRoute
+	var role string
 	for round := 0; ; round++ {
 		total := 0
 		for _, line := range lines {
@@ -1778,15 +1833,16 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 				size += len(lines[end])
 				end++
 			}
-			resp, err := cm.completeSummarization(ctx, cm.currentProfile(), partnerBatchPrompt+strings.Join(lines[start:end], ""), func(reply llm.Response) error {
+			resp, err := cm.completeSummarization(ctx, prof, partnerBatchPrompt+strings.Join(lines[start:end], ""), func(reply llm.Response) error {
 				if strings.TrimSpace(reply.Text()) == "" {
-					return errors.New("summarizer returned an empty batch summary")
+					return errSummaryEmptyBatch
 				}
 				return checkNotCutOff(reply)
 			})
 			if err != nil {
 				return "", err
 			}
+			route, role = resp.route, resp.role
 			// A long summary is split like a long message, so the next round's
 			// batches stay within budget.
 			parts := splitMessage(strings.TrimSpace(resp.Text()), budget/3, 400)
@@ -1804,7 +1860,7 @@ func (cm *Manager) condensePartnerMessages(ctx context.Context, lines []string, 
 	// Summaries that will not shrink to fit are never cut short: failing here
 	// fails the summary, and the checkpoint, which keeps every partner
 	// message, stands.
-	return "", errors.New("partner messages did not condense to fit the summarizer")
+	return "", summaryFailure(errSummaryUncondensable, route, role)
 }
 
 // splitMessage splits text into parts of at most size bytes, each cut at the
@@ -1998,6 +2054,14 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 	}
 }
 
+// summarizationResult retains the selected route for validation that spans
+// multiple otherwise successful model calls, such as partner condensation.
+type summarizationResult struct {
+	llm.Response
+	route summarizationRoute
+	role  string
+}
+
 // completeSummarization runs prompt on the summarizer's routes. The cheap
 // caller owns the first rung — it picks the configured cheap model, or the
 // session model when none is configured, and handles a refused cheap model
@@ -2009,10 +2073,10 @@ func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
 // the session model, and is returned as an error if that reply is rejected
 // too. A rejected reply was still a successful API call, so the attempt group
 // settles on the API error alone.
-func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(llm.Response) error) (llm.Response, error) {
+func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(llm.Response) error) (summarizationResult, error) {
 	routes := summarizationModels(profile)
 	if len(routes) == 0 {
-		return llm.Response{}, errors.New("summarization model is empty")
+		return summarizationResult{}, errSummaryMissingModel
 	}
 	judge := func(resp llm.Response) error {
 		if accept == nil {
@@ -2027,6 +2091,17 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	if apiErr == nil {
 		rejected = judge(resp)
 	}
+	route, role := routes[0], "cheap"
+	if ranSessionModel {
+		route, role = summarizationRoute{provider: profile.ID(), model: profile.Model()}, "session"
+	}
+	describe := func() *summaryFailureError {
+		if apiErr != nil {
+			return summaryFailure(apiErr, route, role)
+		}
+		return summaryFailure(rejected, route, role)
+	}
+	failure := describe()
 	if !ranSessionModel && len(routes) > 1 && (rejected != nil || apiErr != nil && shouldFallbackSummarizationModel(ctx, apiErr)) {
 		// More than one route means the second is the session model, distinct
 		// from the configured cheap one; the caller ran only the cheap one.
@@ -2037,12 +2112,23 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 		if apiErr == nil {
 			rejected = judge(resp)
 		}
+		route, role = sessionRoute, "session"
+		previous := failure
+		failure = describe()
+		if failure != nil && previous != nil {
+			failure.detail.Previous = previous.detail.Previous
+			failure.detail.Previous = append(failure.detail.Previous, previous.detail.Terminal)
+			if len(failure.detail.Previous) > 2 {
+				failure.detail.Previous = failure.detail.Previous[len(failure.detail.Previous)-2:]
+			}
+		}
 	}
 	attemptGroupScope.SettleResult(apiErr)
-	if apiErr != nil {
-		return resp, apiErr
+	result := summarizationResult{Response: resp, route: route, role: role}
+	if failure != nil {
+		return result, failure
 	}
-	return resp, rejected
+	return result, nil
 }
 
 // partnerAuthorityRule keeps a summary from adding or dropping the human
@@ -2130,7 +2216,7 @@ func promptSectionNames(prompt string) []string {
 // off too the summary fails and the checkpoint stands.
 func checkNotCutOff(reply llm.Response) error {
 	if reply.Finish.Reason == llm.FinishReasonLength {
-		return errors.New("the summary was cut off at the model's output limit")
+		return errSummaryOutputLimit
 	}
 	return nil
 }
@@ -2153,7 +2239,7 @@ func checkNotCutOff(reply llm.Response) error {
 // partner's messages verbatim beside the reply (partnerMessagesMarkdown).
 func checkSummaryReply(reply, instructions string) error {
 	if strings.TrimSpace(reply) == "" {
-		return errors.New("summarizer returned an empty reply")
+		return errSummaryEmptyReply
 	}
 	if instructions != "" {
 		return nil
@@ -2199,7 +2285,7 @@ func checkSummaryReply(reply, instructions string) error {
 			return nil
 		}
 	}
-	return errors.New("summarizer reply has no summary section with content")
+	return errSummaryMissingSection
 }
 
 // summarySectionHeading reports whether line is a heading naming one of the
@@ -2427,8 +2513,18 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 		return history, nil
 	}
 
-	// Cap the history text to avoid exceeding the cheap model's context window.
-	// ~80k chars ≈ 20k tokens, leaving room for the instruction prefix and response.
+	// One profile serves the whole fold: the window check and every request
+	// it sends, so a model switch mid-fold cannot redirect its requests to a
+	// model the check never saw.
+	sumProfile := cm.currentProfile()
+	if !summarizingWindowUsable(sumProfile) {
+		// The checkpoint already at history[0] stands in place of a summary.
+		return history, nil
+	}
+
+	// Cap the history text: ~80k chars ≈ 20k tokens, which with the
+	// instruction prefix and the reply fits every route summarizingWindowUsable
+	// admits.
 	const maxHistoryChars = 80_000
 
 	truncText := func(s string, limit int) string {
@@ -2445,7 +2541,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 	if checkpointed != nil {
 		partnerSource = append(slices.Clip(checkpointed), history[1:cutoff]...)
 	}
-	reminder, carry, summarized := cm.partnerCarry(ctx, partnerSource, len(partnerSource), partnerCarryCeiling(cm.currentProfile()))
+	reminder, carry, summarized := cm.partnerCarry(ctx, partnerSource, len(partnerSource), partnerCarryCeiling(sumProfile))
 
 	var b strings.Builder
 	// The partner's messages the turn will not quote come first, so the
@@ -2467,7 +2563,7 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 				lines = append(lines, label+part+"\n")
 			}
 		}
-		condensed, err := cm.condensePartnerMessages(ctx, lines, maxHistoryChars/2)
+		condensed, err := cm.condensePartnerMessages(ctx, sumProfile, lines, maxHistoryChars/2)
 		if err != nil {
 			return nil, err
 		}
@@ -2560,7 +2656,6 @@ func (cm *Manager) summarizeFold(ctx context.Context, history []schema.Turn, pre
 
 	prompt := buildSummaryPrompt(b.String(), instructions)
 
-	sumProfile := cm.currentProfile()
 	resp, err := cm.completeSummarization(ctx, sumProfile, prompt, func(reply llm.Response) error {
 		if err := checkSummaryReply(reply.Text(), instructions); err != nil {
 			return err
@@ -2711,19 +2806,4 @@ func countJSONArrayElements(s string) int {
 		return 0
 	}
 	return len(arr)
-}
-
-// summarizerFailureWarning is the warning for a failed LLM summarization. Its
-// message stays bare: the summarizer's error can carry a provider's body,
-// which can echo the conversation it was asked to summarize, and a strategy's
-// warnings reach Notification hooks (#3386). The error still classifies the
-// Title and Hint.
-func summarizerFailureWarning(err error) events.WarningData {
-	info := diagnostic.FromError(err)
-	return events.WarningData{
-		Message: "LLM summarization failed",
-		Source:  string(info.Source),
-		Title:   info.Title,
-		Hint:    info.Hint,
-	}
 }

@@ -105,12 +105,12 @@ func TestLoginShellPATH_ResolvesAndCaches(t *testing.T) {
 	resetLoginShellPATHCache(t)
 	t.Setenv("SHELL", "/bin/zsh")
 	calls := 0
-	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
 		calls++
 		if name != "/bin/zsh" || len(args) != 2 || args[0] != "-lc" || args[1] != "echo $PATH" {
 			t.Fatalf("unexpected probe invocation: name=%q args=%v", name, args)
 		}
-		return []byte("/opt/homebrew/bin:/usr/bin:/bin\n"), nil
+		return probeCapture{view: []byte("/opt/homebrew/bin:/usr/bin:/bin\n")}, nil
 	}
 	if got := LoginShellPATH(); got != "/opt/homebrew/bin:/usr/bin:/bin" {
 		t.Fatalf("LoginShellPATH() = %q", got)
@@ -130,8 +130,8 @@ func TestLoginShellPATH_ResolvesAndCaches(t *testing.T) {
 func TestLoginShellPATH_FallsBackOnProbeFailure(t *testing.T) {
 	resetLoginShellPATHCache(t)
 	t.Setenv("SHELL", "/bin/zsh")
-	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return nil, errors.New("boom")
+	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
+		return probeCapture{}, errors.New("boom")
 	}
 	if got := LoginShellPATH(); got != "" {
 		t.Fatalf("LoginShellPATH() = %q, want empty on probe failure", got)
@@ -142,9 +142,9 @@ func TestLoginShellPATH_FallsBackOnProbeFailure(t *testing.T) {
 func TestLoginShellPATH_NoShellFallsBack(t *testing.T) {
 	resetLoginShellPATHCache(t)
 	t.Setenv("SHELL", "")
-	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
 		t.Fatal("probe must not run when $SHELL is unset")
-		return nil, nil
+		return probeCapture{}, nil
 	}
 	if got := LoginShellPATH(); got != "" {
 		t.Fatalf("LoginShellPATH() = %q, want empty", got)
@@ -159,8 +159,8 @@ func TestLoginShellPATH_NoShellFallsBack(t *testing.T) {
 func TestLoginShellPATH_TakesLastLineOverNoisyRCBanner(t *testing.T) {
 	resetLoginShellPATHCache(t)
 	t.Setenv("SHELL", "/bin/zsh")
-	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return []byte("nvm is not compatible with the npm config \"prefix\" option\n\n/opt/homebrew/bin:/usr/bin:/bin\n"), nil
+	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
+		return probeCapture{view: []byte("nvm is not compatible with the npm config \"prefix\" option\n\n/opt/homebrew/bin:/usr/bin:/bin\n")}, nil
 	}
 	if got := LoginShellPATH(); got != "/opt/homebrew/bin:/usr/bin:/bin" {
 		t.Fatalf("LoginShellPATH() = %q, want the last line only (rc banner excluded)", got)

@@ -145,7 +145,7 @@ func gctManagerTails(t *testing.T, token string) {
 func gctStrategyTails(t *testing.T, token string) {
 	t.Helper()
 	ctx := context.Background()
-	profile := testOpenAIProfileWithContextWindow(32)
+	profile := testOpenAIProfileWithContextWindow(minSummarizingWindow)
 	client := llm.NewClient()
 	client.Register(&agenttest.ScriptedAdapter{Provider: profile.ID(), Responder: func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("## Progress\nsummary " + token)}
