@@ -438,6 +438,43 @@ test("native handle adjustments keep deferring the settle and complete once when
   expect(onFinish).toHaveBeenCalledWith(expected(SECOND));
 });
 
+test("a later handle adjustment after the first settle updates the captured passage", () => {
+  const { holder, root } = mountDocument(SOURCE);
+  const onFinish = vi.fn();
+  observe(root, holder.map as BoundDocumentMap, onFinish);
+  const paragraph = firstParagraph(root);
+
+  // The cancelled stream's native selection settles on the first occurrence
+  // and completes it.
+  pointer("pointerdown", paragraph, "touch");
+  pointer("pointercancel", paragraph, "touch");
+  selectText(root, "same");
+  expect(selectionchange()).toBe(true);
+  vi.advanceTimersByTime(FLUSH_MS);
+  expect(onFinish).toHaveBeenCalledTimes(1);
+  expect(onFinish).toHaveBeenCalledWith(expected(FIRST));
+
+  // The user pauses well past the settle, then drags the handles to the
+  // second occurrence: the captured passage must follow the visible
+  // selection, not freeze at the first settled range.
+  vi.advanceTimersByTime(FLUSH_MS);
+  selectText(root, "same", 1);
+  expect(selectionchange()).toBe(true);
+  vi.advanceTimersByTime(FLUSH_MS);
+  expect(onFinish).toHaveBeenCalledTimes(2);
+  expect(onFinish).toHaveBeenLastCalledWith(expected(SECOND));
+
+  // A burst that collapses the selection ends the native interaction: a
+  // later change cannot complete without a new gesture.
+  document.getSelection()?.removeAllRanges();
+  expect(selectionchange()).toBe(true);
+  vi.advanceTimersByTime(FLUSH_MS);
+  selectText(root, "same");
+  expect(selectionchange()).toBe(true);
+  vi.advanceTimersByTime(FLUSH_MS);
+  expect(onFinish).toHaveBeenCalledTimes(2);
+});
+
 test("a pointer interaction outside the mapped root never finishes the retained passage", () => {
   const { holder, root } = mountDocument(SOURCE);
   const onFinish = vi.fn();
