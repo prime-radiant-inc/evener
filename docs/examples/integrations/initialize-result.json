@@ -1,0 +1,1 @@
+{"serverInfo":{"name":"documentation-fixture","version":"1"},"protocolVersion":"evener-appwire-v7","sourceId":"fixture","features":{"threadList":true,"threadTurnsList":true,"turnStart":false,"turnSteer":false,"threadClear":false,"threadShutdown":false,"forkFromTurn":false,"tasks":false,"transcriptList":true,"modelList":true,"directoryComplete":true,"auth":false}}

@@ -1,5 +1,28 @@
 # Subagent runtime contracts
 
+Use this page to understand what survives a delegate run, how reports reach the
+parent, and which runtime policies apply to child sessions. For tool parameters,
+start with [Job control](job-control.md); for remote clients, use
+[Integrations](integrations.md). These contracts track main.
+
+## Read a delegate result correctly
+
+A delegate is a durable conversation identified by `dlg_...`, not a shell job.
+It can run, report, become idle and run again when its owner sends new input.
+Its internal generation is not another public handle. Keep the stable delegate
+ID for control and the session transcript reference for evidence.
+
+Completion of one generation does not prove that the requested work is correct.
+Read the terminal message, structured output and cited artifacts, then perform
+the task's acceptance check. A detailed terminal message can differ from its
+structured summary; do not discard either. Failed, cancelled or exhausted runs
+are not successful reports. The report-preservation section below defines the
+accepted capture and recovery behavior.
+
+An idle delegate is still available for follow-up. A stop request instead
+cancels its subtree. Do not infer cancellation from a disconnected client or
+confuse a metadata-only status read with consumption of a result packet.
+
 Status: Evergreen reference for the shipped subagent runtime. This documents what
 evener **does today** across the cross-cutting runtime concerns that subagents,
 plugins, hooks, helpers, and lineage share. It is the current-reality counterpart
@@ -208,7 +231,7 @@ and the `http`/`mcp_tool`/`agent` handlers are parsed-but-inert. See
   [`job-control.md`](job-control.md).
 - **Warnings are first-class and surfaced, never silent.** `WarningData`
   (`agent/events/payloads.go`), carried on the `EventWarning` event, flows on the session
-  event stream that TUI/Hub/SDK consume; emitting paths include plugin hook-config
+  event stream that clients consume; emitting paths include plugin hook-config
   warnings (built in `agent/session_init.go`, emitted via `emitDiagnosticWarning`) and
   delegate task-seed failures (`agent/subagents.go`). A warning with no display surface
   is treated as a bug.
