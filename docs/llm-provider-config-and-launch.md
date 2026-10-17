@@ -107,7 +107,8 @@ Wherever a credential value accepts an environment-variable reference —
 expression, `$(...)`: the command runs through your shell and its
 whitespace-trimmed stdout becomes the value. This is how a gateway whose
 credentials live outside evener gets used: the key stays in your password
-manager, or a short-lived token gets minted per request. Display `headers`
+manager, or the command obtains a short-lived token. Evener caches the result
+within each process rather than running the command for every request. Display `headers`
 and transport `vars` do not run commands: a command's output is a
 credential, and those fields' values reach URLs and logs as ordinary
 text, so a `$(...)` there is refused when the file loads.
@@ -141,9 +142,9 @@ The rules that matter in practice:
   verbatim, so `${MY-VAR}` or `${MY.VAR}` used to expand; the shared
   grammar now refuses them.
 - Commands run with the process environment, no TTY, a closed stdin, and a
-  30-second timeout; results are cached per command (until a token's JWT
-  `exp` is a minute away, else five minutes), so an agent loop mints once
-  and reuses.
+  30-second timeout. Each process caches successful results by command text
+  until one minute before a readable JWT `exp`, or for five minutes if there
+  is no readable expiry. The next lookup after that deadline reruns the command.
 - A `$(...)` ends at the first `)` that brings the paren depth back to
   zero; quotes are not parsed, so a literal `)` inside a quoted argument
   ends the expression early — restructure the command or wrap it in a
