@@ -46,6 +46,8 @@ Operating-system permissions and user instructions still apply. Explicit
 sandbox policies retain their boundaries, and allocated session scratch keeps
 its separate access contract.
 
+### Implicit delegate safety floor
+
 There is one deliberate delegate safety floor: a delegate whose structured tool
 scope contains no workspace-mutation tool (`write_file`, `edit_file`,
 `apply_patch`, or `manage_worktree`) receives a private `read-only` sandbox even
@@ -351,9 +353,12 @@ unsandboxed root's `TMPDIR` is not in the tree.
 
 ## The fail-closed floor
 
-A mode is either fully enforced or the session refuses to start. There is no
-"best effort" and no override flag: evener will not run a session that claims a
-sandbox mode it cannot actually enforce.
+An explicitly requested sandbox mode is either fully enforced or refused.
+There is no override flag that silently weakens that request. The
+[implicit delegate safety floor](#implicit-delegate-safety-floor) is different:
+when no OS backend is usable but file-tool confinement is available, it can
+run with confined file tools and an unconfined shell. Both parent and delegate
+receive a warning. The table below describes requested modes, not that fallback.
 
 | Host capability | Modes that run | Otherwise |
 |---|---|---|
@@ -651,12 +656,18 @@ observe an approval: the escalation and its resolution never enter session histo
 
 ## Subagents and worktrees
 
-A sandboxed session's delegates and subagents inherit the policy automatically,
-re-rooted to their own worktree with fresh git-metadata resolution — a delegate in
-lane A cannot read lane B. Because inheritance is automatic, the flag only goes live
-on a build where subagent/worktree scoping already holds, so the first `delegate`
-never punches a hole in the boundary you opted into. Resumed delegates re-resolve
-their persisted policy the same way the root session does. See
+A sandboxed session's delegates and subagents inherit its policy floor. Worktree
+roots move to each delegate's own worktree, and git-metadata grants are resolved
+again. This separates workspace writes; it does not make sibling worktrees private.
+
+`read-only` and `workspace-write` allow reads anywhere except masked paths,
+including sibling worktrees. `restricted` bounds reads to the delegate's worktree
+and its other granted roots; spawned processes have additional read grants for
+system files, git metadata, and configured infrastructure. See [Modes](#modes)
+for those grants and the separate file-tool and process boundaries.
+
+Delegates cannot relax their parent's policy floor. Resumed delegates re-resolve
+their persisted policy against the current host. See
 [docs/developing-evener/worktrees.md](developing-evener/worktrees.md) for the worktree model itself.
 
 ## Hooks and MCP under a sandbox
@@ -755,8 +766,8 @@ The macOS backend is Seatbelt (`/usr/bin/sandbox-exec`), driven from the same po
 model as bubblewrap so all modes are expressible; caches are always served
 session-private (there is no overlay on macOS), and the `sandbox-exec` path is
 hard-coded as a PATH-injection defense. A host without `/usr/bin/sandbox-exec`
-refuses any sandboxed mode — the same fail-closed floor as a Linux host without a
-usable bubblewrap.
+refuses an explicitly requested sandbox mode — the same
+[fail-closed floor](#the-fail-closed-floor) as a Linux host without usable bubblewrap.
 
 Seatbelt policies canonicalize every granted and denied root through symlink and
 firmlink resolution (`/tmp` → `/private/tmp` is pinned by test). Seatbelt judges the

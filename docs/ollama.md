@@ -65,8 +65,7 @@ protocol's normal code path.
 | `OLLAMA_HOST` | Ollama's canonical env var (`host`, `host:port`, or full URL); used when `OLLAMA_BASE_URL` is unset | unset |
 | `OLLAMA_API_KEY` | API key for authenticated proxies or Ollama Cloud | unset |
 
-These three variables and their resolution order are unchanged. Resolution
-order for the base URL:
+Resolution order for the base URL:
 
 1. If `OLLAMA_BASE_URL` is set, it wins (used as-is, trailing slash
    stripped).
@@ -110,6 +109,9 @@ OLLAMA_API_KEY="$MY_PROXY_TOKEN" \
 
 ### One-shot calls with `llmcall`
 
+`llmcall` is a separate single-call executable, not an `evener` subcommand.
+See its [build and installation note](environment-variables.md#public-settings).
+
 ```bash
 llmcall --provider ollama --model llama3.1:8b "Write a haiku about goroutines."
 ```
@@ -129,15 +131,11 @@ Check the installed model's tool-calling support in Ollama's model metadata. Mod
 
 ## Context length
 
-Ollama's `/v1/models` still doesn't report `context_length`, so Evener still
-can't auto-detect a live model's real window from the API.
-
-Every live-only model on `ollama` (or a pseudo-provider) now budgets against
-a **provider-level default of `context_window = 131072`**, so compaction
-still fires for a live-only model whose listing reports no window. The
-per-model catalog that used to ship a table like `8192` for `llama3.1` (with
-tag-stripping lookup) is gone entirely — there's no bundled per-model table
-anymore.
+When a live model's listing supplies no context length, Evener cannot infer
+its server-configured window. Live-only models on `ollama` and the protocol-only
+pseudo-providers use a **provider-level default of `context_window = 131072`**
+unless live metadata or a user setting supplies a window. Evener does not use
+a bundled Ollama per-model table or strip tags to find a context-window default.
 
 Pin the actual server-configured window on a model row in `providers.toml`. This complete example declares 8192 tokens; change it to match your server. It changes Evener's budget, not Ollama's `num_ctx`:
 
@@ -146,12 +144,10 @@ Pin the actual server-configured window on a model row in `providers.toml`. This
 context_window = 8192
 ```
 
-This is a **flag-day narrowing**: anyone who relied on the bundled
-`llama3.1` → 8192 default being picked up automatically needs to add this
-pin themselves now, or compaction won't fire until 131072 tokens instead of
-8192 (see
-["Upgrading from the old schema"](llm-provider-config-and-launch.md#upgrading-from-the-old-schema)
-for the full list of flag-day changes).
+If the server's window is smaller than Evener's budget, compaction can start
+too late to prevent a context-limit error. Check the configured window before
+a long task. For changes from older bundled defaults, see
+[provider migration](llm-provider-config-and-launch.md#upgrading-from-the-old-schema).
 
 ## Troubleshooting
 

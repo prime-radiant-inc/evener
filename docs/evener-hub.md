@@ -262,103 +262,52 @@ Settings shows a rebuild note instead of the controls, and
 `scripts/ops/deploy-hub.sh` for those.
 
 Running session daemons keep the binary they were spawned from (see the
-"Existing daemons keep the `evener` binary" note below); restart a session
-to move it to the new build.
+[upgrade procedure](#upgrading-and-migrating-safely) below). Shut down the
+daemon and resume the saved session to move it to the new build.
 
 ### Deploying to remote hosts
 
-A host that runs a build other than the hub's is upgraded on attach: the hub
-installs its own build over the host's `evener`, restarts the host's hub, and
-attaches only after the running build matches. **The default build it installs
-is its own executable**, so connecting to a bare host provisions it with the
-exact build the hub was started from and no flag is needed. (The file is read
-when the deploy runs: a hub whose own executable is replaced while it runs
-deploys the replacement, which the code records as the default's accepted
-residual.) A host whose
-platform differs from the hub's cannot be served by that executable: the hub
-does not attempt the push and falls back to the installer path instead — the
-same `install.sh` provisioning a flagless controller used before the default
-existed — so a release or snapshot controller installs the published artifact
-for the host's platform, while a controller whose build has no published
-artifact to pin (dev, dirty, or a release with no stamped tag) is refused
-terminally with both targets and the remedy named. A controller with no deploy
-path at all — `-no-deploy`, or a hub whose executable is not an evener build and
-whose channel has no published artifact — leaves the host on its own build and
-attaches anyway, because the appwire protocol — not the build label — decides
-compatibility, and the hub logs the difference. Two startup flags name a
-different build to push, and a third disables deploying:
+Attaching a remote host can overwrite its Evener installation and restart its
+hub. By default, the controller deploys its own executable when the host needs
+a build or reports a different build. Choose the deployment policy before
+attaching; use `--no-deploy` to prohibit both pushes and installer fallback.
 
-- `-deploy-binary <path>` — a pre-built `evener` for the host's target. The hub
-  reads the artifact's own `GOOS`/`GOARCH` and refuses a mismatch before
-  anything is pushed; the refusal is permanent, since a retry re-reads the same
-  file. The artifact must be executable, and it must be evener: the hub reads
-  the executable's main package from its buildinfo and refuses any other Go
-  program before anything is pushed, so a stray binary cannot replace the
-  host's `evener`. This path needs no Go toolchain and no source tree on the
-  controller. A controller built from a dirty tree refuses a named artifact: its
-  `<sha>-dirty` version is not an identity (every dirty tree at that commit
-  reports it), so the artifact cannot be proven to be the controller's build —
-  see the dirty-tree note below.
-- `-build-source <path>` — an evener checkout's module root. The hub
-  cross-compiles the host's target on the controller, so this path needs Go and
-  the source there; it refuses a dirty tree, an ignored-but-compiled `.go` file,
-  and a path that is not an evener checkout.
-- `-no-deploy` — deploy nothing: the own-executable default is not adopted, both
-  flags above are ignored (a named flag is still validated at startup, and the
-  hub's log line says it was ignored), and every deploy path is off — including
-  the installer fallback below. A host that needs a build is refused with the
-  remedy named, or keeps its own build when it is already protocol-compatible.
-  This restores a deploy-off controller: the pre-default flagless push opt-in,
-  without the installer fallback the pre-default hub still had.
+| Hub invocation or condition | Binary source | Overwrite or refusal behavior |
+|---|---|---|
+| `evener hub` with no deploy flags, same platform | File at the controller's own executable path | Pushes that file when deployment is needed. A dirty controller may use this source. |
+| `evener hub` with no deploy flags, different OS or architecture | Published artifact through `install.sh` | A clean release needs a stamped release tag; a clean snapshot uses the snapshot artifact. Dev, dirty, or tag-less release builds refuse this cross-platform deployment. |
+| `evener hub --deploy-binary <path>` | Named pre-built Evener executable | Needs no Go toolchain or source. Refuses a non-Evener binary or wrong OS/architecture before pushing. A dirty controller refuses this source. After installation, a build mismatch refuses attachment. |
+| `evener hub --build-source <path>` | Cross-compiled checkout on the controller | Needs Go, the Evener module root, and a built web UI. A stamped controller requires the same commit, a clean checkout, and no ignored untracked Go files. A dirty controller refuses this source. An unstamped dev controller skips revision checks. |
+| `evener hub --no-deploy` | None | Writes no build, including through the installer. Keeps an existing compatible host build; refuses a host that needs installation or a protocol/launch-contract upgrade. |
+| No flags, but the controller cannot adopt its executable as an Evener binary | Published artifact if available | Uses the release/snapshot installer when possible. Otherwise keeps a compatible host build and logs the difference; refuses a host that needs a build. |
 
-`-deploy-binary` wins over `-build-source`, `-no-deploy` wins over both, and the
-hub logs which source is effective at startup — including when the default
-adopted its own executable, so the source is never silently something the
-operator did not name. The default is wired only when the hub's executable is an
-evener build: an embedder or test binary has no evener build to offer, so its
-deploy stays unwired exactly as the old no-flag case was — a host that needs a
-build is refused with the remedy named, never sent a program that cannot serve a
-hub.
+`--no-deploy` wins over both source flags; `--deploy-binary` wins over
+`--build-source`. Named paths are still validated at startup even when another
+flag takes precedence. The startup log records the effective source and any
+ignored flags. Read attach failures in the host's Settings row; when attachment
+keeps a different compatible build, the hub log records that difference.
 
-A deploy writes the path the host runs (`evener_path` when the entry sets it,
-else what `command -v evener` resolves to, else the installer's default
-`~/.local/bin/evener`) atomically — a staged temp file on the host, its length
-verified, then a single `mv` into place — so a failed or interrupted deploy
-never leaves a partial binary. The `-build-source` path stamps the controller's
-build identity in-process, so the installed binary's `launch-check` version is
-exactly the controller's; a `-deploy-binary` artifact instead carries whatever
-identity the operator built. The hub's own executable is the one source whose
-identity is true by construction — it IS the controller's build — so a hub built
-from a dirty tree may still deploy its own executable, while compiling a
-checkout or naming an artifact is refused from one: no checkout can be proven to
-reproduce a `<sha>-dirty` build, and a `<sha>-dirty` label cannot tell a named
-artifact apart from a foreign dirty build at the same commit. That difference is
-checked where it can be seen:
-after a deploy the controller re-reads the launch contract on the host, and if
-the host still reports a build other than the controller's it refuses terminally
-instead of attaching — the artifact was not built from the controller's tree, and
-retrying would re-push the same file. So a mismatched artifact is refused before
-attach, and the hub never serves a host on a build it did not stamp.
+**Installation target.** Deployment uses the host entry's `evener_path`, then
+the running host hub's executable, then `command -v evener`, then
+`~/.local/bin/evener` if no installation exists. The push path resolves symlinks,
+stages a temporary file, verifies its length, and renames it atomically over the
+target. A failed transfer does not leave a partial executable. The installer
+preserves the existing installation location and layout. A configured target
+must name the `evener` runtime, not another program.
 
-With no push source — `-no-deploy`, or a hub whose executable is not an evener
-build — the push path is unavailable, and `-no-deploy` additionally disables the
-installer fallback, so that hub writes nothing to a host at all. A hub whose
-executable is not an evener build keeps the installer fallback: a release or
-snapshot controller installs through `install.sh` on the host. Where that
-fallback is refused — a dev or dirty controller, or a release build with no
-stamped tag — nothing is installed, so the host keeps its own build and
-attaches, and the hub logs which build it kept. The fallback is also refused for
-a snapshot controller once the mutable `snapshot` channel has moved past this
-controller's commit. For a snapshot controller the fallback writes the binary
-before its commit is proven, so prefer the push path; the push path is the one
-the refusal names.
+**Build verification.** A source build carries the controller's build identity;
+a named artifact carries its own. After deployment, the controller re-reads the
+host's launch contract and refuses attachment if the build differs. A successful
+installation is not proof of successful attachment. In particular, installer
+verification happens **after the binary is written**: a moved snapshot channel
+can replace the host binary and then fail the version check. Prefer a push source
+when the published snapshot has moved beyond the controller's commit.
 
-When a deploy fails, the refusal lands in that host's attach error — its row in
-Settings — naming the flag to set. A host that attached on its own build raises
-no error; the hub's log line is where its build is recorded. Name one of the two
-flags when you want such a host moved onto a build other than the hub's own
-executable (and remove `-no-deploy` if it is set): that is what makes the hub
-converge it.
+**Own-executable limit.** The default reads the executable file at deploy time,
+not a copy of the running process. Replacing that file while the controller runs
+changes what it pushes. A cross-commit replacement fails the post-install build
+check, but another dirty build at the same commit can report the same label and
+escape that check. Restart the controller after replacing its executable.
 
 ### Trace browser AppWire traffic
 
@@ -447,7 +396,7 @@ A live functional check can incur provider charges: authorize the browser, choos
 
 The documentation site tracks main. Release builds can lag it; snapshot builds follow ongoing development. Record the current version and installation prefix before changing channels. The installation guide owns download procedures; Settings → Hub → Updates owns an installed hub's update flow above.
 
-1. Finish or stop work that must not straddle a version change. A hub restart alone does not stop its session daemons.
+1. Finish work that must not straddle a version change. In each session's actions menu, choose **Shut down** and confirm. This stops the agent process; the composer's **Stop** only interrupts a turn. Verify that the old daemon process has exited before copying state. A hub restart alone does not stop its session daemons.
 2. Inventory effective paths and make a private [backup](security.md#storage-and-backups). Copying live state is not guaranteed consistent.
 3. Preview any legacy-layout migration on the owning host:
 
@@ -456,16 +405,18 @@ The documentation site tracks main. Release builds can lag it; snapshot builds f
    ```
 
 4. Review the paths before running `evener migrate`. It moves supported legacy layouts and converts old provider schema, preserving `providers.toml.pre-registry`. It is not a universal session-format repair or a promise that old project identities become current ones.
-5. Restart the intended hub, check health/build, and verify saved-session visibility. New sessions use the installed runtime; existing daemons retain the old process until stopped and resumed or replaced deliberately.
+5. Restart the intended hub, check health/build, and verify saved-session visibility. Resume a saved session or start a new one only after the intended runtime is installed.
+6. Verify the session daemon separately from the hub. On the owning host, check its new rendezvous record's PID against the process's start time and executable path. For a direct authenticated AppWire connection to that daemon, `initialize` returns its running build in `serverInfo.version`; compare it with the intended build. A hub health response or `evener --version` alone does not prove that an existing daemon was replaced. Keep rendezvous credentials private.
 
 Keep the pre-upgrade backup until you have checked workspaces and saved sessions. Do not restore over new work or assume an older executable can read newly written state. See [provider migration](llm-provider-config-and-launch.md#upgrading-from-the-old-schema) for renamed instances and changed credential variables.
 
 ## Operations notes
 
-- Evener daemons spawned by the hub keep running if the hub exits. Stop sessions
-  from the hub or kill the daemon processes when you want them stopped.
-- Existing daemons keep the `evener` binary they were spawned from. Rebuild and
-  restart sessions to pick up a new binary.
+- Evener daemons spawned by the hub keep running if the hub exits. Use the
+  session actions menu's **Shut down**, not the composer's **Stop**, to end a daemon.
+- Existing daemons keep the `evener` binary they were spawned from. Install the
+  intended build, shut down the old daemon, then resume the saved session. Verify
+  the new daemon as described in the [upgrade procedure](#upgrading-and-migrating-safely).
 - Do not blanket-prune `run_dir`, and never delete a live rendezvous file or
   log. The hub owns cleanup. For a specific suspected stale rendezvous file,
   inspect its recorded PID, verify it is the expected Evener daemon, and

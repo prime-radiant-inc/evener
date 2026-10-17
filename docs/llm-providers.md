@@ -57,10 +57,9 @@ neither. Kimi and MiniMax route over the anthropic protocol because their
 native tool-call format is Anthropic's, and they want the Anthropic tool set
 for the same reason — the curated overlay pins `surface = "anthropic"` on
 their rows because their models.dev `family` doesn't otherwise imply it (the
-`kimi-for-coding` and `minimax` rows in the table below). This is also why
-the separate `openrouter-anthropic` adapter is gone: routing Claude-style
-tool calls through OpenRouter is now an ordinary user entry —
-`base = "openrouter", protocol = "anthropic"` with a model glob pinning
+`kimi-for-coding` and `minimax` rows in the table below). To route Anthropic-style
+tool calls through OpenRouter, define a user entry with
+`base = "openrouter", protocol = "anthropic"` and a model glob pinning
 `surface = "anthropic"` (the `orclaude` recipe in
 ["Upgrading from the old schema"](llm-provider-config-and-launch.md#upgrading-from-the-old-schema)).
 Surface is derived from the model row's family, with overlay pins where a
@@ -494,12 +493,10 @@ Load rules, enforced with errors that name the instance and key:
   a typo that parsed would ride the request to the provider.
 - `$ENV`/`${ENV}`/`$$` expansion in `api_key`, `credential_headers`, and
   `vars` happens at resolve time, so one instance's missing variable never
-  blocks another. **This is a behavior change:** an unset variable in
-  `api_key` used to be a hard load-time error; now it yields an empty
+  blocks another. An unset variable in `api_key` yields an empty
   `Credential` with a `Warnings: no credential (<NAME> unset)` entry, and the
   error is deferred to the first request. In `headers` an unset variable
-  **drops the header** (it used to be a load error — another explicit
-  behavior change), and an empty string removes an inherited header of that name.
+  **drops the header**, and an empty string removes an inherited header of that name.
 - credential inheritance **stops at the endpoint**: an instance whose literal
   `base_url` differs from its base's does not inherit the base's
   `APIKeyEnv`, so a gateway never receives a vendor key by accident.
@@ -512,8 +509,8 @@ Load rules, enforced with errors that name the instance and key:
   `auth_header` entry for header auth, case-insensitive — so a row that
   overrides `auth_header` moves the credential slot with it.
 
-`type`, `api_style`, `quirks`, `[instances.*]`, and `compat` are gone — a
-file using any of them fails to load; see
+The current schema rejects `type`, `api_style`, `quirks`, `[instances.*]`, and
+`compat`. For replacements and changes to missing-variable handling, see
 ["Upgrading from the old schema"](llm-provider-config-and-launch.md#upgrading-from-the-old-schema).
 
 ### Credential resolution order
