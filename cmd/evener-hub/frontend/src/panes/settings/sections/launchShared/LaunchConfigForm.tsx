@@ -67,13 +67,11 @@ export interface LaunchConfigFormProps {
   options: LaunchOption[];
   layer: LaunchConfigLayerName;
   current: LaunchConfigLayer;
-  /** The (separately-fetched) global layer, project-layer callers only -
-   * drives the inline "default: {value}" hints. */
+  /** Inherited defaults for project-layer inline hints. The project caller
+   * supplies global + trusted repo values, excluding its local layer. */
   globalDefaults?: LaunchConfigLayer;
-  /** The effective layer of the caller's launch/resolve for this cwd
-   * (undefined until it lands or after it fails): unset fields whose empty
-   * marker is the generic one prepend their entry here - "high (default)",
-   * "true (use global default)". */
+  /** Display defaults for unset fields. Project callers must exclude their
+   * local layer, including from collection values. Undefined after read failure. */
   resolvedDefaults?: LaunchConfigLayer;
   successToast: string;
   validatePath: (path: string, kind: string) => Promise<PathValidateResponse>;
@@ -360,7 +358,11 @@ export function LaunchConfigForm({
               onChange={(v) => updateList(opt.wireField, v)}
               validatePath={validatePath}
               paths={paths}
-              inheritedItems={inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)}
+              inheritedItems={
+                layer === "project"
+                  ? asStringList(effective)
+                  : inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)
+              }
             />
           );
         case "modelList":
@@ -372,7 +374,9 @@ export function LaunchConfigForm({
               onChange={(v) => updateList(opt.wireField, v)}
               explicitEmpty={state.explicitEmpty[opt.wireField] ?? false}
               onExplicitEmptyChange={(checked) => updateExplicitEmpty(opt.wireField, checked)}
-              inheritedItems={inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)}
+              inheritedItems={
+                state.explicitEmpty[opt.wireField] || state.lists[opt.wireField]?.length ? [] : asStringList(effective)
+              }
             />
           );
         case "envMap": {
@@ -394,7 +398,11 @@ export function LaunchConfigForm({
               items={state.mcpLists[opt.wireField] ?? []}
               onChange={(v) => updateMcpList(opt.wireField, v)}
               validateCommand={(command) => validatePath(command, "command")}
-              inheritedItems={inheritedItems(effective, state.mcpLists[opt.wireField] ?? [], (s) => s.name, asMcpList)}
+              inheritedItems={
+                layer === "project"
+                  ? asMcpList(effective)
+                  : inheritedItems(effective, state.mcpLists[opt.wireField] ?? [], (s) => s.name, asMcpList)
+              }
             />
           );
       }
@@ -464,7 +472,7 @@ export function LaunchConfigForm({
       )}
       <div className={CLASS.actions}>
         <Button type="button" onClick={() => void handleSubmit()} disabled={busy}>
-          Save launch defaults
+          {layer === "project" ? "Save local overrides" : "Save launch defaults"}
         </Button>
         <p className={CLASS.status} aria-live="polite" data-testid="launch-config-status" data-state={status?.kind}>
           {status?.text}

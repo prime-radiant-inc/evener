@@ -13,6 +13,7 @@ import { HostScopedSurface } from "./hostScopedSurface";
 import { RepositoryConfigSection } from "./inrepo";
 import type { LaunchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
+import { projectInheritedDefaults } from "./launchShared/projectInheritedDefaults";
 import styles from "./project.module.css";
 import { useHostScopedLoad, useLaunchConfigRefresh } from "./useConnectedEffect";
 
@@ -40,7 +41,7 @@ function useQueryCwd(): string {
 type LoadState =
   | { phase: "loading" }
   | { phase: "error"; message: string }
-  | { phase: "ready"; options: LaunchOption[]; current: LaunchConfigLayer; globalDefaults: LaunchConfigLayer };
+  | { phase: "ready"; options: LaunchOption[]; current: LaunchConfigLayer };
 
 export interface ProjectSectionProps {
   /** Unused - kept so this component's signature matches every other
@@ -52,10 +53,8 @@ export interface ProjectSectionProps {
 }
 
 /**
- * Per-project launch overrides: layered on top of the global Evener launch
- * defaults. Only fields set here override the global ones. The global layer
- * is fetched read-only, purely to drive the "default: {value}" inline hints
- * - this page never writes it.
+ * Per-project launch overrides sit above trusted repository settings and
+ * session defaults. Inheritance hints exclude the saved local layer.
  */
 export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
   const cwd = useQueryCwd();
@@ -83,11 +82,8 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
   // A re-read of what this pane is already showing that failed: the form (and
   // the draft in it) stays, and this says the values on screen may be stale.
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  // The effective layer of a best-effort resolve(cwd): unset fields whose
-  // empty marker is generic prepend their entry here ("high (use global
-  // default)"). Undefined until the resolve lands, on a resolve failure, and
-  // cleared on every cwd change so one project's labels never leak into the
-  // next project's form.
+  // Lower-layer display values, never the effective local result. Undefined
+  // on a failed resolve, and cleared on a context change to prevent stale hints.
   const [resolvedDefaults, setResolvedDefaults] = useState<LaunchConfigLayer | undefined>(undefined);
 
   // useHostScopedLoad (not a bare useEffect): a direct deep link to
@@ -112,21 +108,20 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
         setRefreshError(null);
       }
       try {
-        const [schema, current, globalDefaults, resolved] = await Promise.all([
+        const [schema, current, resolved] = await Promise.all([
           store.getState().schema(),
           store.getState().getLayer(cwd, "project"),
-          store.getState().getLayer(cwd, "global"),
           store
             .getState()
             .resolve(cwd)
             .catch(() => null),
         ]);
         if (isCancelled()) return false;
-        setLoad({ phase: "ready", options: schema.options, current, globalDefaults });
+        setLoad({ phase: "ready", options: schema.options, current });
         setRefreshError(null);
         // resolve() is best effort: a null answer means it failed, so the
         // inherited-value labels must not keep describing the previous read.
-        setResolvedDefaults(resolved?.effective);
+        setResolvedDefaults(resolved ? projectInheritedDefaults(resolved, schema.options) : undefined);
         return true;
       } catch (err) {
         // `false` tells the hook this run did NOT put content on screen, so the
@@ -172,7 +167,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
       <h3>Local overrides</h3>
       <p className={CLASS.help}>
         Saved in <code>.evener/launch.local.toml</code> for this directory. These values override session defaults and
-        trusted repository settings.
+        trusted repository settings. Unset fields inherit repository settings first, then session defaults.
       </p>
       {load.phase === "loading" && <Loader label="Loading project launch settings" />}
       {load.phase === "error" && (
@@ -208,7 +203,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
             options={load.options}
             layer="project"
             current={load.current}
-            globalDefaults={load.globalDefaults}
+            globalDefaults={resolvedDefaults}
             resolvedDefaults={resolvedDefaults}
             successToast="Project launch settings saved"
             validatePath={(path, kind) => store.getState().validatePath(path, kind)}
@@ -216,7 +211,7 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
             host={host}
             draftOwner={store}
             onSave={(config) => store.getState().setLayer(cwd, "project", config)}
-            onSaved={(resolved) => setResolvedDefaults(resolved.effective)}
+            onSaved={(resolved) => setResolvedDefaults(projectInheritedDefaults(resolved, load.options))}
           />
         </>
       )}

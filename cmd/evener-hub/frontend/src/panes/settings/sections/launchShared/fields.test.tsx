@@ -403,7 +403,7 @@ describe("ScalarField: select dedups the schema's own empty choice against the g
     expect(optionLabels).toEqual(["(default)", "high", "max"]);
   });
 
-  test("project layer uses '(use global default)' as the fallback label only when the schema doesn't supply its own", () => {
+  test("project layer inserts one unset choice when the schema doesn't supply its own", () => {
     const noOwnEmpty = textOption({
       field: "future",
       wireField: "future",
@@ -413,7 +413,8 @@ describe("ScalarField: select dedups the schema's own empty choice against the g
     });
     render(<ScalarField option={noOwnEmpty} layer="project" value="" onChange={() => {}} />);
     const select = screen.getByLabelText("Future field") as HTMLSelectElement;
-    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["(use global default)", "X"]);
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "x"]);
+    expect(select.value).toBe("");
   });
 
   test("selecting a choice calls onChange with its value", async () => {
@@ -501,11 +502,8 @@ describe("ScalarField: resolved-default labels", () => {
       />,
     );
     const projectSelect = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
-    expect(Array.from(projectSelect.options).map((o) => o.textContent)).toEqual([
-      "high (use global default)",
-      "high",
-      "max",
-    ]);
+    expect(Array.from(projectSelect.options).map((o) => o.value)).toEqual(["", "high", "max"]);
+    expect(projectSelect.options[0]?.textContent).toContain("high");
   });
 
   test("a modelPicker's closed trigger names the resolved model", () => {

@@ -120,7 +120,7 @@ test("with this hub selected the section issues the plain launch calls and never
   render(<ProjectHostScope sectionId="project" />);
   const user = userEvent.setup();
   await screen.findByLabelText("Agent");
-  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+  await user.click(screen.getByRole("button", { name: "Save local overrides" }));
 
   await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/launch/setLayer")).toBe(true));
   expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true);
@@ -175,7 +175,7 @@ test("discarding during launch validation cancels the unsent save and removes st
     </SettingsDraftsProvider>,
   );
   await user.type(await screen.findByLabelText("Agent"), "draft-agent");
-  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+  await user.click(screen.getByRole("button", { name: "Save local overrides" }));
   await act(async () => navigate("/settings/theme"));
   await user.click(screen.getByRole("button", { name: "Stay" }));
   expect(screen.getByLabelText("Agent")).toHaveProperty("value", "draft-agent");
@@ -210,14 +210,18 @@ test("selecting a remote host shows THAT host's project layer, never the control
     if (forwarded.method === "evener/launch/getLayer")
       return (forwarded.params.layer === "project" ? {} : { agent: "beta-agent" }) as never;
     if (forwarded.method === "evener/launch/resolve")
-      return { effective: { agent: "beta-agent" }, layers: {}, provenance: {} } as never;
+      return {
+        effective: { agent: "beta-agent" },
+        layers: { global: { agent: "beta-agent" } },
+        provenance: { agent: "global" },
+      } as never;
     throw new Error(`unexpected forwarded method ${forwarded.method}`);
   });
 
   setSettingsHost("beta");
   render(<ProjectHostScope sectionId="project" />);
 
-  await screen.findByText("default: beta-agent");
+  await waitFor(() => expect((screen.getByLabelText("Agent") as HTMLInputElement).placeholder).toContain("beta-agent"));
   expect(controllerLaunchCalls(fake)).toEqual([]);
 });
 
@@ -246,7 +250,7 @@ test("a remote save writes that host's project layer through the proxy, never th
   render(<ProjectHostScope sectionId="project" />);
   const user = userEvent.setup();
   await screen.findByLabelText("Agent");
-  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+  await user.click(screen.getByRole("button", { name: "Save local overrides" }));
 
   await waitFor(() =>
     expect(
@@ -323,7 +327,11 @@ test("switching hosts keeps the route's ?cwd=, re-scoping the same project to th
     if (forwarded.method === "evener/launch/getLayer")
       return (forwarded.params.layer === "project" ? {} : { agent: "beta-agent" }) as never;
     if (forwarded.method === "evener/launch/resolve")
-      return { effective: { agent: "beta-agent" }, layers: {}, provenance: {} } as never;
+      return {
+        effective: { agent: "beta-agent" },
+        layers: { global: { agent: "beta-agent" } },
+        provenance: { agent: "global" },
+      } as never;
     throw new Error(`unexpected forwarded method ${forwarded.method}`);
   });
 
@@ -340,7 +348,7 @@ test("switching hosts keeps the route's ?cwd=, re-scoping the same project to th
   expect(new URL(window.location.href).searchParams.get("host")).toBe("beta");
   expect(shownReasons()).not.toContain("no-project");
   // And the same project's layer now comes from beta.
-  await screen.findByText("default: beta-agent");
+  await waitFor(() => expect((screen.getByLabelText("Agent") as HTMLInputElement).placeholder).toContain("beta-agent"));
   expect(screen.getByText("/repo")).toBeTruthy();
 });
 
@@ -430,5 +438,5 @@ test("a launch-config change for the selected host re-reads the project layer an
   });
 
   await waitFor(() => expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("beta-agent-2"));
-  expect(forwardedLayerCalls(fake, "beta")).toBe(reads + 2);
+  expect(forwardedLayerCalls(fake, "beta")).toBe(reads + 1);
 });
