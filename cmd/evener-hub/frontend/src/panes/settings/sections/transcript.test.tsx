@@ -120,20 +120,35 @@ async function mountReadySection(
   await waitFor(() => expect(transcriptDisplayStore.getState().hubLoading).toBe(false));
 }
 
-test("renders Desktop then Mobile stacked cards, each with its own example preview", () => {
+test.each([false, true])("shows one layout initialized from the current viewport, mobile=%s", async (mobile) => {
+  vi.stubGlobal("matchMedia", () => ({ matches: mobile, addEventListener() {}, removeEventListener() {} }));
   transcriptDisplayStore.setState({ hubSupport: "supported" });
   renderWithToasts();
-
-  const cards = screen.getAllByRole("article");
-  expect(cards.map((card) => card.getAttribute("data-testid"))).toEqual([
-    "transcript-display-card-desktop",
-    "transcript-display-card-mobile",
+  expect(screen.getAllByRole("article").map((card) => card.getAttribute("data-testid"))).toEqual([
+    `transcript-display-card-${mobile ? "mobile" : "desktop"}`,
   ]);
-  expect(cards.every((card) => card.querySelector(":scope > div") !== null)).toBe(true);
-  for (const layout of ["desktop", "mobile"]) {
-    const canvas = screen.getByTestId(`transcript-display-preview-canvas-${layout}`);
-    expect(within(canvas).getByRole("heading", { level: 3 })).toBeTruthy();
-  }
+  await userEvent.setup().click(screen.getByRole("radio", { name: mobile ? "Desktop" : "Mobile" }));
+  expect(screen.getAllByRole("article").map((card) => card.getAttribute("data-testid"))).toEqual([
+    `transcript-display-card-${mobile ? "desktop" : "mobile"}`,
+  ]);
+  expect(screen.getByTestId(`transcript-display-preview-canvas-${mobile ? "desktop" : "mobile"}`)).toBeTruthy();
+});
+
+test("clearing the selected browser override follows shared defaults without writing them", async () => {
+  const client = new FakeClient("ready");
+  await mountReadySection(client);
+  const override = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  act(() => {
+    transcriptDisplayStore.getState().setLocal("desktop", override);
+    transcriptDisplayStore.getState().setLocal("mobile", override);
+  });
+  const hub = transcriptDisplayStore.getState().hub;
+  await userEvent.setup().click(screen.getByRole("button", { name: "Use the shared default" }));
+  expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
+  expect(transcriptDisplayStore.getState().local.mobile).toEqual(override);
+  expect(transcriptDisplayStore.getState().effective("desktop")).toEqual(hub.desktop?.config);
+  expect(transcriptDisplayStore.getState().hub).toEqual(hub);
+  expect(client.calls.filter((call) => call.method === "evener/settings/transcriptDisplay/patch")).toEqual([]);
 });
 
 test("shows an accessible status for an unknown or older hub", () => {
@@ -145,7 +160,11 @@ test("shows an accessible status for an unknown or older hub", () => {
   transcriptDisplayStore.setState({ hubSupport: "unsupported" });
   renderWithToasts();
   expect(screen.getByRole("status").getAttribute("data-reason")).toBe("unsupported");
-  expect(screen.getAllByRole("radio").every((radio) => (radio as HTMLButtonElement).disabled)).toBe(true);
+  expect(
+    within(screen.getByTestId("transcript-display-card-desktop"))
+      .getAllByRole("radio")
+      .every((radio) => (radio as HTMLButtonElement).disabled),
+  ).toBe(true);
 });
 
 test("keeps the preview on the draft until the hub acknowledges the canonical response", async () => {
@@ -470,20 +489,22 @@ test("keeps Desktop and Mobile pending saves, failures, retry, and Toasts indepe
   await mountReadySection(client);
   const user = userEvent.setup();
   await user.click(screen.getAllByRole("radio", { name: "Full detail" })[0]!);
-  await user.click(screen.getAllByRole("radio", { name: "Full detail" })[1]!);
+  await user.click(screen.getByRole("radio", { name: "Mobile" }));
+  await user.click(screen.getByRole("radio", { name: "Full detail" }));
   await waitFor(() => expect(responses).toHaveLength(2));
+  expect(transcriptDisplayStore.getState().drafts).toEqual({ desktop: draft, mobile: draft });
+  expect(screen.getAllByRole("status")).toHaveLength(1);
+  await user.click(screen.getByRole("radio", { name: "Desktop" }));
   const desktop = screen.getByTestId("transcript-display-card-desktop");
-  const mobile = screen.getByTestId("transcript-display-card-mobile");
-  expect(screen.getAllByRole("status")).toHaveLength(2);
 
   responses.find((entry) => entry.layout === "desktop")?.response.reject(new WireError("desktop unavailable", -32000));
   expect((await within(desktop).findByRole("alert")).textContent).toContain("desktop unavailable");
-  expect(within(mobile).getByRole("status")).toBeTruthy();
+  expect(transcriptDisplayStore.getState().drafts.mobile).toEqual(draft);
   expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBe("");
 
   await user.click(within(desktop).getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(responses).toHaveLength(3));
-  expect(screen.getAllByRole("status")).toHaveLength(2);
+  expect(screen.getAllByRole("status")).toHaveLength(1);
   responses
     .find((entry) => entry.layout === "mobile")
     ?.response.resolve({ layout: "mobile", revision: 2, config: toWireConfig(draft) });

@@ -1,0 +1,179 @@
+{
+  "pages": [
+    {
+      "source": "docs/index.md",
+      "path": "index.md",
+      "title": "Documentation",
+      "group": "Start"
+    },
+    {
+      "source": "docs/getting-started.md",
+      "path": "getting-started.md",
+      "title": "Get started",
+      "group": "Start"
+    },
+    {
+      "source": "docs/concepts.md",
+      "path": "concepts.md",
+      "title": "How Evener works",
+      "group": "Start"
+    },
+    {
+      "source": "docs/daily-work.md",
+      "path": "daily-work.md",
+      "title": "Daily work",
+      "group": "Use Evener"
+    },
+    {
+      "source": "docs/native-app.md",
+      "path": "native-app.md",
+      "title": "Native app",
+      "group": "Use Evener"
+    },
+    {
+      "source": "docs/memory.md",
+      "path": "memory.md",
+      "title": "Memory",
+      "group": "Use Evener"
+    },
+    {
+      "source": "docs/configuration.md",
+      "path": "configuration.md",
+      "title": "Configuration",
+      "group": "Configure"
+    },
+    {
+      "source": "docs/connecting-a-provider.md",
+      "path": "connecting-a-provider.md",
+      "title": "Connect a provider",
+      "group": "Configure"
+    },
+    {
+      "source": "docs/llm-providers.md",
+      "path": "llm-providers.md",
+      "title": "Model providers",
+      "group": "Configure"
+    },
+    {
+      "source": "docs/llm-provider-config-and-launch.md",
+      "path": "llm-provider-config-and-launch.md",
+      "title": "Provider configuration reference",
+      "group": "Configure"
+    },
+    {
+      "source": "docs/ollama.md",
+      "path": "ollama.md",
+      "title": "Local models with Ollama",
+      "group": "Configure"
+    },
+    {
+      "source": "docs/sandboxing.md",
+      "path": "sandboxing.md",
+      "title": "Sandboxing",
+      "group": "Configure"
+    },
+    {
+      "source": "docs/environment-variables.md",
+      "path": "environment-variables.md",
+      "title": "Environment variables",
+      "group": "Configure"
+    },
+    {
+      "source": "docs/extensions.md",
+      "path": "extensions.md",
+      "title": "Choose an extension",
+      "group": "Extend"
+    },
+    {
+      "source": "docs/skills.md",
+      "path": "skills.md",
+      "title": "Skills",
+      "group": "Extend"
+    },
+    {
+      "source": "docs/plugins.md",
+      "path": "plugins.md",
+      "title": "Plugins",
+      "group": "Extend"
+    },
+    {
+      "source": "docs/hooks.md",
+      "path": "hooks.md",
+      "title": "Hooks",
+      "group": "Extend"
+    },
+    {
+      "source": "docs/mcp.md",
+      "path": "mcp.md",
+      "title": "MCP servers",
+      "group": "Extend"
+    },
+    {
+      "source": "docs/cli.md",
+      "path": "cli.md",
+      "title": "CLI reference",
+      "group": "Automate and integrate"
+    },
+    {
+      "source": "docs/automation.md",
+      "path": "automation.md",
+      "title": "Automation",
+      "group": "Automate and integrate"
+    },
+    {
+      "source": "docs/integrations.md",
+      "path": "integrations.md",
+      "title": "Build an integration",
+      "group": "Automate and integrate"
+    },
+    {
+      "source": "docs/appwire-protocol.md",
+      "path": "reference/appwire.md",
+      "title": "AppWire protocol",
+      "group": "Automate and integrate"
+    },
+    {
+      "source": "docs/subagent-runtime-contracts.md",
+      "path": "subagent-runtime-contracts.md",
+      "title": "Delegate runtime contracts",
+      "group": "Automate and integrate"
+    },
+    {
+      "source": "docs/troubleshooting.md",
+      "path": "troubleshooting.md",
+      "title": "Troubleshooting",
+      "group": "Operate and troubleshoot"
+    },
+    {
+      "source": "docs/evener-hub.md",
+      "path": "evener-hub.md",
+      "title": "Run the hub",
+      "group": "Operate and troubleshoot"
+    },
+    {
+      "source": "docs/evener-hub-remote-operations.md",
+      "path": "evener-hub-remote-operations.md",
+      "title": "Remote operations",
+      "group": "Operate and troubleshoot"
+    },
+    {
+      "source": "docs/device-pairing.md",
+      "path": "device-pairing.md",
+      "title": "Device pairing reference",
+      "group": "Operate and troubleshoot"
+    },
+    {
+      "source": "docs/security.md",
+      "path": "security.md",
+      "title": "Security",
+      "group": "Operate and troubleshoot"
+    },
+    {
+      "source": "docs/job-control.md",
+      "path": "job-control.md",
+      "title": "Job control",
+      "group": "Operate and troubleshoot"
+    }
+  ],
+  "assets": []
+}

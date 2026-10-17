@@ -64,10 +64,15 @@ test("Input edits shortcuts through the hub owner", async () => {
   render(<Settings params={{ section: "keybindings" }} paneId="settings-input" focused={true} />);
   const user = userEvent.setup();
   await user.click(screen.getByRole("switch", { name: "Enter sends" }));
+  await user.click(screen.getByRole("button", { name: "Customize shortcuts" }));
   await user.click(screen.getByRole("button", { name: "Change the shortcut for Open the command palette" }));
-  fireEvent.keyDown(screen.getByRole("textbox"), { key: "p", code: "KeyP", ctrlKey: true });
-  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
-  await waitFor(() => expect(screen.queryByRole("textbox")).toBeNull());
+  fireEvent.keyDown(screen.getByRole("textbox", { name: /Press the new shortcut/ }), {
+    key: "p",
+    code: "KeyP",
+    ctrlKey: true,
+  });
+  fireEvent.keyDown(screen.getByRole("textbox", { name: /Press the new shortcut/ }), { key: "Enter" });
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull());
   const patches = client.calls.filter((call) => call.method === "evener/settings/keybindings/patch");
   expect(patches).toHaveLength(1);
   expect(patches[0]?.params).toMatchObject({

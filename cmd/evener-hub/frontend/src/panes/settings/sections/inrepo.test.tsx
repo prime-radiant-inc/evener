@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
-import { InRepoSection } from "./inrepo";
+import { RepositoryConfigSection } from "./inrepo";
 import { shownReasons } from "./reasonTestUtils";
 
 beforeAll(() => {
@@ -30,10 +30,9 @@ function inRepoState(): string | null {
   return screen.getByTestId("inrepo-status").getAttribute("data-state");
 }
 
-/** Waits for the "no in-repo file" state for `cwd`. */
-async function noFileFound(cwd: string): Promise<void> {
+/** Waits for the absent repository-file state. */
+async function noFileFound(): Promise<void> {
   await waitFor(() => expect(inRepoState()).toBe("absent"));
-  expect(screen.getByTestId("inrepo-status").textContent).toContain(cwd);
 }
 
 beforeEach(() => {
@@ -47,22 +46,22 @@ afterEach(() => {
 });
 
 describe("initial load", () => {
-  test("pre-fills the cwd input from localStorage's lastCwd and resolves it immediately", async () => {
-    localStorage.setItem("lastCwd", "/repo");
+  test("resolves the contextual directory rather than lastCwd", async () => {
+    localStorage.setItem("lastCwd", "/unrelated");
     const fake = connectFakeClient();
     fake.on("evener/launch/resolve", (params) => {
       expect(params).toEqual({ cwd: "/repo", launchOverrides: undefined });
       return resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" });
     });
-    render(<InRepoSection sectionId="inrepo" />);
-    expect(screen.getByRole("button", { name: "Working dir: /repo — browse" })).toBeTruthy();
-    await noFileFound("/repo");
+    render(<RepositoryConfigSection host="local" cwd="/repo" />);
+    expect(screen.queryByRole("button", { name: /working dir/i })).toBeNull();
+    await noFileFound();
   });
 
   // FIX 2b: the loading phase gets the Loader widget instead of a static
   // "Loading…" string.
   test("shows a Loader while the resolve is in flight", async () => {
-    localStorage.setItem("lastCwd", "/repo");
+    localStorage.setItem("lastCwd", "/unrelated");
     const fake = connectFakeClient();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -72,106 +71,59 @@ describe("initial load", () => {
       await gate;
       return resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" });
     });
-    render(<InRepoSection sectionId="inrepo" />);
+    render(<RepositoryConfigSection host="local" cwd="/repo" />);
     expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
     expect(inRepoState()).toBe("loading");
 
     release();
-    await noFileFound("/repo");
+    await noFileFound();
   });
 
-  test("no lastCwd in storage and an empty field: shows 'Enter a working directory.' with no RPC call", () => {
+  test("an empty contextual directory issues no RPC", () => {
     const fake = connectFakeClient();
     let called = false;
     fake.on("evener/launch/resolve", () => {
       called = true;
       return resolvedWithRepo(undefined);
     });
-    render(<InRepoSection sectionId="inrepo" />);
+    render(<RepositoryConfigSection host="local" cwd="" />);
     expect(inRepoState()).toBe("empty");
     expect(called).toBe(false);
   });
 
-  // Pins the stale-closure bug useConnectedEffect's deferred-fire design can
-  // introduce for any caller closing over mutable local state at mount time:
-  // this section mounts before the connection is ready (a direct deep link
-  // racing AppShell's own connect() handshake - useConnectedEffect's own
-  // rationale), the user edits the field DURING that wait, and the
-  // eventually-deferred initial resolve must reflect what they're now
-  // looking at, not the value the effect closed over at mount.
-  test("a directory draft does not replace the initial directory when the connection becomes ready", async () => {
-    localStorage.setItem("lastCwd", "/initial");
-    const fake = new FakeClient("idle"); // NOT ready yet - the deferred-fire path
-    fake.on("evener/path/validate", ({ path }) => ({ valid: true, path: path === "~" ? "/home" : path }));
-    fake.on("evener/paths/complete", () => ({ data: [] }));
+  test("a directory change before connection readiness resolves only the current context", async () => {
+    const fake = new FakeClient("idle");
     connectionStore.getState().connect(fake);
-    const resolvedCwds: string[] = [];
-    fake.on("evener/launch/resolve", (params) => {
-      resolvedCwds.push(params.cwd);
-      return resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" });
-    });
-    render(<InRepoSection sectionId="inrepo" />);
-    expect(screen.getByLabelText(/working dir/i).textContent).toContain("/initial");
-
-    // The user edits the field WHILE still waiting for the handshake.
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /working dir/i }));
-    const input = await screen.findByRole("textbox", { name: "Path" });
-    await user.clear(input);
-    await user.type(input, "/edited");
-    expect(resolvedCwds).toEqual([]); // not ready yet - nothing has fired
-
-    // The connection becomes ready - the deferred initial resolve fires now.
-    act(() => {
-      fake.emitReady();
-    });
-
-    await waitFor(() => expect(resolvedCwds).toEqual(["/initial"]));
-    await user.type(input, "{Enter}");
-    await user.click(screen.getByRole("button", { name: "Use this folder" }));
-    await waitFor(() => expect(resolvedCwds).toEqual(["/initial", "/edited"]));
-  });
-});
-
-describe("confirmed-directory re-resolve", () => {
-  test("browsing and blur do not refresh; confirmation does", async () => {
-    const fake = connectFakeClient();
     const calls: string[] = [];
-    fake.on("evener/launch/resolve", (params) => {
-      calls.push(params.cwd);
-      return resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" });
+    fake.on("evener/launch/resolve", ({ cwd }) => {
+      calls.push(cwd);
+      return resolvedWithRepo(undefined);
     });
-    render(<InRepoSection sectionId="inrepo" />);
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /working dir/i }));
-    const input = await screen.findByRole("textbox", { name: "Path" });
-    await user.clear(input);
-    await user.type(input, "/repo{Enter}");
-    expect(calls).toEqual([]); // no RPC per keystroke
-    await user.tab();
+    const view = render(<RepositoryConfigSection host="local" cwd="/initial" />);
+    view.rerender(<RepositoryConfigSection host="local" cwd="/current" />);
     expect(calls).toEqual([]);
-    await user.click(screen.getByRole("button", { name: "Use this folder" }));
-    await waitFor(() => expect(calls).toEqual(["/repo"]));
+    act(() => fake.emitReady());
+    await waitFor(() => expect(calls).toEqual(["/current"]));
   });
 });
 
 describe("trust states", () => {
   test("absent: shows the no-file message and nothing else (no preview, no trust button)", async () => {
-    localStorage.setItem("lastCwd", "/repo");
+    localStorage.setItem("lastCwd", "/unrelated");
     const fake = connectFakeClient();
     fake.on("evener/launch/resolve", () => resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" }));
-    render(<InRepoSection sectionId="inrepo" />);
-    await noFileFound("/repo");
+    render(<RepositoryConfigSection host="local" cwd="/repo" />);
+    await noFileFound();
     expect(screen.queryByRole("button", { name: /trust this file/i })).toBeNull();
   });
 
   test("trusted: shows the content hash, the preview, and no trust button", async () => {
-    localStorage.setItem("lastCwd", "/repo");
+    localStorage.setItem("lastCwd", "/unrelated");
     const fake = connectFakeClient();
     fake.on("evener/launch/resolve", () =>
       resolvedWithRepo({ path: ".evener/launch.toml", trust: "trusted", hash: "abc123", preview: "model = 'x'" }),
     );
-    render(<InRepoSection sectionId="inrepo" />);
+    render(<RepositoryConfigSection host="local" cwd="/repo" />);
     await waitFor(() => expect(inRepoState()).toBe("trusted"));
     expect(screen.getByText("abc123")).toBeTruthy();
     expect(screen.getByText("model = 'x'")).toBeTruthy();
@@ -180,18 +132,73 @@ describe("trust states", () => {
   });
 
   test.each(["untrusted", "changed", "rejected"])("%s: shows the trust button", async (trust) => {
-    localStorage.setItem("lastCwd", "/repo");
+    localStorage.setItem("lastCwd", "/unrelated");
     const fake = connectFakeClient();
     fake.on("evener/launch/resolve", () => resolvedWithRepo({ path: ".evener/launch.toml", trust, hash: "abc123" }));
-    render(<InRepoSection sectionId="inrepo" />);
+    render(<RepositoryConfigSection host="local" cwd="/repo" />);
     await waitFor(() => expect(inRepoState()).toBe(trust));
     expect(screen.getByRole("button", { name: /trust this file/i })).toBeTruthy();
   });
 });
 
 describe("trust action", () => {
+  test("a pending trust failure belongs only to the directory that submitted it", async () => {
+    const fake = connectFakeClient();
+    let rejectTrust: (reason: Error) => void = () => {
+      throw new Error("trust not started");
+    };
+    fake.on("evener/launch/resolve", ({ cwd }) =>
+      resolvedWithRepo({
+        path: `${cwd}/.evener/launch.toml`,
+        trust: "untrusted",
+        hash: cwd,
+        preview: cwd,
+      }),
+    );
+    fake.on(
+      "evener/launch/trustRepo",
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectTrust = reject;
+        }),
+    );
+    const view = render(<RepositoryConfigSection host="local" cwd="/old" />);
+    await userEvent.setup().click(await screen.findByRole("button", { name: /trust this file/i }));
+    view.rerender(<RepositoryConfigSection host="local" cwd="/new" />);
+    await screen.findByText("/new");
+    await act(async () => rejectTrust(new Error("old approval failed")));
+    expect(shownReasons()).not.toContain("trust-failed");
+    expect((screen.getByRole("button", { name: /trust this file/i }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByText("/old")).toBeNull();
+  });
+
+  test("a late resolve cannot replace the current directory preview", async () => {
+    const fake = connectFakeClient();
+    let release: (value: LaunchConfigResolved) => void = () => {
+      throw new Error("resolve not started");
+    };
+    fake.on("evener/launch/resolve", ({ cwd }) =>
+      cwd === "/old"
+        ? new Promise((resolve) => {
+            release = resolve;
+          })
+        : resolvedWithRepo({ path: `${cwd}/.evener/launch.toml`, trust: "untrusted", hash: cwd, preview: cwd }),
+    );
+    const view = render(<RepositoryConfigSection host="local" cwd="/old" />);
+    view.rerender(<RepositoryConfigSection host="local" cwd="/new" />);
+    await screen.findByText("/new");
+    await act(async () =>
+      release(
+        resolvedWithRepo({ path: "/old/.evener/launch.toml", trust: "trusted", hash: "old-hash", preview: "/old" }),
+      ),
+    );
+    expect(inRepoState()).toBe("untrusted");
+    expect(screen.queryByText("/old")).toBeNull();
+    expect(screen.getByText("/new")).toBeTruthy();
+  });
+
   test("clicking Trust calls trustRepo(cwd, hash) then re-resolves", async () => {
-    localStorage.setItem("lastCwd", "/repo");
+    localStorage.setItem("lastCwd", "/unrelated");
     const fake = connectFakeClient();
     let resolveCalls = 0;
     fake.on("evener/launch/resolve", () => {
@@ -204,7 +211,7 @@ describe("trust action", () => {
       expect(params).toEqual({ cwd: "/repo", hash: "abc123" });
       return resolvedWithRepo({ path: ".evener/launch.toml", trust: "trusted", hash: "abc123" });
     });
-    render(<InRepoSection sectionId="inrepo" />);
+    render(<RepositoryConfigSection host="local" cwd="/repo" />);
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: /trust this file/i }));
     await waitFor(() => expect(inRepoState()).toBe("trusted"));
@@ -212,7 +219,7 @@ describe("trust action", () => {
   });
 
   test("a trust failure appends an inline error while keeping the preview/note visible", async () => {
-    localStorage.setItem("lastCwd", "/repo");
+    localStorage.setItem("lastCwd", "/unrelated");
     const fake = connectFakeClient();
     fake.on("evener/launch/resolve", () =>
       resolvedWithRepo({ path: ".evener/launch.toml", trust: "untrusted", hash: "abc123", preview: "model = 'x'" }),
@@ -220,7 +227,7 @@ describe("trust action", () => {
     fake.on("evener/launch/trustRepo", () => {
       throw new Error("file changed since review");
     });
-    render(<InRepoSection sectionId="inrepo" />);
+    render(<RepositoryConfigSection host="local" cwd="/repo" />);
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: /trust this file/i }));
     // error is converted via friendlyErrorMessage: raw JS errors become the generic message
@@ -234,12 +241,12 @@ describe("trust action", () => {
 
 describe("resolve failure", () => {
   test("shows the load-failed state without the raw error", async () => {
-    localStorage.setItem("lastCwd", "/repo");
+    localStorage.setItem("lastCwd", "/unrelated");
     const fake = connectFakeClient();
     fake.on("evener/launch/resolve", () => {
       throw new Error("boom");
     });
-    render(<InRepoSection sectionId="inrepo" />);
+    render(<RepositoryConfigSection host="local" cwd="/repo" />);
     // error is converted via friendlyErrorMessage: raw JS errors become the generic message
     await waitFor(() => expect(inRepoState()).toBe("error"));
     // Assert the raw string no longer appears

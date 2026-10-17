@@ -2,6 +2,15 @@
 
 Breaking changes and migration notes for evener.
 
+## Unreleased — the `evener tui` subcommand is removed
+
+The interactive terminal dashboard (`evener tui`, `cmd/evener-tui`) is gone.
+The non-interactive CLI and the web and native clients are unchanged. `evener
+tui` is now an ordinary unknown first word: it is not a subcommand, so it runs
+as a prompt (or, with no prompt on an interactive terminal, prints usage and
+exits 1). Use the web UI served by `evener hub`, the native app, or the
+non-interactive CLI (`evener "<prompt>"`, `evener serve`, `evener doctor`).
+
 ## Unreleased — `evener-dev` is no longer installed
 
 `evener-dev` is repository dev and test tooling, not part of an install.
@@ -28,8 +37,8 @@ rm -f ~/.local/bin/evener-dev ~/.local/share/evener/bin/evener-dev
 The shared tool parameter that carries the agent's stated reason for a call
 was renamed from `purpose` to `intent`. New tool calls carry `intent` only.
 Readers fall back to `purpose` when `intent` is absent, so transcripts
-recorded before 2026-08-29 still render their tool-intent line in the hub,
-the TUI, and `evener doctor`.
+recorded before 2026-08-29 still render their tool-intent line in the hub
+and `evener doctor`.
 
 ## Unreleased — Binary consolidation
 
@@ -39,7 +48,7 @@ All standalone `evener-<x>` binaries are consolidated into two binaries:
 
 | Binary | Subcommands |
 |--------|-------------|
-| `evener` | `serve`, `hub`, `tui`, `doctor`, `migrate`, `openai`, `upgrade`, `plugin`, `launch-check` |
+| `evener` | `serve`, `hub`, `doctor`, `migrate`, `openai`, `upgrade`, `plugin`, `launch-check` |
 | `evener-dev` | `dev`, `fuzz-harvest`, `fuzzcov`, `fuzzregistry`, `internalcheck`, `tomlcheck`, `transcript-v2-upgrade` |
 
 The five old binaries (`evener-hub`, `evener-tui`, `evener-doctor`, `evener-migrate`,
@@ -59,10 +68,12 @@ evener-migrate
 
 # After
 evener hub
-evener tui
 evener doctor locate <session-id>
 evener migrate
 ```
+
+(The `evener-tui` row of this historical migration became `evener tui`; that
+subcommand was later removed — see the top of this file.)
 
 Dev/test tooling:
 

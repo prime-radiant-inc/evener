@@ -165,7 +165,7 @@ import {
 import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
-import { composerShowsStop } from "./session/composerSlot";
+import { composerRests, composerShowsStop } from "./session/composerSlot";
 import { ComposerFocus } from "./session/composerFocus";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
@@ -1853,6 +1853,11 @@ export function ConversationScreen({
 		(!conversation || canComposeFor(conversation));
 	const goalCommand = goalObjective(draft.record.draft, draft.record.images?.length);
 	const command = composerCommand(draft.record.draft, draft.record.images?.length);
+	// The draft's whole shape, said once: how many images it holds. The composer
+	// can't see the attachments, so the screen answers both "may it rest" and
+	// "does Stop take the slot" from this.
+	const imageCount = draft.record.images?.length ?? 0;
+	const draftMayRest = composerRests({ text: draft.record.draft, images: imageCount, editable: draft.loaded });
 	async function applyCommand(clear = false) {
 		const action = clear ? "goal" : command?.command.id;
 		if (
@@ -3368,6 +3373,7 @@ export function ConversationScreen({
 							<Composer
 								value={draft.record.draft}
 								editable={draft.loaded}
+								mayRest={draftMayRest}
 								onChangeText={(text) => {
 									// A "/" that starts an empty draft opens Commands and
 									// skills in its place (spec 8.5).
@@ -3395,7 +3401,7 @@ export function ConversationScreen({
 										connected,
 										canStop,
 										text: draft.record.draft,
-										images: draft.record.images?.length ?? 0,
+										images: imageCount,
 									})
 										? {
 												onStop: () => {

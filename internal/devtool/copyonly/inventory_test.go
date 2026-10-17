@@ -105,7 +105,7 @@ func testReport() Report {
 			{File: "agent/b_test.go", Line: 1, Test: "TestShowsUsage", Purpose: PurposeCopy},
 			{File: "agent/b_test.go", Line: 8, Test: "TestRetries", Purpose: PurposeBehavior},
 			{File: "cmd/evener-hub/frontend/src/a.test.tsx", Line: 3, Test: "shows the title", Purpose: PurposeCopy},
-			{File: "cmd/evener-tui/x_test.go", Line: 2, Test: "TestSaysHi", Purpose: PurposeCopy},
+			{File: "cmd/evener-doctor/x_test.go", Line: 2, Test: "TestSaysHi", Purpose: PurposeCopy},
 			{File: "hooks_test.go", Line: 7, Test: "TestHookRuns", Purpose: PurposeBehavior},
 		},
 	}
@@ -166,8 +166,8 @@ func TestWriteCopyOnly(t *testing.T) {
 	wantTable := "| area | copy-only (targets) | behavior, copy-only oracle (incidental) |\n" +
 		"|---|---:|---:|\n" +
 		"| `agent` | 1 | 1 |\n" +
+		"| `cmd/evener-doctor` | 1 |  |\n" +
 		"| `cmd/evener-hub/frontend` | 1 |  |\n" +
-		"| `cmd/evener-tui` | 1 |  |\n" +
 		"| `hooks_test.go` |  | 1 |\n" +
 		"| **all** | **3** | **2** |\n"
 	if table.String() != wantTable {
@@ -176,8 +176,8 @@ func TestWriteCopyOnly(t *testing.T) {
 	wantTSV := "file\tline\ttest\tpurpose\n" +
 		"agent/b_test.go\t1\tTestShowsUsage\tcopy\n" +
 		"agent/b_test.go\t8\tTestRetries\tbehavior\n" +
+		"cmd/evener-doctor/x_test.go\t2\tTestSaysHi\tcopy\n" +
 		"cmd/evener-hub/frontend/src/a.test.tsx\t3\tshows the title\tcopy\n" +
-		"cmd/evener-tui/x_test.go\t2\tTestSaysHi\tcopy\n" +
 		"hooks_test.go\t7\tTestHookRuns\tbehavior\n"
 	if tsv.String() != wantTSV {
 		t.Errorf("TSV:\n%s\nwant:\n%s", tsv.String(), wantTSV)

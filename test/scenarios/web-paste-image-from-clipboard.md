@@ -10,8 +10,7 @@ each file is canvas-re-encoded to PNG by `reencodeToPng`
 On submit the bytes flow through the appwire `thread/start` and land as an
 image part on the first user message.
 
-Companion scenarios: `web-drag-drop-image.md`, `web-file-picker-image.md`,
-`tui-paste-image-from-clipboard.md`, `tui-paste-image-path.md`.
+Companion scenarios: `web-drag-drop-image.md`, `web-file-picker-image.md`.
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map there is the single place these hooks are maintained.

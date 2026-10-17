@@ -81,7 +81,8 @@ export function NotificationsSection() {
   return (
     <div className={CLASS.root}>
       <p className={CLASS.intro}>
-        Title bar count is on by default; favicon, OS notification, and sound are opt-in. Saved per-browser.
+        Title bar count is on by default. Browser tab indicator, desktop notifications, and sound are opt-in. Saved
+        per-browser.
       </p>
 
       <Switch
@@ -92,14 +93,14 @@ export function NotificationsSection() {
       />
 
       <Switch
-        label="Favicon dot"
+        label="Browser tab indicator"
         checked={notifications.favicon}
         onChange={(value) => commitPlain("favicon", value)}
         description="Tint the favicon with the highest-attention session state."
       />
 
       <Switch
-        label="OS notification"
+        label="Desktop notifications"
         checked={notifications.os}
         onChange={(value) => void handleOsChange(value)}
         description="Native notification when a thread needs you or errors."
@@ -112,16 +113,18 @@ export function NotificationsSection() {
         description="Short tone on the same transitions."
       />
 
-      <RadioGroup
-        label="Loud for"
-        value={loudScope}
-        options={LOUD_SCOPE_OPTIONS}
-        onChange={(value) => {
-          prefsStore.getState().setNotificationsLoudScope(value as "asks" | "all");
-          push("success", "Settings saved");
-        }}
-        description="OS notification and sound fire for this scope only; the title/favicon count always reflects everything needing you."
-      />
+      {(notifications.os || notifications.sound) && (
+        <RadioGroup
+          label="Loud for"
+          value={loudScope}
+          options={LOUD_SCOPE_OPTIONS}
+          onChange={(value) => {
+            prefsStore.getState().setNotificationsLoudScope(value as "asks" | "all");
+            push("success", "Settings saved");
+          }}
+          description="Desktop notifications and sound use this scope; the title and tab indicator always reflect everything needing you."
+        />
+      )}
     </div>
   );
 }

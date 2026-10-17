@@ -895,7 +895,7 @@ const BackpressureCauseQueueSaturated = "queueSaturated"
 // already guards a double-apply. The envelope is the transient one the
 // shared dispatcher classifies (notAccepted plus automatic); message states
 // what happened on the hub and promises nothing about what the client will
-// do, because the TUI and the direct-send fallback do not retry
+// do, because the direct-send fallback does not retry
 // automatically.
 func BackpressureRefusal(clientMutationID, message string) WireError {
 	return WireError{

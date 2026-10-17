@@ -1,8 +1,46 @@
 # Job control
 
-Status: Evergreen contract for the shipped job-control system.
+Use this reference when an agent needs to launch, observe or stop asynchronous
+work. For shell scripting, start with [Automation](automation.md). For client
+requests, start with [Integrations](integrations.md): model-facing tools and
+AppWire methods are different interfaces.
 
-This document defines Evener's job-control model. It is an architecture/reference contract for the shipped system, not an implementation plan. Implementation sequencing belongs in separate ephemeral specs or plans.
+This is the exact contract for the shipped runtime on main. The detailed
+sections below preserve tool parameters, ownership rules and terminal outcomes.
+
+## Choose a lifetime
+
+| Need | Choose | Completion and cleanup |
+| --- | --- | --- |
+| A short shell command | Foreground shell mode | Waits inline, but long work can promote to a managed job. Inspect the returned status and exit code. |
+| Work while the agent continues | Background shell mode | Returns a `job_...` ID. Completion notifies the owner. Session close stops managed processes. |
+| A service that must survive the session | Detached shell mode | Returns a PID, not a managed job. The caller owns logs and shutdown. No job notifications or Evener stop control. |
+| Another agent's conversation | `delegate` | Returns a stable `dlg_...` ID. A completed run leaves the delegate idle and available for another message. |
+
+For background work, keep the returned ID, continue independent work, then wait
+for the completion notification. Use `job_status` or `job_list` once to orient
+yourself when necessary, not in a polling loop. A status read is not delivery of
+a delegate's result. Read retained shell bytes with `job:<job_id>` and delegate
+history with its session `transcript_ref`.
+
+```mermaid
+flowchart LR
+  Start[Launch managed work] --> ID[Retain typed identity]
+  ID --> Work[Do independent work]
+  Work --> Notice[Receive completion]
+  Notice --> Check[Inspect outcome and evidence]
+```
+
+Stopping uses `job_stop(target=...)`. A delegate stop includes its subtree;
+shell child stopping is controlled separately. A stop request and terminal
+settlement are different observations: use a bounded wait when you need to know
+that stopping finished. Never substitute a shell job ID for a delegate ID.
+
+Watches observe a source or a timer; they do not make output retention infinite.
+Watch frames can coalesce while the receiver is busy. Clear timers you no longer
+need, and read retained evidence when a frame alone cannot answer the question.
+Keep application-owned logs outside session scratch when a detached process must
+outlive the session.
 
 ## Summary
 
@@ -96,7 +134,7 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Use the delegate's session `transcript_ref` for its full conversation. A
   `job:` ref is shell output only.
 - Use `job_stop` only when the intent is to cancel or stop work. It does not delete output/history and it does not acknowledge results.
-- Use `job_list` to recover or inspect job inventory, not to wait for completion. Branch primarily on `status`; treat `reason` as diagnostic detail except for documented operational cases such as `runtime_lost`, `run_timeout`, `awaiting_permission`, and `stop_pending`.
+- Use `job_list` to recover or inspect job inventory, not to wait for completion. Branch primarily on `status`; treat `reason` as diagnostic detail except for documented operational cases such as `runtime_lost`, `run_timeout`, and `stop_pending`.
 
 Tool descriptions should avoid these phrases because they train bad behavior:
 
@@ -149,7 +187,7 @@ Terminal targets differ by watch type: only an `output_match`-only `job_watch` s
 | Parent job | A shell job that caused another shell job, when shell ancestry exists. |
 | Parent delegate | The `dlg_...` that owns a delegate-created shell job. |
 | Delegate session | The child Evener session owned by a stable delegate. |
-| Transcript ref | A safe reference to a Evener session transcript, e.g. `local:<sessionID>`. |
+| Transcript ref | A safe reference to an Evener session transcript, e.g. `local:<sessionID>`. |
 | Notification | Metadata injected into a visible session to tell the agent that a job reached a lifecycle/progress event. |
 | Output | Bounded textual/log content associated with a job. |
 
@@ -295,7 +333,8 @@ Launch-and-return (immediate background) shape:
 }
 ```
 
-Foreground with an explicit process-runtime cap:
+Compatibility example with an explicit process-runtime cap (not an advertised
+model-facing parameter):
 
 ```json
 {
@@ -313,20 +352,21 @@ Defaults and timeout semantics:
 - `mode="background"`: Evener starts the command and returns a `job_id` immediately without waiting. The terminal notification fires when it finishes.
 - `mode="detached"`: Evener starts a disowned process and returns only its PID immediately. It is not a job, so Evener neither retains output nor sends notifications nor offers job control for it. It also gets no session scratch: the child's environment drops `EVENER_SCRATCH_DIR`, because the scratch is deleted when the root session is archived and the disowned process may outlive that, and `TMPDIR` names the world-usable session temp container instead, or nothing when that container could not be provisioned. Give a detached command absolute paths for its output and for any file it reads.
 - `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Evener stops it and finalizes the job as `stopped` with reason `run_timeout`. It bounds how long the process may *run*, distinct from the foreground wait.
-- Omitted `max_runtime_ms` means implementation-defined shell runtime policy. Recommended policy: default finite runtime for foreground/promoted shell jobs, no default runtime limit for `mode="background"` shell jobs unless configured by the user/tool call.
+- Omitted or zero `max_runtime_ms` sets no process-runtime deadline for streaming shell jobs, whether foreground, promoted, or background. Session shutdown and explicit cancellation can still stop session-owned jobs. The model-facing shell schema no longer exposes `max_runtime_ms`; the parser still accepts it for compatibility.
 - A shell command that completes before the tool returns does not inject a terminal notification; the terminal result is already in the tool result. Return field `timed_out`, when present, means the foreground wait expired; it never means the process hit `max_runtime_ms`.
 - To learn when a launch-and-return command reaches a state (e.g. a server printing "ready"), use `job_watch(operation="create", source=<job_id>, output_match=...)` and continue from the notification — an output-match watch catch-up-scans a job's retained output even if it already finished.
 
-Normative foreground-wait bounds:
+Foreground-wait bounds:
 
 - The foreground wait is the session command timeout (`DefaultCommandTimeoutMS`, 120000 in stock provider profiles), clamped to `MaxCommandTimeoutMS`. Shell has no per-call wait parameter; `mode` selects foreground (wait, then promote), session-owned background, or immediate detached return.
+- These values belong to the internal [session Config](../agent/session_config.go) (`default_command_timeout_ms` and `max_command_timeout_ms`), not job-watch policy or per-call wait arguments. Provider profiles supply the normal default; the session fallback before profile selection is 10000 ms. These field names are not advertised CLI options.
 
-Normative runtime timeout bounds:
+Compatibility runtime-limit bounds:
 
 - `max_runtime_ms` is the process-killing deadline and must be distinct from the foreground wait (the session command timeout), which only bounds how long the call waits before promoting to background.
-- Minimum positive `max_runtime_ms`: `1000`.
-- Implementations must document default/max/clamp behavior for `max_runtime_ms`.
-- Negative values fail `invalid_request`.
+- Positive `max_runtime_ms` values below `1000` are raised to `1000` ms. The parser applies no upper clamp; `MaxCommandTimeoutMS` clamps the foreground wait, not this runtime limit.
+- Negative values are rejected before launch.
+- A non-streaming execution environment cannot promote or background a command. Its buffered foreground path uses the session command timeout as a process deadline, shortened by a positive `max_runtime_ms` when smaller. Detached execution bypasses the job runtime timer.
 
 Ephemeral foreground terminal return shape:
 
@@ -377,12 +417,11 @@ promotion. It lets the agent's pacing arithmetic use the real wait (the session
 command timeout that expired) rather than the duration the command was asked to
 run, which can be much longer.
 
-Shell approval is not fully designed here. If policy requires approval before a shell command may start, Evener must not execute before approval. The shipped contract permits either:
-
-1. fail job creation synchronously with reason `permission_required` if no async approval flow is available; or
-2. create a durable background job in `running` with reason `awaiting_permission`, then continue after approval or finalize as `failed`/`permission_denied`.
-
-Whichever behavior an implementation chooses must be reflected consistently in `job_list`, `job_status`, the job output read, and notifications.
+Shell sandbox denials are final for that call: they do not open an approval card
+or create an `awaiting_permission` job. The current escalation allowlist covers
+only `read_file`, `write_file`, and `edit_file`, where a one-file grant can permit
+a retry. Shell/kernel denials cannot use that grant. Inspect the denial and
+[sandbox policy](sandboxing.md) rather than waiting for a shell approval event.
 
 ### `delegate`
 
@@ -453,7 +492,7 @@ Defaults:
   not wait for a model result and rejects `max_wait_ms`.
 - `delegate` does not accept `target`, `mode`, `job_id`, `delegate_id`, or `transcript_ref` for continuation.
 - `watch_parent:true` grants only the created child permission to observe the immediate parent with `job_watch(source="parent")`. It is not transitive and does not grant `delegate`.
-- Delegates have no model-facing `max_runtime_ms` in v1. Delegate runtime limits, if any, are implementation policy rather than a tool argument.
+- Delegates have no model-facing `max_runtime_ms`. Use explicit stop control when cancellation is needed.
 - `result_schema`, when supplied, is a JSON Schema-like contract for terminal
   packets from the initial and resumed runs. Validation, explicit JSON null,
   and structured-result failure reasons survive in the stable aggregate and
@@ -718,7 +757,7 @@ Trigger fields:
 
 - `output_match` is level-triggered: it fires once at attach if the shell job's already-retained output contains a match, then again as appended output matches the regex. It requires a concrete `job_...` source; `output_match` on a session/delegate source fails `invalid_request`.
 - `progress_interval_ms` fires periodically with bounded progress/excerpt metadata even if no match occurred. It is a separate progress trigger, not an event-frame modifier. On a session source `progress_interval_ms` is refused; a timer uses `repeat_seconds`.
-- `events` selects session/job event kinds to include in the watch frame. `events: ["*"]` means all visible event kinds allowed by caller permissions and filtering. Event kind names are implementation-defined but must be discoverable by the model; the shipped vocabulary is `assistant.tool`, `communicate`, and `job.notification`. Plain assistant prose is an internal transcript/UI event and is not watchable through `job_watch`.
+- `events` selects session/job event kinds to include in the watch frame. `events: ["*"]` means all visible event kinds allowed by caller permissions and filtering. The shipped vocabulary is `assistant.tool`, `communicate`, and `job.notification`. Plain assistant prose is an internal transcript/UI event and is not watchable through `job_watch`.
 - `event_filter` narrows event watches before any delivery is recorded. In v1 it applies only to `events: ["assistant.tool"]` and supports exact `tool_name` plus `status` (`"ok"` or `"error"`). Non-matching events do not create a delivery, pending row, notification, or observer wake. Assistant-tool frames include the resulting `status` plus the original tool `arguments_json`, so an observer can usually decide from the delivered frame before using audit tools.
 - `every` gates event delivery: `every: N` fires on each Nth occurrence of the watched event kind, for example `events: ["communicate"], every: 3` for every third result-tool message. `every: 1` is the semantic default and reads as unset, whatever `events` contains. `every > 1` is valid only when `events` names exactly one concrete kind; supplying it with zero, multiple, or wildcard (`"*"`) kinds fails `invalid_request`.
 - Session event watches that set `events` use `event_filter` and optional `every` for precision. Combining session `events` with `progress_interval_ms` fails `invalid_request` because periodic progress is a different trigger mode.
@@ -1183,7 +1222,7 @@ The v1 model-facing tool matrix is:
 | --- | --- | --- |
 | Root session | shell, `delegate`, `job_watch`, `delegate_send`, `job_status`, `job_list`, `job_stop` | Root may create delegates and watches, and message its direct delegate conversations by `delegate_id`. |
 | Delegate/subagent session | shell, `job_watch`, `delegate_send`, `job_status`, `job_list`, `job_stop` | Delegates may start shell jobs and watch their own jobs at any allowance. `delegate` is allowance-gated; `job_watch`'s cross-session sources authorize themselves, with the separate `watch_parent:true` grant exposing `job_watch(source="parent")` to observer leaves. Concrete `delegate_id` targets are scoped to the session's **own direct delegates** at every level — a coordinator may message its own worker delegate by `delegate_id`, but not an arbitrary descendant's delegate (which fails `not_controllable`). |
-| Root session, interactive only | `ask_user` | Not a job-control tool, but the same root/delegate split governs it: never available to a non-interactive root (`--non-interactive`, one-shot `evener <prompt>`) or to any delegate/subagent — root-only, hard-enforced; `grant_tools` rejects an explicit attempt to grant it. A one-shot run with `--ask-responder <command>` offers it anyway, for that process only (the session stays non-interactive in what it saves, and sandbox escalation stays off): when its turn ends on pending questions, evener runs the command with `{"questions": [...]}` as JSON on stdin and resumes with its stdout as the reply, for up to a fixed number of rounds. A responder failure ends the run with the question unanswered. `--ask-responder` refuses `--resume`, `--resume-with` and `--resume-last`. |
+| Root session, interactive only | `ask_user` | Not a job-control tool, but the same root/delegate split governs it: never available to a non-interactive root (`--non-interactive`, one-shot `evener <prompt>`) or to any delegate/subagent — root-only, hard-enforced; `grant_tools` rejects an explicit attempt to grant it. A one-shot run with `--ask-responder <command>` offers it anyway, for that process only (the session stays non-interactive in what it saves, and sandbox escalation stays off): when its turn ends on pending questions, Evener runs the command with `{"questions": [...]}` as JSON on stdin and resumes with its stdout as the reply, for up to a fixed number of rounds. A responder failure ends the run with the question unanswered. `--ask-responder` refuses `--resume`, `--resume-with` and `--resume-last`. |
 
 Shell job output is not in this matrix because it is not a job tool: `read_transcript` is available to every session, including a leaf delegate, and an exact `job:<job_id>` ref reads any uniquely resolved shell job persisted under the local Evener state home. Delegate conversation history uses the delegate session's `transcript_ref`. This does not widen `job_list`, `job_status`, `job_stop`, `job_watch`, or `delegate_send` scope.
 
@@ -1517,7 +1556,7 @@ stateDiagram-v2
 
 ## Restart behavior
 
-Shell jobs and delegate generations do not auto-resume after a Evener process
+Shell jobs and delegate generations do not auto-resume after an Evener process
 restart. Reconciliation is provider-free:
 
 1. Fold the root stable-delegate journal and each shell store without creating a

@@ -75,7 +75,7 @@ Most scenarios assume:
 - the auth token at `$HOME/.evener/auth-token` (that isolated `$HOME`,
   never Jesse's real one)
 - the `superpowers-chrome:browsing` skill available for browser steps
-- `tmux` and the Bash tool available for CLI steps
+- the Bash tool available for CLI steps
 - `~/go/bin/kata` for issue lookups
 
 When a scenario needs different state (e.g. no daemon running, OAuth
@@ -85,9 +85,8 @@ reach that state.
 **See `docs/developing-evener/agentic-testing.md`** for practical patterns and recipes:
 hermetic workdirs, the AGENTS.md pacing trick for keeping a turn in
 `processing`, the synchronous-vs-async DOM assertion shape for
-optimistic-rendering scenarios, tmux form-fill conventions
-(`BTab` / `C-u` / `-l`), stderr-probe debugging when an assertion
-fails, the rebuild matrix across daemon / hub / web / TUI, and the
+optimistic-rendering scenarios, stderr-probe debugging when an assertion
+fails, the rebuild matrix across daemon / hub / web, and the
 over-specification trap (when a scenario describes a path that
 production gating prevents).
 

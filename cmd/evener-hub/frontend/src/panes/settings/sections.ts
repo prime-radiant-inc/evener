@@ -55,8 +55,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   { id: "agents", searchTerms: ["model", "defaults"], label: "Agents", cluster: "agents-models" },
   { id: "agents-md", searchTerms: ["instructions"], label: "AGENTS.md", cluster: "agents-models" },
-  { id: "launch-evener", searchTerms: ["launch options"], label: "Evener launch", cluster: "agents-models" },
-  { id: "inrepo", searchTerms: ["repository configuration"], label: "In-repo config", cluster: "agents-models" },
+  { id: "launch-evener", searchTerms: ["launch options"], label: "Session defaults", cluster: "agents-models" },
   // --- Extensions ------------------------------------------------------
   {
     id: "plugins-manager",

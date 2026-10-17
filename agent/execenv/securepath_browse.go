@@ -609,6 +609,22 @@ func grepOverlongNote(n int) string {
 // entering the tree from outside.
 var pseudoFsRoots = []string{"/proc", "/sys", "/dev"}
 
+// pseudoRootCovers reports whether path lies at or under root, applying the
+// /dev/shm carve. root and path must be in the SAME form — both textual, or both
+// symlink-resolved — so the containment test compares like with like.
+// carveName is the production root name the carve keys on; a caller passing a
+// resolved root passes the ORIGINAL root here, so a stubbed root list (the
+// tests' own names) never has the /dev carve applied.
+func pseudoRootCovers(carveName, root, path string) bool {
+	if path != root && !strings.HasPrefix(path, root+string(filepath.Separator)) {
+		return false
+	}
+	if carveName == "/dev" && isDevShm(path) {
+		return false
+	}
+	return true
+}
+
 // isPseudoFsPath reports whether path names pseudo-filesystem content: one of
 // the pseudoFsRoots, or anything under one. Only an absolute path can — a
 // relative path resolves under the environment root, a real tree — so on a
@@ -624,10 +640,7 @@ func isPseudoFsPath(path string) bool {
 	}
 	path = filepath.Clean(path)
 	for _, root := range pseudoFsRoots {
-		if path == root || strings.HasPrefix(path, root+string(filepath.Separator)) {
-			if root == "/dev" && (path == "/dev/shm" || strings.HasPrefix(path, "/dev/shm/")) {
-				return false
-			}
+		if pseudoRootCovers(root, root, path) {
 			return true
 		}
 	}
@@ -643,13 +656,61 @@ func walkSkipsPseudoDir(root, dir string) bool {
 	return isPseudoFsPath(dir) && !isPseudoFsPath(root)
 }
 
-// grepRootIsPseudo reports whether the walk root itself resolves inside a
-// pseudo root: a search rooted there is a deliberate request to search that
-// tree, and every regular file it reads is a stream whose descriptor must
-// keep the nonblocking flag. A root that cannot be resolved is not one.
+// pseudoFsPathResolved reports whether path names pseudo-filesystem content
+// once BOTH it and the pseudo roots are resolved through symlinks. The textual
+// isPseudoFsPath alone is not spelling-independent: a pseudo root reached
+// through a symlinked ancestor — the tests stub one under macOS /tmp, itself a
+// link to /private/tmp — is reported by the kernel under the canonical parent,
+// so a resolved candidate and a textually spelled root would never match.
+//
+// The per-directory walk skip keeps the textual form so a walk pays no syscall
+// per directory; the callers that must be spelling-independent — a search root
+// (grepRootIsPseudo) and a symlink named as the target or selected in a walk
+// (pseudoStreamed) — resolve here. A caller that already has the resolved form
+// (grepTakesNativeArm) calls pseudoResolvedCovers instead of resolving twice. A
+// path or root that cannot be resolved keeps its textual spelling.
+func pseudoFsPathResolved(path string) bool {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		resolved = ""
+	}
+	return pseudoResolvedCovers(path, resolved)
+}
+
+// pseudoResolvedCovers reports whether path names pseudo-filesystem content,
+// given its already-computed symlink-resolved form (empty when it could not be
+// resolved). A caller that has resolved path once passes it here rather than
+// resolving a second time.
+func pseudoResolvedCovers(path, resolved string) bool {
+	if isPseudoFsPath(path) {
+		return true
+	}
+	if resolved == "" {
+		return false
+	}
+	for _, root := range pseudoFsRoots {
+		canon := root
+		if r, rerr := filepath.EvalSymlinks(root); rerr == nil {
+			canon = r
+		}
+		if pseudoRootCovers(root, canon, resolved) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDevShm reports whether the path is /dev/shm or under it.
+func isDevShm(path string) bool {
+	return path == "/dev/shm" || strings.HasPrefix(path, "/dev/shm/")
+}
+
+// grepRootIsPseudo reports whether the walk root itself names pseudo-filesystem
+// content, under any spelling: a search rooted there is a deliberate request to
+// search that tree, and every regular file it reads is a stream whose descriptor
+// must keep the nonblocking flag.
 func grepRootIsPseudo(root string) bool {
-	resolved, err := filepath.EvalSymlinks(root)
-	return err == nil && isPseudoFsPath(resolved)
+	return pseudoFsPathResolved(root)
 }
 
 // grepReachesPseudoRoot reports whether a walk from the absolute directory
@@ -928,8 +989,7 @@ func (f grepAdmitFS) pseudoStreamed(full string) bool {
 	if info, err := os.Lstat(full); err != nil || info.Mode()&os.ModeSymlink == 0 {
 		return false
 	}
-	resolved, err := filepath.EvalSymlinks(full)
-	return err == nil && isPseudoFsPath(resolved)
+	return pseudoFsPathResolved(full)
 }
 
 // ReadDir and Stat forward to the wrapped filesystem rather than letting
@@ -956,15 +1016,18 @@ func (f grepAdmitFS) Stat(name string) (fs.FileInfo, error) {
 // device), and a named file over the read cap (the native arm skips it, as
 // both arms skip an oversized file found in a walk).
 func grepTakesNativeArm(dir string) bool {
-	if isPseudoFsPath(dir) || grepReachesPseudoRoot(dir) {
+	// Resolve the target once and reuse it for both spelling-independent tests: a
+	// search root that reaches or sits inside a pseudo-filesystem root. A symlink
+	// alias can spell pseudo content as an ordinary path — /tmp/proc-alias ->
+	// /proc — so the CONTENT case needs the resolved form
+	// (pseudoResolvedCovers), and a target that resolves to an ANCESTOR of a
+	// pseudo root needs it too (grepReachesPseudoRoot). Resolution walks
+	// ancestors and leaf alike and needs no permission beyond stat.
+	resolved, rerr := filepath.EvalSymlinks(dir)
+	if pseudoResolvedCovers(dir, resolved) || grepReachesPseudoRoot(dir) {
 		return true
 	}
-	// A symlink alias can spell pseudo-filesystem content as an ordinary
-	// path — /tmp/proc-alias -> /proc — so classify what the target resolves
-	// to as well: os.Stat follows the alias and reports a small regular
-	// file. Resolution walks ancestors and leaf alike and needs no
-	// permission beyond stat.
-	if resolved, rerr := filepath.EvalSymlinks(dir); rerr == nil && (isPseudoFsPath(resolved) || grepReachesPseudoRoot(resolved)) {
+	if rerr == nil && grepReachesPseudoRoot(resolved) {
 		return true
 	}
 	info, err := os.Stat(dir)
