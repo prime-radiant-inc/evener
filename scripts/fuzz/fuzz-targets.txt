@@ -22,6 +22,7 @@
 # (the runtime-appended Linux-only entries are NOT listed here — see run-fuzz.sh.)
 native:llm:.:FuzzParseSSE
 native:.:./cmd/evener-transcript-v2-upgrade:FuzzConvertHeader
+native:.:./docs/examples/extensions/mcp-server:FuzzEchoProtocol
 native:.:./appwire:FuzzMessageDecode
 native:.:./appwire:FuzzMessageDecodeStructured
 native:.:./appwire:FuzzTranscriptItemLimitNormalization
