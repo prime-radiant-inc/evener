@@ -8,7 +8,6 @@ import { render, settle } from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import type { Routes } from "../screens";
 import { LaunchMemory } from "./launchMemory";
-import type { SessionSeed } from "./launchSetup";
 import type { NewSessionContextValue } from "./newSessionContext";
 import { forgetCreationForHub } from "./creations";
 import { NewSessionSheet } from "./NewSessionSheet";
@@ -82,8 +81,8 @@ vi.mock("react-native", async () => ({
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
-async function mount(like?: SessionSeed) {
-	const route = { key: "NewSession", name: "NewSession", params: { hubId: "hub-1", hubName: "magic-kingdom", like } };
+async function mount() {
+	const route = { key: "NewSession", name: "NewSession", params: { hubId: "hub-1", hubName: "magic-kingdom" } };
 	const goBack = vi.fn();
 	const props = {
 		navigation: { goBack } as unknown as NativeStackScreenProps<Routes, "NewSession">["navigation"],
@@ -147,23 +146,6 @@ it("reads the form's model list again when the hub announces a refreshed one", a
 	});
 	await settle();
 	expect(reads()).toBe(before + 1);
-});
-
-it("opens like a session when New session like this opened it", async () => {
-	const draft: CreationDraft = {
-		source: "local",
-		cwd: "/home/jesse/git/docs",
-		prompt: "",
-		harness: "",
-		model: null,
-		reasoning: "",
-		launchOverrides: {},
-		images: [],
-		unconfirmed: false,
-	};
-	harness.drafts.write("hub-1", draft);
-	const sheet = await mount({ host: "paradise-park", cwd: "/Users/jesse/git/evener" });
-	expect(sheet.context().store.getState()).toMatchObject({ source: "paradise-park", cwd: "/Users/jesse/git/evener" });
 });
 
 it("asks the hub nothing until the connection is ready, then loads projects and models", async () => {

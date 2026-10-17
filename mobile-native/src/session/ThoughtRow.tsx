@@ -1,5 +1,5 @@
 // A settled thought (spec 8.2, "Thinking"): "Thought for 12s ›", folded; it
-// opens to the thought in the serif. The live thought is the status tray's
+// opens to the thought in the serif. The live thought is the live status line's
 // line (ruling 10), so it never reaches the transcript.
 import { Pressable, Text } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";

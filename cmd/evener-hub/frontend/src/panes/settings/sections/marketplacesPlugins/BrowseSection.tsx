@@ -190,11 +190,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
       <ul aria-label="Marketplace browse tree" className={CLASS.tree}>
         {marketplaces.length === 0 ? (
           <li>
-            <EmptyState
-              size="compact"
-              reason="empty"
-              title="No marketplaces registered. Add one from the Marketplaces tab."
-            />
+            <EmptyState size="compact" reason="empty" title="No marketplaces registered. Add one from Sources." />
           </li>
         ) : trimmedQuery !== "" && filterLoading ? (
           <li>
@@ -231,7 +227,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
       >
         {pendingInstall !== null && (
           <>
-            <p>{`Install "${pendingInstall.plugin}" from ${pendingInstall.marketplace}? It will run in every new session once installed.`}</p>
+            <p>{`Install "${pendingInstall.plugin}" from ${pendingInstall.marketplace}? This makes it available on this host. New sessions use their launch's plugin selection; existing sessions keep theirs.`}</p>
             {(() => {
               const source = findMarketplace(pendingInstall.marketplace)?.source;
               return source && <p className={CLASS.rowMeta}>{`Source: ${marketplaceSourceLabel(source)}`}</p>;

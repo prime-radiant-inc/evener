@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-	seedFromSession,
 	accessOf,
 	knownAccess,
 	effortLabel,
@@ -120,7 +119,7 @@ describe("labels", () => {
 	});
 });
 
-describe("from the form and from a session", () => {
+describe("from the form", () => {
 	it("reads the creation form as a setup", () => {
 		expect(
 			setupOf({
@@ -136,26 +135,6 @@ describe("from the form and from a session", () => {
 			model: { provider: "lunaroute", model: "glm-5.3-vision" },
 			effort: "high",
 			overrides: { sandbox: "restricted" },
-		});
-	});
-
-	it("reads a session as a seed for New session like this (ruling 24)", () => {
-		expect(
-			seedFromSession("paradise-park:thread-9", {
-				cwd: "/Users/jesse/git/evener",
-				modelProvider: "lunaroute/glm-5.3-vision",
-				reasoningEffort: "high",
-			}),
-		).toEqual({
-			host: "paradise-park",
-			cwd: "/Users/jesse/git/evener",
-			model: "lunaroute/glm-5.3-vision",
-			effort: "high",
-		});
-		// A session with no model or effort of its own leaves the sheet's.
-		expect(seedFromSession("local:thread-1", { cwd: "/tmp", modelProvider: "" })).toEqual({
-			host: "local",
-			cwd: "/tmp",
 		});
 	});
 

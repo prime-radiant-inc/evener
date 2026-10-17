@@ -37,6 +37,7 @@ function cloneLitterError(data: unknown): WireError {
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
+  fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -111,7 +112,7 @@ test("a view whose plugin list failed to load asks the hub for no updates", asyn
   expect(fake.calls.some((c) => c.method === "evener/plugin/checkUpdates")).toBe(false);
 });
 
-test("shows one failed-to-load message replacing everything when the marketplace list fails to load", async () => {
+test("keeps navigation available with one failure notice when the marketplace list fails to load", async () => {
   const fake = connectFakeClient();
   fake.on("evener/marketplace/list", () => {
     throw new Error("network down");
@@ -123,7 +124,7 @@ test("shows one failed-to-load message replacing everything when the marketplace
   expect(alertReasons()).toEqual([]);
   // friendlyErrorMessage keeps a raw JS error's message off the screen.
   expect(screen.getByRole("status").textContent).not.toContain("network down");
-  expect(screen.queryByRole("radiogroup", { name: "View" })).toBeNull();
+  expect(screen.getByRole("radiogroup", { name: "View" })).toBeTruthy();
 });
 
 test("shows one failed-to-load message when the plugin list fails to load", async () => {
@@ -168,7 +169,7 @@ test("the segment control carries the list counts and defaults to Installed", as
   const installed = await screen.findByRole("radio", { name: "Installed (1)" });
   expect(installed.getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("radio", { name: "Browse" }).getAttribute("aria-checked")).toBe("false");
-  expect(screen.getByRole("radio", { name: "Marketplaces (1)" }).getAttribute("aria-checked")).toBe("false");
+  expect(screen.getByRole("radio", { name: "Sources (1)" }).getAttribute("aria-checked")).toBe("false");
 });
 
 test("the Installed segment is the default view; other segments' lists are hidden", async () => {
@@ -192,7 +193,7 @@ test("switching to the Marketplaces segment shows the marketplace list and hides
   const user = userEvent.setup();
   connectSeededClient();
   render(<MarketplacesPluginsSection />);
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   expect(screen.getByRole("list", { name: "Marketplaces" })).toBeTruthy();
   expect(screen.queryByRole("list", { name: "Installed plugins" })).toBeNull();
 });
@@ -221,7 +222,7 @@ test("switching segments while the marketplace sheet is open closes it", async (
   connectSeededClient();
   render(<MarketplacesPluginsSection />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy();
   await user.click(screen.getByRole("radio", { name: "Browse" }));
@@ -242,7 +243,7 @@ test("keeps an applied removal guard across failed reconciliation and sheet remo
   });
   render(<MarketplacesPluginsSection />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -274,7 +275,7 @@ test("a later accepted notification publication clears a same-name applied remov
   });
   render(<MarketplacesPluginsSection />);
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -306,7 +307,7 @@ test("a delayed applied outcome after authoritative absence cannot leave a remov
   );
   render(<MarketplacesPluginsSection />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -328,7 +329,7 @@ test("a delayed applied outcome after authoritative absence cannot leave a remov
   await act(async () => {
     await extensionsStore.getState().fetchMarketplaces();
   });
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
 });
@@ -347,7 +348,7 @@ test("clears an applied removal guard when the connection client changes", async
   });
   render(<MarketplacesPluginsSection />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -377,7 +378,7 @@ test("a fenced outcome from the replaced client cannot leave a removal guard", a
   );
   render(<MarketplacesPluginsSection />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -416,7 +417,7 @@ test("a rename carries the Browse expansion to the new name", async () => {
   await waitFor(() => expect(screen.getByText("formatter")).toBeTruthy());
 
   // Rename it through its sheet, which re-browses the new name.
-  await user.click(screen.getByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(screen.getByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.type(screen.getByLabelText("Name"), "2");
   await user.click(screen.getByRole("button", { name: "Save" }));
@@ -460,6 +461,7 @@ test("clears an applied removal guard when the selected host changes (same conne
   let betaListCalls = 0;
   fake.on("evener/host/request", (params) => {
     const forwarded = params as { host: string; method: string };
+    if (forwarded.method === "evener/launch/getLayer") return { pluginDirs: [] } as never;
     if (forwarded.method === "evener/marketplace/list") {
       if (forwarded.host === "beta") {
         betaListCalls += 1;
@@ -475,7 +477,7 @@ test("clears an applied removal guard when the selected host changes (same conne
 
   const view = render(<MarketplacesPluginsSection host="beta" />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -511,7 +513,7 @@ function marketplaceListCalls(fake: FakeClient): number {
 // The sheet is read from the store, so this works on a first mount and a remount.
 async function openMarketplaceSheetAndConfirmRemoval(): Promise<void> {
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -584,7 +586,7 @@ test("a late applied outcome after the whole page unmounts leaves no guard on th
 
   render(<MarketplacesPluginsSection />);
   const remounted = userEvent.setup();
-  await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await remounted.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   // The remount's own read is held too, so the store still lists acme at the
   // same publication version the late outcome marked at: a guard that leaked
   // across the remount would disable Remove here.
@@ -617,7 +619,7 @@ test("an outcome from the replaced client cannot mark or block the remounted pag
 
   render(<MarketplacesPluginsSection />);
   const remounted = userEvent.setup();
-  await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await remounted.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await screen.findByRole("button", { name: /acme-plugins/ });
   const secondListCallsBefore = marketplaceListCalls(second);
 
@@ -661,7 +663,7 @@ test("a late applied outcome against an already-reconciled list is not marked, d
 
   render(<MarketplacesPluginsSection />);
   const remounted = userEvent.setup();
-  await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (0)" }));
+  await remounted.click(await screen.findByRole("radio", { name: "Sources (0)" }));
   expect(cloneCleanupWarnings()).toHaveLength(1);
   // The store is seeded directly at the outcome's own version - below the
   // remount's held read - so a guard the outcome should not have written would
@@ -698,7 +700,7 @@ test("an ordinary removal failure stays retryable across a whole-page remount", 
   // Re-opened by hand rather than through the helper: the point is to inspect
   // Remove before the retry.
   const remounted = userEvent.setup();
-  await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await remounted.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await remounted.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
   await remounted.click(screen.getByRole("button", { name: "Remove" }));

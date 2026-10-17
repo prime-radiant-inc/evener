@@ -8,7 +8,7 @@ import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResiden
 import { resetSettingsOverviewStoreForTests } from "../../../stores/settingsOverview";
 import { HubSection } from "./hub";
 import { statusReasons } from "./reasonTestUtils";
-import { settingsFieldHelp, settingsFieldIds } from "./settingsFieldTestUtils";
+import { settingsFieldHelp, settingsFieldIds, settingsFieldValue } from "./settingsFieldTestUtils";
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
@@ -21,6 +21,7 @@ const SAMPLE_RESPONSE: SettingsOverviewResponse = {
     listenAddr: "127.0.0.1:9180",
     runDir: "/tmp/evener-run",
     spawnTimeout: "30s",
+    bearerTokenAge: "fixture-token-age",
     daemonIdleTimeoutMillis: 3600000,
   },
 };
@@ -31,7 +32,7 @@ beforeEach(() => {
   resetDaemonResidentsStoreForTests();
 });
 
-test("fetches the overview on mount and renders the 3 read-only fields with their help text", async () => {
+test("fetches the overview on mount and renders the runtime and authentication fields with their help text", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
@@ -41,7 +42,7 @@ test("fetches the overview on mount and renders the 3 read-only fields with thei
   expect(await screen.findByText("127.0.0.1:9180")).toBeTruthy();
   expect(screen.getByText("/tmp/evener-run")).toBeTruthy();
   expect(screen.getByText("30s")).toBeTruthy();
-  expect(settingsFieldIds()).toEqual(["listen-address", "run-dir", "spawn-timeout"]);
+  expect(settingsFieldIds()).toEqual(["listen-address", "bearer-token", "run-dir", "spawn-timeout"]);
   for (const field of settingsFieldIds()) {
     expect(settingsFieldHelp(field ?? "")).not.toBeNull();
   }
@@ -114,4 +115,26 @@ describe("on load failure", () => {
     const notice = document.querySelector('[role="status"][data-reason="unavailable"]');
     expect(notice?.textContent).toContain(friendlyErrorMessage(err));
   });
+});
+
+test.each(["fixture-token-age", undefined])("renders only a fixed token mask and optional age %s", async (age) => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => ({
+    ...SAMPLE_RESPONSE,
+    hub: { ...SAMPLE_RESPONSE.hub, daemonIdleTimeoutMillis: 3600000, bearerTokenAge: age },
+  }));
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+  render(<HubSection />);
+  await screen.findByText("127.0.0.1:9180");
+  expect(settingsFieldValue("bearer-token").textContent?.trim()).toBe(age ? `•••••••••••• ${age}` : "••••••••••••");
+});
+
+test("hides client internals when the overview transport becomes unreachable", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => {
+    throw new Error('AppwireClient: cannot call "evener/settings/overview" while state is "closed"');
+  });
+  render(<HubSection />);
+  await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
+  expect(screen.queryByText(/AppwireClient/i)).toBeNull();
 });

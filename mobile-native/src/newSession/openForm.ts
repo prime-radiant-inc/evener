@@ -1,22 +1,13 @@
-// Where New session begins when it opens (spec 11): like a session when "New
-// session like this" opened it; else the draft as it was left, when it has a
-// project, a prompt or an image; else the last start remembered on this hub;
-// else the hub's most recent project, once the hub has listed them.
+// Where New session begins when it opens (spec 11): the draft as it was left,
+// when it has a project, a prompt or an image; else the last start remembered
+// on this hub; else the hub's most recent project, once the hub has listed them.
 import type { NewSessionStore } from "./newSessionContext";
-import type { LaunchSetup, SessionSeed } from "./launchSetup";
+import type { LaunchSetup } from "./launchSetup";
 
 /** Places the form once, as it opens with its draft loaded. The returned stop
  * lets go of the wait for the hub's recent projects. */
-export function openForm(
-	store: NewSessionStore,
-	lastSetup: LaunchSetup | null,
-	like: SessionSeed | undefined,
-): () => void {
+export function openForm(store: NewSessionStore, lastSetup: LaunchSetup | null): () => void {
 	const form = store.getState();
-	if (like) {
-		form.applySeed(like);
-		return () => {};
-	}
 	if (form.cwd.trim() || form.prompt.trim() || form.images.length > 0) return () => {};
 	if (lastSetup) {
 		form.applySetup(lastSetup);

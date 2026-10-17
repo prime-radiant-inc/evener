@@ -17,16 +17,7 @@ function pastCountCopy(count: number): string {
   return `Currently tracking ${count} session${count !== 1 ? "s" : ""}.`;
 }
 
-/**
- * Settings -> Storage (parity-m7-settings.md §17): 4 read-only fields.
- * State dir comes from settingsOverview.storage (its own field), but Run
- * dir and the whole Past index row come from settingsOverview.hub - the
- * legacy storage.html renders them too, but appwire.SettingsStorageOverview
- * deliberately doesn't duplicate them (see that type's own doc comment);
- * General (§2) and this section both read the one shared hub.pastIndex
- * instead. Past index is omitted entirely when hub.pastIndex is absent (no
- * past-session index configured), matching General's own conditional.
- */
+/** Runtime paths, optional past-session index and browser session cache. */
 export function StorageSection() {
   const data = useSettingsOverviewStore((s) => s.data);
   const loading = useSettingsOverviewStore((s) => s.loading);
@@ -102,6 +93,14 @@ export function StorageSection() {
                         {pastCountCopy(pastIndex.count ?? 0)}
                       </>
                     ),
+                  },
+                ]
+              : []),
+            ...(pastIndex?.perPage !== undefined
+              ? [
+                  {
+                    label: "Past results per page",
+                    value: <FieldValue field="past-results-per-page">{pastIndex.perPage}</FieldValue>,
                   },
                 ]
               : []),

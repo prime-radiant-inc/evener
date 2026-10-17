@@ -9,28 +9,26 @@ import { navigate, paneToURL } from "../../shell/routing";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { prefsStore, usePrefsStore } from "../../stores/prefs";
+import { settingsHostStore } from "../../stores/settingsHost";
 import { useSettingsOverviewStore } from "../../stores/settingsOverview";
 import { CloseIcon, IconButton, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { SettingsNav } from "./SettingsNav";
-import { DEFAULT_SECTION_ID, isKnownSettingsSection, settingsSectionLabel } from "./sections";
+import { isKnownSettingsSection, resolveSettingsSection, settingsSectionLabel } from "./sections";
 import { AboutSection } from "./sections/about";
 import { AgentsSection } from "./sections/agents";
 import { AgentsDocHostScope } from "./sections/agentsDoc";
 import { CredentialsHostScope } from "./sections/credentials/CredentialsHostScope";
-import { DisplaySection } from "./sections/display";
-import { GeneralSection } from "./sections/general";
 import { HostsSection } from "./sections/hosts";
 import { HubSection } from "./sections/hub";
+import { InputShortcutsSection } from "./sections/inputShortcuts";
 import { InRepoHostScope } from "./sections/inrepo";
-import { KeybindingsSection } from "./sections/keybindings";
 import { LaunchServerHostScope } from "./sections/launchServer";
 import { MarketplacesPluginsHostScope } from "./sections/marketplacesPlugins";
 import { McpSectionHostScope } from "./sections/mcp";
 import { MobileSection } from "./sections/mobile";
 import { NotificationsSection } from "./sections/notifications";
 import { PlaceholderSection } from "./sections/PlaceholderSection";
-import { PluginsDirsHostScope } from "./sections/pluginsDirs";
 import { ProjectHostScope } from "./sections/project";
 import { SkillsDirsHostScope } from "./sections/skillsDirs";
 import { StorageSection } from "./sections/storage";
@@ -78,15 +76,12 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   inrepo: InRepoHostScope,
   project: ProjectHostScope,
   "plugins-manager": MarketplacesPluginsHostScope,
-  plugins: PluginsDirsHostScope,
   skills: SkillsDirsHostScope,
   mcp: McpSectionWired,
-  general: GeneralSection,
   theme: ThemeSection,
   transcript: TranscriptSection,
-  display: DisplaySection,
   notifications: NotificationsSection,
-  keybindings: KeybindingsSection,
+  keybindings: InputShortcutsSection,
   hosts: HostsSection,
   hub: HubSection,
   mobile: MobileSection,
@@ -145,9 +140,14 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
   // and kept in step with back/forward.
   const { host } = useSettingsHost();
   useSettingsHostURLSync();
-  const activeId =
-    params.section ??
-    (rememberedSection !== null && isKnownSettingsSection(rememberedSection) ? rememberedSection : DEFAULT_SECTION_ID);
+  const activeId = resolveSettingsSection(params.section, rememberedSection);
+  useEffect(() => {
+    if (params.section !== undefined && params.section !== activeId) {
+      // The URL-sync effect above has adopted the route host. Read that
+      // current value rather than the pre-adoption render's host snapshot.
+      navigate(settingsURL(activeId, settingsHostStore.getState().host), { replace: true });
+    }
+  }, [params.section, activeId]);
   const isMobile = useIsMobile();
   const SectionComponent = SECTION_COMPONENTS[activeId] ?? PlaceholderSection;
   // Mobile list view: bare /settings on a phone. No row is "active" - there

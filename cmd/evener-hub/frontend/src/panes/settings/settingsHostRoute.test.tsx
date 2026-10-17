@@ -11,9 +11,26 @@ import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
 import { LOCAL_HOST } from "../../stores/hostRouting";
 import { hostsStore } from "../../stores/hosts";
-import { resetPrefsStoreForTests } from "../../stores/prefs";
+import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetSettingsHostForTests, settingsHostStore } from "../../stores/settingsHost";
 import Settings from "./Settings";
+
+test.each(["display", "general", "plugins", "unrecognized"])(
+  "replaces explicit %s with Appearance while preserving the URL host",
+  (section) => {
+    prefsStore.getState().setLastSettingsSection("notifications");
+    window.history.pushState({}, "", `/settings/${section}?host=remote-test`);
+    const historyLength = window.history.length;
+    render(<Settings params={{ section }} paneId="settings-1" focused={true} />);
+
+    expect(window.location.pathname).toBe("/settings/theme");
+    expect(window.location.search).toBe("?host=remote-test");
+    expect(window.history.length).toBe(historyLength);
+    expect(settingsHostStore.getState().host).toBe("remote-test");
+    expect(screen.getByRole("button", { name: "Appearance" }).getAttribute("aria-current")).toBe("page");
+    expect(screen.getByTestId("settings-content").querySelectorAll("input,button,select").length).toBeGreaterThan(0);
+  },
+);
 
 // The selected host is part of the SETTINGS ROUTE: switching sections keeps it,
 // a URL that carries it restores it, and `local` (the default) leaves today's
@@ -115,7 +132,7 @@ test("the default is local, so switching sections emits today's URL with no host
   render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
   const user = userEvent.setup();
 
-  await user.click(screen.getByRole("button", { name: "Theme" }));
+  await user.click(screen.getByRole("button", { name: "Appearance" }));
 
   expect(settingsHostStore.getState().host).toBe(LOCAL_HOST);
   expect(window.location.pathname).toBe("/settings/theme");
@@ -140,7 +157,7 @@ test("the selection survives a section switch, and the route keeps carrying it",
   const user = userEvent.setup();
   await screen.findByRole("heading", { name: "Providers on beta" });
 
-  await user.click(screen.getByRole("button", { name: "Theme" }));
+  await user.click(screen.getByRole("button", { name: "Appearance" }));
 
   expect(settingsHostStore.getState().host).toBe("beta");
   expect(window.location.pathname).toBe("/settings/theme");

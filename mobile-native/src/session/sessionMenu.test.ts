@@ -18,6 +18,7 @@ function menu(over: Partial<SessionMenuInput> = {}) {
 		sharedNotes: true,
 		canAside: true,
 		canShutDown: true,
+		canStop: true,
 		choose: (action) => chosen.push(action),
 		...over,
 	});
@@ -66,6 +67,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	it("lists every item in order when every condition holds", () => {
 		expect(labels(only(menu().items).menu.items)).toEqual([
 			"Detail level · Intent",
+			"Stop",
 			"Find in session",
 			"Files",
 			"Activity",
@@ -73,21 +75,15 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 			"Notes & links",
 			"Session info",
 			"Ask aside…",
-			"New session like this",
 			"Pin to category…",
 			"Archive",
 			"Shut down",
 		]);
 	});
 
-	it("starts a new session like this one (ruling 24)", () => {
-		const { items, chosen } = menu();
-		action(only(items).menu.items, "New session like this").onPress();
-		expect(chosen).toEqual([{ kind: "like" }]);
-	});
-
 	it("leaves Delete to the Session sheet", () => {
 		expect(chosenKinds()).toEqual([
+			"stop",
 			"find",
 			"files",
 			"activity",
@@ -95,11 +91,21 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 			"notes",
 			"info",
 			"aside",
-			"like",
 			"pin",
 			"archive",
 			"shutDown",
 		]);
+	});
+
+	it("offers Stop only while the turn can be stopped", () => {
+		expect(labels(only(menu({ canStop: false }).items).menu.items)).not.toContain("Stop");
+		expect(labels(only(menu({ canStop: true }).items).menu.items)).toContain("Stop");
+	});
+
+	it("stops the turn from the menu, so a draft never blocks it", () => {
+		const { items, chosen } = menu({ canStop: true });
+		action(only(items).menu.items, "Stop").onPress();
+		expect(chosen).toEqual([{ kind: "stop" }]);
 	});
 
 	it.each([
@@ -180,6 +186,7 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	});
 
 	it.each([
+		["Stop", { kind: "stop" }],
 		["Find in session", { kind: "find" }],
 		["Activity", { kind: "activity" }],
 		["Tasks", { kind: "tasks" }],
@@ -201,8 +208,8 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 		expect(chosen).toEqual(DETAIL_LEVELS.map(({ level }) => ({ kind: "level", level })));
 	});
 
-	it("draws Shut down as destructive, and nothing else", () => {
+	it("draws Stop and Shut down as destructive, and nothing else", () => {
 		const entries = only(menu().items).menu.items;
-		expect(labels(entries.filter((entry) => entry.destructive))).toEqual(["Shut down"]);
+		expect(labels(entries.filter((entry) => entry.destructive))).toEqual(["Stop", "Shut down"]);
 	});
 });

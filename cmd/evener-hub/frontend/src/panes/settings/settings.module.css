@@ -26,25 +26,6 @@
 .link {
   display: block;
   width: 100%;
-  padding: var(--space-2);
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  color: var(--ink-hi);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  text-align: left;
-  cursor: pointer;
-  transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
-}
-
-.link:hover {
-  background: var(--hover-1);
-}
-
-.link:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: -2px;
 }
 
 /* FIX 3a: var(--accent) is the raw hue (meant for glyphs/borders, not text -
@@ -61,6 +42,11 @@
   color: var(--accent-ink);
   font-weight: var(--font-weight-medium);
   border-inline-start: 2px solid var(--accent);
+}
+
+.linkActive .link {
+  color: var(--accent-ink);
+  font-weight: var(--font-weight-medium);
 }
 
 .content {
@@ -106,6 +92,7 @@
   .link {
     display: flex;
     align-items: center;
+    gap: var(--space-2);
     justify-content: space-between;
     min-height: var(--tap-min);
   }

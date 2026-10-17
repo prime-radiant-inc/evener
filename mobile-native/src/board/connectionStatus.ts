@@ -1,8 +1,8 @@
 // What the connection says wherever a screen shows it (spec 14): nothing
 // while live, "Reconnecting…" after 2 seconds without a connection,
 // "Offline · updated 3m ago" after 30, and "Update needed" for a close no
-// retry can fix. The Board's toolbar, the Session's connection bar and the
-// sheets' status lines all read it, on ConnectionProvider's one clock.
+// retry can fix. The Session's connection bar and the sheets' status lines
+// read it, on ConnectionProvider's one clock.
 import type { ConnectionState } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { useConnection } from "../ConnectionProvider";
@@ -19,8 +19,8 @@ const MINUTE = 60_000;
  * it means. */
 export const UPDATE_NEEDED = "Update needed";
 
-/** The connection status the Board toolbar and the Session's connection bar
- * show (spec 14), or null when there is nothing to
+/** The connection status the Session's connection bar and the sheets' status
+ * lines show (spec 14), or null when there is nothing to
  * say. A close no retry can fix says "Update needed" at once and never
  * Reconnecting. Otherwise the text depends on how long the connection has
  * been down (`downSince`) and when it was last live (`lastLiveAt`, null when

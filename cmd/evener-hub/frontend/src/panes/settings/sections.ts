@@ -1,24 +1,12 @@
-// The settings nav's section inventory - single source of truth for
-// SettingsNav's link list/grouping, the pane's own title() (paneRegistry),
-// and (via DEFAULT_SECTION_ID) what a bare /settings resolves to. Verified
-// against the original settings inventory after Codex launch controls were
-// removed, plus keybindings, about, mobile, and agents-md. The original
-// legacy-parity sections are 5 ungrouped top links (General/Theme/
-// Transcript display/Display/Notifications) plus 3 labeled clusters ("Agents &
-// models"/"Extensions"/"Daemon"), in this fixed order. The per-project
-// override (?cwd=) and the /credentials alias are deliberately NOT rows
-// here - per-project is a standalone page reached via a project's own gear
-// icon (no settings-nav entry at all in the legacy either), and
-// /credentials resolves to the "credentials" row below via routing.ts's
-// own urlToPane alias, not a second nav entry.
+// Settings destination metadata shared by navigation, content and pane titles.
 
-export type SettingsClusterId = "agents-models" | "extensions" | "daemon";
+export type SettingsClusterId = "preferences" | "agents-models" | "extensions" | "system";
 
 export interface SettingsSection {
   id: string;
   label: string;
-  /** Omitted for ungrouped top links. */
-  cluster?: SettingsClusterId;
+  searchTerms: readonly string[];
+  cluster: SettingsClusterId;
 }
 
 export interface SettingsCluster {
@@ -27,46 +15,77 @@ export interface SettingsCluster {
 }
 
 export const SETTINGS_CLUSTERS: SettingsCluster[] = [
+  { id: "preferences", label: "Preferences" },
   { id: "agents-models", label: "Agent setup" },
   { id: "extensions", label: "Extensions" },
-  { id: "daemon", label: "Daemon" },
+  { id: "system", label: "System" },
 ];
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
-  // --- ungrouped ---------------------------------------------------------
-  { id: "general", label: "General" },
-  { id: "theme", label: "Theme" },
-  { id: "transcript", label: "Transcript display" },
-  { id: "display", label: "Display" },
-  { id: "notifications", label: "Notifications" },
-  { id: "keybindings", label: "Keybindings" },
+  {
+    id: "theme",
+    searchTerms: ["theme", "font", "color", "density", "text size", "transcript width", "conversation width"],
+    label: "Appearance",
+    cluster: "preferences",
+  },
+  {
+    id: "transcript",
+    searchTerms: ["transcript", "tokens", "cost", "thinking", "tool calls"],
+    label: "Conversation display",
+    cluster: "preferences",
+  },
+  {
+    id: "keybindings",
+    searchTerms: ["composer", "enter", "send", "keyboard", "keybindings"],
+    label: "Input & shortcuts",
+    cluster: "preferences",
+  },
+  {
+    id: "notifications",
+    searchTerms: ["sound", "audio", "alerts", "favicon"],
+    label: "Notifications",
+    cluster: "preferences",
+  },
   // --- Agents & models -----------------------------------------------
-  { id: "credentials", label: "Providers & credentials", cluster: "agents-models" },
-  { id: "agents", label: "Agents", cluster: "agents-models" },
-  { id: "agents-md", label: "AGENTS.md", cluster: "agents-models" },
-  { id: "launch-evener", label: "Evener launch", cluster: "agents-models" },
-  { id: "inrepo", label: "In-repo config", cluster: "agents-models" },
+  {
+    id: "credentials",
+    searchTerms: ["API key", "provider"],
+    label: "Providers & credentials",
+    cluster: "agents-models",
+  },
+  { id: "agents", searchTerms: ["model", "defaults"], label: "Agents", cluster: "agents-models" },
+  { id: "agents-md", searchTerms: ["instructions"], label: "AGENTS.md", cluster: "agents-models" },
+  { id: "launch-evener", searchTerms: ["launch options"], label: "Evener launch", cluster: "agents-models" },
+  { id: "inrepo", searchTerms: ["repository configuration"], label: "In-repo config", cluster: "agents-models" },
   // --- Extensions ------------------------------------------------------
-  { id: "plugins-manager", label: "Marketplaces & Plugins", cluster: "extensions" },
-  { id: "plugins", label: "Plugins", cluster: "extensions" },
-  { id: "skills", label: "Skills", cluster: "extensions" },
-  { id: "mcp", label: "MCP servers", cluster: "extensions" },
-  // --- Daemon ------------------------------------------------------------
-  { id: "hosts", label: "Hosts", cluster: "daemon" },
-  { id: "hub", label: "Hub", cluster: "daemon" },
-  { id: "mobile", label: "Mobile app", cluster: "daemon" },
-  { id: "storage", label: "Storage", cluster: "daemon" },
-  // "About" is deliberately last in nav order overall - the Daemon cluster
-  // is the last cluster SETTINGS_CLUSTERS renders, and this is its last
-  // entry (SettingsNav renders ungrouped links first, then each cluster in
-  // SETTINGS_CLUSTERS order - see its own doc comment).
-  { id: "about", label: "About", cluster: "daemon" },
+  {
+    id: "plugins-manager",
+    searchTerms: ["marketplace", "plugin directory", "plugin directories", "sources", "installed", "browse"],
+    label: "Plugins",
+    cluster: "extensions",
+  },
+  { id: "skills", searchTerms: ["skill directory"], label: "Skill directories", cluster: "extensions" },
+  { id: "mcp", searchTerms: ["tools", "server"], label: "MCP servers", cluster: "extensions" },
+  { id: "hosts", searchTerms: ["remote", "connections"], label: "Hosts", cluster: "system" },
+  { id: "mobile", searchTerms: ["pairing", "phone", "device", "mobile"], label: "Devices", cluster: "system" },
+  {
+    id: "hub",
+    searchTerms: ["runtime", "listen", "token", "workers"],
+    label: "Hub",
+    cluster: "system",
+  },
+  { id: "storage", searchTerms: ["cache", "index", "state directory"], label: "Storage", cluster: "system" },
+  { id: "about", searchTerms: ["version", "credits", "license"], label: "About", cluster: "system" },
 ];
 
-// What a bare /settings (no :section) resolves to - matches the legacy
-// sidebar's own global "Settings" entry point, which hx-gets
-// /_partials/settings/general (test-sidebar-header.js).
-export const DEFAULT_SECTION_ID = "general";
+export const DEFAULT_SECTION_ID = "theme";
+
+export function resolveSettingsSection(section: string | undefined, remembered: string | null): string {
+  if (section !== undefined) {
+    return section === "project" || isKnownSettingsSection(section) ? section : DEFAULT_SECTION_ID;
+  }
+  return remembered !== null && isKnownSettingsSection(remembered) ? remembered : DEFAULT_SECTION_ID;
+}
 
 export function settingsSectionLabel(id: string): string {
   return SETTINGS_SECTIONS.find((s) => s.id === id)?.label ?? id;
@@ -74,4 +93,12 @@ export function settingsSectionLabel(id: string): string {
 
 export function isKnownSettingsSection(id: string): boolean {
   return SETTINGS_SECTIONS.some((s) => s.id === id);
+}
+
+export function matchesSettingsSection(section: SettingsSection, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  return (
+    section.label.toLowerCase().includes(needle) ||
+    section.searchTerms.some((term) => term.toLowerCase().includes(needle))
+  );
 }

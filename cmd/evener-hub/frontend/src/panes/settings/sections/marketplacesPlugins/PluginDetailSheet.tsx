@@ -179,6 +179,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
                 onChange={() => void handleToggleEnable(entry.enabled)}
                 pending={hubWriteBusy}
                 label="Enabled by default"
+                description="Used by new sessions with the default plugin selection. Custom launches and existing sessions keep their own selections."
               />
               <Switch
                 checked={entry.autoUpgrade}

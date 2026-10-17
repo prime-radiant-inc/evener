@@ -80,6 +80,39 @@ describe("Composer", () => {
 		expect(props.onChangeText).toHaveBeenCalledWith("hello");
 	});
 
+	it("rests a single line tall while empty and unfocused, and a full field otherwise", () => {
+		const height = (tree: ReactTestRenderer) => fields(tree)[0]?.props.style.minHeight;
+		// Empty and unfocused: one line, so the composer is short.
+		const { props, tree } = composer();
+		expect(height(tree)).toBe(24);
+		// Touching the field opens it to the full tap target.
+		act(() => fields(tree)[0]?.props.onFocus());
+		expect(height(tree)).toBe(44);
+		act(() => fields(tree)[0]?.props.onBlur());
+		expect(height(tree)).toBe(24);
+		// A draft keeps it open, focused or not.
+		act(() => tree.update(<Composer {...props} value="half a thought" />));
+		expect(height(tree)).toBe(44);
+		// Whitespace is a draft too: the field visibly holds it, so it stays open.
+		act(() => tree.update(<Composer {...props} value="   " />));
+		expect(height(tree)).toBe(44);
+	});
+
+	// The Send/Stop target stays the controls row's 44pt whichever way the field
+	// rests, so the composer always holds that target (Jesse's ruling).
+	it("keeps a 44pt Send target under a resting field", () => {
+		const { tree } = composer();
+		expect(fields(tree)[0]?.props.style.minHeight).toBe(24);
+		const send = pressable(tree, "Queue message");
+		expect(send?.props.style({ pressed: false })).toMatchObject({ width: 44, height: 44 });
+	});
+	it("sits close to the screen's bottom, with a small margin under the card", () => {
+		const { tree } = composer();
+		// The card's own margin; the frame under it owns the home-indicator room.
+		const card = tree.root.find((node) => node.props.testID === "composer-card");
+		expect(card.props.style).toMatchObject({ marginBottom: 4 });
+	});
+
 	it("carries the send label on a paper airplane and sends when enabled", () => {
 		const { props, tree } = composer();
 		const send = pressable(tree, "Queue message");
@@ -204,13 +237,61 @@ describe("Composer", () => {
 		expect(pressable(tree, "Expand editor")).toBeDefined();
 	});
 
-	it("never offers Stop, Steer, Queue, Reconnect or Refresh", () => {
+	// The caller decides Stop: only it sees the whole draft, text and images
+	// alike, so the composer renders whatever slot it is handed.
+	it("renders the slot's occupant the caller names, Send or Stop", () => {
+		const onStop = vi.fn();
+		const stopping = composer({ stop: { onStop, disabled: false } });
+		expect(pressable(stopping.tree, "Queue message")).toBeUndefined();
+		act(() => pressable(stopping.tree, "Stop")?.props.onPress());
+		expect(onStop).toHaveBeenCalledTimes(1);
+		expect(stopping.props.onSend).not.toHaveBeenCalled();
+
+		const sending = composer({ value: "half a thought" });
+		expect(pressable(sending.tree, "Stop")).toBeUndefined();
+		const send = pressable(sending.tree, "Queue message");
+		expect(send).toBeDefined();
+		act(() => send?.props.onPress());
+		expect(sending.props.onSend).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps Send when the session cannot stop", () => {
+		const { tree } = composer();
+		expect(pressable(tree, "Stop")).toBeUndefined();
+		expect(pressable(tree, "Queue message")).toBeDefined();
+	});
+
+	it("shows Stop in the slot and stops when pressed, and disables it while a stop is in flight", () => {
+		const onStop = vi.fn();
+		const { props, tree } = composer({ stop: { onStop, disabled: false } });
+		expect(pressable(tree, "Queue message")).toBeUndefined();
+		const stop = pressable(tree, "Stop");
+		expect(stop?.props.accessibilityState).toMatchObject({ disabled: false });
+		expect(stop?.findByType("SymbolView" as never).props).toMatchObject({
+			name: "stop.fill",
+			tintColor: light.onFill,
+		});
+		// The slot keeps the Send circle's shape, in the danger fill.
+		expect(stop?.findByType("View" as never).props.style).toMatchObject({
+			width: 36,
+			height: 36,
+			backgroundColor: light.danger,
+		});
+		act(() => stop?.props.onPress());
+		expect(onStop).toHaveBeenCalledTimes(1);
+		expect(props.onSend).not.toHaveBeenCalled();
+
+		act(() => tree.update(<Composer {...props} stop={{ onStop, disabled: true }} />));
+		expect(pressable(tree, "Stop")?.props.disabled).toBe(true);
+	});
+
+	it("never offers Steer, Queue, Reconnect or Refresh", () => {
 		const { tree } = composer({ value: "1\n2\n3\n4\n5\n6\n7" });
 		const labels = tree.root
 			.findAll((node) => typeof node.props.accessibilityLabel === "string")
 			.map((node) => node.props.accessibilityLabel as string);
 		const words = [...labels, ...renderedText(tree).split(" ")];
-		for (const word of ["Stop", "Steer", "Queue", "Reconnect", "Refresh"]) expect(words).not.toContain(word);
+		for (const word of ["Steer", "Queue", "Reconnect", "Refresh"]) expect(words).not.toContain(word);
 	});
 });
 

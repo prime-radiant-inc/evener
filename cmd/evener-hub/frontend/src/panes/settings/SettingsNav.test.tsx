@@ -37,96 +37,164 @@ test("the selected nav item's text uses the AA-derived --accent-ink, not the raw
 });
 
 test("renders a nav landmark labelled Settings sections", () => {
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   expect(screen.getByRole("navigation", { name: "Settings sections" })).toBeTruthy();
 });
 
-test("renders all 15 legacy section links with their visible labels", () => {
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
-  for (const label of [
-    "General",
-    "Theme",
-    "Transcript display",
-    "Display",
-    "Notifications",
-    "Providers & credentials",
-    "Agents",
-    "Evener launch",
-    "In-repo config",
-    "Marketplaces & Plugins",
-    "Plugins",
-    "Skills",
-    "MCP servers",
-    "Hub",
-    "Storage",
-  ]) {
-    expect(screen.getByRole("button", { name: label })).toBeTruthy();
-  }
+test("navigation activates every destination in the approved group order", async () => {
+  const user = userEvent.setup();
+  const onNavigate = vi.fn();
+  render(<SettingsNav activeId="theme" onNavigate={onNavigate} />);
+  for (const button of screen.getAllByRole("button")) await user.click(button);
+  expect(onNavigate.mock.calls.map(([id]) => id)).toEqual([
+    "theme",
+    "transcript",
+    "keybindings",
+    "notifications",
+    "credentials",
+    "agents",
+    "agents-md",
+    "launch-evener",
+    "inrepo",
+    "plugins-manager",
+    "skills",
+    "mcp",
+    "hosts",
+    "mobile",
+    "hub",
+    "storage",
+    "about",
+  ]);
 });
 
 function clusterHeaders(container: HTMLElement): (string | null)[] {
   return [...container.querySelectorAll("[data-section]")].map((header) => header.getAttribute("data-section"));
 }
 
-test("renders the 3 cluster headers", () => {
-  const { container } = render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
-  expect(clusterHeaders(container)).toEqual(["agents-models", "extensions", "daemon"]);
+test("renders the four task groups", () => {
+  const { container } = render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
+  expect(clusterHeaders(container)).toEqual(["preferences", "agents-models", "extensions", "system"]);
 });
 
 test("the active section's link carries aria-current=page; others don't", () => {
   render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
-  expect(screen.getByRole("button", { name: "Theme" }).getAttribute("aria-current")).toBe("page");
-  expect(screen.getByRole("button", { name: "General" }).getAttribute("aria-current")).toBeNull();
+  expect(screen.getByRole("button", { name: "Appearance" }).getAttribute("aria-current")).toBe("page");
+  expect(screen.getByRole("button", { name: "Storage" }).getAttribute("aria-current")).toBeNull();
 });
 
 test("clicking a link calls onNavigate with that section's id", async () => {
   const user = userEvent.setup();
   const onNavigate = vi.fn();
-  render(<SettingsNav activeId="general" onNavigate={onNavigate} />);
+  render(<SettingsNav activeId="theme" onNavigate={onNavigate} />);
   await user.click(screen.getByRole("button", { name: "Hub" }));
   expect(onNavigate).toHaveBeenCalledWith("hub");
 });
 
 test("the filter input has an accessible name", () => {
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   expect(screen.getByRole("searchbox", { name: "Filter settings" })).toBeTruthy();
 });
 
-test('filtering "agents" hides General but keeps Agents', async () => {
+test.each([
+  ["font", "theme", "preferences"],
+  ["width", "theme", "preferences"],
+  [" ENTER ", "keybindings", "preferences"],
+  ["sound", "notifications", "preferences"],
+  ["tokens", "transcript", "preferences"],
+  ["marketplace", "plugins-manager", "extensions"],
+  ["plugin directory", "plugins-manager", "extensions"],
+  ["skill directory", "skills", "extensions"],
+  ["cache", "storage", "system"],
+  ["pairing", "mobile", "system"],
+])("finds %s and navigates to %s", async (query, id, cluster) => {
   const user = userEvent.setup();
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  const onNavigate = vi.fn();
+  const { container } = render(<SettingsNav activeId={null} onNavigate={onNavigate} />);
+  await user.type(screen.getByRole("searchbox"), query);
+  expect(clusterHeaders(container)).toEqual([cluster]);
+  await user.click(screen.getByRole("button"));
+  expect(onNavigate).toHaveBeenCalledExactlyOnceWith(id);
+});
+
+test("no matches announces an empty state and clearing restores destination order", async () => {
+  const user = userEvent.setup();
+  const onNavigate = vi.fn();
+  const { container } = render(<SettingsNav activeId={null} onNavigate={onNavigate} />);
+  const filter = screen.getByRole("searchbox");
+  await user.type(filter, "no-such-control");
+  expect(screen.queryAllByRole("button")).toHaveLength(0);
+  expect(clusterHeaders(container)).toEqual([]);
+  expect(within(screen.getByRole("status")).getByTestId("empty-state").getAttribute("data-reason")).toBe("empty");
+  await user.clear(filter);
+  expect(screen.queryByRole("status")).toBeNull();
+  for (const button of screen.getAllByRole("button")) await user.click(button);
+  expect(onNavigate.mock.calls.map(([id]) => id)).toEqual([
+    "theme",
+    "transcript",
+    "keybindings",
+    "notifications",
+    "credentials",
+    "agents",
+    "agents-md",
+    "launch-evener",
+    "inrepo",
+    "plugins-manager",
+    "skills",
+    "mcp",
+    "hosts",
+    "mobile",
+    "hub",
+    "storage",
+    "about",
+  ]);
+});
+
+test("a keyword result supports keyboard activation", async () => {
+  const user = userEvent.setup();
+  const onNavigate = vi.fn();
+  render(<SettingsNav activeId={null} onNavigate={onNavigate} />);
+  await user.type(screen.getByRole("searchbox"), "font");
+  await user.tab();
+  expect(document.activeElement).toBe(screen.getByRole("button"));
+  await user.keyboard("{Enter}");
+  expect(onNavigate).toHaveBeenCalledExactlyOnceWith("theme");
+});
+
+test('filtering "agents" hides Appearance but keeps Agents', async () => {
+  const user = userEvent.setup();
+  render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   await user.type(screen.getByRole("searchbox", { name: "Filter settings" }), "agents");
 
-  expect(screen.queryByRole("button", { name: "General" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Appearance" })).toBeNull();
   expect(screen.getByRole("button", { name: "Agents" })).toBeTruthy();
 });
 
 test("filtering is case-insensitive", async () => {
   const user = userEvent.setup();
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
-  await user.type(screen.getByRole("searchbox", { name: "Filter settings" }), "THEME");
-  expect(screen.getByRole("button", { name: "Theme" })).toBeTruthy();
+  render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
+  await user.type(screen.getByRole("searchbox", { name: "Filter settings" }), "APPEARANCE");
+  expect(screen.getByRole("button", { name: "Appearance" })).toBeTruthy();
 });
 
 test("a cluster header hides once every one of its links is filtered out", async () => {
   const user = userEvent.setup();
-  const { container } = render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  const { container } = render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   await user.type(screen.getByRole("searchbox", { name: "Filter settings" }), "storage");
 
   // Storage matches, so its cluster stays; nothing in the other two matches.
-  expect(clusterHeaders(container)).toEqual(["daemon"]);
+  expect(clusterHeaders(container)).toEqual(["system"]);
 });
 
 test("clearing the filter re-shows every link", async () => {
   const user = userEvent.setup();
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   const filter = screen.getByRole("searchbox", { name: "Filter settings" });
   await user.type(filter, "storage");
-  expect(screen.queryByRole("button", { name: "General" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Appearance" })).toBeNull();
 
   await user.clear(filter);
 
-  expect(screen.getByRole("button", { name: "General" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Appearance" })).toBeTruthy();
   expect(screen.getByRole("button", { name: "Storage" })).toBeTruthy();
 });
 
@@ -141,7 +209,7 @@ test("clearing the filter re-shows every link", async () => {
 // own --tap-min checks.
 
 test("every section link carries a drill-in chevron affordance, decorative only", () => {
-  render(<SettingsNav activeId="general" onNavigate={vi.fn()} />);
+  render(<SettingsNav activeId="theme" onNavigate={vi.fn()} />);
   const links = screen.getAllByRole("button");
   expect(links).toHaveLength(SETTINGS_SECTIONS.length);
   for (const link of links) {
