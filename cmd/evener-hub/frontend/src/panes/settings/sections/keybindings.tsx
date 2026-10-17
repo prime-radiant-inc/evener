@@ -251,7 +251,7 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
         className={CLASS.capture}
         role="textbox"
         aria-readonly="true"
-        tabIndex={-1}
+        tabIndex={0}
         aria-label={`Press the new shortcut for ${title}. Enter saves, Escape cancels.`}
         data-state={captured !== null ? "captured" : held.length > 0 ? "holding" : "idle"}
         onKeyDown={handleKeyDown}
@@ -312,6 +312,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
   // action - replacementRules composes from rawOverrides for the same
   // reason. The Customized marker stays on the effective bindings.
   const hasOverride = useKeybindingsStore((s) => s.rawOverrides.some((rule) => rule.action === actionId));
+  const rowRef = useRef<HTMLLIElement>(null);
   const chordButtonRef = useRef<HTMLButtonElement>(null);
   // Set when a capture ends from the keyboard (Escape cancel, Enter save):
   // focus returns to the chord button so the keyboard flow continues where
@@ -374,7 +375,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
     // the capture this save belongs to is gone; its resolution must not
     // touch the row's current capture state.
     if (captureGenerationRef.current !== generation) return null;
-    refocusOnCloseRef.current = true;
+    refocusOnCloseRef.current = rowRef.current?.contains(document.activeElement) ?? false;
     setCapturing(false);
     setError(null);
     return null;
@@ -409,6 +410,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
 
   return (
     <li
+      ref={rowRef}
       className={CLASS.row}
       hidden={hidden}
       data-action={actionId}

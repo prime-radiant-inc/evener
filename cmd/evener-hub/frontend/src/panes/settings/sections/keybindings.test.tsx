@@ -149,6 +149,51 @@ test("search matches action names and IDs without losing a captured edit", async
   expect(keybindingsStore.getState().rawOverrides).toEqual([]);
 });
 
+test.each([false, true])("retained capture can be resumed from search by keyboard after folding=%s", async (fold) => {
+  const client = await wireEditableClient();
+  renderEditor();
+  const user = userEvent.setup();
+  const search = screen.getByRole("textbox", { name: "Search shortcuts" });
+  await user.type(search, ACTIONS.paletteOpen);
+  const box = await enterCapture("Open the command palette");
+  await user.keyboard("{Control>}y{/Control}");
+  await user.click(search);
+  if (fold) {
+    const toggle = screen.getByRole("button", { name: "Customize shortcuts" });
+    await user.click(toggle);
+    await user.keyboard("{Enter}");
+    await user.tab();
+    expect(document.activeElement).toBe(search);
+  }
+  await user.tab();
+  expect(document.activeElement).toBe(box);
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  expect(keybindingsStore.getState().rawOverrides).toEqual([{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]);
+});
+
+test("a retained capture save does not steal focus from shortcut search", async () => {
+  const client = await wireEditableClient();
+  let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;
+  client.on(
+    "evener/settings/keybindings/patch",
+    () =>
+      new Promise<KeybindingsOverrides>((resolve) => {
+        resolvePatch = resolve;
+      }),
+  );
+  renderEditor();
+  const box = await enterCapture("Open the command palette");
+  fireEvent.keyDown(box, { key: "y", ctrlKey: true });
+  fireEvent.keyDown(box, { key: "Enter" });
+  await waitFor(() => expect(patchCallsOf(client)).toHaveLength(1));
+  const search = screen.getByRole("textbox", { name: "Search shortcuts" });
+  await userEvent.setup().click(search);
+  resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]));
+  await waitFor(() => expect(screen.queryByRole("textbox", { name: /Press the new shortcut/ })).toBeNull());
+  expect(document.activeElement).toBe(search);
+});
+
 test("lists every default action with its title and effective chord, none customized", () => {
   renderEditor();
 
