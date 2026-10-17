@@ -82,7 +82,9 @@ Use the generated request types. `turn/start`, for example, requires `clientMuta
 
 ## Follow output without losing state
 
-`thread/read` with `subscribe: true` both hydrates state and subscribes the connection. `replaceSubscription: true` can remove another consumer's subscription; use it only when you own the connection's whole subscription set. A multi-pane application should share `acquireThreadSubscription(client, ref)` leases, use each lease's `read`, and release its own lease when the view closes. The last release removes membership.
+`thread/read` with `subscribe: true` both hydrates state and subscribes the connection. `replaceSubscription: true` can remove another consumer's subscription; use it only when you own the connection's whole subscription set. A multi-pane application should share `acquireThreadSubscription(client, ref)` leases, use each lease's `read`, and release its own lease when the view closes.
+
+The last release drops local ownership immediately. Once pending subscription operations settle, the helper attempts an asynchronous unsubscribe if the connection is ready. It ignores unsubscribe failures, so remote membership can persist until the connection closes.
 
 Reconnect restores a transport, **not every notification**. Reinitialize, restore subscriptions and read authoritative snapshots. Discard stale in-flight results from the previous connection generation. Recorded history can repair the view; transient deltas and retained rings are not an unlimited lossless replay log. The basic SDK reconnects after an established connection drops, with exponential backoff and jitter. It does not replay your application mutations or rebuild your view for you. A failed initial connection still needs caller error handling.
 
