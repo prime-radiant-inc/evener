@@ -79,6 +79,10 @@ Input & shortcuts brings Enter-to-send and keyboard customization together.
 Enter-to-send and character-key accessibility stay visible. Customize shortcuts
 opens the searchable editor; folding or filtering it preserves captured chords
 and pending writes. Synchronization failures and retry remain visible outside it.
+Failed saves and same-hub reconnects retain the proposed shortcut. **Retry**
+reloads the hub's current shortcuts without saving again. Once recovery finishes,
+focus the retained capture and press Enter to save explicitly, or Escape to cancel.
+Replacing the hub connection discards its proposal; it never moves to another hub.
 Enter-to-send and character-key enablement remain browser-local; keyboard
 overrides retain their existing hub synchronization. Appearance and notification
 preferences retain their existing browser storage. Conversation display keeps
