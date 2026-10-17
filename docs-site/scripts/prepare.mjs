@@ -141,10 +141,11 @@ export async function prepare({
       throw new Error(`Image not in assets: ${target}`);
     if (assets.has(target))
       return `${kind === "export" ? origin : ""}${base}assets/${encodePath(target)}${query}${hash}`;
+    // VitePress resolves source routes before adding the deployment base.
     if (pages.has(target))
       return kind === "export"
         ? `${origin}${base}markdown/${encodePath(pages.get(target).path)}${query}${hash}`
-        : `${base}${encodePath(pages.get(target).path.replace(/\.md$/, ".html"))}${query}${hash}`;
+        : `/${encodePath(pages.get(target).path.replace(/\.md$/, ".html"))}${query}${hash}`;
     return `${repository}/${info.isDirectory() ? "tree" : "blob"}/main/${encodePath(target)}${query}${hash}`;
   }
   const output = new Map();
