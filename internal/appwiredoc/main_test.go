@@ -475,8 +475,7 @@ func TestReachableWireSchemasAndLinks(t *testing.T) {
 		case reflect.Map:
 			pending = append(pending, typ.Key(), typ.Elem())
 		case reflect.Struct:
-			for i := 0; i < typ.NumField(); i++ {
-				field := typ.Field(i)
+			for field := range typ.Fields() {
 				if field.PkgPath == "" && field.Tag.Get("json") != "-" {
 					pending = append(pending, field.Type)
 				}
