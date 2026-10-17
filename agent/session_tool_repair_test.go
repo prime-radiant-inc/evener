@@ -118,6 +118,26 @@ func TestPrepareToolCall_SynthesizesStableIDWhenEmpty(t *testing.T) {
 	}
 }
 
+// A provider may omit the tool-call id (Gemini does). Two id-less calls with
+// identical arguments must still get distinct ids: a synthesized id is what the
+// live overlay, the recorded item and the list key all identify the call by, so
+// a hash-only id would collapse two calls into one row (and one key).
+func TestPrepareToolCall_SynthesizedIDsAreUniqueWhenEmpty(t *testing.T) {
+	t.Parallel()
+	et := editTool(t)
+	args := json.RawMessage(`{"file_path":"/x","old_string":"a","new_string":"b"}`)
+	first := prepareToolCall(llm.ToolCallData{Name: "edit_file", Arguments: args},
+		et, []string{"edit_file"}, "edit_file", "communicate", "")
+	second := prepareToolCall(llm.ToolCallData{Name: "edit_file", Arguments: args},
+		et, []string{"edit_file"}, "edit_file", "communicate", "")
+	if first.Call.ID == "" || second.Call.ID == "" {
+		t.Fatalf("synthesized ids missing: first=%q second=%q", first.Call.ID, second.Call.ID)
+	}
+	if first.Call.ID == second.Call.ID {
+		t.Fatalf("two id-less calls with identical arguments shared the id %q", first.Call.ID)
+	}
+}
+
 // A length-stopped turn with unparseable args is truncation, not a JSON
 // syntax problem: the error must say so, and no repair may run (a "healed"
 // truncated write would silently write a truncated file).
