@@ -33,6 +33,7 @@ function composer(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
 	const props = {
 		value: "",
 		editable: true,
+		mayRest: true,
 		onChangeText: vi.fn(),
 		placeholder: "Tell the agent something…",
 		sendLabel: "Queue message",
@@ -48,6 +49,12 @@ function composer(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
 
 function fields(tree: ReactTestRenderer): ReactTestInstance[] {
 	return tree.root.findAll((node) => String(node.type) === "TextInput" && node.props.accessibilityLabel === "Message");
+}
+
+/** How many model chips the tree holds: 0 while the composer rests (the chip
+ * steps aside), 1 once the field is reached for. */
+function chips(tree: ReactTestRenderer): number {
+	return tree.root.findAll((node) => String(node.props.accessibilityLabel).startsWith("Model: ")).length;
 }
 
 describe("Composer", () => {
@@ -90,14 +97,22 @@ describe("Composer", () => {
 		expect(height(tree)).toBe(44);
 		act(() => fields(tree)[0]?.props.onBlur());
 		expect(height(tree)).toBe(24);
-		// A draft keeps it open, focused or not.
-		act(() => tree.update(<Composer {...props} value="half a thought" />));
-		expect(height(tree)).toBe(44);
-		// Whitespace is a draft too: the field visibly holds it, so it stays open.
-		act(() => tree.update(<Composer {...props} value="   " />));
+		// The screen says the draft may not rest (text, whitespace, or an image):
+		// a full field, focused or not.
+		act(() => tree.update(<Composer {...props} value="half a thought" mayRest={false} />));
 		expect(height(tree)).toBe(44);
 	});
-
+	// The screen decides whether the draft may rest (an attached image or a
+	// read-only field says no); whenever it says no the composer stays open.
+	it("keeps a full field whenever the screen says the draft may not rest", () => {
+		const { tree } = composer({ mayRest: false });
+		expect(fields(tree)[0]?.props.style.minHeight).toBe(44);
+		// The screen's answer wins whichever way focus falls.
+		act(() => fields(tree)[0]?.props.onFocus());
+		expect(fields(tree)[0]?.props.style.minHeight).toBe(44);
+		act(() => fields(tree)[0]?.props.onBlur());
+		expect(fields(tree)[0]?.props.style.minHeight).toBe(44);
+	});
 	// The Send/Stop target stays the controls row's 44pt whichever way the field
 	// rests, so the composer always holds that target (Jesse's ruling).
 	it("keeps a 44pt Send target under a resting field", () => {
@@ -105,6 +120,40 @@ describe("Composer", () => {
 		expect(fields(tree)[0]?.props.style.minHeight).toBe(24);
 		const send = pressable(tree, "Queue message");
 		expect(send?.props.style({ pressed: false })).toMatchObject({ width: 44, height: 44 });
+	});
+
+	// Collapsed (empty and unfocused) the composer is one row: +, the field, and
+	// Send/Stop, with the model chip stepping aside until you reach for it.
+	it("collapses to one row, with +, the field and Send sharing it", () => {
+		const chip = <ModelChip label="Gpt 6 Astra · XHigh" onPress={() => {}} />;
+		const { props, tree } = composer({ settings: chip });
+		// The row that holds the field: its parent carries the layout the shape
+		// switches (row while collapsed, column while open).
+		const rowStyle = () => fields(tree)[0]?.parent?.parent?.props?.style ?? {};
+		// Collapsed: one row, and the chip is gone.
+		expect(rowStyle()).toMatchObject({ flexDirection: "row" });
+		expect(chips(tree)).toBe(0);
+		expect(pressable(tree, "Add")).toBeDefined();
+		expect(pressable(tree, "Queue message")).toBeDefined();
+
+		// Focusing the field opens it: the chip returns and the layout stacks.
+		act(() => fields(tree)[0]?.props.onFocus());
+		expect(chips(tree)).toBe(1);
+		expect(rowStyle()).toMatchObject({ flexDirection: "column" });
+		act(() => fields(tree)[0]?.props.onBlur());
+		expect(chips(tree)).toBe(0);
+		// A draft keeps it open too.
+		act(() => tree.update(<Composer {...props} value="x" mayRest={false} settings={chip} />));
+		expect(chips(tree)).toBe(1);
+	});
+	// Focusing is the only way out of the resting row, so a field that cannot
+	// take focus (which the screen reports as mayRest false) must stay open or
+	// the model chip is stranded with nothing to reach for.
+	it("shows the chip while the screen says the draft may not rest", () => {
+		const chip = <ModelChip label="Gpt 6 Astra · XHigh" onPress={() => {}} />;
+		const { tree } = composer({ mayRest: false, settings: chip });
+		expect(chips(tree)).toBe(1);
+		expect(pressable(tree, "Model: Gpt 6 Astra · XHigh. Change model or effort")).toBeDefined();
 	});
 	it("sits close to the screen's bottom, with a small margin under the card", () => {
 		const { tree } = composer();

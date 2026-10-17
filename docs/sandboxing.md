@@ -1,12 +1,30 @@
 # Sandboxing
 
-Status: Evergreen guide to the `--sandbox` flag and what each mode enforces.
+Choose a sandbox before starting work. The default is **off**, so an ordinary session can use your account's filesystem and command access. This page explains enforced boundaries and their limits, not a promise that every allowed action is safe.
 
-## Summary
+## Start a confined task
+
+Prerequisites: a configured provider, a working directory, and a usable OS sandbox backend. Run these shell examples from the project directory; choose only one for the task you intend:
+
+```sh
+evener --sandbox read-only --sandbox-net off "Review the README without changing project files"
+```
+
+```sh
+evener --sandbox workspace-write --sandbox-net off "Fix the failing unit test and run its checks"
+```
+
+These are real agent requests and can incur provider charges. The second permits project writes. In the browser, choose the corresponding Sandbox and Sandbox network egress launch settings before Start. Check the startup report for the actual backend, mode, and network policy. If an explicit sandbox cannot be enforced, fix the backend or choose another host rather than silently rerunning with sandbox off.
+
+Network off applies to tools, not the model-provider connection. A test that downloads dependencies may fail in this mode; prepare dependencies first or deliberately choose a new network-enabled session. The policy is fixed for the session and cannot be relaxed by a tool call.
+
+Use [Configuration](configuration.md) to save launch defaults, [Daily work](daily-work.md) to review changes, and [Security](security.md) for privacy and storage limits.
+
+## How confinement works
 
 `--sandbox <mode>` confines a session's file access, spawned processes, and
 (optionally) network egress to a policy chosen once at session start. It is
-**off by default**: an unsandboxed session behaves exactly as it always has. A
+**off by default**: an unsandboxed session keeps ordinary user access. A
 sandboxed session's boundary is enforced by two cooperating layers — an
 in-process, race-safe layer for the file tools (`read_file`, `write_file`,
 `edit_file`, `apply_patch`, `glob`, `grep`, `list_dir`) and a kernel layer
@@ -27,6 +45,8 @@ resolve against that working directory, and an omitted `cwd` defaults to it.
 Operating-system permissions and user instructions still apply. Explicit
 sandbox policies retain their boundaries, and allocated session scratch keeps
 its separate access contract.
+
+### Implicit delegate safety floor
 
 There is one deliberate delegate safety floor: a delegate whose structured tool
 scope contains no workspace-mutation tool (`write_file`, `edit_file`,
@@ -117,7 +137,7 @@ access it already had. Stored files and earlier conversation remain. See
 Both flags are available on `evener` and `evener serve`. `--sandbox-net` is meaningful
 only when a non-off `--sandbox` mode is set; with `--sandbox off` it is ignored.
 
-When a session starts sandboxed, evener prints one line to stderr stating exactly
+When a session starts sandboxed, Evener prints one line to stderr stating exactly
 what is enforced on this host — the backend, the mode, the network decision, that
 credential/secret paths are masked, and how the language caches are served — for
 example:
@@ -170,7 +190,7 @@ degrades only the git line.
 All sandboxed modes share a common floor: a per-session writable temp directory
 (exported as `TMPDIR`), the secrets + pseudo-filesystem denylist (masked in both
 layers), git config/hook protection, a fresh PID namespace with its own `/proc`, a
-minimal `/dev`, the environment floor, and no inherited evener file descriptors or
+minimal `/dev`, the environment floor, and no inherited Evener file descriptors or
 sockets beyond stdio.
 
 On Linux, bubblewrap gives spawned processes a private `/tmp`, so "anywhere" in
@@ -194,8 +214,7 @@ unsandboxed root's `TMPDIR` is not in the tree.
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
 | `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
 
-- **`off`** is exactly today's behavior — a strict superset of every sandboxed
-  mode, with no new code path engaged.
+- **`off`** applies no sandbox confinement.
 - **`read-only`** cannot commit or write project files; only the session temp is
   writable, for scratch. Use it for review, exploration, and analysis.
 - **`workspace-write`** grants writes to the worktree, the session temp, and
@@ -334,9 +353,12 @@ unsandboxed root's `TMPDIR` is not in the tree.
 
 ## The fail-closed floor
 
-A mode is either fully enforced or the session refuses to start. There is no
-"best effort" and no override flag: evener will not run a session that claims a
-sandbox mode it cannot actually enforce.
+An explicitly requested sandbox mode is either fully enforced or refused.
+There is no override flag that silently weakens that request. The
+[implicit delegate safety floor](#implicit-delegate-safety-floor) is different:
+when no OS backend is usable but file-tool confinement is available, it can
+run with confined file tools and an unconfined shell. Both parent and delegate
+receive a warning. The table below describes requested modes, not that fallback.
 
 | Host capability | Modes that run | Otherwise |
 |---|---|---|
@@ -344,7 +366,7 @@ sandbox mode it cannot actually enforce.
 | macOS with `/usr/bin/sandbox-exec` (present on every stock install) | all modes, `--sandbox-net` on or off | — |
 | Linux without a usable bubblewrap, Windows, macOS without `sandbox-exec`, any other OS | `off` only | any non-off mode refuses to start |
 
-On Linux, "bubblewrap usable" means more than the binary being present: evener runs a
+On Linux, "bubblewrap usable" means more than the binary being present: Evener runs a
 real unprivileged-user-namespace probe at startup, so a host that ships `bwrap` but
 blocks unprivileged user namespaces (for example Ubuntu 24.04 with
 `apparmor_restrict_unprivileged_userns=1`) reports *not capable* and refuses a
@@ -377,7 +399,7 @@ file tool nor a spawned process can read them:
   `/run/containerd/containerd.sock`, `/run/dbus/system_bus_socket`).
 
 Masking `/proc` is load-bearing: without it a `read_file("/proc/<evener-pid>/environ")`
-would leak evener's own environment, including the provider API key. Masking the
+would leak Evener's own environment, including the provider API key. Masking the
 daemon sockets turns a `connect()` into `ECONNREFUSED`, so a session cannot drive a
 container daemon straight to host root even with `--sandbox-net off` (a read-only
 bind of `/` does not block a Unix-socket `connect()`, and `--unshare-net` does not
@@ -464,7 +486,7 @@ But every git **config and hook** surface is read-only:
 
 Denying a surface that does not exist yet is what stops it being *planted*, and on
 bubblewrap that denial is a mount, which materializes the name on the real
-filesystem and leaves it there after the session. So evener pre-creates an absent
+filesystem and leaves it there after the session. So Evener pre-creates an absent
 `commondir` holding `.` before pinning it: an empty `commondir` is fatal to git
 forever after, and `.` is both the only content git accepts and exactly what a git
 dir without the file already means (it is its own common dir). No other protected
@@ -553,7 +575,7 @@ floor holds either way.
 
 ## The environment floor
 
-On top of evener's existing scrub of `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*`/
+On top of Evener's existing scrub of `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*`/
 `*CREDENTIAL*` variables, a sandboxed session raises an additional floor on every
 spawned process:
 
@@ -583,7 +605,7 @@ than the problem warrants. Ruled 2026-08-06: accept and document the noise
 rather than ship an env var that does nothing.
 
 ssh-agent and gpg-agent Unix sockets are not bind-mounted into the sandbox, and
-spawned commands inherit no evener file descriptors beyond stdio — not evener's live
+spawned commands inherit no Evener file descriptors beyond stdio — not Evener's live
 LLM-API connection, not a credential fd.
 
 ## Network
@@ -625,8 +647,8 @@ path, and a truncated command, never the file contents or a full secret path.
 In a non-interactive session a denial is final. In an interactive root session with a
 UI client attached (subscribed to the thread), a `read_file`, `write_file`, or
 `edit_file` denial for being outside the sandbox's roots can be escalated to a
-human-gated approval card — "Allow" / "Deny" in the web UI, `ctrl+y` / `ctrl+g` in the
-TUI hub — that blocks the tool-exec goroutine until answered
+human-gated approval card — "Allow" / "Deny" in the web UI or the native app —
+that blocks the tool call until answered
 (`evener/sandbox/escalation/requested` → `evener/sandbox/escalation/resolve`, see
 [docs/appwire-protocol.md](appwire-protocol.md)). Shell/kernel denials, `apply_patch`,
 the browse tools, and a masked/git-protected/symlinked/escape denial all stay final,
@@ -635,12 +657,18 @@ observe an approval: the escalation and its resolution never enter session histo
 
 ## Subagents and worktrees
 
-A sandboxed session's delegates and subagents inherit the policy automatically,
-re-rooted to their own worktree with fresh git-metadata resolution — a delegate in
-lane A cannot read lane B. Because inheritance is automatic, the flag only goes live
-on a build where subagent/worktree scoping already holds, so the first `delegate`
-never punches a hole in the boundary you opted into. Resumed delegates re-resolve
-their persisted policy the same way the root session does. See
+A sandboxed session's delegates and subagents inherit its policy floor. Worktree
+roots move to each delegate's own worktree, and git-metadata grants are resolved
+again. This separates workspace writes; it does not make sibling worktrees private.
+
+`read-only` and `workspace-write` allow reads anywhere except masked paths,
+including sibling worktrees. `restricted` bounds reads to the delegate's worktree
+and its other granted roots; spawned processes have additional read grants for
+system files, git metadata, and configured infrastructure. See [Modes](#modes)
+for those grants and the separate file-tool and process boundaries.
+
+Delegates cannot relax their parent's policy floor. Resumed delegates re-resolve
+their persisted policy against the current host. See
 [docs/developing-evener/worktrees.md](developing-evener/worktrees.md) for the worktree model itself.
 
 ## Hooks and MCP under a sandbox
@@ -697,8 +725,10 @@ The grant is tightly bounded:
   when it is fewer than two path components deep. So `/`, `/Users`, `/home`,
   `/private`, `/var`, `/Volumes` and `/tmp` can never be granted. Paths are
   symlink-resolved *and* stripped of their `/System/Volumes/Data` firmlink alias
-  before this check, so neither spelling of a path can slip past it. Note that the
-  denylist alone cannot do this job: it drops roots at or *beneath* a masked path,
+  before this check. A candidate that is the same directory as an entry directly
+  under `/` is also refused, even when a symlink gives it a deeper canonical path,
+  such as `/var` → `/private/var`. Note that the denylist alone cannot do this job:
+  it drops roots at or *beneath* a masked path,
   and these are *above* them.
 
 An MCP `command` or argument contributes only when it is a **regular file**, and it
@@ -739,8 +769,8 @@ The macOS backend is Seatbelt (`/usr/bin/sandbox-exec`), driven from the same po
 model as bubblewrap so all modes are expressible; caches are always served
 session-private (there is no overlay on macOS), and the `sandbox-exec` path is
 hard-coded as a PATH-injection defense. A host without `/usr/bin/sandbox-exec`
-refuses any sandboxed mode — the same fail-closed floor as a Linux host without a
-usable bubblewrap.
+refuses an explicitly requested sandbox mode — the same
+[fail-closed floor](#the-fail-closed-floor) as a Linux host without usable bubblewrap.
 
 Seatbelt policies canonicalize every granted and denied root through symlink and
 firmlink resolution (`/tmp` → `/private/tmp` is pinned by test). Seatbelt judges the
@@ -757,6 +787,6 @@ suite runs the generated profiles under the real `sandbox-exec` when
 
 - [docs/developing-evener/worktrees.md](developing-evener/worktrees.md) — the worktree model that backs delegate
   isolation.
-- [docs/developing-evener/environment.md](developing-evener/environment.md) — the environment variables evener reads.
+- [Environment variables](environment-variables.md) — the environment variables Evener reads.
 - [docs/subagent-runtime-contracts.md](subagent-runtime-contracts.md) — the runtime
   contracts subagents, plugins, and hooks operate under.

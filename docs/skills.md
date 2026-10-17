@@ -5,32 +5,86 @@ commands**. Both are plain text templates. What differs is where they come
 from, how they are invoked, and — critically — whether they can execute
 shell commands.
 
-## The trust model, up front
+## Create and use a skill
 
-A markdown template that can run shell commands is code. Evener's rule:
+Use a skill for instructions you want the agent to reuse. This example needs an
+Evener installation with a working provider and a project directory. Run the
+shell commands on the host where the session runs, from your project root.
 
-- **Templates you explicitly installed** (plugins) may execute shell at
-  expansion time. Installing a plugin is a trust decision, like installing
-  software.
-- **Templates evener discovers automatically** (project and user-global
-  `skills/` directories, project `.evener/commands/`, and your user-global
-  commands directory) never execute shell and never read files at expansion
-  time. Anything in a repo you merely cloned is inert text.
+1. Create `skills/change-summary/SKILL.md`:
 
-This mirrors codex's posture of inert skill text. In codex, a skill body is
-never executable template code: an explicitly mentioned or selected skill is
-resolved and injected by the runtime itself as a separate user-role fragment
-carrying the complete file text, while model-selected loading is a separate
-path through the model's own file reads. Claude Code instead allows `!`cmd``
-execution in skills and commands, but gates project-sourced content behind a
-workspace trust dialog and offers a `disableSkillShellExecution` kill
-switch. Evener keeps Claude Code-compatible execution for explicitly installed
-plugins, and adopts the codex posture of inert discovered text for everything
-it discovers on its own. (An earlier version of this paragraph claimed codex
-bodies reach the model only through the model's own permission-checked tool
-calls; the pinned Codex sources in the [skills implementation
-study](research/2026-09-10-skills-implementation-study.md) corrected that
-claim, and the correction is recorded here.)
+   ```markdown
+   ---
+   name: change-summary
+   description: Summarize a code change and its verification.
+   ---
+   Read the diff relevant to the request. Report what changed, what checks ran,
+   and what remains unverified. Do not edit files.
+   ```
+
+2. Start a new session in that project. In the browser, type `/` and select
+   `change-summary`, or send this leading slash prompt as typed text:
+
+   ```text
+   /change-summary Summarize the current diff.
+   ```
+
+3. Check that the catalog offers `change-summary` and that the session records
+   its activation. A response that merely mentions the name is not proof of
+   activation. Inspect discovery warnings if it is missing: `name` and
+   `description` must be nonempty strings, and `SKILL.md` must be inside a skill
+   directory that is an immediate child of a discovery root, such as
+   `skills/change-summary/SKILL.md`. The [format and discovery reference](#skills)
+   explains precedence and invocation controls.
+
+4. Edit the body and invoke it again to load current bytes. There is no live
+   filesystem watcher. New names require another catalog discovery or session
+   startup. To remove it, delete only the `SKILL.md` you created and start a new
+   session. Removing a file does not erase instructions already in context;
+   later reloads of the missing source fail visibly.
+
+The complete file is also in
+[`examples/extensions/skills/change-summary/SKILL.md`](examples/extensions/skills/change-summary/SKILL.md).
+To get a local copy, use the `git clone` command in
+[Prepare the example](getting-started.md#prepare-the-example); the file is under
+`evener-docs/docs/examples/extensions/skills/change-summary/`. No Evener build is
+needed: copy the skill into your project and use your installed executable.
+Skills are instructions, not a permission boundary. Even “Do not edit files”
+is guidance to the model, not an enforced read-only role.
+
+## Create a command with arguments
+
+Use a command when you need a reusable prompt with explicit arguments. Create
+`.evener/commands/summarize-change.md` in your project:
+
+```markdown
+---
+description: Summarize a requested change.
+argument-hint: change to summarize
+---
+Summarize this change: $ARGUMENTS
+State the evidence and anything not verified. Do not edit files.
+```
+
+Start a new session there and send `/summarize-change the current diff` as a
+**leading typed prompt**. The expanded instruction contains `the current diff`.
+Selecting a command chip instead invokes it with empty arguments; surrounding
+prose is not an argument. Check the command catalog and the expanded session
+input, not just the model's answer. If the name is absent, check the filename,
+project root, and load warnings. Avoid client built-in names such as `help`.
+
+To update or remove a command, edit or delete that file and start a new session.
+Do not expect a running session's command inventory to refresh. See the
+[command reference](#evener-wide-slash-commands) for user-global locations and
+precedence, and [plugins](plugins.md) for packaging executable commands.
+
+## Trust before invocation
+
+Read extensions before loading them. Skills and automatically discovered commands
+supply untrusted prompt text. Skills never expand shell, file, or argument
+syntax. Project and user-global commands substitute arguments but do not execute
+shell or include files. Plugin commands can do both: configuring or installing
+a plugin is a code-trust decision, not just adding text.
 
 | Source | Discovered from | `$ARGUMENTS` | `!`cmd`` | `@file` |
 |---|---|---|---|---|
@@ -256,16 +310,6 @@ Every route a skill can take, and what each one means:
 | `model_tool` | Model calls `use_skill` | no — model choice under current controls | no; a same-source continuation reuses the prior record's answer | tracked ordinary activation |
 | `compaction_reload` | Reload selection honored at the next dispatch after compaction | yes, once the selection is recorded | no; reuses the prior same-source answer | restores the recorded activation's body |
 | `role_preload` | Delegate role declaration | yes — loaded before the delegate starts | no — frozen provenance | permanent-prompt / frozen-delegate lifetime |
-
-The model-interpreted inline path is the one part of this surface that
-depends on how a real model reads your text. The skills-lifecycle live
-evaluation (run 2026-09-12) measured it against a real model — operative
-requests, quotations, fenced code, paths/URLs, negations, multiple selections,
-and near-miss names — and its per-case record lives in the [evaluation
-evidence](research/2026-09-11-skills-lifecycle-evidence.md). The [skills
-implementation study](research/2026-09-10-skills-implementation-study.md)
-records how Evener's invocation surface compares with Pi, OpenCode, Codex,
-and Claude Code.
 
 ### Canonical skill input on AppWire
 
@@ -618,7 +662,7 @@ transcript receipt reconciliation keep a restart from repeating delivery.
 
 ## Evener-wide slash commands
 
-A evener-wide slash command is a markdown file — frontmatter optional — in one
+An Evener-wide slash command is a markdown file — frontmatter optional — in one
 of two places:
 
 - `<any dir from git root to cwd>/.evener/commands/name.md` (project commands)
@@ -634,25 +678,22 @@ last two are parsed but not enforced; their compatibility advisory appears
 only at Full transcript detail).
 
 Expansion substitutes `$ARGUMENTS` and `$1..$9` as inert text. `!`cmd``
-spans and `@file` references in a evener-wide command body never execute or
+spans and `@file` references in an Evener-wide command body never execute or
 read anything — they remain in the expanded text verbatim except that
 argument substitution still applies inside them as inert text — and evener
-warns at load time if a evener-wide command contains `!`` spans. If you want
+warns at load time if an Evener-wide command contains `!`` spans. If you want
 an executable template, package it as a plugin command instead.
 
-**Precedence:** project > user-global > plugin. A evener-wide command shadows
+**Precedence:** project > user-global > plugin. An Evener-wide command shadows
 a plugin command of the same bare name; the plugin command stays reachable
 as `/plugin:name`. Within project commands, the directory closest to your
 cwd wins.
 
 ### Client caveats
 
-- Both desktop surfaces intercept their own built-in slash commands before
-  your input reaches the session: the TUI has its registry (`/status`,
-  `/model`, `/help`, ...) and the web palette has its own, partly different
-  set (`/status`, `/model`, `/help`, `/steer`, `/queue`, ...). A command
-  whose name collides with a client's built-ins is unreachable in that
-  client's typed input — pick another name. Headless input always works.
+- The browser intercepts its built-in slash controls before session input.
+  Avoid names such as `/status`, `/model`, `/help`, `/steer`, and `/queue`.
+  Use distinct names for your commands. Headless input does not use that menu.
 - The web UI opens inline completion when you type `/` in either composer.
   Mod+K opens the separate command palette. Selecting a command in inline
   completion stages an atomic empty-argument invocation. Leaving a leading
@@ -672,7 +713,7 @@ cwd wins.
 ## Plugin commands
 
 Plugins (installed via the marketplace or configured via `plugin_dirs`) may
-ship `commands/*.md` files. These are Claude Code-compatible: in addition
+ship `commands/*.md` files. In addition
 to `$ARGUMENTS` substitution, ``!`cmd` `` spans execute in the session
 environment and `@file` inlines files at working-directory-relative paths
 (the constraint is lexical; symlinks are followed). Only install

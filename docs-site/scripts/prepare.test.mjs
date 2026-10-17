@@ -56,7 +56,7 @@ test("publishes only manifest members, rewrites nested links and emits complete 
   const { default: parse } = await import("remark-parse");
   const { visit } = await import("unist-util-visit");
   for (const [file, want] of [
-    ["index.md", "/evener/reference/two.html#repeat-1"],
+    ["index.md", "/reference/two.html#repeat-1"],
     [
       "public/markdown/index.md",
       "https://prime-radiant-inc.github.io/evener/markdown/reference/two.md#repeat-1",

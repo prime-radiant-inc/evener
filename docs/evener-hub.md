@@ -2,8 +2,7 @@
 
 `evener hub` is Evener's orchestrator. It serves the web UI — Evener's
 default interactive surface — where you start sessions, watch the agent work,
-and steer it across many concurrent sessions; the `evener tui` terminal
-dashboard talks to the same API. The hub launches and supervises
+and steer it across many concurrent sessions. The hub launches and supervises
 local `evener serve` daemons and indexes saved sessions for search.
 
 **First time here?** [Getting started](getting-started.md)
@@ -39,26 +38,11 @@ serves a strict content security policy. When you expose it further, put it
 behind an SSH tunnel, VPN or private-network firewall, or an authenticated
 reverse proxy — the token is a bearer capability, not a per-user login system.
 
-## Build and install
+## Prepare the host
 
-From the repo root:
+Install Evener using [Getting started](getting-started.md), then run the hub as the user who owns the repositories and configuration. This guide assumes that installation is complete. For routine browser work, use [Daily work](daily-work.md); for headless invocations, use the [CLI](cli.md).
 
-```bash
-make install
-```
-
-This builds `evener`, `evener hub`, `evener tui`, `evener doctor`, and
-`evener migrate`, installs the binaries under `~/.local/share/evener/bin`, and
-symlinks them into `~/.local/bin`. The hub, TUI, and doctor workflows resolve
-sibling binaries through the symlink targets, so the installed commands find
-each other without extra flags. `make install-home` is an alias for the same
-layout.
-
-For a system-style install under `/usr/local`:
-
-```bash
-sudo make install-system
-```
+Before starting a service, choose its config and state roots and arrange a provider connection on that host. Do not put secrets in a service command line. A service supervisor does not automatically inherit later changes to your interactive shell.
 
 ## Runtime directories
 
@@ -87,9 +71,7 @@ unset, the corresponding defaults are under `$HOME/.local/state` and
   way they receive the plugin root, so a per-launch `XDG_CONFIG_HOME` override
   cannot make Settings and sessions disagree about the file.
 
-Those extension roots are not active just because they exist. Add standalone
-skill paths to `skills_dirs` and plugin roots to `plugin_dirs` in the layered
-launch config, or pass the equivalent CLI flags for a single launch.
+Extension discovery and enablement have separate rules. Use [Extensions](extensions.md) to choose a source; `skills_dirs` and `plugin_dirs` add explicit launch sources, while installed plugins have their own enabled-by-default state.
 
 ## Hub config
 
@@ -103,7 +85,7 @@ create a default launch stanza; launch defaults still come from the layered
 launch files described below.
 
 Create `hub.toml` when you need to override those paths or the listen
-address. The shell expands `hub_config` and the `$HOME` values in the heredoc
+address. If it already exists, preserve a private copy and edit only the intended fields rather than running this file-creation recipe over it. The shell expands `hub_config` and the `$HOME` values in the heredoc
 before writing the file; TOML itself does not expand shell variables.
 
 ```bash
@@ -142,46 +124,9 @@ spawned session actually runs with.
 
 ## Launch configuration
 
-`evener serve` daemons spawned by the hub get their flags from a layered config:
+[Configuration](configuration.md) owns launch-file locations, trust, precedence, merging, and reload. Use Settings → Agent setup → Session defaults for user defaults, project settings for local overrides and repository review, and New session for one launch. Select the host before editing host-scoped settings.
 
-- **Global**: `${XDG_CONFIG_HOME:-$HOME/.config}/evener/launch.toml` — hub-wide
-  defaults (model, agent, reasoning effort, skills/plugin dirs, MCP servers,
-  etc.). Editable from Settings → Agent setup → Evener launch or by hand.
-  Additional plugin directories also live in Extensions → Plugins → Sources;
-  skill directories have their own Extensions page. Each host-scoped page uses
-  the selected host for both reads and saves. See the
-  [settings guide](web-ui/README.md#settings) for navigation and recovery behavior.
-- **In-repo**: `<cwd>/.evener/launch.toml` — per-project config shipped in
-  the working directory. Trust-on-first-use: the hub UI prompts to review
-  and approve before applying. Untrusted in-repo files are skipped.
-- **Local per-project**: `<cwd>/.evener/launch.local.toml` — personal
-  per-project defaults. Keep this file out of version control; this repo's
-  `.gitignore` ignores it while still allowing shared `.evener/launch.toml`.
-  Existing `${XDG_CONFIG_HOME:-$HOME/.config}/evener/projects/<id>/launch.toml`
-  files are read as a fallback until the project layer is saved in the new
-  location.
-- **Per-launch overrides**: `launchOverrides` on `ThreadStart` — applied to
-  a single spawn only.
-
-API-request logging is a launch option (`api_log`, in the Debug logging group)
-with the same layering: set it per-launch, per-project, in-repo, or globally in
-`launch.toml`. An unset value inherits the hub default above; evener's built-in
-default is off.
-
-Layers merge in order: global → in-repo → project → per-launch.
-- **Scalars** (model, reasoning_effort, etc.): most-specific value wins.
-- **Lists** (skills_dirs, plugin_dirs, mcps, mcp_configs): concatenate in
-  layer order; no dedup. Two exceptions replace instead of concatenating:
-  `system_prompt_append` collapses to its first file-mode entry, and
-  `model_fallbacks` takes the most-specific value.
-- **Env map** (`[env]`): merge by key; most-specific wins per key. Credential-like
-  keys are rejected in every launch-config layer; use the credentials file, a
-  supported provider environment variable exported before starting the hub, or
-  OpenAI OAuth (the `openai-codex` instance) instead.
-
-See the
-[launch config design spec](superpowers/specs/2026-05-16-hub-evener-launch-config-design.md)
-for the full schema and semantics.
+The launch resolver reads user defaults, trusted cwd-local shared settings, private project settings, and per-launch overrides. It reports diagnostics and provenance. API logging inherits the hub default only when no launch layer supplies a value. Neither a browser reload nor a saved setting changes an already-running daemon's configuration.
 
 ### Session plugin selection
 
@@ -214,11 +159,6 @@ a sheet with the same filter, actions, metadata, and diagnostics. The sheet
 stays open while switches are changed; **Done** applies the selection and
 **Cancel** restores the selection from before the sheet opened.
 
-The TUI new-session form has a `Plugins: N/M enabled` field after `Dir` and
-before `Prompt`. Enter opens the `Plugins for this session` picker; Space
-toggles a row, `A` selects all visible rows, `N` selects none, Enter applies, and
-Escape cancels. This field is separate from the global `/plugins` manager.
-
 The launcher previews the effective candidates for the current working directory
 and launch overrides. While inspection is pending it shows `Inspecting
 plugins…`; a failed inspection shows `Couldn't inspect plugins` with retry and
@@ -237,65 +177,9 @@ not mutate an existing session.
 
 ## Provider credentials
 
-> Architecture reference:
-> [`llm-providers.md`](llm-providers.md) (the registry, layers, instances,
-> resolution) and
-> [`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md)
-> (credentials, OAuth, and the hub launch/spawn model).
+Follow [Connecting a provider](connecting-a-provider.md) for first access. The hub stores literal keys by instance in `credentials.toml`; OAuth records belong to the state root. `openai` and `openai-codex` are distinct connections, not two interchangeable keys for one endpoint.
 
-The hub manages `${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml`
-(chmod 600), keyed by **instance name**, not provider type. The file's
-format is a small TOML document:
-
-```toml
-schema = 1
-
-[providers.anthropic]
-api_key = "sk-ant-..."
-
-[providers.openai]
-api_key = "sk-..."
-
-[providers.openrouter]
-api_key = "..."
-```
-
-A section name matches either an implicit instance's id (`anthropic`,
-`openai`, `openrouter`, …) or a custom instance you defined in
-`providers.toml`.
-
-The hub UI (`/credentials`) or TUI (`/credentials`) writes this file via
-the `evener/auth/apiKey/set` RPC. Process-env credentials (e.g.,
-`ANTHROPIC_API_KEY` exported in the shell) still work as a fallback when no
-file entry exists for the instance — matching the `hub.env` style for users
-who prefer external secret management.
-
-If `EVENER_PROVIDERS_CONFIG` points to a non-default `providers.toml`,
-`credentials.toml` is relocated beside that file, unless
-`EVENER_CREDENTIALS_CONFIG` names a different path. Otherwise it is beside
-the default providers config under the XDG config root. Keep both files
-private.
-
-### OpenAI credential resolution
-
-The platform API and the ChatGPT/Codex subscription are two separate
-**instances**, not one instance with two credential sources: `openai` (an
-API key, stored in `credentials.toml` like any other instance, or via
-`OPENAI_API_KEY`) and `openai-codex` (OAuth only — sign in via
-`evener/auth/login/start`; state stored per instance at
-`${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth/openai-codex.json`).
-`openai-codex` precedes `openai` in the default-instance ranking, so a
-fresh sign-in becomes the default the same way a stored OAuth record used
-to win — but by ranking between two instances, not by a precedence check
-within one.
-
-The two instances hit **different backends**: `openai-codex` routes to the
-ChatGPT/Codex backend (`OPENAI_CODEX_BASE_URL`), while `openai` routes to
-the standard OpenAI API backend (`OPENAI_BASE_URL`). They are not
-interchangeable credentials for one endpoint, and signing in with
-`evener openai login` no longer touches the `openai` instance at all. See
-[`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md)
-for the full resolution detail.
+[Credentials and provider launch behavior](llm-provider-config-and-launch.md) owns storage and subprocess details. [Provider reference](llm-providers.md#credential-resolution-order) owns the exact credential order. Keep both configuration and credential files private, including custom headers and command expressions.
 
 ## Start the hub
 
@@ -335,10 +219,6 @@ Production deployments should preferably execute `evener hub --config
 The hub logs config errors, past-index rebuild errors, roster watch errors,
 child-process launch diagnostics, and the auth URL there.
 
-The TUI's `--log-file` option also captures the auto-started hub's full
-authorization URL, including its bearer token. Run the TUI with a restrictive
-`umask` and choose a private log path; do not place this log in a shared
-directory or expose it through a supervisor's broadly readable logs.
 On macOS, [`scripts/ops/deploy-hub.sh`](../scripts/ops/deploy-hub.sh) builds
 while the old hub remains running, kickstarts its launchd job to replace it,
 then verifies health; see
@@ -382,103 +262,52 @@ Settings shows a rebuild note instead of the controls, and
 `scripts/ops/deploy-hub.sh` for those.
 
 Running session daemons keep the binary they were spawned from (see the
-"Existing daemons keep the `evener` binary" note below); restart a session
-to move it to the new build.
+[upgrade procedure](#upgrading-and-migrating-safely) below). Shut down the
+daemon and resume the saved session to move it to the new build.
 
 ### Deploying to remote hosts
 
-A host that runs a build other than the hub's is upgraded on attach: the hub
-installs its own build over the host's `evener`, restarts the host's hub, and
-attaches only after the running build matches. **The default build it installs
-is its own executable**, so connecting to a bare host provisions it with the
-exact build the hub was started from and no flag is needed. (The file is read
-when the deploy runs: a hub whose own executable is replaced while it runs
-deploys the replacement, which the code records as the default's accepted
-residual.) A host whose
-platform differs from the hub's cannot be served by that executable: the hub
-does not attempt the push and falls back to the installer path instead — the
-same `install.sh` provisioning a flagless controller used before the default
-existed — so a release or snapshot controller installs the published artifact
-for the host's platform, while a controller whose build has no published
-artifact to pin (dev, dirty, or a release with no stamped tag) is refused
-terminally with both targets and the remedy named. A controller with no deploy
-path at all — `-no-deploy`, or a hub whose executable is not an evener build and
-whose channel has no published artifact — leaves the host on its own build and
-attaches anyway, because the appwire protocol — not the build label — decides
-compatibility, and the hub logs the difference. Two startup flags name a
-different build to push, and a third disables deploying:
+Attaching a remote host can overwrite its Evener installation and restart its
+hub. By default, the controller deploys its own executable when the host needs
+a build or reports a different build. Choose the deployment policy before
+attaching; use `--no-deploy` to prohibit both pushes and installer fallback.
 
-- `-deploy-binary <path>` — a pre-built `evener` for the host's target. The hub
-  reads the artifact's own `GOOS`/`GOARCH` and refuses a mismatch before
-  anything is pushed; the refusal is permanent, since a retry re-reads the same
-  file. The artifact must be executable, and it must be evener: the hub reads
-  the executable's main package from its buildinfo and refuses any other Go
-  program before anything is pushed, so a stray binary cannot replace the
-  host's `evener`. This path needs no Go toolchain and no source tree on the
-  controller. A controller built from a dirty tree refuses a named artifact: its
-  `<sha>-dirty` version is not an identity (every dirty tree at that commit
-  reports it), so the artifact cannot be proven to be the controller's build —
-  see the dirty-tree note below.
-- `-build-source <path>` — an evener checkout's module root. The hub
-  cross-compiles the host's target on the controller, so this path needs Go and
-  the source there; it refuses a dirty tree, an ignored-but-compiled `.go` file,
-  and a path that is not an evener checkout.
-- `-no-deploy` — deploy nothing: the own-executable default is not adopted, both
-  flags above are ignored (a named flag is still validated at startup, and the
-  hub's log line says it was ignored), and every deploy path is off — including
-  the installer fallback below. A host that needs a build is refused with the
-  remedy named, or keeps its own build when it is already protocol-compatible.
-  This restores a deploy-off controller: the pre-default flagless push opt-in,
-  without the installer fallback the pre-default hub still had.
+| Hub invocation or condition | Binary source | Overwrite or refusal behavior |
+|---|---|---|
+| `evener hub` with no deploy flags, same platform | File at the controller's own executable path | Pushes that file when deployment is needed. A dirty controller may use this source. |
+| `evener hub` with no deploy flags, different OS or architecture | Published artifact through `install.sh` | A clean release needs a stamped release tag; a clean snapshot uses the snapshot artifact. Dev, dirty, or tag-less release builds refuse this cross-platform deployment. |
+| `evener hub --deploy-binary <path>` | Named pre-built Evener executable | Needs no Go toolchain or source. Refuses a non-Evener binary or wrong OS/architecture before pushing. A dirty controller refuses this source. After installation, a build mismatch refuses attachment. |
+| `evener hub --build-source <path>` | Cross-compiled checkout on the controller | Needs Go, the Evener module root, and a built web UI. A stamped controller requires the same commit, a clean checkout, and no ignored untracked Go files. A dirty controller refuses this source. An unstamped dev controller skips revision checks. |
+| `evener hub --no-deploy` | None | Writes no build, including through the installer. Keeps an existing compatible host build; refuses a host that needs installation or a protocol/launch-contract upgrade. |
+| No flags, but the controller cannot adopt its executable as an Evener binary | Published artifact if available | Uses the release/snapshot installer when possible. Otherwise keeps a compatible host build and logs the difference; refuses a host that needs a build. |
 
-`-deploy-binary` wins over `-build-source`, `-no-deploy` wins over both, and the
-hub logs which source is effective at startup — including when the default
-adopted its own executable, so the source is never silently something the
-operator did not name. The default is wired only when the hub's executable is an
-evener build: an embedder or test binary has no evener build to offer, so its
-deploy stays unwired exactly as the old no-flag case was — a host that needs a
-build is refused with the remedy named, never sent a program that cannot serve a
-hub.
+`--no-deploy` wins over both source flags; `--deploy-binary` wins over
+`--build-source`. Named paths are still validated at startup even when another
+flag takes precedence. The startup log records the effective source and any
+ignored flags. Read attach failures in the host's Settings row; when attachment
+keeps a different compatible build, the hub log records that difference.
 
-A deploy writes the path the host runs (`evener_path` when the entry sets it,
-else what `command -v evener` resolves to, else the installer's default
-`~/.local/bin/evener`) atomically — a staged temp file on the host, its length
-verified, then a single `mv` into place — so a failed or interrupted deploy
-never leaves a partial binary. The `-build-source` path stamps the controller's
-build identity in-process, so the installed binary's `launch-check` version is
-exactly the controller's; a `-deploy-binary` artifact instead carries whatever
-identity the operator built. The hub's own executable is the one source whose
-identity is true by construction — it IS the controller's build — so a hub built
-from a dirty tree may still deploy its own executable, while compiling a
-checkout or naming an artifact is refused from one: no checkout can be proven to
-reproduce a `<sha>-dirty` build, and a `<sha>-dirty` label cannot tell a named
-artifact apart from a foreign dirty build at the same commit. That difference is
-checked where it can be seen:
-after a deploy the controller re-reads the launch contract on the host, and if
-the host still reports a build other than the controller's it refuses terminally
-instead of attaching — the artifact was not built from the controller's tree, and
-retrying would re-push the same file. So a mismatched artifact is refused before
-attach, and the hub never serves a host on a build it did not stamp.
+**Installation target.** Deployment uses the host entry's `evener_path`, then
+the running host hub's executable, then `command -v evener`, then
+`~/.local/bin/evener` if no installation exists. The push path resolves symlinks,
+stages a temporary file, verifies its length, and renames it atomically over the
+target. A failed transfer does not leave a partial executable. The installer
+preserves the existing installation location and layout. A configured target
+must name the `evener` runtime, not another program.
 
-With no push source — `-no-deploy`, or a hub whose executable is not an evener
-build — the push path is unavailable, and `-no-deploy` additionally disables the
-installer fallback, so that hub writes nothing to a host at all. A hub whose
-executable is not an evener build keeps the installer fallback: a release or
-snapshot controller installs through `install.sh` on the host. Where that
-fallback is refused — a dev or dirty controller, or a release build with no
-stamped tag — nothing is installed, so the host keeps its own build and
-attaches, and the hub logs which build it kept. The fallback is also refused for
-a snapshot controller once the mutable `snapshot` channel has moved past this
-controller's commit. For a snapshot controller the fallback writes the binary
-before its commit is proven, so prefer the push path; the push path is the one
-the refusal names.
+**Build verification.** A source build carries the controller's build identity;
+a named artifact carries its own. After deployment, the controller re-reads the
+host's launch contract and refuses attachment if the build differs. A successful
+installation is not proof of successful attachment. In particular, installer
+verification happens **after the binary is written**: a moved snapshot channel
+can replace the host binary and then fail the version check. Prefer a push source
+when the published snapshot has moved beyond the controller's commit.
 
-When a deploy fails, the refusal lands in that host's attach error — its row in
-Settings — naming the flag to set. A host that attached on its own build raises
-no error; the hub's log line is where its build is recorded. Name one of the two
-flags when you want such a host moved onto a build other than the hub's own
-executable (and remove `-no-deploy` if it is set): that is what makes the hub
-converge it.
+**Own-executable limit.** The default reads the executable file at deploy time,
+not a copy of the running process. Replacing that file while the controller runs
+changes what it pushes. A cross-commit replacement fails the post-install build
+check, but another dirty build at the same commit can report the same label and
+escape that check. Restart the controller after replacing its executable.
 
 ### Trace browser AppWire traffic
 
@@ -486,6 +315,8 @@ Use `--appwire-trace` to diagnose excessive browser WebSocket traffic. The flag
 records every AppWire data frame on each browser `/rpc` connection:
 
 ```bash
+umask 077
+hub_config="${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml"
 trace_dir="$(mktemp -d)"
 trace_file="$trace_dir/hub-appwire.jsonl"
 evener hub --config "$hub_config" --appwire-trace "$trace_file"
@@ -504,7 +335,7 @@ hub's separate connections to Evener daemons.
 The raw frames can contain prompts, transcripts, paths, tool arguments, and
 credentials entered through Settings. Keep the file private, inspect it before
 sharing it, and never commit it. Stop the traced hub after reproducing the issue,
-then analyze or share that single file.
+then analyze it locally. Share only a reviewed, sanitized excerpt, never an unreviewed raw trace.
 
 For a compact first pass, list each frame's connection, direction, size, request
 ID, and method:
@@ -547,58 +378,45 @@ The columns are connection, direction, method (or `response`), frame count, and
 total bytes, ordered by total bytes. Use the process-local connection ID to
 correlate an `open` record, its frames, and the final `close` record.
 
-## Browser and TUI
+## Check the running hub
 
-Browser: visit the authorization URL logged at startup. It sets the auth
-cookie; after that, plain `http://127.0.0.1:9180` works in that browser.
+Visit the private authorization URL once in your browser. It sets the cookie; afterward, open the plain hub origin without the token path.
 
-TUI:
+This unauthenticated health check requires only `curl`:
 
-```bash
-evener tui \
-  --hub-addr http://127.0.0.1:9180 \
-  --no-auto-start-hub
+```sh
+curl -fsS http://127.0.0.1:9180/api/health
 ```
 
-Use `--no-auto-start-hub` for production-style runs so the TUI does not start a
-separate local hub with default config.
+Check the version and startup time against the process you intended to run. Health does not validate provider credentials. For client integration, use the [AppWire protocol](appwire-protocol.md) and [integration guide](integrations.md), not an unauthenticated model-list URL.
 
-## Smoke checks
+A live functional check can incur provider charges: authorize the browser, choose a known directory and model, start a small task, confirm transcript updates, then refresh and confirm the same session remains readable. Review the task's actual output separately from hub health.
 
-The smoke checks use `jq` and `python3`; install both first. Basic health
-(this route is auth-exempt):
+## Upgrading and migrating safely
 
-```bash
-curl -fsS http://127.0.0.1:9180/api/health | jq .
-```
+The documentation site tracks main. Release builds can lag it; snapshot builds follow ongoing development. Record the current version and installation prefix before changing channels. The installation guide owns download procedures; Settings → Hub → Updates owns an installed hub's update flow above.
 
-Other API routes need the auth token. Model enumeration is AppWire-only:
-connect to `ws://127.0.0.1:9180/rpc`, authenticate with the token, send
-`initialize`, then send this typed request (see
-`docs/developing-evener/agentic-testing.md`, "Driving AppWire directly"):
+1. Finish work that must not straddle a version change. In each session's actions menu, choose **Shut down** and confirm. This stops the agent process; the composer's **Stop** only interrupts a turn. Verify that the old daemon process has exited before copying state. A hub restart alone does not stop its session daemons.
+2. Inventory effective paths and make a private [backup](security.md#storage-and-backups). Copying live state is not guaranteed consistent.
+3. Preview any legacy-layout migration on the owning host:
 
-```json
-{"id":2,"method":"model/list","params":{"cwd":"/path/to/project"}}
-```
+   ```sh
+   evener migrate --dry-run --verbose
+   ```
 
-The response's `result.data` contains the spawn-scoped descriptors;
-`result.recent` is the optional global Recent group.
+4. Review the paths before running `evener migrate`. It moves supported legacy layouts and converts old provider schema, preserving `providers.toml.pre-registry`. It is not a universal session-format repair or a promise that old project identities become current ones.
+5. Restart the intended hub, check health/build, and verify saved-session visibility. Resume a saved session or start a new one only after the intended runtime is installed.
+6. Verify the session daemon separately from the hub. On the owning host, check its new rendezvous record's PID against the process's start time and executable path. For a direct authenticated AppWire connection to that daemon, `initialize` returns its running build in `serverInfo.version`; compare it with the intended build. A hub health response or `evener --version` alone does not prove that an existing daemon was replaced. Keep rendezvous credentials private.
 
-Manual verification:
-
-1. Authorize the browser via the startup auth URL, then open `/new`.
-2. Pick a working directory and spawn an Evener session.
-3. Confirm the transcript streams live before refresh.
-4. Refresh and confirm the transcript replays from saved state.
-5. Open `evener tui --hub-addr http://127.0.0.1:9180 --no-auto-start-hub` and
-   confirm the same session appears with source label `evener`.
+Keep the pre-upgrade backup until you have checked workspaces and saved sessions. Do not restore over new work or assume an older executable can read newly written state. See [provider migration](llm-provider-config-and-launch.md#upgrading-from-the-old-schema) for renamed instances and changed credential variables.
 
 ## Operations notes
 
-- Evener daemons spawned by the hub keep running if the hub exits. Stop sessions
-  from the hub or kill the daemon processes when you want them stopped.
-- Existing daemons keep the `evener` binary they were spawned from. Rebuild and
-  restart sessions to pick up a new binary.
+- Evener daemons spawned by the hub keep running if the hub exits. Use the
+  session actions menu's **Shut down**, not the composer's **Stop**, to end a daemon.
+- Existing daemons keep the `evener` binary they were spawned from. Install the
+  intended build, shut down the old daemon, then resume the saved session. Verify
+  the new daemon as described in the [upgrade procedure](#upgrading-and-migrating-safely).
 - Do not blanket-prune `run_dir`, and never delete a live rendezvous file or
   log. The hub owns cleanup. For a specific suspected stale rendezvous file,
   inspect its recorded PID, verify it is the expected Evener daemon, and

@@ -46,29 +46,46 @@ Design documentation for the web hub (`cmd/evener-hub`).
 Settings groups controls by task:
 
 - **Preferences:** Appearance, Conversation display, Input & shortcuts, Notifications.
-- **Agent setup:** Providers & credentials, Agents, AGENTS.md, Evener launch, In-repo config.
+- **Agent setup:** Providers & credentials, Agents, AGENTS.md, Session defaults.
 - **Extensions:** Plugins, Skill directories, MCP servers.
 - **System:** Hosts, Devices, Hub, Storage, About.
 
 Search matches destination names and control keywords, such as font, Enter,
 tokens, marketplace and plugin directory. Results open the owning page.
 Appearance is the default. Explicit unknown or retired `general`, `display`
-and `plugins` section URLs open Appearance, without aliases or a remembered
+`plugins` and `inrepo` section URLs open Appearance, without aliases or a remembered
 section overriding that request. A host-qualified URL retains its host scope.
 AppShell replaces retired or unknown URLs before placing their settings pane,
 so mobile URL synchronization cannot restore retired params or discard Forward history.
-Project settings remain reachable through their project route.
+Project settings remain reachable through the Project settings action in each sidebar project menu.
+They combine repository-file review and explicit trust with local overrides for the
+selected host and working directory. Shared `.evener/launch.toml` settings apply
+only after approval of the reviewed hash; `.evener/launch.local.toml` overrides
+remain separate. Discovery checks that directory, not its ancestors. Repository
+inspection failures do not prevent editing local overrides.
+
+Conversation display edits one device layout at a time, initially the current
+device class. Both shared layouts remain available through the layout selector.
+Use the shared default clears only the selected layout's browser-local override.
+The preview stays visible; Technical details contains revisions and inventories.
 
 On phones, settings opens as a full-width list. Drilling into a page and using
 Back preserves the list's search and scroll position. Desktop keeps the list
 beside the selected page.
 
 Input & shortcuts brings Enter-to-send and keyboard customization together.
+Enter-to-send and character-key accessibility stay visible. Customize shortcuts
+opens the searchable editor; folding or filtering it preserves captured chords
+and pending writes. Synchronization failures and retry remain visible outside it.
 Enter-to-send and character-key enablement remain browser-local; keyboard
 overrides retain their existing hub synchronization. Appearance and notification
 preferences retain their existing browser storage. Conversation display keeps
 its Desktop/Mobile hub defaults and browser overrides. Organization does not
 change persistence or introduce new synchronization.
+
+Notifications shows Loud for only when sound or desktop notifications are enabled.
+Hiding that control preserves its selection. Browser tab indicator is independent
+of those channels.
 
 Plugins has one home with Installed, Browse and Sources views. Sources contains
 marketplaces and additional plugin directories under one host picker. Directory
@@ -77,8 +94,10 @@ failures; inventory retries preserve directory drafts. Host switching keeps
 reads and saves bound to the selected host. Skill directories remain separate.
 
 The former General summary's runtime, listen address, masked token and token
-age belong to Hub; state/index paths and page size belong to Storage; version
-and credits belong to About. Existing stores and APIs remain authoritative.
+age belong to Hub; state/index paths, run directory and page size belong to Storage; version
+and credits belong to About. Hub and Storage fold these read-only facts under
+Technical details; updates, resident controls and browser-cache management stay
+visible. Existing stores and APIs remain authoritative.
 
 ## Older history demand
 

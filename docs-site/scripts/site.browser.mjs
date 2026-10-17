@@ -14,7 +14,16 @@ test("desktop keyboard navigation and local search use the Pages base", async ({
   await expect(
     page.locator('.VPLocalSearchBox a[href*="/reference/appwire"]').first(),
   ).toBeVisible();
+  const options = page.locator('.VPLocalSearchBox [role="option"]');
+  await expect(options.first().locator("a")).toHaveAttribute(
+    "href",
+    /\/evener\/reference\/appwire\.html#/,
+  );
+  await expect(options.first()).toHaveAttribute("aria-selected", "true");
   await input.press("ArrowDown");
+  await expect(options.nth(1)).toHaveAttribute("aria-selected", "true");
+  await input.press("ArrowUp");
+  await expect(options.first()).toHaveAttribute("aria-selected", "true");
   await input.press("Enter");
   await expect(page).toHaveURL(/\/evener\/reference\/appwire/);
   await expect(page.locator(".vp-doc table").first()).toBeVisible();

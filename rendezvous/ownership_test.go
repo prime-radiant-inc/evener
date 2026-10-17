@@ -168,7 +168,7 @@ func TestDiskHoldsReplacementUsesExactOwnership(t *testing.T) {
 	t.Run("fingerprint-excluded drift is a replacement", func(t *testing.T) {
 		mutations := map[string]func(*Entry){
 			"hub token":  func(e *Entry) { e.HubToken = "different-secret" },
-			"spawned by": func(e *Entry) { e.SpawnedBy = "evener-tui" },
+			"spawned by": func(e *Entry) { e.SpawnedBy = "evener-doctor" },
 			"agent":      func(e *Entry) { e.Agent = "other-agent" },
 			"model":      func(e *Entry) { e.Model = "other-model" },
 			"provider":   func(e *Entry) { e.Provider = "other-provider" },

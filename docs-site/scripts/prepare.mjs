@@ -92,16 +92,14 @@ export async function prepare({
   }
   if (!routes.has("index.md")) throw new Error("Publication needs index.md");
   const trees = new Map();
-  const anchors = new Map();
   async function tree(file) {
     if (!trees.has(file)) {
       const value = processor.parse(
         await readFile(await local(root, file), "utf8"),
       );
-      trees.set(file, value);
-      anchors.set(file, headings(value));
+      trees.set(file, { value, anchors: headings(value) });
     }
-    return trees.get(file);
+    return trees.get(file).value;
   }
   async function rewrite(url, source, kind, image = false) {
     if (/^(https?:|mailto:|tel:)/i.test(url) || url.startsWith("//"))
@@ -124,7 +122,7 @@ export async function prepare({
     const info = await stat(targetPath);
     if (hash && target.endsWith(".md")) {
       await tree(target);
-      if (!anchors.get(target).has(decodeURIComponent(hash.slice(1))))
+      if (!trees.get(target).anchors.has(decodeURIComponent(hash.slice(1))))
         throw new Error(`Missing fragment ${source}: ${url}`);
     }
     if (hash && !target.endsWith(".md") && !assets.has(target)) {
@@ -143,10 +141,11 @@ export async function prepare({
       throw new Error(`Image not in assets: ${target}`);
     if (assets.has(target))
       return `${kind === "export" ? origin : ""}${base}assets/${encodePath(target)}${query}${hash}`;
+    // VitePress resolves source routes before adding the deployment base.
     if (pages.has(target))
       return kind === "export"
         ? `${origin}${base}markdown/${encodePath(pages.get(target).path)}${query}${hash}`
-        : `${base}${encodePath(pages.get(target).path.replace(/\.md$/, ".html"))}${query}${hash}`;
+        : `/${encodePath(pages.get(target).path.replace(/\.md$/, ".html"))}${query}${hash}`;
     return `${repository}/${info.isDirectory() ? "tree" : "blob"}/main/${encodePath(target)}${query}${hash}`;
   }
   const output = new Map();
@@ -157,36 +156,38 @@ export async function prepare({
         .length !== 1
     )
       throw new Error(`Expected one H1: ${row.source}`);
+    const imageReferences = new Set();
+    visit(original, "imageReference", (node) => {
+      imageReferences.add(node.identifier);
+    });
+    visit(original, (n) => {
+      // Component-bearing Markdown is not a complete static export. Fail closed.
+      if (n.type === "html") {
+        const html = load(n.value, {}, false);
+        for (const element of html("*").toArray()) {
+          if (
+            !["a", "br", "details", "summary", "kbd", "sup", "sub"].includes(
+              element.name,
+            )
+          )
+            throw new Error(`Unsupported HTML in ${row.source}`);
+          if (
+            Object.keys(element.attribs).some(
+              (name) => !["id", "title", "open"].includes(name),
+            )
+          )
+            throw new Error(
+              `Use static HTML anchors and Markdown links in ${row.source}`,
+            );
+        }
+      }
+    });
     for (const kind of ["site", "export"]) {
       const document = structuredClone(original);
       const links = [];
-      const imageReferences = new Set();
-      visit(document, "imageReference", (node) => {
-        imageReferences.add(node.identifier);
-      });
       visit(document, (n) => {
         if (n.type === "link" || n.type === "image" || n.type === "definition")
           links.push(n);
-        // Component-bearing Markdown is not a complete static export. Fail closed.
-        if (n.type === "html") {
-          const html = load(n.value, {}, false);
-          for (const element of html("*").toArray()) {
-            if (
-              !["a", "br", "details", "summary", "kbd", "sup", "sub"].includes(
-                element.name,
-              )
-            )
-              throw new Error(`Unsupported HTML in ${row.source}`);
-            if (
-              Object.keys(element.attribs).some(
-                (name) => !["id", "title", "open"].includes(name),
-              )
-            )
-              throw new Error(
-                `Use static HTML anchors and Markdown links in ${row.source}`,
-              );
-          }
-        }
       });
       for (const node of links)
         node.url = await rewrite(

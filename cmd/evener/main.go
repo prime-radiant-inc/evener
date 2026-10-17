@@ -19,7 +19,6 @@ import (
 	doctorcmd "primeradiant.com/evener/cmd/evener-doctor"
 	hubcmd "primeradiant.com/evener/cmd/evener-hub"
 	migratecmd "primeradiant.com/evener/cmd/evener-migrate"
-	tuicmd "primeradiant.com/evener/cmd/evener-tui"
 	"primeradiant.com/evener/cmd/evener/internal/cliprompt"
 	"primeradiant.com/evener/cmd/evener/internal/launchcheck"
 	"primeradiant.com/evener/cmdutil"
@@ -399,7 +398,6 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  install\tInstall Evener on a remote macOS or Linux host over SSH\n")
 	_, _ = fmt.Fprintf(tw, "  plugin\tManage plugin marketplaces and plugins\n")
 	_, _ = fmt.Fprintf(tw, "  hub\tRun the evener-hub web orchestrator\n")
-	_, _ = fmt.Fprintf(tw, "  tui\tRun the evener-tui terminal UI\n")
 	_, _ = fmt.Fprintf(tw, "  doctor\tRead-only forensic inspector for sessions/jobs/watches\n")
 	_, _ = fmt.Fprintf(tw, "  migrate\tMigrate user data to the final evener layout\n")
 	_, _ = fmt.Fprintf(tw, "  models\tInspect the provider registry (list, inspect, refresh)\n")
@@ -495,12 +493,6 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 			}
 			return nil
 		},
-		tui: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-			if code := tuicmd.Run(args, stdin, stdout, stderr); code != 0 {
-				return subcommandExitError(code)
-			}
-			return nil
-		},
 		doctor: func(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			if code := doctorcmd.Run(args, stdin, stdout, stderr); code != 0 {
 				return subcommandExitError(code)
@@ -526,7 +518,6 @@ type cliCommandRunners struct {
 	install     func([]string, io.Reader, io.Writer, io.Writer) error
 	plugin      func([]string, io.Reader, io.Writer, io.Writer) error
 	hub         func([]string, io.Reader, io.Writer, io.Writer) error
-	tui         func([]string, io.Reader, io.Writer, io.Writer) error
 	doctor      func([]string, io.Reader, io.Writer, io.Writer) error
 	migrate     func([]string, io.Reader, io.Writer, io.Writer) error
 	models      func([]string, io.Reader, io.Writer, io.Writer) error
@@ -553,8 +544,6 @@ func dispatchCLICommandWith(args []string, stdin io.Reader, stdout, stderr io.Wr
 		return true, "evener plugin", runners.plugin(args[1:], stdin, stdout, stderr)
 	case "hub":
 		return true, "evener hub", runners.hub(args[1:], stdin, stdout, stderr)
-	case "tui":
-		return true, "evener tui", runners.tui(args[1:], stdin, stdout, stderr)
 	case "doctor":
 		return true, "evener doctor", runners.doctor(args[1:], stdin, stdout, stderr)
 	case "migrate":

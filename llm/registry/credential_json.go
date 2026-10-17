@@ -72,8 +72,8 @@ func CredentialJSONType(raw []byte) string {
 }
 
 // clipEcho shows enough of a refused value to identify it and no more, with
-// nothing in it a terminal would obey. The TUI's credential prompt keeps such
-// a message on screen after the prompt closes, so an unbounded echo would put
+// nothing in it a terminal would obey. A client that echoes a refused value can
+// keep such a message on screen after the prompt closes, so an unbounded echo would put
 // a mistakenly pasted secret there; and JSON carries control characters raw
 // above U+001F, C1 among them (U+009B is CSI), which a terminal reads as the
 // start of a command rather than as text.

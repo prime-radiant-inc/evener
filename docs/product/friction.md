@@ -68,8 +68,6 @@ and should not be presented as reproduced production incidents.
 | [T04](#t04-read-only-directory-symlinks) | Medium (deferred) | A derived read-only delegate cannot browse an allowed target through a symlink | S12, S14 |
 | [T05](#t05-approval-scope-and-lifetime) | Medium (deferred) | Narrow one-call approval paths repeatedly interrupt authorized work | S12, S14 |
 | [T06](#t06-global-git-excludes-files-in-restricted-mode) | Medium (accepted limitation) | A global excludes or attributes file the config names does not apply in restricted mode | S14 |
-| [U01](#u01-tui-uncertain-submission) | High | A lost send acknowledgement becomes a manual new submission | S04, S05, S11 |
-| [U02](#u02-tui-failed-submission-attachments) | High | Preserving a newer draft discards the older failed submission's images | S04, S11 |
 | [D01](#d01-diagnostic-repair-authority) | Medium (deferred) | Bundled repair instructions prohibit product fixes and require byte-identical voting | S21 |
 
 ## Clients and everyday work
@@ -1346,67 +1344,6 @@ children receive the stated filesystem access; recovery reconciles partial
 effects before resuming or retrying. One-shot command acceptance criteria depend
 on the remaining product decision.
 
-### U01 TUI uncertain submission
-
-**Current behavior.** TUI sends create a mutation ID, but error handling restores
-the composer and asks the user to retry without retaining that ID for outcome
-reconciliation. The next submission creates a new identity. Losing a success
-acknowledgement can therefore induce duplicate work; even proven-unsent input
-requires manual retry. TUI transport reconnect itself already works.
-
-**Evidence.** [sendHubInput](../../cmd/evener-tui/hub_commands.go#L882),
-[hubSendMsg failure handling](../../cmd/evener-tui/hub_update.go#L493), and
-[reconnection](../../cmd/evener-tui/hub_reconnect.go#L103).
-The Go [TurnStart client](../../appwire/client.go#L589) has no retained pending
-mutation coordinator for this path. Existing steer-notification reconciliation
-does not establish safe resend of turn/start.
-
-**Decision.** Treat each Send as one retained intent: preserve its exact text,
-attachments, target identity and mutation ID independently of the current
-composer before transmission. An interrupted response leaves the submission
-pending while the client automatically establishes the authoritative outcome.
-An accepted request settles without another turn; a proven unaccepted, still
-valid request retries with its original identity and payload. An unknown outcome
-keeps paced reconciliation active instead of becoming a new submission. A
-definitive rejection retains the complete composition for correction. Explicit
-Stop or cancellation prevents further automatic dispatch, and any newer draft
-remains independent. Reuse the existing mutation receipt and deduplication
-contracts; one user send must not become two accepted turns because a response
-was lost. Implementation remains pending.
-
-**Acceptance.** Lose a send response after acceptance, reconnect, and obtain one
-turn with correct composer state. Also recover a send interrupted before
-acceptance, retain both the original composition and a newer draft, and stop
-automatic dispatch when canceled. No manual comparison or new mutation identity
-is needed to recover the original submission.
-
-### U02 TUI failed submission attachments
-
-**Current behavior.** If newer composer content exists when an older submission
-fails, TUI preserves the new draft but clears the old submission's attachments.
-Clipboard-image and WSL temporary image files can be deleted. The remaining
-notice retains text or an image count, not the failed image payload.
-
-**Evidence.** [restoreFailedComposerPayload](../../cmd/evener-tui/hub_attachments.go#L119)
-calls cleanup, and [cleanupPendingAttachmentFile](../../cmd/evener-tui/hub_attachments.go#L175)
-removes those origins. Existing
-`TestHubModelFailureRestorePreservesNewerComposerDraft` and
-`TestHubModelFailureRestorePreservesNewerAttachments` protect the newer
-draft rather than recovery of the older failed composition.
-
-**Decision.** Preserve failed submissions independently of the currently edited
-draft, including their text, image order, image references and ownership of the
-original media. Keep each composition recoverable until accepted, safely
-restored or explicitly discarded. Restoring an older submission must preserve
-any newer draft; retaining the newer draft must not delete the older
-submission's temporary image files. Release media only when its recovery owner
-has completed or another owner has safely retained it. Implementation remains
-pending.
-
-**Acceptance.** Send A with an image, type draft B before A fails, and recover A.
-Both compositions and the exact original image bytes remain available through
-the chosen recovery flow.
-
 ### D01 Diagnostic repair authority
 
 **Deferred.** Diagnostic repair authority is outside the active work queue.
@@ -1549,7 +1486,7 @@ These are useful patterns and preservation checks, rather than new fix requests.
   copy while preserving the edited source and project/credential precedence. The owning child or probe keeps the
   copy until it exits. [Provider configuration](../llm-providers.md#providerstoml)
   describes the observation interval, startup fallback and filesystem limits.
-- Established remote connections and TUI connections own reconnect loops.
+- Established remote connections own reconnect loops.
   Host-scoped provider operations do not substitute local credentials for a
   failed remote read. Installed-artifact digest checks and update rollback protect
   working software. Improve recovery ownership without removing those guarantees.
@@ -1565,12 +1502,11 @@ every branch. A gap is not evidence that the subsystem is correct or broken.
 | S01 Launch and S06 hub | Executable/module wiring, startup state, RPC routing, auth/config loads, host notices and update responses | Whole-hub fault injection and observing unaffected user journeys |
 | S02 Browser | Startup/reconnect, creation, transcript paging/projection, mutation recovery, tasks, job log, warnings, launch/setup; settings/navigation sampled through owners | Browser outage journeys, actual IndexedDB lifecycle, keyboard/accessibility, responsive layout and difficult content |
 | S03 Native | Connection lifecycle, durable draft/outbox, read/page/Find, rejection actions, model gate, task sheets, warning projection; Board/Projects recovery controls | iOS/Android lifecycle and storage on devices, media retention, touch/accessibility, long-content scroll and complete settings parity |
-| S04 TUI | Connection and subscription recovery, turn input identities, pending state, attachment ownership and failure restoration | PTY journeys with dropped responses and actual clipboard/WSL images |
 | S05 AppWire/shared clients | Request/notification ownership, connection states, mutation authority, history/task reducers, shared warning projection and creation schema | Cross-client end-to-end lost-response, stale-generation and reconnect qualification |
 | S07 Hosts | Attach/supervision, deployment compatibility, scoped config, teardown journals, quarantine and bootstrap | Real SSH interruptions, OS/architecture combinations and exact client notice severity |
 | S08 Daemons and S09 sessions/goals | Restore/admission, persistence failure, turn release, goal failure/progress/wake, pending asks and compaction | Crash/restart schedules, concurrent fault/stress testing and chosen goal recovery semantics |
 | S10 History | Authoritative transcript versus derived projection, rebuild/quarantine, reader demand and job-log access | Very large histories, rebuild cost, scroll stability and complete read-model corruption matrix |
-| S11 Input queues | Accepted/unknown/failed input, durable native/browser recovery and TUI identity/media gaps | Cross-process/device durability, accepted-but-unacknowledged outcomes and stop barriers under races |
+| S11 Input queues | Accepted/unknown/failed input, durable native/browser recovery | Cross-process/device durability, accepted-but-unacknowledged outcomes and stop barriers under races |
 | S12 Jobs/delegates/watches | Constructor recovery, watch journal/config/delivery, child restore, terminal attention and task snapshots | Missed-tick/cursor policies, long-running monitors and delegate-generation races |
 | S13 Workspace/scratch | Scratch kept at each end and removed on archive, shared-scratch ownership and idle-child interaction; host workspace cleanup seams | Full mount/platform topology and every concurrent workspace allocation/cleanup path |
 | S14 Tools/sandbox | Dispatch breaker, argument repair, file/shell scope, read-only symlink handling and escalation lifetime | Native sandbox backend matrix, race-resistant traversal and real multi-repository workflows |

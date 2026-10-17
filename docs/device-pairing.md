@@ -3,15 +3,18 @@
 Evener Hubs are self-hosted. Pairing starts in an already authenticated Hub Web
 UI; there is no global directory, rendezvous service, or shared pairing server.
 The Hub owns invitations and approvals. Clients own their saved Hub profiles,
-network identities and unsent work. This document is the wire contract; the
-[Playdate guide](product/playdate-client.md) covers that client's behavior.
+network identities and unsent work. This document is the wire contract. For
+iPhone setup and availability, use the [native app guide](native-app.md). The
+Playdate client lives in a separate repository; the
+[Playdate guide](product/playdate-client.md) links its implementation and covers
+that client's behavior.
 
 ## Trust and transports
 
 An invitation carries a Hub locator and a random short-lived secret. It carries
 neither the Hub's durable credential nor Tailscale credentials. A Playdate hears
 it as sound; clients can also read the same invitation bytes from a QR code.
-The Hub's Mobile settings offer **Scan with your phone** for the native app's
+The Hub's **Devices** settings offer **Scan with your phone** for the native app's
 direct credential QR and **Pair using sound** for devices listening for an
 invitation. Sound setup shows the playback controls and device claims without
 another QR code. **Use another Hub address** opens manual QR invitation setup

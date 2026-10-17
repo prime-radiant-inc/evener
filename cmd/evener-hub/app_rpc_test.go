@@ -1580,7 +1580,7 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 			Archive:        "evener_linux_amd64.tar.gz",
 			ShareBinDir:    "/tmp/share/evener/bin",
 			BinDir:         "/tmp/bin",
-			RestartMessage: "Restart evener-tui and evener-hub to use the upgraded binaries.",
+			RestartMessage: "Restart evener to use the upgraded binary.",
 		}, nil
 	}
 	t.Cleanup(func() { runHubSelfUpgrade = previous })

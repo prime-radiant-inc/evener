@@ -396,7 +396,7 @@ func TestRegistrationRemovePreservesOriginalErrorWhenFallbackRefuses(t *testing.
 func TestRegistrationRemoveTreatsExcludedFieldDriftAsReplacement(t *testing.T) {
 	mutations := map[string]func(*rendezvous.Entry){
 		"hub token":  func(e *rendezvous.Entry) { e.HubToken = "different-secret" },
-		"spawned by": func(e *rendezvous.Entry) { e.SpawnedBy = "evener-tui" },
+		"spawned by": func(e *rendezvous.Entry) { e.SpawnedBy = "evener-doctor" },
 		"agent":      func(e *rendezvous.Entry) { e.Agent = "other-agent" },
 		"model":      func(e *rendezvous.Entry) { e.Model = "other-model" },
 		"provider":   func(e *rendezvous.Entry) { e.Provider = "other-provider" },

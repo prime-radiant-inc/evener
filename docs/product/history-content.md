@@ -86,7 +86,7 @@ Context management emits `summary_failure` with the selected provider/model,
 terminal failure category and available HTTP status in the existing warning
 message. Advice distinguishes a failed fast/cheap route from the session model,
 since changing the main model need not change an independently configured summary
-model. CLI, TUI, AppWire, browser, native and Notification hooks carry these
+model. CLI, AppWire, browser, native and Notification hooks carry these
 existing message/title/hint fields without a new renderer or visibility policy.
 Predictive-checkpoint recovery retains its informational `context_budget` code.
 

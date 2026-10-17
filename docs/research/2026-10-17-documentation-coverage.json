@@ -1,0 +1,2763 @@
+{
+  "date": "2026-10-17",
+  "scope": "Documentation research, not runtime verification",
+  "claude": [
+    {
+      "url": "https://code.claude.com/docs/en/overview.md",
+      "page_url": "https://code.claude.com/docs/en/overview",
+      "bytes": 16526,
+      "sha256": "e920a550cfa1b61a58253cbd064881ecdc0edc6afe4d475cb841d2e55e324817",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/quickstart.md",
+      "page_url": "https://code.claude.com/docs/en/quickstart",
+      "bytes": 12546,
+      "sha256": "41e9970c2a237b86765c3a95e326c6c78000f878cc782d3f2dacae48151067fa",
+      "read": "full direct read",
+      "method": "complete source text read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/changelog.md",
+      "page_url": "https://code.claude.com/docs/en/changelog",
+      "bytes": 1114854,
+      "sha256": "6ffdcd0453c90a74d8542f1565f397198cab0a777716598ac35421e3347a5a52",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/how-claude-code-works.md",
+      "page_url": "https://code.claude.com/docs/en/how-claude-code-works",
+      "bytes": 19654,
+      "sha256": "7afb973162be7140d93d3941eb1dab438a5119e00ddeb2684c56541cc3a16ed1",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/features-overview.md",
+      "page_url": "https://code.claude.com/docs/en/features-overview",
+      "bytes": 28568,
+      "sha256": "55baae6766d04686f88dd4640975957bc666b94907b02d50581fac4cc908f017",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/claude-directory.md",
+      "page_url": "https://code.claude.com/docs/en/claude-directory",
+      "bytes": 92556,
+      "sha256": "1aab55aa4a8a66327d1e4736cb869bb449760cd5befc68047f5ed0680956f6dd",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/context-window.md",
+      "page_url": "https://code.claude.com/docs/en/context-window",
+      "bytes": 60258,
+      "sha256": "78bf25a505d7563d92492c0083e8249fdf61cc2ccdc15b1d98f7f9e8fa631b2a",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/prompt-caching.md",
+      "page_url": "https://code.claude.com/docs/en/prompt-caching",
+      "bytes": 42697,
+      "sha256": "bf0e42060b519be1966b3cf3ea6540685fa416c16ef21063a8f76c3d46791f2d",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/memory.md",
+      "page_url": "https://code.claude.com/docs/en/memory",
+      "bytes": 51526,
+      "sha256": "768be47946cafc36d6fbe3988a04229521f5433bc038736739204e2ed258f6a7",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/sessions.md",
+      "page_url": "https://code.claude.com/docs/en/sessions",
+      "bytes": 31150,
+      "sha256": "a4d0d58234728333f34ea679d6841442252e23a7e6621197f255aa94a72859ed",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/common-workflows.md",
+      "page_url": "https://code.claude.com/docs/en/common-workflows",
+      "bytes": 18550,
+      "sha256": "d5e3351134537020b46c13330617f4eef2b2e92df80f48e6a7a4038a8ee84205",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/prompt-library.md",
+      "page_url": "https://code.claude.com/docs/en/prompt-library",
+      "bytes": 65861,
+      "sha256": "4cb8c142ce146d497a3a829fccf4ea50fe14d12c2a73557733c6713a4f71f2d7",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/best-practices.md",
+      "page_url": "https://code.claude.com/docs/en/best-practices",
+      "bytes": 36520,
+      "sha256": "3f2d4f1a6eeba4cb13141e68c9f45b7e5af95224ad3b0c62a13b886d144ea86f",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/platforms.md",
+      "page_url": "https://code.claude.com/docs/en/platforms",
+      "bytes": 8741,
+      "sha256": "eee75247131b7edc0e12933f1996f7c09dfc80e34e3e25f71fd8da9beb7ba41c",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/remote-control.md",
+      "page_url": "https://code.claude.com/docs/en/remote-control",
+      "bytes": 58097,
+      "sha256": "42b31331cfde88481d642a6cf8af995597484758dd54cda76a43dfd11093bbf0",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/claude-projects.md",
+      "page_url": "https://code.claude.com/docs/en/claude-projects",
+      "bytes": 61488,
+      "sha256": "4f50e7fd2084ea2a0c6765742bea7039017692e21dac10d5d6d542f08cb42ec9",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/mobile.md",
+      "page_url": "https://code.claude.com/docs/en/mobile",
+      "bytes": 8474,
+      "sha256": "f609f816f5627da08af264044e36521cad33ae19dcb6b85ee2778c71dd2faa0c",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/chrome.md",
+      "page_url": "https://code.claude.com/docs/en/chrome",
+      "bytes": 23130,
+      "sha256": "afadfd9114496fac25143a94b59c3a5d553b71df45ba08827dfda901fdb42fd9",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/computer-use.md",
+      "page_url": "https://code.claude.com/docs/en/computer-use",
+      "bytes": 11980,
+      "sha256": "de3cc4cf15744a48add0e568373b7ea26a9bf51cd8b143a68c084c2977e1163c",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/vs-code.md",
+      "page_url": "https://code.claude.com/docs/en/vs-code",
+      "bytes": 85432,
+      "sha256": "17b2b485d43d5885496db6af2a46b0d62515d5e47ae57b8a35ed7429f7643582",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/jetbrains.md",
+      "page_url": "https://code.claude.com/docs/en/jetbrains",
+      "bytes": 12650,
+      "sha256": "9a46390fef17bd6158ed594090f08dd6368b7f748adaeb1c27d068a20e97384c",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/slack.md",
+      "page_url": "https://code.claude.com/docs/en/slack",
+      "bytes": 16220,
+      "sha256": "907f714fd4dcfd36ceafb20c2f8b7d1ce1dac1ebf45085ab112e8dead8385cdc",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/claude-tag.md",
+      "page_url": "https://code.claude.com/docs/en/claude-tag",
+      "bytes": 488507,
+      "sha256": "8a55565402d54f7de979ac11ee86ad9c7d5370092be5ad88e3c390e620286d99",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/web-quickstart.md",
+      "page_url": "https://code.claude.com/docs/en/web-quickstart",
+      "bytes": 24422,
+      "sha256": "11339a9283e576a80ff4241e1229f22fcb7d860dd6fa5901463c94bfecad3886",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/claude-code-on-the-web.md",
+      "page_url": "https://code.claude.com/docs/en/claude-code-on-the-web",
+      "bytes": 41021,
+      "sha256": "96facadf5c54041b768e5e1c98131f80ae9c851c15253d72639423146dafb704",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/routines.md",
+      "page_url": "https://code.claude.com/docs/en/routines",
+      "bytes": 36889,
+      "sha256": "7e17c96c0b9eff83779590e596a792e2cdb1c6bbea8095aa1989c305cfe29cac",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/desktop-quickstart.md",
+      "page_url": "https://code.claude.com/docs/en/desktop-quickstart",
+      "bytes": 11232,
+      "sha256": "db00f07bd6115e156fecdc953f482b249d312f28d4d342f84f5b35d4121ce500",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/desktop.md",
+      "page_url": "https://code.claude.com/docs/en/desktop",
+      "bytes": 152953,
+      "sha256": "d52aba073096157418773f99dd6d5ed0b7ad9a16674669dcae4ac56a4b5d4e5b",
+      "read": "full mixed read",
+      "method": "web_fetch plus direct source reads of omitted sections"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/desktop-linux.md",
+      "page_url": "https://code.claude.com/docs/en/desktop-linux",
+      "bytes": 12875,
+      "sha256": "4682e01653f2dd4de5b8266f8c9a2308b52d1e94d8d23648b0391d9593dd7fec",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/desktop-wsl.md",
+      "page_url": "https://code.claude.com/docs/en/desktop-wsl",
+      "bytes": 2962,
+      "sha256": "acbb2a4fa359dc84d507d8b7cea5b4153e194fe45b993d10837452b2fabe8ffc",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/desktop-scheduled-tasks.md",
+      "page_url": "https://code.claude.com/docs/en/desktop-scheduled-tasks",
+      "bytes": 9862,
+      "sha256": "9bd3f40f36f87702eafff5ba47fa826db66f860c5f18d11029b8a1b82e59f954",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/desktop-ios-simulator.md",
+      "page_url": "https://code.claude.com/docs/en/desktop-ios-simulator",
+      "bytes": 12106,
+      "sha256": "d04a58393305b0efce2282279e33aeb93b635436328ee994f32d8cb75403af4d",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/code-review-local.md",
+      "page_url": "https://code.claude.com/docs/en/code-review-local",
+      "bytes": 13899,
+      "sha256": "b5a1792e309b8113178ae29b7752ca630a910b712d620c419e0b788328ba0e4a",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/ultrareview.md",
+      "page_url": "https://code.claude.com/docs/en/ultrareview",
+      "bytes": 18257,
+      "sha256": "d02944d665975514e2818b7035bbd4e18c16cdee0d4f605b2998df9f5d665b77",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/github-enterprise-server.md",
+      "page_url": "https://code.claude.com/docs/en/github-enterprise-server",
+      "bytes": 20075,
+      "sha256": "f833e16eb3b18587757cf535bf6b203e1df04767b8ecd31830547bdffebb8fb0",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/code-review.md",
+      "page_url": "https://code.claude.com/docs/en/code-review",
+      "bytes": 10831,
+      "sha256": "e27d0098417de60dc9792fdc86087415970e88a8fdfca60c6b9b3207d39bc5d6",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/code-review-setup.md",
+      "page_url": "https://code.claude.com/docs/en/code-review-setup",
+      "bytes": 13981,
+      "sha256": "ccf9c2ac509fda29a1b973b84974584df273b79184423c34e004569c5ecc666c",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/code-review-customize.md",
+      "page_url": "https://code.claude.com/docs/en/code-review-customize",
+      "bytes": 8585,
+      "sha256": "934b5d7ed1a1dd671af0e7cce0d19385fac5736d77c1f80d775d235f776bb629",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/code-review-pull-requests.md",
+      "page_url": "https://code.claude.com/docs/en/code-review-pull-requests",
+      "bytes": 11518,
+      "sha256": "563c0cebf2a21f68005b2f2801a26bd512e40fb0ba974ca00d7417ea21d717cc",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/code-review-costs.md",
+      "page_url": "https://code.claude.com/docs/en/code-review-costs",
+      "bytes": 6008,
+      "sha256": "93504a0e1aa12e30593b8970d8011b652493a45de6a2f95859de422746993fa2",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/code-review-troubleshooting.md",
+      "page_url": "https://code.claude.com/docs/en/code-review-troubleshooting",
+      "bytes": 8915,
+      "sha256": "73e25bbed25e2d3de9f6066302e283cbeb3077ca93ddbf13421215e8eddadd9d",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/security-guidance.md",
+      "page_url": "https://code.claude.com/docs/en/security-guidance",
+      "bytes": 18553,
+      "sha256": "9ffdefc342740bf36116201096c22b51a1cdca98a1f171ea74a4326a39696499",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/claude-security.md",
+      "page_url": "https://code.claude.com/docs/en/claude-security",
+      "bytes": 15375,
+      "sha256": "20ccb6d1f4575ff3f04a2ee903356ac00924c851e605679248b6c05e6077dcd2",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/github-actions.md",
+      "page_url": "https://code.claude.com/docs/en/github-actions",
+      "bytes": 29088,
+      "sha256": "87b99aefc0a9f4389a3293fdf7c5dfd35491bebc6fec70869a80557070a31ae7",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/github-actions-cloud-providers.md",
+      "page_url": "https://code.claude.com/docs/en/github-actions-cloud-providers",
+      "bytes": 18479,
+      "sha256": "743ebb1e4097116f2cef5788cbf3c731ff9b010fcfcb0fcb1f1b61c6d376c068",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/gitlab-ci-cd.md",
+      "page_url": "https://code.claude.com/docs/en/gitlab-ci-cd",
+      "bytes": 18835,
+      "sha256": "c0786bbeeb973c89bce40e46742e35aeea084fcda0340368c19e63d915b85e83",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agents.md",
+      "page_url": "https://code.claude.com/docs/en/agents",
+      "bytes": 8300,
+      "sha256": "67874a4189558b75520e90509f497464c3712059ee156754bbb96bb1efd7a786",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/sub-agents.md",
+      "page_url": "https://code.claude.com/docs/en/sub-agents",
+      "bytes": 111181,
+      "sha256": "2ef84ba688983c9d7c28015fd3b06a9056b0be11efc7ff8f4b39552d36582d8a",
+      "read": "full mixed read",
+      "method": "web_fetch plus direct source reads of omitted sections"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-view.md",
+      "page_url": "https://code.claude.com/docs/en/agent-view",
+      "bytes": 137741,
+      "sha256": "1cba78a0b064b62fdfb8f1a48d0a23deec34ce0d5eeba0a9af01482207a73754",
+      "read": "full mixed read",
+      "method": "web_fetch plus direct source reads of omitted sections"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-teams.md",
+      "page_url": "https://code.claude.com/docs/en/agent-teams",
+      "bytes": 40432,
+      "sha256": "e09abc4e91fd29fc83e308ee66c7386d8de71f399b606e081c629673361d1250",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/cross-session-messaging.md",
+      "page_url": "https://code.claude.com/docs/en/cross-session-messaging",
+      "bytes": 34299,
+      "sha256": "7b359027749ff27d84019a388145bf78edce1dc424aaa9a50896c6c88e4b1edd",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/workflows.md",
+      "page_url": "https://code.claude.com/docs/en/workflows",
+      "bytes": 41609,
+      "sha256": "a324b4814d760d6c6f115a0a534123fe71acc40e4a9fa63f0e2f85200df197dd",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/worktrees.md",
+      "page_url": "https://code.claude.com/docs/en/worktrees",
+      "bytes": 40095,
+      "sha256": "a50825b4100bc5498f8b91f5a046da133bde41d0b4fa552fc260100a4efbf65b",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/mcp-quickstart.md",
+      "page_url": "https://code.claude.com/docs/en/mcp-quickstart",
+      "bytes": 25274,
+      "sha256": "dd96c348f2010e09b40ce1b3fb5858467b513ab900e24d51f7932144d93e8953",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/mcp.md",
+      "page_url": "https://code.claude.com/docs/en/mcp",
+      "bytes": 123214,
+      "sha256": "f5dc6d1ddc01ceb1fec2cb601d8e5296417f960524d8c3d3549c293e100a2065",
+      "read": "full mixed read",
+      "method": "web_fetch plus direct source reads of omitted sections"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/skills.md",
+      "page_url": "https://code.claude.com/docs/en/skills",
+      "bytes": 109922,
+      "sha256": "428fdf2654fa01dcbbece1f6d010e350f646ecbdbec229e7df097f452f06c2b7",
+      "read": "full mixed read",
+      "method": "web_fetch plus direct source reads of omitted sections"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/artifacts.md",
+      "page_url": "https://code.claude.com/docs/en/artifacts",
+      "bytes": 41257,
+      "sha256": "286097f5602fe616465be22f1c0bbf3eb48296bd5d92e79d1184ed75cfb6918d",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/hooks-guide.md",
+      "page_url": "https://code.claude.com/docs/en/hooks-guide",
+      "bytes": 62858,
+      "sha256": "7f0084f6bd89fa9678ba9e0fa14e409b7b831c671c2716df68103d531114dc8e",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/channels.md",
+      "page_url": "https://code.claude.com/docs/en/channels",
+      "bytes": 23834,
+      "sha256": "bc9798ae1c8bd8b5eb665f0778e9ffa5a05b01f1b57773fbe61706b00474a4ad",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/scheduled-tasks.md",
+      "page_url": "https://code.claude.com/docs/en/scheduled-tasks",
+      "bytes": 17473,
+      "sha256": "8cb643f43a143fdbd8aee53fb63070d2ac473ac5046f5a301b7fb6e502c0f127",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/goal.md",
+      "page_url": "https://code.claude.com/docs/en/goal",
+      "bytes": 14930,
+      "sha256": "ee86d204c45ddee9145fa4d47eab0c8232819e20e10ff6852bf6f2ba42299817",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/headless.md",
+      "page_url": "https://code.claude.com/docs/en/headless",
+      "bytes": 34282,
+      "sha256": "fe8a1d507c57c816da57b3b51ee7d08fedf0e6de86391e6378510989c3e42c7b",
+      "read": "full direct read",
+      "method": "complete source text read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/deep-links.md",
+      "page_url": "https://code.claude.com/docs/en/deep-links",
+      "bytes": 13961,
+      "sha256": "d038e60fdd2ffd7bd5695ffb8d9d933f837a3468ce5ec1f4167c241db660ad59",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/large-codebases.md",
+      "page_url": "https://code.claude.com/docs/en/large-codebases",
+      "bytes": 34352,
+      "sha256": "2a3939c22b945516c7666fc062c7be24e8d609bf34329f71ca5fd1d5bf432bab",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/troubleshoot-install.md",
+      "page_url": "https://code.claude.com/docs/en/troubleshoot-install",
+      "bytes": 75719,
+      "sha256": "7182fe84b548df18d417df2ec1384883847678a63135c9f8438a10c699c8c99f",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/troubleshooting.md",
+      "page_url": "https://code.claude.com/docs/en/troubleshooting",
+      "bytes": 14571,
+      "sha256": "42309b1303449789391f69d8bcc39e926ab33e64eb220c40a95186e5067d11e7",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/debug-your-config.md",
+      "page_url": "https://code.claude.com/docs/en/debug-your-config",
+      "bytes": 17314,
+      "sha256": "4331fb8b977d02f6e97da128f7da6ddb824b2714653b39fc0969d72f3b3959e1",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/errors.md",
+      "page_url": "https://code.claude.com/docs/en/errors",
+      "bytes": 515831,
+      "sha256": "400451afb27d4d92f2fdbaf71aebd1b11531e7171da1b139a13e4f9876fd39e1",
+      "read": "full direct companion read",
+      "method": "consecutive full-text chunks",
+      "chunks": 24
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/overview.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/overview",
+      "bytes": 14924,
+      "sha256": "a33630ffe4a2432e4204fa0a512cffda4a037cf1441fb964a2104517589c8654",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/install.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/install",
+      "bytes": 32237,
+      "sha256": "36f80c095b64fc5cea98684dfe6592ff428d928a26c09371bf4f9ba4c7644edd",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/anthropic-marketplaces.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/anthropic-marketplaces",
+      "bytes": 8566,
+      "sha256": "0c5af63bba6c84c30284ff089a227baeb832337edb867282bf0a701cb15eef96",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/code-intelligence.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/code-intelligence",
+      "bytes": 11722,
+      "sha256": "54d9c2715a4be046254d140d4f3fdc00be190e7b719be9ebbf8e751c1cf80054",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/security.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/security",
+      "bytes": 13840,
+      "sha256": "00692b78a21589e73a1740279aa8168429b86c930520860d31573bc4021e2949",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/create.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/create",
+      "bytes": 25730,
+      "sha256": "6b5c435d8f053dbec7634b7b0c72f71c9ae1b2f8f80af86aa76f49c093081ca4",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/components.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/components",
+      "bytes": 54973,
+      "sha256": "735298101629f7e87d311b277b08abea995a975172f88446ba52726f52c25e10",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/dependencies.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/dependencies",
+      "bytes": 17256,
+      "sha256": "a29a982a1fddb4dbaa361f5c996d4b444fceee116b86bf33720d92e5137ae97e",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugin-evals.md",
+      "page_url": "https://code.claude.com/docs/en/plugin-evals",
+      "bytes": 64289,
+      "sha256": "c3c71f1c70be562641b20a72951e47ba678a2940fbaa8322e99a7f408917af42",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/publish.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/publish",
+      "bytes": 16372,
+      "sha256": "9d4dc32f6cd4f29aff651686d8ef32900a67e70ceae45f20ebf0311ddda80a02",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/measure.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/measure",
+      "bytes": 12831,
+      "sha256": "da4e58bf01f5de1d4eeef6c849c3a47354976ab7e10d3336aa5d6e35bdb1b186",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/cli-hints.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/cli-hints",
+      "bytes": 6742,
+      "sha256": "8f7f28fb9568c8acfce79a0ed6761c175062ffb6c01b91936d2780ebd2e91257",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/mods/overview.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/mods/overview",
+      "bytes": 23906,
+      "sha256": "36162dcc44348f5b61c9370d51ef528fd36801701d9f6ee374c8ff6fc6f48568",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/mods/create.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/mods/create",
+      "bytes": 25235,
+      "sha256": "9e50b9553209dfc9acffb67cecaf67cd7b72777fdf98337ca9ec8f5e8518430b",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/mods/reference.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/mods/reference",
+      "bytes": 39996,
+      "sha256": "83787e396a7ca50eaf93ab28e31f760a33286fab86aa087592042eb059f35725",
+      "read": "full mixed read",
+      "method": "web_fetch plus direct source reads of omitted sections"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/mods/interface.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/mods/interface",
+      "bytes": 51230,
+      "sha256": "3799ccf1061b6f1493a846634eb1f2fd75328232633f5e786d107837cd11c2ad",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/mods/gallery.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/mods/gallery",
+      "bytes": 25558,
+      "sha256": "c62a9fdf24e334a0e97b8d1a56792911786e6614cf945669f0ad981d03337715",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/mods/events.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/mods/events",
+      "bytes": 26470,
+      "sha256": "c2862565ab32bceefd332d4029051fee5adc207ba7966a0eada038b842f07631",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/mods/api.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/mods/api",
+      "bytes": 24343,
+      "sha256": "569f2542ba1b341d39c4652dd6763d286558980da4dcbdde1444ebd94e535188",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/mods/test.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/mods/test",
+      "bytes": 26121,
+      "sha256": "833c7baa491ab8af5f990bf7a5ac0ed3f436e4fb392b72ab9ecf6480ca3451b4",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/mods/troubleshoot.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/mods/troubleshoot",
+      "bytes": 25350,
+      "sha256": "b4a190aaabefb637842396b110026f47c91092f84492f331f26af726425ebc38",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/create-marketplace.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/create-marketplace",
+      "bytes": 14189,
+      "sha256": "0597250fec9a5eb9734df9c6821409431623604656129cf8e462f93460db6a84",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/host-marketplace.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/host-marketplace",
+      "bytes": 38999,
+      "sha256": "c7cd5187df8cb7c483d478716b727376310f33e8d417dd5e027188c3be9c4dbc",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/relevance.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/relevance",
+      "bytes": 12865,
+      "sha256": "bcbe647fd4e587be1dcaf436077181c1a863f9a4ddd18833d96b7862aeed17e9",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/org.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/org",
+      "bytes": 40264,
+      "sha256": "693654a82eb3a7b498adb664087b35c5ad0f6a45ef5a8bd12760498ee1bb0936",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/mods/admin.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/mods/admin",
+      "bytes": 35523,
+      "sha256": "6a59b1d78310187847b1154dd76af53dea43ca49cd7564699e9a5c44e738cf68",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/troubleshooting.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/troubleshooting",
+      "bytes": 96960,
+      "sha256": "d72efaeaa78437561bda1d77ddce118fc146a85856f07274bba198b98526ea09",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/loading.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/loading",
+      "bytes": 39375,
+      "sha256": "981414aeb654516276a878dc8f8942f251b279ba36b9003fe77355e4e24484a5",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/manifest-reference.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/manifest-reference",
+      "bytes": 41987,
+      "sha256": "16b6dafd91d4a258bd1afcb901ee6efafca67c6de52e8c7a2b3c65c3884b5f3d",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/marketplace-reference.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/marketplace-reference",
+      "bytes": 44335,
+      "sha256": "f9733d0ca8639440700b5e2af718c62052e5b0774e9e9d7903c8cdce353f4a07",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/plugins/cli-reference.md",
+      "page_url": "https://code.claude.com/docs/en/plugins/cli-reference",
+      "bytes": 61681,
+      "sha256": "a27045a987676e2291e9f7b5d83facbfb26c9bdb1c8bd7233e1afbc155b8fadc",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/admin-setup.md",
+      "page_url": "https://code.claude.com/docs/en/admin-setup",
+      "bytes": 26750,
+      "sha256": "e459ffddd1cc8bc5d63f0ad52c25bdc3759364435b7bfc56345955d9415edbe7",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/setup.md",
+      "page_url": "https://code.claude.com/docs/en/setup",
+      "bytes": 34205,
+      "sha256": "68b9b31f8e22702599ed1d6e08bfbd74da20f5fdfb88f88f49340c29767815dc",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/authentication.md",
+      "page_url": "https://code.claude.com/docs/en/authentication",
+      "bytes": 31125,
+      "sha256": "c43ef3e8ddcb34ff6ba8b8d9e72276326ba7b672cd99f1252d5167c111ce67ac",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/managed-settings.md",
+      "page_url": "https://code.claude.com/docs/en/managed-settings",
+      "bytes": 60990,
+      "sha256": "6bfb4f806ac254c5562baa28422c7c329ebc57353d95b9106e2a354390e5443c",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/server-managed-settings.md",
+      "page_url": "https://code.claude.com/docs/en/server-managed-settings",
+      "bytes": 44671,
+      "sha256": "13159513774345f8c44ac838e1f4e849752298d9bd7ecb4c936120bf6b5b8e05",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/managed-mcp.md",
+      "page_url": "https://code.claude.com/docs/en/managed-mcp",
+      "bytes": 45147,
+      "sha256": "45a53673fa9e07f69610a79437bb4c0cc477090311097772bf740c0e7dbbb6ad",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/auto-mode-config.md",
+      "page_url": "https://code.claude.com/docs/en/auto-mode-config",
+      "bytes": 31053,
+      "sha256": "22735f1d1ee1f3083cd5f208f653aae71eab00264bbf867ce1f07c738efc2064",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/third-party-integrations.md",
+      "page_url": "https://code.claude.com/docs/en/third-party-integrations",
+      "bytes": 14135,
+      "sha256": "dd80519ee76bea457c42edd78e4429c46789106c9e0270cd317fe02deeedd015",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/feature-availability.md",
+      "page_url": "https://code.claude.com/docs/en/feature-availability",
+      "bytes": 22278,
+      "sha256": "a29639d7ac6f81e02233d7903f4674d296f4146205f0ac71d869e86be7100306",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/amazon-bedrock.md",
+      "page_url": "https://code.claude.com/docs/en/amazon-bedrock",
+      "bytes": 49238,
+      "sha256": "4790981fe3750642bb6af711ab5c21c7169e97ef8eab78cff5b8c88a9d15ce94",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/claude-platform-on-aws.md",
+      "page_url": "https://code.claude.com/docs/en/claude-platform-on-aws",
+      "bytes": 18735,
+      "sha256": "68320e02903244413a72d9027b0608be3e2800e1556897da190e327631709b20",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/google-vertex-ai.md",
+      "page_url": "https://code.claude.com/docs/en/google-vertex-ai",
+      "bytes": 24491,
+      "sha256": "8f10bd8ba84152d1ee9cd704c43f7bdb818fb17cd355d9e1b24b86cf6452a52b",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/microsoft-foundry.md",
+      "page_url": "https://code.claude.com/docs/en/microsoft-foundry",
+      "bytes": 12868,
+      "sha256": "85d0e619be75661d5773f746946575be788c6a2a9a87fbaa352390b1b4da083b",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/network-config.md",
+      "page_url": "https://code.claude.com/docs/en/network-config",
+      "bytes": 31751,
+      "sha256": "cf1d34142ea93e32d957bf6d026f713ee9ab21f06cfbaee0fa812524b6462ea8",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/corporate-launcher.md",
+      "page_url": "https://code.claude.com/docs/en/corporate-launcher",
+      "bytes": 13370,
+      "sha256": "36cdd5441cb55b5505c4ecbda8fb38093a8af77f587bdbccd5d2b35db3139f51",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/devcontainer.md",
+      "page_url": "https://code.claude.com/docs/en/devcontainer",
+      "bytes": 18222,
+      "sha256": "8e00a93ee9bd1858c00866868b0287a091d9ee35cb66ce69f240a71a323c9aab",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/gateways.md",
+      "page_url": "https://code.claude.com/docs/en/gateways",
+      "bytes": 9286,
+      "sha256": "3069bdb2ae05612f0d61d698552f8573bd498ebf7aea3fd903746b5c88c1cdb0",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/claude-apps-gateway.md",
+      "page_url": "https://code.claude.com/docs/en/claude-apps-gateway",
+      "bytes": 57803,
+      "sha256": "34c7bee4f9be308dda3504270b0de60f9b53aabef2ea176300ecdd40be019780",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/claude-apps-gateway-config.md",
+      "page_url": "https://code.claude.com/docs/en/claude-apps-gateway-config",
+      "bytes": 133023,
+      "sha256": "25ea6d8d0c97785ebeb4846c1cb92a78d1dbab492ded29682052b1200a60c7e5",
+      "read": "full direct companion read",
+      "method": "consecutive full-text chunks",
+      "chunks": 6
+    },
+    {
+      "url": "https://code.claude.com/docs/en/claude-apps-gateway-spend-limits.md",
+      "page_url": "https://code.claude.com/docs/en/claude-apps-gateway-spend-limits",
+      "bytes": 15841,
+      "sha256": "d366894636585b26f150e707dd0c26382408f7984c6a6d2fe168de59b2c3652c",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/claude-apps-gateway-deploy.md",
+      "page_url": "https://code.claude.com/docs/en/claude-apps-gateway-deploy",
+      "bytes": 62559,
+      "sha256": "3a567d6df5f8dbd4b40f96bec154311cec351db61dc2d1592f9abb45e089be9b",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/claude-apps-gateway-on-aws.md",
+      "page_url": "https://code.claude.com/docs/en/claude-apps-gateway-on-aws",
+      "bytes": 50532,
+      "sha256": "406be9b95710c035b61b4312b7ed6acaca3248a0c63200d16428023cdba6414b",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/claude-apps-gateway-on-gcp.md",
+      "page_url": "https://code.claude.com/docs/en/claude-apps-gateway-on-gcp",
+      "bytes": 22904,
+      "sha256": "c5fb057ae072c61f74509bc548a8a9b24eb2ccd2656494a943f084ea4c462e4b",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/llm-gateway.md",
+      "page_url": "https://code.claude.com/docs/en/llm-gateway",
+      "bytes": 7105,
+      "sha256": "3acb15a32a7a4ad0608c3bfdc50703a6fbca3b79fcddb0de8c89717db0b8b1a1",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/llm-gateway-connect.md",
+      "page_url": "https://code.claude.com/docs/en/llm-gateway-connect",
+      "bytes": 45467,
+      "sha256": "ed0e0875f519f13c8d2fe8e240be097d75750a00201989120fda21d9abce3c66",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/llm-gateway-rollout.md",
+      "page_url": "https://code.claude.com/docs/en/llm-gateway-rollout",
+      "bytes": 29844,
+      "sha256": "6068c8a4e364901a96d473e75cb152ac29577095009e9bebf53d6c2cb464ba57",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/llm-gateway-protocol.md",
+      "page_url": "https://code.claude.com/docs/en/llm-gateway-protocol",
+      "bytes": 43899,
+      "sha256": "b4ddc0f86a77e561491c9d82d4114dca8abcd364af6bc7f3bcf1801093718107",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/monitoring-usage.md",
+      "page_url": "https://code.claude.com/docs/en/monitoring-usage",
+      "bytes": 153026,
+      "sha256": "c4984d5c294fd8c8e7ceb8b2b655c95fba9b038941080e2552abe35612397d8a",
+      "read": "full direct companion read",
+      "method": "consecutive full-text chunks",
+      "chunks": 7
+    },
+    {
+      "url": "https://code.claude.com/docs/en/costs.md",
+      "page_url": "https://code.claude.com/docs/en/costs",
+      "bytes": 42383,
+      "sha256": "6622bdc6962b23a8c0ef27162b93aaa82a8ecc8527b0dadb0772eedc089a2521",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/analytics.md",
+      "page_url": "https://code.claude.com/docs/en/analytics",
+      "bytes": 12020,
+      "sha256": "b5cc60e906ae8247800a0939e2c0771d20507c0176d5fe224f17b0f227163653",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/security.md",
+      "page_url": "https://code.claude.com/docs/en/security",
+      "bytes": 14368,
+      "sha256": "57603902b3038ab4c51a458516e7d74cb41cd256026e5ebc1d0c20a671aea155",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/data-usage.md",
+      "page_url": "https://code.claude.com/docs/en/data-usage",
+      "bytes": 18976,
+      "sha256": "ef5260591575f5c4d2cc649054349b427fb6f3aa91388f9162662d7e3ba0bb03",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/zero-data-retention.md",
+      "page_url": "https://code.claude.com/docs/en/zero-data-retention",
+      "bytes": 8126,
+      "sha256": "c2503ddb0196239c62695663306a3e7731c19472da2532f4a3e56520d9b67bf7",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/hipaa-setup.md",
+      "page_url": "https://code.claude.com/docs/en/hipaa-setup",
+      "bytes": 21698,
+      "sha256": "ab947878e22d175b80948482e48e158ad9a060af7f5e1d1726d624cb16cb8562",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/communications-kit.md",
+      "page_url": "https://code.claude.com/docs/en/communications-kit",
+      "bytes": 21477,
+      "sha256": "116f0e318fe05812cf75c208d2d07e6d85d940d72744dd81c905fe4a6e6d6c0c",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/champion-kit.md",
+      "page_url": "https://code.claude.com/docs/en/champion-kit",
+      "bytes": 16228,
+      "sha256": "0b13b69734332913465664fb2123baef34112b2127551100c437bbcf0b5263d4",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/settings.md",
+      "page_url": "https://code.claude.com/docs/en/settings",
+      "bytes": 57985,
+      "sha256": "a8cc395af5e0938659ddfd38a703bdc8a5151640216c5230098408e30625e380",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/settings-reference.md",
+      "page_url": "https://code.claude.com/docs/en/settings-reference",
+      "bytes": 425177,
+      "sha256": "8ba90434d2801f9e7b3dc44e304bea0e3ca94c25d540cdcf9763369deeb355e4",
+      "read": "full direct companion read",
+      "method": "consecutive full-text chunks",
+      "chunks": 20
+    },
+    {
+      "url": "https://code.claude.com/docs/en/settings-example.md",
+      "page_url": "https://code.claude.com/docs/en/settings-example",
+      "bytes": 15673,
+      "sha256": "f6cf3b20bd043675631782717e77fd398ffb41d5f964d10f736de6fd95c75cec",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/permissions.md",
+      "page_url": "https://code.claude.com/docs/en/permissions",
+      "bytes": 83973,
+      "sha256": "22f01bc144964cc7cf2ea3b2b71ba5a75d160adf6dbd9b954f6fbf5f707b0b56",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/permission-modes.md",
+      "page_url": "https://code.claude.com/docs/en/permission-modes",
+      "bytes": 91352,
+      "sha256": "7ac8298b868b338f2814160fe24800e6691b7ef313a93daa55c5c907a51005d9",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/auto-mode-classifier-billing.md",
+      "page_url": "https://code.claude.com/docs/en/auto-mode-classifier-billing",
+      "bytes": 6463,
+      "sha256": "f7b5ad0c3128b25ba92f81f207e912ab4fc67d3d026ef29c6379ffc80e6f9a42",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/sandboxing.md",
+      "page_url": "https://code.claude.com/docs/en/sandboxing",
+      "bytes": 94950,
+      "sha256": "ac3bda4a1aa12361200c724edc2a1531d21f54fab50814ac7460a7226e987d75",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/sandbox-environments.md",
+      "page_url": "https://code.claude.com/docs/en/sandbox-environments",
+      "bytes": 18037,
+      "sha256": "7b3961d143b855a6ea15b2a84f10c7f76f9cee406223198ee921ae24eb8a1b77",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/cloud-environments.md",
+      "page_url": "https://code.claude.com/docs/en/cloud-environments",
+      "bytes": 63059,
+      "sha256": "299e408e9efa92e53fa75c6d36b49132980f228a3f14dd290e18de43a178c61f",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/self-hosted-environments.md",
+      "page_url": "https://code.claude.com/docs/en/self-hosted-environments",
+      "bytes": 20731,
+      "sha256": "aa7acca4dff21eb303bf0eb37f6ae977073e6bc421d3837a26de8f1317646444",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/self-hosted-environments-quickstart.md",
+      "page_url": "https://code.claude.com/docs/en/self-hosted-environments-quickstart",
+      "bytes": 15651,
+      "sha256": "fd1b9ba3f4bb4471c7acf9bd0f89b9447ad900a756eac71b473cd83a4813c756",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/self-hosted-environments-deploy.md",
+      "page_url": "https://code.claude.com/docs/en/self-hosted-environments-deploy",
+      "bytes": 92487,
+      "sha256": "73a74f99fb3ac4b79015647531c4642a2e863c076273c5f14456ba3ab70f91b6",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/self-hosted-environments-configuration.md",
+      "page_url": "https://code.claude.com/docs/en/self-hosted-environments-configuration",
+      "bytes": 76436,
+      "sha256": "49a22ac4cafb6d8e23bf6c2a46d3025112347447821e66774b20e60e38813873",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/self-hosted-environments-testing.md",
+      "page_url": "https://code.claude.com/docs/en/self-hosted-environments-testing",
+      "bytes": 16440,
+      "sha256": "e77515585d7628809b3317490e92897ae4a278d5e202850825913b5d3ec58af8",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/self-hosted-environments-reference.md",
+      "page_url": "https://code.claude.com/docs/en/self-hosted-environments-reference",
+      "bytes": 48755,
+      "sha256": "58b9140a3647d42d4c2805ddd5125110761a830ae71b50fc6bbbb5c2e9ab45a9",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/self-hosted-environments-identity.md",
+      "page_url": "https://code.claude.com/docs/en/self-hosted-environments-identity",
+      "bytes": 18436,
+      "sha256": "ac193faf838309f2d41638d6e6ac179675072bc51ed1a90bb4dbde76c0ba6876",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/model-config.md",
+      "page_url": "https://code.claude.com/docs/en/model-config",
+      "bytes": 119115,
+      "sha256": "cf781dd9bd0954efc98d52e09a5967a743e89b3bcfa762571501e0e1e5c712eb",
+      "read": "full mixed read",
+      "method": "web_fetch plus direct source reads of omitted sections"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/fast-mode.md",
+      "page_url": "https://code.claude.com/docs/en/fast-mode",
+      "bytes": 20786,
+      "sha256": "7c371b85166304cb1b88e50a55dedc532f8cf7c64a601d143d000707229827f9",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/advisor.md",
+      "page_url": "https://code.claude.com/docs/en/advisor",
+      "bytes": 17182,
+      "sha256": "735dd5d3f2af64811cb57e7565a44e33e31b7dc3503428a8d435eb141ac92d79",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/output-styles.md",
+      "page_url": "https://code.claude.com/docs/en/output-styles",
+      "bytes": 16684,
+      "sha256": "caa152d1d974171c4622c6c4f6c6c45d2f553f491c18f867153375b7ffab8623",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/terminal-config.md",
+      "page_url": "https://code.claude.com/docs/en/terminal-config",
+      "bytes": 25734,
+      "sha256": "71841ee2104be84e2c24bf2219748c0c97dd4e087fd9edac79ea17c3859f0c13",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/fullscreen.md",
+      "page_url": "https://code.claude.com/docs/en/fullscreen",
+      "bytes": 30884,
+      "sha256": "a73cbcd8771d3c06a57223a7d5eb480d51521d35bc7160d3b74ab95cc5a619ce",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/accessibility.md",
+      "page_url": "https://code.claude.com/docs/en/accessibility",
+      "bytes": 11915,
+      "sha256": "c0470c74dd15c77803d076d4639f9115b6a0f748c41c00cd0414f903ab7a84f5",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/voice-dictation.md",
+      "page_url": "https://code.claude.com/docs/en/voice-dictation",
+      "bytes": 18048,
+      "sha256": "222b99354ac354c010370379256c05be57e8854f56dfb3cc5e3dd89a23ac1977",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/statusline.md",
+      "page_url": "https://code.claude.com/docs/en/statusline",
+      "bytes": 67475,
+      "sha256": "bbe651578fa8edf2ec5a1db3a0823c56d7708248c3d35dc7587b67c4246bb356",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/keybindings.md",
+      "page_url": "https://code.claude.com/docs/en/keybindings",
+      "bytes": 37326,
+      "sha256": "fe47379bf3b71c92a713875c1cc56642670fc4d70b9f612b6518c4c010d19065",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/cli-reference.md",
+      "page_url": "https://code.claude.com/docs/en/cli-reference",
+      "bytes": 47770,
+      "sha256": "81d5a5b49f43566ba0f43c7725dae858cad39c20b297cc5efbde5e4759462cbf",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/commands.md",
+      "page_url": "https://code.claude.com/docs/en/commands",
+      "bytes": 52850,
+      "sha256": "ea13c6c08893d2f6d32a0172fae66a4bb34c76fee27367ea43334b1662e21dac",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/env-vars.md",
+      "page_url": "https://code.claude.com/docs/en/env-vars",
+      "bytes": 171421,
+      "sha256": "9f613e71065bbe0a04e97fe201916111eaefedc15af4471316f584a875448995",
+      "read": "full direct companion read",
+      "method": "consecutive full-text chunks",
+      "chunks": 8
+    },
+    {
+      "url": "https://code.claude.com/docs/en/tools-reference.md",
+      "page_url": "https://code.claude.com/docs/en/tools-reference",
+      "bytes": 80660,
+      "sha256": "320420019ef6584aa61d1b3e30c91f07885c9dc90b5a184f68f1f0ca13c59b50",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/interactive-mode.md",
+      "page_url": "https://code.claude.com/docs/en/interactive-mode",
+      "bytes": 72820,
+      "sha256": "c5c6c87891f9cb427800ffaf72770c72dd9effe82a4cf25d2d67b944ea193aac",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/checkpointing.md",
+      "page_url": "https://code.claude.com/docs/en/checkpointing",
+      "bytes": 8861,
+      "sha256": "abba6eb58112b4f5638862ec3241218b5fe7878834998f029f38a3a524378df1",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/hooks.md",
+      "page_url": "https://code.claude.com/docs/en/hooks",
+      "bytes": 273668,
+      "sha256": "5599b94537beb359bfe35dfa7538503194ea78b8d824fcaccba068915d6a77d7",
+      "read": "full direct companion read",
+      "method": "consecutive full-text chunks",
+      "chunks": 13
+    },
+    {
+      "url": "https://code.claude.com/docs/en/channels-reference.md",
+      "page_url": "https://code.claude.com/docs/en/channels-reference",
+      "bytes": 46874,
+      "sha256": "ff2e4cd795e64681828d44593718164676f82e492c37b81bee7e2ba03268daba",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/glossary.md",
+      "page_url": "https://code.claude.com/docs/en/glossary",
+      "bytes": 28097,
+      "sha256": "4835bb8cff3ee5737c5641622270972ef4e4188e814660783cbea03185a58937",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/overview.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/overview",
+      "bytes": 6839,
+      "sha256": "970069a3d032e81062aed716308d39420b241f590cddc005a9ee72370241db01",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/quickstart.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/quickstart",
+      "bytes": 15561,
+      "sha256": "0dd2bfdabf0c9111a3bf8f44ebbc77ef8dae031072bda5bb28c63ce35e5cf2ed",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/migration-guide.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/migration-guide",
+      "bytes": 7092,
+      "sha256": "fe17b0ad3a92aab2b6ce91bce941ba6723b5e734099259ed8b9dfa891a1ee67f",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/troubleshooting.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/troubleshooting",
+      "bytes": 12996,
+      "sha256": "8f14cbdd3a7b7e475fd042535bc9583221b3d5e92c470761211f0d9bdae8062e",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/configuration.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/configuration",
+      "bytes": 17673,
+      "sha256": "3825f95dc2ea2e25da2d1a33fac37f5f85bbd0b837871f5015e8b0d233d650b7",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/examples.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/examples",
+      "bytes": 1936,
+      "sha256": "80248539c566ea16350663c69870fd2bfd1a37f8d1c43475622ebf2d5e54be1a",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/agent-loop.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/agent-loop",
+      "bytes": 40879,
+      "sha256": "e8222c0772825202243883e76929daf037022594319d86380551e5b7a469f28c",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/claude-code-features.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/claude-code-features",
+      "bytes": 20172,
+      "sha256": "5e6cc2ab57f08333008146aad73d0e8e3a354f36cea77cad13022029095f2e6f",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/sessions.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/sessions",
+      "bytes": 22295,
+      "sha256": "c3106db1c25679f0f5557b18e8da687aa9f0232437911db3fb1db5fdecb4d114",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/session-storage.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/session-storage",
+      "bytes": 23428,
+      "sha256": "6e582d288d2062d6b5c1c9fa3c7f426409688fa1c7b917dec7778071fc01cc46",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode",
+      "bytes": 9534,
+      "sha256": "2d7e6f05239baf9c870e5ab7e58fed07b29444c116e1301df5ec36a299e11176",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/user-input.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/user-input",
+      "bytes": 36906,
+      "sha256": "ff01dec6260ddebd97cdaaa1e05349884a7a5363b01bba70bb0cb1b91db5f6b2",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/streaming-output.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/streaming-output",
+      "bytes": 14822,
+      "sha256": "6130ad83b44bbc5c7f703563dc2a968427bdf0c1b343f3debac883fa2f936854",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/structured-outputs.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/structured-outputs",
+      "bytes": 20974,
+      "sha256": "66c2e8bec15c512f8809209271e17535daeb6af92c7854f7c04f57d3986fcaee",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/custom-tools.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/custom-tools",
+      "bytes": 38885,
+      "sha256": "40da8ca864dc53b14ee9a880ecd389904feca976830f97bbe5bc924e209f3aff",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/mcp.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/mcp",
+      "bytes": 39020,
+      "sha256": "33a0ecdbbc0c2ccff5c5d3c934c28fead463400f8cb5ae1a83850d4c0c2d4dcd",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/tool-search.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/tool-search",
+      "bytes": 11324,
+      "sha256": "6589f261d93df7bd500a8ff3218d85b7d4341b0a746e27592820d5f807dc8ac9",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/subagents.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/subagents",
+      "bytes": 41622,
+      "sha256": "d1c6fcee4fef77a5ec6d6e482c2a25ecfb7c710b34c3fb172139670940638d7f",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts",
+      "bytes": 35707,
+      "sha256": "9cc60ee24b2f7c0c78b2555a46bc58bc06566f3b0f4da7d9af0523d8eae3224e",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/skills.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/skills",
+      "bytes": 27640,
+      "sha256": "c515e05538b55ae79a3044229d742946785e0dcca66845478d542ceb0620d26c",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/plugins.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/plugins",
+      "bytes": 12203,
+      "sha256": "f46b7b5f3992e08def0859e9cae81fbf5f6703611068c8f6bed0427b3b2ab971",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/permissions.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/permissions",
+      "bytes": 26730,
+      "sha256": "59b8df322c70a4a17937bf376ca56910e3b246012258c1d1a52aa1b88e2b1fee",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/hooks.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/hooks",
+      "bytes": 45804,
+      "sha256": "97a80c9a66a35e4addf9e56da5025075936373a69cefeda788d39b2dc598a154",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/file-checkpointing.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/file-checkpointing",
+      "bytes": 28946,
+      "sha256": "c2eb54ff4b8d1ba4817082499a22a631ba29f7691c3672c0424ae82134e9c8ee",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/cost-tracking.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/cost-tracking",
+      "bytes": 27593,
+      "sha256": "0efff313646aefb8e10616b8d5e8b330ffd9904cb08017ccb05073af13d66a61",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/observability.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/observability",
+      "bytes": 17731,
+      "sha256": "4df4a9bacf53675a2e013d5fde79900919c88f2f803d5b8402cb835e961ff495",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/todo-tracking.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/todo-tracking",
+      "bytes": 19337,
+      "sha256": "faeb4117a415e4d595080c0dc44177b9ea58deb9a1430b6ce9348f987d4c6cbf",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/hosting.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/hosting",
+      "bytes": 24509,
+      "sha256": "b4cb853b97732c685c09be29f50a2b0592b68b3cb1f2468c03a26fe05e90e1a2",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/secure-deployment.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/secure-deployment",
+      "bytes": 21395,
+      "sha256": "da343d19cfd20cdf69cecd2ade8b8e795209c1e57fe166a294ba1ecce03dbd7d",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/typescript.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/typescript",
+      "bytes": 292474,
+      "sha256": "983b09d03886a2509b3ee5b4803d044b90b87f0c1acc7184a37b1a9799ad04c8",
+      "read": "reference inventory only",
+      "method": "generated SDK symbol listing, not fully read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/typescript-v2-preview.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/typescript-v2-preview",
+      "bytes": 12317,
+      "sha256": "e9db92c5509efc9988fa54a9fe3301b049ff04c582b4a1eca2f624a7203bd9aa",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/agent-sdk/python.md",
+      "page_url": "https://code.claude.com/docs/en/agent-sdk/python",
+      "bytes": 158960,
+      "sha256": "8f97aba75e8021ae9159f9fec46cedf49eb694edd01c8f25150405e7e21c5a07",
+      "read": "reference inventory only",
+      "method": "generated SDK symbol listing, not fully read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/index.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/index",
+      "bytes": 16070,
+      "sha256": "461e0053c53a0a3b69992a1a3dcc3e8c3356d55e7b615acb79b5734a812e24ea",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w37.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w37",
+      "bytes": 6152,
+      "sha256": "66bb7870ff980ac9c70b27dc9d2d2f9169c904556ed8fc810a99c2e19b0f110e",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w36.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w36",
+      "bytes": 8977,
+      "sha256": "3dcefcf911b781ba55e589371877a3a2d5648fd2ef24146422c276bc29116af5",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w35.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w35",
+      "bytes": 8540,
+      "sha256": "3a54fe141802374512fac399b91b353a014027881c6b52b700194f8487bbf850",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w34.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w34",
+      "bytes": 8432,
+      "sha256": "f60234a2a7d0b415f4c379dd923f040bc43bf854fc3cb97a2612ff124f94d985",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w33.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w33",
+      "bytes": 7543,
+      "sha256": "3173be034d0a304e8412b1b2d9fce7b53402a5548a3ac66099a6f20af6c84a42",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w32.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w32",
+      "bytes": 8740,
+      "sha256": "beaa45be6e8d45f70a9acb2c995982807413c72c397cdc1e5367313b6e02cb9c",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w30.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w30",
+      "bytes": 6986,
+      "sha256": "d277689c7c88fd91933efeb8387444de10c73b902c73442c345559b23566108e",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w29.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w29",
+      "bytes": 5449,
+      "sha256": "118acce134ea5a471a45c714615904a70330fe7e8d3b70d9091fd2060cd1bb0e",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w28.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w28",
+      "bytes": 4309,
+      "sha256": "181a056217f5115c1f17afc54f2051f2964dd7912fbf26d8269f4478b50a3058",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w27.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w27",
+      "bytes": 6804,
+      "sha256": "5654dcbca409024332797dcc36f6089252b026353c54fa2c93703a66b0819870",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w26.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w26",
+      "bytes": 4456,
+      "sha256": "daa492028b273039d527cdd5cb4fd93e0d8361e64b35e0e1941ad6dae2d46b9e",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w25.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w25",
+      "bytes": 5365,
+      "sha256": "9423716d28a7bca0fb8794bb207945d8082a516221978db16da3e35de7603c7d",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w24.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w24",
+      "bytes": 5354,
+      "sha256": "7a2ee84a1e8ef73acccdc418876e8e5182918c40eebce6ff1e5ee7c043682556",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w23.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w23",
+      "bytes": 6590,
+      "sha256": "65d143773a30af241da99abaf593b44ba6e59091a2162d9d83398a97313c5ad0",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w22.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w22",
+      "bytes": 7349,
+      "sha256": "b84fb555b0e073d555ccade310b47f34b61548e1bc17674ac565a29716ff0061",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w21.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w21",
+      "bytes": 4311,
+      "sha256": "db1a92b130e8fa64c1478e742a6c755d6df5515237a59c78e56376c1c585aefe",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w20.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w20",
+      "bytes": 6758,
+      "sha256": "4754d13ebbb3548c335457fba4f25ae79fa24973e27adb3641e32ac154f75bf0",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w19.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w19",
+      "bytes": 4596,
+      "sha256": "09cb0ec35c0be8387903221ee197aed9092a88d620b270d612e8ad3a1de43db0",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w18.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w18",
+      "bytes": 6659,
+      "sha256": "936c4348cd436832d4d9e3c8740dad334bfbcc10c85cb7ccad08242caf0706e2",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w17.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w17",
+      "bytes": 7262,
+      "sha256": "515896de9dc302db5190f3f531b409baa888a32137d8ab045d996b2f0cff00cb",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w16.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w16",
+      "bytes": 8921,
+      "sha256": "a33bf848ebdfd53be8c9f7aeb09725e9088c65baebd2cd1fcd470ed4c5b3f041",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w15.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w15",
+      "bytes": 7364,
+      "sha256": "282687bbdbe4b964dc44ecfe2dc4a5e1e05603fc16309b9c51e520a25e6d2b39",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w14.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w14",
+      "bytes": 7896,
+      "sha256": "bce201823d55027e0c43415e958d36730d33e06e560d729767c09b8ca0d77201",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/whats-new/2026-w13.md",
+      "page_url": "https://code.claude.com/docs/en/whats-new/2026-w13",
+      "bytes": 7981,
+      "sha256": "ab085f5727dbec2b29c3afe9a703936ffe7dc570c01757b64cd1b638a18eaea6",
+      "read": "historical inventory only",
+      "method": "excluded from current-guide full-read requirement"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/legal-and-compliance.md",
+      "page_url": "https://code.claude.com/docs/en/legal-and-compliance",
+      "bytes": 7009,
+      "sha256": "4a5e4b4aff6f0e0525d41d2321a78049e886465f5c6686260d8c8bce67232f4c",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    },
+    {
+      "url": "https://code.claude.com/docs/en/terminal-guide.md",
+      "page_url": "https://code.claude.com/docs/en/terminal-guide",
+      "bytes": 15042,
+      "sha256": "2d54865c955e6a772d0cb21c0679cebfda83b62102dd59be22fe36363c2fcb11",
+      "read": "full-content tool-assisted review",
+      "method": "web_fetch whole-page reader, not direct verbatim read"
+    }
+  ],
+  "codex": [
+    {
+      "url": "https://learn.chatgpt.com/docs/use-chatgpt.md",
+      "bytes": 14472,
+      "sha256_16": "53cc375d4167155c",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/prompting.md",
+      "bytes": 22794,
+      "sha256_16": "c43142cb5c847afb",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/model-selection.md",
+      "bytes": 3213,
+      "sha256_16": "ea2148e897ff6734",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/personalize.md",
+      "bytes": 3115,
+      "sha256_16": "628a63ceec399c21",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/import.md",
+      "bytes": 5364,
+      "sha256_16": "34893c4daf7be033",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/whats-new.md",
+      "bytes": 62433,
+      "sha256_16": "b250b91542c15a0e",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/models.md",
+      "bytes": 16586,
+      "sha256_16": "77779d7adf13e05d",
+      "read": "full",
+      "notes": "PricingCard/ModelDetails/CodexPlanFeatureMatrix JSX data present in twin as JSX props"
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/pricing.md",
+      "bytes": 45736,
+      "sha256_16": "e3e0a5ac79441fac",
+      "read": "full",
+      "notes": "PricingCard/ModelDetails/CodexPlanFeatureMatrix JSX data present in twin as JSX props"
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/glossary.md",
+      "bytes": 27771,
+      "sha256_16": "d3b77d2f9de4bf73",
+      "read": "full",
+      "notes": "GlossaryTable JSX with inline data; fully readable in twin"
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/feature-maturity.md",
+      "bytes": 1867,
+      "sha256_16": "9b773769ae13afc5",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/open-source.md",
+      "bytes": 4021,
+      "sha256_16": "77829a35d1067456",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/codex/cli.md",
+      "bytes": 6710,
+      "sha256_16": "36066e8647cfa5f6",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/codex/ide.md",
+      "bytes": 4406,
+      "sha256_16": "bbecaad17ae60f9e",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/app.md",
+      "bytes": 3624,
+      "sha256_16": "078985b0a2fedec6",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/mobile.md",
+      "bytes": 3293,
+      "sha256_16": "18748906f1404a2e",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/web.md",
+      "bytes": 4263,
+      "sha256_16": "e9de770510f127b6",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/cloud.md",
+      "bytes": 4801,
+      "sha256_16": "6d4e5f7c3078e670",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/cli-customization.md",
+      "bytes": 1638,
+      "sha256_16": "7f59bf08264c6306",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/integrated-terminal.md",
+      "bytes": 1307,
+      "sha256_16": "3cc29632b2e73516",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/non-interactive-mode.md",
+      "bytes": 14881,
+      "sha256_16": "b4bc8dbe1c39f6e5",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/long-running-work.md",
+      "bytes": 6516,
+      "sha256_16": "14bba6e57c9bae8b",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/notifications.md",
+      "bytes": 3165,
+      "sha256_16": "3574fbb5669fd40e",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/remote-connections.md",
+      "bytes": 14229,
+      "sha256_16": "c3f151748b855a03",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/automations.md",
+      "bytes": 18620,
+      "sha256_16": "cd6ad46c3c8304a5",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/projects.md",
+      "bytes": 14106,
+      "sha256_16": "2492a9886d932e82",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/browser.md",
+      "bytes": 16433,
+      "sha256_16": "8558ece2cd53b9a3",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/computer-use.md",
+      "bytes": 10624,
+      "sha256_16": "c0e4f883aa2abc11",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/features/voice.md",
+      "bytes": 4796,
+      "sha256_16": "b331ff43e7677116",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/features/codex-micro.md",
+      "bytes": 11496,
+      "sha256_16": "5324ce0987446a9e",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/features/composer-predictions.md",
+      "bytes": 2565,
+      "sha256_16": "e07a3bdcfbea86f7",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/web-search.md",
+      "bytes": 4749,
+      "sha256_16": "b05fedecab43b239",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/appshots.md",
+      "bytes": 4250,
+      "sha256_16": "a541048923cd2daf",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/image-inputs.md",
+      "bytes": 2295,
+      "sha256_16": "252e1571e2cb0f93",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/configuration.md",
+      "bytes": 5887,
+      "sha256_16": "c034411d817d6cc5",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/config-file/config-basic.md",
+      "bytes": 12673,
+      "sha256_16": "4f0275f5289e27d9",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/config-file/config-advanced.md",
+      "bytes": 54760,
+      "sha256_16": "6180e9e23da85dd2",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/config-file/config-reference.md",
+      "bytes": 136297,
+      "sha256_16": "fe48af085a53345c",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/config-file/config-sample.md",
+      "bytes": 34474,
+      "sha256_16": "626f16aed15a7c49",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/config-file/environment-variables.md",
+      "bytes": 7162,
+      "sha256_16": "af767b8d7892d11d",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/agent-configuration/agents-md.md",
+      "bytes": 9149,
+      "sha256_16": "9d1f87a2d1cb55b4",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/agent-configuration/rules.md",
+      "bytes": 6783,
+      "sha256_16": "4ecdfe26ece03895",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/agent-configuration/speed.md",
+      "bytes": 3580,
+      "sha256_16": "e965b9526b3df519",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/agent-configuration/subagents.md",
+      "bytes": 22907,
+      "sha256_16": "e7469d41c5a18a4e",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/customization/overview.md",
+      "bytes": 9482,
+      "sha256_16": "e4f466bb13521bc8",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/customization/memories.md",
+      "bytes": 6069,
+      "sha256_16": "7412a5b573d678db",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/customization/computer-history.md",
+      "bytes": 11865,
+      "sha256_16": "46e7b7a51804f93c",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/permission-modes.md",
+      "bytes": 2289,
+      "sha256_16": "755f4d11d20f3f04",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/permissions.md",
+      "bytes": 39390,
+      "sha256_16": "1af24fb0126aba2d",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/skills-and-plugins.md",
+      "bytes": 5217,
+      "sha256_16": "39aa27568d3b43ca",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/build-skills.md",
+      "bytes": 11035,
+      "sha256_16": "ed6e324f747d47ad",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/build-plugins.md",
+      "bytes": 13963,
+      "sha256_16": "727cd6c97e479b78",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/plugins.md",
+      "bytes": 14241,
+      "sha256_16": "612ebfed2779c4aa",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/extend/mcp.md",
+      "bytes": 30624,
+      "sha256_16": "834530314faff3c6",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/extend/record-and-replay.md",
+      "bytes": 3607,
+      "sha256_16": "36f40000558f2bf2",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/hooks.md",
+      "bytes": 47133,
+      "sha256_16": "57166ef03e705973",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/webmcp.md",
+      "bytes": 8386,
+      "sha256_16": "88c15d3fe55658f3",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/annotations-extensibility.md",
+      "bytes": 40181,
+      "sha256_16": "bb1e13578875f448",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/codex-sdk.md",
+      "bytes": 5475,
+      "sha256_16": "c3436a3de96a7bd7",
+      "read": "full",
+      "notes": "read fully in round 1 (164 lines); re-verified in round 2"
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/app-server.md",
+      "bytes": 102656,
+      "sha256_16": "f879715bb0d440db",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/github-action.md",
+      "bytes": 7266,
+      "sha256_16": "3c3a244ef87fffb0",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/third-party/github.md",
+      "bytes": 6908,
+      "sha256_16": "1ab502138a121ac5",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/third-party/gitlab.md",
+      "bytes": 11273,
+      "sha256_16": "fed924146abc455e",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/third-party/slack.md",
+      "bytes": 7748,
+      "sha256_16": "ba61aa94fe5a68ed",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/third-party/linear.md",
+      "bytes": 5500,
+      "sha256_16": "a8c693a1f59d6573",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/access-tokens.md",
+      "bytes": 13085,
+      "sha256_16": "bd5b1821bc59ec53",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/service-accounts.md",
+      "bytes": 8921,
+      "sha256_16": "2418e02ccae67c12",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/environments/modes.md",
+      "bytes": 2378,
+      "sha256_16": "64d4650883e84046",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/environments/local-environment.md",
+      "bytes": 3277,
+      "sha256_16": "be1d914a3e59fb5a",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/environments/git-worktrees.md",
+      "bytes": 12831,
+      "sha256_16": "a664bda957392d91",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/environments/cloud-environments.md",
+      "bytes": 21555,
+      "sha256_16": "341b6a58e1f459e2",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/environments/cloud-environment.md",
+      "bytes": 5913,
+      "sha256_16": "9a798f89ae50cdb9",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/cloud/internet-access.md",
+      "bytes": 5270,
+      "sha256_16": "5af493d05e5da1a5",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security-administration.md",
+      "bytes": 4911,
+      "sha256_16": "8642d3acd49b76e8",
+      "read": "full",
+      "notes": "JSX landing hub; nav data inline in twin"
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/agent-approvals-security.md",
+      "bytes": 35349,
+      "sha256_16": "595db3a5a3276996",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/sandboxing.md",
+      "bytes": 13009,
+      "sha256_16": "4702d8590236260c",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/sandboxing/auto-review.md",
+      "bytes": 13942,
+      "sha256_16": "a16ccf51cff77ee1",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security.md",
+      "bytes": 4794,
+      "sha256_16": "17e8fe44f75071a7",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/setup.md",
+      "bytes": 6327,
+      "sha256_16": "e11917a10b7025b9",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/faq.md",
+      "bytes": 6366,
+      "sha256_16": "1463f40e5e16a26a",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/security-review.md",
+      "bytes": 5057,
+      "sha256_16": "2df1dc936b7e22bb",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/threat-model.md",
+      "bytes": 2020,
+      "sha256_16": "b9066071e4473a11",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/plugin.md",
+      "bytes": 6723,
+      "sha256_16": "f44d33afafce0382",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/plugin/scans.md",
+      "bytes": 5148,
+      "sha256_16": "2ebaf809f04edce1",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/plugin/deep-scans.md",
+      "bytes": 6113,
+      "sha256_16": "3edcac8668309c6b",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/plugin/code-changes.md",
+      "bytes": 13338,
+      "sha256_16": "6940bbecd2530519",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/plugin/workbench.md",
+      "bytes": 4606,
+      "sha256_16": "2f90053b15a0195a",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/plugin/triage-backlog.md",
+      "bytes": 9058,
+      "sha256_16": "68da08936077bf30",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/plugin/fix-findings.md",
+      "bytes": 4356,
+      "sha256_16": "7e4baf387b78ece7",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/plugin/security-hardening.md",
+      "bytes": 3036,
+      "sha256_16": "c6d60850694af94e",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/plugin/vulnerability-reports.md",
+      "bytes": 2721,
+      "sha256_16": "13ff30f585373f38",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/plugin/export-findings.md",
+      "bytes": 7249,
+      "sha256_16": "ad360fcd81879fb1",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/plugin/changelog.md",
+      "bytes": 22874,
+      "sha256_16": "2ce0909340d44faf",
+      "read": "sampled",
+      "notes": "plugin changelog: head+heading-sweep read by design (version-dense)"
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/cli.md",
+      "bytes": 7281,
+      "sha256_16": "2dffecdbdae3df42",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/cli/bulk-scans.md",
+      "bytes": 12138,
+      "sha256_16": "d07c26160903aa9e",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/cli/ci.md",
+      "bytes": 11031,
+      "sha256_16": "c40d714e67bce3e6",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/cli/ci/gitlab.md",
+      "bytes": 18590,
+      "sha256_16": "6ccc8c40a0c746ac",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/cli/reference.md",
+      "bytes": 47481,
+      "sha256_16": "d4a5ff04bb28be4a",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/cli/faq.md",
+      "bytes": 7953,
+      "sha256_16": "d7e92875fda13548",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/security/sdk.md",
+      "bytes": 20683,
+      "sha256_16": "afbbeb55b0faf1ef",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/cyber-safety.md",
+      "bytes": 5125,
+      "sha256_16": "bb0024ac81bd00f9",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/cyber-safety/recommended-configuration.md",
+      "bytes": 12921,
+      "sha256_16": "484f48b696445ed7",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/security-cookbook.md",
+      "bytes": 63127,
+      "sha256_16": "533934686daa7046",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/agent-security.md",
+      "bytes": 16486,
+      "sha256_16": "a5328459ce803f3d",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/managed-configuration.md",
+      "bytes": 54482,
+      "sha256_16": "d139c3bd64dcebcc",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/hipaa-configuration.md",
+      "bytes": 22767,
+      "sha256_16": "308f6e3b696f1865",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/auth.md",
+      "bytes": 16852,
+      "sha256_16": "ef2f4e55abe70a66",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/amazon-bedrock.md",
+      "bytes": 25987,
+      "sha256_16": "a4c692f2b0e3b9f4",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/govcloud-configuration.md",
+      "bytes": 31528,
+      "sha256_16": "a4ed4707ab56d944",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/sign-in-with-chatgpt-through-a-gateway.md",
+      "bytes": 9150,
+      "sha256_16": "69627e237196ca4c",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway.md",
+      "bytes": 12093,
+      "sha256_16": "3a0e2bac86f84dec",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/roll-out-a-gateway.md",
+      "bytes": 23192,
+      "sha256_16": "eeaa1d2d10e1b54b",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/gateway-compatibility.md",
+      "bytes": 7215,
+      "sha256_16": "01c10c34a6563a4e",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/bedrock-through-litellm.md",
+      "bytes": 14919,
+      "sha256_16": "e47fb3251e713440",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/windows-deployment.md",
+      "bytes": 31814,
+      "sha256_16": "20127f101c7662c2",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/enterprise/workspace-model-availability.md",
+      "bytes": 10508,
+      "sha256_16": "f6953cfa20733df4",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/reference/troubleshooting.md",
+      "bytes": 10394,
+      "sha256_16": "3a3db459876eca27",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/reference/commands.md",
+      "bytes": 26930,
+      "sha256_16": "03e14392312eb606",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/reference/slash-commands.md",
+      "bytes": 5012,
+      "sha256_16": "31116b5621fa26a4",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/reference/settings.md",
+      "bytes": 5007,
+      "sha256_16": "b66dc62c6718eb2e",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/developer-commands.md",
+      "bytes": 60358,
+      "sha256_16": "539a6793f7c8a76a",
+      "read": "full",
+      "notes": "CLI flag ConfigTables options={vars} NOT in twin (flag lists absent from .md)"
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/developer-settings.md",
+      "bytes": 13052,
+      "sha256_16": "adae82f9f22983ff",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/windows/windows-app.md",
+      "bytes": 9406,
+      "sha256_16": "5bbae21f535849b2",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/windows/windows-sandbox.md",
+      "bytes": 16491,
+      "sha256_16": "9ed22a1312fa2ff8",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/windows/wsl.md",
+      "bytes": 3403,
+      "sha256_16": "7bc7cabfbe456741",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/linux/linux-app.md",
+      "bytes": 5587,
+      "sha256_16": "82b5e912a89b1e11",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/mcp-server.md",
+      "bytes": 1239,
+      "sha256_16": "9fe223993523b4e6",
+      "read": "full",
+      "notes": ""
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/administration.md",
+      "bytes": 15001,
+      "sha256_16": "4cac25cbc0d7050f",
+      "read": "full",
+      "notes": "JSX landing hub; nav data inline in twin"
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/developers.md",
+      "bytes": 7049,
+      "sha256_16": "5f04a724c5ec4dd8",
+      "read": "full",
+      "notes": "JSX landing hub; nav data inline in twin"
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/features.md",
+      "bytes": 10367,
+      "sha256_16": "3da71a384f6b1e36",
+      "read": "full",
+      "notes": "JSX landing hub; nav data inline in twin"
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/resources.md",
+      "bytes": 222,
+      "sha256_16": "1dca9bafc768559c",
+      "read": "full",
+      "notes": "JSX landing hub; nav data inline in twin"
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/code-review.md",
+      "bytes": 15635,
+      "sha256_16": "c18b2fe184104fac",
+      "read": "full",
+      "notes": ""
+    }
+  ]
+}
