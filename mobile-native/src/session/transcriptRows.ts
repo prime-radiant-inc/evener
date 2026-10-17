@@ -1,7 +1,7 @@
 // The Session's transcript rows (spec 8.2):
 // - consecutive steps fold into one run line ("12 steps · 8m · read 6 files,
 //   ran go test (2 failed), edited 3 files"), and a step's images ride with it;
-// - the step in progress, and a live thought, are left to the status tray
+// - the step in progress, and a live thought, are left to the live status line
 //   (ruling 10);
 // - a question still waiting is left to the ask dock, which is the question
 //   while it is open;

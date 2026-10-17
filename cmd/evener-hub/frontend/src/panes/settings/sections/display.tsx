@@ -9,9 +9,7 @@ const CLASS = {
 };
 
 /**
- * Settings -> Display: the composer preference remains here. Transcript
- * detail and estimated cost are hub defaults under Transcript display, while
- * this Enter-sends setting stays browser-local for compatibility.
+ * Browser-local composer preference, composed into Input & shortcuts.
  */
 export function DisplaySection() {
   const enterToSend = usePrefsStore((s) => s.enterToSend);

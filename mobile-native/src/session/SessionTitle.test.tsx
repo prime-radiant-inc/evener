@@ -1,7 +1,11 @@
 import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
+import { PulseMeter } from "../board/PulseMeter";
+import { palettes } from "../design/tokens";
 import { type PanGestureMock, render, renderedText } from "../renderNative.testkit";
 import { NAV_BAR_BUTTON_SPAN, SessionTitle } from "./SessionTitle";
+
+const light = palettes.light;
 
 // The window the mocked react-native reports. useTextScale reads fontScale on
 // iOS, so a test raises it to stand at an accessibility text size (AX1-AX5).
@@ -49,6 +53,46 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 		expect(mark?.props).toMatchObject({ name: "circle.fill", size: 12 });
 		expect(mark?.props.tintColor).toMatch(/^#/);
 		expect(symbols(tree)).toEqual(["circle.fill", "chevron.right"]);
+	});
+
+	it("carries the live line in the state line, with the meter where the dot was", () => {
+		const live = { text: "Checking for an existing remote…", attention: false };
+		const tree = render(
+			<SessionTitle
+				title="S"
+				line={{ state: "working", text: "Checking for an existing remote… · 23s", live }}
+				perMinute={[1, 2, 3, 4, 5, 6, 7]}
+				{...base}
+			/>,
+		);
+		expect(renderedText(tree)).toContain("Checking for an existing remote… · 23s");
+		expect(symbols(tree)).toEqual(["chevron.right"]);
+		expect(tree.root.findByType(PulseMeter).props).toMatchObject({ perMinute: [1, 2, 3, 4, 5, 6, 7], tone: "alive" });
+	});
+
+	it("turns the meter and its words amber when the agent may be stuck", () => {
+		const live = { text: "May be stuck", attention: true };
+		const tree = render(<SessionTitle title="S" line={{ state: "working", text: "May be stuck", live }} {...base} />);
+		expect(tree.root.findByType(PulseMeter).props.tone).toBe("attention");
+		const [state] = tree.root.findAllByType("Text" as never).slice(1);
+		expect(state?.props.style).toMatchObject({ color: light.attentionInk });
+	});
+
+	it("jumps to the live end when the live state line is pressed", () => {
+		const onJumpToLive = vi.fn();
+		const tree = render(
+			<SessionTitle
+				title="S"
+				line={{ state: "working", text: "Thinking… · 5s", live: { text: "Thinking…", attention: false } }}
+				onJumpToLive={onJumpToLive}
+				{...base}
+			/>,
+		);
+		const jump = tree.root.find(
+			(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "Thinking… · 5s",
+		);
+		act(() => jump.props.onPress());
+		expect(onJumpToLive).toHaveBeenCalledTimes(1);
 	});
 
 	it("is one button that opens session info, read title first", () => {

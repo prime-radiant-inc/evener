@@ -31,6 +31,29 @@ reservation and generation across a failed delegate-journal commit; retry does
 not create a second marker or generation. Parents continue to drive the child's
 attention, and fresh owner work remains admissible after the attention settles.
 
+## Delegate report preservation
+
+A successfully reported generation's terminal packet `message` is the accepted
+terminal `communicate.message`, with communicate's existing trimming and
+`output.message` fallback. Its structured result remains separate, including a
+different summary, data, artifacts, or a custom-schema value. Both come from the
+same accepted capture under the session lock
+(`delegateTerminalRunInputs.captureCommunicateReport`, `agent/subagents.go`).
+Competing terminal calls cannot replace that capture. Failed, cancelled,
+exhausted, and unreported runs retain their diagnostic result semantics, and
+root-session return values and `CommunicateOutput` keep their structured-output
+semantics.
+
+Settlement persists an immutable terminal packet. Owner notifications and
+synchronous results consume that packet, and journal recovery reuses it across
+both prepared-before-settlement and settled-but-undelivered windows. Recovery
+does not ask the child to report again or allocate a new generation or delivery
+identity (`delegateTreeController.Reconcile`, `agent/delegate_tree_restore.go`,
+and `deliverDelegatePacket`, `agent/delegate_delivery.go`). Existing receipts,
+storage limits, and preview bounds still apply. This contract neither changes
+notification timing nor reconstructs detailed reports absent from historical
+packets.
+
 ## Effective capability policy
 
 A child agent can **narrow** but never **expand** the capability set available to its

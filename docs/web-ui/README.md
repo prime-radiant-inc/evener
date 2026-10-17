@@ -41,6 +41,45 @@ Design documentation for the web hub (`cmd/evener-hub`).
   observer auto-open). Point-in-time; the multi-pane one is still named as
   source of truth by its implementation plan.
 
+## Settings
+
+Settings groups controls by task:
+
+- **Preferences:** Appearance, Conversation display, Input & shortcuts, Notifications.
+- **Agent setup:** Providers & credentials, Agents, AGENTS.md, Evener launch, In-repo config.
+- **Extensions:** Plugins, Skill directories, MCP servers.
+- **System:** Hosts, Devices, Hub, Storage, About.
+
+Search matches destination names and control keywords, such as font, Enter,
+tokens, marketplace and plugin directory. Results open the owning page.
+Appearance is the default. Explicit unknown or retired `general`, `display`
+and `plugins` section URLs open Appearance, without aliases or a remembered
+section overriding that request. A host-qualified URL retains its host scope.
+AppShell replaces retired or unknown URLs before placing their settings pane,
+so mobile URL synchronization cannot restore retired params or discard Forward history.
+Project settings remain reachable through their project route.
+
+On phones, settings opens as a full-width list. Drilling into a page and using
+Back preserves the list's search and scroll position. Desktop keeps the list
+beside the selected page.
+
+Input & shortcuts brings Enter-to-send and keyboard customization together.
+Enter-to-send and character-key enablement remain browser-local; keyboard
+overrides retain their existing hub synchronization. Appearance and notification
+preferences retain their existing browser storage. Conversation display keeps
+its Desktop/Mobile hub defaults and browser overrides. Organization does not
+change persistence or introduce new synchronization.
+
+Plugins has one home with Installed, Browse and Sources views. Sources contains
+marketplaces and additional plugin directories under one host picker. Directory
+loading and editing recover independently of plugin and marketplace inventory
+failures; inventory retries preserve directory drafts. Host switching keeps
+reads and saves bound to the selected host. Skill directories remain separate.
+
+The former General summary's runtime, listen address, masked token and token
+age belong to Hub; state/index paths and page size belong to Storage; version
+and credits belong to About. Existing stores and APIs remain authoritative.
+
 ## Older history demand
 
 The browser [transcript reader](../../cmd/evener-hub/frontend/src/panes/session/transcript/useTranscript.ts)

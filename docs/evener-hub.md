@@ -146,7 +146,11 @@ spawned session actually runs with.
 
 - **Global**: `${XDG_CONFIG_HOME:-$HOME/.config}/evener/launch.toml` — hub-wide
   defaults (model, agent, reasoning effort, skills/plugin dirs, MCP servers,
-  etc.). Editable from the hub UI's Launch settings tab or by hand.
+  etc.). Editable from Settings → Agent setup → Evener launch or by hand.
+  Additional plugin directories also live in Extensions → Plugins → Sources;
+  skill directories have their own Extensions page. Each host-scoped page uses
+  the selected host for both reads and saves. See the
+  [settings guide](web-ui/README.md#settings) for navigation and recovery behavior.
 - **In-repo**: `<cwd>/.evener/launch.toml` — per-project config shipped in
   the working directory. Trust-on-first-use: the hub UI prompts to review
   and approve before applying. Untrusted in-repo files are skipped.

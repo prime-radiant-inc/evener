@@ -1,7 +1,8 @@
 // The Session's composer (spec 8.5): the field on top, and beneath it one
-// controls row that looks the same whether or not the agent works: +, the
-// model and effort controls, and the one Send. Stop lives in the status
-// tray; steering is something you do to a queued message.
+// controls row: +, the model and effort controls, and the slot at the end.
+// That slot is Stop while the agent works and the field is empty, and Send
+// otherwise: with an empty field the immediate action is stopping, with text
+// it is sending. Steering is something you do to a queued message.
 import { SymbolView } from "expo-symbols";
 import { type ReactNode, type RefObject, useEffect, useState } from "react";
 import { ActionSheetIOS, Alert, Platform, Pressable, Text, TextInput, useWindowDimensions, View } from "react-native";
@@ -10,6 +11,7 @@ import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { ComposerFocus } from "./composerFocus";
 import { ExpandedEditor } from "./ExpandedEditor";
 import { SendButton } from "./SendButton";
+import { StopButton } from "./StopButton";
 import { SymbolButton } from "./SymbolButton";
 
 /** The field grows to this many lines, then scrolls. */
@@ -27,6 +29,11 @@ export interface ComposerProps {
 	sendLabel: string;
 	sendEnabled: boolean;
 	onSend(): void;
+	/** Stop, while the agent works: it takes the slot where Send sits. The
+	 * caller decides when, since only it knows the whole draft (the text here
+	 * and any images above); absent while the turn cannot stop. `disabled`
+	 * covers a stop already in flight. */
+	stop?: { onStop(): void; disabled: boolean };
 	onPhotoLibrary(): void;
 	onCamera(): void;
 	/** Opens Commands and skills. Absent, + doesn't offer it. */
@@ -47,6 +54,7 @@ export function Composer({
 	sendLabel,
 	sendEnabled,
 	onSend,
+	stop,
 	onPhotoLibrary,
 	onCamera,
 	onCommands,
@@ -69,6 +77,10 @@ export function Composer({
 	// measured height catches long lines that wrap. The half line of slack
 	// keeps rounding in the measurement from offering the editor at six.
 	const overflows = value.split("\n").length > MAX_LINES || contentHeight > (MAX_LINES + 0.5) * lineHeight;
+	// An empty field you aren't in rests one line tall, so the composer stays
+	// small until you reach for it: focusing it, or any character at all
+	// (whitespace included, which the field visibly holds), keeps it open.
+	const resting = !focused && value === "";
 	function openAddMenu() {
 		const choices = [
 			{ text: "Photo library", onPress: onPhotoLibrary },
@@ -84,9 +96,10 @@ export function Composer({
 	}
 	return (
 		<View
+			testID="composer-card"
 			style={{
 				marginHorizontal: 16,
-				marginBottom: 8,
+				marginBottom: 4,
 				padding: 8,
 				gap: 4,
 				borderWidth: 1,
@@ -121,7 +134,7 @@ export function Composer({
 						color: palette.inkHi,
 						fontSize: 17 * scale,
 						lineHeight,
-						minHeight: 44,
+						minHeight: resting ? lineHeight : 44,
 						// At the largest text sizes six lines would crowd out the
 						// transcript, so the field also stops at a third of the window.
 						maxHeight: Math.min(MAX_LINES * lineHeight, windowHeight / 3),
@@ -151,7 +164,11 @@ export function Composer({
 					<SymbolView name="plus" tintColor={palette.accentInk} size={20 * scale} />
 				</SymbolButton>
 				<View style={{ flex: 1, minWidth: 0 }}>{settings}</View>
-				<SendButton label={sendLabel} disabled={!sendEnabled} onPress={onSend} />
+				{stop ? (
+					<StopButton disabled={stop.disabled} onPress={stop.onStop} />
+				) : (
+					<SendButton label={sendLabel} disabled={!sendEnabled} onPress={onSend} />
+				)}
 			</View>
 			<ExpandedEditor
 				visible={expanded}

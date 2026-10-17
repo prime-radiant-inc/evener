@@ -416,15 +416,21 @@ func TestCovStableDelegateFinish_NilSession(t *testing.T) {
 		t.Fatalf("unreported packet message = %q, err=%v, want result", message, err)
 	}
 
-	reported := stableDelegateFinish(&Session{comm: communicateResult{called: true}}, "reported result", nil)
+	const report = "accepted human report"
+	const reply = "generic reported result"
+	sess := &Session{}
+	if !sess.acceptCommunicateTerminal(context.Background(), report, reply, "", nil, "") {
+		t.Fatal("terminal report was not accepted")
+	}
+	reported := stableDelegateFinish(sess, reply, nil)
 	if reported.outcome != delegatestore.OutcomeCompleted || reported.disposition != delegatestore.DispositionReported || reported.reason != "" {
 		t.Fatalf("reported finish = outcome:%q disposition:%q reason:%q", reported.outcome, reported.disposition, reported.reason)
 	}
 	if reported.packet == nil || reported.packet.Kind != delegatestore.PacketReported {
 		t.Fatalf("reported packet = %+v, want reported", reported.packet)
 	}
-	if err := json.Unmarshal(reported.packet.Message, &message); err != nil || message != "reported result" {
-		t.Fatalf("reported packet message = %q, err=%v, want reported result", message, err)
+	if err := json.Unmarshal(reported.packet.Message, &message); err != nil || message != report {
+		t.Fatalf("reported packet message = %q, err=%v, want %q", message, err, report)
 	}
 }
 

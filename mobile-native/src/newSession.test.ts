@@ -711,23 +711,11 @@ it("applies a setup and settles its model against the host's list", async () => 
 	expect(store.getState().reasoning).toBe("high");
 });
 
-it("applies a session's seed and finds its model once the host's models arrive", async () => {
-	const { store, calls } = setup();
-	store.getState().applySeed({ host: "local", cwd: "/project", model: "p/a", effort: "low" });
-	answer(calls, "model/list", null, { data: [model] });
-	await flush();
-	expect(store.getState()).toMatchObject({ source: "local", cwd: "/project", model, reasoning: "low" });
-});
-
 it.each([
 	[
 		"a setup",
 		(store: ReturnType<typeof setup>["store"]) =>
 			store.getState().applySetup({ host: "local", cwd: "/project", model: null, effort: "", overrides: {} }),
-	],
-	[
-		"a seed",
-		(store: ReturnType<typeof setup>["store"]) => store.getState().applySeed({ host: "local", cwd: "/project" }),
 	],
 ])("drops a stale per-launch model and effort when %s is applied, as choosing a model does", (_name, apply) => {
 	const { store } = setup();
@@ -821,13 +809,34 @@ it("keeps a project chosen while a host change was still answering (not the host
 	expect(store.getState().movingHost).toBe(false);
 });
 
-it("forgets a session's model once the form moves somewhere else", async () => {
-	const { store, calls } = setup();
-	store.getState().applySeed({ host: "local", cwd: "/project", model: "p/a" });
+it("forgets a saved draft's pending model once the form moves somewhere else", async () => {
+	const calls: { method: string; params: unknown; response: ReturnType<typeof deferred> }[] = [];
+	const service = createNewSessionService({
+		request(method: string, params: unknown) {
+			const response = deferred();
+			calls.push({ method, params, response });
+			return response.promise;
+		},
+	} as ConversationClientLike);
+	const { saved, storage } = memoryDrafts();
+	saved.set("hub-a", {
+		source: "local",
+		cwd: "/project",
+		prompt: "",
+		harness: "",
+		model: null,
+		reasoning: "",
+		launchOverrides: { model: "p/a" },
+		images: [],
+		unconfirmed: false,
+	});
+	const store = createNewSessionStore("hub-a", storage);
+	store.getState().bind(service);
+	const reading = store.getState().loadModels(true);
 	const failed = calls.find((c) => c.method === "model/list");
 	if (failed) calls.splice(calls.indexOf(failed), 1);
 	failed?.response.reject(new Error("offline"));
-	await flush();
+	await reading;
 	const moved = store.getState().setCwd("/other");
 	answer(calls, "model/list", null, { data: [model] });
 	await moved;
@@ -1175,7 +1184,6 @@ it("changes nothing in a form whose start is on its way (#3104)", async () => {
 	store.getState().addImage({ id: "photo", marker: 1, mediaType: "image/png", data: "AQID" });
 	await store.getState().changeHost("paradise-park", "paradise-park");
 	store.getState().applySetup({ host: "paradise-park", cwd: "/elsewhere", model: null, effort: "high", overrides: {} });
-	store.getState().applySeed({ host: "paradise-park", cwd: "/elsewhere" });
 	store.getState().discard();
 	expect(store.getState()).toMatchObject({
 		source: before.source,

@@ -48,6 +48,7 @@ import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { FindBar } from "./session/FindBar";
 import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
+import { indicatorRoom } from "./design/BarFrame";
 import { SessionHeader } from "./session/SessionHeader";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
@@ -582,11 +583,39 @@ it("sends a message when the agent is at rest", async () => {
 	expect(playedHaptics).toEqual(["impact:light"]);
 });
 
-it("stops the running turn from the tray and says so", async () => {
+it("stops the running turn from the composer's slot and says so", async () => {
 	const { tree, hub } = await mount(thread("ref-stop", "active"));
 	await press(tree, "Stop");
 	expect(hub.mutations()).toEqual(["turn/interrupt"]);
 	expect(toasts(tree)).toEqual(["stop:stopped"]);
+});
+
+it("shows Stop in the composer's slot only while the turn runs with an empty field", async () => {
+	// Running with an empty field: Stop, no Send.
+	const running = await mount(thread("ref-slot", "active"));
+	expect(pressable(running.tree, "Stop")).toBeDefined();
+	// A draft takes the slot back for the queueing Send.
+	await type(running.tree, "half a thought");
+	expect(pressable(running.tree, "Stop")).toBeUndefined();
+	expect(pressable(running.tree, "Queue message")).toBeDefined();
+});
+
+it("stops the running turn from the session menu while a draft waits", async () => {
+	const { tree, hub } = await mount(thread("ref-slot-menu", "active"));
+	await type(tree, "half a thought");
+	// The slot is Send while typing; the ⋯ menu is where Stop stays reachable.
+	expect(pressable(tree, "Stop")).toBeUndefined();
+	chooseMenu("Stop");
+	await settle();
+	expect(hub.mutations()).toEqual(["turn/interrupt"]);
+	// The draft survives the stop: stopping must not cost the typed message.
+	expect(field(tree)?.props.value).toBe("half a thought");
+});
+
+it("keeps Send in the slot when the session is not running", async () => {
+	const { tree } = await mount(thread("ref-slot-idle", "idle"));
+	expect(pressable(tree, "Stop")).toBeUndefined();
+	expect(pressable(tree, "Send")).toBeDefined();
 });
 
 it("queues a second Send pressed before the first one's turn is seen", async () => {
@@ -3521,13 +3550,16 @@ describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
 	const bar = (tree: ReactTestRenderer) =>
 		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
 	const homeIndicator = () => useSafeAreaInsets().bottom;
+	/** The room the bar reserves: the home indicator less its trim, so the
+	 * composer sits close to the bottom edge (BarFrame INDICATOR_TRIM). */
+	const room = () => indicatorRoom(homeIndicator());
 
 	it("runs to the screen's bottom edge under a hairline, and keeps the composer above the home indicator", async () => {
 		const { tree } = await mount(thread("ref-bar", "active"));
 		// The screen leaves the bottom safe area to the bar, which paints it.
 		const [screen] = tree.root.findAll((node) => String(node.type) === "SafeAreaView");
 		expect(screen?.props.edges).not.toContain("bottom");
-		expect(flatStyle(bar(tree))).toMatchObject({ borderTopWidth: 0.5, paddingBottom: homeIndicator() });
+		expect(flatStyle(bar(tree))).toMatchObject({ borderTopWidth: 0.5, paddingBottom: room() });
 		// The tray and the composer ride in it, so the bar's padding lifts them
 		// clear of the home indicator.
 		expect(
@@ -3541,7 +3573,7 @@ describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
 		act(() => keyboard.show());
 		expect(flatStyle(bar(tree)).paddingBottom).toBe(0);
 		act(() => keyboard.hide());
-		expect(flatStyle(bar(tree)).paddingBottom).toBe(homeIndicator());
+		expect(flatStyle(bar(tree)).paddingBottom).toBe(room());
 	});
 
 	it("lays the bar over the transcript's end, so the transcript runs under it", async () => {

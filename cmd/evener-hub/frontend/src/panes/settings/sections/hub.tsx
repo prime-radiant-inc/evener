@@ -5,20 +5,16 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
 import { HubResidents } from "./hubResidents";
 import { HubUpdates } from "./hubUpdates";
-import { Code, FieldValue } from "./settingsField";
+import { Code, FieldDim, FieldValue } from "./settingsField";
 
 const CLASS = {
   root: requireClass(styles.root, "hub.module.css", "root"),
 };
 
-/**
- * Settings -> Hub (parity-m7-settings.md §16): 3 read-only daemon-runtime
- * fields, a strict subset of General's own field set (§2) with matching
- * copy - both sections read the same settingsOverview.hub, this one just
- * shows fewer rows and skips General's intro paragraph (the legacy
- * hub.html has none either). No local heading: Settings.tsx's outer
- * PaneScaffold already titles the pane "Hub" from the active section id.
- */
+// Never derive the mask from a credential. The overview carries only its age.
+const BEARER_TOKEN_MASK = "••••••••••••";
+
+/** Hub runtime, authentication status, updates and resident daemons. */
 export function HubSection() {
   const data = useSettingsOverviewStore((s) => s.data);
   const loading = useSettingsOverviewStore((s) => s.loading);
@@ -64,6 +60,20 @@ export function HubSection() {
               <>
                 Address and port the hub HTTP server binds to. Change via <Code>addr</Code> in{" "}
                 <Code>~/.config/evener/hub.toml</Code> or <Code>--addr</Code>.
+              </>
+            ),
+          },
+          {
+            label: "Bearer token",
+            value: (
+              <FieldValue field="bearer-token">
+                {BEARER_TOKEN_MASK} {hub?.bearerTokenAge !== undefined && <FieldDim>{hub.bearerTokenAge}</FieldDim>}
+              </FieldValue>
+            ),
+            help: (
+              <>
+                Used to authenticate the TUI or a remote browser. Stored as <Code>auth-token</Code> in the hub state
+                directory and reused across restarts.
               </>
             ),
           },

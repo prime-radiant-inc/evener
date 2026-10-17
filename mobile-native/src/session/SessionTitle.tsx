@@ -6,6 +6,8 @@ import { useEffect, useMemo, useRef } from "react";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { markFor } from "../board/StateMark";
+import { PulseMeter } from "../board/PulseMeter";
+import { meterTone } from "../board/pulse";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import type { SessionStateLine } from "./sessionState";
 import { titleSwipeDirection } from "./titleSwipe";
@@ -36,6 +38,50 @@ export function navBarButtonSpan(count: number, scale: number): number {
 	);
 }
 
+/** The state line's leading glyph (spec 8.1, 16.4): the live meter while the
+ * agent works, every other state's still mark, or nothing. `markFor(state,
+ * false)` narrows the meter out - the title's mark never animates. */
+function LeadingMark({
+	line,
+	mark,
+	perMinute,
+	connected,
+	scale,
+}: {
+	line: SessionStateLine;
+	mark: ReturnType<typeof markFor>;
+	perMinute?: readonly number[];
+	connected: boolean;
+	scale: number;
+}) {
+	const { palette } = useColors();
+	if (line.live) return <PulseMeter perMinute={perMinute} tone={meterTone(connected, line.live.attention)} />;
+	if (!mark || mark === "meter") return null;
+	return <SymbolView name={mark.name} tintColor={palette[mark.tint]} size={12 * scale} />;
+}
+
+/** The state line's words in 13pt tabular figures, amber while the agent may
+ * be stuck. A long one truncates inside the title's width. */
+function StateLine({ line, scale }: { line: SessionStateLine; scale: number }) {
+	const { palette } = useColors();
+	return (
+		<Text
+			allowFontScaling={allowFontScaling}
+			numberOfLines={1}
+			ellipsizeMode="tail"
+			style={{
+				color: line.live?.attention ? palette.attentionInk : palette.inkMid,
+				fontSize: 13 * scale,
+				lineHeight: 18 * scale,
+				fontVariant: ["tabular-nums"],
+				flexShrink: 1,
+			}}
+		>
+			{line.text}
+		</Text>
+	);
+}
+
 export function SessionTitle({
 	title,
 	line,
@@ -43,6 +89,9 @@ export function SessionTitle({
 	onSwipe,
 	neighbors,
 	backCount = 0,
+	perMinute,
+	onJumpToLive,
+	connected = true,
 }: {
 	title: string;
 	line: SessionStateLine;
@@ -55,6 +104,14 @@ export function SessionTitle({
 	/** How many other sessions need you: the Back pill's count, whose digits
 	 * widen the span the title must clear (#3063). */
 	backCount?: number;
+	/** The live meter's per-minute counts, while the state line carries a live
+	 * line (spec 16.4). */
+	perMinute?: readonly number[];
+	/** A press on the live state line jumps to the live end. Absent where there
+	 * is no live line to jump from. */
+	onJumpToLive?(): void;
+	/** The hub is reachable: a disconnected session's meter goes gray. */
+	connected?: boolean;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -120,25 +177,22 @@ export function SessionTitle({
 					{title}
 				</Text>
 				<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-					{/* Never "meter": the title's mark is still (spec 8.1); the check
-					 * only narrows the type. */}
-					{mark && mark !== "meter" ? (
-						<SymbolView name={mark.name} tintColor={palette[mark.tint]} size={12 * scale} />
-					) : null}
-					<Text
-						allowFontScaling={allowFontScaling}
-						numberOfLines={1}
-						style={{
-							color: palette.inkMid,
-							fontSize: 13 * scale,
-							lineHeight: 18 * scale,
-							fontVariant: ["tabular-nums"],
-							// A long state line truncates inside the title's width too.
-							flexShrink: 1,
-						}}
-					>
-						{line.text}
-					</Text>
+					<LeadingMark line={line} mark={mark} perMinute={perMinute} connected={connected} scale={scale} />
+					{/* The live line is the tray's, lifted here: a press on it jumps
+					 * to the live end, as the tray's line did. */}
+					{line.live && onJumpToLive ? (
+						<Pressable
+							accessibilityRole="button"
+							accessibilityLabel={line.text}
+							accessibilityHint="Shows the latest"
+							onPress={onJumpToLive}
+							style={{ flexShrink: 1 }}
+						>
+							<StateLine line={line} scale={scale} />
+						</Pressable>
+					) : (
+						<StateLine line={line} scale={scale} />
+					)}
 					<SymbolView name="chevron.right" tintColor={palette.inkLow} size={9 * scale} />
 				</View>
 			</Pressable>
