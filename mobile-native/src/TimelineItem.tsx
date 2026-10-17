@@ -38,6 +38,7 @@ import { isCriticalNotice, noticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
 import { allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
 import { Button } from "./sheet/Grouped";
+import { FoldChevron } from "./board/BoardRow";
 
 // A row that shows a call's small exit mark beside its line: the mark and the
 // line share one row, centered. Module-level so it is not re-allocated on every
@@ -314,14 +315,17 @@ export function TimelineItem({
 			// visible as a small x in attention ink, and the line says the code.
 			const exitOnly = isExitOnly(exitSignals);
 			const stepLine = (
-				<Button
-					text
-					quiet
-					label={`${expanded ? "▾" : "▸"} ${stepName} · ${exitOnly ? `exit ${item.detail.exitCode}` : item.state}`}
-					accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${stepName}${exitOnly ? `, exit ${item.detail.exitCode}` : ""}`}
-					expanded={expanded}
-					onPress={toggle}
-				/>
+				<View style={{ flexDirection: "row", alignItems: "center" }}>
+					<FoldChevron folded={!expanded} />
+					<Button
+						text
+						quiet
+						label={`${stepName} · ${exitOnly ? `exit ${item.detail.exitCode}` : item.state}`}
+						accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${stepName}${exitOnly ? `, exit ${item.detail.exitCode}` : ""}`}
+						expanded={expanded}
+						onPress={toggle}
+					/>
+				</View>
 			);
 			content = (
 				<>

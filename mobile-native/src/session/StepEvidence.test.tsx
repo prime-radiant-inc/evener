@@ -219,10 +219,19 @@ describe("each tool's evidence, drawn", () => {
 				],
 			},
 		]);
-		expect(byText(tree.root, "✓ Reproduce the race")?.props.accessibilityLabel).toBe("Done: Reproduce the race");
-		expect(byText(tree.root, "● Fix the drain")?.props.accessibilityLabel).toBe("In progress: Fix the drain");
-		expect(byText(tree.root, "○ Run it again")?.props.accessibilityLabel).toBe("Open: Run it again");
-		expect(byText(tree.root, "× Bisect")?.props.accessibilityLabel).toBe("Cancelled: Bisect");
+		expect(byText(tree.root, "Reproduce the race")?.props.accessibilityLabel).toBe("Done: Reproduce the race");
+		expect(byText(tree.root, "Fix the drain")?.props.accessibilityLabel).toBe("In progress: Fix the drain");
+		expect(byText(tree.root, "Run it again")?.props.accessibilityLabel).toBe("Open: Run it again");
+		expect(byText(tree.root, "Bisect")?.props.accessibilityLabel).toBe("Cancelled: Bisect");
+		// Each state's mark is the tinted SF Symbol taskStatus names for it.
+		const marks = (status: string) =>
+			tree.root
+				.findAllByType("SymbolView" as never)
+				.map((mark) => mark.props.name)
+				.filter((name) => name === status);
+		expect(marks("checkmark.circle.fill")).toHaveLength(1);
+		expect(marks("circle.dotted")).toHaveLength(1);
+		expect(marks("circle")).toHaveLength(1);
 		expect(byText(tree.root, "Seen in 3 of 20 runs.")?.props.style).toMatchObject({ color: INK_LOW });
 	});
 
@@ -233,8 +242,8 @@ describe("each tool's evidence, drawn", () => {
 			description: `task ${n + 1}`,
 		}));
 		const tree = drawn([{ kind: "tasks", tasks }]);
-		const shown = () => texts(tree.root).filter((node) => /^○ task \d+$/.test(textOf(node)));
-		expect(shown().map(textOf)).toEqual(Array.from({ length: 40 }, (_, n) => `○ task ${n + 1}`));
+		const shown = () => texts(tree.root).filter((node) => /^task \d+$/.test(textOf(node)));
+		expect(shown().map(textOf)).toEqual(Array.from({ length: 40 }, (_, n) => `task ${n + 1}`));
 		const showAll = tree.root.findAll(
 			(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === "Show all 41 tasks",
 		)[0];

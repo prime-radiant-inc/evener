@@ -10,7 +10,7 @@ import {
 	useState,
 	useSyncExternalStore,
 } from "react";
-import { AccessibilityInfo, ActivityIndicator, Alert, FlatList, Platform, Pressable, View } from "react-native";
+import { AccessibilityInfo, Alert, FlatList, Platform, Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type {
 	ArchivedListCatalog,
@@ -35,6 +35,7 @@ import {
 } from "./organizationNavigation";
 import type { Routes } from "./screens";
 import { Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Spinner } from "./sheet/Spinner";
 import { sessionSubagentChip, sessionSubagentChipLabel } from "./board/BoardRow";
 import { Button } from "./sheet/Grouped";
 
@@ -320,7 +321,7 @@ export function PageList<T>({
 				contentContainerStyle={styles.padded}
 				ListEmptyComponent={
 					state.loading ? (
-						<ActivityIndicator accessibilityLabel="Loading list" />
+						<Spinner label="Loading list" />
 					) : (
 						<Copy muted>{ready ? empty : "Connect to this hub to load the list."}</Copy>
 					)
@@ -329,7 +330,7 @@ export function PageList<T>({
 					<View style={{ gap: 8 }}>
 						{loadingMore ? (
 							<View accessibilityLiveRegion="polite" style={{ alignItems: "center", paddingVertical: 8 }}>
-								<ActivityIndicator accessibilityLabel="Loading more results" />
+								<Spinner label="Loading more results" />
 								<Copy muted>Loading more…</Copy>
 							</View>
 						) : state.remaining > 0 ? (
@@ -449,7 +450,7 @@ function OrganizationStatus({
 	};
 	return (
 		<View style={{ gap: 8, paddingVertical: 8 }}>
-			{state.pending ? <ActivityIndicator accessibilityLabel="Updating organization" /> : null}
+			{state.pending ? <Spinner label="Updating organization" /> : null}
 			<ErrorMessage message={state.pending || observation ? null : state.error} />
 			{observation ? (
 				<>

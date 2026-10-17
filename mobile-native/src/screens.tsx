@@ -217,6 +217,7 @@ import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow } from "./timeline";
 import { hasUsageLines, projectNativeTranscript } from "./transcriptPresentation";
 import { refreshLoadedArchivedLists } from "./archivedLists";
+import { SymbolView } from "expo-symbols";
 import { Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
 import { haptic } from "./haptics";
 import { Button } from "./sheet/Grouped";
@@ -371,6 +372,7 @@ export function ConversationScreen({
 	const { activeProfile, profiles, client, state: connectionState } = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
+	const textScale = useTextScale();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	// Find in session (ruling 29), open while non-null. The current match is
 	// remembered by its row's reader key, since older pages prepend rows.
@@ -1272,9 +1274,10 @@ export function ConversationScreen({
 						opacity: !hasConversation ? 0.4 : pressed ? 0.6 : 1,
 					})}
 				>
-					<Text allowFontScaling={false} style={{ fontSize: 24, color: colors.text }}>
-						⋮
-					</Text>
+					{/* The Android/older-RN fallback for the ⋯ iOS draws as a native
+						    menu (sessionMenu's ellipsis.circle): a symbol, so Dynamic Type
+						    grows it with everything else. */}
+					<SymbolView name="ellipsis" tintColor={colors.text} size={20 * textScale} />
 				</Pressable>
 			),
 		});
@@ -2985,7 +2988,15 @@ export function ConversationScreen({
 				<SessionMenu
 					title={conversation?.name || route.params.title}
 					hubName={activeProfile?.name ?? "Hub"}
-					connected={connected}
+					menu={{
+						current: menuLevel,
+						hasDocuments: documents.length > 0,
+						connected,
+						sharedNotes: !!conversation?.capabilities.sharedNotes,
+						canAside,
+						canShutDown,
+						canStop,
+					}}
 					deletionAvailable={deletionAvailable}
 					close={() => setSessionMenuOpen(false)}
 					choose={openSessionDestination}

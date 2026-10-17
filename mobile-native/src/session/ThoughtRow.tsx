@@ -2,6 +2,7 @@
 // opens to the thought in the serif. The live thought is the live status line's
 // line (ruling 10), so it never reaches the transcript.
 import { Pressable, Text } from "react-native";
+import { FoldChevron } from "../board/BoardRow";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useReadingFace } from "../display/displayContext";
 import { compactDuration } from "./format";
@@ -28,12 +29,15 @@ export function ThoughtRow({
 				accessibilityLabel={label}
 				accessibilityState={{ expanded }}
 				onPress={onToggle}
-				style={{ minHeight: 44, justifyContent: "center" }}
+				style={{ minHeight: 44, justifyContent: "center", flexDirection: "row", alignItems: "center", gap: 4 }}
 			>
 				<Text
 					allowFontScaling={allowFontScaling}
 					style={{ fontSize: 14 * scale, lineHeight: 19 * scale, color: palette.inkMid, fontVariant: ["tabular-nums"] }}
-				>{`${label} ${expanded ? "⌄" : "›"}`}</Text>
+				>
+					{label}
+				</Text>
+				<FoldChevron folded={!expanded} />
 			</Pressable>
 			{expanded && text ? (
 				<Text

@@ -14,7 +14,7 @@ import { destructiveButton } from "./haptics";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import { Button } from "./sheet/Grouped";
 
-const storageError = "Your last saved section name is kept. This edit could not be saved on this device. Try again.";
+const storageError = "Your last saved category name is kept. This edit could not be saved on this device. Try again.";
 export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenProps<Routes, "PinSectionEditor">) {
 	const { hubId, sectionId, title } = route.params;
 	const pin = usePinNavigation(hubId, undefined, sectionId);
@@ -48,7 +48,7 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 	const settled = pin.confirmed && pin.ready && !pin.action?.pending && !pin.action?.uncertain;
 	const fresh = settled && !pin.page?.stale;
 	const message = changedUnderAlert
-		? "This section changed while you were deciding. Check it and delete again."
+		? "This category changed while you were deciding. Check it and delete again."
 		: (selected?.error ?? pin.action?.error ?? pin.page?.error ?? null);
 	const isUpdating = !!pin.page && updating({ ...pin.page, error: message });
 	const blocked =
@@ -83,7 +83,7 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 		} catch {
 			setProposal((previous) => ({
 				...previous,
-				error: "The saved name could not be cleared from this device. Check the section before editing again.",
+				error: "The saved name could not be cleared from this device. Check the category before editing again.",
 			}));
 			return false;
 		}
@@ -103,10 +103,10 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 		setChangedUnderAlert(false);
 		Alert.alert(
 			`Delete ${section.name}?`,
-			`This removes the pinned section and unpins its ${section.count} ${section.count === 1 ? "session" : "sessions"}. Sessions and their history are kept.`,
+			`This removes the pinned category and unpins its ${section.count} ${section.count === 1 ? "session" : "sessions"}. Sessions and their history are kept.`,
 			[
 				{ text: "Cancel", style: "cancel" },
-				destructiveButton("Delete section", () => {
+				destructiveButton("Delete category", () => {
 					// The catalog re-reads itself while the alert is up; delete only
 					// the section as it was shown.
 					if (pinSectionAsShown(pin.pages?.getSnapshot().rows ?? [], section)) void execute(true);
@@ -142,21 +142,21 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 							/>
 						) : null}
 						{pin.action?.pending ? (
-							<Copy muted>Checking the section…</Copy>
+							<Copy muted>Checking the category…</Copy>
 						) : isUpdating ? (
 							<Copy muted>Updating…</Copy>
 						) : null}
 						{pin.confirmed && !section ? (
-							<Copy>This section no longer exists. Its sessions are kept.</Copy>
+							<Copy>This category no longer exists. Its sessions are kept.</Copy>
 						) : section ? (
 							<Copy muted>
 								{fresh ? "Currently" : "Last seen"}: {section.count} {section.count === 1 ? "session" : "sessions"}
 							</Copy>
 						) : null}
 						<View style={{ gap: 8 }}>
-							<Copy>Section name</Copy>
+							<Copy>Category name</Copy>
 							<TextInput
-								accessibilityLabel="Pinned section name"
+								accessibilityLabel="Pinned category name"
 								value={name}
 								editable={!blocked}
 								onChangeText={change}
@@ -185,8 +185,8 @@ export function PinSectionEditorScreen({ route, navigation }: NativeStackScreenP
 								/>
 							) : null}
 						</View>
-						<Button text label="Delete section" disabled={blocked} onPress={confirmDelete} />
-						<Copy muted>Deleting a section keeps its sessions and their history.</Copy>
+						<Button text label="Delete category" disabled={blocked} onPress={confirmDelete} />
+						<Copy muted>Deleting a category keeps its sessions and their history.</Copy>
 						<Button text quiet label="Close" onPress={() => navigation.goBack()} />
 					</ScrollView>
 				</KeyboardAvoidingView>

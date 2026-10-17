@@ -7,19 +7,19 @@
 import { type ModelDescriptor, sessionEffortLevels } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { ChoiceRow, ModelPicker } from "../ModelPicker";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
 import { type SessionControls, useControlsState } from "../sessionControls";
 import { SearchField } from "../sheet/SearchField";
+import { Segmented } from "../sheet/Grouped";
 import { Sheet } from "../sheet/Sheet";
 import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import type { ToastMessage } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { effortName } from "./sessionFacts";
-import { haptic } from "../haptics";
 
 export interface ModelHost {
 	session: MobileConversation;
@@ -149,8 +149,9 @@ function ModelSheetBody({
 	);
 }
 
-/** Effort as a segmented control: one segment per level the model supports,
- * the current one filled (spec 16.1). */
+/** Effort as the shared segmented control (spec 16.1): one segment per level
+ * the model supports, the current one filled. The control owns the 44pt
+ * target and the selection tick, so the sheet's old private twin is gone. */
 function Effort({
 	levels,
 	current,
@@ -170,51 +171,13 @@ function Effort({
 			<Text allowFontScaling={allowFontScaling} style={{ ...caption, fontWeight: "600" }}>
 				Effort
 			</Text>
-			<View
-				accessibilityRole="radiogroup"
-				style={{ flexDirection: "row", borderRadius: 9, backgroundColor: palette.inset, padding: 2, gap: 2 }}
-			>
-				{levels.map((level) => {
-					const selected = level === current;
-					return (
-						<Pressable
-							key={level}
-							accessibilityRole="radio"
-							accessibilityLabel={effortName(level)}
-							accessibilityState={{ selected, disabled }}
-							disabled={disabled}
-							onPress={() => {
-								if (!selected) haptic("selection");
-								choose(level);
-							}}
-							style={[
-								{
-									flex: 1,
-									minHeight: 32,
-									alignItems: "center",
-									justifyContent: "center",
-									borderRadius: 7,
-									backgroundColor: selected ? palette.accentBg : "transparent",
-								},
-								{ opacity: disabled ? 0.4 : 1 },
-							]}
-						>
-							<Text
-								allowFontScaling={allowFontScaling}
-								numberOfLines={1}
-								style={{
-									color: selected ? palette.accentInk : palette.inkHi,
-									fontSize: 15 * scale,
-									lineHeight: 20 * scale,
-									fontWeight: selected ? "600" : "400",
-								}}
-							>
-								{effortName(level)}
-							</Text>
-						</Pressable>
-					);
-				})}
-			</View>
+			<Segmented
+				label="Effort"
+				options={levels.map((level) => ({ value: level, label: effortName(level) }))}
+				value={current}
+				disabled={disabled}
+				onChange={choose}
+			/>
 			<Text allowFontScaling={allowFontScaling} style={caption}>
 				Applies from the next turn
 			</Text>

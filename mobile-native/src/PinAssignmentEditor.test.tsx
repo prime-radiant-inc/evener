@@ -8,6 +8,7 @@ import { expect, it, vi } from "vitest";
 import { PinAssignmentEditor, type PinAssignmentEditorProps } from "./PinAssignmentEditor";
 import { markers } from "./markerTestUtils";
 import { render } from "./renderNative.testkit";
+import { Row } from "./sheet/Grouped";
 
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
 
@@ -44,4 +45,26 @@ it("blames the failed load, not a previous change, when there is no checkpoint",
 it("names the previous change when a checkpoint is present", () => {
 	const tree = render(createElement(PinAssignmentEditor, props({ uncertain: true, previousChange: true })));
 	expect(markers(tree, "pin-status")).toEqual(["previous-change"]);
+});
+
+it("lays its choices out as grouped rows, not text-glyph radios", () => {
+	const tree = render(
+		createElement(
+			PinAssignmentEditor,
+			props({
+				sections: [
+					{ id: "s1", name: "Release prep", count: 2 },
+					{ id: "s2", name: "Reading list", count: 1 },
+				],
+				selection: { kind: "existing", sectionId: "s1" },
+			}),
+		),
+	);
+	// The picker's choices and the create-a-category row are Grouped rows, so
+	// their check draws as a symbol in the row's glyph column, never as text.
+	const rows = tree.root.findAllByType(Row);
+	expect(rows).toHaveLength(3);
+	expect(rows.map((row) => row.props.checked)).toEqual([true, false, false]);
+	// A text radio renders its glyph inside the label; no row label carries one.
+	expect(rows.map((row) => row.props.label).every((label) => !/[○●]/.test(label))).toBe(true);
 });

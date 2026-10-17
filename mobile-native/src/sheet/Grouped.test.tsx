@@ -268,6 +268,25 @@ describe("a segmented control", () => {
 		tree.root.findAllByProps({ accessibilityRole: "radio" })[1]?.props.onPress();
 		expect(onChange).not.toHaveBeenCalled();
 	});
+
+	it("ticks when a new segment is chosen, and not on the chosen one (spec 16.6)", async () => {
+		const { playedHaptics } = await import("../renderNative.testkit");
+		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={() => {}} />);
+		const radios = tree.root.findAllByProps({ accessibilityRole: "radio" });
+		playedHaptics.length = 0;
+		await act(async () => radios[2]?.props.onPress());
+		expect(playedHaptics).toEqual(["selection"]);
+		playedHaptics.length = 0;
+		await act(async () => radios[1]?.props.onPress());
+		expect(playedHaptics).toEqual([]);
+	});
+
+	it("draws each segment at the action-target height (spec 16.6)", () => {
+		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={() => {}} />);
+		for (const radio of tree.root.findAllByProps({ accessibilityRole: "radio" })) {
+			expect(merged(radio.props.style).minHeight).toBe(44);
+		}
+	});
 });
 
 describe("a form's error", () => {

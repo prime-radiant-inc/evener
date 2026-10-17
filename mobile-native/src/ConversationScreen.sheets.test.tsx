@@ -686,6 +686,19 @@ it("opens Find in session from the Android ⋯ menu", async () => {
 	await act(async () => tree.unmount());
 });
 
+it("draws the header's ⋯ fallback as a symbol that follows Dynamic Type", async () => {
+	await mount();
+	await settle();
+
+	const fallback = render(menuButton());
+	// The fallback (Android and older RN; iOS draws the native menu) is a
+	// SymbolView ellipsis, never a Text glyph pinned against Dynamic Type.
+	const [symbol] = fallback.root.findAll((node) => String(node.type) === "SymbolView");
+	expect(symbol?.props.name).toBe("ellipsis");
+	expect(fallback.root.findAll((node) => node.props.allowFontScaling === false)).toEqual([]);
+	act(() => fallback.unmount());
+});
+
 it("shuts the session down after a confirmation and stays on it (ruling 19)", async () => {
 	const { tree, requests } = mount(withCapabilities({ shutdown: true }), { "thread/shutdown": {} });
 	await settle();

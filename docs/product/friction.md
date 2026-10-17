@@ -1061,6 +1061,8 @@ request without a redundant download when the installed artifact still matches.
 Only confirmation of the requested running version completes the update. An
 artifact replaced by another update is reconciled before execution; cancellation
 or a newer request prevents stale restart attempts.
+The native app observes the same outcome only after reconnecting, through the
+Hub home's update footer.
 
 ### H11 Remote bootstrap diagnostics
 
