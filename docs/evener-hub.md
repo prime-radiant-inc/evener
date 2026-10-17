@@ -2,8 +2,7 @@
 
 `evener hub` is Evener's orchestrator. It serves the web UI — Evener's
 default interactive surface — where you start sessions, watch the agent work,
-and steer it across many concurrent sessions; the `evener tui` terminal
-dashboard talks to the same API. The hub launches and supervises
+and steer it across many concurrent sessions. The hub launches and supervises
 local `evener serve` daemons and indexes saved sessions for search.
 
 **First time here?** [Getting started](getting-started.md)
@@ -39,26 +38,11 @@ serves a strict content security policy. When you expose it further, put it
 behind an SSH tunnel, VPN or private-network firewall, or an authenticated
 reverse proxy — the token is a bearer capability, not a per-user login system.
 
-## Build and install
+## Prepare the host
 
-From the repo root:
+Install Evener using [Getting started](getting-started.md), then run the hub as the user who owns the repositories and configuration. This guide assumes that installation is complete. For routine browser work, use [Daily work](daily-work.md); for headless invocations, use the [CLI](cli.md).
 
-```bash
-make install
-```
-
-This builds `evener`, `evener hub`, `evener tui`, `evener doctor`, and
-`evener migrate`, installs the binaries under `~/.local/share/evener/bin`, and
-symlinks them into `~/.local/bin`. The hub, TUI, and doctor workflows resolve
-sibling binaries through the symlink targets, so the installed commands find
-each other without extra flags. `make install-home` is an alias for the same
-layout.
-
-For a system-style install under `/usr/local`:
-
-```bash
-sudo make install-system
-```
+Before starting a service, choose its config and state roots and arrange a provider connection on that host. Do not put secrets in a service command line. A service supervisor does not automatically inherit later changes to your interactive shell.
 
 ## Runtime directories
 
@@ -87,9 +71,7 @@ unset, the corresponding defaults are under `$HOME/.local/state` and
   way they receive the plugin root, so a per-launch `XDG_CONFIG_HOME` override
   cannot make Settings and sessions disagree about the file.
 
-Those extension roots are not active just because they exist. Add standalone
-skill paths to `skills_dirs` and plugin roots to `plugin_dirs` in the layered
-launch config, or pass the equivalent CLI flags for a single launch.
+Extension discovery and enablement have separate rules. Use [Extensions](extensions.md) to choose a source; `skills_dirs` and `plugin_dirs` add explicit launch sources, while installed plugins have their own enabled-by-default state.
 
 ## Hub config
 
@@ -103,7 +85,7 @@ create a default launch stanza; launch defaults still come from the layered
 launch files described below.
 
 Create `hub.toml` when you need to override those paths or the listen
-address. The shell expands `hub_config` and the `$HOME` values in the heredoc
+address. If it already exists, preserve a private copy and edit only the intended fields rather than running this file-creation recipe over it. The shell expands `hub_config` and the `$HOME` values in the heredoc
 before writing the file; TOML itself does not expand shell variables.
 
 ```bash
@@ -142,46 +124,9 @@ spawned session actually runs with.
 
 ## Launch configuration
 
-`evener serve` daemons spawned by the hub get their flags from a layered config:
+[Configuration](configuration.md) owns launch-file locations, trust, precedence, merging, and reload. Use Settings → Agent setup → Evener launch for user defaults, project settings for local overrides and repository review, and New session for one launch. Select the host before editing host-scoped settings.
 
-- **Global**: `${XDG_CONFIG_HOME:-$HOME/.config}/evener/launch.toml` — hub-wide
-  defaults (model, agent, reasoning effort, skills/plugin dirs, MCP servers,
-  etc.). Editable from Settings → Agent setup → Evener launch or by hand.
-  Additional plugin directories also live in Extensions → Plugins → Sources;
-  skill directories have their own Extensions page. Each host-scoped page uses
-  the selected host for both reads and saves. See the
-  [settings guide](web-ui/README.md#settings) for navigation and recovery behavior.
-- **In-repo**: `<cwd>/.evener/launch.toml` — per-project config shipped in
-  the working directory. Trust-on-first-use: the hub UI prompts to review
-  and approve before applying. Untrusted in-repo files are skipped.
-- **Local per-project**: `<cwd>/.evener/launch.local.toml` — personal
-  per-project defaults. Keep this file out of version control; this repo's
-  `.gitignore` ignores it while still allowing shared `.evener/launch.toml`.
-  Existing `${XDG_CONFIG_HOME:-$HOME/.config}/evener/projects/<id>/launch.toml`
-  files are read as a fallback until the project layer is saved in the new
-  location.
-- **Per-launch overrides**: `launchOverrides` on `ThreadStart` — applied to
-  a single spawn only.
-
-API-request logging is a launch option (`api_log`, in the Debug logging group)
-with the same layering: set it per-launch, per-project, in-repo, or globally in
-`launch.toml`. An unset value inherits the hub default above; evener's built-in
-default is off.
-
-Layers merge in order: global → in-repo → project → per-launch.
-- **Scalars** (model, reasoning_effort, etc.): most-specific value wins.
-- **Lists** (skills_dirs, plugin_dirs, mcps, mcp_configs): concatenate in
-  layer order; no dedup. Two exceptions replace instead of concatenating:
-  `system_prompt_append` collapses to its first file-mode entry, and
-  `model_fallbacks` takes the most-specific value.
-- **Env map** (`[env]`): merge by key; most-specific wins per key. Credential-like
-  keys are rejected in every launch-config layer; use the credentials file, a
-  supported provider environment variable exported before starting the hub, or
-  OpenAI OAuth (the `openai-codex` instance) instead.
-
-See the
-[launch config design spec](superpowers/specs/2026-05-16-hub-evener-launch-config-design.md)
-for the full schema and semantics.
+The launch resolver reads user defaults, trusted cwd-local shared settings, private project settings, and per-launch overrides. It reports diagnostics and provenance. API logging inherits the hub default only when no launch layer supplies a value. Neither a browser reload nor a saved setting changes an already-running daemon's configuration.
 
 ### Session plugin selection
 
@@ -214,11 +159,6 @@ a sheet with the same filter, actions, metadata, and diagnostics. The sheet
 stays open while switches are changed; **Done** applies the selection and
 **Cancel** restores the selection from before the sheet opened.
 
-The TUI new-session form has a `Plugins: N/M enabled` field after `Dir` and
-before `Prompt`. Enter opens the `Plugins for this session` picker; Space
-toggles a row, `A` selects all visible rows, `N` selects none, Enter applies, and
-Escape cancels. This field is separate from the global `/plugins` manager.
-
 The launcher previews the effective candidates for the current working directory
 and launch overrides. While inspection is pending it shows `Inspecting
 plugins…`; a failed inspection shows `Couldn't inspect plugins` with retry and
@@ -237,65 +177,9 @@ not mutate an existing session.
 
 ## Provider credentials
 
-> Architecture reference:
-> [`llm-providers.md`](llm-providers.md) (the registry, layers, instances,
-> resolution) and
-> [`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md)
-> (credentials, OAuth, and the hub launch/spawn model).
+Follow [Connecting a provider](connecting-a-provider.md) for first access. The hub stores literal keys by instance in `credentials.toml`; OAuth records belong to the state root. `openai` and `openai-codex` are distinct connections, not two interchangeable keys for one endpoint.
 
-The hub manages `${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml`
-(chmod 600), keyed by **instance name**, not provider type. The file's
-format is a small TOML document:
-
-```toml
-schema = 1
-
-[providers.anthropic]
-api_key = "sk-ant-..."
-
-[providers.openai]
-api_key = "sk-..."
-
-[providers.openrouter]
-api_key = "..."
-```
-
-A section name matches either an implicit instance's id (`anthropic`,
-`openai`, `openrouter`, …) or a custom instance you defined in
-`providers.toml`.
-
-The hub UI (`/credentials`) or TUI (`/credentials`) writes this file via
-the `evener/auth/apiKey/set` RPC. Process-env credentials (e.g.,
-`ANTHROPIC_API_KEY` exported in the shell) still work as a fallback when no
-file entry exists for the instance — matching the `hub.env` style for users
-who prefer external secret management.
-
-If `EVENER_PROVIDERS_CONFIG` points to a non-default `providers.toml`,
-`credentials.toml` is relocated beside that file, unless
-`EVENER_CREDENTIALS_CONFIG` names a different path. Otherwise it is beside
-the default providers config under the XDG config root. Keep both files
-private.
-
-### OpenAI credential resolution
-
-The platform API and the ChatGPT/Codex subscription are two separate
-**instances**, not one instance with two credential sources: `openai` (an
-API key, stored in `credentials.toml` like any other instance, or via
-`OPENAI_API_KEY`) and `openai-codex` (OAuth only — sign in via
-`evener/auth/login/start`; state stored per instance at
-`${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth/openai-codex.json`).
-`openai-codex` precedes `openai` in the default-instance ranking, so a
-fresh sign-in becomes the default the same way a stored OAuth record used
-to win — but by ranking between two instances, not by a precedence check
-within one.
-
-The two instances hit **different backends**: `openai-codex` routes to the
-ChatGPT/Codex backend (`OPENAI_CODEX_BASE_URL`), while `openai` routes to
-the standard OpenAI API backend (`OPENAI_BASE_URL`). They are not
-interchangeable credentials for one endpoint, and signing in with
-`evener openai login` no longer touches the `openai` instance at all. See
-[`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md)
-for the full resolution detail.
+[Credentials and provider launch behavior](llm-provider-config-and-launch.md) owns storage and subprocess details. [Provider reference](llm-providers.md#credential-resolution-order) owns the exact credential order. Keep both configuration and credential files private, including custom headers and command expressions.
 
 ## Start the hub
 
@@ -335,10 +219,6 @@ Production deployments should preferably execute `evener hub --config
 The hub logs config errors, past-index rebuild errors, roster watch errors,
 child-process launch diagnostics, and the auth URL there.
 
-The TUI's `--log-file` option also captures the auto-started hub's full
-authorization URL, including its bearer token. Run the TUI with a restrictive
-`umask` and choose a private log path; do not place this log in a shared
-directory or expose it through a supervisor's broadly readable logs.
 On macOS, [`scripts/ops/deploy-hub.sh`](../scripts/ops/deploy-hub.sh) builds
 while the old hub remains running, kickstarts its launchd job to replace it,
 then verifies health; see
@@ -486,6 +366,8 @@ Use `--appwire-trace` to diagnose excessive browser WebSocket traffic. The flag
 records every AppWire data frame on each browser `/rpc` connection:
 
 ```bash
+umask 077
+hub_config="${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml"
 trace_dir="$(mktemp -d)"
 trace_file="$trace_dir/hub-appwire.jsonl"
 evener hub --config "$hub_config" --appwire-trace "$trace_file"
@@ -504,7 +386,7 @@ hub's separate connections to Evener daemons.
 The raw frames can contain prompts, transcripts, paths, tool arguments, and
 credentials entered through Settings. Keep the file private, inspect it before
 sharing it, and never commit it. Stop the traced hub after reproducing the issue,
-then analyze or share that single file.
+then analyze it locally. Share only a reviewed, sanitized excerpt, never an unreviewed raw trace.
 
 For a compact first pass, list each frame's connection, direction, size, request
 ID, and method:
@@ -547,51 +429,36 @@ The columns are connection, direction, method (or `response`), frame count, and
 total bytes, ordered by total bytes. Use the process-local connection ID to
 correlate an `open` record, its frames, and the final `close` record.
 
-## Browser and TUI
+## Check the running hub
 
-Browser: visit the authorization URL logged at startup. It sets the auth
-cookie; after that, plain `http://127.0.0.1:9180` works in that browser.
+Visit the private authorization URL once in your browser. It sets the cookie; afterward, open the plain hub origin without the token path.
 
-TUI:
+This unauthenticated health check requires only `curl`:
 
-```bash
-evener tui \
-  --hub-addr http://127.0.0.1:9180 \
-  --no-auto-start-hub
+```sh
+curl -fsS http://127.0.0.1:9180/api/health
 ```
 
-Use `--no-auto-start-hub` for production-style runs so the TUI does not start a
-separate local hub with default config.
+Check the version and startup time against the process you intended to run. Health does not validate provider credentials. For client integration, use the [AppWire protocol](appwire-protocol.md) and [integration guide](integrations.md), not an unauthenticated model-list URL.
 
-## Smoke checks
+A live functional check can incur provider charges: authorize the browser, choose a known directory and model, start a small task, confirm transcript updates, then refresh and confirm the same session remains readable. Review the task's actual output separately from hub health.
 
-The smoke checks use `jq` and `python3`; install both first. Basic health
-(this route is auth-exempt):
+## Upgrading and migrating safely
 
-```bash
-curl -fsS http://127.0.0.1:9180/api/health | jq .
-```
+The documentation site tracks main. Release builds can lag it; snapshot builds follow ongoing development. Record the current version and installation prefix before changing channels. The installation guide owns download procedures; Settings → Hub → Updates owns an installed hub's update flow above.
 
-Other API routes need the auth token. Model enumeration is AppWire-only:
-connect to `ws://127.0.0.1:9180/rpc`, authenticate with the token, send
-`initialize`, then send this typed request (see
-`docs/developing-evener/agentic-testing.md`, "Driving AppWire directly"):
+1. Finish or stop work that must not straddle a version change. A hub restart alone does not stop its session daemons.
+2. Inventory effective paths and make a private [backup](security.md#storage-and-backups). Copying live state is not guaranteed consistent.
+3. Preview any legacy-layout migration on the owning host:
 
-```json
-{"id":2,"method":"model/list","params":{"cwd":"/path/to/project"}}
-```
+   ```sh
+   evener migrate --dry-run --verbose
+   ```
 
-The response's `result.data` contains the spawn-scoped descriptors;
-`result.recent` is the optional global Recent group.
+4. Review the paths before running `evener migrate`. It moves supported legacy layouts and converts old provider schema, preserving `providers.toml.pre-registry`. It is not a universal session-format repair or a promise that old project identities become current ones.
+5. Restart the intended hub, check health/build, and verify saved-session visibility. New sessions use the installed runtime; existing daemons retain the old process until stopped and resumed or replaced deliberately.
 
-Manual verification:
-
-1. Authorize the browser via the startup auth URL, then open `/new`.
-2. Pick a working directory and spawn an Evener session.
-3. Confirm the transcript streams live before refresh.
-4. Refresh and confirm the transcript replays from saved state.
-5. Open `evener tui --hub-addr http://127.0.0.1:9180 --no-auto-start-hub` and
-   confirm the same session appears with source label `evener`.
+Keep the pre-upgrade backup until you have checked workspaces and saved sessions. Do not restore over new work or assume an older executable can read newly written state. See [provider migration](llm-provider-config-and-launch.md#upgrading-from-the-old-schema) for renamed instances and changed credential variables.
 
 ## Operations notes
 
