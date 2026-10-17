@@ -62,11 +62,10 @@ Only listed pages enter the renderer and search. Linked source files and
 unpublished documents stay in the repository, not the artifact. Do not add
 plans, research, screenshots or mockups merely because a chapter links to them.
 
-The initial manifest contains the existing first-run guide and generated AppWire
-reference. After chapter integration, map `docs/index.md` to `index.md`, give the
-first-run guide its own route, and add the approved chapters. **Do not publish the
-seed content before its owners remove TUI promotion.** The builder deliberately
-does not rewrite product claims or silently hide stale paragraphs.
+The manifest publishes the user guides and generated AppWire reference, with
+`docs/index.md` as the homepage and the first-run guide on its own route. Update
+the manifest when adding or removing a public chapter. The builder validates
+structure and links; authors must keep product claims current.
 
 ## Link and export rules
 
@@ -116,8 +115,9 @@ main pushes and manual dispatch. It explicitly installs Chromium and runs the
 diagram, search and navigation browser checks before uploading. Only a main-branch push or main-branch manual
 run can deploy. The deploy job alone receives Pages and OIDC write permissions.
 Enable GitHub Pages with GitHub Actions separately; adding this workflow does not
-enable Pages. The intended address is `https://prime-radiant-inc.github.io/evener/`.
-No custom domain or release-version switcher is configured.
+enable Pages. The published address `https://prime-radiant-inc.github.io/evener/`
+redirects to `https://primeradiant.com/evener/` through the organization's inherited
+domain. This repository configures no separate CNAME or release-version switcher.
 
 The site tracks `main`. Released binaries can lag the guide. Installation chapter
 owners must explain snapshot versus release installation beside those commands.

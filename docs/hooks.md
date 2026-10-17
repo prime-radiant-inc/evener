@@ -244,10 +244,8 @@ Two traps worth calling out:
 - **The matcher is the Claude tool name** — see [the gotcha
   above](#the-1-mistake-shell--bash).
 
-> **Evener-native nicety:** Evener trims surrounding whitespace from the matcher
-> before classifying it, so `" Bash "` is treated as the exact matcher `"Bash"`.
-> Claude treats the matcher as a literal regex and would not trim. This is a
-> minor, intentional divergence.
+Evener trims surrounding whitespace before classifying the matcher, so
+`" Bash "` is the exact matcher `"Bash"`.
 
 ### Matcher targets by event
 

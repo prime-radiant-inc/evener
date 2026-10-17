@@ -13,7 +13,7 @@ contract. A familiar filename does not imply identical behavior.
 | Connect an external service as tools | MCP server | [Connect a local server](mcp.md#connect-a-local-server) |
 | Give a delegate a reusable specialist prompt and tool selection | Plugin agent role | [Add a delegate role](plugins.md#add-a-delegate-role) |
 
-A plugin is packaging, not a seventh execution mechanism. A skill does not create
+A plugin packages extensions; it adds no new execution mechanism. A skill does not create
 a delegate. A hook runs because an event fires, not because the model chooses it.
 An MCP server supplies tools the model can call; connecting it does not prove
 that a tool was called.

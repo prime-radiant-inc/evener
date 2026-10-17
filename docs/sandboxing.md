@@ -189,9 +189,12 @@ degrades only the git line.
 
 All sandboxed modes share a common floor: a per-session writable temp directory
 (exported as `TMPDIR`), the secrets + pseudo-filesystem denylist (masked in both
-layers), git config/hook protection, a fresh PID namespace with its own `/proc`, a
-minimal `/dev`, the environment floor, and no inherited Evener file descriptors or
-sockets beyond stdio.
+layers), git config/hook protection, the environment floor, and no inherited
+Evener file descriptors or sockets beyond stdio.
+
+Linux bubblewrap also creates a fresh PID namespace with its own `/proc` and a
+minimal `/dev`. macOS uses Seatbelt policies through `sandbox-exec`; it does not
+create Linux PID or mount namespaces.
 
 On Linux, bubblewrap gives spawned processes a private `/tmp`, so "anywhere" in
 the table below means anywhere except the rest of the host `/tmp`. The private
@@ -296,60 +299,29 @@ unsandboxed root's `TMPDIR` is not in the tree.
   `<common>/rr-cache`. That is the intended behaviour: the mode runs the
   developer's git, not a blanked-out one.
 
-  **A global `core.excludesFile` or `core.attributesFile` gets no read grant of its
-  own in `restricted`** (accepted limitation, 2026-10-13; recorded in
-  [friction.md's T06](product/friction.md#t06-global-git-excludes-files-in-restricted-mode)
-  and [#4234](https://github.com/prime-radiant-inc/evener/issues/4234)). The grant
-  above is the config FILES, never the files they name, so such a file is readable
-  inside the sandbox only where it already sits under a root the mode grants — the
-  project worktree, `/etc`, `/opt`, `/nix/store` and the other system read roots — and
-  not elsewhere, typically under `$HOME`. Where it is not readable, the effect depends
-  on the host: macOS/Seatbelt reports
+  **Global Git excludes and attributes files need their own readable location.**
+  `restricted` grants access to global Git configuration files, not automatically
+  to files named by `core.excludesFile` or `core.attributesFile`. Those files must
+  already lie under a readable root, such as the worktree or a system read root.
+  If they do not, macOS/Seatbelt reports an access warning on commands that read
+  them; Linux/bubblewrap hides the ungranted path, so Git silently omits the rules.
 
-      warning: unable to access '<path>': Operation not permitted
+  The project's `.gitignore`, `.gitattributes`, and `.git/info/exclude` are
+  unaffected. Move needed rules into the repository, or use `--sandbox off` only
+  if you accept removing sandbox confinement. See the
+  [recorded limitation](product/friction.md#t06-global-git-excludes-files-in-restricted-mode)
+  and [design discussion](https://github.com/prime-radiant-inc/evener/issues/4234).
 
-  on every command that reads the file, while Linux/bubblewrap hides an ungranted
-  path, so git applies no excludes or attributes file at all and says nothing. This
-  is deliberate, not overlooked. Granting one file the config names means granting a
-  pathname a spawned process resolves by its literal name at every spawn, and six
-  review rounds on that route each closed one way of re-pointing a granted name at
-  another file — a symlink, a `..` the kernel resolves after one, a writable alias, a
-  letter case, a directory in place of the file — while exposing another, with the
-  last one specific to a backend whose code cannot be verified where CI runs. The
-  project's own `.gitignore`, `.gitattributes` and `.git/info/exclude` are unaffected;
-  they live in the worktree. A session that needs global rules elsewhere on the host
-  can run with `--sandbox off`, or the rules can move into the repository.
+  **macOS Git uses the readable developer toolchain directly.** The environment
+  floor inserts the active developer directory's `usr/bin` before the first
+  system directory on `PATH` (`/usr/bin`, `/bin`, `/usr/sbin`, or `/sbin`), or
+  appends it if none is present. This bypasses the `xcrun` shim without overriding
+  a developer's preferred Git earlier on `PATH`.
 
-  **git under a sandbox is silent and fast on macOS** (ruled 2026-08-07). It was
-  neither: every `git` call emitted two `xcrun_db` cache-write denials to stderr
-  and cost seconds. The cause was the shim, not the sandbox. `/usr/bin/git`
-  memoizes its tool lookup in `xcrun_db` under the per-user temp directory that
-  `confstr(_CS_DARWIN_USER_TEMP_DIR)` reports — a path that honours no
-  environment variable (not `TMPDIR`) and sits in the shared, multi-tenant
-  `/var/folders` tree no mode makes writable. With the memo unwritable the shim
-  re-ran `xcodebuild -sdk macosx -find git` on *every* invocation.
-
-  The fix names the answer instead of paying for it: the environment floor puts
-  the active developer directory's `usr/bin` — where the binary the shim would
-  have found actually lives — on a spawned process's `PATH`, immediately ahead of
-  the first system directory it finds there (`/usr/bin`, `/bin`, `/usr/sbin`,
-  `/sbin`), or at the end when `PATH` names none of them. Measured as an
-  interleaved A/B in a live `restricted` sandbox:
-  8.61s mean via the shim (5.27-12.75s on a loaded host, two stderr lines every
-  time) against 164ms mean via the toolchain (127-225ms, stderr pristine).
-
-  It **adds no grant**. The directory is inside the read-only toolchain grant
-  above, and the floor names it only after it passes the same shared-tree guard,
-  is not masked, and is really readable under the mode's own spawned grants — an
-  unreadable `PATH` entry would turn a noisy `git` into a missing one. The
-  insertion point is deliberate too: ahead of the *system* directories rather
-  than at the front, so it shadows the shim and nothing else. A developer who put
-  their own `git` ahead of `/usr/bin` still gets it.
-
-  `DEVELOPER_DIR` was tried first and **does not work**: the shim reports it,
-  keys its cache on it, and then still runs `xcodebuild -find`. Granting the
-  per-user temp directory would have silenced the write, and was refused — that
-  widens the sandbox to buy quiet.
+  This adds no read or write grant. Evener inserts the directory only after it
+  passes the shared-tree guard, is not masked, and is readable under the mode's
+  existing spawned-process grants. It does not grant access to the per-user
+  `xcrun` cache directory.
 
 ## The fail-closed floor
 
@@ -711,8 +683,9 @@ The grant is tightly bounded:
   `sandbox=restricted`, read whatever you named), breaking the rule that the policy
   is fixed for the life of the session. A project-declared MCP server still connects
   normally; it just cannot hand itself filesystem roots.
-- **Read and exec only.** The write surface is unchanged; a hook's own directory
-  stays unwritable in every mode.
+- **Adds read and exec access, not write access.** Existing write permissions
+  remain: a hook directory already under a writable root, such as the worktree
+  in `workspace-write`, stays writable.
 - **Spawned layer only.** This grant gives the file tools no browse access to a hook
   or MCP path.
 - **The denylist still wins.** A hook or MCP path at or under a masked path is not
