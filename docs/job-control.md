@@ -1,8 +1,46 @@
 # Job control
 
-Status: Evergreen contract for the shipped job-control system.
+Use this reference when an agent needs to launch, observe or stop asynchronous
+work. For shell scripting, start with [Automation](automation.md). For client
+requests, start with [Integrations](integrations.md): model-facing tools and
+AppWire methods are different interfaces.
 
-This document defines Evener's job-control model. It is an architecture/reference contract for the shipped system, not an implementation plan. Implementation sequencing belongs in separate ephemeral specs or plans.
+This is the exact contract for the shipped runtime on main. The detailed
+sections below preserve tool parameters, ownership rules and terminal outcomes.
+
+## Choose a lifetime
+
+| Need | Choose | Completion and cleanup |
+| --- | --- | --- |
+| A short shell command | Foreground shell mode | Waits inline, but long work can promote to a managed job. Inspect the returned status and exit code. |
+| Work while the agent continues | Background shell mode | Returns a `job_...` ID. Completion notifies the owner. Session close stops managed processes. |
+| A service that must survive the session | Detached shell mode | Returns a PID, not a managed job. The caller owns logs and shutdown. No job notifications or Evener stop control. |
+| Another agent's conversation | `delegate` | Returns a stable `dlg_...` ID. A completed run leaves the delegate idle and available for another message. |
+
+For background work, keep the returned ID, continue independent work, then wait
+for the completion notification. Use `job_status` or `job_list` once to orient
+yourself when necessary, not in a polling loop. A status read is not delivery of
+a delegate's result. Read retained shell bytes with `job:<job_id>` and delegate
+history with its session `transcript_ref`.
+
+```mermaid
+flowchart LR
+  Start[Launch managed work] --> ID[Retain typed identity]
+  ID --> Work[Do independent work]
+  Work --> Notice[Receive completion]
+  Notice --> Check[Inspect outcome and evidence]
+```
+
+Stopping uses `job_stop(target=...)`. A delegate stop includes its subtree;
+shell child stopping is controlled separately. A stop request and terminal
+settlement are different observations: use a bounded wait when you need to know
+that stopping finished. Never substitute a shell job ID for a delegate ID.
+
+Watches observe a source or a timer; they do not make output retention infinite.
+Watch frames can coalesce while the receiver is busy. Clear timers you no longer
+need, and read retained evidence when a frame alone cannot answer the question.
+Keep application-owned logs outside session scratch when a detached process must
+outlive the session.
 
 ## Summary
 
