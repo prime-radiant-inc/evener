@@ -20,10 +20,10 @@ const MAX_LINES = 6;
 export interface ComposerProps {
 	value: string;
 	editable: boolean;
-	/** How many images the draft holds. The composer can't see them (they sit in
-	 * `above`), but an image-only draft is a message, not an empty draft, so it
-	 * must not rest. */
-	imageCount: number;
+	/** Whether the empty draft may rest one line tall. The screen decides this
+	 * (`composerRests`), since only it sees the images alongside the text and
+	 * whether the field can take focus; the composer adds its own focus bit. */
+	mayRest: boolean;
 	onChangeText(text: string): void;
 	inputRef?: RefObject<TextInput | null>;
 	/** Where the field reports its focus, for what steps aside while you type
@@ -51,7 +51,7 @@ export interface ComposerProps {
 export function Composer({
 	value,
 	editable,
-	imageCount,
+	mayRest,
 	onChangeText,
 	inputRef,
 	focus,
@@ -85,11 +85,9 @@ export function Composer({
 	// An empty field you aren't in rests one line tall, so the composer stays
 	// small until you reach for it: focusing it, or any character at all
 	// (whitespace included, which the field visibly holds), keeps it open.
-	// A field that cannot take focus (a failed draft read leaves it read-only)
-	// never rests: focusing is the only way back to the controls row, so
-	// collapsing it would strand the model chip with nothing to reach for.
-	// An attached image is a draft too: it rests no more than text does.
-	const resting = !focused && value === "" && imageCount === 0 && editable;
+	// Whether the draft may rest at all is the screen's call (`mayRest`: an
+	// attached image or a read-only field keeps it open); focus is the composer's.
+	const resting = mayRest && !focused;
 	function openAddMenu() {
 		const choices = [
 			{ text: "Photo library", onPress: onPhotoLibrary },
