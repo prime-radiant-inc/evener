@@ -440,10 +440,8 @@ describe("per-message fork affordance", () => {
   });
 
   // The no-key fork: an item the transcript has not numbered names no
-  // divergence position at all. The TUI's own fork draft refuses outright on
-  // this (cmd/evener-tui/hub_browse.go's startForkDraft: "fork requires
-  // persisted transcript turn identity" when TurnIndexFromID yields 0) rather
-  // than cut a child somewhere the user never pointed at. A per-message
+  // divergence position at all, so no child should be cut somewhere the user
+  // never pointed at. A per-message
   // affordance refuses in the web-native way this component already uses for
   // the other unforkable case (no sessionRef, above): it is not offered.
   test("no Fork-from-here button at all when the item carries no transcriptKey", () => {

@@ -383,7 +383,6 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 	evenerBin := filepath.Join(binDir, "evener")
 	runCommand(t, fixtureRoot, env, evenerBin, "--version")
 	runCommand(t, fixtureRoot, env, evenerBin, "hub", "--help")
-	runCommand(t, fixtureRoot, env, evenerBin, "tui", "--help")
 	runCommand(t, fixtureRoot, env, evenerBin, "doctor", "help")
 	runCommand(t, fixtureRoot, env, evenerBin, "migrate", "--dry-run")
 	runCommand(t, fixtureRoot, env, evenerBin, "--list-sessions")

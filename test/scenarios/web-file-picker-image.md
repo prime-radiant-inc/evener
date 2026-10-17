@@ -21,8 +21,7 @@ written for, and the composer door is where the dimension readout
 actually lives.
 
 Companion scenarios: `web-drag-drop-image.md`,
-`web-paste-image-from-clipboard.md`, `tui-paste-image-from-clipboard.md`,
-`tui-paste-image-path.md`.
+`web-paste-image-from-clipboard.md`.
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map is where these hooks are maintained. Everything this card

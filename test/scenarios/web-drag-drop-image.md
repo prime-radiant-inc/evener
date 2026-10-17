@@ -11,8 +11,7 @@ ride an appwire `thread/start` as `{type:"image", …}` input items
 `USER_INPUT` turn.
 
 Companion scenarios: `web-paste-image-from-clipboard.md`,
-`web-file-picker-image.md`, `tui-paste-image-from-clipboard.md`,
-`tui-paste-image-path.md`.
+`web-file-picker-image.md`.
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — its selector
 map is the single place these hooks are maintained. `form[data-spawn-form]`,

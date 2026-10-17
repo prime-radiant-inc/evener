@@ -146,7 +146,7 @@ converts real failures into timeout mysteries. The preference hierarchy:
    codebase's clock abstraction.
 
 The repo's track record backs the policy: every flake family root-caused
-here (vite-cache digest, tmux palette capture, auth stopwatch, composer
+here (vite-cache digest, auth stopwatch, composer
 projection refresh) turned out to be an awaitable completion nobody was
 awaiting, and zero were fixed by widening a timeout.
 
@@ -808,7 +808,7 @@ ROOT_FULL=1 make test
 ~~~
 
 Live/e2e tests police their own requirements: the cmd/evener-hub
-`TestE2E_*` and cmd/evener-tui `TestTUITmuxE2E_*` families call
+`TestE2E_*` family calls
 `internal/e2ecap`'s `RequireLoopbackBind`/`RequireProcessInspect`, which probe
 the capability at test time and `t.Skip` with the probe's reason when the host
 lacks it. On an unrestricted host nothing skips and the gate's coverage and
@@ -1261,7 +1261,7 @@ ceiling.
 | retirement | 30s | daemon retirement lifecycles |
 | eval harness | 20s | memory and prompt evals |
 | plugin-git integration | 15s | plugin materialization over real git |
-| live-stack E2E | 15s | hub and TUI end-to-end suites |
+| live-stack E2E | 15s | hub end-to-end suite |
 
 Four classes were removed on 2026-10-14 (Jesse's ruling, issue #4615):
 **dev-tool compile/CLI**, **install**, **transcript large-fixture** and
@@ -1560,94 +1560,6 @@ pass.
 Dynamic-viewport enforcement is instead the CSS-text contract in layoutguard's
 `mobile-shell-viewport-height` case plus the `AppShell.test.tsx` source
 contract; true geometry verification stays manual and on-device.
-
-## A Single `tmux capture-pane` Can Lie
-
-`tmux capture-pane` returns tmux's OWN terminal-grid state, not a snapshot of
-what the program last rendered. tmux updates that grid incrementally as bytes
-arrive from the pty; `cmd/evener-tui` writes each frame through bubbletea's
-default renderer as one unsynchronized ANSI byte stream — bubbletea v1.3.10
-has no terminal synchronized-output-mode support at all (grep `standard_renderer.go`
-for `2026`/`SyncUpdate`; nothing), and a single frame commonly runs several
-KB, well past any platform's atomic-pipe-write guarantee. Under load (rapid
-re-renders, CPU contention — kata nxq6's report: "shortly after a turn
-started and notifications were arriving"), `capture-pane` can land while tmux
-is still mid-write and read a pane that is blank above the last few lines,
-with those last few lines already showing current content.
-
-nxq6 investigated the alternative — a real partial-repaint bug, some update
-path writing the composer without repainting the frame above it — first, and
-ruled it out two ways before touching tmux at all:
-
-- `hubModel.View()` composes the full frame synchronously from model state on
-  every call (`cmd/evener-tui/hub_model.go`, `sessionView()` in
-  `cmd/evener-tui/hub_session_view.go`); there is no code path that writes only
-  the composer, and the session breadcrumb (`topBar`) is provably non-empty
-  for any reachable state, so `tuiprim.AppShell.View()` cannot legitimately
-  drop it while keeping the footer.
-- The kata's own report is inconsistent with a `View()` bug on logical
-  grounds: `View()` is a pure function of model state, so an inert keypress
-  cannot change its return value — yet "any key... brought back... content
-  that had not changed" is exactly what a render/transport-path bug looks
-  like from the outside, and exactly what a `View()` bug cannot produce.
-
-`cmd/evener-tui/hub_partial_repaint_nxq6_test.go` drives realistic notification
-bursts through `hubModel.Update` directly (no terminal involved) and checks
-that invariant after every step, both as a fixed scenario and as a fuzz
-target; a mutation test (temporarily dropping `topBar` from `AppShell.View()`)
-confirmed the check fails the way it should before the mutation was reverted.
-
-**The fix**: never trust a lone `Capture()` (or a lone `capture-pane`) for a
-negative assertion ("X is absent"). `WaitFor` in
-`cmd/evener-tui/tmux_e2e_test.go` already retries until its wanted substrings
-appear, which self-corrects for POSITIVE assertions the same way a capture
-race self-heals — but the screen it returns is only guaranteed to contain
-what it waited for, not to be a complete frame, so a
-`strings.Contains(screen, unwanted)` check against that same screen can still
-land mid-render. Use `(*tmuxTUI).CaptureStable()` instead: it polls until two
-consecutive captures match. A torn frame cannot do that — it converges within
-milliseconds — while a pane that is genuinely still changing (an active
-stream) legitimately does not, so `CaptureStable` keeps polling rather than
-settling on a stable-but-wrong frame. `TestTUITmuxE2E_CaptureStableDuringStream`
-exercises it under a live rapid-notification burst.
-
-For a check scripted OUTSIDE this harness — an agent driving `tmux
-capture-pane` directly to verify TUI behavior, the scripted-verification
-workflow this hazard cost real time in during e79v's verification (kata
-nxq6's motivating example) — the same fix applies without the Go helper:
-
-```sh
-prev=$(tmux capture-pane -p -t "$SESSION")
-sleep 0.02
-cur=$(tmux capture-pane -p -t "$SESSION")
-while [ "$prev" != "$cur" ]; do
-  prev=$cur
-  sleep 0.02
-  cur=$(tmux capture-pane -p -t "$SESSION")
-done
-# $cur is now safe to grep for an absence.
-```
-
-A live repro under CPU-loaded, multi-session, wide-pane bursts (~7,000
-captures across several attempts) never caught the pattern directly — tmux
-usually wins this race on a healthy machine, which is consistent with the
-above rather than a counter-example to it. Treat the mechanism as
-evidence-backed, not directly observed.
-
-The pty lies in the other direction too. **An e2e test must await a render
-between consecutive printable command-mode key presses**: tmux coalesces
-back-to-back `send-keys` writes into one pty read when the pane's reader
-lags, bubbletea reports every printable rune of one read as a single
-KeyMsg, and a command mode that matches on `msg.String()` reads "kkf" as
-one unmatchable message instead of three keys (kata fazd — reproducible on
-an idle machine with one `send-keys -l` write). The dashboard replays such
-bursts rune by rune (`replayKeyBurst` in `cmd/evener-tui/hub_keys.go`).
-Browse is text-first (kata 7hh0): every printable rune is composer text at any
-delivery timing, so its commands — Escape to leave, ctrl+up/ctrl+down to move
-the selection, ctrl+f to fork — are all escape sequences and immune to
-batching. Only printable runes batch: see
-`TestTUITmuxE2E_FailedForkPreservesDraft`, which awaits the selection render
-after each ctrl+up.
 
 ## A Test That Never Runs
 

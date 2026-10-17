@@ -208,7 +208,7 @@ and the `http`/`mcp_tool`/`agent` handlers are parsed-but-inert. See
   [`job-control.md`](job-control.md).
 - **Warnings are first-class and surfaced, never silent.** `WarningData`
   (`agent/events/payloads.go`), carried on the `EventWarning` event, flows on the session
-  event stream that TUI/Hub/SDK consume; emitting paths include plugin hook-config
+  event stream that Hub/SDK consume; emitting paths include plugin hook-config
   warnings (built in `agent/session_init.go`, emitted via `emitDiagnosticWarning`) and
   delegate task-seed failures (`agent/subagents.go`). A warning with no display surface
   is treated as a bug.

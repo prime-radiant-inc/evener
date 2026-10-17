@@ -1,9 +1,7 @@
 // Package hubapi's attention.go is the single shared source of truth for
 // attention-state ranking and display words, imported by both the hub
-// (cmd/evener-hub/internal/hubcore, which cannot be imported directly by the
-// TUI because it is an `internal` package scoped to cmd/evener-hub) and the
-// TUI (cmd/evener-tui). Previously AttentionRank and rollupRank were
-// duplicated in hubcore, and the TUI carried a third copy
+// (cmd/evener-hub/internal/hubcore) and its clients. Previously AttentionRank
+// and rollupRank were duplicated in hubcore, and a client carried a third copy
 // (attentionRankLabel) — this file is the one place that ordering logic
 // lives now.
 package hubapi
@@ -70,7 +68,7 @@ func NeedsResponse(state string, askPending bool) bool {
 }
 
 // StateWord returns the display word for a normalized attention state, used by
-// the TUI (displayWord). askPending selects the word for awaiting:
+// clients. askPending selects the word for awaiting:
 // "Question waiting" for a pending question, "Needs you" for a turn that
 // ended on needs_response (#4093). It is ignored for every other state.
 func StateWord(state string, askPending bool) string {

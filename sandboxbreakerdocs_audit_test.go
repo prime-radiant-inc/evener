@@ -65,6 +65,33 @@ func TestArchitectureBreakerDescribesBothLedgerKeys(t *testing.T) {
 	}
 }
 
+// TestArchitectureClientControlPathIsAppWire pins the surviving half of the
+// retired TUI control-path audit: docs/architecture.md's application-commands
+// section must name AppWire — not hubapi/HTTP — as an interactive client's
+// control path, and the doc must still document hubapi. The TUI row it once
+// guarded is gone; the claim moved to the browser row rather than disappearing,
+// so the guard follows it. The oracle is the production construction: the
+// browser dials the hub's /rpc socket through appwire.Client, and hubapi is the
+// hub's health/projection surface, not the interactive control path.
+func TestArchitectureClientControlPathIsAppWire(t *testing.T) {
+	t.Parallel()
+	const heading = "## Application commands and process boundaries"
+	section := safeAuditMarkdownSection(t, "docs/architecture.md", heading)
+	if !strings.Contains(section, "AppWire") {
+		t.Errorf("docs/architecture.md %q no longer names AppWire as the interactive client's control path:\n%s", heading, section)
+	}
+	if strings.Contains(section, "hubapi (HTTP)") {
+		t.Errorf("docs/architecture.md %q names hubapi (HTTP) as a client control path; the interactive client dials the hub's /rpc socket through appwire.Client:\n%s", heading, section)
+	}
+	whole, err := os.ReadFile("docs/architecture.md")
+	if err != nil {
+		t.Fatalf("read docs/architecture.md: %v", err)
+	}
+	if !strings.Contains(string(whole), "hubapi") {
+		t.Errorf("docs/architecture.md stops documenting hubapi at all; the hub's health/projection surface still exists")
+	}
+}
+
 // safeAuditPackageDoc returns the package doc comment at the top of a Go file:
 // the leading run of // lines up to the package clause. It fails the test when
 // the file cannot be read so a moved path is not read as an empty doc.

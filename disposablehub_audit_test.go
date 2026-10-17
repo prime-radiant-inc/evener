@@ -111,7 +111,7 @@ func markdownFencedBlocks(t *testing.T, path string) [][]string {
 
 // hostileAmbient is the ambient environment the recipes must shed: the
 // state/config/cache roots, the state-dir and run-dir overrides, the hub
-// rendezvous settings (token, TUI auth token, address), and the provider and
+// rendezvous settings (token, address), and the provider and
 // credential config paths. The provider paths matter most — they outrank
 // $HOME/.config/evener, so leaving them set makes an "isolated" hub read the
 // operator's real providers and credentials.
@@ -128,7 +128,6 @@ func hostileAmbient(sentinel string) map[string]string {
 		"EVENER_STATE_DIR":          filepath.Join(sentinel, "state-dir"),
 		"EVENER_RUN_DIR":            filepath.Join(sentinel, "run-dir"),
 		"EVENER_HUB_TOKEN":          "real-hub-token",
-		"EVENER_HUB_AUTH_TOKEN":     "real-hub-auth-token",
 		"EVENER_HUB_ADDR":           "127.0.0.1:1",
 		"EVENER_HUB_SPAWNED":        "1",
 		"EVENER_PROVIDERS_CONFIG":   filepath.Join(sentinel, "providers.toml"),

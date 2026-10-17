@@ -556,8 +556,8 @@ func TestSystemPromptLoadedSources(t *testing.T) {
 
 // TestSystemPromptDiagramGuidanceClaimsNoRendering pins the #3455 fix: the
 // diagram guidance must not tell the model that the reader's app renders
-// mermaid, because some clients (cmd/evener-tui and one-shot `evener run`)
-// show the ```mermaid fence as its source. The guidance itself stays, because
+// mermaid, because some clients (the one-shot `evener run` CLI) show the
+// ```mermaid fence as its source. The guidance itself stays, because
 // the web hub and native app do render it.
 func TestSystemPromptDiagramGuidanceClaimsNoRendering(t *testing.T) {
 	t.Parallel()

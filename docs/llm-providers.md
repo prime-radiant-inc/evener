@@ -597,8 +597,7 @@ tracked as
 else → `{loc}-aiplatform.googleapis.com`. `auth = gcp-adc`: application-default
 credentials on the host, or a **credential JSON stored under the instance
 name** (a service-account key or an `application_default_credentials.json`,
-pasted in the hub's instance sheet, pasted into the TUI's credentials panel
-with Enter on the instance or read from a file with `f` there, or written
+pasted in the hub's instance sheet, or written
 into `credentials.toml`; other credential types, such as `external_account`,
 are refused), which outranks the ADC file. Requests authenticated with user credentials — an
 `authorized_user` ADC file or a stored `authorized_user` JSON — carry
@@ -845,7 +844,7 @@ pre-dispatch `max_output_tokens` budget error.
 
 **Setting it.** Launch: `--reasoning-effort`, `EVENER_REASONING_EFFORT`,
 `reasoning_effort` in `launch.toml`, or the spawn-form effort chip
-(per-model levels). Runtime: the `/effort` command (TUI) or the web `⌘K`
+(per-model levels). Runtime: the web `⌘K`
 "Set reasoning effort" command → the `thread/reasoning-effort/set` appwire
 method → `Session.SetReasoningEffort`, validated and clamped against the
 *current* model's ladder before it's applied. A successful change broadcasts

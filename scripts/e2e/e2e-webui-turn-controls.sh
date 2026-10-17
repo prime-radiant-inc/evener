@@ -34,7 +34,7 @@
 #   scripts/e2e/e2e-webui-turn-controls.sh --stop RUN_DIR # kill a prior run, remove RUN_DIR
 #
 # OUTPUT: fakellm and the hub keep running in the background after this
-# script exits — that is the point, so a browser or the TUI has something to
+# script exits — that is the point, so a browser has something to
 # attach to. Nothing here needs, reads, or sets a real provider
 # credential.
 # END-USAGE (--help prints everything above this line)

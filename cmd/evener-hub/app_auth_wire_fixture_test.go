@@ -12,9 +12,9 @@ package hub
 //
 // This test is the corpus that closes that gap: every case drives the REAL
 // registered RPC handler over a hermetic registry, encodes the answer the way
-// the wire does, and pins it in testdata/authwire/responses.json. Both other
-// consumers decode that same file — cmd/evener-tui/hub_auth_wire_test.go and
-// the AppWire package's credentialLabels.test.ts — so no client can drift from
+// the wire does, and pins it in testdata/authwire/responses.json. The other
+// consumer decodes that same file — the AppWire package's credentialLabels.test.ts
+// — so no client can drift from
 // the hub's answers without this test failing first.
 //
 // Regenerate after an intentional wire change with:

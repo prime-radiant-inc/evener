@@ -3,9 +3,8 @@
 A coding agent run through a hub. The `evener hub` orchestrator serves the
 web UI — Evener's default interactive surface — where you start sessions,
 watch the agent read files, run commands, and edit code, and steer it with
-follow-up messages. The hub tracks many concurrent sessions at once, and
-`evener tui` gives the same hub a terminal dashboard. A non-interactive
-command line handles scripting and automation.
+follow-up messages. The hub tracks many concurrent sessions at once. A
+non-interactive command line handles scripting and automation.
 
 **New here? [docs/getting-started.md](docs/getting-started.md) walks from
 install to your first session.**
@@ -36,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/insta
 
 The installer verifies the release archive's SHA-256 checksum and installs
 `evener` under `~/.local/share/evener/bin`, symlinked into `~/.local/bin`. The
-binary includes the `hub`, `tui`, `doctor`, and `migrate` subcommands. Make sure
+binary includes the `hub`, `doctor`, and `migrate` subcommands. Make sure
 `~/.local/bin` is on your `PATH`.
 
 From a source checkout:
@@ -54,14 +53,14 @@ Upgrade the application and its subcommands with `evener upgrade`. The command
 follows the binary's install channel: release builds upgrade to the latest
 release, and snapshot builds upgrade to the latest
 successful `main` build. Pass `release`, `snapshot`, or a tag such as `v1.2.3`
-to switch tracks. The TUI and web UI expose the same mechanism through their
+to switch tracks. The web UI exposes the same mechanism through its
 `/upgrade` command.
 
 On first use, Evener creates:
 
 - `${XDG_STATE_HOME:-$HOME/.local/state}/evener/run` for live daemon rendezvous
   files and per-daemon logs.
-- `${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth-token` for the local hub/TUI
+- `${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth-token` for the local hub
   bearer token.
 - `${XDG_STATE_HOME:-$HOME/.local/state}/evener/projects/<project-id>/` for saved
   per-project session state. The project ID is readable (derived from the
@@ -79,7 +78,7 @@ that plugin and become available through the plugin path. User-global slash
 commands are read automatically from
 `${XDG_CONFIG_HOME:-$HOME/.config}/evener/commands` when present.
 Install does not create provider credentials. Hosted/auth-required providers
-can be configured through the hub or TUI credentials UI, supported provider
+can be configured through the hub credentials UI, supported provider
 environment variables such as `OPENAI_API_KEY`, or OpenAI OAuth (which signs
 in to the separate `openai-codex` instance, not `openai`). Local/auth-none
 providers such as Ollama may not need credentials. The default credentials file
@@ -132,7 +131,7 @@ From a source checkout, run `make build-hub`, then `./evener` (default
 - **Workspace pane** with a two-tier conversation: messages (user pills + assistant body) at the primary reading tier, tool calls and diffs as muted margin annotations.
 - **New session** at `/new` — prompt-first, pick model and working dir, click Start.
 - **Fork from here**: every message you sent carries a fork button. Click it to branch the session at that point; the original message lands in the composer for you to edit, and the original line is preserved as a sibling fork.
-- **Aside**: `/aside` (TUI) or the *Aside: fork to side thread* palette command (web UI) forks the current session at its tip into a side thread with the same permissions and config — for asking a distracting question without derailing the main session.
+- **Aside**: the *Aside: fork to side thread* palette command (web UI) forks the current session at its tip into a side thread with the same permissions and config — for asking a distracting question without derailing the main session.
 - **Transparent resume**: click any closed session, type, send. The daemon spawns from where it left off — same identity throughout.
 - **⌘K search** (Ctrl+K on Linux) across live + past sessions.
 - **Settings** for theme (light/dark/system), notification preferences, and provider and MCP configuration.
@@ -146,65 +145,6 @@ credential, smoke-check, remote-operation, and deploy guidance, see
 [`docs/evener-hub-remote-operations.md`](docs/evener-hub-remote-operations.md).
 
 Design spec, plans, and notes live under `docs/superpowers/`.
-
-## Evener TUI (Terminal User Interface)
-
-`evener tui` is a hub-backed terminal dashboard for Evener sessions. It connects to `evener hub`, lists live and saved sessions, lets you drill into a transcript, and sends session actions through the hub API.
-
-### Build
-
-```bash
-make build
-```
-
-### Usage
-
-Start the dashboard from an installed `PATH` command:
-
-```bash
-evener tui
-```
-
-After `make build` in a source checkout, use `./evener` instead.
-
-By default `evener tui` connects to `http://127.0.0.1:9180`. If no local hub is
-running, it starts `evener hub` automatically and waits for an authenticated
-AppWire `/rpc` connection. When `--state-dir` is explicit, it also checks
-`/api/health` for state-environment compatibility.
-
-Connect to a specific hub:
-
-```bash
-evener tui --hub-addr http://127.0.0.1:9180
-```
-
-Use a specific hub binary or disable auto-start:
-
-```bash
-evener tui --hub-bin /path/to/evener-hub
-evener tui --no-auto-start-hub
-```
-
-### Flags
-
-| Flag | Description |
-|---|---|
-| `--hub-addr <url>` | Hub URL or host:port (default: `127.0.0.1:9180`) |
-| `--hub-bin <path>` | Hub binary to auto-start when the local hub is down |
-| `--no-auto-start-hub` | Fail instead of starting a missing local hub |
-| `--auth-token <token>` | Hub capability token (overrides the token file and env var) |
-| `--state-dir <path>` | Override the Evener state directory |
-| `--log-file <path>` | Write auto-started hub logs to this file |
-| `--debug` | Disable the alternate screen |
-
-### Features
-
-- **Dashboard**: Browse live and saved sessions from the hub roster and past-session index
-- **Session drill-in**: Open a session transcript from the dashboard
-- **Hub actions**: Send input, view tasks/details, interrupt, compact, clear, and switch models through hub endpoints
-- **Streaming**: Follow session AppWire streams through the hub
-- **Markdown rendering**: Format-aware display of assistant messages
-- **Tool inspection**: Collapse/expand tool calls and view arguments
 
 ## Non-interactive CLI
 

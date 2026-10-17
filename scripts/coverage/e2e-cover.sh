@@ -16,7 +16,6 @@
 # USAGE:
 #   scripts/coverage/e2e-cover.sh                 # CLI battery, print cmd/* coverage
 #   scripts/coverage/e2e-cover.sh --merge-unit    # also run unit tests, print COMBINED %
-#   scripts/coverage/e2e-cover.sh --tui           # also run the tmux TUI battery (slow)
 #   scripts/coverage/e2e-cover.sh --html OUT.html # write an HTML coverage report
 #   EVENER_E2E_LIVE=1 scripts/coverage/e2e-cover.sh # additionally run live provider scripts
 #
@@ -32,14 +31,12 @@ repo_root="$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" \
 cd "$repo_root"
 
 merge_unit=false
-run_tui=false
 html_out=""
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--merge-unit) merge_unit=true; shift ;;
-		--tui) run_tui=true; shift ;;
 		--html) html_out="$2"; shift 2 ;;
-		-h|--help) sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "unknown flag: $1" >&2; exit 2 ;;
 	esac
 done
@@ -74,10 +71,6 @@ run "$evener" openai status
 run "$evener" openai bogus-subcommand
 run "$evener" --bogus-flag
 run "$evener" totally-unknown-command
-# evener tui: help + error path.
-run "$evener" tui --help
-run "$evener" tui -h
-run "$evener" tui --bogus
 
 # Web-hub battery: start the real hub HTTP server (instrumented) on a loopback
 # port, drive its routes with curl, then stop it. Captures the web handler /
@@ -134,21 +127,6 @@ if [ "${EVENER_E2E_LIVE:-0}" = "1" ]; then
 		[ -f "$s" ] || continue
 		echo "    $s"; bash "$s" >/dev/null 2>&1 || true
 	done
-fi
-
-# TUI battery: drive the real terminal UI in tmux (slow; needs tmux). The
-# tmux e2e tests build the evener binary's TUI subcommand with -cover and launch
-# it with GOCOVERDIR set to our covdir when EVENER_E2E_COVER is exported, so the
-# TUI subprocess's paint / interaction coverage — which units give 0% for —
-# merges into this run.
-if $run_tui; then
-	if command -v tmux >/dev/null 2>&1; then
-		echo "==> driving the TUI tmux battery under coverage (slow)"
-		EVENER_E2E_COVER="$covdir" go test -run 'TmuxE2E' -count=1 -timeout 20m ./cmd/evener-tui/ >"$workdir/tui.log" 2>&1 \
-			|| echo "    (some tmux tests failed; coverage still collected — see $workdir/tui.log)"
-	else
-		echo "==> --tui requested but tmux not installed; skipping"
-	fi
 fi
 
 e2e_prof="$workdir/e2e.prof"
