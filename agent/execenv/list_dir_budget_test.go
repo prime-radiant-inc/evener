@@ -763,8 +763,8 @@ func writeListDirBadName(t *testing.T, root string) {
 		// ("illegal byte sequence"), at os.Mkdir and raw mkdir(2) alike. The
 		// fixture cannot exist there, so the walk under test never runs; the
 		// scenario is a Linux-host one (CI runs there). Skip rather than fail on
-		// a host limitation — the same guard glob_budget_test.go uses for a
-		// name the platform refuses.
+		// a host limitation — glob_budget_test.go skips the same way when the
+		// platform will not create the name a fixture needs.
 		t.Skipf("the filesystem refuses a non-UTF-8 name, so the fixture cannot exist: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(bad, "leaf.txt"), []byte("x"), 0o644); err != nil {
