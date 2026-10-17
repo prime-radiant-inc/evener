@@ -21,6 +21,7 @@ import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../.
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "../../../stores/activityPanel";
 import {
+  type BrowserDraftKey,
   browserDraftKey,
   createBrowserDraftRepository,
   getBrowserDraftRepository,
@@ -372,6 +373,98 @@ async function mountComposer(
 ): Promise<FakeClient> {
   return (await mountComposerWithHandle(ref, overrides, options)).fake;
 }
+
+// A durable draft hydrates asynchronously on remount, so an EMPTY editor
+// during that window must read as "restoring", not as a fresh conversation:
+// otherwise a user returning to a conversation sees their staged draft look
+// gone until IndexedDB answers (issue #4652). The state is observable on the
+// editor's data-draft-state; the placeholder copy is selected from it, so the
+// test never pins the prose.
+async function mountHydrationWindow(ref: string, databaseName: string) {
+  const factory = new IDBFactory();
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  const outbox = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+  const key = browserDraftKey(ref);
+  // Hold the durable load so the hydration window stays open while we sample.
+  let releaseLoad: (() => void) | undefined;
+  const loadGate = new Promise<void>((resolve) => {
+    releaseLoad = resolve;
+  });
+  const gatedRepository = new Proxy(repository, {
+    get(target, prop) {
+      if (prop === "load") {
+        return async (loadedKey: BrowserDraftKey) => {
+          await loadGate;
+          return target.load(loadedKey);
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse(ref));
+  await threadsStore.getState().ensureThread(ref);
+  const source = composerSources.createComposerSourceState(ref, {
+    repository: gatedRepository,
+    key,
+    outbox,
+  });
+  sourceWork.add(source);
+  const view = render(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref={ref} source={source} focused={false} />
+    </ClientProvider>,
+  );
+  await settleActivityDiscovery(ref);
+  await flushPendingTurnsProjectionForTests();
+  return {
+    key,
+    repository,
+    editor: screen.getByRole("textbox", { name: /^message$/i }),
+    releaseLoad: () => releaseLoad?.(),
+    source,
+    view,
+  };
+}
+
+test("a remount reads as restoring until the durable draft hydrates, then shows the staged draft", async () => {
+  const ref = "remount-hydration-staged";
+  const staged = "a draft staged before the remount";
+  const window = await mountHydrationWindow(ref, "composer-remount-hydration-staged");
+  await window.repository.seedDraft(window.key, { text: staged, skillNames: [] });
+  try {
+    // The load has not settled: the empty editor is restoring, not a fresh one.
+    expect(window.editor.dataset.draftState).toBe("restoring");
+    expect(window.editor.textContent).toBe("");
+
+    await act(async () => {
+      window.releaseLoad();
+    });
+    await waitFor(() => expect(window.editor.dataset.draftState).toBe("staged"));
+    expect(window.editor.textContent).toContain(staged);
+  } finally {
+    window.releaseLoad();
+    window.view.unmount();
+  }
+});
+
+test("a remount with no durable draft reads as fresh once hydration settles", async () => {
+  const ref = "remount-hydration-fresh";
+  const window = await mountHydrationWindow(ref, "composer-remount-hydration-fresh");
+  try {
+    expect(window.editor.dataset.draftState).toBe("restoring");
+    await act(async () => {
+      window.releaseLoad();
+    });
+    await waitFor(() => expect(window.editor.dataset.draftState).toBe("fresh"));
+    expect(window.editor.textContent).toBe("");
+  } finally {
+    window.releaseLoad();
+    window.view.unmount();
+  }
+});
 
 test("the dev composer surface commits its durable fixture before constructing the drafted source", async () => {
   const ref = "dev-surface-composer-drafted";

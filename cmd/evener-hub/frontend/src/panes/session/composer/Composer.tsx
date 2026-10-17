@@ -241,6 +241,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     activeRecoveryId,
     freshRecoveryRef,
     submittedAttachmentRetirementPending,
+    hydrating,
   } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const {
@@ -805,6 +806,13 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   }
   const availability = availabilityFor(model, hasPendingSend, recoveryRequired, resumeOnlySignals);
   const hasText = text.trim() !== "";
+  // The durable draft hydrates asynchronously, so a remounted composer cannot
+  // know at first paint whether a staged row is about to arrive. Until that
+  // load settles an EMPTY editor is "restoring", not a fresh one; a non-empty
+  // draft is "staged" regardless of the hydration state, so a synchronous read
+  // and a user edit during the window both read as staged. The placeholder and
+  // the editor's data-draft-state are selected from this, never from the copy.
+  const draftState: "restoring" | "fresh" | "staged" = hasText ? "staged" : hydrating ? "restoring" : "fresh";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0 || selectionMeta.commandNames.length > 0;
   const showStop = controls.stop;
@@ -1774,7 +1782,14 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                     aria-activedescendant={slashActiveId ?? undefined}
                     minLines={ended ? (followUpEngaged ? 3 : 1) : undefined}
                     onBlur={handleEditorBlur}
-                    placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
+                    draftState={draftState}
+                    placeholder={
+                      draftState === "restoring"
+                        ? "Restoring your draft…"
+                        : ended
+                          ? "Send a follow-up…"
+                          : "Message the agent…"
+                    }
                     aria-label="Message"
                   />
                 }
