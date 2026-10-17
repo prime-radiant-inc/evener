@@ -917,8 +917,9 @@ export interface EvenerThread {
   /**
    * FailedToolCalls is how many of this session's tool calls failed — the
    * session-scale count of exactly what the transcript marks with a failure
-   * glyph (a tool result carrying an error, or a shell command that ran and
-   * exited nonzero). It answers "did anything go wrong in here" without
+   * glyph — a tool result carrying an error. A shell command that ran and
+   * exited nonzero is NOT counted: it shows as a small inline mark, not a
+   * failure (Jesse, 2026-10-16). It answers "did anything go wrong in here" without
    * reading the transcript, which a client cannot answer for itself: a
    * windowed thread/read hands it a fraction of the session, and a count over
    * that fraction would report a comforting "0 failed" for a session full of

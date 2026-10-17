@@ -495,6 +495,10 @@ describe("a tool step", () => {
 		);
 		const marks = tree.root.findAllByType("SymbolView" as never).filter((mark) => mark.props.name === "xmark");
 		expect(marks.map((mark) => [mark.props.name, mark.props.tintColor])).toEqual([["xmark", ATTENTION_INK]]);
+		// The mark is decorative, so the compact row's accessible name must
+		// carry the exit code itself - otherwise VoiceOver never hears it.
+		const labelled = tree.root.findAll((node) => String(node.props.accessibilityLabel ?? "").endsWith("exit 3"));
+		expect(labelled.length).toBeGreaterThan(0);
 	});
 });
 

@@ -43,6 +43,11 @@ import { Button } from "./sheet/Grouped";
 // line share one row, centered. Module-level so it is not re-allocated on every
 // render (the same reason RunRow keeps its own `lineStyle` in one place).
 const exitRowStyle = { flexDirection: "row", alignItems: "center", gap: 6 } as const;
+// The line beside the mark wraps in the space left for it. React Native
+// defaults a row child's flexShrink to 0, so without this a long command (or a
+// large text scale) overflows the viewport and pushes the mark offscreen. Same
+// constraint RunRow puts on its own step text.
+const exitTextStyle = { flex: 1, minWidth: 0 } as const;
 
 export function TimelineItem({
 	item,
@@ -286,7 +291,14 @@ export function TimelineItem({
 				const intentExitOnly = isExitOnly(exitSignals);
 				content = intentExitOnly ? (
 					<View style={exitRowStyle}>
-						<Copy muted>{activityPresentation.summary}</Copy>
+						<View style={exitTextStyle}>
+							{/* The mark is decorative, so the code it stands for has to be
+							named here or VoiceOver never hears it (the full step line
+							names it in its own label). */}
+							<Copy muted label={`${activityPresentation.summary}, exit ${item.detail.exitCode}`}>
+								{activityPresentation.summary}
+							</Copy>
+						</View>
 						<ExitMark />
 					</View>
 				) : (
@@ -301,20 +313,29 @@ export function TimelineItem({
 			// (the shared classifier no longer reads the exit), but the exit stays
 			// visible as a small x in attention ink, and the line says the code.
 			const exitOnly = isExitOnly(exitSignals);
+			const stepLine = (
+				<Button
+					text
+					quiet
+					label={`${expanded ? "▾" : "▸"} ${stepName} · ${exitOnly ? `exit ${item.detail.exitCode}` : item.state}`}
+					accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${stepName}${exitOnly ? `, exit ${item.detail.exitCode}` : ""}`}
+					expanded={expanded}
+					onPress={toggle}
+				/>
+			);
 			content = (
 				<>
 					{activityPresentation?.summary ? <Copy muted>{activityPresentation.summary}</Copy> : null}
-					<View style={exitRowStyle}>
-						<Button
-							text
-							quiet
-							label={`${expanded ? "▾" : "▸"} ${stepName} · ${exitOnly ? `exit ${item.detail.exitCode}` : item.state}`}
-							accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${stepName}${exitOnly ? `, exit ${item.detail.exitCode}` : ""}`}
-							expanded={expanded}
-							onPress={toggle}
-						/>
-						{exitOnly ? <ExitMark /> : null}
-					</View>
+					{/* Only an exit-only row needs the row wrapper: it is what seats the
+					mark beside the line. A clean row keeps its line alone. */}
+					{exitOnly ? (
+						<View style={exitRowStyle}>
+							<View style={exitTextStyle}>{stepLine}</View>
+							<ExitMark />
+						</View>
+					) : (
+						stepLine
+					)}
 					{expanded ? (
 						<>
 							{item.detail.arguments ? (
