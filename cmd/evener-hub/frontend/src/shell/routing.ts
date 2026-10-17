@@ -416,7 +416,7 @@ function withSettingsHost(target: string): string {
 // deliberately choosing a URL without it.
 export function navigate(pathname: string, options: { replace?: boolean; carrySettingsHost?: boolean } = {}): void {
   const target = options.carrySettingsHost === false ? pathname : withSettingsHost(pathname);
-  if ((contextOverride ?? currentURL()) === target && contextOverride === null) return;
+  if (contextOverride === null && currentURL() === target) return;
   requestNavigation(() => commitNavigation(target, options.replace));
 }
 

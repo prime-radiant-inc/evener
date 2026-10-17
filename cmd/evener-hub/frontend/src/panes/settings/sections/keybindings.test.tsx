@@ -12,7 +12,7 @@ import {
   serializeChord,
   WireError,
 } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { parseKeybinding } from "tinykeys";
@@ -497,21 +497,14 @@ test("same-client reconnect retains a proposal but waits for the current canonic
   expect(captureBox()).toBe(box);
   fireEvent.keyDown(box, { key: "Enter" });
   expect(patchCallsOf(client)).toHaveLength(0);
-  let resolveRead: ((value: KeybindingsOverrides) => void) | undefined;
-  client.on(
-    "evener/settings/keybindings/get",
-    () =>
-      new Promise((resolve) => {
-        resolveRead = resolve;
-      }),
-  );
+  const reads = gateSettlements(client, "evener/settings/keybindings/get");
   const initialize = await client.connect();
   act(() => client.emitReady({ ...initialize, features: { ...initialize.features, keybindingsSettings: true } }));
-  await waitFor(() => expect(resolveRead).toBeDefined());
+  await waitFor(() => expect(reads).toHaveLength(1));
   fireEvent.keyDown(box, { key: "Enter" });
   expect(patchCallsOf(client)).toHaveLength(0);
   await act(async () => {
-    resolveRead?.(overridesPayload(8, []));
+    reads[0]?.resolve(overridesPayload(8, []));
   });
   expect(captureBox()).toBe(box);
   expect(patchCallsOf(client)).toHaveLength(0);
@@ -527,19 +520,12 @@ test("same-client reconnect retains a proposal but waits for the current canonic
 
 test("replacing the connection discards a proposal and fences the old save from a new capture", async () => {
   const oldClient = await wireEditableClient();
-  let resolveSave: ((value: KeybindingsOverrides) => void) | undefined;
-  oldClient.on(
-    "evener/settings/keybindings/patch",
-    () =>
-      new Promise((resolve) => {
-        resolveSave = resolve;
-      }),
-  );
+  const saves = gateSettlements(oldClient, "evener/settings/keybindings/patch");
   renderEditor();
   const oldBox = await enterCapture("Open the command palette");
   fireEvent.keyDown(oldBox, { key: "y", ctrlKey: true });
   fireEvent.keyDown(oldBox, { key: "Enter" });
-  await waitFor(() => expect(resolveSave).toBeDefined());
+  await waitFor(() => expect(saves).toHaveLength(1));
   const replacement = new FakeClient("ready");
   replacement.on("evener/settings/keybindings/get", () => overridesPayload(1, []));
   await act(() => wireClient(replacement, true));
@@ -547,7 +533,7 @@ test("replacing the connection discards a proposal and fences the old save from 
   const newBox = await enterCapture("Open the command palette");
   expect(captureState(newBox)).toBe("idle");
   await act(async () => {
-    resolveSave?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]));
+    saves[0]?.resolve(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]));
   });
   expect(captureBox()).toBe(newBox);
   expect(captureState(newBox)).toBe("idle");
