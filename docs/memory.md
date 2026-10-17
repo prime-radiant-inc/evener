@@ -2,6 +2,8 @@
 
 Memory lets Evener carry useful preferences and project decisions into later sessions. It is selected knowledge, not a transcript of everything you said, and it is not authority to act against your current request.
 
+Evener stores each topic in a file called a **memory page**. It generates an **index**, a list of page paths and short descriptions, to help the agent find relevant topics.
+
 Use memory for context that a later session needs but cannot reliably infer from the code. Keep task status in the conversation or task list, and keep credentials out of both.
 
 ## Choose the right scope
@@ -43,7 +45,7 @@ The importer now reads headers by name. Update the project memory to
 remove the old column-order constraint and record the new reason.
 ```
 
-Evener supplies bounded personal and project indexes to the model. Topic pages are read when needed; every page is not loaded into every request. The `MEMORY.md` index is generated from page metadata. Editing a generated index is not how you update a topic's source content.
+Evener supplies bounded personal and project indexes to the model. Topic pages are read when needed; every page is not loaded into every request. The `MEMORY.md` index is generated from each page's metadata: fields in its header that describe the topic. Editing a generated index is not how you update a topic's source content.
 
 The transcript may show **Refreshed my memory** when the session receives updated index information. That row records an observation; it does not mean the agent reread every topic page or verified every claim. Current evidence should override an obsolete note.
 
@@ -60,7 +62,7 @@ Removing a memory page prevents future reads of that stored page. It does not re
 
 ## Where memory lives
 
-The default state root is `${XDG_STATE_HOME:-$HOME/.local/state}/evener`. Under that root:
+The default state root is `${XDG_STATE_HOME:-$HOME/.local/state}/evener`. `XDG_STATE_HOME` is an optional environment variable that selects where applications store persistent state; when unset, Evener uses `~/.local/state/evener`. Under that root:
 
 ```text
 memory/                         personal pages

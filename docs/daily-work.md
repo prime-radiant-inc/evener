@@ -32,7 +32,7 @@ For an unfamiliar codebase, start with a question or request a plan before autho
 
 Use the conversation to see the current result and expand tool calls when you need evidence. A tool call can contain a command, a file edit, or a read; the label alone does not tell you whether a test passed. Read the exit status and output of important checks.
 
-Open the session's **Overview** from its action menu to inspect **Agents**, **Jobs**, **Watches**, and **Tasks**. The session remains the place to send instructions. A task list is the agent's plan, not proof that the listed work succeeded.
+Open the session's **Overview** from its **Session actions** menu to inspect **Agents**, **Jobs**, **Watches**, and **Tasks**. The session remains the place to send instructions. A task list is the agent's plan, not proof that the listed work succeeded.
 
 For several sessions, use the sidebar to return to the one that needs attention. Give parallel sessions distinct goals and avoid asking two agents to edit the same files in a shared checkout.
 
@@ -43,10 +43,14 @@ Choose the action that matches your intent:
 | Action | Use it when… | What to remember |
 | --- | --- | --- |
 | **Send** | You have another request for the session | While it is busy, ordinary input queues for later rather than serving as an immediate correction |
-| **Steer** | New information should change the work already underway | Delivery happens through the running session, not as an undo operation |
+| **Steer** | New information should change the work already underway | The running agent receives your correction, but actions already completed remain |
 | **Stop** | You want the current work interrupted | Completed edits and external side effects remain |
 
 Busy sessions expose Stop and, when supported, Steer. Narrow layouts may put actions in the session menu rather than beside the composer. Read the pending-message or queue state before resending text, especially after a connection loss.
+
+The submit button still says **Send** while the agent is busy; it does not become a separate Queue button. Messages waiting for a later turn appear in **Queued messages** beside the composer. A **Sending** or **Retrying** indicator means delivery is still in progress, not that the agent has already acted on the message.
+
+For a queued message, use **Remove from queue** to withdraw it before it runs, **Edit message** to bring it back for revision, or **Steer now** to send it into the current work. These controls appear only when the session supports them and may be disabled during recovery. Confirm that removal succeeded; an error means you must not assume the request was withdrawn. Removing a queued message cannot undo work the agent has already started. If a row says **Delivery uncertain**, let the session recover before submitting a duplicate.
 
 A useful steering message is specific:
 
@@ -60,7 +64,7 @@ Steering cannot retract a command that already ran. If the agent is about to tak
 
 ## Return after a break
 
-Reopen the session from the sidebar or session search. If it has stopped, sending a new message uses the resume path. Read the last result first, then tell the agent what has changed outside the conversation.
+Reopen the session from the sidebar or session search. If it has stopped, sending a new message resumes it. Read the last result first, then tell the agent what has changed outside the conversation.
 
 ```text
 Continue from the last result. I changed the fixture in the meantime.
@@ -73,7 +77,7 @@ After a disconnection, wait for the interface to reconcile pending input before 
 
 ## Fork to try another direction
 
-Use **Fork from here** on a user message to branch the conversation at that point and revise the request. The original line of work remains available. The **Aside: fork to side thread** palette command offers a separate thread for a tangent.
+Use **Fork from here** on a user message to branch the conversation at that point and revise the request. The original line of work remains available. Open the command palette with Cmd+K on macOS or Ctrl+K on Linux. Its **Aside: fork to side thread** command offers a separate thread for a tangent.
 
 A conversation fork is not a Git rollback. Earlier edits may still be present on disk, and the new conversation must work with the filesystem it actually has. Ask it to inspect the current state rather than assuming the files match an older message. Use an explicit Git branch or worktree when you need separate code versions; see [concepts](concepts.md#workspaces-and-worktrees).
 
@@ -96,7 +100,11 @@ The main session should combine the findings and explain what was checked. A del
 
 In Overview, open the relevant agent conversation or job output when the summary leaves a gap. Ask the main session for exact paths, commands, and remaining work. If you want to stop a whole effort, say whether that includes child work and detached services; do not assume every kind of background process shares the same lifetime.
 
-Session-owned background shell jobs can outlive a model turn, but end when their owning session ends. Detached processes are different: they are intended to survive the session and need an explicit service lifecycle. Watches notify an agent about selected events or timers; they are not a promise that a sleeping or offline host keeps doing useful work. The [job-control reference](job-control.md) owns the exact rules.
+A **turn** is one stretch of agent work responding to input. A background shell job can keep running after the agent answers. Closing the browser does not shut down the session, and **Stop** interrupts the current turn rather than acting as a general shutdown command for all its jobs.
+
+When Evener shuts down the owning session, its cleanup stops the session-owned shell processes. That shutdown is different from the agent answering or waiting for your next message. Check **Jobs** to see which commands are still running and ask the agent to stop a particular job when that is your intent.
+
+A **detached process** is deliberately started outside that cleanup so it can survive the session. For a detached server, agree on how to find and stop it before asking the agent to leave it running. Watches notify an agent about selected events or timers; they do not make an offline host keep working. See [job-control vocabulary](job-control.md#vocabulary) and [shutdown and restart behavior](job-control.md#restart-behavior) for the exact rules.
 
 ## Review before accepting
 
@@ -108,7 +116,7 @@ git diff --stat
 git diff
 ```
 
-If work happened in an isolated worktree, review that worktree or the resulting commit—not just your original checkout. Ask where the deliverable lives if the final report does not say.
+If work happened in an isolated worktree, review that worktree or the resulting commit, not just your original checkout. Ask where the deliverable lives if the final report does not say.
 
 Then run the project's relevant checks yourself. Confirm that the tests still assert the intended behavior and that the agent did not replace a failing check with a weaker one. Check for unrelated edits, generated files, credentials, and changes outside the requested scope.
 

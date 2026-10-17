@@ -1,8 +1,10 @@
 # Get started
 
-Finish your first Evener task by repairing a tiny Python program and checking the result yourself. You will install Evener, connect a model provider, and work in a disposable Git repository—not in your real project.
+Finish your first Evener task by repairing a tiny Python program and checking the result yourself. You will install Evener, connect a model provider, and work in a disposable Git repository rather than in your real project.
 
 Evener runs the agent on your computer or another configured host. The browser is its control surface. A **hub** serves that interface and connects it to sessions; a **session** holds one conversation and its work.
+
+A **model provider** supplies the AI model that reads your request and proposes actions. Evener carries out those actions through **tools**, such as file readers and shell commands. A model with tool-call support can request those tools, rather than only return text.
 
 ## Before you begin
 
@@ -14,7 +16,7 @@ You need:
 - A browser and network access to GitHub and your chosen model provider.
 - An API key from a supported provider, or another supported authentication method. Hosted model use may incur charges.
 
-If you want to keep inference local, configure [Ollama](ollama.md) instead of the hosted-provider step below. Complete its setup and choose a model that supports tool calls before starting the session. A local server does not need a hosted-provider key, but it does need a downloaded model and enough machine resources to run it.
+If you want to run the model locally, configure [Ollama](ollama.md) instead of the hosted-provider step below. Complete its setup and choose a model that supports tool calls before starting the session. A local server does not need a hosted-provider key, but it does need a downloaded model and enough machine resources to run it.
 
 Evener can edit files and run commands. This tutorial isolates the files you give it, but a disposable directory is **not a security sandbox**. Read [sandboxing](sandboxing.md) before working with untrusted code.
 
@@ -28,7 +30,7 @@ less evener-install.sh
 EVENER_INSTALL_VERSION=snapshot sh evener-install.sh
 ```
 
-Use a directory where `evener-install.sh` does not already exist. Inspect the downloaded script before running it: it installs executable code. The installer verifies the archive's SHA-256 checksum, puts binaries under `~/.local/share/evener/bin`, and links commands into `~/.local/bin` by default.
+Use a directory where `evener-install.sh` does not already exist. Inspect the downloaded script before running it: it installs executable code. The installer verifies the archive's SHA-256 checksum, installs the `evener` executable under `~/.local/share/evener/bin`, and links it into `~/.local/bin` by default. Commands such as `evener hub` are subcommands of that executable.
 
 Check that your shell can find Evener:
 
@@ -69,13 +71,13 @@ Leave the hub running. Closing a browser tab is not a stop command for the agent
 
 ## Connect a provider before starting work
 
-In the authenticated browser, open **Settings → Credentials**, at `/settings/credentials` on your hub. For a straightforward hosted setup:
+In the authenticated browser, open **Settings → Providers & credentials**, at `/settings/credentials` on your hub. For a straightforward hosted setup:
 
 1. Obtain an API key from your provider's account dashboard. An ordinary chat subscription is not necessarily an API account.
-2. Select the matching provider instance, such as `openai` or `anthropic`, and save the key in Credentials.
+2. Select the matching configured provider entry, such as `openai` or `anthropic`, and save the key in **Providers & credentials**.
 3. Open **New session** at `/new` and choose an available model from that provider. Do not submit a task yet.
 
-For a supported ChatGPT/Codex subscription, the Credentials page also offers OAuth sign-in for `openai-codex`. That is a separate provider instance from `openai`; saving an OpenAI API key is not the same action.
+For a supported ChatGPT/Codex subscription, the **Providers & credentials** page also offers OAuth sign-in for `openai-codex`. That is a separate configured provider entry from `openai`; saving an OpenAI API key is not the same action.
 
 The default credential file is `~/.config/evener/credentials.toml` (under `XDG_CONFIG_HOME` when set). Evener writes it with owner-only permissions. Do not put keys in your project or prompt. Custom paths, environment-variable fallbacks, and provider-specific rules are covered in [configuration](configuration.md).
 
@@ -101,7 +103,17 @@ pwd
 python3 check.py
 ```
 
-Copy the absolute path printed by `pwd`; you will use it as the session's working directory. The final command **should fail**, with `FAIL: quantity: expected 750, got 250` and a nonzero exit status. That failure establishes the bug before the agent changes anything. If Python cannot run, fix that prerequisite first. If the check already passes, use a fresh copy of the fixture.
+The `git -c` options set a throwaway author identity for this one commit; they do not change your global Git settings.
+
+Copy the absolute path printed by `pwd`; you will use it as the session's working directory. The final command **should fail**, exiting 1 with these three lines:
+
+```text
+FAIL: quantity: expected 750, got 250
+FAIL: mixed: expected 490, got 205
+FAIL: zero quantity: expected 100, got 1049
+```
+
+These failures establish the bug before the agent changes anything. If Python cannot run, fix that prerequisite first. If the check already passes, use a fresh copy of the fixture.
 
 The checker uses only Python's standard library. It makes no model request and needs no Evener credentials. Read `check.py`: its expected answers are fixed examples, not values calculated by the function under test.
 

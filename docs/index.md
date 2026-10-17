@@ -4,7 +4,7 @@ Put a coding task in Evener's hands without losing sight of what changed or how 
 
 **New here? [Get started](getting-started.md)** takes you from installation and provider setup to a repaired program with an independent acceptance check. You need basic terminal and Git knowledge, not previous experience with coding agents.
 
-This documentation follows **main**, not a fixed release. Use a snapshot for the closest match. The [installation guide](getting-started.md#install-evener) explains the release alternative.
+This documentation follows **main**, not a fixed release. Use a snapshot, the latest successful build from main, for the closest match. The [installation guide](getting-started.md#install-evener) explains the release alternative.
 
 ## Start
 
@@ -20,7 +20,7 @@ This documentation follows **main**, not a fixed release. Use a snapshot for the
 ## Configure
 
 - [Configuration](configuration.md): providers, credentials, scope, and trust.
-- [Model providers](llm-providers.md) and [Ollama](ollama.md): choose hosted or local models.
+- [Model providers](llm-providers.md) and [Ollama for local models without a hosted-provider key](ollama.md): choose where to run your model.
 - [Sandboxing](sandboxing.md): understand file, process, and network boundaries.
 
 ## Extend

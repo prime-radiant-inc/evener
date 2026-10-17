@@ -15,7 +15,7 @@ flowchart LR
     Record --> Client
 ```
 
-The client sends your request to the hub. The session on the selected host calls the model and executes allowed tools, then records what happened. The client displays that history and live activity. The [noninteractive CLI](cli.md) also runs agent sessions without requiring you to compose requests in a browser.
+The client sends your request to the hub. The session on the selected host calls the model and executes allowed tools, then records what happened. The client displays that history and live activity. The [noninteractive CLI](cli.md) accepts a task from a shell command or script, runs the agent, and returns output without a browser conversation.
 
 A provider supplies model responses; it is not the machine executing your shell commands. With a hosted model, content sent for inference leaves the host. A local model changes that inference destination, not the permissions of the agent's tools.
 
@@ -25,7 +25,7 @@ A **session** is a conversation with an identity, working context, and retained 
 
 A **turn** is one stretch of agent work responding to input. It may include several model calls and many tool calls before the agent returns an answer or waits. “The agent answered” and “all background work finished” are not always the same event.
 
-The model has a limited context window. Evener can compact working context so a long session can continue. Compaction is not a filesystem rollback and is not the same as saving a memory page. Ask the agent to reread a source file when its current contents matter more than an earlier summary.
+The model can receive only a limited amount of text and other input at once. That limit is its **context window**. Evener can **compact** a long conversation, replacing older working context with a summary so the session can continue. Compaction is not a filesystem rollback and is not the same as saving a memory page. Ask the agent to reread a source file when its current contents matter more than an earlier summary.
 
 ## Delegates, jobs, and watches
 
@@ -46,7 +46,7 @@ The **working directory** is where the session resolves relative file paths and 
 
 A **Git worktree** is a separate checkout of the same repository. Evener can use isolated worktrees for delegated work. This helps separate edits, but it does not merge the result back into your branch automatically in every workflow. A final report should name the path, branch, or commit that contains the deliverable.
 
-A conversation **fork** branches the conversation. It does not by itself mean that files have been restored to the fork point. Keep conversation history and Git history distinct when comparing two approaches.
+A conversation **fork** creates a separate conversation from a selected point in the original history, so you can try a different request while keeping the original conversation. It does not by itself mean that files have been restored to the fork point. Keep conversation history and Git history distinct when comparing two approaches.
 
 ## What persists
 
@@ -62,7 +62,7 @@ Stopping work does not delete its history or undo its effects. Deleting a visibl
 
 ## Authority and trust
 
-The model proposes actions; the runtime controls which tools and resources the session may use. A repository's text, a retrieved webpage, and a saved memory note can contain misleading instructions. Treat them as input, not permission to change the task or disclose secrets.
+The model proposes actions; the software running the session, called the **runtime**, controls which tools and resources it may use. A repository's text, a retrieved webpage, and a saved memory note can contain misleading instructions. Treat them as input, not permission to change the task or disclose secrets.
 
 Review launch trust and access settings before starting work. Use [configuration](configuration.md) for scope and precedence, and [sandboxing](sandboxing.md) for enforcement boundaries. “Please do not edit” is a useful instruction, but it is not equivalent to a filesystem restriction.
 

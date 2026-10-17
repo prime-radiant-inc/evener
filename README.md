@@ -1,8 +1,8 @@
 # Evener
 
-Evener is a coding agent that works in your project: it reads files, runs commands, edits code, and checks the result. Use the browser to follow and steer its work, the CLI to run a task from a script, or the iPhone client to reach your hub away from your desk.
+Evener is a coding agent that works in your project: it reads files, runs commands, edits code, and checks the result. Use the browser to follow and steer its work, the CLI to run a task from a script, or the iPhone client to reach your hub away from your desk. The hub is the service that connects these interfaces to your sessions.
 
-**[Get started](docs/getting-started.md)** — install Evener, connect a model provider, and repair a small program with a check you can run yourself.
+**[Get started](docs/getting-started.md)** to install Evener, connect a model provider, and repair a small program with a check you can run yourself.
 
 These guides track **main**. The first-run guide uses the latest successful snapshot from main; tagged releases can lag the behavior described here.
 

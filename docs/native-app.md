@@ -24,15 +24,34 @@ Keep authentication enabled. Use HTTPS where transport encryption is needed, or 
 
 ## Pair the phone
 
-Keep the authenticated browser open on the computer:
+Keep the authenticated browser open on the computer. There are two pairing flows. The default QR code contains a reusable sign-in link. Choosing another hub address creates a short-lived invitation that requires browser approval instead.
 
-1. Open **Settings → Mobile app** in the browser and display a pairing code. Check the destination address before using it; it must be reachable from the phone.
-2. In the native app, choose **Scan pairing code**. Grant camera access and scan the browser's code.
-3. Follow the approval screen. For an invitation, compare the displayed comparison value on both devices and approve only the claim from your phone in the browser.
-4. Review the hub address and name on the phone, then choose **Connect**.
-5. Open a known session and confirm that its recent conversation appears. Send a harmless follow-up to verify control as well as reading.
+### Scan the default code
 
-The app also offers **Paste pairing link** and **Enter the address**. Manual entry needs the hub's HTTP(S) origin and bearer token, not a provider API key. Use those alternatives only with credentials obtained through a trusted path. Keep tokens out of screenshots, prompts, and source control. The app stores credentials in SecureStore.
+1. On the computer, open **Settings → Devices** in the browser. Check that the hub address is reachable from the phone.
+2. On the iPhone, choose **Scan pairing code**, grant camera access, and scan the browser's code.
+3. On the iPhone, review the hub address and name, then choose **Connect**. This direct-link flow has no separate approval step in the browser.
+
+Keep the code and **Copy pairing link** output private. They contain access to the hub and remain usable until its authentication token is rotated. On an untrusted network, use encrypted transport before displaying or transferring them.
+
+### Use another hub address
+
+If the browser offers **Use another Hub address** or **Enter Hub address**, use that control to supply an address the phone can reach. Review the connection choice and select **Create invitation** to display a QR invitation. This does not change the hub's listener or network configuration.
+
+1. Scan the invitation with **Scan pairing code** on the iPhone.
+2. The iPhone shows **Compare code** and waits. On the computer, the browser shows the device requesting access and its comparison code.
+3. Compare the full code on both screens. If they match, use that code's approval button in the computer's browser. If they differ, do not approve; cancel pairing on the phone and start again with a new invitation.
+4. After approval, review the hub address and name on the iPhone, then choose **Connect**.
+
+Invitations expire after ten minutes. If the phone reports expiry or that another device was approved, create a new invitation and scan it again. A device name alone is not proof that the request came from your phone.
+
+### Verify the connection or enter it manually
+
+Open a known session and confirm that its recent conversation appears. Send a harmless follow-up to verify control as well as reading.
+
+The app also offers **Paste pairing link** and **Enter the address**. Manual entry needs the hub's base address, such as `https://hub.example.invalid:9180` (a schematic example, not a working server). Include the `http://` or `https://` scheme and any required port, but no session path. This base address is also called the hub's **origin**.
+
+Manual entry also needs the hub's **bearer token**, a secret that grants access to the hub. It is not a provider API key. The hub operator can obtain it from the `auth-token` file in the hub state root, normally `~/.local/state/evener/auth-token`. Transfer it privately, and keep it out of screenshots, prompts, and source control. The app stores credentials in the phone's secure credential storage, SecureStore.
 
 Pairing grants access to the hub. It does not configure model credentials, make an unreachable address reachable, or start a stopped hub. The [device-pairing reference](device-pairing.md) defines invitation expiry, approval, and credential delivery for client authors.
 
@@ -54,10 +73,9 @@ Updating hub binaries does not update the phone app. Nor does a successful uploa
 
 If connection fails, check these in order:
 
-- Is the hub running, and can the computer's browser open it?
-- Is the phone on the intended network or VPN, and is the destination reachable?
-- Is the address a hub origin rather than a session URL or the phone's loopback address?
-- Has the invitation expired, or does the token need replacement?
-- Are the app and hub versions compatible?
+1. On the computer, open the hub in the browser. If it fails there too, inspect the terminal or service running `evener hub` before changing the phone's setup.
+2. On the phone, connect to the intended Wi-Fi or VPN. Compare the saved address with the reachable address shown in **Settings → Devices**. Remove any session path, and do not use `127.0.0.1` for another computer.
+3. If the phone reports that an invitation expired or another device was approved, create a new invitation. The default reusable pairing link has no ten-minute expiry; if the hub token was rotated, obtain a new link instead of repeatedly scanning the old one.
+4. If the app reports a protocol or version incompatibility, update through the app's distribution channel and the hub's supported update path. Run `evener --version` on the hub host and retain the app build identifier supplied by its distributor for a support report. Do not assume a connectivity error alone proves a version mismatch.
 
 Use [troubleshooting](troubleshooting.md) for server-side diagnosis. Report versions, the action, and the visible error, but redact tokens and pairing links.
