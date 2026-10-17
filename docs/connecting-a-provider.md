@@ -2,6 +2,8 @@
 
 Connect one provider on the host that will run your session. You need an installed, running hub and either a hosted account with suitable access or a reachable local model server. No existing API key is required for the [Ollama path](ollama.md).
 
+The [first-task walkthrough](getting-started.md#connect-a-provider-before-starting-work) uses Settings → Providers & credentials. The guided dialog below manages the same host's connections and credentials. If you already completed that step, use your existing connection; you do not need to add it again.
+
 ## Start your first session
 
 1. Open **New session**. Choose a working directory and, optionally, write your

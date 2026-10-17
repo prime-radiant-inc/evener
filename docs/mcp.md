@@ -10,7 +10,9 @@ tools after connecting. Connecting does not invoke a tool.
 This example uses the complete [echo server](examples/extensions/mcp-server/main.go).
 It returns its input without changing files or contacting a service. You need Go,
 an Evener source checkout, and an Evener installation with a working provider
-for the final agent invocation. Run on the session host, from the checkout root:
+for the final agent invocation. Get the checkout with the `git clone` command in
+[Prepare the example](getting-started.md#prepare-the-example). You will build only
+the example server, not Evener. Run on the session host, from the checkout root:
 
 ```bash
 example_dir=$(mktemp -d)

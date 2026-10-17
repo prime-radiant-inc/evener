@@ -13,7 +13,7 @@ Use launch settings to choose how a new session runs, provider settings to choos
 | Installed plugins and their default enablement | Extensions → Plugins | New sessions, existing sessions keep their resolved plugin set |
 | Shell environment | Shell or service supervisor that starts Evener | New process, not an already-running hub |
 
-For a single CLI invocation, use [CLI flags](cli.md). The layered `launch.toml` resolver described here belongs to hub launches; do not assume a direct CLI invocation reads those files.
+For a single CLI invocation, use [CLI flags](cli.md#one-shot-options). The layered `launch.toml` resolver described here belongs to hub launches; do not assume a direct CLI invocation reads those files.
 
 ## Locate the files
 

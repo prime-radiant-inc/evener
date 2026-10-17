@@ -22,7 +22,13 @@ Evener can edit files and run commands. This tutorial isolates the files you giv
 
 ## Install Evener
 
-These docs track **main**. Install the latest successful snapshot build for the closest match; it may still trail the newest source commit. Run this in your terminal:
+These docs track **main**. Install the latest successful snapshot build for the closest match; it may still trail the newest source commit. Start in a new directory so the download cannot overwrite an earlier installer. Run this in your terminal:
+
+```sh
+mkdir evener-install-review && cd evener-install-review
+```
+
+If that directory already exists, choose another unused name before continuing. Then download and inspect the installer:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh -o evener-install.sh
@@ -30,7 +36,7 @@ less evener-install.sh
 EVENER_INSTALL_VERSION=snapshot sh evener-install.sh
 ```
 
-Use a directory where `evener-install.sh` does not already exist. Inspect the downloaded script before running it: it installs executable code. The installer verifies the archive's SHA-256 checksum, installs the `evener` executable under `~/.local/share/evener/bin`, and links it into `~/.local/bin` by default. Commands such as `evener hub` are subcommands of that executable.
+Inspect the downloaded script before running it: it installs executable code. The installer verifies the archive's SHA-256 checksum, installs the `evener` executable under `~/.local/share/evener/bin`, and links it into `~/.local/bin` by default. Commands such as `evener hub` are subcommands of that executable.
 
 Check that your shell can find Evener:
 
@@ -70,6 +76,8 @@ The URL signs this browser in. Treat it as a credential: do not paste it into a 
 Leave the hub running. Closing a browser tab is not a stop command for the agent. If the port is occupied or the page will not open, use [troubleshooting](troubleshooting.md) rather than launching more hub instances. For another bind address or a supervised service, use the [hub runbook](evener-hub.md).
 
 ## Connect a provider before starting work
+
+This walkthrough uses Settings. The [guided Connect provider dialog](connecting-a-provider.md#start-your-first-session) offers another route to the same host's provider connections and credentials. If you already connected there, choose that connection rather than entering its credentials again.
 
 In the authenticated browser, open **Settings → Providers & credentials**, at `/settings/credentials` on your hub. For a straightforward hosted setup:
 

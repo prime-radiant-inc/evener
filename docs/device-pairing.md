@@ -3,8 +3,11 @@
 Evener Hubs are self-hosted. Pairing starts in an already authenticated Hub Web
 UI; there is no global directory, rendezvous service, or shared pairing server.
 The Hub owns invitations and approvals. Clients own their saved Hub profiles,
-network identities and unsent work. This document is the wire contract; the
-[Playdate guide](product/playdate-client.md) covers that client's behavior.
+network identities and unsent work. This document is the wire contract. For
+iPhone setup and availability, use the [native app guide](native-app.md). The
+Playdate client lives in a separate repository; the
+[Playdate guide](product/playdate-client.md) links its implementation and covers
+that client's behavior.
 
 ## Trust and transports
 
