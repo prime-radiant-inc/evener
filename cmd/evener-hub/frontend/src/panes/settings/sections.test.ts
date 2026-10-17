@@ -44,6 +44,8 @@ test.each([
   ["transcript", "transcript"],
   ["cost", "transcript"],
   ["mobile", "mobile"],
+  ["session defaults", "launch-evener"],
+  ["launch", "launch-evener"],
 ])("control query %s finds its owning destination %s", (query, owner) => {
   expect(
     SETTINGS_SECTIONS.filter((section) => matchesSettingsSection(section, query)).map((section) => section.id),

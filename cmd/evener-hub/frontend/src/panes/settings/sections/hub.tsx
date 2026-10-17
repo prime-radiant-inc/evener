@@ -1,6 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Button, InlineNotice, PropertyList, Skeleton } from "../../../widgets";
+import { Button, Disclosure, InlineNotice, PropertyList, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
 import { HubResidents } from "./hubResidents";
@@ -16,6 +16,7 @@ const BEARER_TOKEN_MASK = "••••••••••••";
 
 /** Hub runtime, authentication status, updates and resident daemons. */
 export function HubSection() {
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const data = useSettingsOverviewStore((s) => s.data);
   const loading = useSettingsOverviewStore((s) => s.loading);
   const error = useSettingsOverviewStore((s) => s.error);
@@ -50,47 +51,44 @@ export function HubSection() {
 
   return (
     <div className={CLASS.root}>
-      <PropertyList
-        layout="stacked"
-        rows={[
-          {
-            label: "Listen address",
-            value: <FieldValue field="listen-address">{hub?.listenAddr ?? ""}</FieldValue>,
-            help: (
-              <>
-                Address and port the hub HTTP server binds to. Change via <Code>addr</Code> in{" "}
-                <Code>~/.config/evener/hub.toml</Code> or <Code>--addr</Code>.
-              </>
-            ),
-          },
-          {
-            label: "Bearer token",
-            value: (
-              <FieldValue field="bearer-token">
-                {BEARER_TOKEN_MASK} {hub?.bearerTokenAge !== undefined && <FieldDim>{hub.bearerTokenAge}</FieldDim>}
-              </FieldValue>
-            ),
-            help: (
-              <>
-                Used to authenticate the TUI or a remote browser. Stored as <Code>auth-token</Code> in the hub state
-                directory and reused across restarts.
-              </>
-            ),
-          },
-          {
-            label: "Run dir",
-            value: <FieldValue field="run-dir">{hub?.runDir ?? ""}</FieldValue>,
-            help: "Per-PID rendezvous files; the hub watches this directory to discover live daemons.",
-          },
-          {
-            label: "Spawn timeout",
-            value: <FieldValue field="spawn-timeout">{hub?.spawnTimeout ?? ""}</FieldValue>,
-            help: "How long the hub waits for a daemon to report ready after spawn before treating it as failed.",
-          },
-        ]}
-      />
       <HubUpdates />
       <HubResidents />
+      <Disclosure summary="Technical details" open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <PropertyList
+          layout="stacked"
+          rows={[
+            {
+              label: "Listen address",
+              value: <FieldValue field="listen-address">{hub?.listenAddr ?? ""}</FieldValue>,
+              help: (
+                <>
+                  Address and port the hub HTTP server binds to. Change via <Code>addr</Code> in{" "}
+                  <Code>~/.config/evener/hub.toml</Code> or <Code>--addr</Code>.
+                </>
+              ),
+            },
+            {
+              label: "Bearer token",
+              value: (
+                <FieldValue field="bearer-token">
+                  {BEARER_TOKEN_MASK} {hub?.bearerTokenAge !== undefined && <FieldDim>{hub.bearerTokenAge}</FieldDim>}
+                </FieldValue>
+              ),
+              help: (
+                <>
+                  Used to authenticate the TUI or a remote browser. Stored as <Code>auth-token</Code> in the hub state
+                  directory and reused across restarts.
+                </>
+              ),
+            },
+            {
+              label: "Spawn timeout",
+              value: <FieldValue field="spawn-timeout">{hub?.spawnTimeout ?? ""}</FieldValue>,
+              help: "How long the hub waits for a daemon to report ready after spawn before treating it as failed.",
+            },
+          ]}
+        />
+      </Disclosure>
     </div>
   );
 }
