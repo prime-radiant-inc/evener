@@ -28,9 +28,11 @@ For a single CLI invocation, use [CLI flags](cli.md). The layered `launch.toml` 
 | `<config-root>/providers.toml` | Provider instances and model overrides |
 | `<config-root>/credentials.toml` | Literal credentials keyed by instance |
 | `<state-root>/auth/<instance>.json` | OAuth records |
-| `<config-root>/mcp.json` and `<cwd>/.evener/mcp.json` | MCP server configuration, separate from launch merging |
+| `<config-root>/mcp.json` and `<git-root>/.evener/mcp.json` | MCP server configuration, separate from launch merging |
 
 The launch resolver uses the selected working directory, not an upward search for `.evener/launch.toml`. Linked worktrees share canonical project identity for metadata, but their cwd-local launch files remain distinct. The old `<config-root>/projects/<id>/launch.toml` is a read-only fallback when `launch.local.toml` is absent; saving the project layer writes the new location.
+
+Project MCP configuration instead lives at the Git root, even when you launch from a subdirectory. See [MCP configuration locations](mcp.md#configuration-locations-and-precedence).
 
 `EVENER_STATE_DIR` selects one invocation's project/session state directory. It does **not** move the whole state root or OAuth store. Provider and credential path overrides are documented in [Environment variables](environment-variables.md).
 

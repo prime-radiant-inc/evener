@@ -3,6 +3,10 @@
 Evener's supported environment variables are defined in `envvars`. Runtime code,
 help text, and tests should refer to those rows instead of hard-coding names.
 
+For user setup, scope, and precedence, see the public
+[environment variable reference](../environment-variables.md). This contributor
+reference also includes internal processes and test controls.
+
 ## Evener Commands
 
 | Variable | Description |
