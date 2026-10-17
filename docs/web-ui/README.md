@@ -99,10 +99,25 @@ To recover from a denial, allow notifications in the browser's site settings and
 reload. Unsupported browsers can use sound instead.
 
 Plugins has one home with Installed, Browse and Sources views. Sources contains
-marketplaces and additional plugin directories under one host picker. Directory
-loading and editing recover independently of plugin and marketplace inventory
-failures; inventory retries preserve directory drafts. Host switching keeps
-reads and saves bound to the selected host. Skill directories remain separate.
+marketplaces and additional plugin directories under one host picker. With no
+installed plugins, **Browse plugins** opens Browse. With no marketplaces,
+**Manage sources** opens Sources, where **+ Add marketplace** accepts a reviewed
+repository URL, `owner/repo`, or local directory containing a
+`.claude-plugin/marketplace.json` catalog. See the
+[plugin marketplace guide](../plugins.md#install-from-a-marketplace).
+After adding a source, **Browse plugins** opens its catalog list. These navigation
+actions never install or enable plugins; installation is a separate confirmation.
+
+Plugin and marketplace read failures have separate retries. A failed marketplace
+read does not hide Installed; a failed plugin read does not prevent browsing
+catalogs, but installation waits until the installed inventory is available.
+Directory loading and editing recover independently of both inventories.
+Temporary marketplace read failures retain source add/edit drafts and let you
+keep typing; retry the read before saving. Untouched source editors follow
+canonical changes. An edited source that changes elsewhere requires **Reload
+latest** or **Keep my edits** before Save; neither choice saves by itself.
+Host switching keeps reads and saves bound to the selected host, and replacement
+host registrations never inherit drafts. Skill directories remain separate.
 
 The former General summary's runtime, listen address, masked token and token
 age belong to Hub; state/index paths, run directory and page size belong to Storage; version
