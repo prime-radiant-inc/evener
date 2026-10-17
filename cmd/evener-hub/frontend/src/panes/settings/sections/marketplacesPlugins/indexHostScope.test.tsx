@@ -1,6 +1,6 @@
 import type { HostRow, MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
@@ -97,6 +97,43 @@ test("with this hub selected the section reads this hub's own lists and never th
 
   expect(await screen.findByRole("button", { name: /controller-linter/ })).toBeTruthy();
   expect(fake.calls.some((call) => call.method === "evener/host/request")).toBe(false);
+});
+
+test.each(["add", "edit"] as const)("a replacement registration cannot inherit an %s source draft", async (kind) => {
+  const fake = connectFakeClient();
+  let address = "first.example";
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true, address })] }));
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { host: string; method: string };
+    if (forwarded.method === "evener/launch/getLayer") return { pluginDirs: [] } as never;
+    if (forwarded.method === "evener/marketplace/list") return { marketplaces: [MARKETPLACE] } as never;
+    if (forwarded.method === "evener/plugin/list") return { plugins: [] } as never;
+    throw new Error(`unexpected forwarded method ${forwarded.method}`);
+  });
+  setSettingsHost("beta");
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsHostScope />);
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+  await user.click(screen.getByRole("button", { name: kind === "add" ? "+ Add marketplace" : /acme-plugins/ }));
+  await user.type(screen.getByLabelText(kind === "add" ? "Git URL" : "Name"), "old-registration-draft");
+  address = "replacement.example";
+  await act(async () => {
+    await hostsStore.getState().fetch();
+  });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+  await user.click(screen.getByRole("button", { name: kind === "add" ? "+ Add marketplace" : /acme-plugins/ }));
+  expect((screen.getByLabelText(kind === "add" ? "Git URL" : "Name") as HTMLInputElement).value).toBe(
+    kind === "add" ? "" : MARKETPLACE.name,
+  );
+  expect(proxyEdits(fake)).toEqual([]);
+  expect(
+    fake.calls.filter(
+      (call) =>
+        call.method === "evener/host/request" &&
+        (call.params as { method: string }).method === "evener/marketplace/add",
+    ),
+  ).toEqual([]);
 });
 
 test("a remote selection shows THAT host's own marketplaces and plugins, never this hub's", async () => {

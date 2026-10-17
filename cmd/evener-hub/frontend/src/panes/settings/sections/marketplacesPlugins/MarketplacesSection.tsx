@@ -15,6 +15,7 @@ import {
   Chip,
   EmptyState,
   FormRow,
+  InlineNotice,
   Input,
   ListRow,
   PathField,
@@ -35,13 +36,15 @@ const CLASS = {
 
 export interface MarketplacesSectionProps {
   onSelect: (name: string) => void;
+  onBrowse?: () => void;
 }
 
-export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
+export function MarketplacesSection({ onSelect, onBrowse }: MarketplacesSectionProps) {
   const store = useExtensionsHostStore();
   const directory = useHostDirectoryActions();
   const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
   const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
+  const readUnavailable = useExtensionsHostState((s) => s.marketplacesError !== null || s.marketplacesLoading);
   const toasts = useToasts();
 
   const [addOpen, setAddOpen] = useState(false);
@@ -50,6 +53,7 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
   const [repoValue, setRepoValue] = useState("");
   const [pathValue, setPathValue] = useState("");
   const [nameValue, setNameValue] = useState("");
+  const [added, setAdded] = useState(false);
 
   const urlId = useId();
   const repoId = useId();
@@ -72,11 +76,13 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (readUnavailable || hubWriteBusy) return;
     const trimmedName = nameValue.trim();
     try {
       await store.getState().addMarketplace({ name: trimmedName, source: buildSource() });
       setAddOpen(false);
       resetAddForm();
+      setAdded(true);
       toasts.push("success", `Added marketplace${trimmedName ? ` ${trimmedName}` : ""}`);
     } catch (err) {
       toasts.push("error", isHubWriteBusy(err) ? HUB_WRITE_BUSY : `Add marketplace failed: ${errorText(err)}`);
@@ -90,6 +96,19 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
 
   return (
     <section className={CLASS.section}>
+      <p>
+        Use a repository or local directory with a <code>.claude-plugin/marketplace.json</code> plugin catalog, not an
+        arbitrary Git repository. Review the source before adding it. See the{" "}
+        <a href="https://github.com/prime-radiant-inc/evener/blob/main/docs/plugins.md#install-from-a-marketplace">
+          plugin marketplace guide
+        </a>
+        .
+      </p>
+      {added && onBrowse && (
+        <InlineNotice action={<Button onClick={onBrowse}>Browse plugins</Button>}>
+          Marketplace added. Choose a plugin to install from Browse.
+        </InlineNotice>
+      )}
       <ul aria-label="Marketplaces" className={CLASS.list}>
         {marketplaces.length === 0 ? (
           <li>
@@ -159,7 +178,7 @@ export function MarketplacesSection({ onSelect }: MarketplacesSectionProps) {
             />
           </FormRow>
           <div className={CLASS.formActions}>
-            <Button type="submit" disabled={hubWriteBusy}>
+            <Button type="submit" disabled={hubWriteBusy || readUnavailable}>
               Add
             </Button>
             <Button type="button" variant="quiet" onClick={handleCancelAdd} disabled={hubWriteBusy}>

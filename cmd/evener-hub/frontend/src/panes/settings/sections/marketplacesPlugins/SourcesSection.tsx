@@ -15,9 +15,11 @@ const CLASS = {
 export function SourcesSection({
   host,
   onSelectMarketplace,
+  onBrowse,
 }: {
   host: string;
   onSelectMarketplace: (name: string) => void;
+  onBrowse?: () => void;
 }) {
   const store = useExtensionsHostStore();
   const marketplaces = useExtensionsHostState((s) => s.marketplaces);
@@ -42,10 +44,11 @@ export function SourcesSection({
           >
             {error}
           </InlineNotice>
-        ) : marketplaces === null ? (
-          <Skeleton />
+        ) : null}
+        {marketplaces === null ? (
+          error === null && <Skeleton />
         ) : (
-          <MarketplacesSection onSelect={onSelectMarketplace} />
+          <MarketplacesSection onSelect={onSelectMarketplace} onBrowse={onBrowse} />
         )}
       </section>
       <PluginsDirsSection host={host} />
