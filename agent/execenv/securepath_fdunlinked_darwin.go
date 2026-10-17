@@ -3,6 +3,8 @@
 package execenv
 
 import (
+	"errors"
+
 	"golang.org/x/sys/unix"
 
 	"primeradiant.com/evener/agent/sandbox"
@@ -25,6 +27,13 @@ import (
 // and is not dead either. The path is the kernel's own, so this is not the
 // path-based check the descriptor route exists to avoid: it is a property of
 // the pinned inode, unaffected by a later spelling.
+//
+// Only ABSENCE means the directory is gone. Any other stat error — a renamed
+// ancestor whose old spelling no longer resolves the way it did, or an ancestor
+// the process can no longer search (EACCES) — leaves the outcome unknown, and an
+// unknown outcome must NOT be reported as deletion: the descriptor may still be
+// perfectly usable. Those cases are inconclusive, so the operation falls through
+// to its normal resolution.
 func fdUnlinked(fd int) bool {
 	path, err := sandbox.FdPath(fd)
 	if err != nil || path == "" {
@@ -35,7 +44,7 @@ func fdUnlinked(fd int) bool {
 		return false
 	}
 	if err := unix.Stat(path, &cur); err != nil {
-		return true // the descriptor's directory is gone from the filesystem
+		return errors.Is(err, unix.ENOENT) || errors.Is(err, unix.ENOTDIR)
 	}
 	return st.Dev != cur.Dev || st.Ino != cur.Ino // recreated in place: a different file
 }
