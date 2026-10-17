@@ -2296,7 +2296,8 @@ describe("a streamed reply's key once history records its round", () => {
 
 	it("keeps every key unique when a round records two replies around a delegate_send", () => {
 		// The round's first reply takes the stream's key; the second keeps its
-		// own, and the delegate_send between them starts a run of its own.
+		// own, and the delegate_send between them starts a run of its own, keyed
+		// by its call id (stable across recording).
 		const streamed = keys(streaming()).at(-1);
 		const after = keys(
 			hydrateThread(
@@ -2320,8 +2321,68 @@ describe("a streamed reply's key once history records its round", () => {
 		);
 		expect(new Set(after).size).toBe(after.length);
 		expect(after).toContain(streamed);
-		expect(after.indexOf(streamed ?? "")).toBeLessThan(after.indexOf("t1:1:1"));
+		expect(after.indexOf(streamed ?? "")).toBeLessThan(after.indexOf("step:call-1"));
 		expect(after).toContain("t1:1:2");
+	});
+
+	// Keeping the key through the recording change is stepKey's job; this pins
+	// it end to end. The live and recorded turns differ, as they do for a
+	// daemon-minted turn.
+	it("keeps a running tool's key when history records its call", () => {
+		const tool = {
+			key: "tool:call:call-7",
+			kind: "tool",
+			turnId: "t_abc",
+			roundId: "r1",
+			callId: "call-7",
+			item: {
+				id: "tool:call:call-7",
+				type: "commandExecution",
+				turnId: "t_abc",
+				roundId: "r1",
+				callId: "call-7",
+				toolName: "shell",
+				status: "completed",
+				output: "ok",
+			},
+		};
+		const live = hydrateThread(
+			{
+				thread: wireThread([wireTurn("t_abc", [ask], { status: "inProgress" })]),
+				bootGeneration: "boot-1",
+				epoch: 1,
+				snapshot: { incarnation: "inc-1", length: 1 },
+				overlay: [tool],
+			} as unknown as ThreadReadResponse,
+			"ref-1",
+			0,
+		);
+		const liveKeys = keys(live);
+		const after = keys(
+			hydrateThread(
+				{
+					thread: wireThread([
+						wireTurn("turn_1", [
+							ask,
+							recorded("item_tool_1_0", "commandExecution", 0, {
+								turnId: "turn_1",
+								toolName: "shell",
+								callId: "call-7",
+								completedAtEntry: 2,
+								output: "ok",
+							}),
+						]),
+					]),
+				},
+				"ref-1",
+				0,
+			),
+		);
+		// The tool row is the only row that is not your message, so its key is
+		// the one that is not "u1" on either side.
+		const toolKey = (list: string[]) => list.filter((key) => key !== "u1");
+		expect(toolKey(after)).toEqual(toolKey(liveKeys));
+		expect(toolKey(liveKeys)).toHaveLength(1);
 	});
 
 	// The web renders an automatic memory refresh as a "Refreshed my memory"

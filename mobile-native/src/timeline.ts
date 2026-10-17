@@ -52,6 +52,27 @@ export function rowTurnId(row: TimelineRow): string | undefined {
 	return row.kind === "details" ? row.entries[0]?.turnId : row.turnId;
 }
 
+// The key a step or run row keys by, shared by the list's row key (readerKey),
+// the reading anchor match (matchesAnchor) and the disclosure store's member
+// key (disclosureKeys.ts's memberKey), so all three move together as history
+// records a live step. Today the identity is the call id alone. Undefined for
+// a step with no call id, which keeps its row id instead; the step: prefix
+// keeps it apart from an assistant reply's call:<callId>:agentMessage key.
+//
+// Why the call id and not the turn id: the turn id is not the same live and
+// recorded for daemon-minted turns (internal/apptranscript/logical_turn.go's
+// invariant), so keying on it moved a row's key when its item was recorded.
+//
+// Assumption: a call id is unique for a session — provider ids are, and the
+// disclosure store and the transcript's call/result fold both already key on
+// one call per id. The one exception is the synthesized fallback
+// "call_" + shortHash(arguments) (agent/internal/tool/registry.go:713-716):
+// two provider-id-less calls with identical arguments in one session would
+// share a key. That is a documented residual risk, not fixed here.
+export function stepKey(step: { detail: { callId?: string } }): string | undefined {
+	return step.detail.callId === undefined ? undefined : `step:${step.detail.callId}`;
+}
+
 export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 	if (!after) return 0;
 	const needsAttention = (item: TimelineRow) =>

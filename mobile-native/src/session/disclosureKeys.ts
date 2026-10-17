@@ -1,13 +1,12 @@
 // What a transcript row's open state is stored under, in the native
-// disclosure store. Row ids change as history records what the live stream
-// showed (a tool the overlay showed as tool:call:<callId>, or
-// tool:<historyKey>, becomes item_tool_<entry>_<part>), so keys use what
-// holds: a call's id. A run is its steps: it is open by its members' latest
-// choice, and a choice is written to every member, so the run keeps its state
-// as calls join it (a parallel call settling late, an older page extending its
-// turn) and as live steps are added.
+// disclosure store. A step keys by its call id (timeline.ts's stepKey, shared
+// with the list's row key and reading positions), so its open state survives
+// the recording change that renames its row. A run is its steps: it is open by
+// its members' latest choice, and a choice is written to every member, so the
+// run keeps its state as calls join it (a parallel call settling late, an
+// older page extending its turn) and as live steps are added.
 import { scopedDisclosureId } from "@evener/appwire-client";
-import type { RunStep, TimelineRow } from "../timeline";
+import { type RunStep, stepKey, type TimelineRow } from "../timeline";
 
 /** The disclosure store scope one session's rows share. */
 export function sessionDisclosureScope(hubId: string, sessionRef: string): string {
@@ -35,8 +34,8 @@ export function memoryContextSourceDisclosureId(hubId: string, sessionRef: strin
 	return scopedDisclosureId(scope, JSON.stringify(["memory-context-source", row.kind, row.id]));
 }
 
-// Call ids are the provider's, and a call never spans a turn, so the turn
-// rides along. A step with no call id keeps its row id.
+// A step with no call id keeps its row id.
 function memberKey(step: RunStep | Extract<TimelineRow, { kind: "activity" }>): string[] {
-	return step.detail.callId ? [step.turnId ?? "", step.detail.callId] : ["", step.id];
+	const key = stepKey(step);
+	return key === undefined ? ["", step.id] : [key];
 }
