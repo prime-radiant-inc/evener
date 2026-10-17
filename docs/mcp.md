@@ -132,8 +132,9 @@ Tools are registered as `<server>__<tool>`, sanitized for provider-compatible
 names. For this example the name is `example__echo`, not
 `mcp__example__echo`. Hook matchers see the registered name unchanged.
 
-Each startup connection and tool listing has its own 10-second bound, so a bad
-server does not prevent other servers from connecting. Diagnostics distinguish
+Each server's startup transport setup, connection, and tool listing share one
+10-second deadline. Servers start independently, so a bad server does not prevent
+other servers from connecting. Diagnostics distinguish
 `connected`, `degraded`, and `failed`. A server can be connected yet report an
 application error. Transport reconnects and failure handling are not a guarantee
 that a failed call had no external effect; check the service before repeating a
