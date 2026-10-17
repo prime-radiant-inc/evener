@@ -99,6 +99,50 @@ describe("reader positions", () => {
 		expect(readerKey(communicate)).toBe("call:c1:agentMessage");
 		expect(comparePosition({ entry: 1, item: 2 }, { entry: 1, item: 3 })).toBe(-1);
 	});
+	// The live and recorded turns differ, as they do for a daemon-minted turn;
+	// the row id changes too, so we key by the call id (stepKey).
+	it("keys a step and its run by the call id, through the recording transition", () => {
+		const live: TimelineRow = {
+			kind: "activity",
+			id: "tool:call:call-7",
+			label: "shell",
+			family: "tool",
+			state: "running",
+			detail: { callId: "call-7" },
+			turnId: "t_abc",
+		};
+		const recorded: TimelineRow = {
+			kind: "activity",
+			id: "item_tool_3_1",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			detail: { callId: "call-7" },
+			turnId: "turn_1",
+			transcriptKey: "apptranscript-item-v2:turn_1:3:1",
+		};
+		expect(readerKey(live)).toBe(readerKey(recorded));
+		// A run keys by its first step's call, so it too keeps one key as the
+		// step is recorded.
+		const liveRun: TimelineRow = { kind: "run", id: "run:tool:call:call-7", steps: [live] };
+		const recordedRun: TimelineRow = {
+			kind: "run",
+			id: "run:item_tool_3_1",
+			steps: [recorded],
+			transcriptKey: "apptranscript-item-v2:turn_1:3:1",
+		};
+		expect(readerKey(liveRun)).toBe(readerKey(recordedRun));
+		// A step with no call id keeps its transcript key, then its row id.
+		const keyless: TimelineRow = {
+			kind: "activity",
+			id: "tool:call:none",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			detail: {},
+		};
+		expect(readerKey(keyless)).toBe("tool:call:none");
+	});
 	it("captures content-space measurements and restores with a negative view offset", () => {
 		const rows = [row("a", { entry: 1, item: 1 }), row("b", { entry: 2, item: 1 })];
 		const anchor = captureReaderAnchor(

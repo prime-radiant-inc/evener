@@ -23,6 +23,7 @@ const where = { hubId: "hub-1", sessionRef: "ref-1" };
 
 const DANGER_INK = "#C51D23";
 const INK_LOW = "#6D6D64";
+const ATTENTION_INK = "#AD5209";
 
 // A step as projectedRows builds it: its words read from the whole step.
 function step(id: string, label: string, args: Record<string, unknown>, over: Partial<RunStep> = {}): RunStep {
@@ -218,6 +219,49 @@ describe("a run expanded into its steps", () => {
 		const bare: Run = { ...run, steps: [step("e", "read_file", {})] };
 		const tree = render(<RunRow run={bare} live={false} expanded onToggle={() => {}} {...where} />);
 		expect(texts(tree.root).filter((node) => node.props.style?.fontFamily === "Menlo")).toEqual([]);
+	});
+
+	// Jesse, 2026-10-16: a nonzero exit alone must not read as failed - the step
+	// wears a small x in attention ink, and it does not join the failed tally.
+	it("marks an exit-only step with a small x, never the failure octagon", () => {
+		const exitOnly: Run = {
+			...run,
+			steps: [
+				step(
+					"x",
+					"shell",
+					{ command: "grep missing" },
+					{ detail: { arguments: '{"command":"grep missing"}', exitCode: 1 } },
+				),
+			],
+		};
+		const tree = render(<RunRow run={exitOnly} live={false} expanded onToggle={() => {}} {...where} />);
+		const marks = tree.root
+			.findAllByType("SymbolView" as never)
+			.filter((mark) => String(mark.props.name).startsWith("xmark"));
+		expect(marks.map((mark) => [mark.props.name, mark.props.tintColor])).toEqual([["xmark", ATTENTION_INK]]);
+		expect(tree.root.findAll((node) => String(node.props.name) === "xmark.octagon.fill")).toEqual([]);
+	});
+
+	// A summary-only (intent-level) exit step keeps its exit code, so the folded
+	// run's expanded line still shows the small x (Jesse, 2026-10-16).
+	it("shows the exit mark on a summary-only exit step", () => {
+		const summaryOnly: Run = {
+			...run,
+			steps: [
+				step(
+					"so",
+					"shell",
+					{ command: "grep missing" },
+					{ summaryOnly: true, detail: { summary: "Ran grep missing", exitCode: 5 } },
+				),
+			],
+		};
+		const tree = render(<RunRow run={summaryOnly} live={false} expanded onToggle={() => {}} {...where} />);
+		const marks = tree.root
+			.findAllByType("SymbolView" as never)
+			.filter((mark) => String(mark.props.name).startsWith("xmark"));
+		expect(marks.map((mark) => [mark.props.name, mark.props.tintColor])).toEqual([["xmark", ATTENTION_INK]]);
 	});
 });
 

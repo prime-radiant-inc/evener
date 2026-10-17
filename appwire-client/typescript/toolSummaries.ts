@@ -35,7 +35,7 @@ import {
 } from "./stepWords";
 import { taskMutationSummary } from "./taskListStep";
 import { clip, formatByteCount, lineCount, parseArgs, str } from "./toolCallText";
-import { lastLine, outputTails, webFetchResult } from "./toolEvidence";
+import { lastLine, outputTails, shellOutput, webFetchResult } from "./toolEvidence";
 import {
   findSessionsProgress,
   findSessionsWords,
@@ -536,6 +536,24 @@ function entryFor(toolName: string): ToolEntry | undefined {
 /** The family a run's summary counts a step of this tool under. */
 export function toolFamily(toolName: string): ToolFamily {
   return entryFor(toolName)?.family ?? (mcpToolParts(toolName) ? "mcp" : "tool");
+}
+
+/**
+ * The process exit code a tool call records. The typed wire field
+ * (ItemModel.exitCode) first; when that is absent — an old daemon that did not
+ * populate it — the shell tool's own output footer (shellOutput reads the same
+ * "[exit N]" / "exit_code=N" trailer the body shows). Undefined for a non-shell
+ * tool or a call that recorded no exit.
+ *
+ * Both clients read the exit through HERE, so the small inline exit mark cannot
+ * appear on one surface and not the other — the divergence isExitOnly's own
+ * comment promises cannot happen. The shell family gate is what keeps a stray
+ * "[exit 3]" a non-shell tool echoed in its output from being read as an exit.
+ */
+export function toolExitCode(item: { toolName?: string; output?: string; exitCode?: number }): number | undefined {
+  if (item.exitCode !== undefined) return item.exitCode;
+  if (toolFamily(item.toolName ?? "") !== "shell") return undefined;
+  return shellOutput(item.output ?? "").exitCode;
 }
 
 /** A step's words in parts, for any tool: what it did, what it acted on

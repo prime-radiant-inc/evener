@@ -77,6 +77,7 @@ it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keepin
 const INK_LOW = "#6D6D64";
 const INK_MID = "#5F5F57";
 const EDGE_STRONG = "#B7B6AC";
+const ATTENTION_INK = "#AD5209";
 
 beforeEach(() => {
 	mode.scheme = "light";
@@ -451,6 +452,53 @@ describe("a tool step", () => {
 		const open = pressable(tree, "Collapse Read agent/session.go");
 		expect(open && textOf(open)).toBe("▾ Read agent/session.go · completed");
 		expect(open?.props.accessibilityState).toMatchObject({ expanded: true });
+	});
+
+	// Jesse, 2026-10-16: an exit-only call is not failed; a small attention x
+	// carries the exit on the standalone activity row instead.
+	it("shows a small attention x on an exit-only call, never a failed state", () => {
+		const exitStep: TimelineRow = {
+			kind: "activity",
+			id: "step-exit",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			detail: { arguments: '{"command":"grep missing"}', summary: "Ran grep missing", exitCode: 1 },
+		};
+		const tree = render(<TimelineItem item={exitStep} hubId="hub" sessionRef="step-exit" />);
+		const marks = tree.root.findAllByType("SymbolView" as never);
+		expect(marks.map((mark) => [mark.props.name, mark.props.tintColor])).toEqual([["xmark", ATTENTION_INK]]);
+		// Never the failure octagon: exit-only is not a failure.
+		expect(tree.root.findAll((node) => node.props.name === "xmark.octagon.fill")).toEqual([]);
+	});
+
+	// At the compact intent level the row is a summary line only, but an
+	// exit-only call keeps its small x so the phone agrees with the web (Jesse,
+	// 2026-10-16).
+	it("shows the exit mark on an exit-only intent-mode activity row", () => {
+		const exitStep: TimelineRow = {
+			kind: "activity",
+			id: "step-exit-intent",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			summaryOnly: true,
+			detail: { summary: "Ran grep missing", exitCode: 3 },
+		};
+		const tree = render(
+			<TimelineItem
+				item={exitStep}
+				hubId="hub"
+				sessionRef="step-exit-intent"
+				activityPresentation={{ mode: "intent", summary: "Ran grep missing" }}
+			/>,
+		);
+		const marks = tree.root.findAllByType("SymbolView" as never).filter((mark) => mark.props.name === "xmark");
+		expect(marks.map((mark) => [mark.props.name, mark.props.tintColor])).toEqual([["xmark", ATTENTION_INK]]);
+		// The mark is decorative, so the compact row's accessible name must
+		// carry the exit code itself - otherwise VoiceOver never hears it.
+		const labelled = tree.root.findAll((node) => String(node.props.accessibilityLabel ?? "").endsWith("exit 3"));
+		expect(labelled.length).toBeGreaterThan(0);
 	});
 });
 

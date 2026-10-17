@@ -4,7 +4,7 @@
 // with evidence opens it under its line (StepEvidence). A run held open while
 // it is live (the last run of the turn in progress, at the levels that show
 // tool calls) has no fold control until it finishes.
-import { composeStepWords } from "@evener/appwire-client";
+import { composeStepWords, isExitOnly } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { Fragment } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -13,6 +13,7 @@ import { toggleDisclosure, useDisclosureOpen } from "../nativeDisclosure";
 import type { RunStep, TimelineRow } from "../timeline";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { rowDisclosureIds } from "./disclosureKeys";
+import { ExitMark } from "./ExitMark";
 import { useStepEvidence } from "./useStepEvidence";
 import { StepEvidence } from "./StepEvidence";
 import { runHeadText, runPartFailedText, runSummary, runSummaryText, stepWords } from "./transcriptRows";
@@ -42,17 +43,23 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 	const [disclosureId = ""] = rowDisclosureIds(hubId, sessionRef, step);
 	const open = useDisclosureOpen(disclosureId, evidenceOpenByDefault) && hasEvidence;
 	const failed = step.state === "failed";
+	// An otherwise-clean call whose process exited nonzero: not a failure
+	// (hasItemFailure no longer reads the exit, Jesse 2026-10-16), but the exit
+	// stays visible as a small x in attention ink, not the danger octagon.
+	const exitOnly = isExitOnly({ status: step.state, error: step.detail.error, exitCode: step.detail.exitCode });
+	// sessionRows leaves every running step to the tray, so a run holds only
+	// completed, exit-only and failed steps: three marks, chosen in that order.
+	// The exit-only small x is visible without reading as a failure.
+	const mark = failed ? (
+		<SymbolView name="xmark.octagon.fill" tintColor={palette.dangerInk} size={15 * scale} />
+	) : exitOnly ? (
+		<ExitMark size={15 * scale} />
+	) : (
+		<SymbolView name="checkmark.circle.fill" tintColor={palette.inkLow} size={15 * scale} />
+	);
 	const line = (
 		<>
-			<View style={{ paddingTop: 2 * scale }}>
-				{/* Two marks are enough: sessionRows leaves every running step to the
-				tray, so a run holds only completed and failed steps. */}
-				<SymbolView
-					name={failed ? "xmark.octagon.fill" : "checkmark.circle.fill"}
-					tintColor={failed ? palette.dangerInk : palette.inkLow}
-					size={15 * scale}
-				/>
-			</View>
+			<View style={{ paddingTop: 2 * scale }}>{mark}</View>
 			<View style={{ flex: 1, minWidth: 0 }}>
 				<Text
 					allowFontScaling={allowFontScaling}
@@ -89,11 +96,11 @@ function StepLine({ step, hubId, sessionRef, evidenceOpenByDefault }: { step: Ru
 		</>
 	);
 	// The label reads what the line draws: the same bounded words, composed.
+	// An exit-only call is still done - never "failed" - and the word names the
+	// exit so the small x is not the only place it is said.
 	const sentence = words ? composeStepWords(words) : stepWords(step);
-	const label = [ownIntent ? [ownIntent, target] : [sentence], failed ? "failed" : "done"]
-		.flat()
-		.filter(Boolean)
-		.join(", ");
+	const stateWord = failed ? "failed" : exitOnly ? `exit ${step.detail.exitCode}` : "done";
+	const label = [ownIntent ? [ownIntent, target] : [sentence], stateWord].flat().filter(Boolean).join(", ");
 	const lineStyle = { flexDirection: "row", alignItems: "flex-start", gap: 8, paddingVertical: 4 } as const;
 	return (
 		<View>

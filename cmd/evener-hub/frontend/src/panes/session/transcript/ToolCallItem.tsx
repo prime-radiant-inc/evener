@@ -7,7 +7,7 @@ import { useEntityViews } from "../../../transcriptDisplay/entityViews";
 // descriptors registered under tools/.
 
 import type { ItemModel, ThreadModel } from "@evener/appwire-client";
-import { hasErrorText, parseArgs, scopedDisclosureId, str } from "@evener/appwire-client";
+import { hasErrorText, isExitOnly, parseArgs, scopedDisclosureId, str, toolExitCode } from "@evener/appwire-client";
 import { memo, useId, useLayoutEffect, useState } from "react";
 import { useThreadsStore } from "../../../stores/threads";
 import {
@@ -176,11 +176,21 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // it for free. A descriptor may still set HOW large they render
   // (outputImageSize).
   const hasOutputImages = (item.outputImages?.length ?? 0) > 0;
-  // Two independent failure signals, OR'd: the generic wire one every client
-  // shares (non-blank error text, a failed/interrupted status, a nonzero exit
-  // code - protocol/itemFailure.ts) and the descriptor's own, which is for a
-  // tool whose failure shows up only in the shape of its output.
+  // The row is failed when the generic wire signal (non-blank error text, a
+  // failed/interrupted status - protocol/itemFailure.ts) or the descriptor's
+  // own failure signal says so. A nonzero exit is NOT a failure (Jesse,
+  // 2026-10-16): exit alone reads as a small inline mark instead, below.
   const failed = toolCallFailed(item);
+  // The exit code, read through the SHARED resolver (typed field first, the
+  // shell tool's own output footer as the old-daemon fallback) so the phone
+  // draws the mark on exactly the same calls. Resolved only on a NON-failed row:
+  // a failed row discards the mark, and on an old-daemon shell row the resolver
+  // scans the whole output for the footer, so there is no reason to pay that on
+  // a row whose failure already shows. The guard's second job is the descriptor
+  // half of toolCallFailed (a future descriptor's own failed signal) - error
+  // text and status are already negated by isExitOnly.
+  const exitCode = failed ? undefined : toolExitCode(item);
+  const exitOnly = !failed && isExitOnly({ error: item.error, status: item.status, exitCode });
   const showErrorText = hasErrorText(item);
 
   // summarySuffix (kata h70z) reads the FULL thread model, not just this
@@ -362,6 +372,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           icon={descriptor.icon}
           monoSummary={descriptor.monoSummary}
           failed={false}
+          exitCode={exitOnly ? exitCode : undefined}
           status={delegateStatus}
           expandable={false}
           expanded={false}
@@ -406,6 +417,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         icon={descriptor.icon}
         monoSummary={descriptor.monoSummary}
         failed={failed}
+        exitCode={exitOnly ? exitCode : undefined}
         status={delegateStatus}
         expandable
         expanded={expanded}

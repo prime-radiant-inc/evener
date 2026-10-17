@@ -45,6 +45,7 @@ import {
 	hasItemFailure,
 	isActiveItem,
 	isInformationalWarning,
+	isNonZeroExit,
 	isSuppressedSteeringKind,
 	jobWatchEvidence,
 	joinedReasoningParagraphs,
@@ -70,6 +71,7 @@ import {
 	delegateSendResponse,
 	delegateSendWaitIgnoredReason,
 	toolFamily,
+	toolExitCode,
 	toolStepWords,
 	warningWords,
 } from "@evener/appwire-client";
@@ -392,13 +394,18 @@ function intentRow(
 	if (entry.failed || row.state !== "completed") {
 		return { ...row, state: entry.failed ? "failed" : row.state };
 	}
-	const { startedAtMs, endedAtMs, callId, summary, words } = row.detail;
+	const { startedAtMs, endedAtMs, callId, summary, words, exitCode } = row.detail;
 	// Its words' target names what it acted on, which its line sets in Menlo
 	// under a rationale as under its own words.
 	const metadata = {
 		...(startedAtMs !== undefined && endedAtMs !== undefined ? { startedAtMs, endedAtMs } : {}),
 		...(callId !== undefined ? { callId } : {}),
 		...(words !== undefined ? { words } : {}),
+		// A NONZERO exit survives the summarization: an exit-only call keeps its
+		// small inline x at the compact intent level too, so the phone agrees with
+		// the web about which calls wear the mark (Jesse, 2026-10-16). A clean 0
+		// carries no mark, so it stays dropped with the output and duration.
+		...(isNonZeroExit({ exitCode }) ? { exitCode } : {}),
 	};
 	// With no rationale of its own, the row keeps the step's words, read from
 	// the whole step before its output goes.
@@ -658,7 +665,11 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 		arguments: it.argumentsJSON,
 		output: it.output,
 		error: it.error,
-		exitCode: it.exitCode,
+		// The shared resolver: typed wire field first, the shell tool's own output
+		// footer as the old-daemon fallback. Both clients read the exit through
+		// this one function, so the small inline mark cannot appear on one surface
+		// and not the other.
+		exitCode: toolExitCode(it),
 		durationMs: start !== undefined && end !== undefined ? end - start : undefined,
 		callId: it.callId,
 		startedAtMs: start,

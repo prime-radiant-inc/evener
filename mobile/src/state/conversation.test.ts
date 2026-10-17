@@ -4222,7 +4222,9 @@ describe("ConversationStore", () => {
 
 		it.each([
 			["completed", undefined, undefined, "completed"],
-			["failed on a nonzero exit code and no error", 1, undefined, "failed"],
+			// A nonzero exit alone is not a failure: it shows as a small inline
+			// mark on the call, not a failed row (Jesse, 2026-10-16).
+			["completed on a nonzero exit code and no error", 1, undefined, "completed"],
 			["completed on a zero exit code and no error", 0, undefined, "completed"],
 			["failed with an error and no exit code", undefined, "boom", "failed"],
 		] as const)("marks an activity item as %s on item/completed", async (_label, exitCode, error, expected) => {
