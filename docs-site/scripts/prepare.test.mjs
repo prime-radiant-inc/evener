@@ -166,3 +166,18 @@ test("rejects components nested inside otherwise supported HTML blocks", async (
   const f = await fixture(t, "<details>\n<Widget />\n</details>");
   await assert.rejects(prepare(f));
 });
+test("retains Mermaid language and source in complete Markdown exports", async (t) => {
+  const diagram = "flowchart TD\n  Session[Session] --> Turn[Turn]";
+  const f = await fixture(t, "```mermaid\n" + diagram + "\n```");
+  await prepare(f);
+  const { unified } = await import("unified");
+  const { default: parse } = await import("remark-parse");
+  for (const file of ["index.md", "public/markdown/index.md"]) {
+    const tree = unified()
+      .use(parse)
+      .parse(await readFile(path.join(f.out, file), "utf8"));
+    const code = tree.children.find((node) => node.type === "code");
+    assert.equal(code.lang, "mermaid");
+    assert.equal(code.value, diagram);
+  }
+});

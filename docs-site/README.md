@@ -30,6 +30,9 @@ If Chrome is already installed, use `DOCS_BROWSER_CHANNEL=chrome npx playwright 
 
 The browser suite starts and stops its own preview server. It checks mobile
 width, navigation, keyboard focus, local search and the AppWire table.
+It also builds an isolated two-page fixture with the production theme and checks
+actual Mermaid SVG output on initial load, client navigation and browser back.
+Fixture pages never enter the publication manifest or the Pages artifact.
 
 ## Publication manifest
 
@@ -93,6 +96,12 @@ and images instead of raw HTML attributes. Unsupported HTML/components fail the
 check rather than leaking renderer code into exports. Plain HTML anchors and
 small semantic tags are allowed. Exported content is complete, not a summary.
 
+Mermaid fences render as SVG in the browser through Mermaid's strict-security
+renderer. The renderer loads only when a page contains a Mermaid fence and runs
+again after client-side navigation. Without JavaScript, the code fence remains
+readable. Markdown exports retain the original fenced Mermaid source; they do
+not contain Vue components or generated SVG.
+
 `check` runs fixture tests, validates sources and regenerates staging and exports.
 `build` also runs VitePress and checks actual HTML targets and fragments, asset
 URLs, the `/evener/` base and exact page/export membership. The fixture tests cover
@@ -103,7 +112,8 @@ as comprehension tests.
 ## Publishing
 
 `.github/workflows/docs.yml` builds and uploads this same checked artifact on PRs,
-main pushes and manual dispatch. Only a main-branch push or main-branch manual
+main pushes and manual dispatch. It explicitly installs Chromium and runs the
+diagram, search and navigation browser checks before uploading. Only a main-branch push or main-branch manual
 run can deploy. The deploy job alone receives Pages and OIDC write permissions.
 Enable GitHub Pages with GitHub Actions separately; adding this workflow does not
 enable Pages. The intended address is `https://prime-radiant-inc.github.io/evener/`.

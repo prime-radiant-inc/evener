@@ -62,3 +62,6 @@ docs/experiments/dashboard-session24.html
 /docs-site/.vitepress/cache/
 /docs-site/.vitepress/.temp/
 /docs-site/test-results/
+/docs-site/.vitepress/mermaid-test-dist/
+/docs-site/fixtures/mermaid/.vitepress/cache/
+/docs-site/fixtures/mermaid/.vitepress/.temp/

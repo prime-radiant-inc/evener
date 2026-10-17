@@ -11,15 +11,16 @@
     "preview": "vitepress preview ."
   },
   "devDependencies": {
-    "vitepress": "1.6.4",
+    "@playwright/test": "1.56.1",
+    "cheerio": "1.1.2",
+    "github-slugger": "2.0.0",
+    "mermaid": "12.2.0",
+    "remark-gfm": "4.0.1",
     "remark-parse": "11.0.0",
     "remark-stringify": "11.0.0",
-    "remark-gfm": "4.0.1",
     "unified": "11.0.5",
     "unist-util-visit": "5.0.0",
-    "github-slugger": "2.0.0",
-    "cheerio": "1.1.2",
-    "@playwright/test": "1.56.1"
+    "vitepress": "1.6.4"
   },
   "overrides": {
     "vite": "^6.4.3"

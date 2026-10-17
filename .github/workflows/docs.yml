@@ -22,6 +22,12 @@ jobs:
           cache-dependency-path: docs-site/package-lock.json
       - run: npm --prefix docs-site ci
       - run: npm --prefix docs-site run build
+      - name: Install Chromium for documentation checks
+        working-directory: docs-site
+        run: npx playwright install --with-deps chromium
+      - name: Check diagrams, search and navigation in Chromium
+        working-directory: docs-site
+        run: npx playwright test
       - uses: actions/upload-pages-artifact@v4
         with:
           path: docs-site/.vitepress/dist
