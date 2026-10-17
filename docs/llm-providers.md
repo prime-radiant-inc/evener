@@ -241,7 +241,7 @@ openai/gpt-5.6` work on a machine with no key set.
 | `mistral` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` (`https://api.mistral.ai/v1`) | `default_model = mistral-medium-latest`, `cheap_model = ministral-3b-latest` |
 | `cerebras` | `CEREBRAS_API_KEY` | `CEREBRAS_BASE_URL` (`https://api.cerebras.ai/v1`) | `default_model = gpt-oss-120b`, `cheap_model = gpt-oss-120b` |
 | `togetherai` | `TOGETHER_API_KEY` — **not** `TOGETHERAI_API_KEY`; the instance id and the key variable don't match | `TOGETHERAI_BASE_URL` (`https://api.together.ai/v1`) | registry id is `togetherai` (no dash), not `together`; `default_model = moonshotai/Kimi-K3`, `cheap_model = openai/gpt-oss-20b` |
-| `moonshotai` | `MOONSHOT_API_KEY` | `MOONSHOTAI_BASE_URL` (`https://api.moonshot.ai/v1`) | `default_model = kimi-k3`, `cheap_model = kimi-k2.5` |
+| `moonshotai` | `MOONSHOT_API_KEY` | `MOONSHOTAI_BASE_URL` (`https://api.moonshot.ai/v1`) | `default_model = kimi-k3`, `cheap_model = kimi-k2.6` |
 | `kimi-for-coding` | `KIMI_API_KEY` (meaning changed at the flag day — see ["Upgrading from the old schema"](llm-provider-config-and-launch.md#upgrading-from-the-old-schema)) | `KIMI_FOR_CODING_BASE_URL` (`https://api.kimi.com/coding/v1`) | anthropic protocol, surface `anthropic`; sends `Headers["User-Agent"] = "claude-cli/2.1.177 (external, cli)"` (Kimi's coding-plan endpoint 403s any other User-Agent); `default_model = k3`, `cheap_model = kimi-for-coding` |
 | `minimax` | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` (`https://api.minimax.io/anthropic/v1`) | anthropic protocol, surface `anthropic`; `default_model = MiniMax-M3`, `cheap_model = MiniMax-M2.7` |
 | `zai-coding-plan` | `ZHIPU_API_KEY` (the same key as `zai`) | `ZAI_CODING_PLAN_BASE_URL` (`https://api.z.ai/api/coding/paas/v4`) | `thinking_format = zai`; `default_model = glm-5.3`, `cheap_model = glm-5.3-flash` |
@@ -258,7 +258,7 @@ they're usable only through an explicit `providers.toml` entry with
 form), `moonshotai-cn`, `zhipuai`, `zhipuai-coding-plan`, `minimax-cn`,
 `minimax-coding-plan`, `minimax-cn-coding-plan`. They carry the same
 protocol/caps corrections as their implicit siblings, and several of them —
-`zhipuai`, `moonshotai-cn`, `minimax-cn`, `azure-cognitive-services` — do
+`zhipuai`, `moonshotai-cn`, `minimax-cn` — do
 resolve a base URL and a credential straight from models.dev with no
 curated pin at all. What none of the seven carries is a curated
 `default_model`, so none of them is ever the automatic default.
