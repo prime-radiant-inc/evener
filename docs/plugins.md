@@ -158,7 +158,10 @@ proof. See [job control](job-control.md) for delegate lifetime and inspection.
 
 Roles require `name` and `description`; the Markdown body supplies instructions.
 Optional `model`, `color`, `tools`, and `skills` metadata describe the role.
-`tools` accepts a list, a comma-separated string, or the scalar `all`/`*`.
+`tools` accepts a list of strings (`[Read, Grep]`), a comma-separated string
+(`Read, Grep`), a single tool name (`Read`), or the scalar `all`.
+Use `tools: all` for all tools available to the child. The parser rejects scalar
+`*`, `all` or `*` inside a list or comma-separated sequence, and non-string entries.
 Claude-style tool names map to Evener names. Tool selection cannot expand the
 parent's effective policy. `skills` names skills to preload; preloads have the
 frozen delegate/permanent-prompt lifetime, not ordinary skill activation history.

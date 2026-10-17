@@ -32,8 +32,9 @@ shell commands on the host where the session runs, from your project root.
 3. Check that the catalog offers `change-summary` and that the session records
    its activation. A response that merely mentions the name is not proof of
    activation. Inspect discovery warnings if it is missing: `name` and
-   `description` must be nonempty strings, and the file must be an immediate
-   child of a discovery root. The [format and discovery reference](#skills)
+   `description` must be nonempty strings, and `SKILL.md` must be inside a skill
+   directory that is an immediate child of a discovery root, such as
+   `skills/change-summary/SKILL.md`. The [format and discovery reference](#skills)
    explains precedence and invocation controls.
 
 4. Edit the body and invoke it again to load current bytes. There is no live

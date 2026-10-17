@@ -139,15 +139,16 @@ What validation actually runs when evener loads a plugin (`agent/plugin/plugin.g
 `agent/plugin/agents.go`):
 
 - **Plugin name** is required and must be kebab-case (`validatePluginName` / `kebabCaseRe`).
-- **`.codex-plugin` wins over `.claude-plugin`.** When both `<dir>/.codex-plugin/plugin.json`
-  and `<dir>/.claude-plugin/plugin.json` exist, `Load` uses `.codex-plugin` and ignores
-  `.claude-plugin` for that root.
+- **Claude manifest first.** `Load` reads `.claude-plugin/plugin.json` and falls
+  back to `.codex-plugin/plugin.json` only when the first is absent, not malformed.
+  See the [plugin package format](plugins.md#package-format-reference).
 - **Duplicate plugin names are rejected** across loaded plugins (`LoadAll`,
   `"duplicate plugin name %q…"`).
-- **Agent `name`/`description`** are required non-empty strings (`getString`). **`tools`**
-  accepts the scalar `all` or a list of strings; it rejects scalar `*`, list `all`, list
-  `*`, and non-string entries. Claude tool names are mapped to evener canonical names at
-  load (`toolname.ClaudeToEvener`). `model`/`color` default to `inherit`/`blue`.
+- **Agent `name`/`description`** are required non-empty strings (`getString`).
+  **`tools`** accepts string lists, comma-separated strings, single tool names,
+  or scalar `all`; see [role metadata and validation](plugins.md#add-a-delegate-role)
+  for accepted and rejected forms. Claude tool names are mapped to evener canonical
+  names at load (`toolname.ClaudeToEvener`). `model`/`color` default to `inherit`/`blue`.
 - **Agent `model` is a provider-local preference.** Evener selects the first usable
   source in this order: an available plugin model, the delegate call's explicit
   `model`, then the parent model. Plugin metadata never switches providers.
@@ -196,7 +197,7 @@ reserved. (`agent/plugin/hooks.go`, `agent/internal/hooks/`.)
   exec-form (`args`); `${CLAUDE_PLUGIN_ROOT}`/`${PLUGIN_ROOT}` expand in command/prompt/
   args; the runner sets `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR`, and
   `CLAUDE_EFFORT` (only when configured). It does not set `CLAUDE_CODE_REMOTE`
-  (intentionally — evener has no remote/serve mode) or `CLAUDE_PLUGIN_DATA`. `prompt`
+  or `CLAUDE_PLUGIN_DATA`. `prompt`
   is evener-native sugar that runs an LLM call with
   `$TOOL_INPUT/$TOOL_RESULT/$USER_PROMPT/$MESSAGE/$TOOL_NAME` substitution.
 - **`PreToolUse` runs before registry schema validation**, can rewrite the tool input
@@ -210,8 +211,10 @@ reserved. (`agent/plugin/hooks.go`, `agent/internal/hooks/`.)
   ignored.
 - **Output routing:** `additionalContext` goes to the model (wrapped as a system
   reminder); `systemMessage` goes to the user only — distinct channels (`routeOutput`).
-- `/status` labels each hook event by tier (`claude-compatible-subset` vs
-  `reserved-placeholder`, `plugin.EventTier`).
+- **Verification:** inspect startup warnings for load errors and use the
+  [startup-hook example's explicit warning](hooks.md#add-and-verify-a-startup-hook)
+  to confirm execution. Browser `/status` opens Overview's About tab, not a hook
+  tier/count display.
 
 Known gaps (stated so you don't over-trust the compat surface): **`UserPromptSubmit` and
 `PreCompact` do not enforce the exit-2 block** even though Claude's contract blocks; and
@@ -244,16 +247,18 @@ and the `http`/`mcp_tool`/`agent` handlers are parsed-but-inert. See
   into load-time warnings; reserved handler fields are captured for diagnostics rather
   than treated as working.
 
-Secret handling: the agent runtime has **no dedicated redaction layer** for diagnostics
-or event payloads. Secrets are kept out **by construction** — warning and hook-lifecycle
-events copy only names, IDs, and counts, never hook commands, env, argv, stdout/stderr,
-or MCP env maps. (The only redaction in the codebase is CLI-level: env-secret and
-launch-check scrubbing in `cmd/`.) There
-is **no shared redaction helper** and validation is fail-on-first (no grouped
-`[]ValidationIssue`); both are proposed in
-`subagent-management/10-runtime-contracts.md` Contract 3. The residual risk to know: a
-`command`/`prompt` hook's own stdout is delivered as context unscrubbed — that is
-hook-author behavior, not a evener leak, but nothing redacts it.
+**Do not assume warnings are secret-safe.** Hook lifecycle event payloads contain
+metadata, not hook commands, environment values, or stdout/stderr. Free-form
+warnings have a different contract: a failed `SessionStart` warning includes the
+first non-empty line of stderr, or stdout when stderr is empty, bounded to 160
+characters (`agent/internal/hooks/hooks.go`, `sessionStartFailureWarning`).
+Hooks can also supply `systemMessage` warnings or model context. These messages
+have no dedicated secret-redaction layer. Keep secrets out of hook output and
+inspect warnings and transcripts before sharing them. See
+[hook output routing](hooks.md#what-your-hook-returns).
+
+A shared redaction helper and grouped validation issues remain proposals in
+`subagent-management/10-runtime-contracts.md` Contract 3.
 
 ## Lightweight helper isolation
 
