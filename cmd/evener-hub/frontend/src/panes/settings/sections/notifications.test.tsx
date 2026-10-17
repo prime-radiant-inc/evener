@@ -47,18 +47,41 @@ function renderWithToasts() {
   );
 }
 
+test.each([
+  [false, false],
+  [true, false],
+  [false, true],
+  [true, true],
+])("notification scope is available only for enabled channels, sound=%s desktop=%s", (sound, os) => {
+  prefsStore.getState().setNotification("sound", sound);
+  prefsStore.getState().setNotification("os", os);
+  renderWithToasts();
+  expect(screen.queryAllByRole("radio").length > 0).toBe(sound || os);
+});
+
+test("hiding and restoring sound options preserves the chosen notification scope", async () => {
+  prefsStore.getState().setNotification("sound", true);
+  renderWithToasts();
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("radio", { name: "Everything needing me" }));
+  await user.click(screen.getByRole("switch", { name: "Sound" }));
+  expect(screen.queryAllByRole("radio")).toEqual([]);
+  expect(prefsStore.getState().notificationsLoudScope).toBe("all");
+  await user.click(screen.getByRole("switch", { name: "Sound" }));
+  expect(screen.getByRole("radio", { name: "Everything needing me" }).getAttribute("aria-checked")).toBe("true");
+});
+
 test("title bar count defaults checked; favicon/OS/sound default unchecked; Loud for defaults to Questions, reply requests, approvals & errors", () => {
   renderWithToasts();
   expect(screen.getByRole("switch", { name: "Title bar count" }).getAttribute("aria-checked")).toBe("true");
-  expect(screen.getByRole("switch", { name: "Favicon dot" }).getAttribute("aria-checked")).toBe("false");
-  expect(screen.getByRole("switch", { name: "OS notification" }).getAttribute("aria-checked")).toBe("false");
+  expect(screen.getByRole("switch", { name: "Browser tab indicator" }).getAttribute("aria-checked")).toBe("false");
+  expect(screen.getByRole("switch", { name: "Desktop notifications" }).getAttribute("aria-checked")).toBe("false");
   expect(screen.getByRole("switch", { name: "Sound" }).getAttribute("aria-checked")).toBe("false");
-  expect(
-    screen.getByRole("radio", { name: "Questions, reply requests, approvals & errors" }).getAttribute("aria-checked"),
-  ).toBe("true");
+  expect(screen.queryAllByRole("radio")).toEqual([]);
+  expect(prefsStore.getState().notificationsLoudScope).toBe("asks");
 });
 
-describe("Title bar count / Favicon dot / Sound - plain toggles, no permission gate", () => {
+describe("Title bar count / Browser tab indicator / Sound - plain toggles, no permission gate", () => {
   // Title bar count now defaults ON, so the first click turns it OFF - the
   // opposite direction of every other toggle in this file, but the same
   // persist-and-toast behavior.
@@ -84,14 +107,14 @@ describe("Title bar count / Favicon dot / Sound - plain toggles, no permission g
   });
 });
 
-describe("OS notification - permission-gated toggle", () => {
+describe("Desktop notifications - permission-gated toggle", () => {
   test("turning ON while permission is 'default' requests permission; granted commits true and toasts success", async () => {
     FakeNotification.permission = "default";
     FakeNotification.requestPermission.mockResolvedValue("granted");
     const user = userEvent.setup();
     renderWithToasts();
 
-    await user.click(screen.getByRole("switch", { name: "OS notification" }));
+    await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
 
     expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(toastKinds()).toEqual(["success"]));
@@ -104,11 +127,11 @@ describe("OS notification - permission-gated toggle", () => {
     const user = userEvent.setup();
     renderWithToasts();
 
-    await user.click(screen.getByRole("switch", { name: "OS notification" }));
+    await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
 
     await waitFor(() => expect(toastKinds()).toEqual(["warning"]));
     expect(prefsStore.getState().notifications.os).toBe(false);
-    expect(screen.getByRole("switch", { name: "OS notification" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("switch", { name: "Desktop notifications" }).getAttribute("aria-checked")).toBe("false");
   });
 
   test("if requestPermission() itself rejects, reverts to false but shows NO toast at all", async () => {
@@ -117,7 +140,7 @@ describe("OS notification - permission-gated toggle", () => {
     const user = userEvent.setup();
     renderWithToasts();
 
-    await user.click(screen.getByRole("switch", { name: "OS notification" }));
+    await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
 
     // Let the rejected promise's handler run before asserting silence.
     await vi.waitFor(() => expect(prefsStore.getState().notifications.os).toBe(false));
@@ -129,7 +152,7 @@ describe("OS notification - permission-gated toggle", () => {
     const user = userEvent.setup();
     renderWithToasts();
 
-    await user.click(screen.getByRole("switch", { name: "OS notification" }));
+    await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
 
     expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
     expect(prefsStore.getState().notifications.os).toBe(true);
@@ -141,7 +164,7 @@ describe("OS notification - permission-gated toggle", () => {
     const user = userEvent.setup();
     renderWithToasts();
 
-    await user.click(screen.getByRole("switch", { name: "OS notification" }));
+    await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
 
     expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
     expect(prefsStore.getState().notifications.os).toBe(true);
@@ -153,7 +176,7 @@ describe("OS notification - permission-gated toggle", () => {
     const user = userEvent.setup();
     renderWithToasts();
 
-    await user.click(screen.getByRole("switch", { name: "OS notification" }));
+    await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
 
     expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
     expect(prefsStore.getState().notifications.os).toBe(false);
@@ -166,7 +189,7 @@ describe("OS notification - permission-gated toggle", () => {
     const user = userEvent.setup();
     renderWithToasts();
 
-    await user.click(screen.getByRole("switch", { name: "OS notification" }));
+    await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
 
     expect(prefsStore.getState().notifications.os).toBe(true);
   });
@@ -174,6 +197,7 @@ describe("OS notification - permission-gated toggle", () => {
 
 describe("Loud for", () => {
   test("choosing Everything needing me persists and toasts Settings saved", async () => {
+    prefsStore.getState().setNotification("sound", true);
     const user = userEvent.setup();
     renderWithToasts();
 

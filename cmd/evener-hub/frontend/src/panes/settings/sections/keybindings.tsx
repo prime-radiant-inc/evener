@@ -35,13 +35,13 @@ import {
   serializeChord,
   storeErrorText,
 } from "@evener/appwire-client";
-import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { isIMECompositionKeydown } from "../../../keybindings/dispatcher";
 import { keybindingsStore, useKeybindingsStore } from "../../../stores/keybindings";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
-import { Button, Chip, InlineNotice, KeyHint, Switch } from "../../../widgets";
+import { Button, Chip, InlineNotice, Input, KeyHint, Switch } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./keybindings.module.css";
 
@@ -122,6 +122,11 @@ interface CaptureBoxProps {
   onCancel: (refocus: boolean) => void;
 }
 
+// Searching or folding the editor changes visibility, not the captured chord.
+function isShortcutNavigation(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest("[data-keybinding-navigation]") !== null;
+}
+
 /** The capture widget: a focusable box that consumes EVERY keydown while it
  * is alive. preventDefault + stopPropagation keep each press from the
  * window-level dispatcher - a captured chord must never fire the action it
@@ -161,7 +166,12 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
   useEffect(() => {
     function onPointerDown(event: PointerEvent): void {
       const box = boxRef.current;
-      if (box !== null && event.target instanceof Node && !box.contains(event.target)) {
+      if (
+        box !== null &&
+        event.target instanceof Node &&
+        !box.contains(event.target) &&
+        !isShortcutNavigation(event.target)
+      ) {
         onCancel(false);
       }
     }
@@ -246,7 +256,9 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
         data-state={captured !== null ? "captured" : held.length > 0 ? "holding" : "idle"}
         onKeyDown={handleKeyDown}
         onKeyUp={handleKeyUp}
-        onBlur={() => onCancel(false)}
+        onBlur={(event) => {
+          if (!isShortcutNavigation(event.relatedTarget)) onCancel(false);
+        }}
       >
         {captured !== null ? (
           <KeyHint keys={chordDisplayKeys(captured)} />
@@ -269,9 +281,10 @@ interface KeybindingRowProps {
   editable: boolean;
   bindings: readonly Binding[];
   characterKeyTriggers: boolean;
+  hidden: boolean;
 }
 
-function KeybindingRow({ actionId, title, editable, bindings, characterKeyTriggers }: KeybindingRowProps) {
+function KeybindingRow({ actionId, title, editable, bindings, characterKeyTriggers, hidden }: KeybindingRowProps) {
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // A failed save leaves this row's inline error AND the store's hubError
@@ -397,6 +410,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
   return (
     <li
       className={CLASS.row}
+      hidden={hidden}
       data-action={actionId}
       data-customized={customized || undefined}
       data-unbound={binding === undefined || undefined}
@@ -473,6 +487,15 @@ const LOAD_FAILED_STATUS: ReadOnlyStatus = {
 };
 
 export function KeybindingsSection() {
+  const [customizeOpen, setCustomizeOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const editorId = useId();
+  const search = query.trim().toLocaleLowerCase();
+  const matchingActions = new Set(
+    ACTION_DISPLAY_ROWS.filter((row) => `${row.title} ${row.actionId}`.toLocaleLowerCase().includes(search)).map(
+      (row) => row.actionId,
+    ),
+  );
   const hubSupport = useKeybindingsStore((s) => s.hubSupport);
   const hubLoading = useKeybindingsStore((s) => s.hubLoading);
   const hubError = useKeybindingsStore((s) => s.hubError);
@@ -530,12 +553,6 @@ export function KeybindingsSection() {
         description="Saved in this browser. When on, pressing ? outside a text field opens the keyboard shortcuts overlay. Turn off to keep every shortcut on a modifier chord."
       />
 
-      <p className={CLASS.intro}>
-        {editable
-          ? "Keyboard shortcuts sync to this hub. Click a shortcut to change it; Enter saves and Escape cancels. Bindings marked Customized come from this hub's synced overrides."
-          : "Keyboard shortcuts use this hub's synced overrides. The shortcuts currently in effect are shown below."}
-      </p>
-
       {status !== undefined && (
         <p className={CLASS.status} role="status" data-reason={status.reason}>
           {status.text}
@@ -584,18 +601,45 @@ export function KeybindingsSection() {
         </div>
       )}
 
-      <ul className={CLASS.list}>
-        {ACTION_DISPLAY_ROWS.map((row) => (
-          <KeybindingRow
-            key={row.actionId}
-            actionId={row.actionId}
-            title={row.title}
-            editable={editable}
-            bindings={bindings}
-            characterKeyTriggers={characterKeyTriggers}
+      <div data-keybinding-navigation>
+        <Button
+          variant="secondary"
+          aria-expanded={customizeOpen}
+          aria-controls={editorId}
+          onClick={() => setCustomizeOpen((open) => !open)}
+        >
+          Customize shortcuts
+        </Button>
+      </div>
+      <div id={editorId} hidden={!customizeOpen}>
+        <p className={CLASS.intro}>
+          {editable
+            ? "Keyboard shortcuts sync to this hub. Click a shortcut to change it; Enter saves and Escape cancels."
+            : "Keyboard shortcuts use this hub's synced overrides. The shortcuts currently in effect are shown below."}
+        </p>
+        <div data-keybinding-navigation>
+          <Input
+            aria-label="Search shortcuts"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search shortcuts"
           />
-        ))}
-      </ul>
+        </div>
+        {matchingActions.size === 0 && <p role="status">No matching shortcuts.</p>}
+        <ul className={CLASS.list}>
+          {ACTION_DISPLAY_ROWS.map((row) => (
+            <KeybindingRow
+              key={row.actionId}
+              actionId={row.actionId}
+              title={row.title}
+              editable={editable}
+              bindings={bindings}
+              characterKeyTriggers={characterKeyTriggers}
+              hidden={!matchingActions.has(row.actionId)}
+            />
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

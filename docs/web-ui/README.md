@@ -74,11 +74,18 @@ Back preserves the list's search and scroll position. Desktop keeps the list
 beside the selected page.
 
 Input & shortcuts brings Enter-to-send and keyboard customization together.
+Enter-to-send and character-key accessibility stay visible. Customize shortcuts
+opens the searchable editor; folding or filtering it preserves captured chords
+and pending writes. Synchronization failures and retry remain visible outside it.
 Enter-to-send and character-key enablement remain browser-local; keyboard
 overrides retain their existing hub synchronization. Appearance and notification
 preferences retain their existing browser storage. Conversation display keeps
 its Desktop/Mobile hub defaults and browser overrides. Organization does not
 change persistence or introduce new synchronization.
+
+Notifications shows Loud for only when sound or desktop notifications are enabled.
+Hiding that control preserves its selection. Browser tab indicator is independent
+of those channels.
 
 Plugins has one home with Installed, Browse and Sources views. Sources contains
 marketplaces and additional plugin directories under one host picker. Directory
