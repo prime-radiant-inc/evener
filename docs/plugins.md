@@ -7,16 +7,19 @@ executable commands, hooks, and MCP servers: review it as code before loading it
 ## Load a local plugin
 
 You need an Evener installation with a working provider. Run these shell commands
-on the session host, from an Evener source checkout:
+on the session host, from an Evener source checkout. The second command makes a
+real provider call and may incur charges. It uses a read-only sandbox, but
+confinement does not remove the need to trust executable extensions.
 
 ```bash
 evener plugin list --effective --plugin-dir ./docs/examples/extensions/hello-plugin
-evener --plugin-dir ./docs/examples/extensions/hello-plugin "/hello-plugin:hello world"
+evener --sandbox read-only --plugin-dir ./docs/examples/extensions/hello-plugin "/hello-plugin:hello world"
 ```
 
-The first command inspects the effective launch inventory. The second starts a
-session with the fixture and invokes its command with `world` as the argument.
-Expect the `hello-plugin` inventory entry, the startup-hook warning, and expanded
+The first command inspects the effective launch inventory. If `hello-plugin` is
+absent, check the fixture path and loading diagnostics before starting the model.
+The second starts a session with the fixture and invokes its command with `world`
+as the argument. Expect the startup-hook warning and expanded
 instructions asking for a greeting to `world`. Inspect the session input to verify
 expansion; the exact model response is not deterministic.
 

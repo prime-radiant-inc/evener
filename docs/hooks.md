@@ -47,7 +47,8 @@ its hooks may still need. A running hook is synchronous, bounded by its timeout
 and session cancellation; deleting its declaration is not a stop command.
 
 If the warning is absent, inspect startup diagnostics, confirm the manifest
-loaded, and check the matcher. For tool hooks, use `Bash`, not `shell`.
+loaded, and check the matcher. For tool hooks, [use `Bash`, not
+`shell`](#the-1-mistake-shell--bash).
 The reference below distinguishes supported behavior from fields that only parse.
 
 ## Hook reference
