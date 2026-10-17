@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { type NotificationKey, prefsStore, usePrefsStore } from "../../../stores/prefs";
-import { RadioGroup, type RadioGroupOption, Switch, useToasts } from "../../../widgets";
+import { InlineNotice, RadioGroup, type RadioGroupOption, Switch, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./notifications.module.css";
 
@@ -31,17 +32,35 @@ const LOUD_SCOPE_OPTIONS: RadioGroupOption[] = [
  * contradicts the toggles rendered directly below it would be worse than
  * either "faithful" option alone.
  *
- * OS notification's permission gate has no timer/polling to clean up
- * (unlike T2's OAuth device-code flow) - one `requestPermission()` promise
- * per click, so a plain async handler suffices; there is nothing to abort
- * on unmount (the store setter + toast below are both fire-and-forget
- * module-level calls, not local component state a stale closure could
- * clobber).
+ * Browser availability is separate from the saved preference. Resolved
+ * permission choices never re-prompt; failed or dismissed requests keep
+ * the existing rollback to off and explain how to recover inline.
  */
 export function NotificationsSection() {
   const notifications = usePrefsStore((s) => s.notifications);
   const loudScope = usePrefsStore((s) => s.notificationsLoudScope);
   const { push } = useToasts();
+  const [permission, setPermission] = useState<NotificationPermission | null>(() =>
+    "Notification" in window ? Notification.permission : null,
+  );
+  const [requestState, setRequestState] = useState<"idle" | "pending" | "failed" | "dismissed">("idle");
+  let availability: string | null = null;
+  if (requestState === "pending") {
+    availability = "Waiting for your browser’s notification permission decision.";
+  } else if (requestState === "failed") {
+    availability =
+      "Could not request notification permission. Desktop notifications remain off. Check this site’s browser permissions, then turn them on to try again.";
+  } else if (permission === null) {
+    availability =
+      "Desktop notifications are unavailable in this browser. Your preference is saved, but cannot deliver notifications here. Use a browser that supports notifications, or turn on Sound.";
+  } else if (permission === "denied") {
+    availability =
+      "Desktop notifications are blocked by your browser, regardless of the saved preference. Allow notifications in this site’s browser settings, then reload.";
+  } else if (requestState === "dismissed" || (permission === "default" && notifications.os)) {
+    availability = notifications.os
+      ? "Browser permission has not been granted. Turn desktop notifications off and on to request permission again."
+      : "Browser permission has not been granted. Turn desktop notifications on to request permission again.";
+  }
 
   function commitPlain(key: Exclude<NotificationKey, "os">, value: boolean) {
     prefsStore.getState().setNotification(key, value);
@@ -49,32 +68,42 @@ export function NotificationsSection() {
   }
 
   async function handleOsChange(value: boolean) {
+    const currentPermission = "Notification" in window ? Notification.permission : null;
+    setPermission(currentPermission);
+    setRequestState("idle");
     // Turning off, or toggling while permission is already resolved
     // (granted/denied, not "default"): commit unconditionally - turning the
-    // setting off never revokes/rechecks the browser permission, and
+    // setting off never revokes or requests browser permission, and
     // turning it back on after a resolved decision never re-prompts.
-    const shouldRequestPermission = value && "Notification" in window && Notification.permission === "default";
+    const shouldRequestPermission = value && currentPermission === "default";
     if (!shouldRequestPermission) {
       prefsStore.getState().setNotification("os", value);
-      push("success", "Settings saved");
+      if (value && currentPermission !== "granted") {
+        push("warning", "Preference saved, but desktop notifications are unavailable");
+      } else {
+        push("success", "Settings saved");
+      }
       return;
     }
 
+    setRequestState("pending");
     let permission: NotificationPermission;
     try {
       permission = await Notification.requestPermission();
     } catch {
-      // requestPermission() itself threw/rejected: revert silently - no
-      // toast at all, matching the legacy's own empty-reason suppression.
       prefsStore.getState().setNotification("os", false);
+      setRequestState("failed");
+      push("warning", "Could not request notification permission");
       return;
     }
+    setPermission(permission);
+    setRequestState(permission === "default" ? "dismissed" : "idle");
     if (permission === "granted") {
       prefsStore.getState().setNotification("os", true);
       push("success", "Settings saved");
     } else {
       prefsStore.getState().setNotification("os", false);
-      push("warning", "Browser denied notification permission");
+      push("warning", "Browser notification permission was not granted");
     }
   }
 
@@ -102,9 +131,16 @@ export function NotificationsSection() {
       <Switch
         label="Desktop notifications"
         checked={notifications.os}
+        pending={requestState === "pending"}
         onChange={(value) => void handleOsChange(value)}
         description="Native notification when a thread needs you or errors."
       />
+
+      {availability && (
+        <InlineNotice data-testid="notification-availability" tone={requestState === "failed" ? "danger" : "neutral"}>
+          {availability}
+        </InlineNotice>
+      )}
 
       <Switch
         label="Sound"

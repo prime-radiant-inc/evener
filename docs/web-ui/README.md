@@ -52,6 +52,8 @@ Settings groups controls by task:
 
 Search matches destination names and control keywords, such as font, Enter,
 tokens, marketplace and plugin directory. Results open the owning page.
+Phone density opens Appearance; desktop or mobile layout opens Conversation
+display; desktop notifications or quiet opens Notifications. Pairing still opens Devices.
 Appearance is the default. Explicit unknown or retired `general`, `display`
 `plugins` and `inrepo` section URLs open Appearance, without aliases or a remembered
 section overriding that request. A host-qualified URL retains its host scope.
@@ -85,7 +87,16 @@ change persistence or introduce new synchronization.
 
 Notifications shows Loud for only when sound or desktop notifications are enabled.
 Hiding that control preserves its selection. Browser tab indicator is independent
-of those channels.
+of those channels. The desktop switch records a browser-local preference, not a
+promise that the browser can deliver notifications. Inline status explains blocked
+or unsupported notifications; toggling on preserves the preference in those cases
+but warns that delivery is unavailable. A browser permission prompt appears only
+when enabling with an undecided permission. Denying or dismissing that prompt
+leaves the preference off; a rejected request also leaves it off and raises an
+inline alert with retry guidance. Other preferences remain usable while the browser
+prompt is pending. Resolved permission choices never trigger another prompt.
+To recover from a denial, allow notifications in the browser's site settings and
+reload. Unsupported browsers can use sound instead.
 
 Plugins has one home with Installed, Browse and Sources views. Sources contains
 marketplaces and additional plugin directories under one host picker. Directory
