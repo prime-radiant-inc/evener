@@ -423,10 +423,15 @@ func TestReachableWireSchemasAndLinks(t *testing.T) {
 		t.Fatalf("run = %d", code)
 	}
 	// Check navigation structure, not explanatory copy.
+	links := regexp.MustCompile(`\]\(#([^)]*)\)`).FindAllSubmatch(markdown, -1)
+	linkTargets := map[string]bool{}
+	for _, match := range links {
+		linkTargets[string(match[1])] = true
+	}
 	for _, name := range []string{"InitializeParams", "InitializeResponse", "ClientInfo", "Thread", "ThreadContentParams", "InputItem"} {
-		anchor := "#" + strings.ToLower(name)
-		if !strings.Contains(string(markdown), "]("+anchor+")") {
-			t.Errorf("missing schema link %s", anchor)
+		anchor := strings.ToLower(name)
+		if !linkTargets[anchor] {
+			t.Errorf("missing schema link #%s", anchor)
 		}
 	}
 	// Start independently at every catalog root, not the generator's registered
@@ -460,7 +465,7 @@ func TestReachableWireSchemasAndLinks(t *testing.T) {
 			if _, ok := types[typ.Name()]; !ok {
 				t.Errorf("reachable catalog type %s has no schema", typ)
 			}
-			if !strings.Contains(string(markdown), "](#"+strings.ToLower(typ.Name())+")") {
+			if !linkTargets[strings.ToLower(typ.Name())] {
 				t.Errorf("reachable catalog type %s has no incoming link", typ)
 			}
 		}
@@ -487,7 +492,7 @@ func TestReachableWireSchemasAndLinks(t *testing.T) {
 	for _, match := range regexp.MustCompile("(?m)^### `(\\w+)`$").FindAllSubmatch(markdown, -1) {
 		anchors[strings.ToLower(string(match[1]))] = true
 	}
-	for _, match := range regexp.MustCompile(`\]\(#([^)]*)\)`).FindAllSubmatch(markdown, -1) {
+	for _, match := range links {
 		if !anchors[string(match[1])] {
 			t.Errorf("unresolved schema link %s", match[1])
 		}

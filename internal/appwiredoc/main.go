@@ -168,7 +168,10 @@ func resultType(register func(any) string, m appwire.MethodSpec) string {
 }
 
 func registerType(typeNames map[string]typeView, v any) string {
-	t := reflect.TypeOf(v)
+	return registerReflectType(typeNames, reflect.TypeOf(v))
+}
+
+func registerReflectType(typeNames map[string]typeView, t reflect.Type) string {
 	if t == nil {
 		return "(inline)"
 	}
@@ -191,7 +194,7 @@ func registerType(typeNames map[string]typeView, v any) string {
 func registerNestedTypes(types map[string]typeView, t reflect.Type) {
 	visit := func(nested reflect.Type) {
 		if nested.PkgPath() == reflect.TypeFor[appwire.Thread]().PkgPath() {
-			registerType(types, reflect.Zero(nested).Interface())
+			registerReflectType(types, nested)
 		} else if nested.PkgPath() == "" {
 			registerNestedTypes(types, nested)
 		}
