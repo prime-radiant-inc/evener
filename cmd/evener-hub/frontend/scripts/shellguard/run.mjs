@@ -30,6 +30,7 @@ import { Driver } from "../skillguard/run.mjs";
 import { measureDelayedFloatingDock } from "./startup.mjs";
 import { checkSessionHoverCards } from "./sessionHoverCard.mjs";
 import { checkMovingControls } from "./click-regression.mjs";
+import { checkSettingsHistory } from "./settingsHistory.mjs";
 import {
   DOCKVIEW_READY_LABEL,
   DOCKVIEW_READY_WAIT_EXPR,
@@ -1140,6 +1141,7 @@ async function main() {
     failures.push(...assertFloatingDock(delayedFloatingDock));
     console.log(`shellguard delayed workspace: ${JSON.stringify(delayedFloatingDock)}`);
     failures.push(...await checkSessionHoverCards(cdpEndpoint, vitePort));
+    failures.push(...await checkSettingsHistory(cdpEndpoint, vitePort, clickControl));
     if (failures.length === 0) {
       console.log(
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +
