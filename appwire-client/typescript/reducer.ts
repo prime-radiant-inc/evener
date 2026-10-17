@@ -4586,8 +4586,7 @@ function warningMessage(params: WarningParams): string {
 
 // A frame with no message anywhere is surfaced as the frame itself
 // (appwire/warning.go's DecodeWarningParams: "a malformed warning is visible
-// instead of silent" — cmd/evener-tui/hub_notifications_test.go pins the same
-// contract server-side). Bounded because params is unknown on the wire and
+// instead of silent"). Bounded because params is unknown on the wire and
 // can carry anything; this is package-level code feeding both hosts, and
 // neither host's own display bound can be assumed to run before something
 // else reads item.text.
@@ -4817,8 +4816,7 @@ export function applyNotification<M extends ThreadModel>(
   // grinding through retries looks like the indicator vanished for no reason.
   // No read-model replacement exists for the old turn-boundary clearing rule
   // (a turn boundary carries no notification of its own any more), so only
-  // the model-output-item-completed half survives — same trim as the Go TUI
-  // port's clearModelRetryOnProgress (fc12305a41).
+  // the model-output-item-completed half survives.
   const modelOutputCompleted =
     n.method === "history/updated" &&
     next.history?.turns !== model.history?.turns &&

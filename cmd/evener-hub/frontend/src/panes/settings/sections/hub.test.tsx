@@ -39,10 +39,11 @@ test("fetches the overview on mount and renders the runtime and authentication f
 
   render(<HubSection />);
 
+  await userEvent.setup().click(await screen.findByText("Technical details", { selector: "summary" }));
   expect(await screen.findByText("127.0.0.1:9180")).toBeTruthy();
-  expect(screen.getByText("/tmp/evener-run")).toBeTruthy();
+  expect(screen.queryByText("/tmp/evener-run")).toBeNull();
   expect(screen.getByText("30s")).toBeTruthy();
-  expect(settingsFieldIds()).toEqual(["listen-address", "bearer-token", "run-dir", "spawn-timeout"]);
+  expect(settingsFieldIds()).toEqual(["listen-address", "bearer-token", "spawn-timeout"]);
   for (const field of settingsFieldIds()) {
     expect(settingsFieldHelp(field ?? "")).not.toBeNull();
   }
@@ -98,6 +99,7 @@ describe("on load failure", () => {
     fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
+    await userEvent.setup().click(await screen.findByText("Technical details", { selector: "summary" }));
     expect(await screen.findByText("127.0.0.1:9180")).toBeTruthy();
     await waitFor(() => expect(fake.calls).toHaveLength(3));
   });
@@ -125,6 +127,7 @@ test.each(["fixture-token-age", undefined])("renders only a fixed token mask and
   }));
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
   render(<HubSection />);
+  await userEvent.setup().click(await screen.findByText("Technical details", { selector: "summary" }));
   await screen.findByText("127.0.0.1:9180");
   expect(settingsFieldValue("bearer-token").textContent?.trim()).toBe(age ? `•••••••••••• ${age}` : "••••••••••••");
 });
@@ -137,4 +140,18 @@ test("hides client internals when the overview transport becomes unreachable", a
   render(<HubSection />);
   await waitFor(() => expect(statusReasons(document.body)).toEqual(["unavailable"]));
   expect(screen.queryByText(/AppwireClient/i)).toBeNull();
+});
+
+test("runtime details start folded while resident controls remain available", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+  render(<HubSection />);
+  const toggle = await screen.findByText("Technical details", { selector: "summary" });
+  expect(toggle.closest("details")?.open).toBe(false);
+  expect(settingsFieldIds()).toEqual([]);
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/daemon/list")).toBe(true));
+  await userEvent.setup().click(toggle);
+  expect(settingsFieldIds()).toContain("listen-address");
+  expect(settingsFieldIds()).not.toContain("run-dir");
 });

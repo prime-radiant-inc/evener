@@ -8,7 +8,7 @@ import {
 } from "@evener/appwire-client";
 import { useState } from "react";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
-import { Button, Card, InlineNotice } from "../../../widgets";
+import { Button, Card, Disclosure, InlineNotice } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TranscriptBody } from "../../session/transcript/TranscriptBody";
 import { TranscriptDetailEditor } from "../../session/transcript/TranscriptDetailEditor";
@@ -24,6 +24,7 @@ export interface TranscriptDisplayCardProps {
   disabled?: boolean;
   onChange(config: TranscriptDisplayConfigV1): void;
   onRetry(): void;
+  onClearLocal(): void;
 }
 
 const CLASS = {
@@ -81,7 +82,9 @@ export function TranscriptDisplayCard({
   disabled = false,
   onChange,
   onRetry,
+  onClearLocal,
 }: TranscriptDisplayCardProps) {
+  const [technicalOpen, setTechnicalOpen] = useState(false);
   const [previewModel] = useState(makeTranscriptPreviewModel);
   const config = draft ?? confirmed.config;
   const inventory = visibleCategoryInventory(config);
@@ -94,7 +97,6 @@ export function TranscriptDisplayCard({
         <div className={CLASS.content}>
           <header className={CLASS.heading}>
             <h2 id={`${cardId}-heading`}>{name} default</h2>
-            <span>Hub revision {confirmed.revision}</span>
           </header>
 
           <div className={CLASS.controls} data-testid={`transcript-display-controls-${layout}`}>
@@ -107,10 +109,15 @@ export function TranscriptDisplayCard({
               transcript choice is made.
             </p>
           ) : (
-            <p className={CLASS.scope} data-testid="transcript-display-scope" data-state="local-override">
-              A browser-local live view is overriding this hub default ({contentSummary(localOverride.content)}).
-              Changing this card does not replace that local choice.
-            </p>
+            <div className={CLASS.scope} data-testid="transcript-display-scope" data-state="local-override">
+              <p>
+                A browser-local live view is overriding this hub default ({contentSummary(localOverride.content)}).
+                Changing this card does not replace that local choice.
+              </p>
+              <Button variant="secondary" onClick={onClearLocal}>
+                Use the shared default
+              </Button>
+            </div>
           )}
 
           {saveState === "saving" && (
@@ -147,14 +154,17 @@ export function TranscriptDisplayCard({
                 />
               </div>
             </div>
-            <div className={CLASS.inventory}>
-              <p className={CLASS.inventoryRow} data-inventory="shown" data-categories={inventory.visible.join(" ")}>
-                <strong>Shown:</strong> {categoryList(inventory.visible)}
-              </p>
-              <p className={CLASS.inventoryRow} data-inventory="hidden" data-categories={inventory.hidden.join(" ")}>
-                <strong>Hidden:</strong> {categoryList(inventory.hidden)}
-              </p>
-            </div>
+            <Disclosure summary="Technical details" open={technicalOpen} onOpenChange={setTechnicalOpen}>
+              <div className={CLASS.inventory}>
+                <p>Hub revision {confirmed.revision}</p>
+                <p className={CLASS.inventoryRow} data-inventory="shown" data-categories={inventory.visible.join(" ")}>
+                  <strong>Shown:</strong> {categoryList(inventory.visible)}
+                </p>
+                <p className={CLASS.inventoryRow} data-inventory="hidden" data-categories={inventory.hidden.join(" ")}>
+                  <strong>Hidden:</strong> {categoryList(inventory.hidden)}
+                </p>
+              </div>
+            </Disclosure>
           </section>
         </div>
       </Card>

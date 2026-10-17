@@ -160,16 +160,13 @@ e2e_disarm_reaper() {
 # outrank $HOME/.config/evener (envvars/envvars.go), so leaving them set
 # would load the operator's real providers and credentials instead of the
 # fake backend — a network call and a paid request out of a fixture whose
-# whole point is that neither happens. EVENER_HUB_AUTH_TOKEN is here because
-# evener-tui prefers it over the isolated HOME's auth-token file
-# (cmd/evener-tui/internal/hubstart), so leaving it set would authenticate a
-# TUI against the real hub instead of the disposable one.
+# whole point is that neither happens.
 e2e_isolate_home() {
 	local run_dir="$1"
 	export HOME="$run_dir/home"
 	mkdir -p "$HOME/.config/evener" "$HOME/.local/state/evener"
 	unset XDG_STATE_HOME XDG_CONFIG_HOME XDG_CACHE_HOME
-	unset EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN EVENER_HUB_AUTH_TOKEN EVENER_HUB_ADDR EVENER_HUB_SPAWNED
+	unset EVENER_STATE_DIR EVENER_RUN_DIR EVENER_HUB_TOKEN EVENER_HUB_ADDR EVENER_HUB_SPAWNED
 	unset EVENER_PROVIDERS_CONFIG EVENER_CREDENTIALS_CONFIG
 }
 

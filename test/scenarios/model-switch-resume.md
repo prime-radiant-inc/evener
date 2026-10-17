@@ -24,7 +24,7 @@ live-notification convergence.
 
 1. Spawn the session on model A, wait for idle. Capture the `session_id`.
 2. Switch to model B (e.g. `anthropic/claude-opus-4-6` or any second real,
-   distinct instance/model) via `thread/model/set` (web chip, TUI `/model`,
+   distinct instance/model) via `thread/model/set` (web chip
    or a direct RPC call) — confirm the call returns success and the marker
    turn appears in the transcript.
 3. Find and **kill** the daemon backing the session (same technique as

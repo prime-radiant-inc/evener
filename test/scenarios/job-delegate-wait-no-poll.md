@@ -15,7 +15,7 @@ orientation `job_status` call (ideally zero) and then goes idle.
 - Fresh scenario state dir (own `$EVENER_STATE_DIR` / `$HOME`), so the poll-loop
   detector and any nudge counters start clean and nothing pollutes a real
   instance.
-- A `evener serve` instance and a hub (or TUI) client built from the code under
+- A `evener serve` instance and a hub or web client built from the code under
   test — confirm the running binary is this checkout, not a stale build: its
   reported build commit matches `git rev-parse --short HEAD` (`evener --version`
   prints it; the hub's `/api/health` carries `version` and `backend_git_sha`).
@@ -71,7 +71,7 @@ orientation `job_status` call (ideally zero) and then goes idle.
 
 ## Cleanup
 
-Stop the daemon, hub/TUI client, and any tmux session this card created. Remove
+Stop the daemon and hub/web client this card created. Remove
 the scratch state dir. Leave any pre-existing evener instance running and
 untouched.
 

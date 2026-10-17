@@ -10,8 +10,8 @@ import {
   settingsSectionLabel,
 } from "./sections";
 
-test("has exactly 17 navigation destinations", () => {
-  expect(SETTINGS_SECTIONS).toHaveLength(17);
+test("has exactly 16 navigation destinations", () => {
+  expect(SETTINGS_SECTIONS).toHaveLength(16);
 });
 
 test("every section id is unique", () => {
@@ -44,6 +44,8 @@ test.each([
   ["transcript", "transcript"],
   ["cost", "transcript"],
   ["mobile", "mobile"],
+  ["session defaults", "launch-evener"],
+  ["launch", "launch-evener"],
 ])("control query %s finds its owning destination %s", (query, owner) => {
   expect(
     SETTINGS_SECTIONS.filter((section) => matchesSettingsSection(section, query)).map((section) => section.id),
@@ -54,22 +56,22 @@ test.each(["origin", "TLS"])("unsupported Hub field %s does not offer a destinat
   expect(SETTINGS_SECTIONS.filter((section) => matchesSettingsSection(section, query))).toEqual([]);
 });
 
-test('the "agents-models" cluster has exactly these 5 sections, in order, right after preferences', () => {
+test('the "agents-models" cluster has exactly these 4 sections, in order, right after preferences', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "agents-models");
-  expect(cluster.map((s) => s.id)).toEqual(["credentials", "agents", "agents-md", "launch-evener", "inrepo"]);
-  expect(SETTINGS_SECTIONS.slice(4, 9)).toEqual(cluster);
+  expect(cluster.map((s) => s.id)).toEqual(["credentials", "agents", "agents-md", "launch-evener"]);
+  expect(SETTINGS_SECTIONS.slice(4, 8)).toEqual(cluster);
 });
 
 test('the "extensions" cluster has exactly these 3 sections, in order, right after "agents-models"', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "extensions");
   expect(cluster.map((s) => s.id)).toEqual(["plugins-manager", "skills", "mcp"]);
-  expect(SETTINGS_SECTIONS.slice(9, 12)).toEqual(cluster);
+  expect(SETTINGS_SECTIONS.slice(8, 11)).toEqual(cluster);
 });
 
 test('the "system" cluster has exactly these 5 sections, in order, last', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "system");
   expect(cluster.map((s) => s.id)).toEqual(["hosts", "mobile", "hub", "storage", "about"]);
-  expect(SETTINGS_SECTIONS.slice(12, 17)).toEqual(cluster);
+  expect(SETTINGS_SECTIONS.slice(11, 16)).toEqual(cluster);
 });
 
 test('"about" is the very last section overall', () => {
@@ -117,6 +119,8 @@ test.each([
   ["display", "notifications", "theme"],
   ["general", "notifications", "theme"],
   ["plugins", "notifications", "theme"],
+  ["inrepo", "notifications", "theme"],
+  [undefined, "inrepo", "theme"],
   [undefined, "plugins", "theme"],
   ["plugins-manager", "notifications", "plugins-manager"],
   [undefined, "general", "theme"],

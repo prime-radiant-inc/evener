@@ -99,7 +99,7 @@ served route can still miss that announcement; see
 Cancellation releases read ownership; connection loss
 fences the old epoch, and rejoining establishes a fresh snapshot and ordered
 live stream. These guarantees apply to every AppWire client, including browser
-tabs and background subscriptions, native clients, and the TUI. Reads alone
+tabs and background subscriptions and native clients. Reads alone
 never launch or stop a daemon.
 
 ## Session document reads

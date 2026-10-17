@@ -135,7 +135,7 @@ func pollServeAskStatusUntil(t *testing.T, addr, want string, timeout, interval 
 // pending, and that the reply genuinely resolves it: the reply's own turn
 // (scriptedCommunicate("answered")) is a plain reply, so thread/read settles
 // back to "idle". This drives the real serve daemon
-// (installServeScriptedProvider + runServe, the TestServeGoal_TUIPathEndToEnd
+// (installServeScriptedProvider + runServe, the TestServeGoal_DaemonPathEndToEnd
 // harness) rather than the Session directly, because the turn-end status
 // publication (the bridge's SESSION_END and the serve loop's finish) is a seam
 // agenttest cannot reach.

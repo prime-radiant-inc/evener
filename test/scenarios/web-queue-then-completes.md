@@ -5,8 +5,7 @@ composer's **Send** routes to the queue instead of starting a turn; the queue
 strip shows what is waiting; and when the active turn completes the daemon
 pops the head of the queue and runs it as a **fresh user turn** — not as a
 steer. The user-facing complement to the agent-level
-`TestSession_Enqueue_DrainsAfterTurnCompletes` unit (kata `111a` backend) and
-to the TUI scenario.
+`TestSession_Enqueue_DrainsAfterTurnCompletes` unit (kata `111a` backend).
 
 The card previously read `data-capability-send`/`data-capability-queue` off a
 server-rendered button and POSTed `/s/<id>/queue`. All three are gone with the

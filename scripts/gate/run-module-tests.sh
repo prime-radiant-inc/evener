@@ -7,7 +7,7 @@
 # targets, rapid/sequence fuzz tests, structured fuzz reachability checks, saved
 # fuzz corpus replay, and the fuzz toolkit module are owned by `make fuzz`.
 #
-# The default wave split gives the root module's timing-sensitive TUI tests the
+# The default wave split gives the root module's timing-sensitive tests the
 # machine to themselves, then runs the remaining modules concurrently. Override
 # MODULES, WAVE1, WAVE2, or AGENT_PARALLEL when a caller needs a different local
 # schedule without changing the coverage boundary.
@@ -78,7 +78,7 @@ if [ -z "${WAVE1+x}" ] && [ -z "${WAVE2+x}" ]; then
 	# Giving root the machine to itself looks like idle capacity, but measured on
 	# an idle 10-core box it is the faster arrangement. Moving the five small
 	# modules into wave 1 (12.5s of work against root's ~21s window) slowed the
-	# *total* gate from 64s to 78s: root's timing-sensitive TUI tests stretched
+	# *total* gate from 64s to 78s: root's timing-sensitive tests stretched
 	# 21s -> 37s under the added contention, which cost more than the overlap
 	# saved. Root is latency-sensitive, not throughput-bound — do not "fill" its
 	# wave without re-measuring end to end.

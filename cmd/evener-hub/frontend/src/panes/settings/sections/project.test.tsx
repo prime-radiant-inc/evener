@@ -40,6 +40,40 @@ const SCHEMA: LaunchOptionSchemaResponse = {
 const PROJECT_LAYER: LaunchConfigLayer = {};
 const GLOBAL_LAYER: LaunchConfigLayer = { agent: "evener" };
 
+test("project settings review repository trust without replacing an unsaved local override", async () => {
+  setQueryCwd("/repo");
+  const fake = connectFakeClient();
+  let trusted = false;
+  const approvals: unknown[] = [];
+  fake.on("evener/launch/schema", () => SCHEMA);
+  fake.on("evener/launch/getLayer", () => ({}));
+  fake.on("evener/launch/resolve", () => ({
+    effective: {},
+    layers: {},
+    provenance: {},
+    repo: {
+      path: "/repo/.evener/launch.toml",
+      trust: trusted ? "trusted" : "untrusted",
+      hash: "reviewed-hash",
+      preview: 'agent = "repo-agent"',
+    },
+  }));
+  fake.on("evener/launch/trustRepo", (params) => {
+    approvals.push(params);
+    trusted = true;
+    return { effective: {}, layers: {}, provenance: {} };
+  });
+  render(<ProjectSection sectionId="project" />);
+  const agent = await screen.findByLabelText("Agent");
+  const user = userEvent.setup();
+  await user.type(agent, "local-draft");
+  expect(approvals).toEqual([]);
+  await user.click(await screen.findByRole("button", { name: /trust this file/i }));
+  await waitFor(() => expect(screen.getByTestId("inrepo-status").getAttribute("data-state")).toBe("trusted"));
+  expect(approvals).toEqual([{ cwd: "/repo", hash: "reviewed-hash" }]);
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).value).toBe("local-draft");
+});
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetLaunchConfigStoreForTests();
@@ -104,6 +138,28 @@ describe("3-state loaded contract", () => {
 });
 
 describe("save", () => {
+  test("repository inspection failure leaves local overrides editable and saveable", async () => {
+    setQueryCwd("/repo");
+    const fake = connectFakeClient();
+    fake.on("evener/launch/schema", () => SCHEMA);
+    fake.on("evener/launch/getLayer", () => ({}));
+    fake.on("evener/launch/resolve", () => {
+      throw new Error("inspection unavailable");
+    });
+    const saved: unknown[] = [];
+    fake.on("evener/launch/setLayer", (params) => {
+      saved.push(params);
+      return { effective: {}, layers: {}, provenance: {} };
+    });
+    render(<ProjectSection sectionId="project" />);
+    const user = userEvent.setup();
+    await user.type(await screen.findByLabelText("Agent"), "local-agent");
+    await waitFor(() => expect(screen.getByTestId("inrepo-status").getAttribute("data-state")).toBe("error"));
+    await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]).toMatchObject({ cwd: "/repo", layer: "project", config: { agent: "local-agent" } });
+  });
+
   test("saves to the project layer (not global) and toasts the project-specific success message", async () => {
     setQueryCwd("/repo");
     const fake = connectFakeClient();

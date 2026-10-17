@@ -206,8 +206,33 @@ async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
     }
     const focus = detail ? await measureTrustedFocus(send) : null;
     const finalMeasurement = JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
+    let settingsLayouts = null;
+    if (url.includes("settings=1")) {
+      const initialLayout = realizedLayout.mobile ? "mobile" : "desktop";
+      const otherLabel = realizedLayout.mobile ? "Desktop" : "Mobile";
+      await evaluate(
+        send,
+        `(() => {
+        const selector = [...document.querySelectorAll('[role="radiogroup"]')].find((group) =>
+          (group.getAttribute("aria-label") ?? document.getElementById(group.getAttribute("aria-labelledby"))?.textContent) === "Device layout");
+        const option = [...(selector?.querySelectorAll('[role="radio"]') ?? [])]
+          .find((node) => node.textContent.trim() === ${JSON.stringify(otherLabel)});
+        if (!option) throw new Error("device layout selector option is missing");
+        option.click();
+      })()`,
+      );
+      await waitForDynamicViewport(send);
+      settingsLayouts = [
+        { layout: initialLayout, measurement: finalMeasurement },
+        {
+          layout: initialLayout === "mobile" ? "desktop" : "mobile",
+          measurement: JSON.parse(await evaluate(send, "JSON.stringify(window.measure())")),
+        },
+      ];
+    }
     return {
       ...finalMeasurement,
+      settingsLayouts,
       exceptionSafety,
       detail,
       focus,
@@ -1188,10 +1213,33 @@ function assertCanvases(result, width) {
 
 function assertSettings(result, width) {
   const failures = [];
-  if (result.cardsFound !== 2) failures.push(`expected two production Settings cards, found ${result.cardsFound}`);
-  if (result.previewsFound !== 2)
-    failures.push(`expected two production Settings previews, found ${result.previewsFound}`);
-  if (!result.cardsStacked) failures.push("Settings Desktop/Mobile cards are not stacked");
+  if (!Array.isArray(result.settingsLayouts) || result.settingsLayouts.length !== 2) {
+    return ["Settings must measure both layouts through the device selector"];
+  }
+  for (const { layout, measurement } of result.settingsLayouts) {
+    if (measurement.cardsFound !== 1 || measurement.previewsFound !== 1) {
+      failures.push(
+        `${layout} must show exactly one card and preview, found ${measurement.cardsFound}/${measurement.previewsFound}`,
+      );
+    }
+    if (measurement.editors?.[0]?.layout !== layout) failures.push(`${layout} selector did not select its editor`);
+  }
+  // Each layout is measured separately, retaining geometry coverage for both.
+  result = {
+    ...result,
+    cardOverflowCount: result.settingsLayouts.reduce((count, item) => count + item.measurement.cardOverflowCount, 0),
+    previewOverflowCount: result.settingsLayouts.reduce(
+      (count, item) => count + item.measurement.previewOverflowCount,
+      0,
+    ),
+    previewInnerScrollCount: result.settingsLayouts.reduce(
+      (count, item) => count + item.measurement.previewInnerScrollCount,
+      0,
+    ),
+    scrollContainers: result.settingsLayouts.flatMap((item) => item.measurement.scrollContainers),
+    editors: result.settingsLayouts.flatMap((item) => item.measurement.editors),
+    canvases: result.settingsLayouts.flatMap((item) => item.measurement.canvases),
+  };
   if (result.cardOverflowCount !== 0) failures.push(`Settings card overflow count is ${result.cardOverflowCount}`);
   if (result.previewOverflowCount !== 0)
     failures.push(`Settings preview overflow count is ${result.previewOverflowCount}`);
@@ -1693,7 +1741,7 @@ async function main() {
         failed++;
         console.log(`${width}px Settings ... FAIL - ${settingsFailures.join("; ")}`);
       } else {
-        console.log(`${width}px Settings ... PASS - cards stack and previews have no inner scroll`);
+        console.log(`${width}px Settings ... PASS - both layouts select one editor and previews have no inner scroll`);
       }
     }
   } finally {

@@ -532,7 +532,7 @@ The current schema rejects `type`, `api_style`, `quirks`, `[instances.*]`, and
    instance name — and otherwise application-default credentials (the
    `GOOGLE_APPLICATION_CREDENTIALS` variable or the well-known file); it
    never reads `api_key_env` or a `<NAME>_API_KEY` variable. A store entry
-   under a `gcp-adc` instance that is not a credential JSON evener can use —
+   under a `gcp-adc` instance that is not a credential JSON Evener can use —
    invalid JSON, a type other than `service_account` / `authorized_user`
    (for example a stale API key, or an `external_account` configuration), or
    a JSON missing the fields its type needs to mint a token (`client_email`
@@ -756,7 +756,7 @@ injected at construction (cycle-free: `cmd/evener` builds the closure;
   fast (prompt and tool surfaces differ too much to fall back silently);
   same-surface is allowed.
 
-## Tool choice: evener never forces it
+## Tool choice: Evener never forces it
 
 `Session.buildModelRequest` (`agent/session_model_call.go`) sends
 `ToolChoice: &llm.ToolChoice{Mode: "auto"}` on every main model call, and
@@ -764,7 +764,7 @@ never a forcing mode (`"required"` or a named tool). This is deliberate and
 regression-guarded, not an oversight.
 
 **Why.** A model that cannot honor a forcing `tool_choice` has no legal way
-to stop, and evener targets arbitrary models on arbitrary gateways where that
+to stop, and Evener targets arbitrary models on arbitrary gateways where that
 capability is not knowable in advance. Measured against glm-5.2-vision (full
 system prompt, interleaved arms in one window): `auto` finished cleanly 3/3,
 one tool call, under 15s. `required` never terminated 3/3, emitting
@@ -875,7 +875,7 @@ transcript marker.
 - [`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md) —
   credentials store, provider env-var reference, OpenAI OAuth, and the hub →
   `launch-check` → `evener serve` process model.
-- [`ollama.md`](ollama.md) — running evener against a local Ollama server.
+- [`ollama.md`](ollama.md) — running Evener against a local Ollama server.
 - [`superpowers/specs/2026-08-28-provider-registry-design.md`](superpowers/specs/2026-08-28-provider-registry-design.md)
   — the registry design: data model, layers, resolution, and the flag day.
 - Historical point-in-time audits live under `docs/audit-logs/` (Feb 2026;

@@ -124,7 +124,7 @@ spawned session actually runs with.
 
 ## Launch configuration
 
-[Configuration](configuration.md) owns launch-file locations, trust, precedence, merging, and reload. Use Settings → Agent setup → Evener launch for user defaults, project settings for local overrides and repository review, and New session for one launch. Select the host before editing host-scoped settings.
+[Configuration](configuration.md) owns launch-file locations, trust, precedence, merging, and reload. Use Settings → Agent setup → Session defaults for user defaults, project settings for local overrides and repository review, and New session for one launch. Select the host before editing host-scoped settings.
 
 The launch resolver reads user defaults, trusted cwd-local shared settings, private project settings, and per-launch overrides. It reports diagnostics and provenance. API logging inherits the hub default only when no launch layer supplies a value. Neither a browser reload nor a saved setting changes an already-running daemon's configuration.
 

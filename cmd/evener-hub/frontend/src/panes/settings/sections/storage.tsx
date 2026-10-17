@@ -1,6 +1,13 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
-import { Button, InlineNotice, PropertyList, Skeleton, type StackedPropertyListRow } from "../../../widgets";
+import {
+  Button,
+  Disclosure,
+  InlineNotice,
+  PropertyList,
+  Skeleton,
+  type StackedPropertyListRow,
+} from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SESSION_CACHE_HELP, SESSION_CACHE_LABEL, SessionCacheStatus } from "./sessionCacheRow";
 import { Code, FieldDim, FieldValue } from "./settingsField";
@@ -19,6 +26,7 @@ function pastCountCopy(count: number): string {
 
 /** Runtime paths, optional past-session index and browser session cache. */
 export function StorageSection() {
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const data = useSettingsOverviewStore((s) => s.data);
   const loading = useSettingsOverviewStore((s) => s.loading);
   const error = useSettingsOverviewStore((s) => s.error);
@@ -54,71 +62,75 @@ export function StorageSection() {
 
   return (
     <div className={CLASS.root}>
-      <p className={CLASS.help}>Paths and file locations used by the hub at runtime.</p>
       <PropertyList
         layout="stacked"
-        rows={
-          [
-            {
-              label: "State dir",
-              value: <FieldValue field="state-dir">{data.storage?.stateDir ?? ""}</FieldValue>,
-              help: "Root directory for hub state: auth token, credentials, and project sub-directories.",
-            },
-            {
-              label: "Run dir",
-              value: <FieldValue field="run-dir">{hub?.runDir ?? ""}</FieldValue>,
-              help: "Per-PID rendezvous files; the hub watches this directory to discover live daemons.",
-            },
-            {
-              label: "Hub config",
-              value: (
-                <FieldValue field="hub-config">
-                  <Code>~/.config/evener/hub.toml</Code>
-                </FieldValue>
-              ),
-              help: "Main configuration file. Edit it to change addresses, providers, and spawn defaults.",
-            },
-            ...(pastIndex !== undefined
-              ? [
-                  {
-                    label: "Past index",
-                    value: (
-                      <FieldValue field="past-index">
-                        {pastIndex.path} {pastIndex.size !== undefined && <FieldDim>{pastIndex.size}</FieldDim>}
-                      </FieldValue>
-                    ),
-                    help: (
-                      <>
-                        SQLite database of past session metadata. Search results in <Code>⌘K</Code> come from here.{" "}
-                        {pastCountCopy(pastIndex.count ?? 0)}
-                      </>
-                    ),
-                  },
-                ]
-              : []),
-            ...(pastIndex?.perPage !== undefined
-              ? [
-                  {
-                    label: "Past results per page",
-                    value: <FieldValue field="past-results-per-page">{pastIndex.perPage}</FieldValue>,
-                  },
-                ]
-              : []),
-            // The session-history cache row (spec, "The clear-cached-sessions
-            // setting"): its value is its own component because its state is its
-            // own store with a per-render count, unlike the overview-fed rows above.
-            {
-              label: SESSION_CACHE_LABEL,
-              value: (
-                <FieldValue field="session-cache">
-                  <SessionCacheStatus />
-                </FieldValue>
-              ),
-              help: SESSION_CACHE_HELP,
-            },
-          ] satisfies StackedPropertyListRow[]
-        }
+        rows={[
+          {
+            label: SESSION_CACHE_LABEL,
+            value: (
+              <FieldValue field="session-cache">
+                <SessionCacheStatus />
+              </FieldValue>
+            ),
+            help: SESSION_CACHE_HELP,
+          },
+        ]}
       />
+      <Disclosure summary="Technical details" open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <p className={CLASS.help}>Paths and file locations used by the hub at runtime.</p>
+        <PropertyList
+          layout="stacked"
+          rows={
+            [
+              {
+                label: "State dir",
+                value: <FieldValue field="state-dir">{data.storage?.stateDir ?? ""}</FieldValue>,
+                help: "Root directory for hub state: auth token, credentials, and project sub-directories.",
+              },
+              {
+                label: "Run dir",
+                value: <FieldValue field="run-dir">{hub?.runDir ?? ""}</FieldValue>,
+                help: "Per-PID rendezvous files; the hub watches this directory to discover live daemons.",
+              },
+              {
+                label: "Hub config",
+                value: (
+                  <FieldValue field="hub-config">
+                    <Code>~/.config/evener/hub.toml</Code>
+                  </FieldValue>
+                ),
+                help: "Main configuration file. Edit it to change addresses, providers, and spawn defaults.",
+              },
+              ...(pastIndex !== undefined
+                ? [
+                    {
+                      label: "Past index",
+                      value: (
+                        <FieldValue field="past-index">
+                          {pastIndex.path} {pastIndex.size !== undefined && <FieldDim>{pastIndex.size}</FieldDim>}
+                        </FieldValue>
+                      ),
+                      help: (
+                        <>
+                          SQLite database of past session metadata. Search results in <Code>⌘K</Code> come from here.{" "}
+                          {pastCountCopy(pastIndex.count ?? 0)}
+                        </>
+                      ),
+                    },
+                  ]
+                : []),
+              ...(pastIndex?.perPage !== undefined
+                ? [
+                    {
+                      label: "Past results per page",
+                      value: <FieldValue field="past-results-per-page">{pastIndex.perPage}</FieldValue>,
+                    },
+                  ]
+                : []),
+            ] satisfies StackedPropertyListRow[]
+          }
+        />
+      </Disclosure>
     </div>
   );
 }

@@ -3,7 +3,7 @@
 **Connecting your first provider?** Follow [Connecting a provider](connecting-a-provider.md)
 for the New session → connection → model → Start walkthrough.
 
-How evener stores provider credentials, signs you in to OpenAI, and how the
+How Evener stores provider credentials, signs you in to OpenAI, and how the
 **hub** turns a launch request into a running model session.
 
 Companion docs:
@@ -106,7 +106,7 @@ Wherever a credential value accepts an environment-variable reference —
 `api_key` and `credential_headers` — it also accepts a command
 expression, `$(...)`: the command runs through your shell and its
 whitespace-trimmed stdout becomes the value. This is how a gateway whose
-credentials live outside evener gets used: the key stays in your password
+credentials live outside Evener gets used: the key stays in your password
 manager, or the command obtains a short-lived token. Evener caches the result
 within each process rather than running the command for every request. Display `headers`
 and transport `vars` do not run commands: a command's output is a
@@ -130,7 +130,7 @@ first — the trimmed stdout is the value, verbatim. MCP server config
 accepts the same forms in the fields it expands (command, args, env, url,
 headers) in the layers you author yourself — the global
 `~/.config/evener/mcp.json` and `--mcp-config` files. The project's
-`.evener/mcp.json` and plugin configs are content evener does not author,
+`.evener/mcp.json` and plugin configs are content Evener does not author,
 so they refuse `$(command)` at load and skip the layer with a warning.
 
 The rules that matter in practice:
@@ -449,6 +449,6 @@ files are renamed or deleted.
 
 - [`llm-providers.md`](llm-providers.md) — the registry: layers, instances,
   resolution, wire protocols, and the implicit provider table.
-- [`ollama.md`](ollama.md) — running evener against a local Ollama server.
+- [`ollama.md`](ollama.md) — running Evener against a local Ollama server.
 - [`superpowers/specs/2026-08-28-provider-registry-design.md`](superpowers/specs/2026-08-28-provider-registry-design.md)
   — the registry design: data model, layers, resolution, and the flag day.

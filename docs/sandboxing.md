@@ -137,7 +137,7 @@ access it already had. Stored files and earlier conversation remain. See
 Both flags are available on `evener` and `evener serve`. `--sandbox-net` is meaningful
 only when a non-off `--sandbox` mode is set; with `--sandbox off` it is ignored.
 
-When a session starts sandboxed, evener prints one line to stderr stating exactly
+When a session starts sandboxed, Evener prints one line to stderr stating exactly
 what is enforced on this host — the backend, the mode, the network decision, that
 credential/secret paths are masked, and how the language caches are served — for
 example:
@@ -190,7 +190,7 @@ degrades only the git line.
 All sandboxed modes share a common floor: a per-session writable temp directory
 (exported as `TMPDIR`), the secrets + pseudo-filesystem denylist (masked in both
 layers), git config/hook protection, a fresh PID namespace with its own `/proc`, a
-minimal `/dev`, the environment floor, and no inherited evener file descriptors or
+minimal `/dev`, the environment floor, and no inherited Evener file descriptors or
 sockets beyond stdio.
 
 On Linux, bubblewrap gives spawned processes a private `/tmp`, so "anywhere" in
@@ -366,7 +366,7 @@ receive a warning. The table below describes requested modes, not that fallback.
 | macOS with `/usr/bin/sandbox-exec` (present on every stock install) | all modes, `--sandbox-net` on or off | — |
 | Linux without a usable bubblewrap, Windows, macOS without `sandbox-exec`, any other OS | `off` only | any non-off mode refuses to start |
 
-On Linux, "bubblewrap usable" means more than the binary being present: evener runs a
+On Linux, "bubblewrap usable" means more than the binary being present: Evener runs a
 real unprivileged-user-namespace probe at startup, so a host that ships `bwrap` but
 blocks unprivileged user namespaces (for example Ubuntu 24.04 with
 `apparmor_restrict_unprivileged_userns=1`) reports *not capable* and refuses a
@@ -399,7 +399,7 @@ file tool nor a spawned process can read them:
   `/run/containerd/containerd.sock`, `/run/dbus/system_bus_socket`).
 
 Masking `/proc` is load-bearing: without it a `read_file("/proc/<evener-pid>/environ")`
-would leak evener's own environment, including the provider API key. Masking the
+would leak Evener's own environment, including the provider API key. Masking the
 daemon sockets turns a `connect()` into `ECONNREFUSED`, so a session cannot drive a
 container daemon straight to host root even with `--sandbox-net off` (a read-only
 bind of `/` does not block a Unix-socket `connect()`, and `--unshare-net` does not
@@ -486,7 +486,7 @@ But every git **config and hook** surface is read-only:
 
 Denying a surface that does not exist yet is what stops it being *planted*, and on
 bubblewrap that denial is a mount, which materializes the name on the real
-filesystem and leaves it there after the session. So evener pre-creates an absent
+filesystem and leaves it there after the session. So Evener pre-creates an absent
 `commondir` holding `.` before pinning it: an empty `commondir` is fatal to git
 forever after, and `.` is both the only content git accepts and exactly what a git
 dir without the file already means (it is its own common dir). No other protected
@@ -575,7 +575,7 @@ floor holds either way.
 
 ## The environment floor
 
-On top of evener's existing scrub of `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*`/
+On top of Evener's existing scrub of `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*`/
 `*CREDENTIAL*` variables, a sandboxed session raises an additional floor on every
 spawned process:
 
@@ -605,7 +605,7 @@ than the problem warrants. Ruled 2026-08-06: accept and document the noise
 rather than ship an env var that does nothing.
 
 ssh-agent and gpg-agent Unix sockets are not bind-mounted into the sandbox, and
-spawned commands inherit no evener file descriptors beyond stdio — not evener's live
+spawned commands inherit no Evener file descriptors beyond stdio — not Evener's live
 LLM-API connection, not a credential fd.
 
 ## Network
@@ -647,7 +647,8 @@ path, and a truncated command, never the file contents or a full secret path.
 In a non-interactive session a denial is final. In an interactive root session with a
 UI client attached (subscribed to the thread), a `read_file`, `write_file`, or
 `edit_file` denial for being outside the sandbox's roots can be escalated to a
-human-gated approval card — "Allow" / "Deny" in the web UI — that blocks the tool call until answered
+human-gated approval card — "Allow" / "Deny" in the web UI or the native app —
+that blocks the tool call until answered
 (`evener/sandbox/escalation/requested` → `evener/sandbox/escalation/resolve`, see
 [docs/appwire-protocol.md](appwire-protocol.md)). Shell/kernel denials, `apply_patch`,
 the browse tools, and a masked/git-protected/symlinked/escape denial all stay final,
@@ -724,8 +725,10 @@ The grant is tightly bounded:
   when it is fewer than two path components deep. So `/`, `/Users`, `/home`,
   `/private`, `/var`, `/Volumes` and `/tmp` can never be granted. Paths are
   symlink-resolved *and* stripped of their `/System/Volumes/Data` firmlink alias
-  before this check, so neither spelling of a path can slip past it. Note that the
-  denylist alone cannot do this job: it drops roots at or *beneath* a masked path,
+  before this check. A candidate that is the same directory as an entry directly
+  under `/` is also refused, even when a symlink gives it a deeper canonical path,
+  such as `/var` → `/private/var`. Note that the denylist alone cannot do this job:
+  it drops roots at or *beneath* a masked path,
   and these are *above* them.
 
 An MCP `command` or argument contributes only when it is a **regular file**, and it
@@ -784,6 +787,6 @@ suite runs the generated profiles under the real `sandbox-exec` when
 
 - [docs/developing-evener/worktrees.md](developing-evener/worktrees.md) — the worktree model that backs delegate
   isolation.
-- [Environment variables](environment-variables.md) — the environment variables evener reads.
+- [Environment variables](environment-variables.md) — the environment variables Evener reads.
 - [docs/subagent-runtime-contracts.md](subagent-runtime-contracts.md) — the runtime
   contracts subagents, plugins, and hooks operate under.

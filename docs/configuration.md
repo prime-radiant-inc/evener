@@ -6,7 +6,7 @@ Use launch settings to choose how a new session runs, provider settings to choos
 
 | Change | Where to make it | Scope and when it takes effect |
 | --- | --- | --- |
-| Model, reasoning, sandbox, limits, extra extension paths | Settings → Agent setup → Evener launch, project settings, or New session overrides | Next launch, not an edit to a running session |
+| Model, reasoning, sandbox, limits, extra extension paths | Settings → Agent setup → Session defaults, project settings, or New session overrides | Next launch, not an edit to a running session |
 | Provider endpoint, protocol, model facts | Provider connection editor or `providers.toml` | Hub reloads valid external edits, new processes load their own registry |
 | API key or OAuth sign-in | Connect provider or provider settings | Named instance on the selected host |
 | Hub listener, discovery paths, indexing | `hub.toml` and hub startup flags | Restart the hub |
@@ -90,7 +90,7 @@ The next hub launch uses `high`, keeps `workspace-write` and network off, and ke
 
 ### Review shared configuration before trusting it
 
-Open the project's repository launch review in Settings. Read the preview, especially commands, MCP servers, extension directories, environment, and prompt files. Approve only content you intend to execute. Trust is stored against a canonical content hash in project metadata, not just a filename. Changed content can require a new decision; known hashes support switching between reviewed versions.
+Open the project's menu in the sidebar, choose **Project settings**, then review **Repository settings**. Read the preview, especially commands, MCP servers, extension directories, environment, and prompt files. **Trust this file** approves the displayed content; approve only content you intend to execute. Edit **Local overrides** separately. Trust is stored against a canonical content hash in project metadata, not just a filename. Changed content can require a new decision; known hashes support switching between reviewed versions.
 
 Repo-layer paths must be relative and stay inside the selected working directory. The resolver anchors valid paths there and drops invalid entries with diagnostics. User and private project path entries must be absolute. A file being trusted does not exempt its paths from validation.
 

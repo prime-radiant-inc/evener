@@ -313,7 +313,7 @@ func TestClientUpgradeRoundTrip(t *testing.T) {
 	transport.reads <- ResponseMessage(written.Request.ID, UpgradeResponse{
 		Channel:        "snapshot",
 		Archive:        "evener_linux_amd64.tar.gz",
-		RestartMessage: "Restart evener-tui and evener-hub to use the upgraded binaries.",
+		RestartMessage: "Restart evener to use the upgraded binary.",
 	})
 
 	var result struct {

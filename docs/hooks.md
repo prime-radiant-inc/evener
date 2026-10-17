@@ -8,12 +8,16 @@ provider charges. Start with a command handler that makes no model call.
 
 ## Add and verify a startup hook
 
-You need Evener with a configured provider and `bash` on the session host. From
-an Evener source checkout, use the complete
-[`hello-plugin` fixture](examples/extensions/hello-plugin/hooks/hooks.json):
+You need Evener with a configured provider and `bash` on the session host. Get
+an Evener checkout with the [example clone command](getting-started.md#prepare-the-example),
+then run from the resulting `evener-docs` directory. No Evener build is needed.
+The complete [`hello-plugin` fixture](examples/extensions/hello-plugin/hooks/hooks.json)
+runs a startup hook. The session makes a real provider call and may incur charges;
+`--sandbox read-only` prevents writes to the checkout but permits reads outside
+it and writes to session scratch.
 
 ```bash
-evener --plugin-dir ./docs/examples/extensions/hello-plugin "Reply briefly."
+evener --sandbox read-only --plugin-dir ./docs/examples/extensions/hello-plugin "Reply briefly."
 ```
 
 This plugin has a manifest and a `SessionStart` hook. The hook uses exec-form
@@ -56,15 +60,15 @@ The reference below distinguishes supported behavior from fields that only parse
 Use the sections below to check hook discovery, event support, matchers, handlers,
 and input/output contracts. Parsed fields marked reserved have no runtime effect.
 
-## How evener discovers your hooks
+## How Evener discovers your hooks
 
-Point evener at one or more plugin directories with `--plugin-dir`:
+Point Evener at one or more plugin directories with `--plugin-dir`:
 
 ```bash
 evener --plugin-dir ./my-plugin "do the thing"
 ```
 
-For each plugin directory, evener reads hooks from the **first** of these it finds:
+For each plugin directory, Evener reads hooks from the **first** of these it finds:
 
 1. **A manifest-referenced path.** If the plugin manifest
    (`.claude-plugin/plugin.json`, or `.codex-plugin/plugin.json` as a fallback) has a `hooks`
@@ -112,7 +116,7 @@ wrapper):
 The structure is the same either way: each event maps to an array of **matcher
 groups**; each group has a `matcher` and an array of **handlers**.
 
-## Which events evener fires
+## Which events Evener fires
 
 Evener fires **nine** events. A hook on any other event name is parsed but never
 runs (and warns loudly at load — see [Misconfiguration
@@ -130,7 +134,7 @@ warnings](#misconfiguration-warnings-loud-not-silent)).
 | `SessionEnd` | at session teardown | session end reason (not yet wired) |
 | `Notification` | on a user-visible notification | notification type (not yet wired) |
 
-All nine are tier `claude-compatible-subset`: evener fires them with a
+All nine are tier `claude-compatible-subset`: Evener fires them with a
 Claude-compatible **subset** of the behavior. None is a complete end-to-end
 reimplementation of the Claude event — for example `PreToolUse` honors `allow` and
 `deny` decisions but not `ask`/`defer` (no interactive permission prompt), and
@@ -145,7 +149,7 @@ around the call like any other.
 
 **Other Claude events are reserved, not fired.** Names like `PostToolUseFailure`,
 `PermissionRequest`, `SubagentStart`, `PostCompact`, `Setup`, `FileChanged`, and
-the rest of the Claude vocabulary are *recognized* (evener knows they are real
+the rest of the Claude vocabulary are *recognized* (Evener knows they are real
 Claude events) but **reserved** — declaring a hook for one parses cleanly and
 warns that the event is not fired yet. The full event vocabulary and the roadmap
 live in
@@ -181,17 +185,17 @@ undo a tool that already ran.
 
 ## The #1 mistake: `shell` → `Bash`
 
-> **Matchers run against the _Claude_ tool name, not evener's name.** Evener's shell
+> **Matchers run against the _Claude_ tool name, not Evener's name.** Evener's shell
 > tool is presented to hooks as **`Bash`**. A matcher of `"shell"` silently never
 > fires. Use `"Bash"`.
 
-When evener loads Claude-style plugins, tool names meet two vocabularies: evener's
+When Evener loads Claude-style plugins, tool names meet two vocabularies: Evener's
 engine uses canonical names (`shell`, `read_file`, `edit_file`), while Claude
-(and your hook matcher) names them `Bash`, `Read`, `Edit`. Before matching, evener
+(and your hook matcher) names them `Bash`, `Read`, `Edit`. Before matching, Evener
 translates the tool to its Claude name (`agent/internal/toolname`), so your
 matcher must name the **Claude** tool:
 
-| You want to match… | evener canonical name | matcher you must write |
+| You want to match… | Evener canonical name | matcher you must write |
 |---|---|---|
 | the shell tool | `shell` | `Bash` |
 | file reads | `read_file` | `Read` |
@@ -240,14 +244,14 @@ Two traps worth calling out:
 - **The matcher is the Claude tool name** — see [the gotcha
   above](#the-1-mistake-shell--bash).
 
-> **Evener-native nicety:** evener trims surrounding whitespace from the matcher
+> **Evener-native nicety:** Evener trims surrounding whitespace from the matcher
 > before classifying it, so `" Bash "` is treated as the exact matcher `"Bash"`.
 > Claude treats the matcher as a literal regex and would not trim. This is a
 > minor, intentional divergence.
 
 ### Matcher targets by event
 
-For the events evener fires, the matcher is tested against:
+For the events Evener fires, the matcher is tested against:
 
 - **Tool events** (`PreToolUse`, `PostToolUse`): the **Claude tool name**,
   including `<server>__<tool>` (see the [gotcha](#the-1-mistake-shell--bash)).
@@ -267,10 +271,10 @@ built-in communicate nudge, or final-round salvage.
 
 ### Go RE2, not JavaScript regex
 
-Claude documents JavaScript regular expressions; evener matches with **Go RE2**.
+Claude documents JavaScript regular expressions; Evener matches with **Go RE2**.
 RE2 is a strict subset: **lookbehind** (`(?<=...)`, `(?<!...)`) and
 **backreferences** (`\1`) are not supported. A matcher using either is treated as
-an **invalid regex**: evener skips the hook and emits a warning naming the plugin,
+an **invalid regex**: Evener skips the hook and emits a warning naming the plugin,
 event, and matcher — it never silently mis-matches. Rewrite such matchers with
 RE2-compatible alternatives. (Almost all real-world Claude matchers are already
 RE2-compatible.)
@@ -278,7 +282,7 @@ RE2-compatible.)
 ## Handlers
 
 Each matcher group holds an array of **handlers**. Evener runs two handler types
-today: `command` (a process) and `prompt` (an LLM call, evener-native sugar). The
+today: `command` (a process) and `prompt` (an LLM call, Evener-native sugar). The
 `http`, `mcp_tool`, and `agent` types are **reserved** — they parse but are
 skipped with a diagnostic; see
 [07](subagent-management/07-lifecycle-hooks-claude-compat.md#handler-types).
@@ -310,9 +314,9 @@ its [output](#what-your-hook-returns) from stdout/stderr.
 
 #### Shell form vs. exec form
 
-- **Shell form** (`command`, omitted or empty `args`): evener runs `bash -c "<command>"`. The
+- **Shell form** (`command`, omitted or empty `args`): Evener runs `bash -c "<command>"`. The
   shell expands variables, globs, and pipes. This is the default.
-- **Exec form** (`command` + nonempty `args`): evener spawns the program **directly, with no
+- **Exec form** (`command` + nonempty `args`): Evener spawns the program **directly, with no
   shell**. `command` is the executable; `args` are passed verbatim. Use this for
   paths with spaces and to avoid shell expansion.
 
@@ -332,7 +336,7 @@ without quoting gymnastics:
 
 When `args` is nonempty, `shell` is ignored. An empty array uses shell form.
 
-> **`async` / `asyncRewake`** are command-only fields that evener parses but does
+> **`async` / `asyncRewake`** are command-only fields that Evener parses but does
 > not execute yet (reserved). A hook that sets them runs **synchronously** today.
 
 #### Selecting the shell
@@ -353,7 +357,7 @@ Evener sets these in the command's environment:
 | Variable | Value |
 |---|---|
 | `CLAUDE_PLUGIN_ROOT` | your plugin's directory (absolute) |
-| `PLUGIN_ROOT` | evener-native alias of `CLAUDE_PLUGIN_ROOT` |
+| `PLUGIN_ROOT` | Evener-native alias of `CLAUDE_PLUGIN_ROOT` |
 | `CLAUDE_PROJECT_DIR` | the session's working directory |
 | `CLAUDE_EFFORT` | the session's reasoning-effort level — **only when configured** |
 
@@ -364,7 +368,7 @@ plugin's files in the path itself, as in the examples above.
 Evener does not set `CLAUDE_PLUGIN_DATA`, `CLAUDE_CODE_REMOTE`, or
 `CLAUDE_ENV_FILE` today. Do not depend on them in a hook.
 
-### The `prompt` handler (evener-native sugar)
+### The `prompt` handler (Evener-native sugar)
 
 `type: "prompt"` runs an LLM call instead of a process, substituting
 `$TOOL_INPUT`, `$TOOL_RESULT`, `$USER_PROMPT`, `$MESSAGE`, and `$TOOL_NAME` into
@@ -376,13 +380,13 @@ used.
 { "type": "prompt", "prompt": "Is `$TOOL_INPUT` safe to run? Reply with JSON.", "model": "openai/gpt-5.4-mini" }
 ```
 
-It works today but is evener-specific sugar; the Claude-compatible `$ARGUMENTS` /
+It works today but is Evener-specific sugar; the Claude-compatible `$ARGUMENTS` /
 `{ok, reason}` form is reserved. The `http`, `mcp_tool`, and `agent` handler
 types are **reserved and skipped** (with a diagnostic) — they do not run yet.
 
 ## The input your hook receives
 
-A command hook reads a single JSON object on stdin. The fields evener populates:
+A command hook reads a single JSON object on stdin. The fields Evener populates:
 
 ```json
 {
@@ -409,7 +413,7 @@ Notes:
 - Fields are **omitted when empty** — `tool_name`/`tool_input` only appear for
   tool events, `transcript_path` only when persistence is on, `effort` only when
   configured, and so on.
-- `tool_result` and `user_prompt` are **legacy evener aliases** kept during
+- `tool_result` and `user_prompt` are **legacy Evener aliases** kept during
   migration. Prefer the official `tool_response` and `prompt`; the aliases will
   not necessarily survive forever.
 - `permission_mode`, `agent_id`, `agent_type`, and `CLAUDE_CODE_REMOTE` are part
@@ -427,22 +431,22 @@ Evener reads the command's **stdout**, **stderr**, and **exit code**.
 - **Exit 0, plain-text stdout** → reaches the **model** only for `SessionStart` and
   `UserPromptSubmit` (context events); for all other events it is shown to the
   **user** as a diagnostic warning. This is a deliberate divergence from Claude,
-  which debug-logs non-context plain stdout to neither model nor user; evener surfaces
+  which debug-logs non-context plain stdout to neither model nor user; Evener surfaces
   it to the user so hook output never silently vanishes.
 - **Exit 0, JSON stdout** → parsed as a structured decision (below).
 - **Exit 2** → an event-specific block/error (see the [exit-code
   table](#exit-codes-per-event)). **JSON is ignored on exit 2** — only stderr is
   used.
-- **Other non-zero** → a non-blocking error for the events evener fires.
+- **Other non-zero** → a non-blocking error for the events Evener fires.
 - **Any non-zero from `SessionStart`** → summarized into a single user-facing
   warning; the hook's output never reaches the model (see [Failed `SessionStart`
   hooks](#failed-sessionstart-hooks)).
 
 > **JSON is parsed only on exit 0.** If your hook exits non-zero, any JSON it
-> printed is discarded; evener uses the exit code and stderr. Print your decision
+> printed is discarded; Evener uses the exit code and stderr. Print your decision
 > JSON only when you exit 0.
 
-The output JSON evener reads (exit 0):
+The output JSON Evener reads (exit 0):
 
 ```json
 {
@@ -461,7 +465,7 @@ The output JSON evener reads (exit 0):
 }
 ```
 
-- `continue` and `suppressOutput` are **parsed but not acted on today** — evener
+- `continue` and `suppressOutput` are **parsed but not acted on today** — Evener
   reads them for Claude compatibility, but they have no runtime effect yet (a
   deferred item); a hook that sets `continue: false` still runs to completion.
   `stopReason` and the rest of the structured output schema are reserved (see
@@ -469,7 +473,7 @@ The output JSON evener reads (exit 0):
 - `hookSpecificOutput.additionalContext` is delivered to the **model**, wrapped in
   a `<SYSTEM-REMINDER>`.
 - The top-level `systemMessage` field is shown to the **user** (a `[warning]`-style
-  message via evener's diagnostic-warning channel) — it is **not** sent to the model.
+  message via Evener's diagnostic-warning channel) — it is **not** sent to the model.
 - `terminalSequence` must be a safe terminal notification sequence.
 - `decision: "block"` blocks where the event supports it (e.g. `Stop`,
   `SubagentStop`).
@@ -478,7 +482,7 @@ The output JSON evener reads (exit 0):
   form is accepted as a fallback: `decision: "approve"` → allow, `decision: "block"`
   → deny, top-level `reason` → the reason; the preferred `permissionDecision` wins
   when both are present. `updatedInput` rewrites the tool arguments before
-  validation. `ask` and `defer` are recognized but **not honored** — evener has no
+  validation. `ask` and `defer` are recognized but **not honored** — Evener has no
   interactive permission prompt, so the tool proceeds and a user-visible diagnostic
   names the unsupported decision. The rewritten input still passes registry schema validation and final execution policy.
 
@@ -488,7 +492,7 @@ A `SessionStart` hook that exits **non-zero** — exit 2 included — is the one
 where the failing hook's output never reaches the model. Its stderr (or its stdout
 when stderr is empty) is summarized into **one operator-facing warning line**
 naming the event, the registering plugin and matcher, and the exit code, followed
-by the first non-empty line of that output (truncated to 160 characters):
+by the first non-empty line of that output (160 characters plus an ellipsis when truncated):
 
 ```
 SessionStart hook my-plugin failed (exit 2): /path/to/hook.sh: permission denied
@@ -501,7 +505,7 @@ The reasoning: a `SessionStart` hook's output is the session's FIRST steering
 input, and the model can do nothing with a permission denial or a broken script —
 a wall of shell stderr as opening context is worse than no context. Every other
 event keeps the Claude-compatible contract that a non-zero hook's stderr reaches
-the model, which is how a tool-event hook corrects it. This moves evener toward
+the model, which is how a tool-event hook corrects it. This moves Evener toward
 Claude's own `SessionStart` rule, which
 [07](subagent-management/07-lifecycle-hooks-claude-compat.md#exit-code-semantics)
 records as "show stderr to user only".
@@ -511,7 +515,7 @@ path — plain stdout, or `hookSpecificOutput.additionalContext`.
 
 ### Exit codes per event
 
-Exit 2 blocks for some events and is informational for others. The evener-fired
+Exit 2 blocks for some events and is informational for others. The Evener-fired
 subset:
 
 | Event | Exit 2 effect |
@@ -519,8 +523,8 @@ subset:
 | `PreToolUse` | block the tool call — the stderr becomes the deny reason, surfaced to the model as the tool's error result |
 | `Stop` | prevent stopping |
 | `SubagentStop` | prevent the subagent stopping |
-| `UserPromptSubmit` | **no block yet** — Claude erases the prompt here, but evener does not yet enforce the block; stderr is delivered to the model |
-| `PreCompact` | **no block yet** — Claude blocks compaction here, but evener does not yet enforce the block; stderr is delivered to the model |
+| `UserPromptSubmit` | **no block yet** — Claude erases the prompt here, but Evener does not yet enforce the block; stderr is delivered to the model |
+| `PreCompact` | **no block yet** — Claude blocks compaction here, but Evener does not yet enforce the block; stderr is delivered to the model |
 | `PostToolUse` | **no block** (cannot undo the tool) — stderr is delivered to the model as context |
 | `SessionStart` | **no block** — the failure is summarized to the **user**; neither stderr nor stdout reaches the model (see [Failed `SessionStart` hooks](#failed-sessionstart-hooks)) |
 | `SessionEnd` | **no block** — the session is ending, so the stderr is captured but not delivered (no following turn) |
@@ -537,7 +541,7 @@ CLI (and a warning in the browser) for each of:
 
 - **An unknown event name** (e.g. `PreToolUze`) — "not a recognized Claude or evener
   event (likely a typo); this hook will never fire."
-- **A recognized-but-unsupported event** (a real Claude event evener does not fire
+- **A recognized-but-unsupported event** (a real Claude event Evener does not fire
   yet, e.g. `PostToolUseFailure`) — "declared for a reserved event evener does not
   yet fire; this hook will not run."
 - **An invalid-regex matcher** (e.g. one using lookbehind) — names the plugin,
@@ -582,7 +586,7 @@ and exit-code tables above before implementing a guard.
 ## Hooks cannot bypass policy
 
 However a plugin hook rewrites input or returns a decision, it cannot escape
-evener's execution guarantees. A hook cannot:
+Evener's execution guarantees. A hook cannot:
 
 - bypass effective tool policy;
 - expand a child/subagent's capability set beyond effective policy;
