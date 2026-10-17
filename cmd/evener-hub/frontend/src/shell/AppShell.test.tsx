@@ -44,6 +44,7 @@ import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import type { SessionZoomParams } from "../panes/zoom/intent";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import { resetAgentsDocStoreForTests } from "../stores/agentsDoc";
 import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
 import * as backgroundTranscriptsModule from "../stores/backgroundTranscripts";
 import { connectionStore } from "../stores/connection";
@@ -506,6 +507,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetAgentsDocStoreForTests();
   window.history.pushState({}, "", "/");
   // The command palette store is a module singleton; reset it so one test's
   // open palette never leaks into the next.
@@ -5535,6 +5537,40 @@ function navClientWithLive(sessions: NavigationSessionSummary[]): FakeClient {
   }));
   return client;
 }
+
+test("live-session shortcut asks before replacing an edited Settings workspace", async () => {
+  resetAgentsDocStoreForTests();
+  const user = userEvent.setup();
+  const client = navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B]);
+  client.on("evener/settings/agentsDoc/get", () => ({ path: "/fixture/AGENTS.md", exists: true, content: "original" }));
+  client.on("evener/host/list", () => ({ hosts: [] }));
+  render(<AppShell client={client} />);
+  await rail().findByText("Live A");
+  act(() => navigate("/settings/agents-md"));
+  const editor = await screen.findByRole("textbox", { name: "AGENTS.md contents" });
+  await waitFor(() => expect(editor).toHaveProperty("value", "original"));
+  fireEvent.change(editor, { target: { value: "retained shortcut draft" } });
+  screen.getByRole("button", { name: "Close settings" }).focus();
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  expect(workspaceStore.getState().mainPane()?.type).toBe("settings");
+  expect(window.location.pathname).toBe("/settings/agents-md");
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(screen.getByRole("textbox", { name: "AGENTS.md contents" })).toBe(editor);
+  expect(editor).toHaveProperty("value", "retained shortcut draft");
+  screen.getByRole("button", { name: "Close settings" }).focus();
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  act(() => navigate("/new"));
+  const committed = vi.fn();
+  window.addEventListener("popstate", committed);
+  try {
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(window.location.pathname).toBe("/s/local%3Alive-a");
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+    expect(committed).toHaveBeenCalledTimes(1);
+  } finally {
+    window.removeEventListener("popstate", committed);
+  }
+});
 
 test("Alt+Shift+ArrowRight/Left navigate across the rail's live sessions, wrapping", async () => {
   const user = userEvent.setup();

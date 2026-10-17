@@ -176,6 +176,109 @@ export function setSettingsHostRouteSync(sync: SettingsHostRouteSync | null): vo
   settingsHostRouteSync = sync;
 }
 
+type NavigationGuard = (proceed: () => void) => boolean;
+let navigationGuard: NavigationGuard | null = null;
+let deferUntilRestored: ((proceed: () => void) => boolean) | null = null;
+let proceeding = false;
+const HISTORY_INDEX = "evenerNavigationIndex";
+
+function currentURL(): string {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+/** A settings-owned, component-lifetime guard. No guard means unchanged navigation.
+ * The continuation is captured once, before any URL, host or workspace change. */
+export function requestNavigation(proceed: () => void): void {
+  const run = () => {
+    const previous = proceeding;
+    proceeding = true;
+    try {
+      proceed();
+    } finally {
+      proceeding = previous;
+    }
+  };
+  const commit = () => {
+    if (!proceeding && deferUntilRestored?.(run)) return;
+    run();
+  };
+  if (proceeding || navigationGuard === null || navigationGuard(commit)) commit();
+}
+
+/** Capture browser traversal before ordinary popstate listeners adopt its context.
+ * Entries made by navigate carry an index, so Stay restores the history cursor,
+ * not a duplicate entry. Unindexed inbound entries use URL restoration instead. */
+export function installNavigationGuard(guard: NavigationGuard): () => void {
+  navigationGuard = guard;
+  let accepted = currentURL();
+  let acceptedState = window.history.state;
+  let restoring = false;
+  let afterRestore: (() => void) | null = null;
+  let permitted: string | null = null;
+  const defer = (proceed: () => void) => {
+    if (!restoring) return false;
+    afterRestore ??= proceed;
+    return true;
+  };
+  deferUntilRestored = defer;
+  const onPopState = (event: PopStateEvent) => {
+    const target = currentURL();
+    if (restoring && target === accepted) {
+      event.stopImmediatePropagation();
+      restoring = false;
+      const continuation = afterRestore;
+      afterRestore = null;
+      continuation?.();
+      return;
+    }
+    if (proceeding || target === accepted || target === permitted) {
+      permitted = null;
+      accepted = target;
+      acceptedState = window.history.state;
+      return;
+    }
+    const targetState = window.history.state;
+    const fromIndex = acceptedState?.[HISTORY_INDEX];
+    const toIndex = targetState?.[HISTORY_INDEX];
+    const delta = typeof fromIndex === "number" && typeof toIndex === "number" ? toIndex - fromIndex : 0;
+    const proceed = () => {
+      const visit = () => {
+        if (navigationGuard !== guard) return;
+        if (delta !== 0) {
+          permitted = target;
+          window.history.go(delta);
+        } else {
+          window.history.replaceState(targetState, "", target);
+          accepted = target;
+          acceptedState = targetState;
+          window.dispatchEvent(new PopStateEvent("popstate", { state: targetState }));
+        }
+      };
+      if (restoring) afterRestore ??= visit;
+      else visit();
+    };
+    if (guard(proceed)) {
+      accepted = target;
+      acceptedState = targetState;
+      return;
+    }
+    event.stopImmediatePropagation();
+    if (delta !== 0) {
+      restoring = true;
+      window.history.go(-delta);
+    } else {
+      window.history.replaceState(acceptedState, "", accepted);
+    }
+  };
+  window.addEventListener("popstate", onPopState, true);
+  return () => {
+    window.removeEventListener("popstate", onPopState, true);
+    if (navigationGuard === guard) navigationGuard = null;
+    if (deferUntilRestored === defer) deferUntilRestored = null;
+    afterRestore = null;
+  };
+}
+
 // withSettingsHost carries the host the address bar already names onto an
 // APP-BUILT navigation to a settings route (component 07b): the selected host
 // is part of that route, and the builders that cannot know it - the palette's
@@ -225,10 +328,18 @@ function withSettingsHost(target: string): string {
 // deliberately choosing a URL without it.
 export function navigate(pathname: string, options: { replace?: boolean; carrySettingsHost?: boolean } = {}): void {
   const target = options.carrySettingsHost === false ? pathname : withSettingsHost(pathname);
-  const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  const current = currentURL();
   if (current === target) return;
-  if (options.replace) window.history.replaceState({}, "", target);
-  else window.history.pushState({}, "", target);
+  requestNavigation(() => commitNavigation(target, options.replace));
+}
+
+function commitNavigation(target: string, replace = false): void {
+  const index = window.history.state?.[HISTORY_INDEX] ?? 0;
+  if (window.history.state?.[HISTORY_INDEX] === undefined) {
+    window.history.replaceState({ ...window.history.state, [HISTORY_INDEX]: index }, "");
+  }
+  if (replace) window.history.replaceState({ [HISTORY_INDEX]: index }, "", target);
+  else window.history.pushState({ [HISTORY_INDEX]: index + 1 }, "", target);
   // Mirror the settings selection onto the route the app just chose, before any
   // listener runs: an app-built navigation drops a remote selection it leaves
   // behind and adopts the one its target names, so no host-scoped pane ever

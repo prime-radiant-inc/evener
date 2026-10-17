@@ -43,9 +43,11 @@ import {
   sameJsonValue,
   schemaPathKind,
 } from "@evener/appwire-client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { connectionStore } from "../../../../stores/connection";
 import { Button, Eyebrow, InlineNotice, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useSettingsDirty } from "../../settingsDrafts";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 import { type LaunchFormPaths, PromptCompositeField, ScalarField } from "./fields";
 import styles from "./LaunchConfigForm.module.css";
@@ -150,6 +152,7 @@ export function LaunchConfigForm({
     return { owner: draftOwner ?? host, current, baseline };
   });
   const [state, setState] = useState<LaunchFormState>(seed.baseline);
+  useSettingsDirty(!sameJsonValue(state, seed.baseline));
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   // Whether the host's values moved under an EDITED draft: the draft stays
   // (it is the user's), and this is what says so instead of leaving a later
@@ -179,12 +182,31 @@ export function LaunchConfigForm({
   const [busy, setBusy] = useState(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const toast = useToasts();
+  const lifetime = useRef<object>({});
+  // biome-ignore lint/correctness/useExhaustiveDependencies: owner changes invalidate preflight and save continuations
+  useLayoutEffect(() => {
+    const invalidate = () => {
+      lifetime.current = {};
+    };
+    invalidate();
+    const unsubscribe = connectionStore.subscribe((current, previous) => {
+      if (current.client !== previous.client || current.state !== previous.state) {
+        invalidate();
+        setBusy(false);
+      }
+    });
+    return () => {
+      invalidate();
+      unsubscribe();
+    };
+  }, [owner]);
   if (seed.owner !== owner) {
     const baseline = buildFormState(supportedOptions, current);
     setSeed({ owner, current, baseline });
     setState(baseline);
     setFieldErrors({});
     setSaveStatus(null);
+    setBusy(false);
     setConflict(false);
   } else if (seed.current !== current) {
     // A same-owner re-read: the pane refreshed this host's layer while the form
@@ -258,7 +280,7 @@ export function LaunchConfigForm({
   // add-time, in their own field components instead of re-validated here -
   // a deliberate scope simplification from the legacy's own defensive
   // re-validation pass (see this task's own report).
-  async function validateScalarPathFields(): Promise<boolean> {
+  async function validateScalarPathFields(attempt: object): Promise<boolean> {
     const modes = {
       systemPromptMode: state.scalars.systemPromptMode,
       systemPromptAppendMode: state.scalars.systemPromptAppendMode,
@@ -270,6 +292,7 @@ export function LaunchConfigForm({
       const raw = (state.scalars[opt.wireField] ?? "").trim();
       if (!raw) continue;
       const result = await validatePath(raw, schemaPathKind(opt.pathKind));
+      if (attempt !== lifetime.current) return false;
       if (!result.valid) errors[opt.wireField] = result.error || "invalid path";
     }
     setFieldErrors(errors);
@@ -278,15 +301,21 @@ export function LaunchConfigForm({
 
   async function handleSubmit(): Promise<void> {
     if (busy) return;
-    const valid = await validateScalarPathFields();
+    const attempt = lifetime.current;
+    const valid = await validateScalarPathFields(attempt);
+    if (attempt !== lifetime.current) return;
     if (!valid) return; // matches the legacy's own "returns early, no save attempted" - no status-line change
     setBusy(true);
     try {
       const resolved = await onSave(collectConfig(supportedOptions, state));
+      if (attempt !== lifetime.current) return;
+      // Rebase only the submitted state. Edits made while saving stay dirty.
+      setSeed((currentSeed) => ({ ...currentSeed, baseline: state }));
       setStatus({ kind: "saved", text: formatSavedAt() });
       toast.push("success", successToast);
       onSaved?.(resolved);
     } catch (err) {
+      if (attempt !== lifetime.current) return;
       const message = err instanceof Error ? err.message : String(err);
       if (matchesEnvCredentialError(message) && supportedOptions.some((o) => o.wireField === "env")) {
         setFieldErrors((e) => ({ ...e, env: message }));
@@ -294,7 +323,7 @@ export function LaunchConfigForm({
       setStatus({ kind: "error", text: `Error: ${message}` });
       toast.push("error", "Save failed");
     } finally {
-      setBusy(false);
+      if (attempt === lifetime.current) setBusy(false);
     }
   }
 

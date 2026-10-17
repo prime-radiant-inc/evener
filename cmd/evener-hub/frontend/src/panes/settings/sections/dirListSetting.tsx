@@ -36,6 +36,7 @@ import {
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { SettingsDraft } from "../settingsDrafts";
 import styles from "./dirListSetting.module.css";
 import { useHostScopedLoad } from "./useConnectedEffect";
 
@@ -126,21 +127,23 @@ export function PathListEditor({
         emptyMessage={emptyMessage}
         onAdd={onAdd}
         renderAddField={({ value, onChange, disabled }) => (
-          <div className={CLASS.addBlock}>
-            <FormRow label={addLabel} htmlFor={addFieldId}>
-              <PathField
-                ariaLabel={addLabel}
-                directory={directory}
-                id={addFieldId}
-                value={value}
-                onChange={onChange}
-                kind={kind}
-                complete={complete}
-                placeholder={addPlaceholder}
-                disabled={disabled}
-              />
-            </FormRow>
-          </div>
+          <SettingsDraft dirty={value !== ""}>
+            <div className={CLASS.addBlock}>
+              <FormRow label={addLabel} htmlFor={addFieldId}>
+                <PathField
+                  ariaLabel={addLabel}
+                  directory={directory}
+                  id={addFieldId}
+                  value={value}
+                  onChange={onChange}
+                  kind={kind}
+                  complete={complete}
+                  placeholder={addPlaceholder}
+                  disabled={disabled}
+                />
+              </FormRow>
+            </div>
+          </SettingsDraft>
         )}
       />
       <ConfirmDialog
@@ -252,13 +255,14 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
         )}
       </header>
       <p className={CLASS.help}>{copy}</p>
-      {error !== null ? (
+      {error !== null && (
         <InlineNotice tone="danger" live="status" data-reason="unavailable">
           Failed to load: {error}
         </InlineNotice>
-      ) : loading && layer === null ? (
+      )}
+      {loading && layer === null ? (
         <Skeleton />
-      ) : (
+      ) : layer !== null ? (
         <PathListEditor
           directory={{
             validatePath: (path, kind) => store.getState().validatePath(path, kind),
@@ -275,7 +279,7 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
           removeConfirmTitle="Remove directory"
           removeConfirmBody={(path) => `Remove "${path}" from ${lowerLabel}?`}
         />
-      )}
+      ) : null}
     </section>
   );
 }

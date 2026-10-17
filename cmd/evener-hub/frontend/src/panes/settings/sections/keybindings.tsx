@@ -45,6 +45,7 @@ import { type KeybindingsStoreState, keybindingsStore, useKeybindingsStore } fro
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { Button, Chip, InlineNotice, Input, KeyHint, Switch } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { useSettingsDirty, useSettingsDraftProtection } from "../settingsDrafts";
 import styles from "./keybindings.module.css";
 
 const CLASS = {
@@ -151,6 +152,7 @@ function isShortcutNavigation(target: EventTarget | null): boolean {
  * (a stray key before Enter must not silently replace what is saved) - to
  * change the chord, cancel and re-capture. */
 function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
+  const protectedDraft = useSettingsDraftProtection();
   const [held, setHeld] = useState<string[]>([]);
   const [captured, setCaptured] = useState<Chord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -172,7 +174,7 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
   // (focus goes where the user put it - or stays, for a non-focusable
   // target). The listener dies with the box (unmount on cancel/save).
   useEffect(() => {
-    if (!active) return;
+    if (!active || protectedDraft) return;
     function onPointerDown(event: PointerEvent): void {
       const box = boxRef.current;
       if (
@@ -186,7 +188,7 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
     }
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
-  }, [active, onCancel]);
+  }, [active, onCancel, protectedDraft]);
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
     // IME composition keydowns are not presses: during composition events
@@ -269,7 +271,7 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
         onKeyDown={handleKeyDown}
         onKeyUp={handleKeyUp}
         onBlur={(event) => {
-          if (active && !isShortcutNavigation(event.relatedTarget)) onCancel(false);
+          if (active && !protectedDraft && !isShortcutNavigation(event.relatedTarget)) onCancel(false);
         }}
       >
         {captured !== null ? (
@@ -302,6 +304,7 @@ interface KeybindingRowProps {
 
 function KeybindingRow({ actionId, title, editable, bindings, characterKeyTriggers, hidden }: KeybindingRowProps) {
   const [capturing, setCapturing] = useState(false);
+  useSettingsDirty(capturing);
   const [error, setError] = useState<string | null>(null);
   // A failed save leaves this row's inline error AND the store's hubError
   // set. When a later confirmed hub payload (refresh or notification) clears

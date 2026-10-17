@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { navigate, paneToURL, urlToPane } from "./routing";
+import { installNavigationGuard, navigate, paneToURL, urlToPane } from "./routing";
 
 beforeEach(() => {
   window.history.pushState({}, "", "/");
@@ -7,6 +7,83 @@ beforeEach(() => {
 
 afterEach(() => {
   window.history.pushState({}, "", "/");
+});
+
+test.each([
+  { name: "Back", index: 4, delta: -1 },
+  { name: "Forward", index: 6, delta: 1 },
+  { name: "inbound unindexed history", index: undefined, delta: 0 },
+])("$name waits before context adoption and Discard visits its frozen target once", ({ index, delta }) => {
+  const original = "/settings/agents-md?host=alpha";
+  const target = "/settings/project?host=beta&cwd=%2Fselected";
+  const originalState = { evenerNavigationIndex: 5 };
+  const targetState = { evenerNavigationIndex: index };
+  window.history.replaceState(originalState, "", original);
+  let pending: (() => void) | undefined;
+  const remove = installNavigationGuard((proceed) => {
+    pending = proceed;
+    return false;
+  });
+  const go = vi.spyOn(window.history, "go").mockImplementation(() => {});
+  const adopted = vi.fn();
+  window.addEventListener("popstate", adopted);
+  try {
+    window.history.replaceState(targetState, "", target);
+    window.dispatchEvent(new PopStateEvent("popstate", { state: targetState }));
+    expect(adopted).not.toHaveBeenCalled();
+    if (delta !== 0) {
+      expect(go).toHaveBeenCalledWith(-delta);
+      window.history.replaceState(originalState, "", original);
+      window.dispatchEvent(new PopStateEvent("popstate", { state: originalState }));
+    }
+    expect(`${window.location.pathname}${window.location.search}`).toBe(original);
+    pending?.();
+    if (delta !== 0) {
+      expect(go).toHaveBeenLastCalledWith(delta);
+      window.history.replaceState(targetState, "", target);
+      window.dispatchEvent(new PopStateEvent("popstate", { state: targetState }));
+    }
+    expect(`${window.location.pathname}${window.location.search}`).toBe(target);
+    expect(adopted).toHaveBeenCalledTimes(1);
+  } finally {
+    remove();
+    go.mockRestore();
+    window.removeEventListener("popstate", adopted);
+  }
+});
+
+test("an already requested app destination waits for browser cursor restoration", () => {
+  navigate("/settings/theme");
+  const priorState = window.history.state;
+  navigate("/settings/agents-md");
+  const acceptedState = window.history.state;
+  let pending: (() => void) | undefined;
+  const remove = installNavigationGuard((proceed) => {
+    pending ??= proceed;
+    return false;
+  });
+  const go = vi.spyOn(window.history, "go").mockImplementation(() => {});
+  const adopted = vi.fn();
+  window.addEventListener("popstate", adopted);
+  try {
+    navigate("/new");
+    // Model Back arriving before the user answers the existing confirmation.
+    window.history.replaceState(priorState, "", "/settings/theme");
+    window.dispatchEvent(new PopStateEvent("popstate", { state: priorState }));
+    expect(go).toHaveBeenCalledWith(1);
+    pending?.();
+    expect(adopted).not.toHaveBeenCalled();
+    expect(window.location.pathname).not.toBe("/new");
+    // The browser finishes restoring the cursor, then the approved destination runs.
+    window.history.replaceState(acceptedState, "", "/settings/agents-md");
+    window.dispatchEvent(new PopStateEvent("popstate", { state: acceptedState }));
+    expect(window.location.pathname).toBe("/new");
+    expect(adopted).toHaveBeenCalledTimes(1);
+  } finally {
+    remove();
+    go.mockRestore();
+    window.removeEventListener("popstate", adopted);
+  }
 });
 
 // --- urlToPane: every deep link in the Global Constraints contract -------

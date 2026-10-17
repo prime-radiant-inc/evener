@@ -44,7 +44,7 @@ import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { adjacentLiveSessionRef } from "./rail/liveSessionCycle";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
-import { navigate, refParam, urlToPane } from "./routing";
+import { navigate, refParam, requestNavigation, urlToPane } from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
@@ -787,16 +787,17 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // focus must survive a boot placement), so the chord refocuses whatever
     // the placement left in main itself.
     const openLiveSession = (ref: string): void => {
-      openNeedsYouSession(ref);
-      const workspace = workspaceStore.getState();
-      const main = workspace.mainPane();
-      if (main === null || main.type !== "session" || refParam(main.params) !== ref) {
-        openTopLevelSession(ref);
-      }
-      const placed = workspaceStore.getState().mainPane();
-      // focusPane already no-ops for a pane that is focused or absent, so
-      // this needs no guard of its own.
-      if (placed !== null) workspaceStore.getState().focusPane(placed.id);
+      requestNavigation(() => {
+        openNeedsYouSession(ref);
+        const workspace = workspaceStore.getState();
+        const main = workspace.mainPane();
+        if (main === null || main.type !== "session" || refParam(main.params) !== ref) {
+          openTopLevelSession(ref);
+        }
+        const placed = workspaceStore.getState().mainPane();
+        // The approval covers placement and focus, not just its URL.
+        if (placed !== null) workspaceStore.getState().focusPane(placed.id);
+      });
     };
     const demandLivePage = (direction: "next" | "previous", beforeRefs: ReadonlySet<string>) => {
       const state = navigationStore.getState();

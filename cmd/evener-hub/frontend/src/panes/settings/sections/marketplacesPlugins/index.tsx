@@ -3,6 +3,7 @@
 
 import type { AppwireClientLike } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
+import { requestNavigation } from "../../../../shell/routing";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { LOCAL_HOST } from "../../../../stores/hostRouting";
 import { Button, InlineNotice, SegmentedControl, Skeleton } from "../../../../widgets";
@@ -114,13 +115,15 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   }, [store]);
 
   function handleSegmentChange(segment: SegmentId) {
-    setActiveSegment(segment);
-    // Each sheet belongs to the segment whose row opened it - the plugin
-    // detail sheet to Installed, the marketplace editor to Sources.
-    // Navigating away closes both rather than leaving an editor floating
-    // over an unrelated list.
-    setSelectedPlugin(null);
-    setSelectedMarketplace(null);
+    requestNavigation(() => {
+      setActiveSegment(segment);
+      // Each sheet belongs to the segment whose row opened it - the plugin
+      // detail sheet to Installed, the marketplace editor to Sources.
+      // Navigating away closes both rather than leaving an editor floating
+      // over an unrelated list.
+      setSelectedPlugin(null);
+      setSelectedMarketplace(null);
+    });
   }
 
   const pluginCount = plugins?.length ?? 0;
@@ -174,7 +177,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
       {activeSegment === "sources" && (
         <SourcesSection
           host={host}
-          onSelectMarketplace={setSelectedMarketplace}
+          onSelectMarketplace={(name) => requestNavigation(() => setSelectedMarketplace(name))}
           onBrowse={() => handleSegmentChange("browse")}
         />
       )}

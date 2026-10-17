@@ -9,6 +9,7 @@ import {
   safeCredentialTestResult,
 } from "@evener/appwire-client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { requestNavigation } from "../../../../shell/routing";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import {
   credentialsStore,
@@ -28,6 +29,7 @@ import {
   OpenButton,
   Skeleton,
 } from "../../../../widgets";
+import { useSettingsDirty } from "../../settingsDrafts";
 import { useConnectedEffect } from "../useConnectedEffect";
 import type { FormError } from "./formError";
 import { AddInstanceDialog } from "./instanceDialogs";
@@ -289,6 +291,7 @@ function SelectedConnection({
   const [host, setHost] = useState(false);
   const [saved, setSaved] = useState(false);
   const [configured, setConfigured] = useState(false);
+  useSettingsDirty((value !== "" && !saved) || (!configured && name !== (provider.setup?.name ?? provider.id)));
   const [configure, setConfigure] = useState(false);
   const [oauth, setOAuth] = useState<OAuthEditor | null>(null);
   const [phase, setPhaseState] = useState<Phase>("idle");
@@ -366,8 +369,10 @@ function SelectedConnection({
   }, [errorMessage]);
 
   function leave(callback: () => void) {
-    operation.current += 1;
-    callback();
+    requestNavigation(() => {
+      operation.current += 1;
+      callback();
+    });
   }
   function current(token: number) {
     return active.current && operation.current === token && connectionStore.getState().state === "ready";

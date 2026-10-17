@@ -4,12 +4,15 @@ import userEvent from "@testing-library/user-event";
 import { useEffect, useState } from "react";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
-import { urlToPane } from "../../shell/routing";
+import { navigate, urlToPane } from "../../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
+import { resetAgentsDocStoreForTests } from "../../stores/agentsDoc";
 import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
+import { hostsStore } from "../../stores/hosts";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
+import { settingsHostStore } from "../../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../../stores/settingsOverview";
 import Settings from "./Settings";
 import { SETTINGS_SECTIONS, settingsSectionLabel } from "./sections";
@@ -90,6 +93,139 @@ afterEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
   resetSettingsOverviewStoreForTests();
+  resetAgentsDocStoreForTests();
+  hostsStore.getState().resetForTests();
+});
+
+async function editedInstructions(mobile = false) {
+  stubMatchMedia(mobile);
+  window.history.pushState({}, "", "/settings/agents-md");
+  const fake = new FakeClient("ready");
+  fake.on("evener/settings/agentsDoc/get", () => ({ path: "/fixture/AGENTS.md", exists: true, content: "original" }));
+  fake.on("evener/settings/agentsDoc/set", (params) => ({
+    path: "/fixture/AGENTS.md",
+    exists: true,
+    content: params.content,
+  }));
+  fake.on("evener/host/list", () => ({
+    hosts: [
+      {
+        name: "beta",
+        generation: 1,
+        incarnationId: "beta-1",
+        origin: "hub.toml",
+        attached: true,
+        midAttach: false,
+        removed: false,
+      },
+    ],
+  }));
+  connectionStore.getState().connect(fake);
+  const view = render(<RoutedSettings />);
+  const editor = await screen.findByRole("textbox", { name: "AGENTS.md contents" });
+  await waitFor(() => expect(editor).toHaveProperty("value", "original"));
+  fireEvent.change(editor, { target: { value: "retained draft" } });
+  return { ...view, fake, editor, user: userEvent.setup() };
+}
+
+test("dirty section navigation waits, Stay retains the same editor, Discard visits the first destination once", async () => {
+  const { editor, user } = await editedInstructions();
+  let events = 0;
+  const count = () => events++;
+  window.addEventListener("popstate", count);
+  try {
+    await user.click(screen.getByRole("button", { name: "Appearance" }));
+    expect(window.location.pathname).toBe("/settings/agents-md");
+    await user.click(screen.getByRole("button", { name: "Stay" }));
+    expect(screen.getByRole("textbox", { name: "AGENTS.md contents" })).toBe(editor);
+    expect(editor).toHaveProperty("value", "retained draft");
+    await user.click(screen.getByRole("button", { name: "Appearance" }));
+    // A late navigation cannot replace the requested destination.
+    act(() => chromeStore.getState().paneBack?.());
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(window.location.pathname).toBe("/settings/theme");
+    expect(events).toBe(1);
+  } finally {
+    window.removeEventListener("popstate", count);
+  }
+});
+
+test("dirty close and mobile Back preserve the draft until Discard", async () => {
+  const { editor, user } = await editedInstructions(true);
+  act(() => chromeStore.getState().paneBack?.());
+  expect(window.location.pathname).toBe("/settings/agents-md");
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(editor).toHaveProperty("value", "retained draft");
+  await user.click(screen.getByRole("button", { name: "Close settings" }));
+  expect(window.location.pathname).toBe("/settings/agents-md");
+  await user.click(screen.getByRole("button", { name: "Discard changes" }));
+  expect(window.location.pathname).toBe("/");
+});
+
+test("confirmed save clears unload protection and navigation guard, unmount removes stale handlers", async () => {
+  const { user, unmount } = await editedInstructions();
+  const unload = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(unload);
+  expect(unload.defaultPrevented).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true));
+  const cleanUnload = new Event("beforeunload", { cancelable: true });
+  window.dispatchEvent(cleanUnload);
+  expect(cleanUnload.defaultPrevented).toBe(false);
+  await user.click(screen.getByRole("button", { name: "Appearance" }));
+  expect(window.location.pathname).toBe("/settings/theme");
+  unmount();
+  expect(chromeStore.getState().paneBack).toBeNull();
+});
+
+test("dirty host selection never adopts the destination before confirmation", async () => {
+  const { editor, user } = await editedInstructions();
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(screen.getByRole("combobox", { name: "Host" }), "beta");
+  expect(settingsHostStore.getState().host).toBe("local");
+  expect(window.location.search).toBe("");
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(editor).toHaveProperty("value", "retained draft");
+  expect(screen.getByRole("combobox", { name: "Host" })).toHaveProperty("value", "local");
+  await user.selectOptions(screen.getByRole("combobox", { name: "Host" }), "beta");
+  await user.click(screen.getByRole("button", { name: "Discard changes" }));
+  expect(settingsHostStore.getState().host).toBe("beta");
+  expect(window.location.search).toBe("?host=beta");
+});
+
+test("browser Back restores the original route before context listeners, Stay keeps input and Discard goes back", async () => {
+  const { editor, user } = await editedInstructions();
+  // Create indexed entries with real navigate, then return to the dirty form.
+  fireEvent.change(editor, { target: { value: "original" } });
+  act(() => navigate("/settings/theme"));
+  act(() => navigate("/settings/agents-md"));
+  const currentEditor = await screen.findByRole("textbox", { name: "AGENTS.md contents" });
+  fireEvent.change(currentEditor, { target: { value: "history draft" } });
+  act(() => window.history.back());
+  await screen.findByRole("button", { name: "Stay" });
+  await waitFor(() => expect(window.location.pathname).toBe("/settings/agents-md"));
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(screen.getByRole("textbox", { name: "AGENTS.md contents" })).toBe(currentEditor);
+  expect(currentEditor).toHaveProperty("value", "history draft");
+  act(() => window.history.back());
+  await screen.findByRole("button", { name: "Discard changes" });
+  await waitFor(() => expect(window.location.pathname).toBe("/settings/agents-md"));
+  await user.click(screen.getByRole("button", { name: "Discard changes" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/settings/theme"));
+  expect(screen.queryByRole("textbox", { name: "AGENTS.md contents" })).toBeNull();
+});
+
+test("a rejected save retains navigation protection and the submitted input", async () => {
+  const { fake, editor, user } = await editedInstructions();
+  fake.on("evener/settings/agentsDoc/set", () => {
+    throw new Error("fixture refusal");
+  });
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await screen.findByRole("alert");
+  await user.click(screen.getByRole("button", { name: "Appearance" }));
+  expect(window.location.pathname).toBe("/settings/agents-md");
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(editor).toHaveProperty("value", "retained draft");
 });
 
 // General and Hub read the hub overview on mount. With no client connected

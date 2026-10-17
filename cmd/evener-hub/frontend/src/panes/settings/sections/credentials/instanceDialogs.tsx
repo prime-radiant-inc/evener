@@ -25,6 +25,7 @@ import {
   isEndpointConflict,
 } from "@evener/appwire-client";
 import { type FormEvent, useLayoutEffect, useRef, useState } from "react";
+import { requestNavigation } from "../../../../shell/routing";
 import { credentialsStore, isStaleListingRefusal } from "../../../../stores/credentials";
 import {
   Button,
@@ -37,6 +38,7 @@ import {
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useSettingsDirty } from "../../settingsDrafts";
 import type { FormError } from "./formError";
 import styles from "./instanceDialogs.module.css";
 import { byCodePoint, PROTOCOL_OPTIONS, SURFACE_OPTIONS } from "./instanceEdit";
@@ -142,6 +144,16 @@ export function AddInstanceDialog({
   const [vars, setVars] = useState<Record<string, string>>({});
   const [apiKeyEnv, setApiKeyEnv] = useState("");
   const [credentialHeader, setCredentialHeader] = useState("");
+  useSettingsDirty(
+    base !== initialBase ||
+      name !== "" ||
+      baseUrl !== "" ||
+      protocol !== "" ||
+      surface !== "" ||
+      Object.values(vars).some((value) => value !== "") ||
+      apiKeyEnv !== "" ||
+      credentialHeader !== "",
+  );
   const [error, setError] = useState<FormError<AddInstanceErrorReason> | null>(null);
   const [busy, setBusy] = useState(false);
   // Set when the create succeeded but the listing could not be confirmed to
@@ -295,7 +307,7 @@ export function AddInstanceDialog({
   }
 
   return (
-    <Dialog open onClose={onCancel} title="Add provider instance">
+    <Dialog open onClose={() => requestNavigation(onCancel)} title="Add provider instance">
       <form className={CLASS.body} onSubmit={(event) => void handleSubmit(event)}>
         <FormRow label="Base provider" htmlFor="add-instance-base">
           <Select
@@ -390,7 +402,7 @@ export function AddInstanceDialog({
               Create
             </Button>
           )}
-          <Button type="button" variant="quiet" onClick={onCancel} disabled={busy}>
+          <Button type="button" variant="quiet" onClick={() => requestNavigation(onCancel)} disabled={busy}>
             Cancel
           </Button>
         </div>
@@ -460,6 +472,7 @@ function CredentialValueDialog({
   submit,
 }: CredentialValueDialogProps) {
   const [value, setValue] = useState("");
+  useSettingsDirty(value !== "");
   const [error, setError] = useState<FormError<CredentialValueErrorReason> | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
@@ -597,7 +610,7 @@ function CredentialValueDialog({
   }
 
   return (
-    <Dialog open onClose={onCancel} title={title}>
+    <Dialog open onClose={() => requestNavigation(onCancel)} title={title}>
       <form className={CLASS.body} onSubmit={(event) => void handleSubmit(event)}>
         <FormRow label={label} htmlFor={inputId}>
           {input === "textarea" ? (
@@ -631,7 +644,7 @@ function CredentialValueDialog({
           <Button type="submit" disabled={busy}>
             Save
           </Button>
-          <Button type="button" variant="quiet" onClick={onCancel} disabled={busy}>
+          <Button type="button" variant="quiet" onClick={() => requestNavigation(onCancel)} disabled={busy}>
             Cancel
           </Button>
         </div>

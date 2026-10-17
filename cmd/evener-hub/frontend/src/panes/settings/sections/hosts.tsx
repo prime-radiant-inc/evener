@@ -10,6 +10,7 @@ import {
   rootsToText,
 } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
+import { requestNavigation } from "../../../shell/routing";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import {
   clearedOutcomeLine,
@@ -51,6 +52,7 @@ import {
   VisuallyHidden,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { useSettingsDirty } from "../settingsDrafts";
 import styles from "./hosts.module.css";
 import { Code } from "./settingsField";
 import { useConnectedEffect } from "./useConnectedEffect";
@@ -675,6 +677,12 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
   const [configPath, setConfigPath] = useState(row?.configPath ?? "");
   const [addr, setAddr] = useState(row?.addr ?? "");
   const [roots, setRoots] = useState(rootsToText(row?.roots));
+  const [baseline] = useState(() => [name, address, user, keyPath, evenerPath, configPath, addr, roots]);
+  useSettingsDirty(
+    [name, address, user, keyPath, evenerPath, configPath, addr, roots].some(
+      (value, index) => value !== baseline[index],
+    ),
+  );
   const [busy, setBusy] = useState(false);
   // `reason` is the refusal kind when the hub says the host moved under the
   // dialog, rendered as the form alert's `data-reason`.
@@ -736,12 +744,12 @@ function HostEntryDialog({ mode, row, onClose, onSubmit }: HostEntryDialogProps)
     <Dialog
       open
       onClose={() => {
-        if (!busy) onClose();
+        if (!busy) requestNavigation(onClose);
       }}
       title={mode === "add" ? "Add host" : `Edit ${row?.name ?? ""}`.trim()}
       footer={
         <>
-          <Button variant="quiet" disabled={busy} onClick={onClose}>
+          <Button variant="quiet" disabled={busy} onClick={() => requestNavigation(onClose)}>
             Cancel
           </Button>
           <Button variant="primary" disabled={busy} onClick={() => void handleSubmit()}>

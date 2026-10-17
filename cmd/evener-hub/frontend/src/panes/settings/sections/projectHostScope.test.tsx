@@ -1,13 +1,15 @@
 import type { HostRow, LaunchOptionSchemaResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { navigate } from "../../../shell/routing";
 import { connectionStore } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
 import { resetLaunchConfigHostStoresForTests, resetLaunchConfigStoreForTests } from "../../../stores/launchConfig";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { SettingsDraftsProvider } from "../settingsDrafts";
 import { ProjectHostScope } from "./project";
 import { shownReasons } from "./reasonTestUtils";
 
@@ -58,9 +60,9 @@ const SCHEMA: LaunchOptionSchemaResponse = {
       defaultableLayers: ["global", "project"],
     },
     {
-      field: "systemPromptPath",
-      wireField: "systemPromptPath",
-      label: "System prompt file",
+      field: "traceFile",
+      wireField: "traceFile",
+      label: "Trace file",
       group: "Prompt",
       kind: "path",
       pathKind: "file",
@@ -106,7 +108,7 @@ test("with this hub selected the section issues the plain launch calls and never
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/schema", () => SCHEMA);
   fake.on("evener/launch/getLayer", (params) =>
-    params.layer === "project" ? { systemPromptPath: "/repo/prompt.md" } : { agent: "evener" },
+    params.layer === "project" ? { traceFile: "/repo/prompt.md" } : { agent: "evener" },
   );
   fake.on("evener/launch/resolve", () => ({ effective: { agent: "evener" }, layers: {}, provenance: {} }));
   fake.on("evener/path/validate", ({ path }) => ({ valid: true, path }));
@@ -123,6 +125,67 @@ test("with this hub selected the section issues the plain launch calls and never
   await waitFor(() => expect(fake.calls.some((call) => call.method === "evener/launch/setLayer")).toBe(true));
   expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(true);
   expect(fake.calls.some((call) => call.method === "evener/host/request")).toBe(false);
+});
+
+test("project context stays pinned until Discard and only the first requested cwd is loaded", async () => {
+  setQueryCwd("/repo/one");
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [] }));
+  fake.on("evener/launch/schema", () => SCHEMA);
+  fake.on("evener/launch/getLayer", () => ({}));
+  fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  const user = userEvent.setup();
+  render(
+    <SettingsDraftsProvider>
+      <ProjectHostScope sectionId="project" />
+    </SettingsDraftsProvider>,
+  );
+  const editor = await screen.findByLabelText("Agent");
+  await act(async () => {
+    fireEvent.change(editor, { target: { value: "edited-agent" } });
+  });
+  await act(async () => navigate("/settings/project?cwd=%2Frepo%2Ftwo"));
+  expect(new URLSearchParams(window.location.search).get("cwd")).toBe("/repo/one");
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(screen.getByLabelText("Agent")).toBe(editor);
+  expect(editor).toHaveProperty("value", "edited-agent");
+  await act(async () => navigate("/settings/project?cwd=%2Frepo%2Ftwo"));
+  await act(async () => navigate("/settings/project?cwd=%2Frepo%2Fthree"));
+  await user.click(screen.getByRole("button", { name: "Discard changes" }));
+  await screen.findByLabelText("Agent");
+  expect(new URLSearchParams(window.location.search).get("cwd")).toBe("/repo/two");
+  expect(
+    fake.calls.filter((call) => call.method === "evener/launch/getLayer").map((call) => call.params),
+  ).not.toContainEqual({ cwd: "/repo/three", layer: "project" });
+  expect(fake.calls.filter((call) => call.method === "evener/launch/setLayer")).toHaveLength(0);
+});
+
+test("discarding during launch validation cancels the unsent save and removes stale guard registration", async () => {
+  setQueryCwd("/repo");
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [] }));
+  fake.on("evener/launch/schema", () => SCHEMA);
+  fake.on("evener/launch/getLayer", () => ({ traceFile: "/repo/prompt.md" }));
+  fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  const releaseValidation = deferRequest<{ valid: boolean; path: string }>(fake, "evener/path/validate");
+  const user = userEvent.setup();
+  const view = render(
+    <SettingsDraftsProvider>
+      <ProjectHostScope sectionId="project" />
+    </SettingsDraftsProvider>,
+  );
+  await user.type(await screen.findByLabelText("Agent"), "draft-agent");
+  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+  await act(async () => navigate("/settings/theme"));
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(screen.getByLabelText("Agent")).toHaveProperty("value", "draft-agent");
+  await act(async () => navigate("/settings/theme"));
+  await user.click(screen.getByRole("button", { name: "Discard changes" }));
+  view.unmount();
+  await act(async () => releaseValidation({ valid: true, path: "/repo/prompt.md" }));
+  expect(fake.calls.filter((call) => call.method === "evener/launch/setLayer")).toHaveLength(0);
+  await act(async () => navigate("/settings/agents-md"));
+  expect(window.location.pathname).toBe("/settings/agents-md");
 });
 
 test("selecting a remote host shows THAT host's project layer, never the controller's", async () => {
@@ -172,7 +235,7 @@ test("a remote save writes that host's project layer through the proxy, never th
     const forwarded = params as { method: string; params: { layer?: string } };
     if (forwarded.method === "evener/launch/schema") return SCHEMA as never;
     if (forwarded.method === "evener/launch/getLayer")
-      return (forwarded.params.layer === "project" ? { systemPromptPath: "/beta/prompt.md" } : {}) as never;
+      return (forwarded.params.layer === "project" ? { traceFile: "/beta/prompt.md" } : {}) as never;
     if (forwarded.method === "evener/launch/resolve") return { effective: {}, layers: {}, provenance: {} } as never;
     if (forwarded.method === "evener/path/validate") return { valid: true, path: "/beta/prompt.md" } as never;
     if (forwarded.method === "evener/launch/setLayer") return { effective: {}, layers: {}, provenance: {} } as never;
@@ -215,7 +278,7 @@ test("browsing a path field on a remote host completes against THAT host, never 
     const forwarded = params as { method: string; params: { layer?: string } };
     if (forwarded.method === "evener/launch/schema") return SCHEMA as never;
     if (forwarded.method === "evener/launch/getLayer")
-      return (forwarded.params.layer === "project" ? { systemPromptPath: "/beta/prompt.md" } : {}) as never;
+      return (forwarded.params.layer === "project" ? { traceFile: "/beta/prompt.md" } : {}) as never;
     if (forwarded.method === "evener/launch/resolve") return { effective: {}, layers: {}, provenance: {} } as never;
     if (forwarded.method === "evener/path/validate") return { valid: true, path: "/beta" } as never;
     if (forwarded.method === "evener/paths/complete") return { data: [] } as never;
@@ -225,7 +288,7 @@ test("browsing a path field on a remote host completes against THAT host, never 
   setSettingsHost("beta");
   render(<ProjectHostScope sectionId="project" />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: /system prompt file/i }));
+  await user.click(await screen.findByRole("button", { name: /trace file/i }));
 
   await waitFor(() =>
     expect(
@@ -251,7 +314,7 @@ test("switching hosts keeps the route's ?cwd=, re-scoping the same project to th
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/launch/schema", () => SCHEMA);
   fake.on("evener/launch/getLayer", (params) =>
-    params.layer === "project" ? { systemPromptPath: "/repo/prompt.md" } : { agent: "evener" },
+    params.layer === "project" ? { traceFile: "/repo/prompt.md" } : { agent: "evener" },
   );
   fake.on("evener/launch/resolve", () => ({ effective: { agent: "evener" }, layers: {}, provenance: {} }));
   fake.on("evener/host/request", (params) => {
@@ -295,9 +358,7 @@ test("a failed refresh keeps the project form and the draft, and a retry clears 
     if (refuse) throw new Error("the host refused the read");
     if (forwarded.method === "evener/launch/schema") return SCHEMA as never;
     if (forwarded.method === "evener/launch/getLayer")
-      return (
-        forwarded.params.layer === "project" ? { systemPromptPath: "/beta/prompt.md" } : { agent: "beta" }
-      ) as never;
+      return (forwarded.params.layer === "project" ? { traceFile: "/beta/prompt.md" } : { agent: "beta" }) as never;
     if (forwarded.method === "evener/launch/resolve") return { effective: {}, layers: {}, provenance: {} } as never;
     throw new Error(`unexpected forwarded method ${forwarded.method}`);
   });

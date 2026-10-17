@@ -1,11 +1,13 @@
 import { ConnectionClosedError, friendlyErrorMessage, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { navigate } from "../../../shell/routing";
 import { connectionStore } from "../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../stores/extensions";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { SettingsDraftsProvider } from "../settingsDrafts";
 import { DirListSetting, PathListEditor } from "./dirListSetting";
 import { alertReasons, statusReasons } from "./reasonTestUtils";
 
@@ -24,6 +26,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState({}, "", "/");
   vi.restoreAllMocks();
 });
 
@@ -79,6 +82,28 @@ describe("PathListEditor", () => {
     expect(screen.getByRole("list", { name: "Plugin directories" })).toBeTruthy();
     expect(screen.getByText("/opt/plugins")).toBeTruthy();
     expect(screen.getByText("/home/user/.evener/plugins")).toBeTruthy();
+  });
+
+  test("a staged directory asks before navigation, Stay retains it and Add clears its protection", async () => {
+    const props = baseProps();
+    const user = userEvent.setup();
+    render(
+      <SettingsDraftsProvider>
+        <PathListEditor {...props} />
+      </SettingsDraftsProvider>,
+    );
+    await typePath(user, "/typed/path");
+    const field = picker();
+    act(() => navigate("/settings/theme"));
+    await user.click(screen.getByRole("button", { name: "Stay" }));
+    expect(picker()).toBe(field);
+    expect(field.textContent).toContain("/typed/path");
+    expect(props.onAdd).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(props.onAdd).toHaveBeenCalledWith("/typed/path");
+    act(() => navigate("/settings/theme"));
+    expect(screen.queryByRole("button", { name: "Stay" })).toBeNull();
+    expect(window.location.pathname).toBe("/settings/theme");
   });
 
   test("renders the empty message and no rows when items is empty", () => {

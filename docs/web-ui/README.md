@@ -75,6 +75,22 @@ On phones, settings opens as a full-width list. Drilling into a page and using
 Back preserves the list's search and scroll position. Desktop keeps the list
 beside the selected page.
 
+Edited forms ask before changing section, host or project, closing Settings,
+or leaving through an app action or browser history. **Stay** keeps the same
+editor and input. **Discard changes** visits the originally requested destination
+once, without saving. Confirmed saves clear protection for the saved input;
+failed saves and temporary read or connection failures retain it. Capturing a
+shortcut counts as an edit, even before choosing a chord. Autosaved preferences
+do not prompt. While an editor is dirty, Settings asks the browser to show its
+native warning on refresh or close; drafts are not persisted for a later visit.
+
+A replaced host registration is different from a temporary disconnect. Settings
+discards the old registration's local input, remounts its editors and shows a
+replacement notice. No draft or pending write is reassigned to the new host.
+An incarnation change counts as replacement even when configuration is identical;
+an ordinary mutation-generation change alone does not. Same-registration
+reconnects retain input and do not show that notice.
+
 Input & shortcuts brings Enter-to-send and keyboard customization together.
 Enter-to-send and character-key accessibility stay visible. Customize shortcuts
 opens the searchable editor; folding or filtering it preserves captured chords

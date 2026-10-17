@@ -22,9 +22,10 @@
 // covers every pane that renders through this frame rather than trusting each
 // one to remember. The picker above stays outside the key, so the selection is
 // not remounted by its own change.
-import { Fragment, type ReactNode } from "react";
+import { Fragment, type ReactNode, useState } from "react";
 import { isLocalHost } from "../../../stores/hostRouting";
 import { hostInstanceIdentity, registrySaysHostGone, useHostsStore } from "../../../stores/hosts";
+import { InlineNotice } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostPicker } from "../HostPicker";
 import { useSettingsHost } from "../settingsHost";
@@ -59,9 +60,19 @@ export function HostScopedSurface({ children }: HostScopedSurfaceProps) {
   // the live session state the hub reports on the same row). The local hub has
   // no registration to key on, so it keeps its own name, stable as ever.
   const bodyKey = isLocalHost(host) ? host : `host:${hostInstanceIdentity(host)}`;
+  const [identity, setIdentity] = useState({ host, key: bodyKey, replaced: false });
+  if (identity.host !== host || identity.key !== bodyKey) {
+    setIdentity({ host, key: bodyKey, replaced: identity.host === host });
+  }
   return (
     <div className={CLASS.root}>
       <HostPicker />
+      {identity.replaced && (
+        <InlineNotice data-reason="registration-replaced">
+          This host registration changed. Previous edits were discarded, not transferred. Review the new host's settings
+          before editing.
+        </InlineNotice>
+      )}
       {gone ? (
         <p className={CLASS.note} role="status" data-reason="host-gone">
           Host {host} is no longer configured, so it has no settings to show here.

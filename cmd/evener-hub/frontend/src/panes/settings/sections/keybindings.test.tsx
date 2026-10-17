@@ -19,10 +19,13 @@ import { parseKeybinding } from "tinykeys";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { createKeybindingDispatcher } from "../../../keybindings/dispatcher";
+import { navigate } from "../../../shell/routing";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "../../../stores/keybindings";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
+import { Button } from "../../../widgets";
+import { SettingsDraftsProvider } from "../settingsDrafts";
 import { KeybindingsSection } from "./keybindings";
 
 beforeAll(() => {
@@ -106,6 +109,28 @@ function warningReasons(): (string | null)[] {
     warning.getAttribute("data-reason"),
   );
 }
+
+test("Stay retains the same capture and Tab proposal after pointer and focus leave for navigation", async () => {
+  await wireEditableClient();
+  window.history.replaceState({}, "", "/settings/keybindings");
+  render(
+    <SettingsDraftsProvider>
+      <Button onClick={() => navigate("/settings/theme")}>Leave editor</Button>
+      <KeybindingsSection />
+    </SettingsDraftsProvider>,
+  );
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Customize shortcuts" }));
+  await user.click(screen.getByRole("button", { name: "Change the shortcut for Open the command palette" }));
+  const capture = screen.getByRole("textbox", { name: /Press the new shortcut/ });
+  fireEvent.keyDown(capture, { key: "Tab" });
+  await user.click(screen.getByRole("button", { name: "Leave editor" }));
+  expect(window.location.pathname).toBe("/settings/keybindings");
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(screen.getByRole("textbox", { name: /Press the new shortcut/ })).toBe(capture);
+  expect(keysOf(capture)).toEqual(["Tab"]);
+  expect(keybindingsStore.getState().rawOverrides).toEqual([]);
+});
 
 test("basic accessibility controls stay available while customization starts collapsed", async () => {
   render(<KeybindingsSection />);

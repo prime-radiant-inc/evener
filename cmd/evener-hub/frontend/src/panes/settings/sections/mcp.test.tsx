@@ -5,12 +5,14 @@ import {
   WireError,
 } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { navigate } from "../../../shell/routing";
 import { connectionStore } from "../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../stores/extensions";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { SettingsDraftsProvider } from "../settingsDrafts";
 import { McpSection, type SettingsOverviewLike } from "./mcp";
 
 function connectFakeClient(): FakeClient {
@@ -47,7 +49,28 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState({}, "", "/");
   vi.restoreAllMocks();
+});
+
+test("an incomplete inline MCP proposal stays on its original editor when navigation is declined", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  render(
+    <SettingsDraftsProvider>
+      <McpSection useOverviewStore={overviewHook()} />
+    </SettingsDraftsProvider>,
+  );
+  const user = userEvent.setup();
+  const editor = await screen.findByRole("textbox", { name: "Inline MCP servers" });
+  await act(async () => {
+    fireEvent.change(editor, { target: { value: "unfinished-server" } });
+  });
+  act(() => navigate("/settings/theme"));
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(screen.getByRole("textbox", { name: "Inline MCP servers" })).toBe(editor);
+  expect(editor).toHaveProperty("value", "unfinished-server");
+  expect(fake.calls.some((call) => call.method === "evener/launch/setLayer")).toBe(false);
 });
 
 test("calls the injected overview hook's fetch on mount", async () => {

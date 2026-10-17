@@ -15,9 +15,11 @@ import type { AuthDevicePollResponse } from "@evener/appwire-client";
 import { CONNECTION_REPLACED_ERROR, errorText } from "@evener/appwire-client";
 import { type FormEvent, useEffect, useState } from "react";
 import { openInNewTab } from "../../../../shell/openInNewTab";
+import { requestNavigation } from "../../../../shell/routing";
 import { credentialsStore, devicePollOnHost, fetchHost, isStaleListingRefusal } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, OpenButton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useSettingsDirty } from "../../settingsDrafts";
 import { copyText } from "./clipboard";
 import styles from "./oauthDialogs.module.css";
 import { refreshListingAfterMutation } from "./reconcileListing";
@@ -44,6 +46,7 @@ export interface OAuthRedirectDialogProps {
 /** The browser-redirect fallback flow's paste-back editor. */
 export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess }: OAuthRedirectDialogProps) {
   const [value, setValue] = useState("");
+  useSettingsDirty(value !== "");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToasts();
@@ -91,7 +94,7 @@ export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess
   }
 
   return (
-    <Dialog open onClose={onCancel} title={`Sign in to ${name}`}>
+    <Dialog open onClose={() => requestNavigation(onCancel)} title={`Sign in to ${name}`}>
       <form className={CLASS.body} onSubmit={(event) => void handleSubmit(event)}>
         <p className={CLASS.help}>
           Authorize in browser, then paste the full redirect URL back here.{" "}
@@ -110,7 +113,7 @@ export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess
           <Button type="submit" disabled={busy}>
             Finish
           </Button>
-          <Button type="button" variant="quiet" onClick={onCancel} disabled={busy}>
+          <Button type="button" variant="quiet" onClick={() => requestNavigation(onCancel)} disabled={busy}>
             Cancel
           </Button>
         </div>
@@ -299,7 +302,11 @@ export function DeviceCodeDialog({
         : "Waiting for you to authorize…");
 
   return (
-    <Dialog open onClose={onCancel} title={host === undefined ? `Sign in to ${name}` : `Sign in to ${name} on ${host}`}>
+    <Dialog
+      open
+      onClose={() => requestNavigation(onCancel)}
+      title={host === undefined ? `Sign in to ${name}` : `Sign in to ${name} on ${host}`}
+    >
       <div className={CLASS.body}>
         <p className={CLASS.help}>
           {host === undefined
@@ -329,7 +336,7 @@ export function DeviceCodeDialog({
               </Button>
             </>
           )}
-          <Button type="button" variant="quiet" onClick={onCancel}>
+          <Button type="button" variant="quiet" onClick={() => requestNavigation(onCancel)}>
             Cancel
           </Button>
         </div>

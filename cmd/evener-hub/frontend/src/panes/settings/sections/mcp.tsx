@@ -24,11 +24,13 @@ import {
   ConfirmDialog,
   EmptyState,
   InlineNotice,
+  Input,
   ListRow,
   Skeleton,
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { SettingsDraft } from "../settingsDrafts";
 import { PathListEditor } from "./dirListSetting";
 import { HostScopedSurface } from "./hostScopedSurface";
 import {
@@ -286,6 +288,17 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
               emptyMessage="No inline MCP servers. Add one below."
               addPlaceholder="name command args..."
               onAdd={handleAddServer}
+              renderAddField={({ value, onChange, disabled }) => (
+                <SettingsDraft dirty={value !== ""}>
+                  <Input
+                    aria-label="Inline MCP servers"
+                    value={value}
+                    onChange={(event) => onChange(event.target.value)}
+                    disabled={disabled}
+                    placeholder="name command args..."
+                  />
+                </SettingsDraft>
+              )}
             />
           </section>
         </>

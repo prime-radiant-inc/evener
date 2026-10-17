@@ -10,6 +10,7 @@ import type { MarketplaceSourceInput } from "@evener/appwire-client";
 import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy } from "@evener/appwire-client/state/extensions";
 import { type FormEvent, useId, useState } from "react";
+import { requestNavigation } from "../../../../shell/routing";
 import {
   Button,
   Chip,
@@ -23,6 +24,7 @@ import {
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useSettingsDirty } from "../../settingsDrafts";
 import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import { MARKETPLACE_SOURCE_OPTIONS, type MarketplaceSourceKind } from "./marketplaceEdit";
 import styles from "./marketplacesPlugins.module.css";
@@ -54,6 +56,9 @@ export function MarketplacesSection({ onSelect, onBrowse }: MarketplacesSectionP
   const [pathValue, setPathValue] = useState("");
   const [nameValue, setNameValue] = useState("");
   const [added, setAdded] = useState(false);
+  useSettingsDirty(
+    addOpen && (kind !== "url" || urlValue !== "" || repoValue !== "" || pathValue !== "" || nameValue !== ""),
+  );
 
   const urlId = useId();
   const repoId = useId();
@@ -181,7 +186,12 @@ export function MarketplacesSection({ onSelect, onBrowse }: MarketplacesSectionP
             <Button type="submit" disabled={hubWriteBusy || readUnavailable}>
               Add
             </Button>
-            <Button type="button" variant="quiet" onClick={handleCancelAdd} disabled={hubWriteBusy}>
+            <Button
+              type="button"
+              variant="quiet"
+              onClick={() => requestNavigation(handleCancelAdd)}
+              disabled={hubWriteBusy}
+            >
               Cancel
             </Button>
           </div>

@@ -15,6 +15,7 @@ import type { AppwireClientLike, MarketplaceEntry } from "@evener/appwire-client
 import { errorText } from "@evener/appwire-client";
 import { HUB_WRITE_BUSY, isHubWriteBusy, marketplaceRemovalOutcome } from "@evener/appwire-client/state/extensions";
 import { type Dispatch, type SetStateAction, useEffect, useId, useRef, useState } from "react";
+import { requestNavigation } from "../../../../shell/routing";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { connectionStore } from "../../../../stores/connection";
 import {
@@ -30,6 +31,7 @@ import {
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useSettingsDirty } from "../../settingsDrafts";
 import { useExtensionsHostState, useExtensionsHostStore, useHostDirectoryActions } from "./hostStore";
 import {
   MARKETPLACE_SOURCE_OPTIONS,
@@ -152,6 +154,7 @@ export function MarketplaceSheet({
     baseline !== null &&
     draft !== null &&
     (draft.name.trim() !== baseline.name.trim() || marketplaceSourceTouched(baseline, draft));
+  useSettingsDirty(dirty);
   const canonicalChanged =
     baseline !== null &&
     entry !== undefined &&
@@ -343,7 +346,7 @@ export function MarketplaceSheet({
     <>
       <Sheet
         open={open}
-        onClose={onClose}
+        onClose={() => requestNavigation(onClose)}
         title={entry?.name ?? ""}
         side={isMobile ? "bottom" : "right"}
         size="wide"

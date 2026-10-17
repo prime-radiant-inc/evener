@@ -36,6 +36,7 @@ import type { ReactNode } from "react";
 import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
 import { CollectionEditor, FormRow, Input, PathField, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { SettingsDraft, useSettingsDirty } from "../../settingsDrafts";
 import styles from "./collectionFields.module.css";
 import { controllerLaunchFormPaths, type LaunchFormPaths } from "./fields";
 import { SettingsModelCatalog } from "./SettingsModelCatalog";
@@ -95,7 +96,21 @@ function StringListField({
           emptyMessage={emptyMessage}
           addPlaceholder={addPlaceholder}
           onAdd={handleAdd}
-          renderAddField={renderAddField}
+          renderAddField={(props) => (
+            <SettingsDraft dirty={props.value !== ""}>
+              {renderAddField ? (
+                renderAddField(props)
+              ) : (
+                <Input
+                  aria-label={option.label}
+                  value={props.value}
+                  onChange={(event) => props.onChange(event.target.value)}
+                  disabled={props.disabled}
+                  placeholder={addPlaceholder}
+                />
+              )}
+            </SettingsDraft>
+          )}
         />
         {explicitEmpty && (
           <Switch checked={explicitEmpty.checked} onChange={explicitEmpty.onChange} label={explicitEmpty.label} />
@@ -323,6 +338,7 @@ function EnvAddFields({
   const eq = value.indexOf("=");
   const name = eq === -1 ? value : value.slice(0, eq);
   const envValue = eq === -1 ? "" : value.slice(eq + 1);
+  useSettingsDirty(name !== "" || envValue !== "");
 
   return (
     <>
@@ -497,6 +513,17 @@ export function McpServerListField({
         emptyMessage="No MCP servers configured."
         addPlaceholder="name command args..."
         onAdd={handleAdd}
+        renderAddField={({ value, onChange, disabled }) => (
+          <SettingsDraft dirty={value !== ""}>
+            <Input
+              aria-label={option.label}
+              value={value}
+              onChange={(event) => onChange(event.target.value)}
+              disabled={disabled}
+              placeholder="name command args..."
+            />
+          </SettingsDraft>
+        )}
       />
     </FormRow>
   );

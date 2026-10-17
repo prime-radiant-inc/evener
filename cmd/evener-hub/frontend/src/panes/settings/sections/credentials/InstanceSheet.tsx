@@ -43,6 +43,7 @@ import {
   unconfiguredLabel,
 } from "@evener/appwire-client";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { requestNavigation } from "../../../../shell/routing";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
 import {
@@ -59,6 +60,7 @@ import {
   useToasts,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useSettingsDirty } from "../../settingsDrafts";
 import { CREDENTIAL_DOT, credentialState } from "./credentialState";
 import type { FormError } from "./formError";
 import styles from "./InstanceSheet.module.css";
@@ -406,6 +408,7 @@ export function InstanceSheet({
   // where a pressable one answers with the reason.
   const emptiedName = draft !== null && draft.name.trim() === "";
   const dirty = params !== null || emptiedName;
+  useSettingsDirty(open && dirty);
 
   function update(patch: Partial<InstanceDraft>): void {
     setDraft((current) => (current === null ? current : { ...current, ...patch }));
@@ -759,7 +762,7 @@ export function InstanceSheet({
   return (
     <Sheet
       open={open}
-      onClose={onClose}
+      onClose={() => requestNavigation(onClose)}
       title={instance?.name ?? ""}
       side={isMobile ? "bottom" : "right"}
       size="wide"

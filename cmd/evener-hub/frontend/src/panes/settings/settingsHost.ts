@@ -7,7 +7,7 @@
 // today's URLs are unchanged), restored from the URL, and carried across every
 // app-built settings navigation (shell/routing.ts's navigate).
 import { useCallback, useEffect } from "react";
-import { HOST_QUERY_PARAM, navigate, paneToURL, urlToPane } from "../../shell/routing";
+import { HOST_QUERY_PARAM, navigate, paneToURL, requestNavigation, urlToPane } from "../../shell/routing";
 import { isLocalHost } from "../../stores/hostRouting";
 import {
   adoptSettingsHostFromURL,
@@ -70,9 +70,12 @@ export interface SettingsHostSelection {
 export function useSettingsHost(): SettingsHostSelection {
   const host = useSettingsHostStore((state) => state.host);
   const selectHost = useCallback((next: string) => {
-    setSettingsHost(next);
-    navigate(settingsURLWithQuery(currentSettingsSection(), next, window.location.search), {
-      carrySettingsHost: false,
+    const target = settingsURLWithQuery(currentSettingsSection(), next, window.location.search);
+    requestNavigation(() => {
+      navigate(target, { carrySettingsHost: false });
+      // An identical URL is a routing no-op, but a standalone picker's store
+      // may not have adopted it yet. Selection still follows confirmation.
+      setSettingsHost(next);
     });
   }, []);
   return { host, selectHost };

@@ -16,6 +16,7 @@ import { enterText } from "../../../../textEntryTestUtils";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { toastKinds } from "../../../../widgets/toast/toastTestUtils";
+import { SettingsDraftsProvider } from "../../settingsDrafts";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 
 // The dialogs' outcomes, read from their markers: the inline refusal by its
@@ -64,6 +65,35 @@ const BEDROCK = provider({
   auth: "gcp-adc",
   varsEnv: ["AWS_REGION"],
   vars: { AWS_REGION: "AWS_REGION" },
+});
+
+test("credential cancellation asks before discarding and Stay retains the same secret input", async () => {
+  const fake = connectFakeClient();
+  const setKey = vi.fn();
+  fake.on("evener/auth/apiKey/set", setKey);
+  const onCancel = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <SettingsDraftsProvider>
+      <ApiKeyDialog
+        instance={instance({ name: "work", providerId: "anthropic" })}
+        expectedEndpointFingerprint={undefined}
+        onCancel={onCancel}
+        onSuccess={() => {}}
+      />
+    </SettingsDraftsProvider>,
+  );
+  const editor = screen.getByLabelText(/api key/i, { selector: "input" });
+  await enterText(user, editor, "fixture-credential");
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(onCancel).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(screen.getByLabelText(/api key/i, { selector: "input" })).toBe(editor);
+  expect(editor).toHaveProperty("value", "fixture-credential");
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  await user.click(screen.getByRole("button", { name: "Discard changes" }));
+  expect(onCancel).toHaveBeenCalledTimes(1);
+  expect(setKey).not.toHaveBeenCalled();
 });
 const VERTEX_EXPRESS = provider({
   id: "google-vertex-express",

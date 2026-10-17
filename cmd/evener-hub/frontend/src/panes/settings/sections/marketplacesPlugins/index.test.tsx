@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { SettingsDraftsProvider } from "../../settingsDrafts";
 import { alertReasons, statusReasons } from "../reasonTestUtils";
 import { MarketplacesPluginsSection } from "./index";
 import { chipKinds } from "./marketplacesTestUtils";
@@ -151,6 +152,39 @@ test.each(["add", "edit"] as const)("retains an %s source draft through a failed
   expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe("draft/value2");
   expect(fake.calls.filter((c) => /evener\/marketplace\/(add|edit)$/.test(c.method))).toHaveLength(0);
 });
+
+test.each(["add", "edit"] as const)(
+  "protects an %s source draft before segment change and preserves it on Stay",
+  async (kind) => {
+    const fake = connectSeededClient();
+    const user = userEvent.setup();
+    render(
+      <SettingsDraftsProvider>
+        <MarketplacesPluginsSection />
+      </SettingsDraftsProvider>,
+    );
+    await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+    if (kind === "add") await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
+    else await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+    const label = kind === "add" ? "Git URL" : "owner/repo";
+    const editor = screen.getByLabelText(label);
+    await user.clear(editor);
+    await user.type(editor, "pending/source");
+    if (kind === "edit") {
+      await user.click(screen.getByRole("button", { name: "Close" }));
+    } else {
+      await user.click(screen.getByRole("radio", { name: "Browse" }));
+    }
+    await user.click(screen.getByRole("button", { name: "Stay" }));
+    expect(screen.getByLabelText(label)).toBe(editor);
+    expect(editor).toHaveProperty("value", "pending/source");
+    await user.click(screen.getByRole("radio", { name: "Browse" }));
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(screen.getByRole("radio", { name: "Browse" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByLabelText(label)).toBeNull();
+    expect(fake.calls.filter((call) => /evener\/marketplace\/(add|edit)$/.test(call.method))).toHaveLength(0);
+  },
+);
 
 test("an untouched source follows canonical changes without arming Save", async () => {
   const fake = connectSeededClient();

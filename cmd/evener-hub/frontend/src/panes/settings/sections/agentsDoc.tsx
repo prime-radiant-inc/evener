@@ -19,6 +19,7 @@ import { agentsDocStoreForHost, useAgentsDocStoreForHost } from "../../../stores
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { Button, InlineNotice, Skeleton, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { useSettingsDirty } from "../settingsDrafts";
 import styles from "./agentsDoc.module.css";
 import { HostScopedSurface } from "./hostScopedSurface";
 import { Code } from "./settingsField";
@@ -106,6 +107,7 @@ export function AgentsDocSection({ host = LOCAL_HOST }: AgentsDocSectionProps) {
   }, [doc]);
 
   const dirty = baseline !== null && draft !== baseline;
+  useSettingsDirty(dirty);
 
   async function handleSave(): Promise<void> {
     const sent = draft;
