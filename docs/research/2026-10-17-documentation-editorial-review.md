@@ -100,6 +100,26 @@ Known build warnings were left visible: the lazy Mermaid bundle exceeds Vite's
 chunk-size warning threshold, and the local Node runtime reports a
 `module.register()` deprecation. Neither was hidden by weakening a check.
 
+## CI follow-up
+
+The first PR run exposed gaps that local Chrome checks did not catch: the pinned
+Chromium run timed out before Mermaid finished layout, the MCP example lacked
+registered fuzz coverage, and a reflection loop in the generator test violated
+the pinned modernize linter. The static aggregate failed because of that lint
+finding. No automatic RoboRev review appeared during the wait.
+
+Adding real MCP client/server fuzz coverage exposed a schema-validation bug:
+the example accepted missing `message` values despite declaring the field
+required. The example now uses the SDK's typed tool registration, with rejection
+and subsequent successful-call checks. The fuzz target is registered without an
+ignorelist exception. The reflection test now uses the standard field iterator.
+The browser test now observes Mermaid's completed DOM replacement before running
+its original SVG assertions, without increasing timeouts. CPU throttling
+reproduced the failure and passed after the repair. Independent source review
+accepted all three corrections. Parent reruns passed the build, pinned Chromium
+and Chrome suites, Go packages, tagged fuzz seeds, fuzz gap/registry checks, and
+scoped Go lint. A new Ubuntu CI run must confirm the browser repair there.
+
 ## Final disposition
 
 All six reviewers accepted the integrated source and built HTML. The editor's
