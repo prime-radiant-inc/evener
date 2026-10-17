@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitepress";
 import { slug } from "github-slugger";
 const manifest = JSON.parse(
@@ -13,7 +14,7 @@ export default defineConfig({
   outDir: ".vitepress/dist",
   srcExclude: ["public/**"],
   vite: {
-    publicDir: new URL("../.generated/public", import.meta.url).pathname,
+    publicDir: fileURLToPath(new URL("../.generated/public", import.meta.url)),
   },
   transformPageData(page) {
     page.frontmatter.source = manifest.pages.find(

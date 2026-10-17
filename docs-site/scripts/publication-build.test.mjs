@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   mkdtemp,
   mkdir,
+  copyFile,
   writeFile,
   readFile,
   rm,
@@ -16,11 +17,11 @@ import { load } from "cheerio";
 import { prepare, site } from "./prepare.mjs";
 import { checkBuilt } from "./check-built.mjs";
 
-test("real VitePress builds mutual published links and applies the Pages base once", async (t) => {
+test("production VitePress config publishes exports and links from a space and Unicode path", async (t) => {
   const root = await mkdtemp(
     path.join(
       process.env.EVENER_SCRATCH_DIR || os.tmpdir(),
-      "vitepress-links-",
+      "vitepress links-é-",
     ),
   );
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -56,12 +57,16 @@ test("real VitePress builds mutual published links and applies the Pages base on
     ],
     assets: [],
   };
-  const out = path.join(root, "staged");
+  const out = path.join(root, ".generated");
   await prepare({ root, manifest, out });
   await mkdir(path.join(root, ".vitepress"));
   await writeFile(
+    path.join(root, "publication.json"),
+    JSON.stringify(manifest),
+  );
+  await copyFile(
+    path.join(site, ".vitepress/config.mjs"),
     path.join(root, ".vitepress/config.mjs"),
-    `export default ${JSON.stringify({ base: "/evener/", srcDir: "staged", srcExclude: ["public/**"], outDir: path.join(root, "dist"), vite: { publicDir: path.join(out, "public") } })};`,
   );
   const run = promisify(execFile);
   await run(process.execPath, [
@@ -69,7 +74,8 @@ test("real VitePress builds mutual published links and applies the Pages base on
     "build",
     root,
   ]);
-  await checkBuilt(path.join(root, "dist"), manifest);
+  const dist = path.join(root, ".vitepress/dist");
+  await checkBuilt(dist, manifest);
   for (const [file, expected] of [
     ["index.html", ["/evener/reference/two.html#target"]],
     [
@@ -77,7 +83,7 @@ test("real VitePress builds mutual published links and applies the Pages base on
       ["/evener/index.html#start", "/evener/reference/two.html#target"],
     ],
   ]) {
-    const $ = load(await readFile(path.join(root, "dist", file), "utf8"));
+    const $ = load(await readFile(path.join(dist, file), "utf8"));
     assert.deepEqual(
       $(".vp-doc p a")
         .toArray()

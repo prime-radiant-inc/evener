@@ -90,7 +90,9 @@ Reconnect restores a transport, **not every notification**. Reinitialize, restor
 
 History reads have selection flags and bounded pages. Use returned cursors unchanged, keep the same selection, and take a fresh latest read when the selection or snapshot authority changes. `thread/list` returns `data` and `nextCursor`; an absent next cursor ends that listing. Other collections have their own cursor and completeness fields: an empty page alone does not prove completion. See the generated result type for each method.
 
-Job output has lifetime byte offsets, not character offsets. `evener/jobs/output` returns `offsetBytes`, `bytesReturned`, `totalBytes`, `retainedStartBytes`, `encoding` and `data`. Omitting `beforeBytes` reads the latest page; explicit zero is not omission. The default page is 4 KiB, with positive limits capped at 64 KiB. Decode with `parseJobOutputPage`; join contiguous byte pages before decoding UTF-8. `jobOutputPruned` means requested bytes are no longer retained, not that the job produced no output.
+Job output has lifetime byte offsets, not character offsets. `evener/jobs/output` returns a `JobsOutputResponse` whose `data` field contains the `JobOutputPage`. Read `offsetBytes`, `bytesReturned`, `totalBytes`, `retainedStartBytes`, `encoding` and the encoded `data` payload from `response.data`, not from the response itself. Decode with `parseJobOutputPage(response.data)`; join contiguous byte pages before decoding UTF-8.
+
+Omitting `beforeBytes` reads the latest page; explicit zero is not omission. The default page is 4 KiB, with positive limits capped at 64 KiB. `jobOutputPruned` means requested bytes are no longer retained, not that the job produced no output.
 
 ## Cancel and recover safely
 
