@@ -64,6 +64,11 @@ only after approval of the reviewed hash; `.evener/launch.local.toml` overrides
 remain separate. Discovery checks that directory, not its ancestors. Repository
 inspection failures do not prevent editing local overrides.
 
+Conversation display edits one device layout at a time, initially the current
+device class. Both shared layouts remain available through the layout selector.
+Use the shared default clears only the selected layout's browser-local override.
+The preview stays visible; Technical details contains revisions and inventories.
+
 On phones, settings opens as a full-width list. Drilling into a page and using
 Back preserves the list's search and scroll position. Desktop keeps the list
 beside the selected page.
