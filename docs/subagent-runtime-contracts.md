@@ -250,8 +250,9 @@ and the `http`/`mcp_tool`/`agent` handlers are parsed-but-inert. See
 **Do not assume warnings are secret-safe.** Hook lifecycle event payloads contain
 metadata, not hook commands, environment values, or stdout/stderr. Free-form
 warnings have a different contract: a failed `SessionStart` warning includes the
-first non-empty line of stderr, or stdout when stderr is empty, bounded to 160
-characters (`agent/internal/hooks/hooks.go`, `sessionStartFailureWarning`).
+first non-empty line of stderr, or stdout when stderr is empty, truncated to 160
+characters plus an ellipsis if longer (`agent/internal/hooks/hooks.go`,
+`sessionStartFailureWarning`).
 Hooks can also supply `systemMessage` warnings or model context. These messages
 have no dedicated secret-redaction layer. Keep secrets out of hook output and
 inspect warnings and transcripts before sharing them. See
