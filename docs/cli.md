@@ -79,6 +79,50 @@ Each command owns its flags. Run `evener COMMAND --help` before scripting a subc
 
 For client startup and authentication, see [Integrations](integrations.md). `serve` also accepts daemon-specific options such as `--run-dir`, `--app-replay-size` (default 1000), `--non-interactive`, `--model-fallback` (repeatable) and `--daemon-idle-timeout` (default 0, automatic retirement disabled). It does not accept every one-shot option, including `--timeout` or `--ask-responder`.
 
+## Doctor session selectors
+
+Doctor reads saved evidence without running a model. Discover sessions first:
+
+```sh
+evener doctor sessions --json
+evener doctor locate SESSION_ID
+evener doctor transcript SESSION_ID --format outline
+evener doctor transcript SESSION_ID --range last:10
+evener doctor jobs SESSION_ID
+```
+
+Replace `SESSION_ID` with an ID from `sessions`, or copy its full session ref.
+The selector grammar is:
+
+| Form | Resolution |
+| --- | --- |
+| `SESSION_ID` | Search all buckets under the selected state root. |
+| `local:SESSION_ID` | Also search all buckets; it does not mean the current working directory. |
+| `proj:PROJECT_ID:SESSION_ID` | Select one project bucket, resolving duplicate IDs across buckets. |
+
+`PROJECT_ID` is the stored bucket key, not a repository path. Copy it from
+discovery output rather than deriving it. The final colon separates the session
+ID, so project keys may contain colons. Project keys cannot be empty, `.` or `..`,
+or contain `/`, `\`, or NUL. Session IDs must pass the session-ID grammar;
+use the emitted ID unchanged. Empty selectors and `current` are rejected because
+Doctor has no current session. If a bare or `local:` ID is ambiguous, use the
+full `proj:` ref.
+
+For example, after replacing both placeholders with discovered values:
+
+```sh
+evener doctor locate 'proj:PROJECT_ID:SESSION_ID'
+evener doctor watches 'proj:PROJECT_ID:SESSION_ID' --json
+evener doctor tree 'proj:PROJECT_ID:SESSION_ID'
+```
+
+Use `--state-dir PATH` to inspect another state root. Without it, Doctor uses
+`EVENER_STATE_DIR`, then `XDG_STATE_HOME`, then `~/.local/state`. Use the same
+root for discovery and subsequent reads. `sessions`, `turnids`, `audit`, and
+`plugins` do not take a session selector. Run `evener doctor SUBCOMMAND -h` for
+that command's flags. Transcripts and API logs can contain secrets and private
+task content; review them before sharing.
+
 ## One-shot options
 
 The following reference follows `newRunFlagSet` in [`cmd/evener/main.go`](../cmd/evener/main.go). An omitted string option is resolved by its subsystem; there is no universal configuration precedence. See [Configuration](configuration.md) for persisted settings.
