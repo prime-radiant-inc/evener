@@ -452,6 +452,11 @@ describe("projectedRow — item entries", () => {
 		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "failed" });
 	});
 
+	it("does not mark an exit-only tool activity failed - the exit shows as an inline mark", () => {
+		const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "shell", exitCode: 1 })));
+		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "completed" });
+	});
+
 	it("maps a daemon steering item to an informational notice labelled by its kind", () => {
 		const row = projectedRow(
 			itemEntry(
@@ -941,6 +946,32 @@ describe("projectedRow — intent entries", () => {
 			intentEntry(item({ type: "commandExecution", toolName: "read_file", description: "  Read a.ts  " })),
 		);
 		expect(row).toMatchObject({ kind: "activity", detail: { description: "Read a.ts" } });
+	});
+
+	it("keeps an exit-only intent's activity completed and summary-only, not failed", () => {
+		const row = projectedRow(intentEntry(item({ type: "commandExecution", toolName: "shell", exitCode: 1 })));
+		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "completed", summaryOnly: true });
+	});
+
+	// The summary-only ruling drops the source's output and duration, but an
+	// exit-only call keeps its exit code so the compact row (and the run it folds
+	// into) can still show the small x. Web shows it at intent level; the phone
+	// must not silently lose it (Jesse, 2026-10-16).
+	it("keeps an exit-only intent's exit code in its summary-only detail", () => {
+		const row = projectedRow(intentEntry(item({ type: "commandExecution", toolName: "shell", exitCode: 7 })));
+		expect(row?.kind === "activity" && row.detail.exitCode).toBe(7);
+	});
+
+	// The exit resolves through the SHARED toolExitCode: on an old daemon that
+	// never set the typed field, the shell tool's own output footer still gives
+	// the mark its code - the same call web draws the x on (Jesse, 2026-10-16).
+	it("resolves a footer-only exit the same way as the typed field", () => {
+		const typed = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "shell", exitCode: 3 })));
+		const footer = projectedRow(
+			itemEntry(item({ type: "commandExecution", toolName: "shell", output: "boom\n[exit 3]" })),
+		);
+		expect(typed?.kind === "activity" && typed.detail.exitCode).toBe(3);
+		expect(footer?.kind === "activity" && footer.detail.exitCode).toBe(3);
 	});
 
 	// The operator's ruling (Sep-25): a summarized tool-action row carries

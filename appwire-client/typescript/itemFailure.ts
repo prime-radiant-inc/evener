@@ -18,9 +18,15 @@ export interface ItemFailureSignals {
 
 // A shell call's process exit code. The daemon never fabricates exitCode as 0
 // (appwire/types.go's ThreadItem.ExitCode doc), so a defined nonzero value is
-// an honest failure signal even when Error is empty (e.g. `make test` failing
-// with no denial or exception). A real 0 is a clean exit, distinct from
-// undefined — never conflate the two.
+// an honest signal that the process exited nonzero even when Error is empty
+// (e.g. `make test` failing with no denial or exception). A real 0 is a clean
+// exit, distinct from undefined — never conflate the two.
+//
+// This stays a real, honest signal: both clients render it as a small inline
+// mark on the call. It is deliberately NOT part of hasItemFailure, because a
+// nonzero exit is common and expected (Jesse, 2026-10-16: "don't call out
+// failed in lists of tool calls just for nonzero exits ... show a small x
+// inline on the call").
 export function isNonZeroExit(item: ItemFailureSignals): boolean {
   return typeof item.exitCode === "number" && item.exitCode !== 0;
 }
@@ -38,7 +44,7 @@ export function isTurnError(error: unknown): error is TurnError {
 }
 
 // The item's own status settled as a failure. The wire projects status
-// "completed" even for an errored tool call, so this is one signal of three,
+// "completed" even for an errored tool call, so this is one signal of two,
 // never the whole answer.
 export function hasFailureStatus(item: ItemFailureSignals): boolean {
   return item.status === "failed" || item.status === "interrupted";
@@ -52,11 +58,24 @@ export function hasErrorText(item: ItemFailureSignals): boolean {
   return item.error !== undefined && item.error.trim() !== "";
 }
 
+// A settled call whose ONLY problem is a nonzero exit: it did not carry error
+// text and its status is not failed/interrupted. This is the inline-mark rule
+// (Jesse, 2026-10-16): such a call must not read as failed, but the exit stays
+// visible as a small x on the call. It is deliberately expressed as the exact
+// negation of the other two failure terms plus a nonzero exit, so the two
+// clients can never disagree about which calls get the mark.
+export function isExitOnly(item: ItemFailureSignals): boolean {
+  return isNonZeroExit(item) && !hasErrorText(item) && !hasFailureStatus(item);
+}
+
 // A settled item is a failure when the tool result itself carried a non-blank
-// error message, OR the item's own status settled as failed/interrupted, OR
-// the process behind it exited nonzero.
+// error message, OR the item's own status settled as failed/interrupted. A
+// non-zero exit is NOT one of the terms: it is common and expected (a grep
+// that finds nothing, a check inside a passing run), so on its own it must not
+// raise a call to failed. Both clients still show it, as a small inline x on
+// the call (isExitOnly above) — visible, not alarming.
 export function hasItemFailure(item: ItemFailureSignals): boolean {
-  return hasErrorText(item) || hasFailureStatus(item) || isNonZeroExit(item);
+  return hasErrorText(item) || hasFailureStatus(item);
 }
 
 // The wire sends "inProgress" for a still-executing turn or item, never

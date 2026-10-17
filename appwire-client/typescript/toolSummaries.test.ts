@@ -7,6 +7,7 @@ import {
   mcpToolParts,
   type ToolStep,
   taskListChanges,
+  toolExitCode,
   toolFamily,
   toolStepProgress,
   toolStepSummary,
@@ -334,6 +335,27 @@ test("sorts each tool into the family a run's summary counts it under", () => {
   );
   expect(toolFamily("github__create_issue")).toBe("mcp");
   expect(toolFamily("compact_context")).toBe("tool");
+});
+
+// toolExitCode is the ONE exit reader both the web row and the phone's step
+// line call, so the small inline exit mark lands on exactly the same calls on
+// both surfaces (Jesse, 2026-10-16).
+test("toolExitCode reads the typed field first, the shell footer as the fallback", () => {
+  // The typed wire field is authoritative, even when it disagrees with the
+  // footer the command's own output carries.
+  expect(toolExitCode({ toolName: "shell", exitCode: 0, output: "done\n[exit 5]" })).toBe(0);
+  // No typed field (an old daemon): the shell tool's own output footer.
+  expect(toolExitCode({ toolName: "shell", output: "boom\n[exit 3]" })).toBe(3);
+  // The buffered environment's differently-shaped trailer, too.
+  expect(toolExitCode({ toolName: "shell", output: "out\nexit_code=2 duration_ms=1 timed_out=false" })).toBe(2);
+});
+
+test("toolExitCode reads no exit for a clean shell, a non-shell, or a footer-less output", () => {
+  expect(toolExitCode({ toolName: "shell", output: "ok\n[exit 0]" })).toBe(0);
+  expect(toolExitCode({ toolName: "shell", output: "still going" })).toBeUndefined();
+  // A non-shell tool that echoes an "[exit N]" footer in its OWN output is not
+  // a shell call, so its echoed footer is not read as an exit.
+  expect(toolExitCode({ toolName: "grep", output: "matches\n[exit 3]" })).toBeUndefined();
 });
 
 test("reads an MCP tool's server and tool in words", () => {

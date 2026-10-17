@@ -19,11 +19,11 @@ import { ToolCallItem } from "./ToolCallItem";
 import { statedIntentOf, ToolRow } from "./ToolRow";
 import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
 import { textAround } from "./transcriptTestUtils";
-// The failure-glyph and exit-code tests below drive the REAL shell descriptor
-// (its failed() hook is the A2 signal, and the exit code's one home is the raw
-// output's own trailing footer), so this file has to register it - without
-// this import "shell" resolves to DEFAULT_DESCRIPTOR and those assertions
-// test nothing. Same precedent as ToolCallItem.test.tsx.
+// The exit-mark tests below drive the REAL shell descriptor (its exitCode()
+// hook is the inline exit mark's source, read from the typed field with the raw
+// output's own trailing footer as the old-daemon fallback), so this file has to
+// register it - without this import "shell" resolves to DEFAULT_DESCRIPTOR and
+// those assertions test nothing. Same precedent as ToolCallItem.test.tsx.
 import "./tools/shellTool";
 
 afterEach(() => {
@@ -473,7 +473,7 @@ test("a successful call renders NO glyph element at all - the row reserves no sp
   expect(screen.queryByTestId("failure-glyph")).toBe(null);
 });
 
-test("a shell call that exited nonzero is marked failed by the glyph, not only by its exit-code text", () => {
+test("a shell call that exited nonzero shows the small inline exit mark, never the failure glyph", () => {
   render(
     <ToolCallItem
       item={item({ toolName: "shell", argumentsJSON: JSON.stringify({ command: "false" }), exitCode: 1 })}
@@ -481,7 +481,16 @@ test("a shell call that exited nonzero is marked failed by the glyph, not only b
       live={false}
     />,
   );
-  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
+  // Jesse, 2026-10-16: the exit is visible without reading as a failure.
+  const mark = screen.getByTestId("tool-row-exit");
+  // The mark is the small ATTENTION cross, never the danger octagon: a
+  // nonzero exit is visible, not alarming. Its accessible name carries the code
+  // as data (the row's own text says nothing about the exit).
+  const icon = mark.querySelector("svg");
+  expect(icon?.getAttribute("data-tone")).toBe("attention");
+  expect(mark.getAttribute("aria-label")).toBe("exit 1");
+  expect(screen.queryByTestId("failure-glyph")).toBe(null);
+  expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe(null);
 });
 
 test("a shell call that exited 0 gets no failure glyph", () => {

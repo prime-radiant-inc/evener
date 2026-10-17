@@ -18,8 +18,13 @@ import (
 )
 
 // shellRound describes one assistant round in a seeded transcript: a shell call
-// and the exit code its result carries.
-type shellRound struct{ exitCode int64 }
+// and its result — the exit code the result carries, and whether the result
+// itself errored. A nonzero exit ALONE is not a failure (Jesse, 2026-10-16), so
+// the count moves only on isError.
+type shellRound struct {
+	exitCode int64
+	isError  bool
+}
 
 // seedPastSessionWithShellExits writes a real transcript of shell calls with
 // the given exit codes, plus a meta. divergenceTurn > 0 makes it a fork child
@@ -69,7 +74,7 @@ func seedPastSessionWithShellExits(t testing.TB, divergenceTurn int, rounds []sh
 		}}}
 		results := llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
 			Kind:       llm.ContentToolResult,
-			ToolResult: &llm.ToolResultData{ToolCallID: id, Name: "shell", Content: "output", ToolState: state},
+			ToolResult: &llm.ToolResultData{ToolCallID: id, Name: "shell", Content: "output", ToolState: state, IsError: round.isError},
 		}}}
 		if err := w.Append(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("run it")}); err != nil {
 			t.Fatal(err)
@@ -100,15 +105,17 @@ func seedPastSessionWithShellExits(t testing.TB, divergenceTurn int, rounds []sh
 // failure without scrolling all of it. The read path now reports the count the
 // session's own chrome can state.
 func TestPastThreadRead_ReportsTheFailedToolCallCountFromTheFullTranscript(t *testing.T) {
-	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{0}, {1}, {0}, {127}, {0}})
+	// Two nonzero exits alone (not failures) and one errored result (a failure):
+	// the count is the errored one, never the exit codes.
+	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{exitCode: 0}, {exitCode: 1}, {isError: true}, {exitCode: 127}, {exitCode: 0}})
 
 	thread := readSeededThread(t, cfg, entry)
 
 	if thread.Evener.FailedToolCalls == nil {
 		t.Fatal("thread.Evener.FailedToolCalls = nil, want the full-transcript count")
 	}
-	if got := *thread.Evener.FailedToolCalls; got != 2 {
-		t.Fatalf("thread.Evener.FailedToolCalls = %d, want 2", got)
+	if got := *thread.Evener.FailedToolCalls; got != 1 {
+		t.Fatalf("thread.Evener.FailedToolCalls = %d, want 1 (the errored result, not the two exit codes)", got)
 	}
 }
 
@@ -117,7 +124,7 @@ func TestPastThreadRead_ReportsTheFailedToolCallCountFromTheFullTranscript(t *te
 // a future surface that wants to say "nothing failed" must be able to tell
 // "measured, none" from "nobody counted".
 func TestPastThreadRead_ReportsZeroForASessionWhereNothingFailed(t *testing.T) {
-	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{0}, {0}, {0}})
+	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{exitCode: 0}, {exitCode: 0}, {exitCode: 0}})
 
 	thread := readSeededThread(t, cfg, entry)
 
@@ -135,7 +142,7 @@ func TestPastThreadRead_ReportsZeroForASessionWhereNothingFailed(t *testing.T) {
 func TestPastThreadRead_ForkFailureCountExcludesTheInheritedParentPrefix(t *testing.T) {
 	// Rounds 1-2 (entries 1-6: user+announce+results each) are the parent's;
 	// the child's own history starts at entry 7.
-	cfg, entry := seedPastSessionWithShellExits(t, 7, []shellRound{{1}, {1}, {2}})
+	cfg, entry := seedPastSessionWithShellExits(t, 7, []shellRound{{isError: true}, {isError: true}, {isError: true}})
 
 	thread := readSeededThread(t, cfg, entry)
 
@@ -152,7 +159,7 @@ func TestPastThreadRead_ForkFailureCountExcludesTheInheritedParentPrefix(t *test
 // comforting 0 for a session nobody can read is the exact misreading this
 // count exists to prevent.
 func TestPastThreadRead_LegacyTranscriptLeavesTheFailureCountAbsent(t *testing.T) {
-	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{1}})
+	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{isError: true}})
 	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 	if err := os.WriteFile(path, []byte(`{"kind":"header","format_version":1}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -169,7 +176,7 @@ func TestPastThreadRead_LegacyTranscriptLeavesTheFailureCountAbsent(t *testing.T
 }
 
 func TestPastThreadRead_MissingTranscriptLeavesTheFailureCountAbsent(t *testing.T) {
-	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{1}})
+	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{isError: true}})
 	if err := os.Remove(filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")); err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +192,7 @@ func TestPastThreadRead_MissingTranscriptLeavesTheFailureCountAbsent(t *testing.
 // hydrates at load (kata hw2n), so a count over the loaded window undercounts.
 // The derived count must not move with the window thread/read returns.
 func TestPastThreadRead_FailureCountIsIndependentOfTheTurnWindow(t *testing.T) {
-	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{1}, {0}, {1}, {0}, {1}})
+	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{exitCode: 1}, {isError: true}, {exitCode: 1}, {isError: true}, {exitCode: 1}})
 
 	resp, ok := requirePastThreadReadResponse(t, cfg, appwire.ThreadReadParams{
 		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 1,
@@ -200,8 +207,8 @@ func TestPastThreadRead_FailureCountIsIndependentOfTheTurnWindow(t *testing.T) {
 	if resp.Thread.Evener.FailedToolCalls == nil {
 		t.Fatal("thread.Evener.FailedToolCalls = nil on a windowed read, want the full-transcript count")
 	}
-	if got := *resp.Thread.Evener.FailedToolCalls; got != 3 {
-		t.Fatalf("windowed read reported %d failures, want 3 (the whole transcript's, not the window's)", got)
+	if got := *resp.Thread.Evener.FailedToolCalls; got != 2 {
+		t.Fatalf("windowed read reported %d failures, want 2 (the whole transcript's errored results, not the window's)", got)
 	}
 }
 
@@ -210,7 +217,7 @@ func TestPastThreadRead_FailureCountIsIndependentOfTheTurnWindow(t *testing.T) {
 // every transcript on disk (measured at 1.09s over 1592 files in kata 5tdg),
 // so the sweep path must stay off it and report absent instead.
 func TestPastEntryThread_DoesNotDeriveTheFailureCountOnTheListSweepPath(t *testing.T) {
-	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{1}, {1}})
+	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{isError: true}, {isError: true}})
 
 	thread, err := pastEntryThread(context.Background(), cfg, entry, false)
 	if err != nil {

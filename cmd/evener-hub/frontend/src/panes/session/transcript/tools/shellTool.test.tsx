@@ -1,4 +1,4 @@
-import { stripRedundantCd } from "@evener/appwire-client";
+import { stripRedundantCd, toolExitCode } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -50,30 +50,28 @@ test("summary: leads with the command, no result suffix on a clean run", () => {
   expectSummaryEndsWithCommand(d.summary(withCommand("go test ./...", { output: out })), "go test ./...");
 });
 
-// A2: the exit code stops being the summary's headline. The failure glyph
-// (failed()) announces a nonzero exit; the number's one home is the real
-// text at the tail of the expanded body (the captured output's own
-// "[exit N]" footer, per agent/session_tools_shell.go's formatShellResult).
+// A2: the exit code stops being the summary's headline. The row's small inline
+// exit mark (exitCode(), via the shared isExitOnly rule) announces a nonzero
+// exit; the number's one home is the real text at the tail of the expanded body
+// (the captured output's own "[exit N]" footer, per
+// agent/session_tools_shell.go's formatShellResult).
 
-test("summary: a nonzero exit is NOT in the summary text - the glyph carries that signal", () => {
+test("summary: a nonzero exit is NOT in the summary text - the inline mark carries that signal", () => {
   const d = toolRendererFor("shell");
   const out = "some output\n[exit 1]";
   expectSummaryEndsWithCommand(d.summary(withCommand("false", { output: out })), "false");
 });
 
-test("failed: true for a nonzero exit parsed from the output footer", () => {
-  const d = toolRendererFor("shell");
-  expect(d.failed?.(withCommand("false", { output: "some output\n[exit 1]" }))).toBe(true);
+test("toolExitCode: a nonzero exit parsed from the output footer", () => {
+  expect(toolExitCode(withCommand("false", { output: "some output\n[exit 1]" }))).toBe(1);
 });
 
-test("failed: false on a clean exit - success reserves no glyph", () => {
-  const d = toolRendererFor("shell");
-  expect(d.failed?.(withCommand("true", { output: "x\n[exit 0]" }))).toBe(false);
+test("toolExitCode: a clean exit", () => {
+  expect(toolExitCode(withCommand("true", { output: "x\n[exit 0]" }))).toBe(0);
 });
 
-test("failed: false when no exit code is detectable at all (still running/backgrounded)", () => {
-  const d = toolRendererFor("shell");
-  expect(d.failed?.(withCommand("sleep 10", { output: "still going" }))).toBe(false);
+test("toolExitCode: undefined when no exit code is detectable at all (still running/backgrounded)", () => {
+  expect(toolExitCode(withCommand("sleep 10", { output: "still going" }))).toBeUndefined();
 });
 
 test("summary: no footer at all (still running, or backgrounded) shows no exit suffix", () => {
@@ -81,14 +79,27 @@ test("summary: no footer at all (still running, or backgrounded) shows no exit s
   expectSummaryEndsWithCommand(d.summary(withCommand("sleep 10", { output: "partial output so far" })), "sleep 10");
 });
 
-test("failed: also recognizes the buffered-execenv fallback's differently-shaped trailer (no brackets)", () => {
+test("toolExitCode: also recognizes the buffered-execenv fallback's differently-shaped trailer (no brackets)", () => {
   // agent/session_tools_shell.go's runBufferedShell path (used when the
   // execution environment doesn't support streaming) has no StateResult/
   // bracketed footer at all - it ends in a bare
   // "exit_code=N duration_ms=N timed_out=bool" line instead.
-  const d = toolRendererFor("shell");
   const out = "stdout here\nexit_code=2 duration_ms=15 timed_out=false";
-  expect(d.failed?.(withCommand("false", { output: out }))).toBe(true);
+  expect(toolExitCode(withCommand("false", { output: out }))).toBe(2);
+});
+
+// The shell family gate: a non-shell tool that echoes an "[exit N]" footer in
+// its OWN output is not a shell call, so the resolver does not read it as an
+// exit. (The typed field wins regardless of family.)
+test("toolExitCode: a non-shell tool's echoed footer is not an exit", () => {
+  expect(toolExitCode(item({ toolName: "grep", output: "matches\n[exit 3]" }))).toBeUndefined();
+});
+
+// The descriptor declares NO failure on its own (Jesse, 2026-10-16): a nonzero
+// exit is the inline mark's signal, never a failure.
+test("failed: the shell descriptor declares no failure hook - the exit is the inline mark, not a failure", () => {
+  const d = toolRendererFor("shell");
+  expect(d.failed).toBeUndefined();
 });
 
 // Truncation is the ROW's presentation job, not the descriptor's: the row
@@ -130,16 +141,13 @@ test("exec_command and run_shell_command alias to the same descriptor as shell",
 });
 
 // --- autoExpand: none ---------------------------------------------------
-// A failed command does not auto-open its row: a failure earns the glyph and
-// data-attention, and the reader opens the row to read the output. The shell
-// descriptor therefore carries no autoExpand at all (the exit code still
-// drives failed(), so the row never loses its failure signal).
+// An exit-only command does not auto-open its row: the exit earns the small
+// inline mark, and the reader opens the row to read the output. The shell
+// descriptor therefore carries no autoExpand at all.
 
 test("autoExpand: the shell descriptor never auto-opens a row, clean or failed", () => {
   const d = toolRendererFor("shell");
   expect(d.autoExpand).toBeUndefined();
-  // The failure signal itself is untouched.
-  expect(d.failed?.(withCommand("false", { output: "x\n[exit 1]" }))).toBe(true);
 });
 
 // --- typed exitCode (wire-honesty spec Part A) ----------------------------
@@ -148,17 +156,15 @@ test("autoExpand: the shell descriptor never auto-opens a row, clean or failed",
 // output-footer text heuristic above stays only as the old-daemon fallback
 // (every test above carries no exitCode, so those now exercise that fallback).
 
-test("failed: the typed exitCode wins over a conflicting output footer", () => {
-  const d = toolRendererFor("shell");
+test("toolExitCode: the typed exitCode wins over a conflicting output footer", () => {
   // Typed 0 (clean) must not be overridden by a stray bracketed "[exit 5]" in
   // the command's own output text — the structured field is authoritative.
   const clean = withCommand("make test", { exitCode: 0, output: "done\n[exit 5]" });
-  expect(d.failed?.(clean)).toBe(false);
+  expect(toolExitCode(clean)).toBe(0);
 });
 
-test("failed: true from a typed nonzero exitCode with no footer text", () => {
-  const d = toolRendererFor("shell");
-  expect(d.failed?.(withCommand("make test", { exitCode: 2, output: "boom" }))).toBe(true);
+test("toolExitCode: a typed nonzero exitCode with no footer text", () => {
+  expect(toolExitCode(withCommand("make test", { exitCode: 2, output: "boom" }))).toBe(2);
 });
 
 // --- body -----------------------------------------------------------------

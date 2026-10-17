@@ -15,7 +15,7 @@ import (
 // A discarded saved diagnostic must not make an authoritative live read fail.
 // A directory at the journal path makes an attempted read fail even as root.
 func TestMergePastThreadForReadSkipsUnusedSavedDelegateDiagnostics(t *testing.T) {
-	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{0}})
+	cfg, entry := seedPastSessionWithShellExits(t, 0, []shellRound{{exitCode: 0}})
 	journalPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID, "delegates.jsonl")
 	if err := os.MkdirAll(journalPath, 0o700); err != nil {
 		t.Fatal(err)

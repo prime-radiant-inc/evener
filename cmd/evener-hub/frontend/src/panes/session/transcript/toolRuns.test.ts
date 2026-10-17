@@ -161,13 +161,29 @@ test("the label hands the working-directory context to the summary, as an expand
 
 // The fold rule breaks a run on a failure, and a failure is whatever the
 // shared settled-item predicate says it is - not a second, looser reading of
-// the same wire fields.
-test("a settled call that exited nonzero is a failure and breaks the run", () => {
+// the same wire fields. A nonzero exit alone is NOT a failure (Jesse,
+// 2026-10-16), so an exit-only call folds like any other quiet call.
+test("a settled call that exited nonzero alone is not a failure and folds into the run", () => {
   const out = foldToolRuns(
     [
       tool("a", "read_file"),
       tool("b", "read_file"),
       tool("c", "read_file", "completed", { exitCode: 1 }),
+      tool("d", "read_file"),
+    ],
+    { turnSettled: true, descriptorFor },
+  );
+  expect(out.map((e) => e.kind)).toEqual(["run"]);
+  expect((out[0] as ToolRun).entries.map((e) => e.id)).toEqual(["a", "b", "c", "d"]);
+});
+
+// A real failure still breaks the run.
+test("a settled call with error text breaks the run", () => {
+  const out = foldToolRuns(
+    [
+      tool("a", "read_file"),
+      tool("b", "read_file"),
+      tool("c", "read_file", "completed", { error: "boom", exitCode: 1 }),
       tool("d", "read_file"),
     ],
     { turnSettled: true, descriptorFor },
