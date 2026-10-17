@@ -53,6 +53,9 @@ The reference below distinguishes supported behavior from fields that only parse
 
 ## Hook reference
 
+Use the sections below to check hook discovery, event support, matchers, handlers,
+and input/output contracts. Parsed fields marked reserved have no runtime effect.
+
 ## How evener discovers your hooks
 
 Point evener at one or more plugin directories with `--plugin-dir`:
@@ -148,8 +151,8 @@ warns that the event is not fired yet. The full event vocabulary and the roadmap
 live in
 [07](subagent-management/07-lifecycle-hooks-claude-compat.md#event-contract).
 
-**Unknown names are rejected loudly.** A typo like `PreToolUze` is neither a evener
-event nor a Claude event, so evener warns that it is likely a typo and the hook
+**Unknown names are rejected loudly.** A typo like `PreToolUze` is neither an Evener
+event nor a Claude event, so Evener warns that it is likely a typo and the hook
 will never fire.
 
 ### When `PreToolUse` runs (input rewriting)
@@ -202,7 +205,7 @@ matcher must name the **Claude** tool:
 
 MCP tools keep their `<server>__<tool>` name in both vocabularies.
 
-A matcher that names a evener-canonical tool (`"shell"`, `"read_file"`) is not an
+A matcher that names an Evener-canonical tool (`"shell"`, `"read_file"`) is not an
 error — it is a valid exact matcher that simply never matches the Claude name the
 hook is tested against. It will fail silently. Write `"Bash"`.
 
