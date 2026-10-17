@@ -1,18 +1,99 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { installNavigationGuard, navigate, paneToURL, urlToPane } from "./routing";
+import {
+  installNavigationGuard,
+  isHistoryUnrestored,
+  navigate,
+  navigationLocation,
+  paneToURL,
+  urlToPane,
+} from "./routing";
 
 beforeEach(() => {
   window.history.pushState({}, "", "/");
 });
 
 afterEach(() => {
-  window.history.pushState({}, "", "/");
+  navigate("/", { carrySettingsHost: false });
+  vi.unstubAllGlobals();
 });
+
+test("unindexed Back and Stay preserve the destination entry for Forward and Back", async () => {
+  window.history.pushState({}, "", "/older");
+  window.history.pushState({}, "", "/settings/theme");
+  window.history.pushState({}, "", "/settings/agents-md");
+  const guard = vi.fn(() => false);
+  const remove = installNavigationGuard(guard);
+  try {
+    window.history.back();
+    await vi.waitFor(() => expect(guard).toHaveBeenCalledTimes(1));
+    expect(window.location.pathname).toBe("/settings/theme");
+    expect(navigationLocation().pathname).toBe("/settings/agents-md");
+    expect(isHistoryUnrestored()).toBe(true);
+    // Stay leaves the unknown cursor untouched. Forward returns to the original
+    // accepted entry, then Back must reach the still distinct theme entry.
+    window.history.forward();
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/settings/agents-md"));
+    expect(isHistoryUnrestored()).toBe(false);
+    window.history.back();
+    await vi.waitFor(() => expect(guard).toHaveBeenCalledTimes(2));
+  } finally {
+    remove();
+  }
+});
+
+test.each(["indexed History", "Navigation API"].flatMap((api) => [-2, -1, 1, 2].map((delta) => ({ api, delta }))))(
+  "$api restores a real traversal of $delta entries",
+  async ({ api, delta }) => {
+    const urls = ["/older", "/settings/theme", "/settings/project", "/settings/agents-md"];
+    for (const [index, url] of urls.entries()) {
+      window.history.pushState(
+        { nativeIndex: index, ...(api === "indexed History" ? { evenerNavigationIndex: index } : {}) },
+        "",
+        url,
+      );
+    }
+    const from = delta > 0 ? 1 : 3;
+    if (from !== 3) {
+      window.history.go(from - 3);
+      await vi.waitFor(() => expect(window.history.state.nativeIndex).toBe(from));
+    }
+    // jsdom lacks Navigation API. Supply its read-only currentEntry contract,
+    // derived from fixture metadata, while all traversals still use real History.
+    if (api === "Navigation API") {
+      vi.stubGlobal("navigation", {
+        get currentEntry() {
+          return { index: window.history.state.nativeIndex, key: `entry-${window.history.state.nativeIndex}` };
+        },
+      });
+    }
+    let pending: (() => void) | undefined;
+    const guard = vi.fn((proceed: () => void) => {
+      pending ??= proceed;
+      return false;
+    });
+    const remove = installNavigationGuard(guard);
+    const adopted = vi.fn();
+    window.addEventListener("popstate", adopted);
+    try {
+      window.history.go(delta);
+      await vi.waitFor(() => expect(guard).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(window.history.state.nativeIndex).toBe(from));
+      expect(adopted).not.toHaveBeenCalled();
+      expect(isHistoryUnrestored()).toBe(false);
+      pending?.();
+      await vi.waitFor(() => expect(window.history.state.nativeIndex).toBe(from + delta));
+      expect(window.location.pathname).toBe(urls[from + delta]);
+      expect(adopted).toHaveBeenCalledTimes(1);
+    } finally {
+      remove();
+      window.removeEventListener("popstate", adopted);
+    }
+  },
+);
 
 test.each([
   { name: "Back", index: 4, delta: -1 },
   { name: "Forward", index: 6, delta: 1 },
-  { name: "inbound unindexed history", index: undefined, delta: 0 },
 ])("$name waits before context adoption and Discard visits its frozen target once", ({ index, delta }) => {
   const original = "/settings/agents-md?host=alpha";
   const target = "/settings/project?host=beta&cwd=%2Fselected";

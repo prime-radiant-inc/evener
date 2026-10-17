@@ -17,7 +17,7 @@
 // shared hook and the mount/popstate sync - lives in panes/settings/settingsHost.ts;
 // shell/routing.ts's navigate carries the host across the app's own navigations.
 import { createStore, useStore } from "zustand";
-import { HOST_QUERY_PARAM, isSettingsPath, setSettingsHostRouteSync } from "../shell/routing";
+import { HOST_QUERY_PARAM, isSettingsPath, navigationLocation, setSettingsHostRouteSync } from "../shell/routing";
 import { LOCAL_HOST, normalizeHost } from "./hostRouting";
 
 // The one spelling rule (absent / empty / `local` -> LOCAL_HOST) lives in
@@ -54,7 +54,9 @@ export function initialSettingsHost(pathname: string, search: string): string {
 // there is no URL to seed from, so the default local hub is the honest answer.
 export const settingsHostStore = createStore<SettingsHostState>(() => ({
   host:
-    typeof window === "undefined" ? LOCAL_HOST : initialSettingsHost(window.location.pathname, window.location.search),
+    typeof window === "undefined"
+      ? LOCAL_HOST
+      : initialSettingsHost(navigationLocation().pathname, navigationLocation().search),
 }));
 
 /** setSettingsHost is the one writer of the selection. Callers that also want
@@ -81,8 +83,8 @@ export function setSettingsHost(host: string): void {
  * one function that rewrites it from a URL, so asking the question here is what
  * makes it impossible to call around. */
 export function adoptSettingsHostFromURL(): void {
-  if (!isSettingsPath(window.location.pathname)) return;
-  setSettingsHost(readHostFromSearch(window.location.search));
+  if (!isSettingsPath(navigationLocation().pathname)) return;
+  setSettingsHost(readHostFromSearch(navigationLocation().search));
 }
 
 /** syncSettingsHostToRoute mirrors the selection onto a route the app just

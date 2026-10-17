@@ -179,11 +179,57 @@ export function setSettingsHostRouteSync(sync: SettingsHostRouteSync | null): vo
 type NavigationGuard = (proceed: () => void) => boolean;
 let navigationGuard: NavigationGuard | null = null;
 let deferUntilRestored: ((proceed: () => void) => boolean) | null = null;
+let contextOverride: string | null = null;
+let historyUnrestored = false;
+let publishingContext = false;
+const contextListeners = new Set<() => void>();
 let proceeding = false;
 const HISTORY_INDEX = "evenerNavigationIndex";
 
 function currentURL(): string {
   return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+/** The one route reader, including accepted context when legacy History cannot
+ * restore an unknown cursor. No override means the ordinary browser location. */
+export function navigationLocation(): URL {
+  return new URL(contextOverride ?? window.location.href, window.location.origin);
+}
+
+/** Canonicalizing an existing route is not permission to overwrite a different
+ * browser entry while legacy history and app context disagree. */
+export function replaceNavigationContext(target: string): void {
+  if (contextOverride !== null) contextOverride = target;
+  else window.history.replaceState(window.history.state, "", target);
+}
+
+export function subscribeNavigationContext(listener: () => void): () => void {
+  contextListeners.add(listener);
+  return () => {
+    contextListeners.delete(listener);
+  };
+}
+
+export function isHistoryUnrestored(): boolean {
+  return historyUnrestored;
+}
+
+function setContextOverride(target: string | null, unrestored = false): void {
+  contextOverride = target === currentURL() ? null : target;
+  historyUnrestored = unrestored && contextOverride !== null;
+  for (const listener of contextListeners) listener();
+}
+
+// The compatibility override must survive Settings unmount, but never a later
+// ordinary traversal. A guarded traversal decides adoption in its own handler.
+if (typeof window !== "undefined") {
+  window.addEventListener(
+    "popstate",
+    () => {
+      if (navigationGuard === null && !publishingContext) setContextOverride(null);
+    },
+    true,
+  );
 }
 
 /** A settings-owned, component-lifetime guard. No guard means unchanged navigation.
@@ -207,14 +253,16 @@ export function requestNavigation(proceed: () => void): void {
 
 /** Capture browser traversal before ordinary popstate listeners adopt its context.
  * Entries made by navigate carry an index, so Stay restores the history cursor,
- * not a duplicate entry. Unindexed inbound entries use URL restoration instead. */
+ * not a duplicate entry. Navigation API indices cover unindexed entries. Legacy
+ * History cannot identify those cursors, so preserve them and retain app context. */
 export function installNavigationGuard(guard: NavigationGuard): () => void {
   navigationGuard = guard;
-  let accepted = currentURL();
+  let accepted = contextOverride ?? currentURL();
   let acceptedState = window.history.state;
+  let acceptedEntry = window.navigation?.currentEntry;
   let restoring = false;
   let afterRestore: (() => void) | null = null;
-  let permitted: string | null = null;
+  let permitted: { url: string; key?: string; index?: number } | null = null;
   const defer = (proceed: () => void) => {
     if (!restoring) return false;
     afterRestore ??= proceed;
@@ -222,36 +270,74 @@ export function installNavigationGuard(guard: NavigationGuard): () => void {
   };
   deferUntilRestored = defer;
   const onPopState = (event: PopStateEvent) => {
+    if (publishingContext) return;
     const target = currentURL();
-    if (restoring && target === accepted) {
+    const targetEntry = window.navigation?.currentEntry;
+    const targetState = window.history.state;
+    const fromIndex = acceptedState?.[HISTORY_INDEX];
+    const toIndex = targetState?.[HISTORY_INDEX];
+    const atAccepted =
+      acceptedEntry != null && targetEntry != null
+        ? acceptedEntry.key === targetEntry.key
+        : typeof fromIndex === "number" && typeof toIndex === "number"
+          ? fromIndex === toIndex
+          : target === accepted;
+    if (restoring && atAccepted) {
       event.stopImmediatePropagation();
       restoring = false;
+      setContextOverride(null);
       const continuation = afterRestore;
       afterRestore = null;
       continuation?.();
       return;
     }
-    if (proceeding || target === accepted || target === permitted) {
+    const isPermitted =
+      permitted !== null &&
+      target === permitted.url &&
+      (permitted.key !== undefined ? targetEntry?.key === permitted.key : permitted.index === toIndex);
+    if (proceeding || (!restoring && target === accepted) || isPermitted) {
       permitted = null;
       accepted = target;
       acceptedState = window.history.state;
+      acceptedEntry = targetEntry;
+      setContextOverride(null);
       return;
     }
-    const targetState = window.history.state;
-    const fromIndex = acceptedState?.[HISTORY_INDEX];
-    const toIndex = targetState?.[HISTORY_INDEX];
-    const delta = typeof fromIndex === "number" && typeof toIndex === "number" ? toIndex - fromIndex : 0;
+    const nativeFromIndex = acceptedEntry?.index;
+    const nativeIndices =
+      nativeFromIndex !== undefined && nativeFromIndex >= 0 && targetEntry != null && targetEntry.index >= 0;
+    const delta = nativeIndices
+      ? targetEntry.index - nativeFromIndex
+      : typeof fromIndex === "number" && typeof toIndex === "number"
+        ? toIndex - fromIndex
+        : null;
     const proceed = () => {
       const visit = () => {
         if (navigationGuard !== guard) return;
-        if (delta !== 0) {
-          permitted = target;
-          window.history.go(delta);
+        const currentIndex = nativeIndices
+          ? window.navigation?.currentEntry?.index
+          : window.history.state?.[HISTORY_INDEX];
+        const destinationIndex = nativeIndices ? targetEntry.index : toIndex;
+        if (delta !== null && typeof currentIndex === "number" && currentIndex !== destinationIndex) {
+          permitted = { url: target, key: nativeIndices ? targetEntry.key : undefined, index: toIndex };
+          window.history.go(destinationIndex - currentIndex);
         } else {
-          window.history.replaceState(targetState, "", target);
+          // No history writes: the cursor may have moved again while the first
+          // question stayed open. Discard adopts that first URL as app context.
           accepted = target;
           acceptedState = targetState;
-          window.dispatchEvent(new PopStateEvent("popstate", { state: targetState }));
+          acceptedEntry = targetEntry;
+          setContextOverride(target, true);
+          if (settingsHostRouteSync !== null) {
+            const location = navigationLocation();
+            settingsHostRouteSync(location.pathname, location.search);
+          }
+          publishingContext = true;
+          try {
+            window.dispatchEvent(new PopStateEvent("popstate", { state: targetState }));
+          } finally {
+            publishingContext = false;
+          }
         }
       };
       if (restoring) afterRestore ??= visit;
@@ -260,14 +346,15 @@ export function installNavigationGuard(guard: NavigationGuard): () => void {
     if (guard(proceed)) {
       accepted = target;
       acceptedState = targetState;
+      acceptedEntry = targetEntry;
+      setContextOverride(null);
       return;
     }
     event.stopImmediatePropagation();
-    if (delta !== 0) {
+    setContextOverride(accepted, delta === null);
+    if (delta !== null && delta !== 0) {
       restoring = true;
       window.history.go(-delta);
-    } else {
-      window.history.replaceState(acceptedState, "", accepted);
     }
   };
   window.addEventListener("popstate", onPopState, true);
@@ -279,7 +366,7 @@ export function installNavigationGuard(guard: NavigationGuard): () => void {
   };
 }
 
-// withSettingsHost carries the host the address bar already names onto an
+// withSettingsHost carries the host the accepted route already names onto an
 // APP-BUILT navigation to a settings route (component 07b): the selected host
 // is part of that route, and the builders that cannot know it - the palette's
 // `navigate("/settings")` (palette/commands.ts), AppShell's settings.open
@@ -296,7 +383,8 @@ function withSettingsHost(target: string): string {
   // one out of itself: a non-settings URL that merely carries `?host=` (a
   // hand-typed link, another surface's own parameter) must not leak it onto a
   // settings target.
-  if (!isSettingsPath(window.location.pathname)) return target;
+  const context = navigationLocation();
+  if (!isSettingsPath(context.pathname)) return target;
   const params = new URLSearchParams(search);
   if (params.has(HOST_QUERY_PARAM)) return target;
   // The current host goes through the ONE spelling rule (hostRouting.ts's
@@ -304,7 +392,7 @@ function withSettingsHost(target: string): string {
   // empty, or `local` current host normalizes to the local hub, which is nothing
   // to carry - so the target keeps the canonical hostless local URL instead of
   // gaining a `?host=local` or a bare `?host=`.
-  const current = normalizeHost(new URLSearchParams(window.location.search).get(HOST_QUERY_PARAM));
+  const current = normalizeHost(new URLSearchParams(context.search).get(HOST_QUERY_PARAM));
   if (isLocalHost(current)) return target;
   params.set(HOST_QUERY_PARAM, current);
   return `${path}?${params.toString()}${hash}`;
@@ -323,13 +411,12 @@ function withSettingsHost(target: string): string {
 // listeners. The argument is always a path (optionally with search/hash) - the
 // app never constructs an absolute URL here.
 //
-// A settings target also carries the host the address bar already names (see
+// A settings target also carries the host the accepted route already names (see
 // withSettingsHost) unless `carrySettingsHost: false` says the caller is
 // deliberately choosing a URL without it.
 export function navigate(pathname: string, options: { replace?: boolean; carrySettingsHost?: boolean } = {}): void {
   const target = options.carrySettingsHost === false ? pathname : withSettingsHost(pathname);
-  const current = currentURL();
-  if (current === target) return;
+  if ((contextOverride ?? currentURL()) === target && contextOverride === null) return;
   requestNavigation(() => commitNavigation(target, options.replace));
 }
 
@@ -340,6 +427,7 @@ function commitNavigation(target: string, replace = false): void {
   }
   if (replace) window.history.replaceState({ [HISTORY_INDEX]: index }, "", target);
   else window.history.pushState({ [HISTORY_INDEX]: index + 1 }, "", target);
+  setContextOverride(null);
   // Mirror the settings selection onto the route the app just chose, before any
   // listener runs: an app-built navigation drops a remote selection it leaves
   // behind and adopts the one its target names, so no host-scoped pane ever

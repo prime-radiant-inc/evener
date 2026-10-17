@@ -44,7 +44,7 @@ import { useActivitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useChromeStore } from "../chromeStore";
 import { paneFor } from "../paneRegistry";
 import { PaneVisibilityContext } from "../paneVisibility";
-import { navigate, paneToURL, urlToPane } from "../routing";
+import { navigate, navigationLocation, paneToURL, urlToPane } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { isSinglePaneRoute } from "../singlePane";
 import {
@@ -99,8 +99,8 @@ function popValidBackTarget(
   return undefined;
 }
 
-// True when `pathname` is a SINGLE-PANE route that already names this exact
-// pane - today that is only /thread/{ref}, the share link (singlePane.ts).
+// True when the accepted route already names this exact pane. Publishing it
+// again would discard query context or realign legacy history without consent.
 //
 // /thread/{ref} and /s/{ref} resolve to the same session pane (routing.ts),
 // but only /thread turns single-pane mode on: AppShell reads
@@ -114,7 +114,8 @@ function popValidBackTarget(
 //
 // Params compare by JSON, the same plain structural equality workspace.ts's
 // own sameParams uses for these small always-JSON-safe param bags.
-function singlePaneRouteNames(pathname: string, pane: OpenPaneRecord): boolean {
+function routeNamesPane(pathname: string, pane: OpenPaneRecord): boolean {
+  if (paneToURL(pane.type, pane.params) === pathname) return true;
   if (!isSinglePaneRoute(pathname)) return false;
   const route = urlToPane(pathname);
   return route !== null && route.type === pane.type && JSON.stringify(route.params) === JSON.stringify(pane.params);
@@ -286,12 +287,12 @@ export function StackHost({ railSlot, routeDeferred = false, singlePane = false 
   // arrives. The address bar already names where we are going, so leaving it
   // alone is also the honest reading of "always name the visible pane".
   //
-  // A single-pane route that already names the focused pane is left alone for
-  // the same reason, one step further: see singlePaneRouteNames above.
+  // Any accepted route already naming the focused pane is left alone, including
+  // query-prefilled and single-pane routes: see routeNamesPane above.
   useEffect(() => {
     if (routeDeferred) return;
     if (!focusedPane) return;
-    if (singlePaneRouteNames(window.location.pathname, focusedPane)) return;
+    if (routeNamesPane(navigationLocation().pathname, focusedPane)) return;
     const url = paneToURL(focusedPane.type, focusedPane.params);
     if (url) navigate(url);
   }, [focusedPane, routeDeferred]);

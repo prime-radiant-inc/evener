@@ -4,6 +4,7 @@
 import type { LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
+import { navigationLocation } from "../../../shell/routing";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import { launchConfigStoreForHost } from "../../../stores/launchConfig";
 import { Button, InlineNotice, Loader } from "../../../widgets";
@@ -21,7 +22,7 @@ const CLASS = {
 };
 
 function readQueryCwd(): string {
-  return new URLSearchParams(window.location.search).get("cwd") ?? "";
+  return new URLSearchParams(navigationLocation().search).get("cwd") ?? "";
 }
 
 function useQueryCwd(): string {

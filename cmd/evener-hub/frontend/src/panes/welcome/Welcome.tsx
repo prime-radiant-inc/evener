@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { navigate } from "../../shell/routing";
+import { navigate, navigationLocation } from "../../shell/routing";
 import { useWorkspaceStore } from "../../shell/workspace";
 import { EmptyState, PaneScaffold } from "../../widgets";
 import { useProviderSetup } from "../spawn/useProviderSetup";
@@ -16,8 +16,8 @@ export default function Welcome({ params, focused }: PaneProps<WelcomePaneParams
   const { status } = useProviderSetup();
   const hasSession = useWorkspaceStore((state) => state.panes.some((pane) => pane.type === "session"));
   useEffect(() => {
-    if (focused && !hasSession && status === "missing" && window.location.pathname === "/")
-      navigate(`/new${window.location.search}${window.location.hash}`, { replace: true });
+    if (focused && !hasSession && status === "missing" && navigationLocation().pathname === "/")
+      navigate(`/new${navigationLocation().search}${navigationLocation().hash}`, { replace: true });
   }, [focused, hasSession, status]);
   // The note is rendered by EmptyState's hint (the original rendering path,
   // so the existing "shows params.note as a hint" test stays green). It is

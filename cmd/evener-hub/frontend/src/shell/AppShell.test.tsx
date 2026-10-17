@@ -78,7 +78,7 @@ import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { resolveFocusedComposer } from "./holdhints/HoldHints";
 import { paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
-import { navigate, refParam } from "./routing";
+import { navigate, navigationLocation, refParam } from "./routing";
 import {
   documentPaneState,
   getDockviewApi,
@@ -5537,6 +5537,89 @@ function navClientWithLive(sessions: NavigationSessionSummary[]): FakeClient {
   }));
   return client;
 }
+
+test.each([
+  { next: "app", mobile: false },
+  { next: "history", mobile: false },
+  { next: "app", mobile: true },
+  { next: "history", mobile: true },
+])(
+  "unknown legacy traversal adopts the first destination after Settings unmount, then clears on $next navigation, mobile=$mobile",
+  async ({ next, mobile }) => {
+    if (mobile) installMobileViewport();
+    resetAgentsDocStoreForTests();
+    const user = userEvent.setup();
+    const client = new FakeClient("ready");
+    client.on("evener/settings/agentsDoc/get", () => ({
+      path: "/fixture/AGENTS.md",
+      exists: true,
+      content: "original",
+    }));
+    client.on("evener/host/list", () => ({ hosts: [] }));
+    for (const path of ["/older", "/new?dir=%2Ffirst", "/settings/theme", "/settings/agents-md"]) {
+      window.history.pushState({}, "", path);
+    }
+    const view = render(<AppShell client={client} />);
+    const editor = await screen.findByRole("textbox", { name: "AGENTS.md contents" });
+    await waitFor(() => expect(editor).toHaveProperty("value", "original"));
+    fireEvent.change(editor, { target: { value: "legacy draft" } });
+    const push = vi.spyOn(window.history, "pushState");
+    const replace = vi.spyOn(window.history, "replaceState");
+    const adopted = vi.fn();
+    window.addEventListener("popstate", adopted);
+    try {
+      await act(async () => {
+        window.history.go(-2);
+        await vi.waitFor(() => expect(window.location.pathname).toBe("/new"));
+      });
+      expect(screen.getByRole("button", { name: "Stay" })).toBeTruthy();
+      expect(editor).toHaveProperty("value", "legacy draft");
+      await act(async () => {
+        window.history.back();
+        await vi.waitFor(() => expect(window.location.pathname).toBe("/older"));
+      });
+      await user.click(screen.getByRole("button", { name: "Discard changes" }));
+      await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("spawn"));
+      expect(navigationLocation().pathname).toBe("/new");
+      expect(navigationLocation().search).toBe("?dir=%2Ffirst");
+      expect(window.location.pathname).toBe("/older");
+      expect(screen.queryByRole("textbox", { name: "AGENTS.md contents" })).toBeNull();
+      await waitFor(() =>
+        expect(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" }).textContent).toContain(
+          "/first",
+        ),
+      );
+      expect(document.querySelector('[data-reason="history-unrestored"]')).not.toBeNull();
+      expect(push).not.toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
+      expect(adopted).toHaveBeenCalledTimes(1);
+      if (next === "history") {
+        // The first rejected destination is still the next browser entry.
+        await act(async () => {
+          window.history.forward();
+          await vi.waitFor(() => expect(window.location.pathname).toBe("/new"));
+        });
+        expect(window.location.search).toBe("?dir=%2Ffirst");
+      } else {
+        act(() => navigate("/settings/theme"));
+      }
+      expect(navigationLocation().href).toBe(window.location.href);
+      expect(document.querySelector('[data-reason="history-unrestored"]')).toBeNull();
+      await act(async () => {
+        window.history.back();
+        await vi.waitFor(() => expect(window.location.pathname).toBe("/older"));
+      });
+      expect(navigationLocation().href).toBe(window.location.href);
+    } finally {
+      push.mockRestore();
+      replace.mockRestore();
+      window.removeEventListener("popstate", adopted);
+      view.unmount();
+      act(() => navigate("/"));
+      vi.unstubAllGlobals();
+    }
+  },
+);
 
 test("live-session shortcut asks before replacing an edited Settings workspace", async () => {
   resetAgentsDocStoreForTests();

@@ -12,6 +12,7 @@ import type {
 import { type Dispatch, type SetStateAction, useCallback } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { navigationLocation } from "../../shell/routing";
 import { createAttachmentStore } from "../session/composer/attachments/useAttachments";
 import { resolveInitialDefaults } from "./spawnDefaults";
 import { readUrlPrefill } from "./urlPrefill";
@@ -124,7 +125,7 @@ export function selectSpawnDirectory(cwd: string): SpawnDraft {
  * This is the directory a fresh LOCAL mount seeds, so a switch back to the
  * local host re-seeds exactly this - and a remote host never does. */
 export function controllerDefaultDirectory(): string {
-  const prefill = window.location.pathname === "/new" ? readUrlPrefill(window.location.search) : {};
+  const prefill = navigationLocation().pathname === "/new" ? readUrlPrefill(navigationLocation().search) : {};
   const urlDir = prefill.dir?.trim();
   return urlDir || resolveInitialDefaults({}).workingDir || "";
 }
@@ -150,9 +151,9 @@ export function reseedSpawnDirectory(draft: SpawnDraft, cwd: string): void {
 
 export function applySpawnURL(onNavigation = false): void {
   const state = spawnDraftsStore.getState();
-  const isNew = window.location.pathname === "/new";
-  const applyPrefill = isNew && (onNavigation || state.lastPrefillURL !== window.location.href);
-  const prefill = applyPrefill ? readUrlPrefill(window.location.search) : {};
+  const isNew = navigationLocation().pathname === "/new";
+  const applyPrefill = isNew && (onNavigation || state.lastPrefillURL !== navigationLocation().href);
+  const prefill = applyPrefill ? readUrlPrefill(navigationLocation().search) : {};
   // A bare /new restores the last in-app selection even if no launch has ever
   // saved the global working-directory default.
   const urlDir = prefill.dir?.trim();
@@ -166,7 +167,10 @@ export function applySpawnURL(onNavigation = false): void {
     // The rail's project-copy launch hands its host over as ?host=; Spawn's
     // host picker owns the fallback when that host is unknown or offline.
     if (prefill.host) setDraftField(draft, "source", prefill.host);
-    spawnDraftsStore.setState({ lastPrefillURL: window.location.href, prefillRevision: state.prefillRevision + 1 });
+    spawnDraftsStore.setState({
+      lastPrefillURL: navigationLocation().href,
+      prefillRevision: state.prefillRevision + 1,
+    });
   }
 }
 
@@ -179,7 +183,7 @@ export function applySpawnURL(onNavigation = false): void {
 // keeps the marker, so its suppression of a redundant re-apply survives.
 if (typeof window !== "undefined") {
   window.addEventListener("popstate", () => {
-    if (window.location.pathname === "/new") return;
+    if (navigationLocation().pathname === "/new") return;
     const state = spawnDraftsStore.getState();
     if (state.lastPrefillURL !== null) spawnDraftsStore.setState({ lastPrefillURL: null });
   });

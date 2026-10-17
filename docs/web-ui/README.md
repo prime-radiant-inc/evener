@@ -84,6 +84,15 @@ shortcut counts as an edit, even before choosing a chord. Autosaved preferences
 do not prompt. While an editor is dirty, Settings asks the browser to show its
 native warning on refresh or close; drafts are not persisted for a later visit.
 
+Back and Forward restore the accepted cursor when app history indices or the
+browser Navigation API identify it. With older unindexed history and no usable
+Navigation API, Settings keeps the accepted editor instead of overwriting a
+history entry. A notice explains that the address bar may name another page.
+Stay retains input; Discard adopts the first requested destination once, even
+if history moved again while the question was open. Neither answer rewrites or
+truncates those unknown entries. A later app navigation realigns the address bar;
+an ordinary unguarded history traversal adopts its actual destination.
+
 A replaced host registration is different from a temporary disconnect. Settings
 discards the old registration's local input, remounts its editors and shows a
 replacement notice. No draft or pending write is reassigned to the new host.

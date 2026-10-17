@@ -37,7 +37,7 @@ import { useClient } from "../../shell/clientContext";
 import { resolveHeadBranch } from "../../shell/gitLocation";
 import { splitModelId } from "../../shell/palette/commands";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { navigate, paneToURL } from "../../shell/routing";
+import { navigate, navigationLocation, paneToURL } from "../../shell/routing";
 import { useMountAutofocus } from "../../shell/useMountAutofocus";
 import { useExtensionsStore } from "../../stores/extensions";
 import { hostRequest, isLocalHost } from "../../stores/hostRouting";
@@ -133,7 +133,7 @@ import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
 // the same Dialog shell on failure so pending and failure share one frame.
 
 // No route params: /new resolves to spawn with an empty param object; the
-// ?dir=/?prompt= prefill is read from window.location.search, not params.
+// ?dir=/?prompt= prefill is read from navigationLocation().search, not params.
 export type SpawnPaneParams = Record<string, never>;
 
 // Fallback effort ladder for a model whose own ladder the hub does not
@@ -243,12 +243,12 @@ const StartingLoader = memo(function StartingLoader({ startedAt }: { startedAt: 
 export default function Spawn({ focused }: PaneProps<SpawnPaneParams>) {
   const draft = useStore(spawnDraftsStore, (state) => state.current);
   const prefillRevision = useStore(spawnDraftsStore, (state) => state.prefillRevision);
-  const [onNewRoute, setOnNewRoute] = useState(() => window.location.pathname === "/new");
+  const [onNewRoute, setOnNewRoute] = useState(() => navigationLocation().pathname === "/new");
   useLayoutEffect(() => {
     applySpawnURL();
     function onPopState(): void {
-      setOnNewRoute(window.location.pathname === "/new");
-      if (window.location.pathname === "/new") applySpawnURL(true);
+      setOnNewRoute(navigationLocation().pathname === "/new");
+      if (navigationLocation().pathname === "/new") applySpawnURL(true);
     }
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -842,10 +842,10 @@ function SpawnForm({
     // pending launch's claim to the screen. A popstate carrying no URL
     // change (a redundant dispatch) does not revoke, and the launch's own
     // programmatic navigate() is safe: ownsLaunchView() runs before it.
-    let lastURL = window.location.href;
+    let lastURL = navigationLocation().href;
     const onNavigation = () => {
-      if (window.location.href === lastURL) return;
-      lastURL = window.location.href;
+      if (navigationLocation().href === lastURL) return;
+      lastURL = navigationLocation().href;
       revoke();
     };
     window.addEventListener("popstate", onNavigation);
@@ -866,8 +866,9 @@ function SpawnForm({
 
   function captureLaunchView(): () => boolean {
     const owner = viewOwnership.current;
-    const active = focused && isCurrentDraft() && window.location.pathname === "/new";
-    return () => active && viewOwnership.current === owner && isCurrentDraft() && window.location.pathname === "/new";
+    const active = focused && isCurrentDraft() && navigationLocation().pathname === "/new";
+    return () =>
+      active && viewOwnership.current === owner && isCurrentDraft() && navigationLocation().pathname === "/new";
   }
 
   function updatePrompt(next: string): void {
