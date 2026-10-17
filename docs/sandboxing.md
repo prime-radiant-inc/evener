@@ -1,12 +1,30 @@
 # Sandboxing
 
-Status: Evergreen guide to the `--sandbox` flag and what each mode enforces.
+Choose a sandbox before starting work. The default is **off**, so an ordinary session can use your account's filesystem and command access. This page explains enforced boundaries and their limits, not a promise that every allowed action is safe.
 
-## Summary
+## Start a confined task
+
+Prerequisites: a configured provider, a working directory, and a usable OS sandbox backend. Run these shell examples from the project directory; choose only one for the task you intend:
+
+```sh
+evener --sandbox read-only --sandbox-net off "Review the README without changing project files"
+```
+
+```sh
+evener --sandbox workspace-write --sandbox-net off "Fix the failing unit test and run its checks"
+```
+
+These are real agent requests and can incur provider charges. The second permits project writes. In the browser, choose the corresponding Sandbox and Sandbox network egress launch settings before Start. Check the startup report for the actual backend, mode, and network policy. If an explicit sandbox cannot be enforced, fix the backend or choose another host rather than silently rerunning with sandbox off.
+
+Network off applies to tools, not the model-provider connection. A test that downloads dependencies may fail in this mode; prepare dependencies first or deliberately choose a new network-enabled session. The policy is fixed for the session and cannot be relaxed by a tool call.
+
+Use [Configuration](configuration.md) to save launch defaults, [Daily work](daily-work.md) to review changes, and [Security](security.md) for privacy and storage limits.
+
+## How confinement works
 
 `--sandbox <mode>` confines a session's file access, spawned processes, and
 (optionally) network egress to a policy chosen once at session start. It is
-**off by default**: an unsandboxed session behaves exactly as it always has. A
+**off by default**: an unsandboxed session keeps ordinary user access. A
 sandboxed session's boundary is enforced by two cooperating layers — an
 in-process, race-safe layer for the file tools (`read_file`, `write_file`,
 `edit_file`, `apply_patch`, `glob`, `grep`, `list_dir`) and a kernel layer
@@ -194,8 +212,7 @@ unsandboxed root's `TMPDIR` is not in the tree.
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
 | `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
 
-- **`off`** is exactly today's behavior — a strict superset of every sandboxed
-  mode, with no new code path engaged.
+- **`off`** applies no sandbox confinement.
 - **`read-only`** cannot commit or write project files; only the session temp is
   writable, for scratch. Use it for review, exploration, and analysis.
 - **`workspace-write`** grants writes to the worktree, the session temp, and
@@ -625,8 +642,7 @@ path, and a truncated command, never the file contents or a full secret path.
 In a non-interactive session a denial is final. In an interactive root session with a
 UI client attached (subscribed to the thread), a `read_file`, `write_file`, or
 `edit_file` denial for being outside the sandbox's roots can be escalated to a
-human-gated approval card — "Allow" / "Deny" in the web UI, `ctrl+y` / `ctrl+g` in the
-TUI hub — that blocks the tool-exec goroutine until answered
+human-gated approval card — "Allow" / "Deny" in the web UI — that blocks the tool call until answered
 (`evener/sandbox/escalation/requested` → `evener/sandbox/escalation/resolve`, see
 [docs/appwire-protocol.md](appwire-protocol.md)). Shell/kernel denials, `apply_patch`,
 the browse tools, and a masked/git-protected/symlinked/escape denial all stay final,
@@ -757,6 +773,6 @@ suite runs the generated profiles under the real `sandbox-exec` when
 
 - [docs/developing-evener/worktrees.md](developing-evener/worktrees.md) — the worktree model that backs delegate
   isolation.
-- [docs/developing-evener/environment.md](developing-evener/environment.md) — the environment variables evener reads.
+- [Environment variables](environment-variables.md) — the environment variables evener reads.
 - [docs/subagent-runtime-contracts.md](subagent-runtime-contracts.md) — the runtime
   contracts subagents, plugins, and hooks operate under.

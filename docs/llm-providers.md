@@ -1,14 +1,19 @@
-# LLM Provider Architecture
+# Provider and model reference
 
-How evener turns a `provider/model` string into an API call. This documents
-the **registry-based** implementation: one data-driven package,
-`llm/registry`, that merges models.dev, a curated overlay, and the user's
-`providers.toml` into a single `Resolved` record per `instance/model`
-reference. Design:
-[`docs/superpowers/specs/2026-08-28-provider-registry-design.md`](superpowers/specs/2026-08-28-provider-registry-design.md).
-Companion doc:
-[`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md)
-(credentials, OAuth, and how the hub spawns sessions).
+Use this reference to choose an instance, explain a model's resolved settings, or configure an endpoint. For your first credential, follow [Connecting a provider](connecting-a-provider.md). For launch-file scopes, use [Configuration](configuration.md).
+
+## Inspect before changing a provider
+
+Run on the execution host:
+
+```sh
+EVENER_OFFLINE=1 evener providers list
+EVENER_OFFLINE=1 evener models inspect openai/gpt-5.6
+```
+
+The first command reports instances and credential sources. The second explains the endpoint, protocol, model facts, and provenance with secrets masked; it does not prove live access. Review custom URLs and errors before sharing output. `--check`, `probe`, and `models refresh` contact remote services, and `probe --write` changes configuration.
+
+Read [reference syntax](#reference-syntax-and-model-lookup) for model names, [providers.toml](#providerstoml) for authoring, and [credential resolution](#credential-resolution-order) before routing through a gateway. The exact registry implementation lives in [llm/registry](../llm/registry).
 
 ## Concepts
 
@@ -65,22 +70,16 @@ family, or a model released this morning on an implicit provider).
 
 ## Request lifecycle
 
+```mermaid
+flowchart LR
+  Ref[Instance/model reference] --> Resolve[Registry resolves layered facts]
+  Resolve --> Profile[Agent profile selects tools and instructions]
+  Profile --> Shape[Client shapes request]
+  Shape --> Protocol[Protocol encodes request]
+  Protocol --> Endpoint[Configured HTTP endpoint]
 ```
-model string "openai/gpt-5.6"
-  │  registry.Resolve(ref)             llm/registry/resolve.go  → Resolved{Instance:"openai", ModelID:"gpt-5.6", Protocol, Surface, Caps, ...}
-  ▼
-provider.FromResolved(res, reg)        agent/provider/profile.go → *Profile (tool defs, project doc files, caps)
-  ▼
-agent.Session   sets req.Provider = s.profile.ID()   (the resolved instance name)
-  ▼
-llm.Client.Complete / Stream           llm/client.go
-  │  dispatchTarget(req)  resolves the target: instance name, Resolved record, and which protocol/override handles it
-  │  req = ShapeRequest(req, t.res)     shapes the wire body from the Resolved record's Caps
-  ▼
-Protocol.Complete/Stream               llm/providers/{chatcompletions,responses,anthropic,google}
-  ▼
-vendor HTTP API
-```
+
+The registry supplies the instance, model facts, protocol, and surface. The profile uses those facts for agent behavior; the protocol owns the wire format. Changing a URL alone does not infer a different model family.
 
 `resp.Provider` and error labels are stamped back to the instance name
 centrally, in `llm.Client`, not by each protocol package.
@@ -242,7 +241,7 @@ openai/gpt-5.6` work on a machine with no key set.
 | `mistral` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` (`https://api.mistral.ai/v1`) | `default_model = mistral-medium-latest`, `cheap_model = ministral-3b-latest` |
 | `cerebras` | `CEREBRAS_API_KEY` | `CEREBRAS_BASE_URL` (`https://api.cerebras.ai/v1`) | `default_model = gpt-oss-120b`, `cheap_model = gpt-oss-120b` |
 | `togetherai` | `TOGETHER_API_KEY` — **not** `TOGETHERAI_API_KEY`; the instance id and the key variable don't match | `TOGETHERAI_BASE_URL` (`https://api.together.ai/v1`) | registry id is `togetherai` (no dash), not `together`; `default_model = moonshotai/Kimi-K3`, `cheap_model = openai/gpt-oss-20b` |
-| `moonshotai` | `MOONSHOT_API_KEY` | `MOONSHOTAI_BASE_URL` (`https://api.moonshot.ai/v1`) | `default_model = kimi-k3`, `cheap_model = kimi-k2.5` |
+| `moonshotai` | `MOONSHOT_API_KEY` | `MOONSHOTAI_BASE_URL` (`https://api.moonshot.ai/v1`) | `default_model = kimi-k3`, `cheap_model = kimi-k2.6` |
 | `kimi-for-coding` | `KIMI_API_KEY` (meaning changed at the flag day — see ["Upgrading from the old schema"](llm-provider-config-and-launch.md#upgrading-from-the-old-schema)) | `KIMI_FOR_CODING_BASE_URL` (`https://api.kimi.com/coding/v1`) | anthropic protocol, surface `anthropic`; sends `Headers["User-Agent"] = "claude-cli/2.1.177 (external, cli)"` (Kimi's coding-plan endpoint 403s any other User-Agent); `default_model = k3`, `cheap_model = kimi-for-coding` |
 | `minimax` | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` (`https://api.minimax.io/anthropic/v1`) | anthropic protocol, surface `anthropic`; `default_model = MiniMax-M3`, `cheap_model = MiniMax-M2.7` |
 | `zai-coding-plan` | `ZHIPU_API_KEY` (the same key as `zai`) | `ZAI_CODING_PLAN_BASE_URL` (`https://api.z.ai/api/coding/paas/v4`) | `thinking_format = zai`; `default_model = glm-5.3`, `cheap_model = glm-5.3-flash` |
@@ -259,7 +258,7 @@ they're usable only through an explicit `providers.toml` entry with
 form), `moonshotai-cn`, `zhipuai`, `zhipuai-coding-plan`, `minimax-cn`,
 `minimax-coding-plan`, `minimax-cn-coding-plan`. They carry the same
 protocol/caps corrections as their implicit siblings, and several of them —
-`zhipuai`, `moonshotai-cn`, `minimax-cn`, `azure-cognitive-services` — do
+`zhipuai`, `moonshotai-cn`, `minimax-cn` — do
 resolve a base URL and a credential straight from models.dev with no
 curated pin at all. What none of the seven carries is a curated
 `default_model`, so none of them is ever the automatic default.
@@ -311,10 +310,7 @@ A row is *effort-capable* when `effort` is
 in its `ReasoningControls` — every row gets this unless it explicitly lists
 controls without `effort` (a toggle-only or budget-only row).
 
-**openai-chat.** This table is unchanged from before the registry cut-over
-except for how the gate is expressed — it's now derived from
-effort-capability rather than a separately configured
-`supports_reasoning_effort` flag:
+**openai-chat.** Effort-capability controls which reasoning fields are sent:
 
 | `thinking_format` | when an effort is set | with `ThinkingAlwaysOn` and no effort |
 |---|---|---|
@@ -522,11 +518,11 @@ file using any of them fails to load; see
 
 ### Credential resolution order
 
-1. the instance's own `api_key` (literal or `$VAR`)
-2. the credential header the launch's transport names —
+1. the credential header the launch's transport names —
    `credential_headers.Authorization` for the bearer schemes, the
    `auth_header` entry for header auth, case-insensitive (it also
-   suppresses any bearer)
+   suppresses a derived key)
+2. the instance's own `api_key` (literal, variable reference, or command expression)
 3. the credentials-store file entry under the instance name
 4. environment: the instance's resolved `APIKeyEnv`, then `<NAME>_API_KEY`
    under the uppercase rule **only for instance names that are not registry
@@ -555,6 +551,14 @@ file using any of them fails to load; see
    warning naming the remedy, and resolution falls through to
    application-default credentials. The gate reads these fields the way
    Google's library does, matching key names case-insensitively.
+
+An authored auth-slot header or `api_key` is terminal: if its reference is missing or expands empty, resolution reports no credential rather than falling through to a stored or environment key. A header occupying the auth slot wins before an `api_key` command is evaluated. `auth = "none"` does not fill an auth slot, although explicitly configured credential headers can still be sent.
+
+### Endpoint inheritance safeguard
+
+A custom instance with a literal `base_url` different from its base stops inheriting the base's `api_key_env`. Its own `api_key_env` still applies. Copying the base's resolved URL or curated default URL is not considered a different endpoint, even when an environment override exists. This rule limits inherited key variables; it does not erase an explicitly authored key, credential header, or instance-store entry. Inspect the destination and credential source before a live request.
+
+Source: [`effectiveAPIKeyEnv`](../llm/registry/instances.go).
 
 ## Cloud transports: Azure, Bedrock, Vertex
 
@@ -597,9 +601,7 @@ tracked as
 else → `{loc}-aiplatform.googleapis.com`. `auth = gcp-adc`: application-default
 credentials on the host, or a **credential JSON stored under the instance
 name** (a service-account key or an `application_default_credentials.json`,
-pasted in the hub's instance sheet, pasted into the TUI's credentials panel
-with Enter on the instance or read from a file with `f` there, or written
-into `credentials.toml`; other credential types, such as `external_account`,
+pasted in the hub's instance sheet or written into `credentials.toml`; other credential types, such as `external_account`,
 are refused), which outranks the ADC file. Requests authenticated with user credentials — an
 `authorized_user` ADC file or a stored `authorized_user` JSON — carry
 `x-goog-user-project` = `GOOGLE_VERTEX_PROJECT`, which such credentials need
@@ -638,7 +640,7 @@ transport with behavior beyond authentication:
 - a stray record — `auth/<name>.json` where `<name>` isn't on the Codex
   transport (or doesn't exist as an instance) — produces a one-line startup
   notice naming the file, remedied with `evener openai logout --instance
-  <name>` or deleting it by hand.
+  <name>` after confirming that the record is no longer needed.
 - `openai/…` still means the platform API unless the user explicitly writes
   `[providers.openai] base = "openai-codex"`.
 - the backend enforces a model allowlist: an unknown id is a resolve error,
@@ -845,7 +847,7 @@ pre-dispatch `max_output_tokens` budget error.
 
 **Setting it.** Launch: `--reasoning-effort`, `EVENER_REASONING_EFFORT`,
 `reasoning_effort` in `launch.toml`, or the spawn-form effort chip
-(per-model levels). Runtime: the `/effort` command (TUI) or the web `⌘K`
+(per-model levels). Runtime: the web `⌘K`
 "Set reasoning effort" command → the `thread/reasoning-effort/set` appwire
 method → `Session.SetReasoningEffort`, validated and clamped against the
 *current* model's ladder before it's applied. A successful change broadcasts

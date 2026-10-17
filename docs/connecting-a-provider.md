@@ -1,5 +1,7 @@
 # Connecting a provider
 
+Connect one provider on the host that will run your session. You need an installed, running hub and either a hosted account with suitable access or a reachable local model server. No existing API key is required for the [Ollama path](ollama.md).
+
 ## Start your first session
 
 1. Open **New session**. Choose a working directory and, optionally, write your
@@ -55,6 +57,38 @@ pasting an API key. Availability depends on your account and provider terms.
   rename, reset overrides, replace/clear stored credentials, logout, source
   inspection, and explicit default management. In the session model chooser,
   only an explicit model pick requests a session model switch.
+
+## Connect from the CLI
+
+For ChatGPT/Codex access, run these on the execution host:
+
+```sh
+evener openai login
+evener openai status
+```
+
+Complete the browser or device flow privately. These commands use the `openai-codex` instance by default, not the API-key `openai` instance. On a headless host, `EVENER_LOGIN_HEADLESS=1 evener openai login` requests the device flow. Status checks local login state; it does not prove quota or model generation.
+
+For API-key access, the browser's masked form is the simplest way to store a key without shell history. A service can instead receive the provider's supported variable from its secret manager. Restart the service after changing that environment. Do not type a literal secret into `--credential-header` or another command argument.
+
+Inspect what resolves without making a generation request:
+
+```sh
+EVENER_OFFLINE=1 evener providers list
+EVENER_OFFLINE=1 evener models inspect openai/gpt-5.6
+```
+
+Substitute the instance/model you intend to use. For a custom gateway, author an instance without probing it:
+
+```sh
+evener providers add work --base openai \
+  --base-url https://gateway.example.com/v1 \
+  --api-key-env WORK_API_KEY --no-probe
+```
+
+This writes configuration; it does not set `WORK_API_KEY` or validate that example endpoint. Supply the real gateway URL and inject its key securely. An instance pointing to a different endpoint does not inherit vendor key variables. Inspect the resulting destination before any live check. Without `--no-probe`, `providers add` may send provider requests.
+
+Once the connection resolves, use an explicit `instance/model` in the [CLI](cli.md), or choose it in New session. Review the result using [Daily work](daily-work.md).
 
 ## Repair or return
 
