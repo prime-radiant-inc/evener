@@ -47,10 +47,14 @@ its hooks may still need. A running hook is synchronous, bounded by its timeout
 and session cancellation; deleting its declaration is not a stop command.
 
 If the warning is absent, inspect startup diagnostics, confirm the manifest
-loaded, and check the matcher. For tool hooks, use `Bash`, not `shell`.
+loaded, and check the matcher. For tool hooks, [use `Bash`, not
+`shell`](#the-1-mistake-shell--bash).
 The reference below distinguishes supported behavior from fields that only parse.
 
 ## Hook reference
+
+Use the sections below to check hook discovery, event support, matchers, handlers,
+and input/output contracts. Parsed fields marked reserved have no runtime effect.
 
 ## How evener discovers your hooks
 
@@ -147,8 +151,8 @@ warns that the event is not fired yet. The full event vocabulary and the roadmap
 live in
 [07](subagent-management/07-lifecycle-hooks-claude-compat.md#event-contract).
 
-**Unknown names are rejected loudly.** A typo like `PreToolUze` is neither a evener
-event nor a Claude event, so evener warns that it is likely a typo and the hook
+**Unknown names are rejected loudly.** A typo like `PreToolUze` is neither an Evener
+event nor a Claude event, so Evener warns that it is likely a typo and the hook
 will never fire.
 
 ### When `PreToolUse` runs (input rewriting)
@@ -201,7 +205,7 @@ matcher must name the **Claude** tool:
 
 MCP tools keep their `<server>__<tool>` name in both vocabularies.
 
-A matcher that names a evener-canonical tool (`"shell"`, `"read_file"`) is not an
+A matcher that names an Evener-canonical tool (`"shell"`, `"read_file"`) is not an
 error — it is a valid exact matcher that simply never matches the Claude name the
 hook is tested against. It will fail silently. Write `"Bash"`.
 
@@ -357,9 +361,8 @@ Evener sets these in the command's environment:
 `command` (and `args`) **strings** at parse time, so you can reference your
 plugin's files in the path itself, as in the examples above.
 
-Reserved (not set today): `CLAUDE_PLUGIN_DATA`, `CLAUDE_CODE_REMOTE` (evener has no
-remote/serve signal to report, so it is omitted rather than fabricated), and
-`CLAUDE_ENV_FILE`.
+Evener does not set `CLAUDE_PLUGIN_DATA`, `CLAUDE_CODE_REMOTE`, or
+`CLAUDE_ENV_FILE` today. Do not depend on them in a hook.
 
 ### The `prompt` handler (evener-native sugar)
 
@@ -410,8 +413,7 @@ Notes:
   migration. Prefer the official `tool_response` and `prompt`; the aliases will
   not necessarily survive forever.
 - `permission_mode`, `agent_id`, `agent_type`, and `CLAUDE_CODE_REMOTE` are part
-  of the Claude contract but evener has **no real value** for them today, so it
-  **omits** them rather than sending a fabricated value. Do not write a hook that
+  of the Claude contract but Evener omits them today. Do not write a hook that
   depends on them.
 
 (A `prompt` handler does not receive this JSON on stdin; it gets the legacy
@@ -548,18 +550,22 @@ error** that names the source path, event, matcher, and handler index. Unknown
 handler **fields** are not errors — they are preserved for diagnostics and
 forward-compatibility.
 
-The warnings and diagnostics carry **names and reasons only** — never your hook's
-payload, env values, header values, tool input/output, or secrets. If env-var
-substitution fails, evener reports the variable name, not its value. Completed runs
-also record a sanitized error category when relevant: `parse_error`,
+Hook lifecycle event payloads carry metadata, not hook commands, environment
+values, or stdout/stderr. Completed runs also record a sanitized error category
+when relevant: `parse_error`,
 `unsupported_event`, `unsupported_handler`, `invalid_matcher`, `timeout`,
 `cancelled`, `command_error`, `prompt_error`, or `hook_blocked`.
 
-You can see the full picture in `/status`, which lists active supported hooks
-(with their tier and count) alongside recognized-but-unsupported events (tier
-`reserved-placeholder`, count 0). `/status` reports the recognized event
-landscape; the load-time `[warning]` lines above are where misconfiguration shows
-up.
+**Warnings are not restricted to metadata.** A failed `SessionStart` warning can
+include the first non-empty line of stderr, or stdout when stderr is empty.
+Hooks can also supply free-form `systemMessage` warnings. These messages are not
+secret-redacted. Keep secrets out of hook output, and inspect warnings and
+transcripts before sharing them.
+
+Check startup warnings for load errors. To verify execution, use the explicit
+warning in [the startup-hook example](#add-and-verify-a-startup-hook). In the
+browser, `/status` opens Overview's About tab with Session, Usage, and Location
+details; it does not show hook tiers or counts.
 
 ## Extend the example to tool calls
 

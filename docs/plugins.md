@@ -6,17 +6,23 @@ executable commands, hooks, and MCP servers: review it as code before loading it
 
 ## Load a local plugin
 
-You need an Evener installation with a working provider. Run these shell commands
-on the session host, from an Evener source checkout:
+You need an Evener installation with a working provider. For the fixture files,
+use the `git clone` command in [Prepare the example](getting-started.md#prepare-the-example),
+then run the commands below from the resulting `evener-docs` directory on the
+session host. You do not need to build Evener; use your installed executable.
+
+The second command makes a real provider call and may incur charges. It uses a read-only sandbox, but
+confinement does not remove the need to trust executable extensions.
 
 ```bash
 evener plugin list --effective --plugin-dir ./docs/examples/extensions/hello-plugin
-evener --plugin-dir ./docs/examples/extensions/hello-plugin "/hello-plugin:hello world"
+evener --sandbox read-only --plugin-dir ./docs/examples/extensions/hello-plugin "/hello-plugin:hello world"
 ```
 
-The first command inspects the effective launch inventory. The second starts a
-session with the fixture and invokes its command with `world` as the argument.
-Expect the `hello-plugin` inventory entry, the startup-hook warning, and expanded
+The first command inspects the effective launch inventory. If `hello-plugin` is
+absent, check the fixture path and loading diagnostics before starting the model.
+The second starts a session with the fixture and invokes its command with `world`
+as the argument. Expect the startup-hook warning and expanded
 instructions asking for a greeting to `world`. Inspect the session input to verify
 expansion; the exact model response is not deterministic.
 
@@ -158,7 +164,10 @@ proof. See [job control](job-control.md) for delegate lifetime and inspection.
 
 Roles require `name` and `description`; the Markdown body supplies instructions.
 Optional `model`, `color`, `tools`, and `skills` metadata describe the role.
-`tools` accepts a list, a comma-separated string, or the scalar `all`/`*`.
+`tools` accepts a list of strings (`[Read, Grep]`), a comma-separated string
+(`Read, Grep`), a single tool name (`Read`), or the scalar `all`.
+Use `tools: all` for all tools available to the child. The parser rejects scalar
+`*`, `all` or `*` inside a list or comma-separated sequence, and non-string entries.
 Claude-style tool names map to Evener names. Tool selection cannot expand the
 parent's effective policy. `skills` names skills to preload; preloads have the
 frozen delegate/permanent-prompt lifetime, not ordinary skill activation history.
