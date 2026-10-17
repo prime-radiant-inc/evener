@@ -3368,6 +3368,7 @@ export function ConversationScreen({
 							<Composer
 								value={draft.record.draft}
 								editable={draft.loaded}
+								imageCount={draft.record.images?.length ?? 0}
 								onChangeText={(text) => {
 									// A "/" that starts an empty draft opens Commands and
 									// skills in its place (spec 8.5).

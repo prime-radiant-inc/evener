@@ -33,6 +33,7 @@ function composer(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
 	const props = {
 		value: "",
 		editable: true,
+		imageCount: 0,
 		onChangeText: vi.fn(),
 		placeholder: "Tell the agent something…",
 		sendLabel: "Queue message",
@@ -97,6 +98,15 @@ describe("Composer", () => {
 		act(() => tree.update(<Composer {...props} value="   " />));
 		expect(height(tree)).toBe(44);
 	});
+	// An attached image is a message with no text, so the composer must not
+	// rest: picking a photo blurs the field, and a collapse would hide the
+	// model chip under the thumbnail.
+	it("keeps a full field while the draft holds an image and no text", () => {
+		const { props, tree } = composer();
+		expect(fields(tree)[0]?.props.style.minHeight).toBe(24);
+		act(() => tree.update(<Composer {...props} value="" imageCount={1} />));
+		expect(fields(tree)[0]?.props.style.minHeight).toBe(44);
+	});
 
 	// The Send/Stop target stays the controls row's 44pt whichever way the field
 	// rests, so the composer always holds that target (Jesse's ruling).
@@ -105,6 +115,50 @@ describe("Composer", () => {
 		expect(fields(tree)[0]?.props.style.minHeight).toBe(24);
 		const send = pressable(tree, "Queue message");
 		expect(send?.props.style({ pressed: false })).toMatchObject({ width: 44, height: 44 });
+	});
+
+	// Collapsed (empty and unfocused) the composer is one row: +, the field, and
+	// Send/Stop, with the model chip stepping aside until you reach for it.
+	it("collapses to one row, with +, the field and Send sharing it", () => {
+		const chip = <ModelChip label="Gpt 6 Astra · XHigh" onPress={() => {}} />;
+		const { props, tree } = composer({ settings: chip });
+		// The row that holds the field: its parent carries the layout the shape
+		// switches (row while collapsed, column while open).
+		const rowStyle = () => {
+			const owner = fields(tree)[0]?.parent?.parent;
+			return (
+				(typeof owner?.props.style === "function" ? owner.props.style({ pressed: false }) : owner?.props.style) ?? {}
+			);
+		};
+		const chipShown = () =>
+			tree.root.findAll((node) => String(node.props.accessibilityLabel).startsWith("Model: ")).length;
+		// Collapsed: one row, and the chip is gone.
+		expect(rowStyle()).toMatchObject({ flexDirection: "row" });
+		expect(chipShown()).toBe(0);
+		expect(pressable(tree, "Add")).toBeDefined();
+		expect(pressable(tree, "Queue message")).toBeDefined();
+
+		// Focusing the field opens it: the chip returns and the layout stacks.
+		act(() => fields(tree)[0]?.props.onFocus());
+		expect(chipShown()).toBe(1);
+		expect(rowStyle()).toMatchObject({ flexDirection: "column" });
+		act(() => fields(tree)[0]?.props.onBlur());
+		expect(chipShown()).toBe(0);
+		// A draft keeps it open too.
+		act(() => tree.update(<Composer {...props} value="x" settings={chip} />));
+		expect(chipShown()).toBe(1);
+	});
+	// Focusing is the only way out of the resting row, so a field that cannot
+	// take focus (a failed draft read leaves it read-only) must stay open or
+	// the model chip is stranded with nothing to reach for.
+	it("stays open while the field cannot take focus, so the chip is reachable", () => {
+		const chip = <ModelChip label="Gpt 6 Astra · XHigh" onPress={() => {}} />;
+		const { tree } = composer({ editable: false, settings: chip });
+		expect(fields(tree)[0]?.props.editable).toBe(false);
+		const chipShown = () =>
+			tree.root.findAll((node) => String(node.props.accessibilityLabel).startsWith("Model: ")).length;
+		expect(chipShown()).toBe(1);
+		expect(pressable(tree, "Model: Gpt 6 Astra · XHigh. Change model or effort")).toBeDefined();
 	});
 	it("sits close to the screen's bottom, with a small margin under the card", () => {
 		const { tree } = composer();
