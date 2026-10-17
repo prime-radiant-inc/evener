@@ -113,18 +113,22 @@ intent representation, selected paging and reconnect behavior.
 ## Error model
 
 Errors use JSON-RPC codes in `error.code` with a human `error.message`.
-`error.data.evenerErrorInfo` carries a structured evener-specific detail string
+`error.data.evenerErrorInfo` carries a structured Evener-specific detail string
 when present. Common cases: method-not-found, invalid-params (params failed to
-unmarshal), invalid-request (e.g. a request before `initialize`). A history
-read whose transcript index needs a rebuild the server has taken ownership of
-in the background answers `transcriptIndexRebuilding` with
-`data.retryDisposition: "automatic"`: retrying is the right response, and the
-read that follows the repair's commit succeeds; a read that met the index's
-lock in ordinary contention — a writer mid-extension or a foreign rebuild,
-with no server repair in flight — answers its sibling
-`transcriptIndexLocked` with the same automatic retry disposition; their
-terminal sibling `transcriptHistoryFailed` names the last entry the failed
-history had recorded.
+unmarshal), invalid-request (e.g. a request before `initialize`). History reads
+distinguish three conditions:
+
+- **`transcriptIndexRebuilding`:** the server owns a background index repair.
+  `data.retryDisposition` is `automatic`. Retry the read after a delay so the
+  repair can commit.
+- **`transcriptIndexLocked`:** a writer or foreign rebuild holds the index lock,
+  with no server-owned repair in flight. `data.retryDisposition` is `automatic`.
+  Retry the read after a delay rather than starting another repair.
+- **`transcriptHistoryFailed`:** the history has failed, and the error identifies
+  its last recorded entry. This is terminal, not an automatic-retry signal.
+  Stop retrying and inspect the error and saved history with
+  [Doctor](cli.md#doctor-session-selectors) before choosing a recovery action.
+
 A retry-safe mutation arriving on a connection whose inbound request queue is
 at high-water depth is refused in band as `connectionBackpressure` with
 `data.cause "queueSaturated"`, `mutationOutcome "notAccepted"` and
@@ -187,7 +191,7 @@ no router (reserved).
 | Method | Scope | Params | Result | Summary |
 |--------|-------|--------|--------|---------|
 {{- range .Methods}}
-| `{{.Name}}` | {{.Scope}} | `{{.ParamsType}}` | `{{.ResultType | tableCell}}` | {{.Summary | tableCell}} |
+| `{{.Name}}` | {{.Scope}} | {{.ParamsType | typeLink}} | {{.ResultType | typeLink | tableCell}} | {{.Summary | tableCell}} |
 {{- end}}
 
 ## Notifications (server → client)
@@ -198,7 +202,7 @@ the shared [TypeScript client](../appwire-client/typescript/README.md).
 | Notification | Payload | Summary |
 |--------------|---------|---------|
 {{- range .Notifications}}
-| `{{.Name}}` | `{{.PayloadType}}` | {{.Summary}} |
+| `{{.Name}}` | {{.PayloadType | typeLink}} | {{.Summary}} |
 {{- end}}
 
 ## Type reference
@@ -206,15 +210,30 @@ the shared [TypeScript client](../appwire-client/typescript/README.md).
 JSON fields of each params/result/payload type, reflected from the Go structs.
 An embedded type contributes its own fields inline.
 
+Follow type links for nested AppWire schemas. Go notation describes the stored
+type, not a JSON literal: `*T` is a pointer (which can be nil), `[]T` is an array
+of values, and `map[string]T` is an object with string keys. The byte-slice
+exception, `[]uint8` (Go `[]byte`), encodes as a base64 string. `interface {}` is an
+arbitrary JSON value. Named scalar types below give their underlying Go kind;
+the [AppWire source](../appwire/) defines their constants and validation.
+External leaves are not implementation schemas: `time.Time` encodes an RFC 3339
+timestamp string, and `jsontext.Value` holds raw JSON whose shape depends on its
+containing field. Do not infer fields from their Go internals.
+
+`Omitempty` records the Go JSON tag: the encoder may omit an empty value.
+It does not say whether a request field is optional, nullable, or valid.
+Method validation and capability checks still apply, including to fields
+without that tag. These tables describe fields, not every validation constraint.
+
 {{range .Types}}
 ### `{{.Name}}`
 {{if .Fields}}
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 {{- range .Fields}}
-| `{{.JSON}}` | `{{.GoType}}` | {{yesno .Omitempty}} | {{yesno .Embedded}} |
+| `{{.JSON}}` | {{.GoType | typeLink}} | {{yesno .Omitempty}} | {{yesno .Embedded}} |
 {{- end}}
 {{else}}
-_(no fields)_
+Underlying Go kind: `{{.Kind}}` (no struct fields).
 {{end}}
 {{end}}

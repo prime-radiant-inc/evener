@@ -79,9 +79,82 @@ Each command owns its flags. Run `evener COMMAND --help` before scripting a subc
 
 For client startup and authentication, see [Integrations](integrations.md). `serve` also accepts daemon-specific options such as `--run-dir`, `--app-replay-size` (default 1000), `--non-interactive`, `--model-fallback` (repeatable) and `--daemon-idle-timeout` (default 0, automatic retirement disabled). It does not accept every one-shot option, including `--timeout` or `--ask-responder`.
 
+## Upgrade binaries
+
+Syntax: `evener upgrade [flags] [release|snapshot|vTAG]`. Put flags before the
+target. `evener upgrade release` selects the latest release;
+`evener upgrade snapshot` switches to the snapshot channel. Either command can
+switch channels. `evener upgrade vTAG` installs a specific published release tag;
+replace `vTAG` with the actual tag. With no target, snapshot builds track
+snapshots and other builds select the latest release. Run `evener upgrade -h`
+for installation-path flags, and review the target before replacing binaries.
+
+## Doctor session selectors
+
+Doctor reads saved evidence without running a model. Discover sessions first:
+
+```sh
+evener doctor sessions --json
+evener doctor locate SESSION_ID
+evener doctor transcript SESSION_ID --format outline
+evener doctor transcript SESSION_ID --range last:10
+evener doctor jobs SESSION_ID
+```
+
+Replace `SESSION_ID` with an ID from `sessions`, or copy its full session ref.
+The selector grammar is:
+
+| Form | Resolution |
+| --- | --- |
+| `SESSION_ID` | Search all buckets under the selected state root. |
+| `local:SESSION_ID` | Also search all buckets; it does not mean the current working directory. |
+| `proj:PROJECT_ID:SESSION_ID` | Select one project bucket, resolving duplicate IDs across buckets. |
+
+`PROJECT_ID` is the stored bucket key, not a repository path. Copy it from
+discovery output rather than deriving it. The final colon separates the session
+ID, so project keys may contain colons. Project keys cannot be empty, `.` or `..`,
+or contain `/`, `\`, or NUL. Session IDs must pass the session-ID grammar;
+use the emitted ID unchanged. Empty selectors and `current` are rejected because
+Doctor has no current session. If a bare or `local:` ID is ambiguous, use the
+full `proj:` ref.
+
+For example, after replacing both placeholders with discovered values:
+
+```sh
+evener doctor locate 'proj:PROJECT_ID:SESSION_ID'
+evener doctor watches 'proj:PROJECT_ID:SESSION_ID' --json
+evener doctor tree 'proj:PROJECT_ID:SESSION_ID'
+```
+
+Use `--state-dir PATH` to inspect another state root. Without it, Doctor uses
+`EVENER_STATE_DIR`, then `XDG_STATE_HOME`, then `~/.local/state`. Use the same
+root for discovery and subsequent reads. `sessions`, `turnids`, `audit`, and
+`plugins` do not take a session selector. Run `evener doctor SUBCOMMAND -h` for
+that command's flags. Transcripts and API logs can contain secrets and private
+task content; review them before sharing.
+
 ## One-shot options
 
 The following reference follows `newRunFlagSet` in [`cmd/evener/main.go`](../cmd/evener/main.go). An omitted string option is resolved by its subsystem; there is no universal configuration precedence. See [Configuration](configuration.md) for persisted settings.
+
+**Parser default** is the value the flag parser supplies when you omit an option,
+not necessarily the value the session uses. For a new one-shot session:
+
+- `--max-rounds`: omitted `-1` resolves to **unlimited**, as does explicit `0`.
+  A positive value sets a cap. The CLI help's older “default: 200” text is stale;
+  the [conversion](../cmdutil/cmdutil.go) and
+  [session defaults](../agent/session_config.go) define the current behavior.
+- `--max-subagent-depth`: omitted `-1` leaves the session default of **2**.
+- `--max-concurrent-delegates`: omitted `-1` leaves the session default of **50**.
+  For these two delegation limits, explicit `0` also selects the default; it
+  does not mean unlimited or disabled.
+- `--max-retained-terminal`: omitted `-1` or explicit `0` selects **2048**
+  retained terminal delegate records per session.
+- `--vision-model`: omitted `""` uses the **active session model** for image
+  descriptions. It does not disable vision; use `off` to disable that side channel.
+
+Read each option's meaning separately: `-1`, `0`, and `""` have no universal
+runtime meaning across flags.
 
 | Option | Parser default | Meaning |
 | --- | --- | --- |
@@ -96,7 +169,7 @@ The following reference follows `newRunFlagSet` in [`cmd/evener/main.go`](../cmd
 | `--resume-with` | `""` | start a new prompt using a previous session's id as context |
 | `--resume-last` | `false` | resume the most recent session |
 | `--list-sessions` | `false` | list saved sessions and exit |
-| `--max-rounds` | `-1` | max tool rounds per input (0=unlimited, default: 200) |
+| `--max-rounds` | `-1` | max tool rounds per input (0=unlimited, effective default: unlimited) |
 | `--max-subagent-depth` | `-1` | max subagent nesting depth (default: 2) |
 | `--max-concurrent-delegates` | `-1` | max concurrently running delegate turns per session tree (default: 50) |
 | `--max-retained-terminal` | `-1` | max retained terminal delegate records per session (default: 2048) |

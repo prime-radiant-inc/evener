@@ -80,7 +80,7 @@ evener doctor transcript SESSION --format outline
 evener doctor jobs SESSION
 ```
 
-For a narrow transcript window, use `evener doctor transcript SESSION --range last:10`. These records can contain private task content. Keep them local until reviewed. Doctor sees settled on-disk evidence, not a guarantee that a live process has finished flushing its state. [CLI reference](cli.md) describes selectors and further diagnostic commands.
+Replace `SESSION` with an ID or full ref from `sessions`. If an ID matches more than one bucket, use its `proj:PROJECT_ID:SESSION_ID` ref. Doctor does not accept `current`. For a narrow transcript window, use `evener doctor transcript SESSION --range last:10`. These records can contain private task content. Keep them local until reviewed. Doctor sees settled on-disk evidence, not a guarantee that a live process has finished flushing its state. The [Doctor selector reference](cli.md#doctor-session-selectors) covers discovery, selector forms, and state roots.
 
 When an interface disconnects, reconnect to the same session before creating another. Compare the transcript, job status, filesystem changes, and any external service outcome. A shell exit code reports that command's result; it does not by itself prove or disprove the larger task. Follow [Daily work](daily-work.md) to review the result.
 
