@@ -172,6 +172,20 @@ test.each([false, true])("retained capture can be resumed from search by keyboar
   expect(keybindingsStore.getState().rawOverrides).toEqual([{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]);
 });
 
+test("a folded capture survives changing another setting", async () => {
+  await wireEditableClient();
+  renderEditor();
+  const user = userEvent.setup();
+  const box = await enterCapture("Open the command palette");
+  await user.keyboard("{Control>}y{/Control}");
+  const toggle = screen.getByRole("button", { name: "Customize shortcuts" });
+  await user.click(toggle);
+  await user.click(screen.getByRole("switch", { name: "Character-key shortcuts" }));
+  await user.click(toggle);
+  expect(screen.getByRole("textbox", { name: /Press the new shortcut/ })).toBe(box);
+  expect(keysOf(box)).toEqual(["Ctrl", "Y"]);
+});
+
 test("a retained capture save does not steal focus from shortcut search", async () => {
   const client = await wireEditableClient();
   let resolvePatch: ((value: KeybindingsOverrides) => void) | undefined;

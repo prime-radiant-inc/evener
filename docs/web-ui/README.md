@@ -57,7 +57,7 @@ Appearance is the default. Explicit unknown or retired `general`, `display`
 section overriding that request. A host-qualified URL retains its host scope.
 AppShell replaces retired or unknown URLs before placing their settings pane,
 so mobile URL synchronization cannot restore retired params or discard Forward history.
-Project settings remain reachable through their project route and sidebar gear.
+Project settings remain reachable through the Project settings action in each sidebar project menu.
 They combine repository-file review and explicit trust with local overrides for the
 selected host and working directory. Shared `.evener/launch.toml` settings apply
 only after approval of the reviewed hash; `.evener/launch.local.toml` overrides

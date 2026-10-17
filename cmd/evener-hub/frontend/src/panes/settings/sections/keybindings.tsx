@@ -114,6 +114,7 @@ function replacementRules(actionId: string, chord: string | null | undefined): O
 
 interface CaptureBoxProps {
   title: string;
+  active: boolean;
   /** Returns null on success (the box unmounts) or the message to show. */
   onSave: (chord: Chord) => Promise<string | null>;
   /** `refocus` is true when the capture ended from the keyboard (Escape) -
@@ -143,7 +144,7 @@ function isShortcutNavigation(target: EventTarget | null): boolean {
  * The FIRST non-modifier press records the chord; later presses are ignored
  * (a stray key before Enter must not silently replace what is saved) - to
  * change the chord, cancel and re-capture. */
-function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
+function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
   const [held, setHeld] = useState<string[]>([]);
   const [captured, setCaptured] = useState<Chord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -164,6 +165,7 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
   // (focus goes where the user put it - or stays, for a non-focusable
   // target). The listener dies with the box (unmount on cancel/save).
   useEffect(() => {
+    if (!active) return;
     function onPointerDown(event: PointerEvent): void {
       const box = boxRef.current;
       if (
@@ -177,7 +179,7 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
     }
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
-  }, [onCancel]);
+  }, [active, onCancel]);
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
     // IME composition keydowns are not presses: during composition events
@@ -257,7 +259,7 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
         onKeyDown={handleKeyDown}
         onKeyUp={handleKeyUp}
         onBlur={(event) => {
-          if (!isShortcutNavigation(event.relatedTarget)) onCancel(false);
+          if (active && !isShortcutNavigation(event.relatedTarget)) onCancel(false);
         }}
       >
         {captured !== null ? (
@@ -422,7 +424,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
         {customized && <Chip>Customized</Chip>}
       </span>
       {capturing ? (
-        <CaptureBox title={title} onSave={saveCapture} onCancel={cancelCapture} />
+        <CaptureBox title={title} active={!hidden} onSave={saveCapture} onCancel={cancelCapture} />
       ) : editable ? (
         <span className={CLASS.controls}>
           <Button
@@ -637,7 +639,7 @@ export function KeybindingsSection() {
               editable={editable}
               bindings={bindings}
               characterKeyTriggers={characterKeyTriggers}
-              hidden={!matchingActions.has(row.actionId)}
+              hidden={!customizeOpen || !matchingActions.has(row.actionId)}
             />
           ))}
         </ul>
