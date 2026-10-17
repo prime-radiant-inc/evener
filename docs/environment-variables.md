@@ -21,6 +21,13 @@ A variable listed here does not automatically create an instance. Curated implic
 
 ## Public settings
 
+`llmcall` in the table below is a separate executable for a single model call,
+without an agent loop or tool calls. It is not an `evener` subcommand and is not
+included in the standard release installer. From a source checkout, `make
+build-llmcall` builds `./llmcall`; run that path or install it separately on your
+`PATH`. See [`cmd/llmcall`](../cmd/llmcall/main.go) and the
+[build target](../make/building.mk).
+
 “Secret” marks the registry's secret classification, not a promise that other values are safe to publish. Paths, account identifiers, custom URLs, and error messages can still be private.
 
 | Variable | Secret | Purpose |

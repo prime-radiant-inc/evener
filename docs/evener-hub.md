@@ -270,19 +270,19 @@ daemon and resume the saved session to move it to the new build.
 Attaching a remote host can overwrite its Evener installation and restart its
 hub. By default, the controller deploys its own executable when the host needs
 a build or reports a different build. Choose the deployment policy before
-attaching; use `-no-deploy` to prohibit both pushes and installer fallback.
+attaching; use `--no-deploy` to prohibit both pushes and installer fallback.
 
 | Hub invocation or condition | Binary source | Overwrite or refusal behavior |
 |---|---|---|
 | `evener hub` with no deploy flags, same platform | File at the controller's own executable path | Pushes that file when deployment is needed. A dirty controller may use this source. |
 | `evener hub` with no deploy flags, different OS or architecture | Published artifact through `install.sh` | A clean release needs a stamped release tag; a clean snapshot uses the snapshot artifact. Dev, dirty, or tag-less release builds refuse this cross-platform deployment. |
-| `evener hub -deploy-binary <path>` | Named pre-built Evener executable | Needs no Go toolchain or source. Refuses a non-Evener binary or wrong OS/architecture before pushing. A dirty controller refuses this source. After installation, a build mismatch refuses attachment. |
-| `evener hub -build-source <path>` | Cross-compiled checkout on the controller | Needs Go, the Evener module root, and a built web UI. A stamped controller requires the same commit, a clean checkout, and no ignored untracked Go files. A dirty controller refuses this source. An unstamped dev controller skips revision checks. |
-| `evener hub -no-deploy` | None | Writes no build, including through the installer. Keeps an existing compatible host build; refuses a host that needs installation or a protocol/launch-contract upgrade. |
+| `evener hub --deploy-binary <path>` | Named pre-built Evener executable | Needs no Go toolchain or source. Refuses a non-Evener binary or wrong OS/architecture before pushing. A dirty controller refuses this source. After installation, a build mismatch refuses attachment. |
+| `evener hub --build-source <path>` | Cross-compiled checkout on the controller | Needs Go, the Evener module root, and a built web UI. A stamped controller requires the same commit, a clean checkout, and no ignored untracked Go files. A dirty controller refuses this source. An unstamped dev controller skips revision checks. |
+| `evener hub --no-deploy` | None | Writes no build, including through the installer. Keeps an existing compatible host build; refuses a host that needs installation or a protocol/launch-contract upgrade. |
 | No flags, but the controller cannot adopt its executable as an Evener binary | Published artifact if available | Uses the release/snapshot installer when possible. Otherwise keeps a compatible host build and logs the difference; refuses a host that needs a build. |
 
-`-no-deploy` wins over both source flags; `-deploy-binary` wins over
-`-build-source`. Named paths are still validated at startup even when another
+`--no-deploy` wins over both source flags; `--deploy-binary` wins over
+`--build-source`. Named paths are still validated at startup even when another
 flag takes precedence. The startup log records the effective source and any
 ignored flags. Read attach failures in the host's Settings row; when attachment
 keeps a different compatible build, the hub log records that difference.

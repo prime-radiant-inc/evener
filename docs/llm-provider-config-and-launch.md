@@ -322,6 +322,13 @@ First run `evener migrate --dry-run --verbose` and review the paths. Stop writer
 when you'd rather rewrite the file yourself — the release notes and the
 load-error message both point here.
 
+**Missing variables no longer prevent the whole file from loading.** An unset
+variable in `api_key` resolves to an empty credential with a warning; the request
+fails when a credential is required. An unset variable in `headers` drops that
+header. Both cases were load-time errors in the old schema. Check each instance's
+resolved credential and headers after migration; a successful config load does
+not prove that a request is authenticated.
+
 **`providers.toml` fails to load.** An old-schema file (`[instances.*]`,
 `type`, `api_style`, `quirks`, `compat`) fails to load. The CLI exits with a
 pointer to
@@ -354,8 +361,10 @@ pick.
 | `openrouter-anthropic` | the `orclaude` recipe below — there's no single renamed instance, it's a `providers.toml` entry now |
 | `openai-compatible` as a vendor/type name | still exists, but only as the protocol-only pseudo-provider instance, not a `type = "openai" api_style = "chat-completions"` recipe |
 
-The `orclaude` recipe (the anthropic-protocol route to OpenRouter, for
-MiniMax's Anthropic-style tool calls):
+This example names the instance `orclaude`, selects OpenRouter's Anthropic
+protocol route, and pins the Anthropic agent surface for `minimax/*` models.
+The instance name is arbitrary; the `protocol` and model-glob settings control
+the behavior:
 
 ```toml
 [providers.orclaude]
