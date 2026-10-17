@@ -79,6 +79,16 @@ Each command owns its flags. Run `evener COMMAND --help` before scripting a subc
 
 For client startup and authentication, see [Integrations](integrations.md). `serve` also accepts daemon-specific options such as `--run-dir`, `--app-replay-size` (default 1000), `--non-interactive`, `--model-fallback` (repeatable) and `--daemon-idle-timeout` (default 0, automatic retirement disabled). It does not accept every one-shot option, including `--timeout` or `--ask-responder`.
 
+## Upgrade binaries
+
+Syntax: `evener upgrade [flags] [release|snapshot|vTAG]`. Put flags before the
+target. `evener upgrade release` selects the latest release;
+`evener upgrade snapshot` switches to the snapshot channel. Either command can
+switch channels. `evener upgrade vTAG` installs a specific published release tag;
+replace `vTAG` with the actual tag. With no target, snapshot builds track
+snapshots and other builds select the latest release. Run `evener upgrade -h`
+for installation-path flags, and review the target before replacing binaries.
+
 ## Doctor session selectors
 
 Doctor reads saved evidence without running a model. Discover sessions first:
@@ -138,6 +148,8 @@ not necessarily the value the session uses. For a new one-shot session:
 - `--max-concurrent-delegates`: omitted `-1` leaves the session default of **50**.
   For these two delegation limits, explicit `0` also selects the default; it
   does not mean unlimited or disabled.
+- `--max-retained-terminal`: omitted `-1` or explicit `0` selects **2048**
+  retained terminal delegate records per session.
 - `--vision-model`: omitted `""` uses the **active session model** for image
   descriptions. It does not disable vision; use `off` to disable that side channel.
 

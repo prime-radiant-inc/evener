@@ -187,7 +187,7 @@ Terminal targets differ by watch type: only an `output_match`-only `job_watch` s
 | Parent job | A shell job that caused another shell job, when shell ancestry exists. |
 | Parent delegate | The `dlg_...` that owns a delegate-created shell job. |
 | Delegate session | The child Evener session owned by a stable delegate. |
-| Transcript ref | A safe reference to a Evener session transcript, e.g. `local:<sessionID>`. |
+| Transcript ref | A safe reference to an Evener session transcript, e.g. `local:<sessionID>`. |
 | Notification | Metadata injected into a visible session to tell the agent that a job reached a lifecycle/progress event. |
 | Output | Bounded textual/log content associated with a job. |
 
@@ -1556,7 +1556,7 @@ stateDiagram-v2
 
 ## Restart behavior
 
-Shell jobs and delegate generations do not auto-resume after a Evener process
+Shell jobs and delegate generations do not auto-resume after an Evener process
 restart. Reconciliation is provider-free:
 
 1. Fold the root stable-delegate journal and each shell store without creating a

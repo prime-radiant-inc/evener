@@ -113,7 +113,7 @@ intent representation, selected paging and reconnect behavior.
 ## Error model
 
 Errors use JSON-RPC codes in `error.code` with a human `error.message`.
-`error.data.evenerErrorInfo` carries a structured evener-specific detail string
+`error.data.evenerErrorInfo` carries a structured Evener-specific detail string
 when present. Common cases: method-not-found, invalid-params (params failed to
 unmarshal), invalid-request (e.g. a request before `initialize`). History reads
 distinguish three conditions:
@@ -257,7 +257,7 @@ no router (reserved).
 | `evener/activity/read` | hub | [ActivityReadParams](#activityreadparams) | [ActivityReadResponse](#activityreadresponse) | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents, quiet time, the newest tool intent and when the tree last moved, of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/notices/list` | hub | [EmptyParams](#emptyparams) | [NoticesListResponse](#noticeslistresponse) | Lists the hub's notices (S11): provider instances on this hub that need signing in again, hosts that are offline, and installed plugins that are broken, each with the live sessions it blocks when the hub can count them. evener/notices/changed announces every change. |
 | `evener/harnesses/list` | hub | [HarnessListParams](#harnesslistparams) | [HarnessListResponse](#harnesslistresponse) | Lists available harness descriptors. |
-| `evener/upgrade` | hub | [UpgradeParams](#upgradeparams) | [UpgradeResponse](#upgraderesponse) | Performs or reports a evener binary upgrade. |
+| `evener/upgrade` | hub | [UpgradeParams](#upgradeparams) | [UpgradeResponse](#upgraderesponse) | Performs or reports an Evener binary upgrade. |
 | `evener/update/check` | hub | [UpdateCheckParams](#updatecheckparams) | [UpdateCheckResponse](#updatecheckresponse) | Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request. |
 | `evener/update/apply` | hub | [UpdateApplyParams](#updateapplyparams) | [UpdateApplyResponse](#updateapplyresponse) | Downloads and installs a channel's build, then execs it in place of the running hub; refused on dev builds. |
 | `evener/auth/status` | hub | [AuthStatusParams](#authstatusparams) | [AuthStatusResponse](#authstatusresponse) | Reports auth/credential status for a provider. |
@@ -364,7 +364,7 @@ the shared [TypeScript client](../appwire-client/typescript/README.md).
 | `evener/goal/updated` | [GoalUpdatedParams](#goalupdatedparams) | The session's complete structured goal state changed; null clears it. |
 | `evener/notes/updated` | [NotesUpdatedParams](#notesupdatedparams) | The session's shared-notes whiteboards changed. |
 | `evener/urls/updated` | [UrlsUpdatedParams](#urlsupdatedparams) | The session's shared-notes URL list changed. |
-| `evener/sandbox/escalation/requested` | [SandboxEscalationRequested](#sandboxescalationrequested) | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via evener/sandbox/escalation/resolve. |
+| `evener/sandbox/escalation/requested` | [SandboxEscalationRequested](#sandboxescalationrequested) | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via `evener/sandbox/escalation/resolve`. |
 | `evener/sandbox/escalation/resolved` | [SandboxEscalationResolved](#sandboxescalationresolved) | A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card. |
 | `evener/settings/transcriptDisplay/changed` | [TranscriptDisplayChangedParams](#transcriptdisplaychangedparams) | Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration. |
 | `evener/settings/keybindings/changed` | [KeybindingsOverrides](#keybindingsoverrides) | Broadcast after the user keybinding overrides change; carries the revision and canonical rules. |

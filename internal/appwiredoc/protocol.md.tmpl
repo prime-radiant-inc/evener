@@ -113,7 +113,7 @@ intent representation, selected paging and reconnect behavior.
 ## Error model
 
 Errors use JSON-RPC codes in `error.code` with a human `error.message`.
-`error.data.evenerErrorInfo` carries a structured evener-specific detail string
+`error.data.evenerErrorInfo` carries a structured Evener-specific detail string
 when present. Common cases: method-not-found, invalid-params (params failed to
 unmarshal), invalid-request (e.g. a request before `initialize`). History reads
 distinguish three conditions:
