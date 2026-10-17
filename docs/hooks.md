@@ -1,25 +1,56 @@
 # Hooks
 
-How evener's lifecycle hooks work **today**, and how to author them in a plugin.
-Hooks are the **primary plugin surface**: a plugin ships a `hooks.json` (or inline
-manifest hooks), evener discovers it, and the hooks fire at session, tool, and
-compaction boundaries. This document is the authoritative reference for shipped
-hook behavior and a practical authoring guide in one.
+Run a hook when an event must trigger code: for example, inspect a tool call
+before execution or add context at startup. Hooks belong to [plugins](plugins.md).
+They run in the session execution environment with its sandbox policy; they do
+not grant additional permissions. Prompt handlers make model calls and may incur
+provider charges. Start with a command handler that makes no model call.
 
-Evener's hooks are a **Claude-compatible subset**: a `hooks.json` written for Claude
-Code mostly works as-is, but only the nine events evener actually fires do anything,
-and a few semantics (notably the matcher and the tool names) have gotchas. Read
-the [tool-name gotcha](#the-1-mistake-shell--bash) first — it is the most common
-authoring mistake.
+## Add and verify a startup hook
 
-> **Scope.** Everything described here is implemented and tested. Claude hook
-> capabilities evener recognizes but does **not** yet run — additional events, the
-> `http`/`mcp_tool`/`agent` handler types, the `PreToolUse` `ask`/`defer` decisions
-> and `updatedInput` revalidation, async execution, typed SDK hooks — are tracked,
-> with the compatibility roadmap, in
-> [`subagent-management/07-lifecycle-hooks-claude-compat.md`](subagent-management/07-lifecycle-hooks-claude-compat.md).
-> Evener is honest about the line: a hook for something unimplemented is parsed and
-> diagnosed loudly, never silently half-run.
+You need Evener with a configured provider and `bash` on the session host. From
+an Evener source checkout, use the complete
+[`hello-plugin` fixture](examples/extensions/hello-plugin/hooks/hooks.json):
+
+```bash
+evener --plugin-dir ./docs/examples/extensions/hello-plugin "Reply briefly."
+```
+
+This plugin has a manifest and a `SessionStart` hook. The hook uses exec-form
+`printf` to return `{"systemMessage":"hello-plugin startup hook ran"}`. Before
+the first model turn, look for the warning **hello-plugin startup hook ran**.
+The warning proves the hook ran; the model's reply does not. The fixture makes
+no file changes and invokes no provider itself, but the Evener session does.
+
+To build your own, create `.claude-plugin/plugin.json` containing
+`{"name":"hello-plugin"}` and `hooks/hooks.json` with:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "startup",
+      "hooks": [{
+        "type": "command",
+        "command": "printf",
+        "args": ["%s\n", "{\"systemMessage\":\"hello-plugin startup hook ran\"}"]
+      }]
+    }]
+  }
+}
+```
+
+Pass that directory to `--plugin-dir`. After editing the declaration, start a
+new session to load it. To remove the hook, omit the directory on the next launch
+(or disable its installed plugin). End an existing session before removing files
+its hooks may still need. A running hook is synchronous, bounded by its timeout
+and session cancellation; deleting its declaration is not a stop command.
+
+If the warning is absent, inspect startup diagnostics, confirm the manifest
+loaded, and check the matcher. For tool hooks, use `Bash`, not `shell`.
+The reference below distinguishes supported behavior from fields that only parse.
+
+## Hook reference
 
 ## How evener discovers your hooks
 
@@ -125,13 +156,19 @@ will never fire.
 `PreToolUse` runs **before** registry schema validation, so a hook can inspect or
 rewrite raw tool input. The order for each tool call is:
 
-1. The model emits a tool call; evener decodes the name and best-effort-parses the
-   arguments for hook input.
-2. `PreToolUse` hooks matching the Claude tool name run.
-3. Any `updatedInput` they return is merged.
-4. The final arguments are validated against the tool's schema.
-5. Final execution policy runs on the validated input.
-6. The tool executes; `PostToolUse` runs on the result.
+```mermaid
+flowchart LR
+  Call[Tool call and raw arguments] --> Pre[PreToolUse hooks]
+  Pre --> Merge[Merge updatedInput]
+  Merge --> Schema[Validate final arguments]
+  Schema --> Policy[Apply final execution policy]
+  Policy --> Tool[Execute tool]
+  Tool --> Post[PostToolUse hooks]
+```
+
+Evener decodes the call and best-effort parses its arguments for the pre-hook.
+After applying any `updatedInput`, it validates the final arguments and checks
+execution policy. Only an admitted call reaches the tool and post-hook.
 
 A `PreToolUse` hook can therefore rewrite arguments or deny the call, but it
 **cannot** push an invalid or disallowed shape past validation and final policy —
@@ -162,7 +199,7 @@ matcher must name the **Claude** tool:
 | notebook edits | `notebook_edit` | `NotebookEdit` |
 | asking the user a question | `ask_user` | `AskUserQuestion` |
 
-MCP tools keep their `mcp__<server>__<tool>` name in both vocabularies.
+MCP tools keep their `<server>__<tool>` name in both vocabularies.
 
 A matcher that names a evener-canonical tool (`"shell"`, `"read_file"`) is not an
 error — it is a valid exact matcher that simply never matches the Claude name the
@@ -176,8 +213,8 @@ A matcher decides which targets a group's hooks fire for. The rules, in order:
 2. **Only `[A-Za-z0-9_|]` characters → exact name / pipe-list.** `"Bash"` matches
    only `Bash` (not `BashOutput`). `"Edit|Write|MultiEdit"` matches exactly
    `Edit`, `Write`, or `MultiEdit`.
-3. **Anything else → a Go RE2 regular expression.** `"mcp__memory__.*"` matches
-   `mcp__memory__search` by regex.
+3. **Anything else → a Go RE2 regular expression.** `"memory__.*"` matches
+   `memory__search` by regex.
 
 Worked examples:
 
@@ -188,14 +225,14 @@ Worked examples:
 | `"Bash"` | `BashOutput` | **no** match (exact mode, not substring) |
 | `"Edit|Write"` | `Write` | match (pipe-list) |
 | `"Edit|Write"` | `Read` | no match |
-| `"mcp__memory__.*"` | `mcp__memory__search` | match (regex) |
-| `"mcp__memory"` | `mcp__memory__search` | **no** match (exact mode, no substring) |
+| `"memory__.*"` | `memory__search` | match (regex) |
+| `"memory"` | `memory__search` | **no** match (exact mode, no substring) |
 
 Two traps worth calling out:
 
 - **Exact mode does not substring-match.** `"Bash"` will not catch `BashOutput`,
-  and `"mcp__memory"` will not catch `mcp__memory__search`. If you want a prefix,
-  write a regex: `"mcp__memory__.*"`.
+  and `"memory"` will not catch `memory__search`. If you want a prefix,
+  write a regex: `"memory__.*"`.
 - **The matcher is the Claude tool name** — see [the gotcha
   above](#the-1-mistake-shell--bash).
 
@@ -209,7 +246,7 @@ Two traps worth calling out:
 For the events evener fires, the matcher is tested against:
 
 - **Tool events** (`PreToolUse`, `PostToolUse`): the **Claude tool name**,
-  including `mcp__<server>__<tool>` (see the [gotcha](#the-1-mistake-shell--bash)).
+  including `<server>__<tool>` (see the [gotcha](#the-1-mistake-shell--bash)).
 - **`SessionStart`**: the start kind — `startup`, `resume`, `clear`, or
   `compact`.
 - **`UserPromptSubmit`**, **`Stop`**: no matcher target; use `"*"` or omit.
@@ -269,9 +306,9 @@ its [output](#what-your-hook-returns) from stdout/stderr.
 
 #### Shell form vs. exec form
 
-- **Shell form** (`command`, no `args`): evener runs `bash -c "<command>"`. The
+- **Shell form** (`command`, omitted or empty `args`): evener runs `bash -c "<command>"`. The
   shell expands variables, globs, and pipes. This is the default.
-- **Exec form** (`command` + `args`): evener spawns the program **directly, with no
+- **Exec form** (`command` + nonempty `args`): evener spawns the program **directly, with no
   shell**. `command` is the executable; `args` are passed verbatim. Use this for
   paths with spaces and to avoid shell expansion.
 
@@ -289,7 +326,7 @@ without quoting gymnastics:
 { "type": "command", "command": "/opt/my plugin/check", "args": ["--mode", "strict"] }
 ```
 
-When `args` is present, `shell` is ignored.
+When `args` is nonempty, `shell` is ignored. An empty array uses shell form.
 
 > **`async` / `asyncRewake`** are command-only fields that evener parses but does
 > not execute yet (reserved). A hook that sets them runs **synchronously** today.
@@ -441,7 +478,7 @@ The output JSON evener reads (exit 0):
   when both are present. `updatedInput` rewrites the tool arguments before
   validation. `ask` and `defer` are recognized but **not honored** — evener has no
   interactive permission prompt, so the tool proceeds and a user-visible diagnostic
-  names the unsupported decision. `updatedInput` revalidation is reserved.
+  names the unsupported decision. The rewritten input still passes registry schema validation and final execution policy.
 
 ### Failed `SessionStart` hooks
 
@@ -494,7 +531,7 @@ subset:
 
 Evener warns **loudly at plugin load** when a hook declaration is broken, so a typo
 does not turn into silent non-execution. You will see a `[warning] …` line in the
-CLI (and a warning in the TUI / web / hub) for each of:
+CLI (and a warning in the browser) for each of:
 
 - **An unknown event name** (e.g. `PreToolUze`) — "not a recognized Claude or evener
   event (likely a typo); this hook will never fire."
@@ -524,57 +561,17 @@ You can see the full picture in `/status`, which lists active supported hooks
 landscape; the load-time `[warning]` lines above are where misconfiguration shows
 up.
 
-## A complete example
+## Extend the example to tool calls
 
-A plugin that (1) bootstraps context at startup, (2) checks `Bash`/`Edit` calls
-before they run, and (3) logs every tool result. Drop this at
-`my-plugin/hooks/hooks.json` and run `evener --plugin-dir ./my-plugin …`.
+Change the event to `PreToolUse` and the matcher to `Bash|Edit` to inspect shell
+and edit calls. Your process receives the input JSON on stdin. Return
+`{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"Explain why"}}`
+with exit 0 to deny the call, or write the reason to stderr and exit 2.
+Use `PostToolUse` only for observation: it cannot undo an executed action.
 
-```json
-{
-  "description": "Guardrails and logging for my-plugin",
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "startup|resume",
-        "hooks": [
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/bootstrap.sh" }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/guard",
-            "args": ["--strict"],
-            "timeout": 20
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/log-result.sh" }
-        ]
-      }
-    ]
-  }
-}
-```
-
-`hooks/guard` (exec form, so the path could contain spaces) receives the
-`PreToolUse` input JSON on stdin; to deny a call it prints
-`{"hookSpecificOutput":{"permissionDecision":"deny"}}` and exits 0, or simply
-exits 2. `hooks/log-result.sh` reads the `PostToolUse` input and exits 0 — its
-plain-text stdout is shown to the **user** as a warning message (not sent to the
-model); to deliver context to the model from a hook, use
-`hookSpecificOutput.additionalContext` in the JSON output. Remember: the
-`PreToolUse` matcher is `Bash`, **not** `shell`.
+Do not interpolate tool input into shell code. Parse stdin as JSON and pass
+values as data. Use exec form when paths contain spaces. See the input, output,
+and exit-code tables above before implementing a guard.
 
 ## Hooks cannot bypass policy
 
