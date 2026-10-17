@@ -64,16 +64,7 @@ For loopback plus LAN/VPN access:
 evener hub --addr 0.0.0.0:9180 --evener /usr/local/bin/evener
 ```
 
-Authorize each browser once with the startup log's `/auth/<token>` URL. For a
-remote TUI, pass the same capability out of band:
-
-```bash
-EVENER_HUB_AUTH_TOKEN='<token>' \
-  evener tui --hub-addr http://hubbox.example:9180 --no-auto-start-hub
-```
-
-The TUI otherwise looks for the local machine's `~/.local/state/evener/auth-token`, which is
-usually not the remote Hub's token.
+Authorize each browser once with the startup log's `/auth/<token>` URL.
 
 ### Ad hoc macOS background launch
 
@@ -109,11 +100,6 @@ Current flags verified from source:
 - `evener hub --evener <path>` selects the `evener serve` binary Hub launches.
 - `evener launch-check --protocol evener-appwire-v1 --model <provider/model> --json`
   validates the binary/protocol/model contract before spawn.
-- `evener tui --hub-addr <url-or-host-port>` connects the TUI to a Hub.
-- `evener tui --auth-token <token>` overrides `EVENER_HUB_AUTH_TOKEN` and the local
-  token file.
-- `evener tui --no-auto-start-hub` prevents local auto-start, which is usually
-  what you want when targeting a remote Hub.
 
 ## Hub Config
 
@@ -217,7 +203,7 @@ Evener-owned OpenAI OAuth is user-scoped by default. With the service layout abo
 spawned sessions still store transcript/runtime state under per-project
 directories.
 
-## Browser And TUI Access
+## Browser Access
 
 For an SSH tunnel:
 
@@ -226,18 +212,6 @@ ssh -N -L 9180:127.0.0.1:9180 hubbox.example
 ```
 
 Then open `http://127.0.0.1:9180` locally.
-
-For TUI access to a remote Hub:
-
-```bash
-evener tui --hub-addr http://127.0.0.1:9180 --no-auto-start-hub
-```
-
-If you connect directly over a private network:
-
-```bash
-evener tui --hub-addr http://hubbox.example:9180 --no-auto-start-hub
-```
 
 ## Health Checks And Manual Verification
 
@@ -255,8 +229,6 @@ Manual spawn/resume verification:
 4. Refresh the browser and confirm the transcript replays from the past index.
 5. Shut down the session from Hub.
 6. Send another message to the ended session and confirm Hub resumes it.
-7. Open `evener tui --hub-addr ... --no-auto-start-hub` and confirm the same
-   session appears with source label `evener`.
 
 ## Logs, Restarts, And Backups
 

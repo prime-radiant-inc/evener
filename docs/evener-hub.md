@@ -2,8 +2,7 @@
 
 `evener hub` is Evener's orchestrator. It serves the web UI — Evener's
 default interactive surface — where you start sessions, watch the agent work,
-and steer it across many concurrent sessions; the `evener tui` terminal
-dashboard talks to the same API. The hub launches and supervises
+and steer it across many concurrent sessions. The hub launches and supervises
 local `evener serve` daemons and indexes saved sessions for search.
 
 **First time here?** [Getting started](getting-started.md)
@@ -47,9 +46,9 @@ From the repo root:
 make install
 ```
 
-This builds `evener`, `evener hub`, `evener tui`, `evener doctor`, and
-`evener migrate`, installs the binaries under `~/.local/share/evener/bin`, and
-symlinks them into `~/.local/bin`. The hub, TUI, and doctor workflows resolve
+This builds the `evener` binary with its `hub`, `doctor`, and `migrate`
+subcommands, installs it under `~/.local/share/evener/bin`, and
+symlinks it into `~/.local/bin`. The hub and doctor workflows resolve
 sibling binaries through the symlink targets, so the installed commands find
 each other without extra flags. `make install-home` is an alias for the same
 layout.
@@ -214,11 +213,6 @@ a sheet with the same filter, actions, metadata, and diagnostics. The sheet
 stays open while switches are changed; **Done** applies the selection and
 **Cancel** restores the selection from before the sheet opened.
 
-The TUI new-session form has a `Plugins: N/M enabled` field after `Dir` and
-before `Prompt`. Enter opens the `Plugins for this session` picker; Space
-toggles a row, `A` selects all visible rows, `N` selects none, Enter applies, and
-Escape cancels. This field is separate from the global `/plugins` manager.
-
 The launcher previews the effective candidates for the current working directory
 and launch overrides. While inspection is pending it shows `Inspecting
 plugins…`; a failed inspection shows `Couldn't inspect plugins` with retry and
@@ -264,7 +258,7 @@ A section name matches either an implicit instance's id (`anthropic`,
 `openai`, `openrouter`, …) or a custom instance you defined in
 `providers.toml`.
 
-The hub UI (`/credentials`) or TUI (`/credentials`) writes this file via
+The hub UI (`/credentials`) writes this file via
 the `evener/auth/apiKey/set` RPC. Process-env credentials (e.g.,
 `ANTHROPIC_API_KEY` exported in the shell) still work as a fallback when no
 file entry exists for the instance — matching the `hub.env` style for users
@@ -335,9 +329,9 @@ Production deployments should preferably execute `evener hub --config
 The hub logs config errors, past-index rebuild errors, roster watch errors,
 child-process launch diagnostics, and the auth URL there.
 
-The TUI's `--log-file` option also captures the auto-started hub's full
-authorization URL, including its bearer token. Run the TUI with a restrictive
-`umask` and choose a private log path; do not place this log in a shared
+An auto-started hub's log captures the full
+authorization URL, including its bearer token. Choose a private log path and do
+not place this log in a shared
 directory or expose it through a supervisor's broadly readable logs.
 On macOS, [`scripts/ops/deploy-hub.sh`](../scripts/ops/deploy-hub.sh) builds
 while the old hub remains running, kickstarts its launchd job to replace it,
@@ -547,21 +541,10 @@ The columns are connection, direction, method (or `response`), frame count, and
 total bytes, ordered by total bytes. Use the process-local connection ID to
 correlate an `open` record, its frames, and the final `close` record.
 
-## Browser and TUI
+## Browser
 
 Browser: visit the authorization URL logged at startup. It sets the auth
 cookie; after that, plain `http://127.0.0.1:9180` works in that browser.
-
-TUI:
-
-```bash
-evener tui \
-  --hub-addr http://127.0.0.1:9180 \
-  --no-auto-start-hub
-```
-
-Use `--no-auto-start-hub` for production-style runs so the TUI does not start a
-separate local hub with default config.
 
 ## Smoke checks
 
@@ -590,8 +573,6 @@ Manual verification:
 2. Pick a working directory and spawn an Evener session.
 3. Confirm the transcript streams live before refresh.
 4. Refresh and confirm the transcript replays from saved state.
-5. Open `evener tui --hub-addr http://127.0.0.1:9180 --no-auto-start-hub` and
-   confirm the same session appears with source label `evener`.
 
 ## Operations notes
 

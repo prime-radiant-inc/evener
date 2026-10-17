@@ -494,7 +494,7 @@ subset:
 
 Evener warns **loudly at plugin load** when a hook declaration is broken, so a typo
 does not turn into silent non-execution. You will see a `[warning] …` line in the
-CLI (and a warning in the TUI / web / hub) for each of:
+CLI (and a warning in the web / hub) for each of:
 
 - **An unknown event name** (e.g. `PreToolUze`) — "not a recognized Claude or evener
   event (likely a typo); this hook will never fire."

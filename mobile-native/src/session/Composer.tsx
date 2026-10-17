@@ -20,6 +20,10 @@ const MAX_LINES = 6;
 export interface ComposerProps {
 	value: string;
 	editable: boolean;
+	/** Whether the empty draft may rest one line tall. The screen decides this
+	 * (`composerRests`), since only it sees the images alongside the text and
+	 * whether the field can take focus; the composer adds its own focus bit. */
+	mayRest: boolean;
 	onChangeText(text: string): void;
 	inputRef?: RefObject<TextInput | null>;
 	/** Where the field reports its focus, for what steps aside while you type
@@ -47,6 +51,7 @@ export interface ComposerProps {
 export function Composer({
 	value,
 	editable,
+	mayRest,
 	onChangeText,
 	inputRef,
 	focus,
@@ -80,7 +85,9 @@ export function Composer({
 	// An empty field you aren't in rests one line tall, so the composer stays
 	// small until you reach for it: focusing it, or any character at all
 	// (whitespace included, which the field visibly holds), keeps it open.
-	const resting = !focused && value === "";
+	// Whether the draft may rest at all is the screen's call (`mayRest`: an
+	// attached image or a read-only field keeps it open); focus is the composer's.
+	const resting = mayRest && !focused;
 	function openAddMenu() {
 		const choices = [
 			{ text: "Photo library", onPress: onPhotoLibrary },
@@ -94,6 +101,68 @@ export function Composer({
 			);
 		else Alert.alert("Add", undefined, [...choices, { text: "Cancel", style: "cancel" }]);
 	}
+	const add = (
+		<SymbolButton label="Add" disabled={!editable} onPress={openAddMenu}>
+			<SymbolView name="plus" tintColor={palette.accentInk} size={20 * scale} />
+		</SymbolButton>
+	);
+	const slot = stop ? (
+		<StopButton disabled={stop.disabled} onPress={stop.onStop} />
+	) : (
+		<SendButton label={sendLabel} disabled={!sendEnabled} onPress={onSend} />
+	);
+	const field = (
+		<>
+			<TextInput
+				ref={inputRef}
+				accessibilityLabel="Message"
+				allowFontScaling={allowFontScaling}
+				multiline
+				scrollEnabled
+				value={value}
+				onChangeText={onChangeText}
+				onFocus={() => {
+					setFocused(true);
+					focus?.set(true);
+				}}
+				onBlur={() => {
+					setFocused(false);
+					focus?.set(false);
+				}}
+				onContentSizeChange={(event) => setContentHeight(event.nativeEvent.contentSize.height)}
+				editable={editable}
+				placeholder={placeholder}
+				placeholderTextColor={palette.inkMid}
+				style={{
+					color: palette.inkHi,
+					fontSize: 17 * scale,
+					lineHeight,
+					minHeight: resting ? lineHeight : 44,
+					// At the largest text sizes six lines would crowd out the
+					// transcript, so the field also stops at a third of the window.
+					maxHeight: Math.min(MAX_LINES * lineHeight, windowHeight / 3),
+					paddingHorizontal: 4,
+					paddingVertical: 0,
+					paddingRight: overflows ? 44 : 4,
+					textAlignVertical: "top",
+				}}
+			/>
+			{overflows ? (
+				<SymbolButton
+					label="Expand editor"
+					onPress={() => {
+						// The editor's own field takes the keyboard; the composer's
+						// blur isn't something to wait on.
+						focus?.set(false);
+						setExpanded(true);
+					}}
+					style={{ position: "absolute", top: -8, right: -8 }}
+				>
+					<SymbolView name="arrow.up.left.and.arrow.down.right" tintColor={palette.inkMid} size={15 * scale} />
+				</SymbolButton>
+			) : null}
+		</>
+	);
 	return (
 		<View
 			testID="composer-card"
@@ -101,7 +170,8 @@ export function Composer({
 				marginHorizontal: 16,
 				marginBottom: 4,
 				padding: 8,
-				gap: 4,
+				// Collapsed there is one row, so no gap between rows.
+				gap: resting ? 0 : 4,
 				borderWidth: 1,
 				borderRadius: 22,
 				borderColor: palette.edge,
@@ -109,65 +179,31 @@ export function Composer({
 			}}
 		>
 			{above}
-			<View>
-				<TextInput
-					ref={inputRef}
-					accessibilityLabel="Message"
-					allowFontScaling={allowFontScaling}
-					multiline
-					scrollEnabled
-					value={value}
-					onChangeText={onChangeText}
-					onFocus={() => {
-						setFocused(true);
-						focus?.set(true);
-					}}
-					onBlur={() => {
-						setFocused(false);
-						focus?.set(false);
-					}}
-					onContentSizeChange={(event) => setContentHeight(event.nativeEvent.contentSize.height)}
-					editable={editable}
-					placeholder={placeholder}
-					placeholderTextColor={palette.inkMid}
-					style={{
-						color: palette.inkHi,
-						fontSize: 17 * scale,
-						lineHeight,
-						minHeight: resting ? lineHeight : 44,
-						// At the largest text sizes six lines would crowd out the
-						// transcript, so the field also stops at a third of the window.
-						maxHeight: Math.min(MAX_LINES * lineHeight, windowHeight / 3),
-						paddingHorizontal: 4,
-						paddingVertical: 0,
-						paddingRight: overflows ? 44 : 4,
-						textAlignVertical: "top",
-					}}
-				/>
-				{overflows ? (
-					<SymbolButton
-						label="Expand editor"
-						onPress={() => {
-							// The editor's own field takes the keyboard; the composer's
-							// blur isn't something to wait on.
-							focus?.set(false);
-							setExpanded(true);
-						}}
-						style={{ position: "absolute", top: -8, right: -8 }}
-					>
-						<SymbolView name="arrow.up.left.and.arrow.down.right" tintColor={palette.inkMid} size={15 * scale} />
-					</SymbolButton>
-				) : null}
-			</View>
-			<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-				<SymbolButton label="Add" disabled={!editable} onPress={openAddMenu}>
-					<SymbolView name="plus" tintColor={palette.accentInk} size={20 * scale} />
-				</SymbolButton>
-				<View style={{ flex: 1, minWidth: 0 }}>{settings}</View>
-				{stop ? (
-					<StopButton disabled={stop.disabled} onPress={stop.onStop} />
+			{/* One stable parent for the field, whose shape changes rather than
+			    which branch renders: collapsed, the +, the field and Send share a
+			    row and the model chip steps aside; open, the field takes the first
+			    line and the controls sit under it (Jesse). The field stays in this
+			    same parent either way, so focusing it does not remount it and drop
+			    the keyboard. */}
+			<View
+				style={{
+					flexDirection: resting ? "row" : "column",
+					alignItems: resting ? "center" : "stretch",
+					gap: 4,
+				}}
+			>
+				{resting ? add : null}
+				<View key="field" style={resting ? { flex: 1, minWidth: 0 } : { minWidth: 0 }}>
+					{field}
+				</View>
+				{resting ? (
+					slot
 				) : (
-					<SendButton label={sendLabel} disabled={!sendEnabled} onPress={onSend} />
+					<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+						{add}
+						<View style={{ flex: 1, minWidth: 0 }}>{settings}</View>
+						{slot}
+					</View>
 				)}
 			</View>
 			<ExpandedEditor

@@ -2589,6 +2589,8 @@ it("names the model on the composer's chip, which opens the model sheet with the
 	const { tree, hub } = await mount(served);
 	// The screen loads the catalog once, so the chip can name the model.
 	expect(hub.requests.filter((request) => request.method === "model/list")).toHaveLength(1);
+	// The chip steps aside while the composer is collapsed, so reach for it first.
+	act(() => field(tree)?.props.onFocus());
 	const chip = pressable(tree, "Model: Claude Sonnet 5. Change model or effort");
 	if (!chip) throw new Error("no model chip");
 	act(() => chip.props.onPress());
@@ -2613,6 +2615,8 @@ it("names the model as the session's Board row does while the catalog can't be r
 	};
 	const { tree } = await mount(served);
 	await act(async () => {});
+	// The chip steps aside while the composer is collapsed, so reach for it first.
+	act(() => field(tree)?.props.onFocus());
 	expect(pressable(tree, "Model: Claude Sonnet 5. Change model or effort")).toBeDefined();
 	expect(renderedText(tree)).not.toContain("claude-sonnet-5");
 });

@@ -3,13 +3,13 @@
 
 # AppWire protocol reference
 
-AppWire is the JSON-RPC wire protocol that connects the three evener binaries:
-the browser and `evener tui` talk to `evener hub`, and `evener hub` talks to each
+AppWire is the JSON-RPC wire protocol that connects Evener's processes:
+the browser talks to `evener hub`, and `evener hub` talks to each
 `evener serve` daemon. The same message shapes
 and method catalog ride every hop.
 
 ```
-browser / evener tui  ──WS /rpc──▶  evener hub  ──WS──▶  evener serve daemon
+browser  ──WS /rpc──▶  evener hub  ──WS──▶  evener serve daemon
 ```
 
 This document is **generated** from the declarative catalog in

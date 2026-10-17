@@ -44,6 +44,28 @@ func TestPermitDepthFloorOffByOne(t *testing.T) {
 	}
 }
 
+// TestPermitRefusesCanonicalTopLevelSystemDir covers the macOS spelling gap: the
+// configured "/var" is a symlink to "/private/var", so by the time the caller
+// canonicalizes it (as the infra grant does) the depth floor sees two
+// components and lets the whole var tree through. The floor's intent is to
+// refuse a top-level system directory however it is spelled, so a candidate
+// that a one-component path under "/" names the SAME FILE must be refused.
+// Skips cleanly where the re-spelling names no distinct top-level directory
+// (e.g. Linux, where CanonicalPath("/var") is "/var" and the depth floor alone
+// already refuses it).
+func TestPermitRefusesCanonicalTopLevelSystemDir(t *testing.T) {
+	guard := NewRootGuard()
+	for _, top := range []string{"/var", "/tmp", "/etc"} {
+		canonical := CanonicalPath(top)
+		if canonical == "" || canonical == top {
+			continue // no re-spelling on this host; the textual floor already covers it
+		}
+		if got := guard.Permit(canonical); got != "" {
+			t.Errorf("Permit(CanonicalPath(%q)) = %q, want refused: a top-level system directory reached through a symlink must not be granted", top, got)
+		}
+	}
+}
+
 // TestPermitRefusesAnchorsAndAncestors covers the core multi-tenant rule: a
 // root at or above the home, worktree, or temp anchor is refused, whatever its
 // exact depth.

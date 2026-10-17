@@ -40,7 +40,7 @@ evener --provider-idle-timeout 15m "your task"
 evener serve --provider-idle-timeout 15m
 ```
 
-The hub/TUI launch setting is **Provider idle timeout**. Launch TOML uses
+The hub launch setting is **Provider idle timeout**. Launch TOML uses
 `provider_idle_timeout = "15m"`; the launch API uses
 `"providerIdleTimeout": "15m"`. Session configuration and snapshots use
 `"provider_idle_timeout": "15m"`. Empty selects the default for new sessions
@@ -333,7 +333,7 @@ dollar figure rather than a placeholder. A session recorded before this
 cut-over, with no instance name in its `ProfileID`, shows no cost in the
 hub's past-sessions list.
 
-## Web / TUI provider surfaces
+## Web provider surfaces
 
 The duplicate type-based Providers and Credentials screens are gone,
 replaced by one instance-aware CRUD screen
@@ -361,13 +361,11 @@ curated implicit provider plus every explicit instance, not the old fixed
 
 ### Model strings and display
 
-The TUI strips a model chip's instance-name prefix generically now
-(`modeldisplay.AbbreviateModel`, `cmd/evener-tui/internal/modeldisplay/`) —
-it takes whatever the first slash-segment is, rather than matching a
-hardcoded provider allowlist, so it stays correct as instance names change.
-The web hub's frontend was rewritten to a React SPA as part of a separate
-effort — the old `spawn.js` and its hardcoded prefix list are gone along
-with it, and a search of the current frontend source turned up no
+Model-chip rendering takes whatever the first slash-segment of an id is,
+rather than matching a hardcoded provider allowlist, so it stays correct as
+instance names change. The web hub's frontend was rewritten to a React SPA as
+part of a separate effort — the old `spawn.js` and its hardcoded prefix list are
+gone along with it, and a search of the current frontend source turned up no
 equivalent allowlist function to describe here.
 
 ## Upgrading from the old schema

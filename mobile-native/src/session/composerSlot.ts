@@ -18,3 +18,23 @@ export interface SlotState {
 export function composerShowsStop({ connected, canStop, text, images }: SlotState): boolean {
 	return connected && canStop && text.trim() === "" && images === 0;
 }
+
+/** What the composer needs to know to rest one line tall: the whole draft (text
+ * and images) and whether the field can take focus. The screen owns this since
+ * only it sees the draft; the composer adds its own focus bit. */
+export interface RestState {
+	/** The typed text. */
+	text: string;
+	/** How many images the draft holds. */
+	images: number;
+	/** Whether the field can take focus. A failed draft read leaves it false, and
+	 * focus is the only way back to the controls row, so it must not rest. */
+	editable: boolean;
+}
+
+/** Whether the composer may rest one line tall (Jesse). Only a truly empty
+ * draft with a focusable field rests: an attached image is a message, and
+ * whitespace is a draft the field visibly holds. */
+export function composerRests({ text, images, editable }: RestState): boolean {
+	return text === "" && images === 0 && editable;
+}

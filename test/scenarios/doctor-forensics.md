@@ -191,7 +191,7 @@ There is no `watch_self_loop` category.
 ## Out of scope
 
 `evener doctor` is read-only forensics over settled state — not a live monitor
-(that is appwire + tui + hub), not a mutator (mutation is the hub REST surface),
+(that is appwire + hub), not a mutator (mutation is the hub REST surface),
 and not a test harness (it exposes numbers; scenarios assert them with `jq`).
 The doctor's repair authority is graduated (`repair-guardrails.md`): diagnosis is
 autonomous; core-skill / Go-tool repair is propose-only behind review + a gate.

@@ -7,8 +7,8 @@
 models must produce a `Recent` group that is (a) capped at the 5
 most-recently-*touched* distinct `(provider, model)` pairs, (b) ordered
 most-recent-first, (c) identical regardless of which `cwd` the caller
-scopes the request to, and (d) consistent across the three pickers
-(web spawn, web settings, TUI) — with one scoping caveat that is by
+scopes the request to, and (d) consistent across the two web pickers
+(spawn and settings) — with one scoping caveat that is by
 design, in Sharp edges.
 
 `RecentModels` itself is where (a)-(c) live: it walks the Past index in
@@ -98,12 +98,6 @@ Recent — spawn real sessions.
    whose block label reads exactly `Model`; only one panel is open at a
    time, so the listbox query above is unambiguous once it is.
 
-### TUI
-
-7. `evener tui --hub-addr 127.0.0.1:$PORT`, `n` → `BTab BTab` (focus
-   Model) → `Enter` to open the picker; `capture-pane` and read the
-   `RECENT` group's rows.
-
 ## Expected
 
 - **Step 3 (exact)**: all five calls return the **same** 5 entries in
@@ -127,14 +121,9 @@ Recent — spawn real sessions.
   provider name** — `rowMeta(entry, true)` for the Recent block only
   (`appwire-client/typescript/modelCatalogPickerRows.ts:37-45,96`), because Recent mixes providers and
   the row would otherwise be unattributable.
-- **Step 7**: the `RECENT` header (uppercased,
-  `cmd/evener-tui/internal/tuipick/model_picker.go:165-167`) leads the
-  list with the same 5 rows in the same order; the Recent block is
-  literally prepended to the provider-grouped items
-  (`cmd/evener-tui/hub_commands.go:493-500`).
 - Falsification: `result.recent` differs by `cwd`; `codex-auto-review`
   appears in `Recent` (6th distinct, should be evicted); the settings
-  picker's or the TUI's Recent order disagrees with the AppWire
+  picker's Recent order disagrees with the AppWire
   `model/list` response; a Recent row is missing its provider
   prefix; or a provider-group row is interleaved into the Recent block.
 
@@ -144,7 +133,7 @@ Recent — spawn real sessions.
   `POST $HUB/api/sessions/local:$SID/shutdown` (the old
   `$HUB/s/$SID/shutdown` shim 404s silently and leaves the daemon
   running).
-- Kill the hub by the PID you captured and the tmux session you named.
+- Kill the hub by the PID you captured.
 - Remove all scratch project directories and the hermetic
   `$HOME`/`$XDG_STATE_HOME` trees.
 

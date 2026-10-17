@@ -647,9 +647,8 @@ cwd wins.
 
 ### Client caveats
 
-- Both desktop surfaces intercept their own built-in slash commands before
-  your input reaches the session: the TUI has its registry (`/status`,
-  `/model`, `/help`, ...) and the web palette has its own, partly different
+- The web palette intercepts its own built-in slash commands before
+  your input reaches the session: it has a partly different
   set (`/status`, `/model`, `/help`, `/steer`, `/queue`, ...). A command
   whose name collides with a client's built-ins is unreachable in that
   client's typed input — pick another name. Headless input always works.

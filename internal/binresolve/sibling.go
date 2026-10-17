@@ -1,7 +1,7 @@
 // Package binresolve locates sibling executables that ship alongside a
 // running Go program.
 //
-// Many of the evener binaries (evener, evener-hub, evener-tui) ship together in
+// Many of the evener binaries (evener, evener-hub) ship together in
 // the same directory and call out to each other. Without help from
 // $PATH, exec.Command("evener", ...) inside evener-hub will fail when the
 // operator runs the hub from a directory where it lives next to evener
@@ -73,9 +73,9 @@ func Resolve(name, explicit, currentExecutable string, lookPath func(string) (st
 // pass a fixture path in tests.
 //
 // The path is canonicalised via filepath.Abs and filepath.EvalSymlinks
-// so that a relative invocation like "./evener-tui" (which would trip
+// so that a relative invocation like "./evener-hub" (which would trip
 // exec.ErrDot when handed back to exec.Command) or a symlink such as
-// /usr/local/bin/evener-tui -> /opt/evener/evener-tui still resolves to the
+// /usr/local/bin/evener-hub -> /opt/evener/evener-hub still resolves to the
 // directory that actually holds the binary. Returns ok=false when no
 // usable path can be derived.
 func SiblingDir(currentExecutable string) (string, bool) {
