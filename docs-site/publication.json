@@ -1,0 +1,17 @@
+{
+  "pages": [
+    {
+      "source": "docs/getting-started.md",
+      "path": "index.md",
+      "title": "Get started",
+      "group": "Get started"
+    },
+    {
+      "source": "docs/appwire-protocol.md",
+      "path": "reference/appwire.md",
+      "title": "AppWire protocol",
+      "group": "Automate and integrate"
+    }
+  ],
+  "assets": []
+}
