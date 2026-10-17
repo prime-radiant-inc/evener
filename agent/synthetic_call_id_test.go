@@ -8,13 +8,14 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
 // idlessReadCall scripts an assistant tool call that carries NO provider id (as
-// Gemini's calls do not), with fixed arguments so every such call hashes the
-// same.
+// Gemini's calls do not), with fixed arguments so two such calls are otherwise
+// identical — the exact case a hash-only id could not tell apart.
 func idlessReadCall() llm.Response {
 	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -35,15 +36,21 @@ func fixedStep(r llm.Response) func(llm.Request) llm.Response {
 // calls into one row (and one list key).
 func TestSynthesizedCallID_IsUniqueAcrossTurnsAndSurvivesRecording(t *testing.T) {
 	t.Parallel()
+	// Two turns, each an id-less read call (identical arguments, so a real
+	// collision case) followed by the round-ending communicate. Built in a loop
+	// so the two turns' steps are not written as duplicated option expressions.
+	steps := make([]func(llm.Request) llm.Response, 0, 4)
+	for range 2 {
+		steps = append(steps, fixedStep(idlessReadCall()), fixedStep(communicateResponse(true, "done")))
+	}
 	s := newSession(t,
-		withSteps(
-			fixedStep(idlessReadCall()), fixedStep(communicateResponse(true, "done")),
-			fixedStep(idlessReadCall()), fixedStep(communicateResponse(true, "done")),
-		),
+		withSteps(steps...),
 		withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir()}),
 		withoutGitSnapshot(),
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// TRIPWIRE: every answer is scripted in process with no real I/O; only a
+	// genuine hang reaches this ceiling.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := s.ProcessInput(ctx, "go", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -79,5 +86,10 @@ func TestSynthesizedCallID_IsUniqueAcrossTurnsAndSurvivesRecording(t *testing.T)
 	}
 	if recorded[0] == recorded[1] {
 		t.Fatalf("two id-less calls with identical arguments recorded the same id %q", recorded[0])
+	}
+	for _, id := range recorded {
+		if err := identifier.ValidateSyntheticCallID(id); err != nil {
+			t.Fatalf("recorded synthesized id %q is not a valid synthetic call id: %v", id, err)
+		}
 	}
 }

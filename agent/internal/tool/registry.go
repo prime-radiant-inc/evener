@@ -16,13 +16,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -713,7 +713,7 @@ func (r *Registry) executeCall(ctx context.Context, env execenv.ExecutionEnviron
 	name := call.Name
 	callID := call.ID
 	if strings.TrimSpace(callID) == "" {
-		callID = SynthesizedCallID(call.Arguments)
+		callID = SynthesizedCallID()
 	}
 
 	// A signature that has already failed the same way twice is refused here,
@@ -1177,20 +1177,19 @@ func shortHash(b []byte) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// synthesizedCallSeq numbers id-less tool calls within the process, so two
-// calls that hash the same still get distinct ids.
-var synthesizedCallSeq atomic.Uint64
-
 // SynthesizedCallID names a tool call the provider left unnamed (Gemini omits
-// ids): "call_<hash>_<n>". The hash is the argument signature (shortHash), kept
-// for readable diagnostics; the trailing sequence makes the id unique per
-// invocation. The hash alone is not unique — two id-less calls with identical
-// arguments hash the same — and a shared id collapses them in the overlay's
-// per-call map (internal/appoverlay), in the recorded item, and in the phone's
-// transcript list key. Both synthesis sites (executeCall here and the session's
-// prepareToolCall) mint through this one function. The id is minted once, at
-// execution, and persisted, so a reload reads the recorded id rather than
-// re-deriving one.
-func SynthesizedCallID(args []byte) string {
-	return fmt.Sprintf("call_%s_%d", shortHash(args), synthesizedCallSeq.Add(1))
+// ids). It mints the repo's own domain id for this (identifier's "call_"
+// UUIDv7), the same one the Google adapter mints for the calls it receives
+// unnamed. A hand-rolled id from the arguments alone would not be unique — two
+// id-less calls with identical arguments would share it — and neither would a
+// process-scoped counter, which resets on restart and so can reissue an id a
+// resumed session already recorded. UUIDv7 cannot: it carries no process state.
+// A shared id collapses the calls in the overlay's per-call map
+// (internal/appoverlay), in the recorded item, and in the phone's transcript
+// list key, so uniqueness is the whole point. Both synthesis sites (executeCall
+// here and the session's prepareToolCall) mint through this one function. The
+// id is minted once, at execution, and persisted, so a reload reads the
+// recorded id rather than re-deriving one.
+func SynthesizedCallID() string {
+	return identifier.MustNewSyntheticCallID()
 }
