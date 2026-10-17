@@ -46,18 +46,23 @@ Design documentation for the web hub (`cmd/evener-hub`).
 Settings groups controls by task:
 
 - **Preferences:** Appearance, Conversation display, Input & shortcuts, Notifications.
-- **Agent setup:** Providers & credentials, Agents, AGENTS.md, Evener launch, In-repo config.
+- **Agent setup:** Providers & credentials, Agents, AGENTS.md, Evener launch.
 - **Extensions:** Plugins, Skill directories, MCP servers.
 - **System:** Hosts, Devices, Hub, Storage, About.
 
 Search matches destination names and control keywords, such as font, Enter,
 tokens, marketplace and plugin directory. Results open the owning page.
 Appearance is the default. Explicit unknown or retired `general`, `display`
-and `plugins` section URLs open Appearance, without aliases or a remembered
+`plugins` and `inrepo` section URLs open Appearance, without aliases or a remembered
 section overriding that request. A host-qualified URL retains its host scope.
 AppShell replaces retired or unknown URLs before placing their settings pane,
 so mobile URL synchronization cannot restore retired params or discard Forward history.
-Project settings remain reachable through their project route.
+Project settings remain reachable through their project route and sidebar gear.
+They combine repository-file review and explicit trust with local overrides for the
+selected host and working directory. Shared `.evener/launch.toml` settings apply
+only after approval of the reviewed hash; `.evener/launch.local.toml` overrides
+remain separate. Discovery checks that directory, not its ancestors. Repository
+inspection failures do not prevent editing local overrides.
 
 On phones, settings opens as a full-width list. Drilling into a page and using
 Back preserves the list's search and scroll position. Desktop keeps the list

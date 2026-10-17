@@ -1,6 +1,6 @@
 import type { HostRow, LaunchConfigResolved } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { installLocalStorage } from "../../../storageTestUtils";
@@ -9,18 +9,14 @@ import { hostsStore } from "../../../stores/hosts";
 import { resetLaunchConfigHostStoresForTests } from "../../../stores/launchConfig";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { InRepoHostScope } from "./inrepo";
+import { HostScopedSurface } from "./hostScopedSurface";
+import { RepositoryConfigSection } from "./inrepo";
 
-// The In-repo config settings surface's host scope (component 07b): the shared
-// HostPicker over the selected host, whose own in-repo launch.toml resolution,
-// trust write and path helpers both show and change from here. Local is today's
-// plain-call section; a remote selection routes every call through
-// evener/host/request and never touches the controller's own filesystem or
-// launch config.
+function RepositoryHostScope() {
+  return <HostScopedSurface>{(host) => <RepositoryConfigSection host={host} cwd="/repo" />}</HostScopedSurface>;
+}
 
-// Node 26 shadows jsdom's real window.localStorage with its own (non-functional
-// under vitest) global - the same MemoryStorage stand-in inrepo.test.tsx
-// documents, needed here because the pane pre-fills its cwd from lastCwd.
+// Repository review uses the shared settings host surface and launch gateway.
 class MemoryStorage {
   private store = new Map<string, string>();
   getItem(key: string): string | null {
@@ -38,7 +34,7 @@ class MemoryStorage {
 }
 
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
+  // @ts-expect-error minimal storage fixture implements only the used methods
   installLocalStorage(new MemoryStorage());
 });
 
@@ -79,7 +75,7 @@ beforeEach(() => {
   hostsStore.getState().resetForTests();
   resetSettingsHostForTests();
   localStorage.clear();
-  window.history.pushState({}, "", "/settings/inrepo");
+  window.history.pushState({}, "", "/settings/project?cwd=/repo");
   setSettingsHost("local");
 });
 
@@ -105,7 +101,7 @@ test("with this hub selected the section issues the plain launch calls and never
     throw new Error("the local hub must never route through the proxy");
   });
 
-  render(<InRepoHostScope sectionId="inrepo" />);
+  render(<RepositoryHostScope />);
 
   await screen.findByText("controller-hash");
   expect(fake.calls.some((call) => call.method === "evener/host/request")).toBe(false);
@@ -136,7 +132,7 @@ test("selecting a remote host resolves THAT host's in-repo config, never the con
   });
 
   setSettingsHost("beta");
-  render(<InRepoHostScope sectionId="inrepo" />);
+  render(<RepositoryHostScope />);
 
   await screen.findByText("beta-hash");
   expect(controllerLaunchCalls(fake)).toEqual([]);
@@ -159,7 +155,7 @@ test("trusting a file on a remote host writes through the proxy, never this hub'
   });
 
   setSettingsHost("beta");
-  render(<InRepoHostScope sectionId="inrepo" />);
+  render(<RepositoryHostScope />);
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /trust this file/i }));
 
@@ -175,44 +171,40 @@ test("trusting a file on a remote host writes through the proxy, never this hub'
   expect(fake.calls.some((call) => call.method === "evener/launch/trustRepo")).toBe(false);
 });
 
-test("browsing for a directory asks the selected host's filesystem, never the controller's", async () => {
-  localStorage.setItem("lastCwd", "/repo");
+test("a pending remote approval cannot refresh or change the newly selected local scope", async () => {
   const fake = connectFakeClient();
+  let release: (value: LaunchConfigResolved) => void = () => {
+    throw new Error("approval not started");
+  };
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
-  fake.on("evener/launch/resolve", () => {
-    throw new Error("a remote selection must not resolve against this hub");
-  });
-  fake.on("evener/path/validate", () => {
-    throw new Error("a remote selection must not validate a path on this hub");
-  });
-  fake.on("evener/paths/complete", () => {
-    throw new Error("a remote selection must not complete a path on this hub");
-  });
-  fake.on("evener/host/request", (params) => {
-    const forwarded = params as { method: string };
-    if (forwarded.method === "evener/launch/resolve")
-      return resolvedWithRepo({ path: ".evener/launch.toml", trust: "absent" }) as never;
-    if (forwarded.method === "evener/path/validate") return { valid: true, path: "/repo" } as never;
-    if (forwarded.method === "evener/paths/complete") return { data: [] } as never;
-    throw new Error(`unexpected forwarded method ${forwarded.method}`);
-  });
-
-  setSettingsHost("beta");
-  render(<InRepoHostScope sectionId="inrepo" />);
-  const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: /working dir/i }));
-
-  await waitFor(() =>
-    expect(
-      fake.calls.some(
-        (call) =>
-          call.method === "evener/host/request" &&
-          (call.params as { method: string }).method === "evener/paths/complete",
-      ),
-    ).toBe(true),
+  fake.on("evener/launch/resolve", () =>
+    resolvedWithRepo({ path: ".evener/launch.toml", trust: "trusted", hash: "local-hash" }),
   );
-  expect(fake.calls.some((call) => call.method === "evener/path/validate")).toBe(false);
-  expect(fake.calls.some((call) => call.method === "evener/paths/complete")).toBe(false);
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as { host: string; method: string; params: unknown };
+    expect(forwarded.host).toBe("beta");
+    if (forwarded.method === "evener/launch/resolve")
+      return resolvedWithRepo({ path: ".evener/launch.toml", trust: "untrusted", hash: "beta-hash" }) as never;
+    if (forwarded.method === "evener/launch/trustRepo") {
+      expect(forwarded.params).toEqual({ cwd: "/repo", hash: "beta-hash" });
+      return new Promise<LaunchConfigResolved>((resolve) => {
+        release = resolve;
+      }) as never;
+    }
+    throw new Error(`unexpected method ${forwarded.method}`);
+  });
+  setSettingsHost("beta");
+  render(<RepositoryHostScope />);
+  await userEvent.setup().click(await screen.findByRole("button", { name: /trust this file/i }));
+  act(() => setSettingsHost("local"));
+  await screen.findByText("local-hash");
+  const reads = forwardedResolveCalls(fake, "beta");
+  await act(async () =>
+    release(resolvedWithRepo({ path: ".evener/launch.toml", trust: "trusted", hash: "beta-hash" })),
+  );
+  expect(screen.queryByText("beta-hash")).toBeNull();
+  expect(screen.getByText("local-hash")).toBeTruthy();
+  expect(forwardedResolveCalls(fake, "beta")).toBe(reads);
 });
 
 /** The resolve() reads the pane forwarded to `host` through the proxy. */
@@ -246,7 +238,7 @@ test("a launch-config change for the selected host re-resolves the in-repo confi
   });
 
   setSettingsHost("beta");
-  render(<InRepoHostScope sectionId="inrepo" />);
+  render(<RepositoryHostScope />);
   await screen.findByText("beta-hash");
   const reads = forwardedResolveCalls(fake, "beta");
 

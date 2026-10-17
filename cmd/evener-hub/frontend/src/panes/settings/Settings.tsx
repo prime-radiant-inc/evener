@@ -22,7 +22,6 @@ import { CredentialsHostScope } from "./sections/credentials/CredentialsHostScop
 import { HostsSection } from "./sections/hosts";
 import { HubSection } from "./sections/hub";
 import { InputShortcutsSection } from "./sections/inputShortcuts";
-import { InRepoHostScope } from "./sections/inrepo";
 import { LaunchServerHostScope } from "./sections/launchServer";
 import { MarketplacesPluginsHostScope } from "./sections/marketplacesPlugins";
 import { McpSectionHostScope } from "./sections/mcp";
@@ -73,7 +72,6 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   agents: AgentsSection,
   "agents-md": AgentsDocHostScope,
   "launch-evener": LaunchServerHostScope,
-  inrepo: InRepoHostScope,
   project: ProjectHostScope,
   "plugins-manager": MarketplacesPluginsHostScope,
   skills: SkillsDirsHostScope,
