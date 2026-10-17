@@ -6,9 +6,12 @@ executable commands, hooks, and MCP servers: review it as code before loading it
 
 ## Load a local plugin
 
-You need an Evener installation with a working provider. Run these shell commands
-on the session host, from an Evener source checkout. The second command makes a
-real provider call and may incur charges. It uses a read-only sandbox, but
+You need an Evener installation with a working provider. For the fixture files,
+use the `git clone` command in [Prepare the example](getting-started.md#prepare-the-example),
+then run the commands below from the resulting `evener-docs` directory on the
+session host. You do not need to build Evener; use your installed executable.
+
+The second command makes a real provider call and may incur charges. It uses a read-only sandbox, but
 confinement does not remove the need to trust executable extensions.
 
 ```bash

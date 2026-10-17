@@ -45,6 +45,10 @@ shell commands on the host where the session runs, from your project root.
 
 The complete file is also in
 [`examples/extensions/skills/change-summary/SKILL.md`](examples/extensions/skills/change-summary/SKILL.md).
+To get a local copy, use the `git clone` command in
+[Prepare the example](getting-started.md#prepare-the-example); the file is under
+`evener-docs/docs/examples/extensions/skills/change-summary/`. No Evener build is
+needed: copy the skill into your project and use your installed executable.
 Skills are instructions, not a permission boundary. Even “Do not edit files”
 is guidance to the model, not an enforced read-only role.
 
