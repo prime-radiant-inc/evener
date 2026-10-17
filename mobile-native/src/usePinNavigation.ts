@@ -25,6 +25,10 @@ export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?:
 						{ resource: "pin_catalog" },
 						"pin_sections",
 						sectionKey,
+						50,
+						// The catalog's own follower re-reads only stale
+						// states, so a failed read needs its own retry.
+						{ readRetry: true },
 					)
 				: null,
 		[client, activeProfile?.id, hubId],

@@ -244,7 +244,7 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 
 ### The notice row
 - **Shape:** Sits on the page like a row: a mark, one sentence, a bottom hairline.
-- **Behavior:** Today's only notice is the incompatible-version warning, "This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.", shown with an amber `exclamationmark.triangle.fill` mark. The row takes no action of its own.
+- **Behavior:** The incompatible-version warning, "This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.", shown with an amber `exclamationmark.triangle.fill` mark; and, while a close a retry can fix lasts, the connection's own sentence for why it closed ("Couldn't reach the hub. Check its address, its token and your network."), which goes when the connection returns. The row takes no action of its own.
 
 ### Skeleton, empty and failed-first-read states
 - **Skeleton:** Three still placeholder rows, 64 units tall with a 10-unit rounded fill, on the very first load only.
@@ -287,7 +287,7 @@ This records the shipped Session, the screen a session opens to: one conversatio
 - **⋯ menu:** A native menu: Detail level (with the five levels inline), Stop (destructive, only while the turn can be stopped — where the turn stays stoppable once a draft fills the composer's slot), Find in session, then Files, Subagents, Tasks and Notes & links, each only when it can act, Session info, Ask aside… (when the session can fork and the hub is reachable), Pin to category…, Archive, and Shut down (destructive, only when it can). Delete lives in the Session sheet.
 
 #### The connection bar, context chips and notes bar
-- **Connection bar:** A 24pt line of 13pt ink-low text under the nav bar: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" after 30, and "Update needed" at once when the hub speaks an incompatible protocol version. A live connection shows nothing.
+- **Connection bar:** A 24pt line of 13pt ink-low text under the nav bar: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" after 30, and "Update needed" at once when the hub speaks an incompatible protocol version. A close a retry can fix shows the connection's own sentence for why it closed ("Couldn't reach the hub. Check its address, its token and your network.") in place of Reconnecting/Offline while the connection stays down, and nothing more once it returns. A live connection shows nothing.
 - **Context chips:** 32pt capsules (16-unit radius, 1pt border, inset fill) in one sideways-scrolling row, each only when it has content: Subagents with its count and "2 failed" in danger ink (`person.2`), Files with its count and a blue dot when a document is new or changed (`doc.text`), Tasks "3/7" (`checklist`, settled: done plus cancelled), Goal (`target`, amber when blocked) and Queue with its depth (`tray`). Subagents and Tasks open live sheets, so they hide while disconnected; the others always show. Dragging the list down more than 8pt from where the scroll last turned slides the row up in 200ms, behind the connection bar when it shows and behind the nav bar otherwise; any upward scroll, or reaching the top, brings it back. Scrolls the app makes itself (restoring your place, following the latest message) never hide it. The slide is a transform, so the list and your place in it never move.
 - **Notes bar:** One 32pt line under the chips, in the same sliding row: "Your note: …" with a person glyph, else "Agent's note: …" with a sparkles glyph, else the one link's label or "3 links", 15pt in ink-hi, with a trailing "3 links" in 13pt ink-mid when a note shows beside links. It shows only when the hub offers shared notes and there is something to preview. Tapping it opens Notes & links.
 
@@ -303,7 +303,7 @@ This records the shipped Session, the screen a session opens to: one conversatio
 - **Your note:** A saved note shows as its own row where the agent was told: a 2pt left rule in the strong edge color, "You updated your note" in 13pt ink-mid, and the note in the your-message serif ("You cleared your note" alone when it was emptied).
 - **Document chip:** A document the agent named sits under its message: its kind and title, the file name, and how long ago the session wrote it. Tapping opens the Reader.
 - **System event:** A diamond in a 16pt gutter and the event in 13pt ink-low, two lines at most until tapped.
-- **Error:** A red left rule, the hub's words as they are, and at most one action: Resume when the session is paused, Sign in when a sign-in failed, otherwise Retry on the latest turn's own failure while Send can act.
+- **Error:** A red left rule, the hub's words as they are, and at most one action: Resume when the session is paused, Sign in when a sign-in failed, otherwise Retry on the latest turn's own failure while Send can act and the input that opened the turn can be re-sent. Retry re-sends that input — your words and images, not a sentence invented for you; with no input to re-send there is no Retry.
 - **Scrolling:** A session opens at the right place and never moves what you are reading. New content below reads "↓ 3 new" in a floating capsule (a ghost coming or going is never new content); tapping it scrolls to the end. Until the first read lands, three still blocks stand in for the conversation.
 
 #### The live status line
@@ -379,7 +379,7 @@ This records the two shipped sheets: New session, where a session is set up and 
 - **Header buttons:** Accent ink at 17pt in a 44-unit target: "Cancel", "Done", "Save", "Start". The one that finishes the page is semibold; one that can't act reads in ink-low and does nothing.
 
 ### The calm connection line
-- One centered line at the top of a sheet page, 13/18 in ink-mid, with the Board's words: "Reconnecting…" after 2 seconds down, "Offline · updated 3m ago" after 30, and "Update needed" at once for an incompatible hub. A live connection shows nothing.
+- One centered line at the top of a sheet page, 13/18 in ink-mid, with the Board's words: "Reconnecting…" after 2 seconds down, "Offline · updated 3m ago" after 30, and "Update needed" at once for an incompatible hub. A close a retry can fix shows the connection's own sentence for why it closed in place of Reconnecting/Offline while the connection stays down. A live connection shows nothing.
 - The page underneath keeps its last data. A page that has never loaded says "Connecting to magic-kingdom…" in its place, or the incompatible-versions sentence when no retry can help.
 - Controls that need the hub stay on screen, disabled; the line already says why. There is no Reconnect, Refresh or pull-to-refresh anywhere in either sheet.
 

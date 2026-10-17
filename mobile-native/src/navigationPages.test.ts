@@ -1,5 +1,5 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	AnyNotification,
 	NavigationInvalidatedPayload,
@@ -8,6 +8,7 @@ import type {
 } from "@evener/appwire-client";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { reconnectDelay } from "./hubConnection";
 import { NavigationPages, updating } from "./navigationPages";
 
 it("reconciles a restarted hub without carrying a prior generation's receipt floor", async () => {
@@ -67,13 +68,14 @@ function boundary(resource: "catalog" | "section" = "catalog") {
 	const requests: {
 		params: NavigationReadParams;
 		resolve: (value: NavigationReadResponse) => void;
+		reject: (error: Error) => void;
 	}[] = [];
 	const arrivals = new Map<number, () => void>();
 	let notify: (event: AnyNotification) => void = () => {};
 	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (_method, params) =>
-			new Promise((resolve) => {
-				requests.push({ params: params as NavigationReadParams, resolve });
+			new Promise((resolve, reject) => {
+				requests.push({ params: params as NavigationReadParams, resolve, reject });
 				arrivals.get(requests.length)?.();
 			}),
 		onNotification: (listener) => {
@@ -95,6 +97,7 @@ function boundary(resource: "catalog" | "section" = "catalog") {
 			resource === "catalog" ? "projects" : "sessions",
 			(row) => row.ref ?? row.key,
 			2,
+			{ readRetry: true },
 		),
 	};
 }
@@ -181,6 +184,71 @@ describe("navigation pages", () => {
 		await first;
 		expect(pages.getSnapshot().error).toBeTruthy();
 		expect(pages.getSnapshot().remaining).toBe(0);
+	});
+});
+
+describe("a failed read's own retry", () => {
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(() => vi.useRealTimers());
+
+	it("re-reads after a growing backoff until a read lands, then retires", async () => {
+		const { requests, pages } = boundary();
+		const first = pages.refresh();
+		requests[0].reject(new Error("request timed out"));
+		await first;
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The first retry waits the backoff's first step, and keeps waiting
+		// longer with each failure in a row.
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1) - 1);
+		expect(requests).toHaveLength(1);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(requests).toHaveLength(2);
+		requests[1].reject(new Error("request timed out"));
+		await settled(pages).catch(() => {});
+		await vi.advanceTimersByTimeAsync(reconnectDelay(2) - 1);
+		expect(requests).toHaveLength(2);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(requests).toHaveLength(3);
+		requests[2].resolve(response(["fresh"]));
+		await settled(pages);
+		expect(pages.getSnapshot()).toMatchObject({ rows: [{ key: "fresh" }], error: null });
+		// Loaded and clean: no more retries arm.
+		const reads = requests.length;
+		await vi.advanceTimersByTimeAsync(reconnectDelay(3) * 2);
+		expect(requests).toHaveLength(reads);
+	});
+
+	it("a failed refresh of an already-loaded page re-arms the re-read too", async () => {
+		const { requests, pages } = boundary();
+		const first = pages.refresh();
+		requests[0].resolve(response(["a"]));
+		await first;
+		const refresh = pages.refresh();
+		requests[1].reject(new Error("request timed out"));
+		await refresh;
+		expect(pages.getSnapshot().rows).toMatchObject([{ key: "a" }]);
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1));
+		expect(requests).toHaveLength(3);
+		requests[2].resolve(response(["b"]));
+		await settled(pages);
+		expect(pages.getSnapshot().rows).toMatchObject([{ key: "b" }]);
+	});
+
+	it("cancel abandons the pending retry, and none runs while paused", async () => {
+		const { requests, pages } = boundary();
+		const first = pages.refresh();
+		requests[0].reject(new Error("request timed out"));
+		await first;
+		pages.cancel();
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1) * 3);
+		expect(requests).toHaveLength(1);
+		// Resume re-arms the read the way it always has: the store's own
+		// owed-read path, not a second retry owner.
+		pages.resume();
+		expect(requests).toHaveLength(2);
+		requests[1].resolve(response(["back"]));
+		await settled(pages);
+		expect(pages.getSnapshot().rows).toMatchObject([{ key: "back" }]);
 	});
 });
 

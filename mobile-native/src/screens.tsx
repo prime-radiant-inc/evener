@@ -126,7 +126,8 @@ import {
 	exactRestoreDue,
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
-import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
+import { type ErrorAction, errorAction } from "./session/errorAction";
+import { originatingInput } from "./session/turnRetryInput";
 import {
 	type Ghost,
 	type GhostAction,
@@ -2521,18 +2522,27 @@ export function ConversationScreen({
 		},
 		[store],
 	);
-	// An error row's Retry sends Jesse's sentence as your message through
-	// Send's own path (ruling 26), leaving whatever you were typing alone.
+	// An error row's Retry re-sends the input that opened the failed turn
+	// through Send's own path (ruling 26): your words and images again, never a
+	// sentence invented for you, and whatever you were typing stays alone.
 	const retryFailedTurn = useCallback(async () => {
 		const kind = liveSendKind();
 		if (!service || kind === null) return;
+		const live = store.getState();
+		const latest = live.conversation?.turns[live.conversation.turns.length - 1];
+		const origin = latest ? originatingInput(live.conversation.turns, latest.id) : undefined;
+		if (origin?.kind !== "retry") return;
 		setActionError(null);
 		try {
-			await document.submitText(RETRY_MESSAGE, (text, images) => deliver(service, kind, text, images));
+			await document.submitText(
+				origin.input.text,
+				async (text, images) => deliver(service, kind, text, images),
+				origin.input.attachments,
+			);
 		} catch {
 			// As with Send, a refusal leaves the unconfirmed ghost to say so.
 		}
-	}, [liveSendKind, service, document, deliver]);
+	}, [liveSendKind, service, document, deliver, store]);
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
 			if (errorAction === "resume") void controls?.resume();

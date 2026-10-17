@@ -1356,7 +1356,7 @@ it("says Update needed, with the spec's hint, when no retry can fix the connecti
 	await act(async () => tree.unmount());
 });
 
-it("says Reconnecting… and then how old the session is while the hub is out of reach", async () => {
+it("says why the connection closed while the hub is out of reach, and goes without a word when it returns", async () => {
 	const { tree, client } = mount(busy);
 	await settle();
 	vi.useFakeTimers();
@@ -1373,20 +1373,18 @@ it("says Reconnecting… and then how old the session is while the hub is out of
 				vi.advanceTimersByTime(ms);
 			});
 		expect(status()).toBeNull();
+		// A blip this fresh reconnects without a word.
 		advance(2000);
-		const reconnecting = status();
-		expect(reconnecting).not.toBeNull();
+		// Once the drop is old enough to speak, the bar carries the close's own
+		// sentence — the hub's words for why it is out of reach.
+		const why = status();
+		expect(why).toBe(OLD_TRANSPORT_ERROR);
 		advance(28_000);
-		const offline = status();
-		expect(offline).not.toBe(reconnecting);
-		expect(offline).toMatch(/\b1m\b/);
-		// The status re-renders once a minute of the data's age, one tick per
-		// act.
-		advance(30_000);
-		advance(60_000);
-		advance(60_000);
-		expect(status()).toMatch(/\b3m\b/);
-		expect(renderedText(tree)).not.toContain(OLD_TRANSPORT_ERROR);
+		// The sentence stays while the connection stays down — it runs no clock.
+		expect(status()).toBe(why);
+		advance(120_000);
+		expect(status()).toBe(why);
+		expect(renderedText(tree)).toContain(OLD_TRANSPORT_ERROR);
 		expect(hasTestID(tree, "connection-status")).toBe(true);
 
 		// Back in reach, the bar goes without a word.

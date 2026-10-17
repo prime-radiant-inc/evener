@@ -901,7 +901,11 @@ describe("an error", () => {
 	});
 	const session = (resumeRequired = false) => ({
 		resumeRequired,
-		turns: [{ id: "turn_1" }, { id: "turn_2" }] as never,
+		// The failed turn opened with the user's own input, which Retry re-sends.
+		turns: [
+			{ id: "turn_1" },
+			{ id: "turn_2", items: [{ id: "u-1", type: "userMessage", text: "my original question" }] },
+		] as never,
 	});
 	function show(row: TimelineRow, resumeRequired = false) {
 		const onErrorAction = vi.fn();

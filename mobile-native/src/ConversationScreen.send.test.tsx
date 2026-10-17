@@ -2458,7 +2458,7 @@ it("doesn't page older history while the hub is away", async () => {
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
 });
 
-it("retries a failed turn with Jesse's sentence, and leaves your draft alone", async () => {
+it("retries a failed turn by re-sending its own input, and leaves your draft alone", async () => {
 	const served = thread("ref-retry-turn", "idle");
 	(served as unknown as { turns: unknown[] }).turns = [
 		{
@@ -2466,7 +2466,7 @@ it("retries a failed turn with Jesse's sentence, and leaves your draft alone", a
 			status: "failed",
 			itemsView: "default",
 			error: { message: "go test exited 1" },
-			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "run the tests" }],
+			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "my original question" }],
 		},
 	];
 	const { tree, hub } = await mount(served);
@@ -2477,8 +2477,59 @@ it("retries a failed turn with Jesse's sentence, and leaves your draft alone", a
 	// Spec 16.6: a light impact on send, a retry's included.
 	expect(playedHaptics).toEqual(["impact:light"]);
 	const start = hub.requests.find((request) => request.method === "turn/start");
-	expect(start?.params.input).toEqual([{ type: "text", text: "Something went wrong. Please try again." }]);
+	expect(start?.params.input).toEqual([{ type: "text", text: "my original question" }]);
 	expect(field(tree)?.props.value).toBe("keep this");
+});
+
+it("re-sends the failed turn's images with its text on Retry", async () => {
+	const served = thread("ref-retry-images", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			items: [
+				{
+					id: "u-1",
+					turnId: "turn_1",
+					type: "userMessage",
+					status: "completed",
+					text: "(attached image 1: plot.png) my original question",
+					images: [{ mediaType: "image/png", data: "image-bytes", name: "plot.png" }],
+				},
+			],
+		},
+	];
+	const { tree, hub } = await mount(served);
+	await press(tree, "Retry");
+	expect(hub.mutations()).toEqual(["turn/start"]);
+	const start = hub.requests.find((request) => request.method === "turn/start");
+	// The anchor re-translates to the same marker prose at the submit boundary,
+	// and the image rides its own wire item with its bytes — exactly the input
+	// that opened the failed turn.
+	expect(start?.params.input).toEqual([
+		{ type: "text", text: "(attached image 1: plot.png) my original question" },
+		{ type: "image", mediaType: "image/png", data: "image-bytes", name: "plot.png" },
+	]);
+});
+
+it("offers no Retry when the failed turn's own input cannot be re-sent", async () => {
+	const served = thread("ref-retry-none", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			// A reloaded failure entry: no user input anywhere to re-issue.
+			items: [],
+		},
+	];
+	const { tree, hub } = await mount(served);
+	expect(pressable(tree, "Retry")).toBeUndefined();
+	// Nothing went out: no canned sentence stands in for the person's words.
+	expect(hub.mutations()).toEqual([]);
 });
 
 // Retry shows only while a press would send, which a session control going
@@ -2768,6 +2819,42 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 			hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref),
 		).toEqual(["ref-paused"]);
 	});
+});
+
+it("re-sends an image-only failed turn's images on Retry", async () => {
+	const served = thread("ref-retry-image-only", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			items: [
+				{
+					id: "u-1",
+					turnId: "turn_1",
+					type: "userMessage",
+					status: "completed",
+					text: "(attached image 1: plot.png)",
+					images: [{ mediaType: "image/png", data: "image-bytes", name: "plot.png" }],
+				},
+			],
+		},
+	];
+	const { tree, hub } = await mount(served);
+	expect(pressable(tree, "Retry")).toBeDefined();
+	await press(tree, "Retry");
+	expect(hub.mutations()).toEqual(["turn/start"]);
+	const start = hub.requests.find((request) => request.method === "turn/start");
+	// Marker-only text carries no words of the user's own: only the image
+	// rides, exactly as the original image-only send did.
+	// The recorded original is the marker prose with the image (that is how an
+	// image-only submission is stored), so the re-issue carries exactly that —
+	// no invented sentence, and the send actually goes out.
+	expect(start?.params.input).toEqual([
+		{ type: "text", text: "(attached image 1: plot.png)" },
+		{ type: "image", mediaType: "image/png", data: "image-bytes", name: "plot.png" },
+	]);
 });
 
 it("opens sign-in from an error that says a sign-in failed", async () => {

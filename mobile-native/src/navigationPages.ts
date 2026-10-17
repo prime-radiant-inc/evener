@@ -14,6 +14,7 @@ import {
 	snapshotResource,
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { reconnectDelay } from "./hubConnection";
 import { singleFlight } from "./singleFlight";
 
 export interface PageState<T> {
@@ -82,13 +83,45 @@ export class NavigationPages<T> implements PageSource<T> {
 		() => this.rereadLoadedDepth(),
 		() => !this.paused && !this.state.loading,
 	);
+	/** The retry a failed read arms on its own when the constructor's readRetry
+	 * opts in (the same capped backoff the Board's failed reads retry on,
+	 * useBoardReadRetry): grows with each failure in a row, retires when a read
+	 * lands, and never runs while the page is paused (out of view) — cancel()
+	 * abandons it and resume() re-arms what the page still owes. */
+	private retryTimer: ReturnType<typeof setTimeout> | null = null;
+	private retryCount = 0;
+	/** Whether a failed read re-arms on its own. Off by default: a consumer
+	 * whose reads another owner already retries (the Board's own rebind,
+	 * useBoardReadRetry) must not double-fire it. */
+	private readonly readRetry: boolean;
+	/** Re-reads from the first page down to the loaded depth, so a retry of a
+	 * loaded page keeps the list's length; on the shared rereads flight so an
+	 * invalidation's re-read and a retry's never run twice at once. */
+	private retryRead = () => {
+		this.retryTimer = null;
+		this.rereads.request();
+	};
+	private armRetry() {
+		if (!this.readRetry || this.paused || this.retryTimer !== null) return;
+		this.retryCount += 1;
+		this.retryTimer = setTimeout(this.retryRead, reconnectDelay(this.retryCount));
+	}
+	private clearRetry(success: boolean) {
+		if (this.retryTimer !== null) {
+			clearTimeout(this.retryTimer);
+			this.retryTimer = null;
+		}
+		if (success) this.retryCount = 0;
+	}
 	constructor(
 		private client: ConversationClientLike,
 		private params: NativeNavigationParams,
 		private field: "projects" | "sessions" | "pin_sections",
 		private key: (row: T) => string,
 		private limit = 50,
+		{ readRetry = false }: { readRetry?: boolean } = {},
 	) {
+		this.readRetry = readRetry;
 		this.resourceKey = navigationParamsToResourceKey({
 			...params,
 			representationVersion: 3,
@@ -165,6 +198,7 @@ export class NavigationPages<T> implements PageSource<T> {
 	cancel() {
 		this.request++;
 		this.paused = true;
+		this.clearRetry(false);
 		this.rereads.abandon();
 		this.publish({ loading: false });
 		if (this.state.stale) this.scheduleReread();
@@ -172,6 +206,10 @@ export class NavigationPages<T> implements PageSource<T> {
 	resume() {
 		this.paused = false;
 		if (this.state.stale) this.scheduleReread();
+		// A failed read the pause held back is still owed: read it now, the
+		// same way an owed stale re-read runs on resume — but only where the
+		// page retries its own reads; an owner's resume path stands as before.
+		if (this.readRetry && this.state.error !== null) this.rereads.request();
 		this.rereads.drain();
 	}
 	/** An explicit read means the owner is active again; its result stands
@@ -202,6 +240,7 @@ export class NavigationPages<T> implements PageSource<T> {
 			uncertain = this.uncertain,
 			epoch = this.notificationEpoch;
 		this.publish({ loading: true, error: null });
+		this.clearRetry(false);
 		try {
 			const offset = reset ? 0 : this.offset,
 				params = {
@@ -263,6 +302,7 @@ export class NavigationPages<T> implements PageSource<T> {
 				this.version = null;
 				this.mutationFloor = 0;
 				this.rereads.settle();
+				this.clearRetry(true);
 				this.publish({
 					loaded: true,
 					rows: [],
@@ -278,6 +318,7 @@ export class NavigationPages<T> implements PageSource<T> {
 				this.version = decoded.version;
 				if (decoded.version.revision >= this.mutationFloor) this.mutationFloor = 0;
 				this.rereads.settle();
+				this.clearRetry(true);
 				this.publish({
 					loaded: true,
 					loading: false,
@@ -322,6 +363,7 @@ export class NavigationPages<T> implements PageSource<T> {
 			this.version = decoded.version;
 			if (decoded.version.revision >= this.mutationFloor) this.mutationFloor = 0;
 			this.rereads.settle();
+			this.clearRetry(true);
 			this.publish({
 				loaded: true,
 				rows: [...unique.values()],
@@ -337,6 +379,10 @@ export class NavigationPages<T> implements PageSource<T> {
 				loading: false,
 				error: cause instanceof Error ? cause.message : "Could not load this page. Try again.",
 			});
+			// Nothing else would retry a failed read while the page stays in
+			// view: an idle hub sends no invalidation, so the page arms its own
+			// re-read, on the same capped backoff the Board's reads retry on.
+			this.armRetry();
 		} finally {
 			this.rereads.drain();
 		}

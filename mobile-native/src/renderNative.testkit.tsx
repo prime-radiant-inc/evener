@@ -629,6 +629,7 @@ export function screenConnection(client: unknown, state: ConnectionState): Recor
 		client,
 		state,
 		fatal: false,
+		error: null,
 		downSince: downAt,
 		lastLiveAt: downAt,
 	};

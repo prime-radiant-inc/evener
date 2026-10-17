@@ -505,7 +505,10 @@ function sessionPages(
 ): PageSource<NavigationSessionSummary> {
 	if (params.tier === "archived" && params.projectKey !== undefined)
 		return new ArchivedPages(client, catalog, params.projectKey);
-	return new NavigationPages<NavigationSessionSummary>(client, params, "sessions", sessionRef);
+	return new NavigationPages<NavigationSessionSummary>(client, params, "sessions", sessionRef, 50, {
+		// Nothing else retries a failed tier read while the screen is in view.
+		readRetry: true,
+	});
 }
 
 export function ProjectsScreen({ route, navigation }: NativeStackScreenProps<Routes, "Projects">) {
@@ -524,6 +527,10 @@ export function ProjectsScreen({ route, navigation }: NativeStackScreenProps<Rou
 						},
 						"projects",
 						projectKey,
+						50,
+						// Nothing else retries this catalog's failed reads while
+						// the screen is in view.
+						{ readRetry: true },
 					)
 				: null,
 		[client, belongs, archived],

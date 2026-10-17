@@ -178,20 +178,30 @@ export class DraftDocument {
 	async submit(operation: (text: string, images: InputAttachment[]) => Promise<boolean>) {
 		return this.submitContent(this.snapshot.record.draft, false, operation);
 	}
-	async submitText(text: string, operation: (text: string, images: InputAttachment[]) => Promise<boolean>) {
-		return this.submitContent(text, true, operation);
+	/** Submit composer text without consuming the draft. `reissued` carries the
+	 * attachments of an input being re-sent (a Retry): they travel with the text
+	 * and the guard counts them, so an image-only re-issue can send. */
+	async submitText(
+		text: string,
+		operation: (text: string, images: InputAttachment[]) => Promise<boolean>,
+		reissued?: InputAttachment[],
+	) {
+		return this.submitContent(text, true, operation, reissued);
 	}
 	private async submitContent(
 		text: string,
 		preserveDraft: boolean,
 		operation: (text: string, images: InputAttachment[]) => Promise<boolean>,
+		reissued?: InputAttachment[],
 	) {
 		const { record, loaded, submitting, error } = this.snapshot;
 		const images = preserveDraft ? [] : (record.images ?? []);
-		if (!loaded || submitting || error || record.unconfirmed !== null || (!text.trim() && images.length === 0)) return;
+		const outbound = reissued ?? images;
+		if (!loaded || submitting || error || record.unconfirmed !== null || (!text.trim() && outbound.length === 0))
+			return;
 		// Persist before invoking any transport operation. A crash after this point
 		// can only establish uncertainty, never that it is safe to replay the input.
-		const inputImages = this.repository().imageInputs(this.destination, images);
+		const inputImages = reissued ?? this.repository().imageInputs(this.destination, images);
 		this.persist(
 			{
 				draft: preserveDraft ? record.draft : "",

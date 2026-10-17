@@ -119,6 +119,7 @@ export class ProviderSignIn {
 		if (this.disposed || this.connection === connection) return;
 		this.clearTimer();
 		this.generation += 1;
+		const wasNull = this.connection === null;
 		this.connection = connection;
 		const interruptedWrite =
 			this.state.busy &&
@@ -126,11 +127,23 @@ export class ProviderSignIn {
 		const interruptedPoll = this.pendingOperation === "devicePoll" && this.state.phase === "device";
 		this.pendingOperation = null;
 		this.uncertain ||= interruptedPoll;
+		// A connection arriving after a failed poll answers the question the
+		// failure left open: the flow asks once on its own, rather than waiting
+		// for the person to press Check again. Device flows expire in 15
+		// minutes, so one automatic re-poll cannot loop.
+		const failedPollWaiting =
+			connection !== null && wasNull && this.state.phase === "device" && this.state.problem === "checkFailed";
 		this.publish({
 			busy: false,
 			...(this.state.phase === "starting" ? { phase: "error" as const } : {}),
 			...(interruptedWrite || interruptedPoll ? reporting("connectionChanged") : {}),
+			...(failedPollWaiting ? reporting(null) : {}),
 		});
+		if (failedPollWaiting) {
+			this.uncertain = false;
+			void this.poll();
+			return;
+		}
 		this.schedule();
 	}
 	setActive(active: boolean) {
