@@ -26,7 +26,7 @@ func TestTutorialCheckpointRejectsFailedEvidence(t *testing.T) {
 }
 
 func TestTutorialChildEnvironment(t *testing.T) {
-	for _, key := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "EVENER_CONFIG_DIR", "AWS_SHARED_CREDENTIALS_FILE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"} {
+	for _, key := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "EVENER_PROVIDERS_CONFIG", "EVENER_CREDENTIALS_CONFIG", "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL", "AWS_SHARED_CREDENTIALS_FILE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
 		t.Setenv(key, "canary")
 	}
 	root := t.TempDir()
