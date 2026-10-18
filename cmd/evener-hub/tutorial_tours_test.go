@@ -99,9 +99,30 @@ func TestTutorialCleanupOwnership(t *testing.T) {
 }
 
 type tourCase struct{ Scenario, Surface string }
+
+func TestTutorialCheckpointRecordsEvidence(t *testing.T) {
+	out := t.TempDir()
+	t.Setenv("EVENER_TUTORIAL_OUT", out)
+	checkpoint(t, "entry", []tourEvidence{{Name: "independent-oracle", Passed: true}}, func() error { return nil })
+	body, err := os.ReadFile(filepath.Join(out, "entry.evidence.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evidence []struct {
+		Name   string `json:"name"`
+		Passed bool   `json:"passed"`
+	}
+	if err := json.Unmarshal(body, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 || evidence[0].Name != "independent-oracle" || !evidence[0].Passed {
+		t.Fatal("missing checkpoint evidence")
+	}
+}
+
 type tourEvidence struct {
-	Name   string
-	Passed bool
+	Name   string `json:"name"`
+	Passed bool   `json:"passed"`
 }
 
 func captureCheckpoint(evidence []tourEvidence, capture func() error) error {
@@ -119,6 +140,15 @@ func checkpoint(t *testing.T, id string, evidence []tourEvidence, capture func()
 	t.Helper()
 	if err := captureCheckpoint(evidence, capture); err != nil {
 		t.Fatalf("checkpoint %s: %v", id, err)
+	}
+	if out := os.Getenv("EVENER_TUTORIAL_OUT"); out != "" {
+		body, err := json.Marshal(evidence)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(out, id+".evidence.json"), body, 0600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Logf("checkpoint %s passed", id)
 }
