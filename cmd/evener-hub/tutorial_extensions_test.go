@@ -19,11 +19,84 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
 func TestTutorialExtensionEffects(t *testing.T) {
 	runTour(t, tourCase{Scenario: "extensions", Surface: "cli"}, t.TempDir())
+}
+
+func TestTutorialExtensionOracleRequiresSkillResult(t *testing.T) {
+	for _, tc := range []struct {
+		name, resultCallID string
+		wantError          bool
+	}{
+		{"matching_result", "activated", false},
+		{"missing_result", "", true},
+		{"different_call_result", "other", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			plugin, err := filepath.Abs("../../docs/examples/extensions/hello-plugin")
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeJSON := func(name string, value any) {
+				t.Helper()
+				b, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, name), b, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeJSON("session.meta.json", schema.SessionMeta{
+				Config: schema.ConfigSnapshot{PluginDirs: []string{plugin}},
+				Skills: &schema.SkillLifecycleSnapshot{Inventory: map[string]schema.SkillInventoryEntry{
+					"change-summary": {Ordinary: &schema.OrdinarySkillActivation{
+						Identity: schema.SkillContentIdentity{Name: "change-summary", FileDigest: "fixture-digest"}, Route: "model_tool",
+					}},
+				}},
+			})
+			turns := []schema.Turn{
+				{Hook: &schema.HookInfo{Event: "SessionStart", Matcher: "startup", PluginName: "hello-plugin"}},
+				{Message: llm.Message{Content: []llm.ContentPart{
+					{ToolCall: &llm.ToolCallData{ID: "activated", Name: "use_skill"}},
+					{ToolCall: &llm.ToolCallData{ID: "other", Name: "use_skill"}},
+					{ToolCall: &llm.ToolCallData{ID: "echo", Name: "example__echo", Arguments: json.RawMessage(`{"message":"nonce"}`)}},
+				}}},
+				{SkillState: &schema.SkillTurnState{Outcomes: []schema.SkillActivationOutcome{{
+					Identity: schema.SkillContentIdentity{Name: "change-summary"}, Status: "pending", ToolCallID: "activated",
+				}}}},
+				{Message: llm.Message{Content: []llm.ContentPart{{ToolResult: &llm.ToolResultData{
+					ToolCallID: "echo", Name: "example__echo", Content: "nonce",
+				}}}}},
+			}
+			if tc.resultCallID != "" {
+				turns = append(turns, schema.Turn{Message: llm.Message{Content: []llm.ContentPart{{ToolResult: &llm.ToolResultData{
+					ToolCallID: tc.resultCallID, Name: "use_skill", Content: "skill loaded",
+				}}}}})
+			}
+			var transcriptBytes bytes.Buffer
+			for _, turn := range turns {
+				if err := json.NewEncoder(&transcriptBytes).Encode(transcript.Entry{Turn: turn}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(root, "session.transcript.jsonl"), transcriptBytes.Bytes(), 0600); err != nil {
+				t.Fatal(err)
+			}
+			err = checkExtensionOutcome(root, "unchanged", "unchanged", "nonce")
+			if tc.wantError && err == nil {
+				t.Fatal("accepted activation without its successful skill result")
+			}
+			if !tc.wantError && err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 func extensionHash(t *testing.T, root string) string {
@@ -100,15 +173,21 @@ func extensionExpanded(t *testing.T, call *fakellm.Call, nonce, command string) 
 
 func extensionOutcome(t *testing.T, root, work, beforeHash, sentNonce string) {
 	t.Helper()
+	if err := checkExtensionOutcome(root, beforeHash, extensionHash(t, work), sentNonce); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("verified startup hook, skill activation, correlated MCP nonce, unchanged workspace")
+}
+
+func checkExtensionOutcome(root, beforeHash, workspaceHash, sentNonce string) error {
 	var hook events.HookEndData
 	hookFound, skillFound, echoFound := false, false, false
 	skillCommitted := false
 	pluginConfigured := false
 	expectedPlugin, err := filepath.Abs("../../docs/examples/extensions/hello-plugin")
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
-	calls := map[string]string{}
 	echoNonce := ""
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -141,6 +220,9 @@ func extensionOutcome(t *testing.T, root, work, beforeHash, sentNonce string) {
 		if err != nil {
 			return err
 		}
+		calls := map[string]string{}
+		skillActivations := map[string]bool{}
+		skillResults := map[string]bool{}
 		for _, line := range bytes.Split(bytes.TrimSpace(b), []byte("\n")) {
 			var entry transcript.Entry
 			if err := json.Unmarshal(line, &entry); err != nil {
@@ -157,7 +239,7 @@ func extensionOutcome(t *testing.T, root, work, beforeHash, sentNonce string) {
 			if state := turn.SkillState; state != nil {
 				for _, outcome := range state.Outcomes {
 					if outcome.Identity.Name == "change-summary" && outcome.Status == "pending" && outcome.ToolCallID != "" && calls[outcome.ToolCallID] == "use_skill" {
-						skillFound = true
+						skillActivations[outcome.ToolCallID] = true
 					}
 				}
 			}
@@ -183,23 +265,29 @@ func extensionOutcome(t *testing.T, root, work, beforeHash, sentNonce string) {
 					if r.Name == "example__echo" {
 						echoFound = true
 						echoNonce = fmt.Sprint(r.Content)
+					} else {
+						skillResults[r.ToolCallID] = true
 					}
 				}
+			}
+		}
+		for callID := range skillActivations {
+			if skillResults[callID] {
+				skillFound = true
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	if !hookFound || !skillFound || !skillCommitted || !pluginConfigured || !echoFound {
-		t.Fatalf("missing records: hook=%v skill=%v committed=%v plugin=%v echo=%v", hookFound, skillFound, skillCommitted, pluginConfigured, echoFound)
+		return fmt.Errorf("missing records: hook=%v skill=%v committed=%v plugin=%v echo=%v", hookFound, skillFound, skillCommitted, pluginConfigured, echoFound)
 	}
-	workspaceHash := extensionHash(t, work)
 	if hook.ExitCode != 0 || echoNonce != sentNonce || workspaceHash != beforeHash {
-		t.Fatal("extension effects disagree")
+		return fmt.Errorf("extension effects disagree")
 	}
-	t.Log("verified startup hook, skill activation, correlated MCP nonce, unchanged workspace")
+	return nil
 }
 
 func runExtensionsCLI(t *testing.T, out string) {
