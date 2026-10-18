@@ -36,7 +36,7 @@ func TestTutorialChildEnvironment(t *testing.T) {
 		t.Setenv(key, "canary")
 	}
 	root := t.TempDir()
-	env := tutorialChildEnvironment(root)
+	env := tutorialChildEnvironment(t, root)
 	child := exec.Command("sh", "-c", `test "$EVENER_OFFLINE" = 1`)
 	child.Env = env
 	if err := child.Run(); err != nil {
@@ -87,7 +87,7 @@ func TestTutorialCleanupOwnership(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		stack := startHubStackWithOptions(t, fmt.Sprintf("default = \"fake\"\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"fakellm-not-a-secret\"\n", provider.BaseURL()), "fake/"+fakellm.ModelID, filepath.Join(liveStackBinaries(t, repo), "evener"), hubStackOptions{ChildEnv: tutorialChildEnvironment(owned)})
+		stack := startHubStackWithOptions(t, tutorialProviderConfig(provider.BaseURL()), "fake/"+fakellm.ModelID, filepath.Join(liveStackBinaries(t, repo), "evener"), hubStackOptions{ChildEnv: tutorialChildEnvironment(t, owned)})
 		ownedPID = stack.pid
 	})
 	if proc, err := os.FindProcess(ownedPID); err == nil && proc.Signal(syscall.Signal(0)) == nil {
@@ -159,8 +159,16 @@ func checkpoint(t *testing.T, id string, evidence []tourEvidence, capture func()
 	}
 	t.Logf("checkpoint %s passed", id)
 }
-func tutorialChildEnvironment(root string) []string {
-	return []string{"PATH=" + os.Getenv("PATH"), "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "HOME=" + root, "EVENER_OFFLINE=1",
+func tutorialChildEnvironment(t *testing.T, root string) []string {
+	t.Helper()
+	base := filepath.Join(root, "host-temp")
+	if err := os.MkdirAll(base, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(base, 0777|os.ModeSticky); err != nil {
+		t.Fatal(err)
+	}
+	return []string{"PATH=" + os.Getenv("PATH"), "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "HOME=" + root, "EVENER_OFFLINE=1", "EVENER_HOST_TEMP_BASES=" + base,
 		"XDG_CONFIG_HOME=" + filepath.Join(root, "config"), "XDG_STATE_HOME=" + filepath.Join(root, "state"),
 		"XDG_CACHE_HOME=" + filepath.Join(root, "cache"), "XDG_DATA_HOME=" + filepath.Join(root, "data"),
 		"TMPDIR=" + root, "PYTHONDONTWRITEBYTECODE=1"}
@@ -260,7 +268,7 @@ func openTutorialDriver(ctx context.Context, t *testing.T, args map[string]any) 
 	driverCtx, cancel := context.WithDeadline(context.Background(), deadline)
 	t.Cleanup(cancel)
 	cmd := exec.CommandContext(driverCtx, "node", "../../docs-site/scripts/tours/driver.mjs")
-	cmd.Env = tutorialChildEnvironment(t.TempDir())
+	cmd.Env = tutorialChildEnvironment(t, t.TempDir())
 	cmd.Env = append(cmd.Env, "PLAYWRIGHT_BROWSERS_PATH="+tutorialBrowserCache)
 	input, err := cmd.StdinPipe()
 	if err != nil {

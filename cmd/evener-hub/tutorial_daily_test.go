@@ -89,12 +89,12 @@ func dailyStack(t *testing.T, web bool) (*fakellm.Server, hubStack, string) {
 		bin = filepath.Join(liveStackBinaries(t, repo), "evener")
 	}
 	config := tutorialProviderConfig(provider.BaseURL())
-	stack := startHubStackWithOptions(t, config, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(tutorialOwnedRoot(t))})
+	stack := startHubStackWithOptions(t, config, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(t, tutorialOwnedRoot(t))})
 	stack.workDir, err = filepath.EvalSymlinks(stack.workDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r := recordCommand(t, stack.workDir, tutorialChildEnvironment(stack.home), "git", "init"); r.ExitCode != 0 {
+	if r := recordCommand(t, stack.workDir, tutorialChildEnvironment(t, stack.home), "git", "init"); r.ExitCode != 0 {
 		t.Fatal("workspace git init")
 	}
 	return provider, stack, bin
@@ -403,7 +403,7 @@ func runDailyWeb(t *testing.T, out string) {
 
 func runDailyCLI(t *testing.T, out string) {
 	provider, stack, bin := dailyStack(t, false)
-	env := tutorialChildEnvironment(stack.home)
+	env := tutorialChildEnvironment(t, stack.home)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	capture := func(id string, records ...commandRecord) func() error {

@@ -248,8 +248,8 @@ func runConfigCLI(t *testing.T, out string) {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(liveStackBinaries(t, repo), "evener")
-	stack := startHubStackWithOptions(t, providers, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(tutorialOwnedRoot(t))})
-	env := tutorialChildEnvironment(stack.home)
+	stack := startHubStackWithOptions(t, providers, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(t, tutorialOwnedRoot(t))})
+	env := tutorialChildEnvironment(t, stack.home)
 	if err := os.WriteFile(filepath.Join(stack.workDir, "input.json"), []byte(configInput), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +331,7 @@ func runConfigWeb(t *testing.T, out string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := tutorialChildEnvironment(stack.home)
+	env := tutorialChildEnvironment(t, stack.home)
 	if r := recordCommand(t, other, env, "git", "init"); r.ExitCode != 0 {
 		t.Fatal("other project git init")
 	}

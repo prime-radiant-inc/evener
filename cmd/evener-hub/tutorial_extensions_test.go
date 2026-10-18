@@ -303,8 +303,8 @@ func runExtensionsCLI(t *testing.T, out string) {
 	if b, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build MCP: %v: %s", err, b)
 	}
-	stack := startHubStackWithOptions(t, providers, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(home)})
-	env := append(tutorialChildEnvironment(home), "EVENER_EXAMPLE_MCP_SERVER="+server)
+	stack := startHubStackWithOptions(t, providers, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(t, home)})
+	env := append(tutorialChildEnvironment(t, home), "EVENER_EXAMPLE_MCP_SERVER="+server)
 	examples := filepath.Join(repo, "docs", "examples", "extensions")
 	var records []commandRecord
 	for _, copy := range [][2]string{{"skills/change-summary/SKILL.md", "skills/change-summary/SKILL.md"}, {"commands/summarize-change.md", ".evener/commands/summarize-change.md"}, {"mcp.json", ".mcp.json"}} {
@@ -430,7 +430,7 @@ func runExtensionsWeb(t *testing.T, out string) {
 	if b, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("MCP build: %v: %s", err, b)
 	}
-	env := append(tutorialChildEnvironment(home), "EVENER_EXAMPLE_MCP_SERVER="+server)
+	env := append(tutorialChildEnvironment(t, home), "EVENER_EXAMPLE_MCP_SERVER="+server)
 	stack := startHubStackWithOptions(t, providers, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: env})
 	stack.workDir, err = filepath.EvalSymlinks(stack.workDir)
 	if err != nil {
@@ -510,7 +510,7 @@ func TestTutorialExtensionMCPFailures(t *testing.T) {
 			}
 			bin := filepath.Join(liveStackBinaries(t, repo), "evener")
 			home := tutorialOwnedRoot(t)
-			stack := startHubStackWithOptions(t, providers, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(home)})
+			stack := startHubStackWithOptions(t, providers, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(t, home)})
 			config := filepath.Join(home, "mcp.json")
 			body := fmt.Sprintf(`{"mcpServers":{"example":{"command":%q}}}`, filepath.Join(home, "absent-server"))
 			if kind == "malformed-config" {
@@ -546,7 +546,7 @@ func TestTutorialExtensionMCPFailures(t *testing.T) {
 			}()
 			cmd := exec.CommandContext(ctx, bin, "--model", "fake/"+fakellm.ModelID, "--mcp-config", config, "Inspect extension availability.")
 			cmd.Dir = stack.workDir
-			cmd.Env = tutorialChildEnvironment(home)
+			cmd.Env = tutorialChildEnvironment(t, home)
 			output, runErr := cmd.CombinedOutput()
 			cancel()
 			seen := <-observed

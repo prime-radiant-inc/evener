@@ -131,7 +131,7 @@ func recordCommand(t *testing.T, work string, env []string, argv ...string) comm
 	return commandRecord{Argv: argv, CwdLabel: "receipt-workspace", Stdout: out.String(), Stderr: errout.String(), ExitCode: exit}
 }
 func receiptCheck(t *testing.T, work string) commandRecord {
-	return recordCommand(t, work, tutorialChildEnvironment(t.TempDir()), "python3", "check.py")
+	return recordCommand(t, work, tutorialChildEnvironment(t, t.TempDir()), "python3", "check.py")
 }
 func receiptOracle(t *testing.T, work string, baseline map[string][]byte) error {
 	for _, name := range []string{"README.md", "check.py"} {
@@ -143,7 +143,7 @@ func receiptOracle(t *testing.T, work string, baseline map[string][]byte) error 
 			return fmt.Errorf("protected fixture changed: %s", name)
 		}
 	}
-	r := recordCommand(t, work, tutorialChildEnvironment(t.TempDir()), "python3", "-c", `import json; from receipt import total_cents; print(json.dumps([total_cents(x) for x in [[], [(250,3)], [(125,2),(80,3)], [(999,0),(50,2)]]]))`)
+	r := recordCommand(t, work, tutorialChildEnvironment(t, t.TempDir()), "python3", "-c", `import json; from receipt import total_cents; print(json.dumps([total_cents(x) for x in [[], [(250,3)], [(125,2),(80,3)], [(999,0),(50,2)]]]))`)
 	var actual []int
 	if r.ExitCode != 0 {
 		return fmt.Errorf("oracle execution failed: %d", r.ExitCode)
@@ -180,9 +180,9 @@ func runReceiptCLI(t *testing.T, candidateDir string) {
 	}
 	bin := filepath.Join(liveStackBinaries(t, repo), "evener")
 	root := tutorialOwnedRoot(t)
-	env := tutorialChildEnvironment(root)
-	stack := startHubStackWithOptions(t, fmt.Sprintf("default = \"fake\"\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"fakellm-not-a-secret\"\n", provider.BaseURL()), "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: env})
-	env = tutorialChildEnvironment(stack.home)
+	env := tutorialChildEnvironment(t, root)
+	stack := startHubStackWithOptions(t, tutorialProviderConfig(provider.BaseURL()), "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: env})
+	env = tutorialChildEnvironment(t, stack.home)
 	prepareReceiptWorkspace(t, stack.workDir, env, source)
 	capture := func(id string, records []commandRecord) func() error {
 		return func() error {
@@ -414,12 +414,12 @@ func runReceiptWeb(t *testing.T, candidateDir string) {
 	if _, err := registry.ParseConfig([]byte(providerConfig)); err != nil {
 		t.Fatal(err)
 	}
-	stack := startHubStackWithOptions(t, providerConfig, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(root)})
+	stack := startHubStackWithOptions(t, providerConfig, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(t, root)})
 	stack.workDir, err = filepath.EvalSymlinks(stack.workDir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepareReceiptWorkspace(t, stack.workDir, tutorialChildEnvironment(stack.home), source)
+	prepareReceiptWorkspace(t, stack.workDir, tutorialChildEnvironment(t, stack.home), source)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	url := "http://" + stack.addr
