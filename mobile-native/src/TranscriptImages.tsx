@@ -52,7 +52,18 @@ function HubImage({ image, hubId }: { image: AttachmentRef; hubId: string }) {
 					}}
 				/>
 			) : null}
-			{loading ? <Spinner label="Loading image" /> : null}
+			{loading ? (
+				<View
+					style={{
+						position: "absolute",
+						inset: 0,
+						alignItems: "center",
+						justifyContent: "center",
+					}}
+				>
+					<Spinner label="Loading image" />
+				</View>
+			) : null}
 			{error ? <Copy muted>Image unavailable</Copy> : null}
 		</View>
 	);

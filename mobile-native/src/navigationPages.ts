@@ -427,7 +427,14 @@ export class NavigationPages<T> implements PageSource<T> {
 			if (owed === null || this.offset >= owed || exhausted) {
 				this.owedDepth = null;
 				this.clearRetry(true);
-			} else this.clearRetry(false);
+			} else {
+				this.clearRetry(false);
+				// A direct paging request that landed short of the owed depth
+				// (a manual Retry loading more) continues the recovery the same
+				// flight owns: the reread walks to the depth, and the flight's
+				// own retry pacing covers a read that cannot run yet.
+				this.rereads.request();
+			}
 			// The error says the page still owes its recovery: it holds until
 			// the depth is restored or the results end, whichever completes it.
 			const incomplete = this.owedDepth !== null && this.offset < this.owedDepth;
