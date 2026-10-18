@@ -229,6 +229,13 @@ export class NavigationPages<T> implements PageSource<T> {
 	 * in for any re-read owed while paused. */
 	refresh() {
 		this.paused = false;
+		// A refresh while depth is owed is the reader pressing Try again: it
+		// completes the recovery the automatic retry would, to the owed depth,
+		// so it cannot strand what it owes on a changed first page.
+		if (this.owedDepth !== null) {
+			this.rereads.request();
+			return Promise.resolve(true);
+		}
 		return this.load(true);
 	}
 	more() {
@@ -336,7 +343,10 @@ export class NavigationPages<T> implements PageSource<T> {
 				this.version = decoded.version;
 				if (decoded.version.revision >= this.mutationFloor) this.mutationFloor = 0;
 				this.rereads.settle();
-				this.clearRetry(true);
+				// A first page that stands can still owe deeper pages: the
+				// count retires with the recovery, not with one page.
+				if (this.owedDepth === null) this.clearRetry(true);
+				else this.clearRetry(false);
 				this.publish({
 					loaded: true,
 					loading: false,

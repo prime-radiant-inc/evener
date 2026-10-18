@@ -122,7 +122,10 @@ export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?:
 	useEffect(() => {
 		if (!actions) return;
 		if (action?.uncertain && !action.pending && ready && focused) armReconcileRetry();
-		else if (!action?.uncertain) clearReconcileRetry();
+		// Retire only on a settled clean state: restore() publishes a brief
+		// not-uncertain flicker while a reconciliation starts, and retiring
+		// there would reset the curve on every consecutive failure.
+		else if (!action?.uncertain && !action?.pending) clearReconcileRetry();
 	}, [actions, action?.uncertain, action?.pending, ready, focused, armReconcileRetry, clearReconcileRetry]);
 	// A mutation's own confirmation re-reads everything, so catalog changes
 	// wait for it; the follower drains on each action state change.
