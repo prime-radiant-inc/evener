@@ -66,6 +66,11 @@ working directory, as in the CLI example. The browser does not upload this file.
    running session keeps its original configuration. Another directory's project
    defaults remain separate.
 
+After the exercise, stop work in both test sessions. Restore the project's
+previous **Max rounds** value and save it for future sessions. Review the
+disposable directory before deleting it; keep any results you need. CLI flags
+apply only to that invocation and need no saved-default rollback.
+
 ### Contributor checks, not provider setup
 
 From the Evener checkout root, follow the [build setup](developing-evener/building.md)

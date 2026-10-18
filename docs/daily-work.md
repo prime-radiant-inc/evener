@@ -114,6 +114,10 @@ A live model may finish before you press a control; asking it to wait does not k
 
 The automated tour holds real HTTP provider requests at these boundaries to verify queue depth, delivery order, cancellation, and file effects. It cancels a held request, then attempts to answer it and checks that `cancelled.json` is absent. This covers a cancelled held request, not a race with an already-delivered response. Stop cannot undo a command that has already executed.
 
+After the control exercise, stop any remaining work and inspect **Jobs** for
+processes still running. Keep the receipt files if you need them, then remove
+only the disposable workspace you created. Closing the tab alone is not cleanup.
+
 ## Return after a break
 
 Reopen the session from the sidebar or session search. If it has stopped, sending a new message resumes it. Read the last result first, then tell the agent what has changed outside the conversation.

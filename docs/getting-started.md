@@ -207,6 +207,11 @@ You have now completed the basic loop: give a bounded task, observe the work, an
 
 ## Move to your own project
 
+When finished, stop any remaining tutorial work and inspect running jobs before
+removing the disposable `evener-first-task` directory. Keep the diff and checker
+output if you need a record. Do not remove your provider configuration or other
+projects as part of this cleanup.
+
 Start with a clean Git working tree, a small task, and a test command you already trust. Tell Evener which files it may change and what it must leave alone. Keep deployment, credential changes, and destructive operations outside a first experiment.
 
 Continue with [daily work](daily-work.md) for steering and review, [concepts](concepts.md) for session lifetimes, or [the CLI](cli.md) for noninteractive tasks. The [native app guide](native-app.md) explains how an iPhone connects to the same hub.

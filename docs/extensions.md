@@ -85,6 +85,11 @@ inspect their runtime records and compare the workspace with its initial state.
 These examples request no file edits. A missing server or invalid configuration
 is a setup failure, even if the assistant still answers.
 
+For cleanup, stop the test session, restore the launch and MCP configuration you
+changed, and remove only example files you installed. Start a new session to
+check that the removed extensions are no longer loaded. Unsetting a variable in
+your shell does not change an already-running hub's environment.
+
 ## What the automated walkthrough proves
 
 The [tour manifest and review process](developing-evener/tutorial-tours.md#review-and-publication)
