@@ -84,7 +84,13 @@ import {
   useConnectProviderDialogChunk,
 } from "../settings/sections/credentials/ConnectProviderDialogBoundary";
 import { AdvancedOptions } from "./AdvancedOptions";
-import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
+import {
+  ACCESS_MODE_OPTIONS,
+  accessModeDefaultLabel,
+  accessModeDescription,
+  accessModeForSandbox,
+  mergeAccessModeSandbox,
+} from "./accessMode";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 import pluginSelectionStyles from "./pluginSelection.module.css";
@@ -649,6 +655,7 @@ function SpawnForm({
     host: string;
     effective: LaunchConfigLayer;
   } | null>(null);
+  const [resolveStatus, setResolveStatus] = useState<"pending" | "ready" | "error">("pending");
   // Every unset launch-config control names its entry in this effective layer:
   // "high (default)", "On (default)", etc. Unknown defaults remain plain.
   const resolvedDefaults =
@@ -1659,14 +1666,21 @@ function SpawnForm({
   useEffect(() => {
     if (cwd.trim() === "") {
       setDefaultPreview(null);
+      setResolveStatus("pending");
       return undefined;
     }
     let active = true;
+    setDefaultPreview(null);
+    setResolveStatus("pending");
     const settle = setTimeout(() => {
-      Promise.all([resolveConfig(advancedOverrides), loadModels().catch(() => null)]).then(
+      Promise.all([
+        resolveConfig(mergeAccessModeSandbox(advancedOverrides, accessMode) ?? {}),
+        loadModels().catch(() => null),
+      ]).then(
         ([result, models]) => {
           if (!active) return;
           setDefaultPreview({ draft, host: submittedSource, effective: result.effective });
+          setResolveStatus("ready");
           const defaultModel = (result.effective.model ?? "").trim();
           // A remote target resolves its own default model from its own host's
           // credentials and catalog, so this controller's launchable set is not
@@ -1706,6 +1720,7 @@ function SpawnForm({
         () => {
           if (active) {
             setDefaultPreview(null);
+            setResolveStatus("error");
           }
         },
       );
@@ -1719,6 +1734,7 @@ function SpawnForm({
     draft,
     submittedSource,
     advancedOverrides,
+    accessMode,
     advancedModel,
     resolveConfig,
     loadModels,
@@ -1789,6 +1805,39 @@ function SpawnForm({
     { value: "", label: accessModeDefaultLabel(resolvedDefaults?.sandbox ?? "") },
     ...ACCESS_MODE_OPTIONS,
   ];
+  const effectiveSandbox = typeof resolvedDefaults?.sandbox === "string" ? resolvedDefaults.sandbox.trim() : "";
+  const effectiveAccess = accessModeForSandbox(effectiveSandbox);
+  const effectiveAccessDescription = accessModeDescription(effectiveSandbox);
+  const advancedSandboxOverride =
+    typeof advancedOverrides.sandbox === "string" && advancedOverrides.sandbox.trim() !== "";
+
+  function focusAccessOwner(): void {
+    const toggle = document.querySelector<HTMLButtonElement>('button[aria-controls][aria-expanded="false"]');
+    toggle?.click();
+    queueMicrotask(() => {
+      if (!advancedSandboxOverride) {
+        document.getElementById("spawn-access")?.focus();
+        return;
+      }
+      const sandboxOption = schemaOptions.find((option) => option.wireField === "sandbox");
+      if (!sandboxOption) return;
+      const label = Array.from(document.querySelectorAll<HTMLLabelElement>("label[for]")).find(
+        (candidate) => candidate.textContent?.trim() === sandboxOption.label,
+      );
+      if (label?.htmlFor) {
+        document.getElementById(label.htmlFor)?.focus();
+        return;
+      }
+      const group = Array.from(document.querySelectorAll<HTMLElement>('[role="radiogroup"]')).find((candidate) => {
+        const labelledBy = candidate.getAttribute("aria-labelledby");
+        return labelledBy !== null && document.getElementById(labelledBy)?.textContent?.trim() === sandboxOption.label;
+      });
+      (
+        group?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]') ??
+        group?.querySelector<HTMLElement>('[role="radio"]')
+      )?.focus();
+    });
+  }
 
   // A chosen effort the (new) model's ladder doesn't name can't stay selected
   // - the select must never display a value it doesn't offer, so the choice
@@ -2524,9 +2573,46 @@ function SpawnForm({
           />
         )}
 
+        {providerRequired && (
+          <InlineNotice
+            data-testid="spawn-provider-prerequisite"
+            action={
+              <>
+                {providerSetupIsLocal && <Button onClick={openProviderSetup}>Connect provider</Button>}
+                <Button variant="quiet" onClick={() => void providerSetup.retry()}>
+                  Retry provider check
+                </Button>
+              </>
+            }
+          >
+            {providerSetupIsLocal
+              ? "Connect a provider to use a model. Sign in or add an API key here."
+              : `No provider is configured on ${remoteSourceLabel}. Configure one on that host to use a model.`}
+          </InlineNotice>
+        )}
+        {usesEvenerModels && providerSetup.status === "loading" && <Loader label="Checking provider access" />}
+        {usesEvenerModels && providerSetup.status === "error" && (
+          <InlineNotice
+            tone="danger"
+            live="status"
+            action={
+              <>
+                <Button onClick={() => void providerSetup.retry()}>Retry provider check</Button>
+                {providerSetupIsLocal && (
+                  <Button variant="quiet" onClick={openProviderSetup}>
+                    Review providers
+                  </Button>
+                )}
+              </>
+            }
+          >
+            Could not check provider configuration.
+          </InlineNotice>
+        )}
+
         <div className={CLASS.promptIntro} data-testid="spawn-prompt-intro">
           <h2 className={CLASS.promptHeading}>What should the agent do?</h2>
-          <p className={CLASS.promptSubtitle}>Leave blank to start a dormant session.</p>
+          <p className={CLASS.promptSubtitle}>Leave blank to start an empty session and write the task there.</p>
         </div>
 
         {/* The prompt shares its card and attachment controls with the session composer. */}
@@ -2718,45 +2804,29 @@ function SpawnForm({
             />
           </Dropzone>
         </div>
-        {providerRequired && (
-          <InlineNotice
-            action={
-              <>
-                {providerSetupIsLocal && <Button onClick={openProviderSetup}>Connect provider</Button>}
-                <Button variant="quiet" onClick={() => void providerSetup.retry()}>
-                  Retry provider check
-                </Button>
-              </>
-            }
-          >
-            {providerSetupIsLocal
-              ? "Connect a provider to use a model. Sign in or add an API key here."
-              : // A remote host's provider registry is not editable from this
-                // browser: the credentials editor is controller-scoped, so it
-                // would configure the wrong machine. Say where the work has to
-                // happen instead of offering an action that cannot unblock the
-                // spawn.
-                `No provider is configured on ${remoteSourceLabel}. Configure one on that host to use a model.`}
-          </InlineNotice>
-        )}
-        {usesEvenerModels && providerSetup.status === "error" && (
-          <InlineNotice
-            tone="danger"
-            live="status"
-            action={
-              <>
-                <Button onClick={() => void providerSetup.retry()}>Retry provider check</Button>
-                {providerSetupIsLocal && (
-                  <Button variant="quiet" onClick={openProviderSetup}>
-                    Review providers
-                  </Button>
-                )}
-              </>
-            }
-          >
-            Could not check provider configuration.
-          </InlineNotice>
-        )}
+        <InlineNotice
+          data-testid="spawn-effective-access"
+          data-state={resolveStatus}
+          data-sandbox={resolveStatus === "ready" ? effectiveSandbox : undefined}
+          data-source={advancedSandboxOverride ? "advanced" : "access"}
+          action={
+            <Button variant="quiet" size="xs" type="button" onClick={focusAccessOwner}>
+              Change
+            </Button>
+          }
+        >
+          {resolveStatus === "ready" ? (
+            <>
+              Effective access: {effectiveAccess?.label ?? (effectiveSandbox || "inherited")}.
+              {advancedSandboxOverride ? " Set by the Advanced sandbox override." : " Set by Access mode."}
+              {effectiveAccessDescription ? ` ${effectiveAccessDescription}` : ""}
+            </>
+          ) : resolveStatus === "error" ? (
+            "Effective access is unresolved because launch settings could not be resolved."
+          ) : (
+            "Effective access is being resolved."
+          )}
+        </InlineNotice>
         {connectingProvider && providerSetupIsLocal && (
           <ConnectProviderDialogBoundary
             key={dialogChunkVersion}
@@ -2794,7 +2864,7 @@ function SpawnForm({
         {/* The modelRequired note lives with the card's own model trigger
             below: it explains why Start is disabled, so it sits beside the
             control it names rather than in a form row that no longer exists. */}
-        {modelRequired && (
+        {modelRequired && !providerRequired && (
           <InlineNotice live="alert" data-reason={noDefaultModel ? "no-default-model" : "provider-model"}>
             {noDefaultModel
               ? "This hub has no default model configured — choose one to start."

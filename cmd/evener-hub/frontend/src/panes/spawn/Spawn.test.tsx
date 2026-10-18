@@ -3696,6 +3696,80 @@ test("Access mode names the resolved sandbox default once launch/resolve lands",
   expect(accessRow?.textContent).toContain(accessOptionLabels()[0]);
 });
 
+test("missing provider prerequisite precedes the editable composer and suppresses the later model prerequisite", async () => {
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    fake.on("model/list", () => ({ data: [] }));
+    fake.on("evener/launch/resolve", () => ({ effective: { model: "" }, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+
+  const prerequisite = await screen.findByTestId("spawn-provider-prerequisite");
+  const composer = screen.getByTestId("spawn-prompt-card");
+  expect(prerequisite.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(screen.queryByTestId("spawn-provider-prerequisite")?.parentElement).not.toBeNull();
+  expect(document.querySelector('[data-reason="no-default-model"], [data-reason="provider-model"]')).toBeNull();
+  expect(screen.getByRole("textbox", { name: "Prompt" }).hasAttribute("disabled")).toBe(false);
+});
+
+test("effective access uses the resolved sandbox and Change focuses Access mode", async () => {
+  const user = setupUser();
+  const fake = readyClient((client) => {
+    client.on("evener/launch/resolve", ({ launchOverrides }) => ({
+      effective: { sandbox: (launchOverrides as { sandbox?: string } | undefined)?.sandbox ?? "read-only" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/effective-access");
+
+  const summary = await screen.findByTestId("spawn-effective-access");
+  await waitFor(() => expect(summary.getAttribute("data-state")).toBe("ready"));
+  expect(summary.getAttribute("data-sandbox")).toBe("read-only");
+  expect(summary.getAttribute("data-source")).toBe("access");
+  await user.click(within(summary).getByRole("button", { name: "Change" }));
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Access mode")));
+});
+
+test("Advanced sandbox override wins in effective access and Change focuses its control", async () => {
+  const user = setupUser();
+  const sandboxOption: LaunchOption = {
+    field: "sandbox",
+    wireField: "sandbox",
+    label: "Sandbox mode",
+    group: "general",
+    kind: "radio",
+    perLaunch: true,
+    choices: [
+      { value: "off", label: "Off" },
+      { value: "restricted", label: "Restricted" },
+    ],
+  };
+  const fake = readyClient((client) => {
+    client.on("evener/launch/schema", () => ({ options: [sandboxOption] }));
+    client.on("evener/launch/resolve", ({ launchOverrides }) => ({
+      effective: { sandbox: (launchOverrides as { sandbox?: string } | undefined)?.sandbox ?? "workspace-write" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByRole("radio", { name: "Restricted" }));
+  await setWorkingDir(user, "/tmp/advanced-effective-access");
+
+  const summary = screen.getByTestId("spawn-effective-access");
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe("restricted"));
+  expect(summary.getAttribute("data-source")).toBe("advanced");
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(within(summary).getByRole("button", { name: "Change" }));
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Restricted" })));
+});
+
 test("the (default) labels stay plain when the resolve fails", async () => {
   const user = setupUser();
   const fake = readyClient((f) => {
@@ -3714,6 +3788,8 @@ test("the (default) labels stay plain when the resolve fails", async () => {
   expect(effortOptionLabels()[0]).toBe(plainEffort);
   expect(modelTrigger().textContent).not.toContain("claude");
   expect(modelState()).toBe("default");
+  expect(screen.getByTestId("spawn-effective-access").getAttribute("data-state")).toBe("error");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 });
 
 // The Advanced panel's own unset labels resolve the same way, off the same
