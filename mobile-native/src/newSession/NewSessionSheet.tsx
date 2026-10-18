@@ -15,6 +15,8 @@ import { useConnection } from "../ConnectionProvider";
 import { isReady } from "../connectionDisplay";
 import { useHubFleet } from "../hosts/useHubFleet";
 import { nativeDrafts } from "../nativeDrafts";
+import { appGroupSharePort } from "../share/appGroupSharePort";
+import { completeShare } from "../share/sharePayload";
 import { useRetainedScreenConnection } from "../retainedScreen";
 import type { Routes } from "../screens";
 import { useSheetStackOptions } from "../sheet/sheetStack";
@@ -32,6 +34,7 @@ import { PluginChecklist } from "./PluginChecklist";
 import { ProjectPicker } from "./ProjectPicker";
 import { useSheetPlugins } from "./sheetPlugins";
 import { useSheetLaunchDefaults } from "./useLaunchDefaults";
+import { seedSharedPrompt } from "./shareSeed";
 
 const NewSessionStack = createNativeStackNavigator<NewSessionRoutes>();
 
@@ -50,7 +53,7 @@ export function NewSessionSheet(props: NativeStackScreenProps<Routes, "NewSessio
 }
 
 function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSession">) {
-	const { hubId, hubName } = route.params;
+	const { hubId, hubName, share } = route.params;
 	const { activeProfile, client, state, renderClient } = useRetainedScreenConnection(hubId);
 	const sheetStackOptions = useSheetStackOptions();
 	const ready = activeProfile?.id === hubId && isReady(state) && !!client;
@@ -64,8 +67,14 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 	useEffect(() => {
 		if (opened.current || !storageLoaded) return;
 		opened.current = true;
+		// A share seeded after openForm keeps the remembered host, project and
+		// model; the share file goes only once the prompt is saved.
+		if (share) {
+			if (seedSharedPrompt(store, memory, share)) void completeShare(appGroupSharePort(), share.id);
+			return;
+		}
 		stopOpening.current = openForm(store, memory.lastSetup());
-	}, [store, memory, storageLoaded]);
+	}, [store, memory, storageLoaded, share]);
 	useEffect(() => () => stopOpening.current(), []);
 
 	const bindTo = ready && client ? client : null;
