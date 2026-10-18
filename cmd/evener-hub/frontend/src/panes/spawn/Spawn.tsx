@@ -275,6 +275,7 @@ function SpawnForm({
 }) {
   const client = useClient();
   const toasts = useToasts();
+  const advancedOwnerRef = useRef<HTMLDivElement>(null);
   const [source, setSource] = useDraftField(draft, "source");
   // The manifest carries every configured launch source (Component 06a). It is
   // empty until it loads, and in the common single-host case holds only
@@ -1812,26 +1813,19 @@ function SpawnForm({
     typeof advancedOverrides.sandbox === "string" && advancedOverrides.sandbox.trim() !== "";
 
   function focusAccessOwner(): void {
-    const toggle = document.querySelector<HTMLButtonElement>('button[aria-controls][aria-expanded="false"]');
-    toggle?.click();
+    const owner = advancedOwnerRef.current;
+    if (owner === null) return;
+    const toggle = owner.querySelector<HTMLButtonElement>("button[aria-controls][aria-expanded]");
+    if (toggle?.getAttribute("aria-expanded") === "false") toggle.click();
     queueMicrotask(() => {
       if (!advancedSandboxOverride) {
-        document.getElementById("spawn-access")?.focus();
+        owner.querySelector<HTMLElement>("#spawn-access")?.focus();
         return;
       }
-      const sandboxOption = schemaOptions.find((option) => option.wireField === "sandbox");
-      if (!sandboxOption) return;
-      const label = Array.from(document.querySelectorAll<HTMLLabelElement>("label[for]")).find(
-        (candidate) => candidate.textContent?.trim() === sandboxOption.label,
-      );
-      if (label?.htmlFor) {
-        document.getElementById(label.htmlFor)?.focus();
-        return;
-      }
-      const group = Array.from(document.querySelectorAll<HTMLElement>('[role="radiogroup"]')).find((candidate) => {
-        const labelledBy = candidate.getAttribute("aria-labelledby");
-        return labelledBy !== null && document.getElementById(labelledBy)?.textContent?.trim() === sandboxOption.label;
-      });
+      const radioOptions = schemaOptions.filter((option) => option.kind === "radio");
+      const sandboxIndex = radioOptions.findIndex((option) => option.wireField === "sandbox");
+      const group =
+        sandboxIndex < 0 ? undefined : owner.querySelectorAll<HTMLElement>('[role="radiogroup"]')[sandboxIndex];
       (
         group?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]') ??
         group?.querySelector<HTMLElement>('[role="radio"]')
@@ -2808,6 +2802,7 @@ function SpawnForm({
           data-testid="spawn-effective-access"
           data-state={resolveStatus}
           data-sandbox={resolveStatus === "ready" ? effectiveSandbox : undefined}
+          data-access={resolveStatus === "ready" ? (effectiveAccess?.value ?? effectiveSandbox) : undefined}
           data-source={advancedSandboxOverride ? "advanced" : "access"}
           action={
             <Button variant="quiet" size="xs" type="button" onClick={focusAccessOwner}>
@@ -2967,39 +2962,41 @@ function SpawnForm({
           />
         </div>
 
-        <AdvancedOptions
-          createDirectory={createDirectory}
-          options={schemaOptions}
-          onOverridesChange={setAdvancedOverrides}
-          values={advancedValues}
-          onValuesChange={setAdvancedValues}
-          errors={advancedErrors}
-          onErrorsChange={setAdvancedErrors}
-          readValues={readAdvancedValues}
-          draftId={draft}
-          validatePath={validatePath}
-          resolveConfig={resolveConfig}
-          loadCatalog={loadCatalog}
-          complete={complete}
-          resolvedDefaults={resolvedDefaults ?? undefined}
-        >
-          <FormRow label="Harness" htmlFor="spawn-harness">
-            <Select
-              id="spawn-harness"
-              value={harness || "evener"}
-              onChange={(e) => handleHarnessChange(e.target.value)}
-              options={harnessOptions}
-            />
-          </FormRow>
-          <FormRow label="Access mode" htmlFor="spawn-access">
-            <Select
-              id="spawn-access"
-              value={accessMode}
-              onChange={(e) => setAccessMode(e.target.value)}
-              options={accessOptions}
-            />
-          </FormRow>
-        </AdvancedOptions>
+        <div ref={advancedOwnerRef}>
+          <AdvancedOptions
+            createDirectory={createDirectory}
+            options={schemaOptions}
+            onOverridesChange={setAdvancedOverrides}
+            values={advancedValues}
+            onValuesChange={setAdvancedValues}
+            errors={advancedErrors}
+            onErrorsChange={setAdvancedErrors}
+            readValues={readAdvancedValues}
+            draftId={draft}
+            validatePath={validatePath}
+            resolveConfig={resolveConfig}
+            loadCatalog={loadCatalog}
+            complete={complete}
+            resolvedDefaults={resolvedDefaults ?? undefined}
+          >
+            <FormRow label="Harness" htmlFor="spawn-harness">
+              <Select
+                id="spawn-harness"
+                value={harness || "evener"}
+                onChange={(e) => handleHarnessChange(e.target.value)}
+                options={harnessOptions}
+              />
+            </FormRow>
+            <FormRow label="Access mode" htmlFor="spawn-access">
+              <Select
+                id="spawn-access"
+                value={accessMode}
+                onChange={(e) => setAccessMode(e.target.value)}
+                options={accessOptions}
+              />
+            </FormRow>
+          </AdvancedOptions>
+        </div>
       </div>
 
       <ConfirmDialog

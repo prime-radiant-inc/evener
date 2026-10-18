@@ -376,8 +376,11 @@ function measureSpawn() {
     };
   });
 
-  const heading = document.querySelector<HTMLElement>("[data-testid='spawn-prompt-intro'] h2");
-  const subtitle = document.querySelector<HTMLElement>("[data-testid='spawn-prompt-intro'] p");
+  const promptIntro = document.querySelector<HTMLElement>("[data-testid='spawn-prompt-intro']");
+  const headings = Array.from(promptIntro?.querySelectorAll<HTMLElement>("h2") ?? []);
+  const subtitles = Array.from(promptIntro?.querySelectorAll<HTMLElement>("p") ?? []);
+  const heading = headings[0] ?? null;
+  const subtitle = subtitles[0] ?? null;
   const pluginSummary = document.querySelector<HTMLElement>('[data-testid="spawn-plugin-summary"]');
   const pluginRow = document.querySelector<HTMLElement>('[data-label="Plugins"]');
   const pluginSheet = document.querySelector<HTMLElement>('[role="dialog"][aria-labelledby] h2')?.parentElement
@@ -400,12 +403,20 @@ function measureSpawn() {
     rows,
     attachments: measureAttachments(),
     accessiblePrompt: {
+      headingCount: headings.length,
       headingTag: heading?.tagName.toLowerCase() ?? "missing",
-      headingText: heading?.textContent?.trim() ?? "",
+      headingHasName: (heading?.textContent?.trim().length ?? 0) > 0,
       headingVisible: heading ? isVisible(visibility("[data-testid='spawn-prompt-intro'] h2")) : false,
+      headingIsDirectChild: heading?.parentElement === promptIntro,
+      subtitleCount: subtitles.length,
       subtitleTag: subtitle?.tagName.toLowerCase() ?? "missing",
-      subtitleText: subtitle?.textContent?.trim() ?? "",
+      subtitleHasContent: (subtitle?.textContent?.trim().length ?? 0) > 0,
       subtitleVisible: subtitle ? isVisible(visibility("[data-testid='spawn-prompt-intro'] p")) : false,
+      subtitleIsDirectChild: subtitle?.parentElement === promptIntro,
+      headingBeforeSubtitle:
+        heading !== null &&
+        subtitle !== null &&
+        Boolean(heading.compareDocumentPosition(subtitle) & Node.DOCUMENT_POSITION_FOLLOWING),
       headingHiddenFromAT: heading?.getAttribute("aria-hidden") === "true",
       subtitleHiddenFromAT: subtitle?.getAttribute("aria-hidden") === "true",
     },

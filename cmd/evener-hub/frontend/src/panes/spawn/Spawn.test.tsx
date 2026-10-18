@@ -3713,11 +3713,17 @@ test("missing provider prerequisite precedes the editable composer and suppresse
   expect(screen.getByRole("textbox", { name: "Prompt" }).hasAttribute("disabled")).toBe(false);
 });
 
-test("effective access uses the resolved sandbox and Change focuses Access mode", async () => {
+test.each([
+  ["off", "full"],
+  ["read-only", "read-only"],
+  ["workspace-write", "workspace-write"],
+  ["restricted", "restricted"],
+  ["custom-sandbox", "custom-sandbox"],
+])("effective access renders resolver sandbox %s as machine access %s", async (sandbox, access) => {
   const user = setupUser();
   const fake = readyClient((client) => {
-    client.on("evener/launch/resolve", ({ launchOverrides }) => ({
-      effective: { sandbox: (launchOverrides as { sandbox?: string } | undefined)?.sandbox ?? "read-only" },
+    client.on("evener/launch/resolve", () => ({
+      effective: { sandbox },
       layers: {},
       provenance: {},
     }));
@@ -3728,8 +3734,93 @@ test("effective access uses the resolved sandbox and Change focuses Access mode"
 
   const summary = await screen.findByTestId("spawn-effective-access");
   await waitFor(() => expect(summary.getAttribute("data-state")).toBe("ready"));
-  expect(summary.getAttribute("data-sandbox")).toBe("read-only");
+  expect(summary.getAttribute("data-sandbox")).toBe(sandbox);
+  expect(summary.getAttribute("data-access")).toBe(access);
   expect(summary.getAttribute("data-source")).toBe("access");
+});
+
+test.each([false, true])(
+  "Change leaves an earlier unrelated disclosure closed and focuses this Spawn control, Advanced initially open=%s",
+  async (initiallyOpen) => {
+    const user = setupUser();
+    const unrelated = vi.fn();
+    const fake = readyClient((client) => {
+      client.on("evener/launch/resolve", () => ({ effective: { sandbox: "read-only" }, layers: {}, provenance: {} }));
+    });
+    render(
+      <>
+        <button type="button" aria-controls="unrelated-panel" aria-expanded="false" onClick={unrelated}>
+          Unrelated disclosure
+        </button>
+        <ClientProvider client={fake}>
+          <Spawn params={{}} paneId="spawn-1" focused />
+          <Toast />
+        </ClientProvider>
+      </>,
+    );
+    await settled();
+    await setWorkingDir(user, "/tmp/scoped-effective-access");
+    await waitFor(() => expect(screen.getByTestId("spawn-effective-access").getAttribute("data-state")).toBe("ready"));
+    if (initiallyOpen) await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+    await user.click(within(screen.getByTestId("spawn-effective-access")).getByRole("button", { name: "Change" }));
+
+    expect(unrelated).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Advanced options" }).getAttribute("aria-expanded")).toBe("true");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Access mode")));
+  },
+);
+
+test("effective access clears stale resolution while the next directory is pending without changing Start eligibility", async () => {
+  const user = setupUser();
+  const first = deferred<LaunchConfigResolved>();
+  const second = deferred<LaunchConfigResolved>();
+  const fake = readyClient((client) => {
+    client.on("evener/launch/resolve", ({ cwd }) => (cwd === "/tmp/access-a" ? first.promise : second.promise));
+  });
+  renderSpawn(fake);
+  await settled();
+  const start = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+
+  await setWorkingDir(user, "/tmp/access-a");
+  const summary = screen.getByTestId("spawn-effective-access");
+  expect(summary.getAttribute("data-state")).toBe("pending");
+  expect(summary.hasAttribute("data-sandbox")).toBe(false);
+  await act(async () =>
+    first.resolve({
+      effective: { sandbox: "read-only", model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }),
+  );
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe("read-only"));
+  const eligibility = start.disabled;
+
+  await setWorkingDir(user, "/tmp/access-b");
+  await waitFor(() => expect(summary.getAttribute("data-state")).toBe("pending"));
+  expect(summary.hasAttribute("data-sandbox")).toBe(false);
+  expect(start.disabled).toBe(eligibility);
+  await act(async () =>
+    second.resolve({
+      effective: { sandbox: "workspace-write", model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }),
+  );
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe("workspace-write"));
+  expect(start.disabled).toBe(eligibility);
+});
+
+test("effective access Change focuses Access mode", async () => {
+  const user = setupUser();
+  const fake = readyClient((client) => {
+    client.on("evener/launch/resolve", () => ({ effective: { sandbox: "read-only" }, layers: {}, provenance: {} }));
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/effective-access-focus");
+  const summary = screen.getByTestId("spawn-effective-access");
+  await waitFor(() => expect(summary.getAttribute("data-state")).toBe("ready"));
   await user.click(within(summary).getByRole("button", { name: "Change" }));
   await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Access mode")));
 });
@@ -3759,12 +3850,20 @@ test("Advanced sandbox override wins in effective access and Change focuses its 
   renderSpawn(fake);
   await settled();
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Access mode"), "full");
   await user.click(screen.getByRole("radio", { name: "Restricted" }));
   await setWorkingDir(user, "/tmp/advanced-effective-access");
 
   const summary = screen.getByTestId("spawn-effective-access");
   await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe("restricted"));
+  expect(summary.getAttribute("data-access")).toBe("restricted");
   expect(summary.getAttribute("data-source")).toBe("advanced");
+  const resolveCall = fake.calls.find(
+    (call) =>
+      call.method === "evener/launch/resolve" &&
+      (call.params as { cwd?: string }).cwd === "/tmp/advanced-effective-access",
+  );
+  expect(resolveCall?.params).toMatchObject({ launchOverrides: { sandbox: "restricted" } });
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   await user.click(within(summary).getByRole("button", { name: "Change" }));
   await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Restricted" })));
