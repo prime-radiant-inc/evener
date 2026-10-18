@@ -8,7 +8,7 @@ import {
   isEndpointConflict,
   safeCredentialTestResult,
 } from "@evener/appwire-client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import {
   credentialsStore,
@@ -160,6 +160,30 @@ function authCapabilities(row: ProviderDescriptor): string {
   return labels.length > 0 ? labels.join(" or ") : "Host or endpoint access";
 }
 
+function ProviderChoice({
+  row,
+  disabled,
+  onSelect,
+}: {
+  row: ProviderDescriptor;
+  disabled: boolean;
+  onSelect(row: ProviderDescriptor): void;
+}) {
+  const descriptionId = useId();
+  const label = HELP[row.id]?.label || row.name || row.id;
+  return (
+    <ListRow
+      label={label}
+      meta={<span id={descriptionId}>{authCapabilities(row)}</span>}
+      aria-label={label}
+      aria-describedby={descriptionId}
+      data-auth-modes={resolvedAuthModes(row).join(" ")}
+      disabled={disabled}
+      onSelect={() => onSelect(row)}
+    />
+  );
+}
+
 /**
  * One tappable ListRow per provider rather than a box per provider. The whole
  * row is the target and a real <button>, so it is a tab stop whose accessible
@@ -179,13 +203,7 @@ function ProviderChoices({
     <ul aria-label="Providers" className={styles.providers}>
       {rows.map((row) => (
         <li key={row.id}>
-          <ListRow
-            label={HELP[row.id]?.label || row.name || row.id}
-            meta={<span aria-hidden="true">{authCapabilities(row)}</span>}
-            data-auth-modes={resolvedAuthModes(row).join(" ")}
-            disabled={disabled}
-            onSelect={() => onSelect(row)}
-          />
+          <ProviderChoice row={row} disabled={disabled} onSelect={onSelect} />
         </li>
       ))}
     </ul>
@@ -306,6 +324,7 @@ function SelectedConnection({
   const [missingCredential, setMissingCredential] = useState(false);
   const [host, setHost] = useState(false);
   const [saved, setSaved] = useState(row?.activeSource === "store");
+  const [storedAccess, setStoredAccess] = useState(row?.activeSource === "store");
   const [configured, setConfigured] = useState(false);
   const [configure, setConfigure] = useState(false);
   const [oauth, setOAuth] = useState<OAuthEditor | null>(null);
@@ -355,6 +374,7 @@ function SelectedConnection({
         setConfigure(false);
         if (current.client !== previous.client) {
           setSaved(false);
+          setStoredAccess(false);
           setConfigured(false);
         }
       }
@@ -584,6 +604,7 @@ function SelectedConnection({
         else await state.setApiKey(name, value.trim(), asserted);
         if (!current(token)) return;
         setSaved(true);
+        setStoredAccess(true);
       } catch (err) {
         if (!current(token)) return;
         // The same two changes, and the same recovery: the hub refused the
@@ -667,6 +688,7 @@ function SelectedConnection({
     setConfigured(true);
     setConfigure(false);
     setSaved(false);
+    setStoredAccess(created?.activeSource === "store");
     // A value typed for a different destination must not be submitted to the
     // adopted connection, the reason the removal effect makes this same reset.
     // Keying that on providerId alone is not enough: one provider can host two
@@ -960,7 +982,7 @@ function SelectedConnection({
             Change provider
           </Button>
           <Button variant="quiet" onClick={() => leave(onClose)}>
-            {saved ? "Close, access stays saved" : "Cancel"}
+            {storedAccess ? "Close, access stays saved" : "Cancel"}
           </Button>
         </div>
       </form>

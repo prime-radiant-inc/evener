@@ -343,6 +343,18 @@ test("provider choices expose resolved authentication capabilities and select th
   expect(screen.queryByLabelText("API key")).toBeNull();
 });
 
+test("provider authentication capabilities describe the choice without changing its accessible name", async () => {
+  setup({ instances: [], availableProviders: [provider("anthropic", "Anthropic", ["apiKey"])] });
+
+  const choice = await screen.findByRole("button", { name: "Anthropic" });
+  const descriptionId = choice.getAttribute("aria-describedby");
+  expect(descriptionId).not.toBeNull();
+  const description = document.getElementById(descriptionId as string);
+  expect(description).not.toBeNull();
+  expect(description?.textContent).not.toBe("");
+  expect(description?.getAttribute("aria-hidden")).toBeNull();
+});
+
 test("a no-auth endpoint never asks for a key", async () => {
   const noAuth = provider("no-auth", "Team endpoint", ["none"], { auth: "none", credentialRequired: false });
   const { user, client, connected } = setup({ instances: [], availableProviders: [noAuth] });
@@ -684,6 +696,31 @@ test("saved access survives a failed check and dismissal, then reopens without a
   expect(connected).toHaveBeenCalledWith("anthropic");
   expect(first.client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
   reopened.unmount();
+});
+test("editing reopened stored access can be dismissed without a write while the original stays saved", async () => {
+  const { user, client, close } = setup(savedList());
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "replacement-draft");
+
+  await user.click(screen.getByRole("button", { name: /^Close, access stays saved$/i }));
+
+  expect(close).toHaveBeenCalledTimes(1);
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+});
+test("a failed stored-access replacement keeps the original access and truthful dismissal", async () => {
+  const { user, client, close } = setup(savedList());
+  client.on("evener/auth/apiKey/set", () => {
+    throw new Error("replacement refused");
+  });
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "replacement-draft");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  expect(await alertReason()).toBe("save-failed");
+
+  await user.click(screen.getByRole("button", { name: /^Close, access stays saved$/i }));
+
+  expect(close).toHaveBeenCalledTimes(1);
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
 });
 test.each([{ activeSource: "api_key" }, { baseUrl: "https://changed.example/v1" }])(
   "requires explicit source/destination review after save: %j",
