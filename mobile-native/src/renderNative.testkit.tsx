@@ -310,6 +310,10 @@ export function nativeModuleMock() {
 		// In front the whole test; a test that needs the app to come and go
 		// mocks its own.
 		AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
+		// No share URL is delivered: the intake hook's read answers null, so a
+		// suite that isn't about shares mounts the app with none pending (and
+		// one that is mocks Linking itself).
+		Linking: { getInitialURL: async () => null, addEventListener: () => ({ remove: () => {} }) },
 		Animated,
 		Appearance: { setColorScheme: () => {} },
 		Alert: { alert: recordAlert, prompt: recordPrompt },

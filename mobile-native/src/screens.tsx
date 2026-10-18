@@ -54,6 +54,7 @@ import {
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
+import type { SharedPayload } from "./share/sharePayload";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { openProviders } from "./board/BoardNotices";
@@ -263,7 +264,15 @@ export type Routes = {
 	/** The Hub sheet (spec 12), a modal holding its own stack of pages. */
 	Hub: NavigatorScreenParams<HubRoutes>;
 	/** New session (spec 11), a modal holding its own stack of pages. */
-	NewSession: { hubId: string; hubName: string };
+	NewSession: {
+		hubId: string;
+		hubName: string;
+		/** A share's text to seed the prompt with (spec: share intent). */
+		share?: { id: string; text: string };
+	};
+	/** Where a share goes (spec: share intent): a modal sheet listing New
+	 * session, the hub's live sessions and search results. */
+	ShareTarget: { item: SharedPayload };
 	/** openedBy says Next opened this session (ruling 2), so Next from it
 	 * replaces it. slideFrom says the title's swipe opened it as the
 	 * previous ("left") or next ("right") session in Live order, the side it
