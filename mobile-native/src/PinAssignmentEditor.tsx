@@ -151,7 +151,7 @@ export function PinAssignmentEditor({
 						placeholder="Category name"
 					/>
 				</Group>
-				{creating && selection?.kind === "new" && !validName(selection.name) ? (
+				{creating && !validName(selection?.kind === "new" ? selection.name : "") ? (
 					<Copy muted>Use 1–80 characters.</Copy>
 				) : null}
 				<View style={[styles.row, { flexWrap: "wrap" }]}>

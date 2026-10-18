@@ -2,6 +2,8 @@
 // Tasks sheet and a task_list step's checklist.
 import type { SFSymbol } from "expo-symbols";
 import type { TaskStatus } from "@evener/appwire-client";
+import { SymbolView } from "expo-symbols";
+import { useColors } from "./ui";
 
 /** The word a task's state reads as, and its screen reader label. */
 export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
@@ -21,3 +23,12 @@ export const TASK_STATUS_MARK: Record<TaskStatus, { name: SFSymbol; tint: TaskSt
 };
 
 export type TaskStatusTint = "inkMid" | "inkLow" | "accentInk";
+
+/** The state's mark itself, a tinted SF Symbol sized to its row: the Tasks
+ * sheet and a task_list step's checklist draw the same one beside a task's
+ * description. The composed label around it reads the state in words. */
+export function TaskStatusMark({ status, size, style }: { status: TaskStatus; size: number; style?: object }) {
+	const { palette } = useColors();
+	const mark = TASK_STATUS_MARK[status];
+	return <SymbolView name={mark.name} tintColor={palette[mark.tint]} size={size} style={style} />;
+}

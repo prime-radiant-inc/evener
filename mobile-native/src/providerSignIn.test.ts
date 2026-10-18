@@ -208,7 +208,6 @@ it("re-polls once on its own when the connection turns ready after a failed poll
 	const back = signInClient(io, calls);
 	store.connectionChanged(back, "ready");
 	flow.setConnection(back);
-	io.request = async () => ({ state: "pending" });
 	await Promise.resolve();
 	await Promise.resolve();
 	const polls = calls.filter((call) => call.method.endsWith("/poll"));

@@ -1,7 +1,7 @@
 import { AccessibilityInfo, Platform, Pressable, type TextInput, View } from "react-native";
 import { describe, expect, it, vi } from "vitest";
 import { fonts, palettes } from "../design/tokens";
-import { render, renderedText } from "../renderNative.testkit";
+import { playedHaptics, render, renderedText } from "../renderNative.testkit";
 import { createRef } from "react";
 import { act, type ReactTestInstance } from "react-test-renderer";
 import {
@@ -270,7 +270,6 @@ describe("a segmented control", () => {
 	});
 
 	it("ticks when a new segment is chosen, and not on the chosen one (spec 16.6)", async () => {
-		const { playedHaptics } = await import("../renderNative.testkit");
 		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={() => {}} />);
 		const radios = tree.root.findAllByProps({ accessibilityRole: "radio" });
 		playedHaptics.length = 0;

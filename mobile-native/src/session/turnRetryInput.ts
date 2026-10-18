@@ -296,7 +296,7 @@ function planRetryImages(
 		(occurrenceIndex) => (occurrences[occurrenceIndex] as ImageOccurrence).marker,
 	);
 	distinctMarkers.forEach((marker, position) => {
-		if (position > 0 && distinctMarkers[position - 1] !== undefined && marker <= (distinctMarkers[position - 1] ?? 0)) {
+		if (position > 0 && marker <= distinctMarkers[position - 1]) {
 			positionalAmbiguous = true;
 		}
 	});

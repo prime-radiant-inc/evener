@@ -687,7 +687,7 @@ it("opens Find in session from the Android ⋯ menu", async () => {
 });
 
 it("draws the header's ⋯ fallback as a symbol that follows Dynamic Type", async () => {
-	await mount();
+	const { tree } = mount();
 	await settle();
 
 	const fallback = render(menuButton());
@@ -697,6 +697,7 @@ it("draws the header's ⋯ fallback as a symbol that follows Dynamic Type", asyn
 	expect(symbol?.props.name).toBe("ellipsis");
 	expect(fallback.root.findAll((node) => node.props.allowFontScaling === false)).toEqual([]);
 	act(() => fallback.unmount());
+	await act(async () => tree.unmount());
 });
 
 it("shuts the session down after a confirmation and stays on it (ruling 19)", async () => {

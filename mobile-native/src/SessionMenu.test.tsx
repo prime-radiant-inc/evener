@@ -41,6 +41,7 @@ function sheet(props: Partial<SessionMenuProps> = {}) {
 			deletionAvailable={false}
 			close={() => {}}
 			choose={() => {}}
+			onAction={() => {}}
 			{...props}
 		/>,
 	);
@@ -88,31 +89,6 @@ function flatOf(menu: SessionMenuProps["menu"]): Flat[] {
 	return flat;
 }
 
-/** The destinations the menu's own items open, derived by pressing each of
- * its entries through the same sessionMenu() the sheet reads. */
-function menuDestinations(): string[] {
-	const kinds = new Set<string>();
-	const menu = facts();
-	sessionMenu({
-		...menu,
-		choose: (action: SessionMenuAction) => {
-			const destinations: Partial<Record<SessionMenuAction["kind"], string>> = {
-				find: "find",
-				activity: "subagents",
-				tasks: "tasks",
-				notes: "notes",
-				info: "session",
-				pin: "pin",
-			};
-			const destination = destinations[action.kind];
-			if (destination) kinds.add(destination);
-		},
-	})
-		.flatMap((item) => (item.type === "menu" ? flatEntriesOf(item.menu.items) : []))
-		.forEach((entry) => entry.onPress());
-	return [...kinds];
-}
-
 describe("SessionMenu", () => {
 	it("keeps its actions above the home indicator on its own", () => {
 		const tree = sheet();
@@ -155,18 +131,25 @@ describe("SessionMenu", () => {
 		expect(aside).toBeDefined();
 	});
 
-	it("routes a row's press the way the menu routes its item", () => {
-		const opened: string[] = [];
-		const tree = sheet({ choose: (destination) => opened.push(destination) });
+	it("hands every row's action to the chooser, level rows and self-run actions included", () => {
+		const chosen: SessionMenuAction[] = [];
+		const tree = sheet({ choose: (destination) => {}, onAction: (action) => chosen.push(action) });
 		const rows = rowsOf(tree);
-		// Every row that opens a destination does so on press; the destructive
-		// ones (Stop, Shut down) and the self-run ones (Archive, Ask aside)
-		// close the sheet and open nothing the sheet names.
+		expect(rows.length).toBeGreaterThan(0);
 		for (const row of rows) {
 			row.props.onPress();
 		}
-		// Two menu items can open the same screen (Activity and Subagents both
-		// open the subagents list), so the destinations compare as a set.
-		expect([...new Set(opened)].sort()).toEqual(menuDestinations().sort());
+		// Every entry the menu can produce arrives as its own action: the five
+		// level rows, and one of each action kind the facts allow. Pressing
+		// through the menu's own entries derives the expected set.
+		const expected = new Set<string>();
+		sessionMenu({
+			...facts(),
+			choose: (action) => expected.add(action.kind === "level" ? `level:${action.level}` : action.kind),
+		})
+			.flatMap((item) => (item.type === "menu" ? flatEntriesOf(item.menu.items) : []))
+			.forEach((entry) => entry.onPress());
+		const got = new Set(chosen.map((action) => (action.kind === "level" ? `level:${action.level}` : action.kind)));
+		expect(got).toEqual(expected);
 	});
 });

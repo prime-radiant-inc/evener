@@ -5,12 +5,11 @@
 import { formatByteCount, lineCount } from "@evener/appwire-client";
 import { type ReactNode, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { SymbolView } from "expo-symbols";
 import type { AnsiLine } from "../../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 import { expandTabs, parseOutputLines } from "../ansiOutputStyles";
 import { AnsiOutputLine } from "../AnsiOutputLine";
 import { MarkdownResponse } from "../MarkdownResponse";
-import { TASK_STATUS_MARK, TASK_STATUS_LABEL } from "../taskStatus";
+import { TaskStatusMark, TASK_STATUS_LABEL } from "../taskStatus";
 import { scaledType, typeRoles } from "../design/tokens";
 import { TranscriptImages } from "../TranscriptImages";
 import type { RunStep } from "../timeline";
@@ -91,14 +90,8 @@ function Checklist({ tasks }: { tasks: readonly ChecklistTask[] }) {
 			{shown.map((task) => (
 				<View key={task.id} style={{ gap: 2 }}>
 					<View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
-						{/* The state's mark, a tinted SF Symbol beside the description;
-						    the composed label below already reads the state in words. */}
-						<SymbolView
-							name={TASK_STATUS_MARK[task.status].name}
-							tintColor={palette[TASK_STATUS_MARK[task.status].tint]}
-							size={15 * scale}
-							style={{ marginTop: 2 * scale }}
-						/>
+						{/* The composed label below already reads the state in words. */}
+						<TaskStatusMark status={task.status} size={15 * scale} style={{ marginTop: 2 * scale }} />
 						<Text
 							allowFontScaling={allowFontScaling}
 							accessibilityLabel={`${TASK_STATUS_LABEL[task.status]}: ${task.description}`}

@@ -1083,6 +1083,18 @@ export function ConversationScreen({
 	// can depend on the boolean rather than on the conversation object, which
 	// changes on every streamed frame.
 	const canStop = connected && conversation !== null && conversationControls(conversation).stop;
+	// The facts both ⋯ surfaces read (the iOS header menu and the Android
+	// sheet): one object, so a new capability lands in both or neither.
+	const menuFacts = {
+		current: menuLevel,
+		hasDocuments: documents.length > 0,
+		connected,
+		sharedNotes: !!conversation?.capabilities.sharedNotes,
+		canAside,
+		canShutDown,
+		canStop,
+		choose: (action: SessionMenuAction) => chooseSessionActionRef.current(action),
+	};
 	function openAside(ref: string, title: string) {
 		Keyboard.dismiss();
 		navigation.push("Conversation", {
@@ -1243,19 +1255,7 @@ export function ConversationScreen({
 					: undefined,
 			// iOS draws these as a native menu and ignores headerRight; Android
 			// ignores them and keeps headerRight's SessionMenu.
-			unstable_headerRightItems: () =>
-				hasConversation
-					? sessionMenu({
-							current: menuLevel,
-							hasDocuments: documents.length > 0,
-							connected,
-							sharedNotes: !!conversation?.capabilities.sharedNotes,
-							canAside,
-							canShutDown,
-							canStop,
-							choose: (action) => chooseSessionActionRef.current(action),
-						})
-					: [],
+			unstable_headerRightItems: () => (hasConversation ? sessionMenu(menuFacts) : []),
 			headerRight: () => (
 				<Pressable
 					accessibilityRole="button"
@@ -2988,18 +2988,11 @@ export function ConversationScreen({
 				<SessionMenu
 					title={conversation?.name || route.params.title}
 					hubName={activeProfile?.name ?? "Hub"}
-					menu={{
-						current: menuLevel,
-						hasDocuments: documents.length > 0,
-						connected,
-						sharedNotes: !!conversation?.capabilities.sharedNotes,
-						canAside,
-						canShutDown,
-						canStop,
-					}}
+					menu={menuFacts}
 					deletionAvailable={deletionAvailable}
 					close={() => setSessionMenuOpen(false)}
 					choose={openSessionDestination}
+					onAction={(action) => chooseSessionActionRef.current(action)}
 				/>
 			) : null}
 			<KeyboardAvoidingView

@@ -40,8 +40,8 @@ export function createSearchController(): SearchController {
 	let timer: ReturnType<typeof setTimeout> | null = null;
 	// The re-ask a failed search arms on its own, on the same capped backoff
 	// the Board's failed reads retry on: nothing else would re-ask while the
-	// query and client stand still. Every ask resets the count, so the backoff
-	// grows only with consecutive failures.
+	// query and client stand still. A new query, a client change or a landing
+	// answer resets the count; the re-ask chain itself grows it.
 	let reaskCount = 0;
 	let reask: ReturnType<typeof setTimeout> | null = null;
 	const clearReask = () => {

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Pressable, ScrollView, SectionList, View } from "react-native";
-import { SymbolView } from "expo-symbols";
 import type { TaskRow } from "@evener/appwire-client";
 import { absoluteTime, createTasksPanelStore, EMPTY_TASKS_PANEL_ENTRY, groupTasks } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -11,7 +10,7 @@ import { useRetainedScreenConnection } from "./retainedScreen";
 import type { Routes } from "./screens";
 import { Sheet } from "./sheet/Sheet";
 import { useSheet } from "./sheet/useSheet";
-import { TASK_STATUS_MARK, TASK_STATUS_LABEL } from "./taskStatus";
+import { TaskStatusMark, TASK_STATUS_LABEL } from "./taskStatus";
 import { tasksReadThroughCurrentClient } from "./tasksRead";
 import { Copy, ErrorMessage, useColors } from "./ui";
 import { Button } from "./sheet/Grouped";
@@ -139,14 +138,8 @@ export function TaskList({
 					style={{ minHeight: 44, justifyContent: "center", gap: 4 }}
 				>
 					<View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
-						{/* The state's mark, a tinted SF Symbol beside the description;
-						    the composed label above already reads the state in words. */}
-						<SymbolView
-							name={TASK_STATUS_MARK[task.status].name}
-							tintColor={colors.palette[TASK_STATUS_MARK[task.status].tint]}
-							size={16}
-							style={{ marginTop: 2 }}
-						/>
+						{/* The composed label above already reads the state in words. */}
+						<TaskStatusMark status={task.status} size={16} style={{ marginTop: 2 }} />
 						<Copy>{task.description}</Copy>
 					</View>
 					{!open && latest && (task.status === "open" || task.status === "in_progress") ? (

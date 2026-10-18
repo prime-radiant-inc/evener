@@ -19,6 +19,9 @@ export interface SessionMenuProps {
 	deletionAvailable: boolean;
 	close: () => void;
 	choose: (destination: SessionDestination) => void;
+	/** Where each row's action goes: the screen's own chooser, the same
+	 * chooseSessionAction the iOS header menu's items press. */
+	onAction: (action: SessionMenuAction) => void;
 }
 
 type Entry = NativeStackHeaderItemMenuAction | NativeStackHeaderItemMenuSubmenu;
@@ -35,38 +38,16 @@ interface SheetRow {
 	act: SessionMenuAction | null;
 }
 
-/** The menu's entries opened out flat, its submenus in place: the level
- * submenu's rows show in the sheet as the checked rows the native menu folds
- * under one heading. */
-function flatEntries(items: readonly Entry[]): Entry[] {
-	return items.flatMap((entry) => (entry.type === "submenu" ? flatEntries(entry.items) : [entry]));
-}
-
-/** The label the level submenu carries ("Detail level · Full" or the bare
- * heading), which the sheet shows as its group's label. */
-function levelLabel(items: readonly Entry[]): string | undefined {
-	const [first] = items;
-	return first?.type === "submenu" ? first.label : undefined;
-}
-
-/** Where a menu action goes on this side: the destinations the screen opens,
- * or null for the ones the screen runs itself (stop, archive, shut down),
- * which the sheet hands back through `act`. */
-const DESTINATIONS: Partial<Record<SessionMenuAction["kind"], SessionDestination>> = {
-	find: "find",
-	activity: "subagents",
-	tasks: "tasks",
-	notes: "notes",
-	info: "session",
-	pin: "pin",
-};
-
 /** The rows the sheet draws for the menu's entries, in the menu's order. */
-export function sessionMenuSheetRows(input: SessionMenuInput): { label?: string; rows: SheetRow[] } {
-	const [item] = sessionMenu(input);
+export function sessionMenuSheetRows(input: SessionMenuInput): { rows: SheetRow[] } {
+	// Each entry's own press carries its action; pressing an entry through the
+	// same sessionMenu() the sheet reads records what its row must hand the
+	// screen. This is per entry, not per label: a detail level and an action
+	// can share a label ("Activity"), and the level's row must carry the level.
+	let act: SessionMenuAction | null = null;
+	const [item] = sessionMenu({ ...input, choose: (action) => void (act = action) });
 	if (item?.type !== "menu") return { rows: [] };
 	const entries = item.menu.items;
-	const label = levelLabel(entries);
 	const rows: SheetRow[] = [];
 	const walk = (list: readonly Entry[]) => {
 		for (const entry of list) {
@@ -74,32 +55,20 @@ export function sessionMenuSheetRows(input: SessionMenuInput): { label?: string;
 				walk(entry.items);
 				continue;
 			}
+			act = null;
+			entry.onPress();
 			rows.push({
 				label: entry.label,
 				sub: entry.description,
 				destructive: entry.destructive === true,
 				checked: entry.state === "on",
 				disabled: entry.disabled === true,
-				act: null,
+				act,
 			});
 		}
 	};
 	walk(entries);
-	return { label, rows: rows.map((row) => ({ ...row, act: actionOf(row.label, input) })) };
-}
-
-/** The action a label's press carries, taken from the entry's own onPress by
- * the choose the caller wired: the sheet routes a row exactly where the native
- * menu routes its item. */
-function actionOf(label: string, input: SessionMenuInput): SessionMenuAction | null {
-	let found: SessionMenuAction | null = null;
-	sessionMenu({ ...input, choose: (action) => void (found = action) })
-		.flatMap((item) => (item.type === "menu" ? flatEntries(item.menu.items) : []))
-		.filter((entry) => entry.type === "action")
-		.forEach((entry) => {
-			if (entry.label === label) entry.onPress();
-		});
-	return found;
+	return { rows };
 }
 
 /** The Android/older-RN twin of the ⋯ menu (screens.tsx: iOS draws
@@ -107,7 +76,7 @@ function actionOf(label: string, input: SessionMenuInput): SessionMenuAction | n
  * sheet). Its rows are regenerated from the same sessionMenu() data, so the
  * two surfaces cannot drift: the same labels, in the same order, with the same
  * descriptions, destructive tones and disabled states. */
-export function SessionMenu({ title, hubName, menu, deletionAvailable, close, choose }: SessionMenuProps) {
+export function SessionMenu({ title, hubName, menu, deletionAvailable, close, choose, onAction }: SessionMenuProps) {
 	const { palette } = useColors();
 	const { rows } = sessionMenuSheetRows({ ...menu, choose: () => {} });
 	return (
@@ -150,9 +119,7 @@ export function SessionMenu({ title, hubName, menu, deletionAvailable, close, ch
 									tone={row.destructive ? "danger" : "accent"}
 									onPress={() => {
 										close();
-										const kind = row.act?.kind;
-										const destination = kind ? DESTINATIONS[kind] : undefined;
-										if (destination) choose(destination);
+										if (row.act) onAction(row.act);
 									}}
 								/>
 							))}
