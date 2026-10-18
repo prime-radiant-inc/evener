@@ -259,7 +259,7 @@ function assertResult(result, expectedWidth) {
     prompt.headingText !== "What should the agent do?" ||
     !prompt.headingVisible ||
     prompt.subtitleTag !== "p" ||
-    prompt.subtitleText !== "Leave blank to start a dormant session." ||
+    prompt.subtitleText !== "Leave blank to start an empty session and write the task there." ||
     !prompt.subtitleVisible ||
     prompt.headingHiddenFromAT ||
     prompt.subtitleHiddenFromAT

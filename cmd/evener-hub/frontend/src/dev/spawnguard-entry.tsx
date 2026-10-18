@@ -123,7 +123,7 @@ if (new URLSearchParams(window.location.search).has("onboarding")) {
     baseUrl: "https://provider.example/v1",
     // A real listing gives a destination its endpoint fingerprint (the hub keys
     // one unless it cannot). The onboarding check asserts it, so without it the
-    // flow refuses the check and never exposes Continue.
+    // flow refuses the check and never exposes Choose model.
     endpointFingerprint: "fp-provider",
   };
   fake.on("evener/instance/list", () => {
@@ -660,7 +660,10 @@ async function onboardingButton(name: string): Promise<HTMLButtonElement> {
   const deadline = performance.now() + 10_000;
   for (;;) {
     const button = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-      (candidate) => candidate.textContent?.trim() === name && isElementVisible(candidate) && !candidate.disabled,
+      (candidate) =>
+        (candidate.getAttribute("aria-label") ?? candidate.textContent?.trim()) === name &&
+        isElementVisible(candidate) &&
+        !candidate.disabled,
     );
     if (button) return button;
     if (performance.now() > deadline) throw new Error(`Onboarding did not expose ${name}`);
@@ -697,7 +700,7 @@ async function exerciseProviderOnboarding(): Promise<string[]> {
   freshKey.dispatchEvent(new Event("input", { bubbles: true }));
   await new Promise((resolve) => requestAnimationFrame(resolve));
   (await onboardingButton("Save and check")).click();
-  const continuation = await onboardingButton("Continue");
+  const continuation = await onboardingButton("Choose model");
   if (fake.calls.some((call) => call.method === "thread/start")) failures.push("save started a session");
   failures.push(...scanHorizontalOverflow());
   continuation.click();
