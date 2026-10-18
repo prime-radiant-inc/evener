@@ -141,6 +141,7 @@
     "state/mutation/projection.ts",
     "state/mutation/projectionWork.ts",
     "state/mutation/secureUUID.ts",
+    "state/mutation/settledIdentities.ts",
     "state/mutation/submission.ts",
     "spawnSchema.ts",
     "spawnPluginSelectionState.ts",
