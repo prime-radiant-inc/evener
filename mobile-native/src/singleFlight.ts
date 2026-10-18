@@ -50,6 +50,7 @@ export function singleFlight(run: () => Promise<unknown>, idle: () => boolean = 
 		},
 		settle() {
 			requested = false;
+			for (const wait of waits.splice(0)) wait();
 		},
 		abandon() {
 			// The owner dropped the run in flight; it may never settle, so a
