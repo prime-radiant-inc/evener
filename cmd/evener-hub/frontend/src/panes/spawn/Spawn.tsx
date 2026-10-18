@@ -1063,36 +1063,40 @@ function SpawnForm({
     generation: number;
     entries: Map<string, Promise<ModelListResponse>>;
   }>({ client, instances: providerSetup.instances, generation: credentialsGeneration, entries: new Map() });
-  const loadModelList = useCallback((): Promise<ModelListResponse> => {
-    if (
-      modelListCache.current.client !== client ||
-      modelListCache.current.instances !== providerSetup.instances ||
-      modelListCache.current.generation !== credentialsGeneration
-    ) {
-      modelListCache.current = {
-        client,
-        instances: providerSetup.instances,
-        generation: credentialsGeneration,
-        entries: new Map(),
-      };
-    }
-    const cache = modelListCache.current.entries;
-    const key = `${submittedSource}\0${harness}\0${cwd}`;
-    const cached = cache.get(key);
-    if (cached) return cached;
+  const loadModelList = useCallback(
+    (refresh = false): Promise<ModelListResponse> => {
+      if (
+        modelListCache.current.client !== client ||
+        modelListCache.current.instances !== providerSetup.instances ||
+        modelListCache.current.generation !== credentialsGeneration
+      ) {
+        modelListCache.current = {
+          client,
+          instances: providerSetup.instances,
+          generation: credentialsGeneration,
+          entries: new Map(),
+        };
+      }
+      const cache = modelListCache.current.entries;
+      const key = `${submittedSource}\0${harness}\0${cwd}`;
+      const cached = cache.get(key);
+      if (cached && !refresh) return cached;
 
-    const request = hostRequest(client, submittedSource, "model/list", {
-      harness: harness || undefined,
-      cwd: cwd || undefined,
-    });
-    let tracked: Promise<ModelListResponse>;
-    tracked = request.catch((error) => {
-      if (cache.get(key) === tracked) cache.delete(key);
-      throw error;
-    });
-    cache.set(key, tracked);
-    return tracked;
-  }, [client, submittedSource, harness, cwd, providerSetup.instances, credentialsGeneration]);
+      const request = hostRequest(client, submittedSource, "model/list", {
+        harness: harness || undefined,
+        cwd: cwd || undefined,
+        refresh: refresh || undefined,
+      });
+      let tracked: Promise<ModelListResponse>;
+      tracked = request.catch((error) => {
+        if (cache.get(key) === tracked) cache.delete(key);
+        throw error;
+      });
+      cache.set(key, tracked);
+      return tracked;
+    },
+    [client, submittedSource, harness, cwd, providerSetup.instances, credentialsGeneration],
+  );
   const loadModels = useCallback(() => loadModelList().then((response) => response.data ?? []), [loadModelList]);
   const modelListRevision = useSameScopeRevision(submittedSource, credentialsGeneration, providerSetup.instances);
   // Every model-valued control in the spawn pane consumes this one scoped
@@ -1106,8 +1110,7 @@ function SpawnForm({
       // post-connection refresh with the listing it fetched before connecting,
       // and only providerConnected's own entries.clear() would be holding that
       // apart - an invisible coupling the loader itself should own.
-      if (refresh) modelListCache.current.entries.clear();
-      return loadModelList().then(modelListToCatalog);
+      return loadModelList(refresh).then(modelListToCatalog);
     },
     [loadModelList],
   );

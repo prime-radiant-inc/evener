@@ -1436,10 +1436,12 @@ test("remote model catalogue recovery retries the remote read without offering l
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
   ]);
   let modelReads = 0;
+  const modelRequests: HostRequestParams[] = [];
   const client = readyClient((fake) => {
     fake.on("evener/host/request", (params) => {
       const request = params as HostRequestParams;
       if (request.method === "model/list") {
+        modelRequests.push(request);
         modelReads += 1;
         throw new WireError("remote catalog unavailable", -32000);
       }
@@ -1458,6 +1460,7 @@ test("remote model catalogue recovery retries the remote read without offering l
   const beforeRetry = modelReads;
   await user.click(screen.getByRole("button", { name: "Retry models" }));
   await waitFor(() => expect(modelReads).toBeGreaterThan(beforeRetry));
+  expect(modelRequests.at(-1)).toMatchObject({ host: "buildbox", params: { refresh: true } });
   expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toEqual([]);
 });
 

@@ -70,3 +70,17 @@ the Go assertions passed. The test is never paused as a recording server.
 
 This guard is a desktop smoke acceptance path, not the complete visual/theme,
 OAuth, remote-host, access-mode, catalogue-recovery or repository gate matrix.
+
+## Activation lifecycle regression
+
+`go test -tags browserguard ./cmd/evener-hub -run '^TestOnboardingEvidenceButtonLifecycle$' -count=1`
+runs the actual walkthrough button helper against real Chrome DOM controls.
+A recording-pause callback disables, aria-disables, hides or covers a control.
+The test forwards all CDP commands/results unchanged, observes the blocked
+activation/readiness operation, then replaces the control with a ready one.
+It requires zero blocked activations and exactly one activation after recovery.
+This is driver/DOM coverage, not a mock frontend E2E. The full onboarding test
+still uses the production UI and real AppWire/provider boundary.
+
+Recording pauses precede the bounded readiness wait. Visibility, native and ARIA
+disabled state, center hit testing, and activation occur in the same browser turn.

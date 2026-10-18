@@ -29,6 +29,17 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+// This is a real DOM driver test, separate from the production-app E2E below.
+func TestOnboardingEvidenceButtonLifecycle(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires Chrome")
+	}
+	cmd := exec.CommandContext(t.Context(), "node", "frontend/scripts/onboardingguard/button-browser.mjs", t.TempDir())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("button lifecycle: %v\n%s", err, out)
+	}
+}
+
 // TestOnboardingBrowser drives embedded production UI, real AppWire and the
 // production HubSpawner/daemon. Only the external HTTP provider is scripted.
 func TestOnboardingBrowser(t *testing.T) {

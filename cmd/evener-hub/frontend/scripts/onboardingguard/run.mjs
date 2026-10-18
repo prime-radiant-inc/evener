@@ -6,6 +6,7 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
 import { Driver } from "../skillguard/run.mjs";
+import { button as activateButton } from "./button.mjs";
 import { captureAccessViews, record } from "./record.mjs";
 
 const args = Object.fromEntries(
@@ -27,9 +28,7 @@ const wait = (source, label) => driver.waitPage(source, { label });
 const hasButton = (name) =>
   `[...document.querySelectorAll('button')].some(b => (b.textContent.trim() === ${JSON.stringify(name)} || b.getAttribute('aria-label') === ${JSON.stringify(name)}) && !b.disabled)`;
 async function button(name) {
-  await wait(hasButton(name), `button ${name}`);
-  await pause();
-  await driver.clickByText(name);
+  await activateButton(driver, pause, name);
 }
 async function fill(selector, value) {
   await wait(
