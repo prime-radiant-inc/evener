@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -113,6 +114,111 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeDocFileRaw(w, r, doc)
+}
+
+// downloadTypes names the media types a download serves, by extension. Go's
+// mime package consults the host's own tables, so its answer differs between
+// macOS and Linux; these are the types agent-written attachments actually use,
+// and the list is what makes the header the same on every hub.
+var downloadTypes = map[string]string{
+	".mp4":  "video/mp4",
+	".m4v":  "video/x-m4v",
+	".mov":  "video/quicktime",
+	".webm": "video/webm",
+	".mp3":  "audio/mpeg",
+	".m4a":  "audio/mp4",
+	".wav":  "audio/wav",
+	".pdf":  "application/pdf",
+	".zip":  "application/zip",
+	".gz":   "application/gzip",
+	".tar":  "application/x-tar",
+	".csv":  "text/csv",
+	".txt":  "text/plain; charset=utf-8",
+	".md":   "text/markdown; charset=utf-8",
+	".json": "application/json",
+	".html": "text/html; charset=utf-8",
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+}
+
+// downloadMediaType names what a download's bytes are, without trusting them.
+// The extension is the only input: sniffing a video's header is unreliable and
+// a sniffed text/html would let a file the agent wrote run as a page.
+func downloadMediaType(name string) string {
+	ext := strings.ToLower(filepath.Ext(name))
+	if mediaType, ok := downloadTypes[ext]; ok {
+		return mediaType
+	}
+	if mediaType := mime.TypeByExtension(ext); mediaType != "" {
+		return mediaType
+	}
+	return "application/octet-stream"
+}
+
+// handleDocDownload streams a session file's whole bytes, for a client that
+// will save it or hand it to another app. /doc/file stops at docFileMaxBytes
+// because a pane shows a head; a shared attachment must be the real file, so
+// this route copies the open file with no cap of its own.
+//
+// Containment is /doc/file's: the path must resolve inside the session's cwd
+// (fspaths.ResolveInRoot), and the open goes through an os.Root at that cwd
+// (openDocInRoot), so a symlink swapped in after the check cannot lead out. A
+// non-regular file is refused: a FIFO would make the copy wait forever. A
+// host-qualified session id is refused rather than read locally: proxying a
+// whole file to the owning host is not implemented yet (evener/session/document
+// answers only the first 512 KiB), so a session on another host cannot be
+// downloaded.
+func (s *WebServer) handleDocDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	session := canonicalRouteID(r.URL.Query().Get("session"))
+	rel := r.URL.Query().Get("path")
+	if session == "" || rel == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if _, ok := hostQualifiedRouteRef(session); ok {
+		http.Error(w, "remote session not supported", http.StatusNotImplemented)
+		return
+	}
+	cwd, err := s.localSessionCWD(r.Context(), session)
+	if err != nil {
+		serveSessionRootError(w, r, err)
+		return
+	}
+	abs, err := fspaths.ResolveInRoot(cwd, rel)
+	if err != nil {
+		if errors.Is(err, fspaths.ErrPathEscapesRoot) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		http.NotFound(w, r)
+		return
+	}
+	f, err := docOpen(cwd, abs)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
+	info, err := docStat(f)
+	if err != nil || !info.Mode().IsRegular() {
+		http.NotFound(w, r)
+		return
+	}
+	name := filepath.Base(abs)
+	w.Header().Set("Content-Type", downloadMediaType(name))
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	// A download is a snapshot of the file now, not a cacheable resource.
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, f)
 }
 
 // sessionDocumentFromHub serves the evener/session/document AppWire method: one

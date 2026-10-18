@@ -172,6 +172,14 @@ export function docImageReadURL(origin: string, session: string, readTarget: str
   return `${docImageURL(origin, session, readTarget)}&read=${encodeURIComponent(generation)}`;
 }
 
+// docDownloadURL builds the /doc/download href for a session-scoped,
+// cwd-relative path: the whole-file read a native client saves or hands to
+// another app. Unlike /doc/file's raw variant there is no pane cap, so the
+// response body is the file itself.
+export function docDownloadURL(origin: string, session: string, path: string): string {
+  return `${docBase(origin)}/doc/download?session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`;
+}
+
 // filenameOf returns the last segment of a slash path: a document's name when
 // it has no title of its own, on the web's doc pane tab and the phone's Reader.
 export function filenameOf(path: string): string {
