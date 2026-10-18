@@ -1519,7 +1519,7 @@ test("connection handoff shows the actual instance models and preserves draft un
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
   fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
   await settled();
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await user.click(await screen.findByRole("button", { name: "Choose model" }));
   // The completed connection hands off to the picker, which reopens scoped to
   // the connected instance: its models are offered, the unrelated provider's
   // are not.
@@ -1540,7 +1540,7 @@ test("connection handoff shows the actual instance models and preserves draft un
   });
 });
 
-test("fresh guided connection waits for Continue and explicit model choice without changing the draft", async () => {
+test("fresh guided connection waits for a successful check and explicit model choice without changing the draft", async () => {
   const user = setupUser();
   let saved = false;
   const setup = {
@@ -1608,7 +1608,7 @@ test("fresh guided connection waits for Continue and explicit model choice witho
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
   fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
   await settled();
-  const next = await screen.findByRole("button", { name: "Continue" });
+  const next = await screen.findByRole("button", { name: "Choose model" });
   expect(screen.queryByRole("option", { name: /Server choice/ })).toBeNull();
   expect(modelValue().textContent).not.toBe("openai/from-server");
   expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
@@ -1693,7 +1693,7 @@ test("closing the handoff without choosing requires an explicit model before Sta
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
   fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
   await settled();
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await user.click(await screen.findByRole("button", { name: "Choose model" }));
   await screen.findByRole("option", { name: /Server choice/ });
   await user.keyboard("{Escape}");
   // The resolved default is non-empty, so the noDefaultModel gate alone would
@@ -1858,7 +1858,7 @@ test("successful keyless testing refreshes availability without an auth notifica
   const testConnection = await screen.findByRole("button", { name: "Check connection" });
   available = true;
   await user.click(testConnection);
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await user.click(await screen.findByRole("button", { name: "Choose model" }));
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
     { method: "evener/auth/test", params: { provider: "ollama", expectedEndpointFingerprint: "fp-ollama" } },
   ]);
@@ -4156,7 +4156,7 @@ test("an Advanced-options model override after onboarding satisfies the requirem
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
   fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
   await settled();
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await user.click(await screen.findByRole("button", { name: "Choose model" }));
   await screen.findByRole("option", { name: /Server choice/ });
   await user.keyboard("{Escape}");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);

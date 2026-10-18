@@ -396,10 +396,10 @@ function SpawnForm({
     setConnectingProvider(false);
   }, [submittedSource]);
   const providerConnected = useCallback(
-    (instance?: string | { name?: string }) => {
+    (name?: string) => {
       setConnectingProvider(false);
       modelListCache.current.entries.clear();
-      setModelHandoff({ name: typeof instance === "string" ? instance : instance?.name });
+      setModelHandoff({ name });
       void providerSetup.retry();
     },
     [providerSetup.retry],
