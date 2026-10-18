@@ -251,15 +251,18 @@ export class NavigationPages<T> implements PageSource<T> {
 	}
 	resume() {
 		this.paused = false;
-		if (this.state.stale) this.scheduleReread();
 		// A failed read the pause held back is still owed, and so is a
 		// recovery cancelled mid-walk: its earlier pages may have landed clean,
 		// leaving neither stale nor error, while the depth it still owes is
 		// the only record of the rows the reader had. The depth re-arms for
 		// every reader — the pages were visible, and returning must restore
 		// them — while the automatic retry of a merely failed read stays
-		// opt-in, where the page already owns its own retry pacing.
-		if (this.state.error !== null && this.readRetry) this.rereads.request();
+		// opt-in, where the page already owns its own retry pacing. A stale
+		// page schedules its own re-read; queueing the depth behind it too
+		// would leave a trailing run that fires the moment the resumed walk
+		// fails, never waiting out the backoff.
+		if (this.state.stale) this.scheduleReread();
+		else if (this.state.error !== null && this.readRetry) this.rereads.request();
 		else if (this.recoveryDepth && this.owedDepth !== null) this.rereads.request();
 		this.rereads.drain();
 	}

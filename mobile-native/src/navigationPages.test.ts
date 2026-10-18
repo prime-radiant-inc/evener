@@ -394,6 +394,45 @@ describe("a failed read's own retry", () => {
 		expect(pages.getSnapshot().error).toBeNull();
 	});
 
+	it("a stale resume that fails waits out the backoff, with no trailing run queued", async () => {
+		const { requests, pages, requested, invalidate } = boundary();
+		pages.watch();
+		// Three pages loaded: the reader reached a depth of six rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 2, 1, 2));
+		await more;
+		const deepest = pages.more();
+		requests[2].resolve(response(["e", "f"], 0, 1, 4));
+		await deepest;
+		// A hub change starts a recovery; the reader leaves before its reset
+		// lands, so the page is stale with the depth owed underneath.
+		invalidate({
+			generationId: "hub-generation",
+			sequence: 2,
+			targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+		});
+		await requested(4);
+		pages.cancel();
+		pages.resume();
+		// The resumed re-read starts and fails: the next read must wait for
+		// the backoff the failure armed, not fire from a trailing run the
+		// resume queued behind the stale re-read.
+		await requested(5);
+		requests[4].reject(new Error("request timed out"));
+		// The failed read leaves the page stale: drain the microtasks so the
+		// failure's retry timer arms before counting.
+		await Promise.resolve();
+		await Promise.resolve();
+		const reads = requests.length;
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1) - 1);
+		expect(requests).toHaveLength(reads);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(requests).toHaveLength(reads + 1);
+	});
+
 	it("resume restores a cancelled recovery's depth without the retry opt-in", async () => {
 		const { requests, pages, requested, invalidate } = boundary("catalog", { readRetry: false });
 		pages.watch();
