@@ -1412,6 +1412,8 @@ test("local model catalogue repair opens the existing connection dialog without 
   connectionStore.getState().connect(client);
   renderSpawn(client);
   await settled();
+  await fillPrompt(user, "repair-draft");
+  await setWorkingDir(user, "/tmp/repair-project");
 
   await user.click(modelTrigger());
   await screen.findByRole("alert");
@@ -1421,6 +1423,9 @@ test("local model catalogue repair opens the existing connection dialog without 
   });
 
   expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("textContent", "repair-draft");
+  expectWorkingDir("/tmp/repair-project");
+  expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
   expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toEqual([]);
 });
 

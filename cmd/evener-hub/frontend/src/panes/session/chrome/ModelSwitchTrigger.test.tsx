@@ -1,8 +1,9 @@
 import { WireError } from "@evener/appwire-client";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { expect, test, vi } from "vitest";
-import type { ModelCatalog } from "../../../widgets";
+import { Button, Dialog, type ModelCatalog } from "../../../widgets";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
 import rawStyles from "./modelswitch.module.css";
@@ -318,6 +319,23 @@ test("an empty scoped catalogue can expose other instances or open the current c
   expect(await screen.findByRole("option", { name: /Other model/ })).toBeTruthy();
 });
 
+test("an empty actual-instance scope retries through the same loader and stays scoped", async () => {
+  const user = userEvent.setup();
+  const loadCatalog = vi.fn(async () => ({
+    models: [{ provider: "other", model: "available", displayName: "Other model" }],
+    recent: [],
+  }));
+  const { props, rerender } = renderTrigger({ loadCatalog });
+  rerender(<ModelSwitchTrigger {...props} connectionRequest={{ name: "team-local" }} />);
+  await screen.findByRole("listbox");
+
+  await user.click(screen.getByRole("button", { name: "Retry models" }));
+
+  await waitFor(() => expect(loadCatalog).toHaveBeenNthCalledWith(2, true));
+  expect(screen.queryByRole("option")).toBeNull();
+  expect(screen.getByRole("button", { name: "Show all models" })).toBeTruthy();
+});
+
 test("recovery actions use the latest loader and connection callback identities", async () => {
   const user = userEvent.setup();
   const firstLoader = vi.fn(async () => ({ models: [], recent: [] }));
@@ -454,6 +472,64 @@ test("Escape closes the mobile sheet and returns focus to the trigger", async ()
     await user.keyboard("{Escape}");
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("a failed mobile Sheet retries through the catalogue loader", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const loadCatalog = vi
+    .fn<Parameters<typeof ModelSwitchTrigger>[0]["loadCatalog"]>()
+    .mockRejectedValueOnce(new Error("catalog boom"))
+    .mockResolvedValueOnce(catalog());
+  try {
+    renderTrigger({ loadCatalog });
+    await user.click(screen.getByTestId("trigger"));
+    const sheet = await screen.findByRole("dialog", { name: "Choose model" });
+    await user.click(within(sheet).getByRole("button", { name: "Retry models" }));
+
+    await waitFor(() => expect(within(sheet).getAllByRole("option")).toHaveLength(2));
+    expect(loadCatalog).toHaveBeenNthCalledWith(2, true);
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("mobile connection repair moves focus into its replacement dialog and dismissal restores the trigger", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  function Harness() {
+    const [connectionOpen, setConnectionOpen] = useState(false);
+    return (
+      <>
+        <ModelSwitchTrigger
+          label="team-local/model"
+          value=""
+          loadCatalog={async () => ({ models: [], recent: [] })}
+          onPick={vi.fn()}
+          onOpenConnection={() => setConnectionOpen(true)}
+          data-testid="trigger"
+        />
+        <Dialog open={connectionOpen} onClose={() => setConnectionOpen(false)} title="Connection settings">
+          <Button>Editor control</Button>
+        </Dialog>
+      </>
+    );
+  }
+  try {
+    render(<Harness />);
+    const trigger = screen.getByTestId("trigger");
+    await user.click(trigger);
+    const sheet = await screen.findByRole("dialog", { name: "Choose model" });
+    await user.click(within(sheet).getByRole("button", { name: "Connection settings" }));
+
+    const replacement = await screen.findByRole("dialog", { name: "Connection settings" });
+    expect(document.activeElement).toBe(within(replacement).getByRole("button", { name: "Editor control" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connection settings" })).toBeNull());
     expect(document.activeElement).toBe(trigger);
   } finally {
     restoreViewport();

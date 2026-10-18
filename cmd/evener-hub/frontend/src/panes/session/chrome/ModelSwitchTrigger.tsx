@@ -14,10 +14,11 @@
 // (panes/spawn/Spawn.tsx). Both get the identical affordance because it is the
 // identical component, which is the whole point of issue #198.
 //
-// The picker offers models and nothing else: no connect-provider entry on
-// either surface. Provider setup is not one of the choices, so it happens
-// where it has a real flow (the spawn pane's own notices, the credentials
-// pane), never mid-list.
+// Ordinary picker rows offer models and nothing else: provider setup is not a
+// model choice and never enters ModelCatalogPanel. After a failed or empty
+// read, a pane-level caller such as Spawn may compose one Connection settings
+// recovery action outside the panel, handing off to its existing setup flow;
+// no widget API owns provider setup.
 //
 // The picker's OVERLAY is viewport-selected (docs/web-ui/design-system.md §11):
 // a floating Popover with the search combobox on desktop, the same catalog
