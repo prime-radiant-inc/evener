@@ -8,6 +8,7 @@ import type {
 } from "@evener/appwire-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { reconnectDelay } from "../hubConnection";
 import { createSearchController, projectResults, searchResultMark, sessionResults } from "./boardSearch";
 
 /** A hub that holds every evener/search until the test answers it. */
@@ -127,6 +128,83 @@ describe("the search controller", () => {
 		expect(search.getSnapshot().failed).toBe(false);
 		vi.advanceTimersByTime(250);
 		expect(hub.requests).toHaveLength(2);
+	});
+
+	it("re-asks a failed search on its own, until an answer lands", async () => {
+		const hub = boundary();
+		const search = createSearchController();
+		search.setClient(hub.client);
+		search.setQuery("fix");
+		vi.advanceTimersByTime(250);
+		hub.requests[0].reject(new Error("request timed out"));
+		await settle();
+		expect(search.getSnapshot().failed).toBe(true);
+		// The re-ask waits the backoff's first step, then asks the same query.
+		vi.advanceTimersByTime(reconnectDelay(1) - 1);
+		expect(hub.requests).toHaveLength(1);
+		vi.advanceTimersByTime(1);
+		expect(hub.requests.map((request) => request.params.query)).toEqual(["fix", "fix"]);
+		const answer = { live: [result("a")], past: [] };
+		hub.requests[1].resolve(answer);
+		await settle();
+		expect(search.getSnapshot()).toMatchObject({ results: answer, failed: false });
+		// Answered: nothing re-asks again.
+		const asked = hub.requests.length;
+		vi.advanceTimersByTime(reconnectDelay(2) * 2);
+		expect(hub.requests).toHaveLength(asked);
+	});
+
+	it("grows the re-ask's backoff with each failure in a row", async () => {
+		const hub = boundary();
+		const search = createSearchController();
+		search.setClient(hub.client);
+		search.setQuery("fix");
+		vi.advanceTimersByTime(250);
+		hub.requests[0].reject(new Error("request timed out"));
+		await settle();
+		vi.advanceTimersByTime(reconnectDelay(1));
+		expect(hub.requests).toHaveLength(2);
+		hub.requests[1].reject(new Error("request timed out"));
+		await settle();
+		vi.advanceTimersByTime(reconnectDelay(2) - 1);
+		expect(hub.requests).toHaveLength(2);
+		vi.advanceTimersByTime(1);
+		expect(hub.requests).toHaveLength(3);
+	});
+
+	it("a query change clears the pending re-ask and asks the new query afresh", async () => {
+		const hub = boundary();
+		const search = createSearchController();
+		search.setClient(hub.client);
+		search.setQuery("fix");
+		vi.advanceTimersByTime(250);
+		hub.requests[0].reject(new Error("request timed out"));
+		await settle();
+		search.setQuery("fixes");
+		// The failed query's re-ask died with the query change: only the new
+		// query's debounced ask runs.
+		vi.advanceTimersByTime(reconnectDelay(1) * 2);
+		expect(hub.requests.map((request) => request.params.query)).toEqual(["fix", "fixes"]);
+		expect(search.getSnapshot()).toMatchObject({ query: "fixes", failed: false });
+	});
+
+	it("a client swap clears the pending re-ask and asks on the new client", async () => {
+		const hub = boundary();
+		const search = createSearchController();
+		search.setClient(hub.client);
+		search.setQuery("fix");
+		vi.advanceTimersByTime(250);
+		hub.requests[0].reject(new Error("request timed out"));
+		await settle();
+		const next = boundary();
+		search.setClient(next.client);
+		// The failure belonged to the old client; the new one asks at once and
+		// nothing re-asks the old query later.
+		expect(next.requests.map((request) => request.params.query)).toEqual(["fix"]);
+		expect(search.getSnapshot().failed).toBe(false);
+		vi.advanceTimersByTime(reconnectDelay(1) * 2);
+		expect(next.requests).toHaveLength(1);
+		expect(hub.requests).toHaveLength(1);
 	});
 
 	it("drops an answer that lands after the query changed, before the new query is asked", async () => {

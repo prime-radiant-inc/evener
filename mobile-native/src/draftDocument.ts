@@ -48,6 +48,10 @@ export class DraftDocument {
 	constructor(
 		private repository: () => Pick<DraftRepository, "read" | "write" | "imageInputs">,
 		private destination: DraftDestination,
+		/** Fresh identities for re-issued attachments. The default is unique
+		 * across app restarts; production passes the app's own randomUUID. */
+		private createImageId: () => string = () =>
+			`reissue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
 	) {
 		this.retry();
 	}
@@ -178,26 +182,54 @@ export class DraftDocument {
 	async submit(operation: (text: string, images: InputAttachment[]) => Promise<boolean>) {
 		return this.submitContent(this.snapshot.record.draft, false, operation);
 	}
-	async submitText(text: string, operation: (text: string, images: InputAttachment[]) => Promise<boolean>) {
-		return this.submitContent(text, true, operation);
+	/** Submit composer text without consuming the draft. `reissued` carries the
+	 * attachments of an input being re-sent (a Retry): they travel with the text
+	 * and the guard counts them, so an image-only re-issue can send. */
+	async submitText(
+		text: string,
+		operation: (text: string, images: InputAttachment[]) => Promise<boolean>,
+		reissued?: InputAttachment[],
+	) {
+		return this.submitContent(text, true, operation, reissued);
 	}
 	private async submitContent(
 		text: string,
 		preserveDraft: boolean,
 		operation: (text: string, images: InputAttachment[]) => Promise<boolean>,
+		reissued?: InputAttachment[],
 	) {
 		const { record, loaded, submitting, error } = this.snapshot;
 		const images = preserveDraft ? [] : (record.images ?? []);
-		if (!loaded || submitting || error || record.unconfirmed !== null || (!text.trim() && images.length === 0)) return;
+		const outbound = reissued ?? images;
+		if (!loaded || submitting || error || record.unconfirmed !== null || (!text.trim() && outbound.length === 0))
+			return;
+		// A re-issued input (a Retry) carries its images as wire attachments:
+		// register them as pending image data so the uncertain record keeps
+		// both the references and the bytes, and recovery restores the whole
+		// input instead of text with orphaned markers.
+		const reissuedRecords: DraftImage[] = [];
+		if (reissued) {
+			for (const attachment of reissued) {
+				const data: DraftImageData = {
+					id: this.createImageId(),
+					marker: attachment.marker,
+					mediaType: attachment.mediaType,
+					...(attachment.name === undefined ? {} : { name: attachment.name }),
+					data: attachment.data,
+				};
+				this.unsavedImages.set(data.id, data);
+				reissuedRecords.push(data);
+			}
+		}
 		// Persist before invoking any transport operation. A crash after this point
 		// can only establish uncertainty, never that it is safe to replay the input.
-		const inputImages = this.repository().imageInputs(this.destination, images);
+		const inputImages = reissued ?? this.repository().imageInputs(this.destination, images);
 		this.persist(
 			{
 				draft: preserveDraft ? record.draft : "",
 				unconfirmed: text,
 				...(preserveDraft && record.images?.length ? { images: record.images } : {}),
-				...(images.length ? { unconfirmedImages: images } : {}),
+				...(outbound.length ? { unconfirmedImages: [...reissuedRecords, ...images] } : {}),
 			},
 			false,
 		);

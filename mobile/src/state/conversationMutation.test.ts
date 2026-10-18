@@ -155,3 +155,22 @@ describe("the production pending-row seam — client-owned outbox", () => {
 		expect(port.isOwnMutationRecord({ originClientId: "mutation-client-someone-else" })).toBe(true);
 	});
 });
+
+describe("the production pending-row seam — live-frame settlement", () => {
+	it("delegates a live frame's settled ids to the runtime", async () => {
+		const key = storageKey("hub-a", "ref-1");
+		const settled: string[][] = [];
+		const runtime = fakeRuntime();
+		const port = createConversationMutationPendingPort(
+			{ ...runtime.runtime, settleIdentities: async (ids) => void settled.push([...ids]) },
+			key,
+		);
+		await port.settleIdentities?.(["cmid-1", "cmid-2"]);
+		expect(settled).toEqual([["cmid-1", "cmid-2"]]);
+	});
+
+	it("offers no settlement when the runtime has none", () => {
+		const port = createConversationMutationPendingPort(fakeRuntime().runtime, storageKey("hub-a", "ref-1"));
+		expect(port.settleIdentities).toBeUndefined();
+	});
+});

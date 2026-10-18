@@ -9,6 +9,7 @@ export function singleFlight(run: () => Promise<unknown>, idle: () => boolean = 
 	let requested = false,
 		running = false,
 		generation = 0;
+	const waits: (() => void)[] = [];
 	const drain = () => {
 		if (!requested || running || !idle()) return;
 		requested = false;
@@ -18,6 +19,7 @@ export function singleFlight(run: () => Promise<unknown>, idle: () => boolean = 
 			void run().finally(() => {
 				if (gen !== generation) return;
 				running = false;
+				for (const wait of waits.splice(0)) wait();
 				drain();
 			});
 		} catch (error) {
@@ -28,6 +30,19 @@ export function singleFlight(run: () => Promise<unknown>, idle: () => boolean = 
 		}
 	};
 	return {
+		/** A promise that settles the next time no run is running and none is
+		 * requested — immediately when the flight is idle, or after the queued
+		 * work finishes — so a caller that just queued work observes its
+		 * completion. */
+		settled(): Promise<void> {
+			return new Promise((resolve) => {
+				const check = () => {
+					if (!requested && !running) resolve();
+					else waits.push(check);
+				};
+				check();
+			});
+		},
 		drain,
 		request() {
 			requested = true;
@@ -35,6 +50,7 @@ export function singleFlight(run: () => Promise<unknown>, idle: () => boolean = 
 		},
 		settle() {
 			requested = false;
+			for (const wait of waits.splice(0)) wait();
 		},
 		abandon() {
 			// The owner dropped the run in flight; it may never settle, so a

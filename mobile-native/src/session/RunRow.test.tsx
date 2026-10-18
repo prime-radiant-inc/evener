@@ -68,17 +68,42 @@ function header(root: ReactTestInstance) {
 	return root.findAll((node) => node.props.accessibilityLabel?.startsWith?.("4 steps"))[0];
 }
 
+/** The run's own fold chevron: the rotating wrapper around a chevron.right
+ * symbol, turned 90° while the run is open. */
+function foldRotation(root: ReactTestInstance): string | undefined {
+	const symbol = root.findAllByType("SymbolView" as never).find((node) => node.props.name === "chevron.right");
+	const transform = symbol?.parent?.props.style?.transform;
+	return Array.isArray(transform) ? transform[0]?.rotate : undefined;
+}
+
 describe("a run folded into one line", () => {
-	it("shows the summary behind a ▸ and draws the failed count in danger ink", () => {
+	it("shows the summary behind a fold chevron and draws the failed count in danger ink", () => {
 		const tree = render(<RunRow run={run} live={false} expanded={false} onToggle={() => {}} {...where} />);
 		const line = header(tree.root);
 		expect(line.props.accessibilityLabel).toBe(`${SUMMARY}, collapsed`);
 		expect(line.props.accessibilityRole).toBe("button");
-		expect(textOf(line)).toBe(`▸ ${SUMMARY}`);
+		expect(textOf(line)).toBe(SUMMARY);
+		// Folded, the chevron points right; the glyph itself never changes.
+		expect(foldRotation(tree.root)).toBe("0deg");
 		const failed = texts(tree.root).find((node) => textOf(node) === " (2 failed)");
 		expect(failed?.props.style).toMatchObject({ color: DANGER_INK });
 		// Folded, no step shows.
 		expect(texts(tree.root).some((node) => textOf(node) === "Read the session loop")).toBe(false);
+	});
+
+	it("gives its summary the space left beside the fold chevron, so a long line wraps there", () => {
+		const tree = render(<RunRow run={run} live={false} expanded={false} onToggle={() => {}} {...where} />);
+		// The line beside the chevron needs the same constraint the exit mark's
+		// line has (RunRow's own summary line): React Native defaults a row
+		// child's flexShrink to 0, so without flex the summary pushes the
+		// chevron offscreen instead of wrapping.
+		// The fold line's own Text is the one whose content is the summary:
+		// anchor on it, not on a symbol (the row's step evidence carries its
+		// own chevron.right).
+		const text = texts(tree.root).find((node) => node.props.children?.toString().includes("4 steps"));
+		// The Text carries the wrap constraint itself (flex 1, minWidth 0), the
+		// same contract the exit mark's line holds in RunRow's summary line.
+		expect(text?.props.style).toMatchObject({ flex: 1, minWidth: 0 });
 	});
 
 	// A part is keyed by its kind of step, never by its words: when "ran go
@@ -93,7 +118,7 @@ describe("a run folded into one line", () => {
 		const grown: Run = { ...run, steps: [...run.steps, step("e", "shell", { command: "ls" })] };
 		act(() => tree.update(<RunRow run={grown} {...props} />));
 		const line = tree.root.findAll((node) => node.props.accessibilityLabel?.startsWith?.("5 steps"))[0];
-		expect(textOf(line)).toBe("▸ 5 steps · read 1 file, ran 3 commands (2 failed), searched once");
+		expect(textOf(line)).toBe("5 steps · read 1 file, ran 3 commands (2 failed), searched once");
 		expect(failedCount()).toBe(before);
 	});
 
@@ -179,7 +204,9 @@ describe("a run expanded into its steps", () => {
 		const tree = render(<RunRow run={run} live={false} expanded onToggle={() => {}} {...where} />);
 		const line = header(tree.root);
 		expect(line.props.accessibilityLabel).toBe(`${SUMMARY}, expanded`);
-		expect(textOf(line)).toBe(`▾ ${SUMMARY}`);
+		expect(textOf(line)).toBe(SUMMARY);
+		// Open, the same chevron turns down.
+		expect(foldRotation(tree.root)).toBe("90deg");
 		const all = texts(tree.root).map(textOf);
 		// The model's intent when there is one, else the step's words (the
 		// package's toolStepSummary), which already name what it acted on.
@@ -199,7 +226,11 @@ describe("a run expanded into its steps", () => {
 				.filter((node) => node.props.style?.fontFamily === "Menlo")
 				.map(textOf),
 		).toEqual(["agent/session.go", "go test ./agent/...", "go test ./agent/...", '"Turn"']);
-		const marks = tree.root.findAllByType("SymbolView" as never);
+		// A step's own disclosure chevron is not a status mark, and neither is
+		// the run's fold chevron, so both are left out of this list.
+		const marks = tree.root
+			.findAllByType("SymbolView" as never)
+			.filter((mark) => !String(mark.props.name).startsWith("chevron"));
 		expect(marks.map((mark) => [mark.props.name, mark.props.tintColor])).toEqual([
 			["checkmark.circle.fill", INK_LOW],
 			["xmark.octagon.fill", DANGER_INK],
@@ -279,11 +310,16 @@ describe("a step's evidence", () => {
 		root.findAll((node) => node.props.accessibilityLabel === label && node.props.accessibilityRole !== undefined)[0] ??
 		root.findAll((node) => node.props.accessibilityLabel === label)[0];
 	const shown = (root: ReactTestInstance) => root.findAll((node) => String(node.type) === "StepEvidence");
-	const chevrons = (root: ReactTestInstance) =>
+	/** A step line's own disclosure chevrons. The run's own fold chevron is a
+	 * rotating chevron.right inside a transform wrapper (see foldRotation), so
+	 * it is excluded by shape, not by name: a step's closed chevron is a
+	 * chevron.right too. */
+	const stepChevrons = (root: ReactTestInstance) =>
 		root
 			.findAllByType("SymbolView" as never)
-			.map((mark) => mark.props.name)
-			.filter((name: string) => name.startsWith("chevron"));
+			.filter((mark) => String(mark.props.name).startsWith("chevron"))
+			.filter((mark) => !Array.isArray(mark.parent?.props?.style?.transform))
+			.map((mark) => mark.props.name);
 
 	it("opens under a step that has some, and closes again", () => {
 		const tree = render(
@@ -293,12 +329,12 @@ describe("a step's evidence", () => {
 		expect(shell.props.accessibilityRole).toBe("button");
 		expect(shell.props.accessibilityState).toEqual({ expanded: false });
 		expect(shown(tree.root)).toEqual([]);
-		expect(chevrons(tree.root)).toEqual(["chevron.right"]);
+		expect(stepChevrons(tree.root)).toEqual(["chevron.right"]);
 		act(() => shell.props.onPress());
 		expect(shown(tree.root).map((node) => [node.props.step, node.props.evidence, node.props.hubId])).toEqual([
 			[withOutput.steps[0], [{ kind: "output", text: "ok", lines: 1 }], "hub-1"],
 		]);
-		expect(chevrons(tree.root)).toEqual(["chevron.down"]);
+		expect(stepChevrons(tree.root)).toEqual(["chevron.down"]);
 		act(() => line(tree.root, "Ran go test, done").props.onPress());
 		expect(shown(tree.root)).toEqual([]);
 	});
@@ -352,7 +388,7 @@ describe("a step's evidence", () => {
 		const grep = line(tree.root, "Searched files, done");
 		expect(grep.props.onPress).toBeUndefined();
 		expect(grep.props.accessibilityRole).toBeUndefined();
-		expect(chevrons(tree.root)).toHaveLength(1);
+		expect(stepChevrons(tree.root)).toHaveLength(1);
 	});
 
 	// sessionRows copies every step on every publish (each streaming frame), so
@@ -485,7 +521,8 @@ describe("a live run", () => {
 				(node) => typeof node.props.onPress === "function" && node.props.accessibilityLabel?.startsWith?.("4 steps"),
 			),
 		).toEqual([]);
-		expect(texts(tree.root).some((node) => /[▸▾]/.test(textOf(node)))).toBe(false);
+		// A live run never folds, so it draws no chevron at all.
+		expect(foldRotation(tree.root)).toBeUndefined();
 		expect(texts(tree.root).map(textOf)).toContain(SUMMARY);
 	});
 });

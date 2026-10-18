@@ -2010,6 +2010,28 @@ it("says Update needed and why when no retry can fix the close", async () => {
 	act(() => tree.unmount());
 });
 
+it("carries a non-fatal close's own sentence in the notice row until the connection returns", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	// A distinctive marker, not the production sentence: the row must carry
+	// whatever the connection says, not a copy of one hardcoded message.
+	const marker = "the board notice must carry this marker sentence";
+	connect(id, null, "closed", { error: marker });
+	rerender(tree, nav);
+	expect(texts(tree)).toContain(marker);
+	expect(texts(tree)).not.toContain(INCOMPATIBLE_TEXT);
+	// The retained rows stay, and the marker goes when the connection returns.
+	expect(hasRow(tree, "Build docs")).toBe(true);
+	connect(id, hub(fleet).client, "ready");
+	rerender(tree, nav);
+	await settleMicrotasks();
+	expect(texts(tree)).not.toContain(marker);
+	act(() => tree.unmount());
+});
+
 it("on a device's first run, reads every Live page before adopting, so no row flashes a blue dot", async () => {
 	const id = hubId();
 	// Live is sorted by attention, so the newest session sits on page 2.

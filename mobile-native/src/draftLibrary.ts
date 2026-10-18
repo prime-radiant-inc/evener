@@ -6,7 +6,11 @@ export type DraftStorage = Pick<DraftRepository, "read" | "write" | "removeHub" 
 /** One document per destination keeps pending work coherent across navigation. */
 export class DraftLibrary {
 	private hubs = new Map<string, Map<string, DraftDocument>>();
-	constructor(private repository: () => DraftStorage) {}
+	constructor(
+		private repository: () => DraftStorage,
+		private createImageId: () => string = () =>
+			`reissue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+	) {}
 
 	open(destination: DraftDestination): DraftDocument {
 		let sessions = this.hubs.get(destination.hubId);
@@ -16,7 +20,7 @@ export class DraftLibrary {
 		}
 		let document = sessions.get(destination.sessionRef);
 		if (!document) {
-			document = new DraftDocument(this.repository, destination);
+			document = new DraftDocument(this.repository, destination, this.createImageId);
 			sessions.set(destination.sessionRef, document);
 		}
 		return document;

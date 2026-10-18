@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { StaleListingRefusal } from "@evener/appwire-client/state/credentials";
 import { authCalls, boundary as kit, type RecordedCall, signInClient } from "./providerSignInTestUtils";
 
 const device = {
@@ -186,6 +187,98 @@ it("retains the flow after a poll transport failure and retries only on request"
 	await flow.retryPoll();
 	expect(flow.getSnapshot().phase).toBe("authorized");
 	expect(calls.filter((call) => call.method.endsWith("/start"))).toHaveLength(1);
+	flow.dispose();
+});
+
+it("re-polls once on its own when the connection turns ready after a failed poll", async () => {
+	vi.useFakeTimers();
+	const { flow, io, calls, store } = boundary();
+	await flow.start();
+	io.request = async () => {
+		throw new Error("request timed out");
+	};
+	await vi.advanceTimersByTimeAsync(2000);
+	expect(flow.getSnapshot().error).toBeTruthy();
+	expect(flow.getSnapshot().phase).toBe("device");
+	const pollsAfterFailure = calls.filter((call) => call.method.endsWith("/poll")).length;
+	// The connection the screen hands the flow goes, then comes back usable:
+	// the same io, so the re-poll lands in the same record.
+	flow.setConnection(null);
+	store.connectionChanged(null, "closed");
+	io.request = async () => ({ state: "pending" });
+	const back = signInClient(io, calls);
+	store.connectionChanged(back, "ready");
+	flow.setConnection(back);
+	await Promise.resolve();
+	await Promise.resolve();
+	const polls = calls.filter((call) => call.method.endsWith("/poll"));
+	expect(polls.length).toBe(pollsAfterFailure + 1);
+	// The failed poll's error cleared, so the sheet says it waits again.
+	expect(flow.getSnapshot().error).toBeNull();
+	// One re-poll, not a burst: the flow's own interval cadence carries on
+	// from there, at the device interval the hub named.
+	await vi.advanceTimersByTimeAsync(2_000);
+	expect(calls.filter((call) => call.method.endsWith("/poll")).length).toBe(polls.length + 1);
+	await vi.advanceTimersByTimeAsync(2_000);
+	expect(calls.filter((call) => call.method.endsWith("/poll")).length).toBe(polls.length + 2);
+	flow.dispose();
+});
+
+it("does not re-poll on its own while the connection stays unusable", async () => {
+	vi.useFakeTimers();
+	const { flow, io, calls } = boundary();
+	await flow.start();
+	io.request = async () => {
+		throw new Error("request timed out");
+	};
+	await vi.advanceTimersByTimeAsync(2000);
+	expect(flow.getSnapshot().error).toBeTruthy();
+	// The same connection token arriving again is no transition to ready.
+	await vi.advanceTimersByTimeAsync(30_000);
+	expect(calls.filter((call) => call.method.endsWith("/poll"))).toHaveLength(1);
+	flow.dispose();
+});
+
+it("treats a stale-listing refusal as a retry, not a failed check", async () => {
+	vi.useFakeTimers();
+	const { flow, io, calls, store } = boundary();
+	await flow.start();
+	io.request = async () => {
+		throw new Error("request timed out");
+	};
+	await vi.advanceTimersByTimeAsync(2000);
+	expect(flow.getSnapshot().error).toBeTruthy();
+	// Reconnect: the immediate re-poll races the credential listing refresh,
+	// and the store refuses it while the old connection's rows are still
+	// showing. That refusal asks for a re-read and a retry.
+	flow.setConnection(null);
+	store.connectionChanged(null, "closed");
+	const refusal = new StaleListingRefusal();
+	io.request = async () => {
+		throw refusal;
+	};
+	const back = signInClient(io, calls);
+	store.connectionChanged(back, "ready");
+	flow.setConnection(back);
+	await vi.advanceTimersByTimeAsync(0);
+	// A refusal is not a verdict on the sign-in: no failure latched, and
+	// the device cadence keeps asking once the listing can answer.
+	expect(flow.getSnapshot().error).toBeNull();
+	await vi.advanceTimersByTimeAsync(2000);
+	const polls = calls.filter((call) => call.method.endsWith("/poll")).length;
+	expect(polls).toBeGreaterThanOrEqual(3);
+	flow.dispose();
+});
+
+it("still ends an expired device flow, never re-polling it", async () => {
+	vi.useFakeTimers();
+	const { flow, io, calls } = boundary();
+	await flow.start();
+	io.request = async () => ({ state: "expired" });
+	await vi.advanceTimersByTimeAsync(2000);
+	expect(flow.getSnapshot().phase).toBe("expired");
+	await vi.advanceTimersByTimeAsync(30_000);
+	expect(calls.filter((call) => call.method.endsWith("/poll"))).toHaveLength(1);
 	flow.dispose();
 });
 it("ignores a start response after leaving the hub", async () => {

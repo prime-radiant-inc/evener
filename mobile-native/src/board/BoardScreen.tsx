@@ -178,7 +178,7 @@ function Board({
 	navigation: Navigation;
 	routeKey: string;
 }) {
-	const { client, state, fatal, activeProfile } = useConnection();
+	const { client, state, fatal, error, activeProfile } = useConnection();
 	const { palette } = useColors();
 	const connected = state === "ready";
 	// This Board's own hub is the connected one, so a hub write may go out.
@@ -1187,7 +1187,14 @@ function Board({
 						/>
 					) : (
 						<>
-							{fatal ? <NoticeRow text={INCOMPATIBLE_VERSIONS} /> : null}
+							{fatal ? (
+								<NoticeRow text={INCOMPATIBLE_VERSIONS} />
+							) : !connected && error !== null ? (
+								// The close's own sentence, set but never shown before: the
+								// rows stay while the app retries on its own, so the Board says
+								// why they hold still.
+								<NoticeRow text={error} />
+							) : null}
 							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} connected={connected} />
 							{continueReading ? (
 								<ContinueReadingRow

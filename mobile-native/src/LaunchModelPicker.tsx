@@ -1,10 +1,11 @@
 import { type ReactNode, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, FlatList, Platform, Pressable, TextInput, View } from "react-native";
+import { FlatList, Platform, Pressable, TextInput, View } from "react-native";
+import { SymbolView } from "expo-symbols";
 import { buildPickerRows } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubModels } from "./hubModels";
-import { Copy, ErrorMessage, styles, useColors } from "./ui";
-import { Button } from "./sheet/Grouped";
+import { Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { Spinner } from "./sheet/Spinner";
 
 export function LaunchModelPicker({
 	client,
@@ -18,6 +19,7 @@ export function LaunchModelPicker({
 	header: ReactNode;
 }) {
 	const colors = useColors();
+	const scale = useTextScale();
 	const model = useMemo(() => new HubModels(client), [client]);
 	const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
 	const [query, setQuery] = useState("");
@@ -51,16 +53,13 @@ export function LaunchModelPicker({
 					/>
 					{!client && <Copy>You can browse this hub's models once it's back. Your selection is kept.</Copy>}
 					<ErrorMessage message={state.error} />
-					{state.loading && <ActivityIndicator accessibilityLabel="Loading launch models" />}
+					{state.loading && <Spinner label="Loading launch models" />}
 					{state.error && (
-						<Button
-							text
-							label="Retry model list"
-							disabled={!client || state.loading}
-							onPress={() => {
-								void model.refresh();
-							}}
-						/>
+						// The list reads again on its own when it can (the calm
+						// recovery owns the retry), so this only says where it stands.
+						<View testID="model-list-status">
+							<Copy muted>The model list will load again on its own. Your selection is kept.</Copy>
+						</View>
 					)}
 				</View>
 			}
@@ -84,8 +83,20 @@ export function LaunchModelPicker({
 					);
 				if (item.kind === "warning")
 					return (
-						<View style={{ paddingLeft: 16, paddingRight: 8, paddingBottom: 4 }}>
-							<Copy muted>{`⚠ ${item.text}`}</Copy>
+						<View
+							style={{
+								flexDirection: "row",
+								alignItems: "center",
+								gap: 6,
+								paddingLeft: 16,
+								paddingRight: 8,
+								paddingBottom: 4,
+							}}
+						>
+							<SymbolView name="exclamationmark.triangle.fill" tintColor={colors.secondary} size={13 * scale} />
+							<View style={{ flex: 1, minWidth: 0 }}>
+								<Copy muted>{item.text}</Copy>
+							</View>
 						</View>
 					);
 				const selected = value === item.option.qualified;
@@ -106,7 +117,14 @@ export function LaunchModelPicker({
 							borderColor: colors.border,
 						}}
 					>
-						<Copy>{`${selected ? "✓ " : ""}${item.option.label}`}</Copy>
+						<View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+							{selected ? (
+								<SymbolView name="checkmark" tintColor={colors.accent} size={14 * scale} weight="semibold" />
+							) : null}
+							<View style={{ flex: 1, minWidth: 0 }}>
+								<Copy>{item.option.label}</Copy>
+							</View>
+						</View>
 						{item.meta ? <Copy muted>{item.meta}</Copy> : null}
 					</Pressable>
 				);

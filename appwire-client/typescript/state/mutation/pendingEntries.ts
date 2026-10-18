@@ -51,6 +51,19 @@ function pendingMethod(method: string): PendingMethod | undefined {
   return undefined;
 }
 
+// The wire methods that name pending composer input - the family whose rows the
+// daemon's pending projection lists, and therefore the only family whose absence
+// from an authoritative projection proves delivery. Exported so a storage
+// adapter pruning by absence reads the family from here rather than restating
+// the method names: adding a pending verb must change this mapping alone.
+export const PENDING_TURN_METHODS: readonly string[] = Object.freeze([
+  "turn/start",
+  "turn/steer",
+  "turn/queue",
+  "turn/drainAsSteer",
+  "turn/promoteQueuedAsSteer",
+]);
+
 // Collapses any whitespace run to a single space and trims both ends.
 export function normalizeText(s: string): string {
   return s.replace(/\s+/g, " ").trim();
