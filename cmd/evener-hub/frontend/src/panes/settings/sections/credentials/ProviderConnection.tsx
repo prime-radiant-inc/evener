@@ -144,6 +144,22 @@ function needsConfiguration(row: InstanceEntry | undefined): boolean {
   return !row || !!row.hidden || !row.baseUrl || /[{}]/.test(row.baseUrl);
 }
 
+function resolvedAuthModes(row: ProviderDescriptor): string[] {
+  return row.setup?.authModes ?? row.authModes ?? [];
+}
+
+function authCapabilities(row: ProviderDescriptor): string {
+  const modes = resolvedAuthModes(row);
+  const labels = modes.flatMap((mode) => {
+    if (mode === "apiKey") return ["API key"];
+    if (mode === "credentialJson") return ["Credential JSON"];
+    if (mode === "oauth") return ["Account sign-in"];
+    if (mode === "none") return ["No credential"];
+    return [];
+  });
+  return labels.length > 0 ? labels.join(" or ") : "Host or endpoint access";
+}
+
 /**
  * One tappable ListRow per provider rather than a box per provider. The whole
  * row is the target and a real <button>, so it is a tab stop whose accessible
@@ -165,6 +181,8 @@ function ProviderChoices({
         <li key={row.id}>
           <ListRow
             label={HELP[row.id]?.label || row.name || row.id}
+            meta={<span aria-hidden="true">{authCapabilities(row)}</span>}
+            data-auth-modes={resolvedAuthModes(row).join(" ")}
             disabled={disabled}
             onSelect={() => onSelect(row)}
           />
@@ -287,7 +305,7 @@ function SelectedConnection({
   }, [resolvedProviderId]);
   const [missingCredential, setMissingCredential] = useState(false);
   const [host, setHost] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved] = useState(row?.activeSource === "store");
   const [configured, setConfigured] = useState(false);
   const [configure, setConfigure] = useState(false);
   const [oauth, setOAuth] = useState<OAuthEditor | null>(null);
@@ -876,7 +894,7 @@ function SelectedConnection({
                 <p role="status" data-state="success">
                   Model list access confirmed. This does not verify generation access.
                 </p>
-                <Button onClick={() => leave(() => onConnected(name))}>Continue</Button>
+                <Button onClick={() => leave(() => onConnected(name))}>Choose model</Button>
               </>
             ) : (
               <Button type="submit" disabled={busy || unavailable}>
@@ -942,7 +960,7 @@ function SelectedConnection({
             Change provider
           </Button>
           <Button variant="quiet" onClick={() => leave(onClose)}>
-            Cancel
+            {saved ? "Close, access stays saved" : "Cancel"}
           </Button>
         </div>
       </form>
