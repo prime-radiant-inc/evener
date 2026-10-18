@@ -507,6 +507,44 @@ describe("a tool step", () => {
 		const labelled = tree.root.findAll((node) => String(node.props.accessibilityLabel ?? "").endsWith("exit 3"));
 		expect(labelled.length).toBeGreaterThan(0);
 	});
+
+	// At Intent a failed call is a row of its own, where it used to sit in a
+	// run. Opening it must still show the step's evidence - the first 40 lines
+	// and the full-log viewer - never the whole raw output at once (RoboRev on
+	// PR #4740).
+	it("opens a standalone failed step to its evidence, not its whole raw output", () => {
+		const output = Array.from({ length: 60 }, (_, index) => `line ${index + 1}`).join("\n");
+		const failedStep: TimelineRow = {
+			kind: "activity",
+			id: "step-failed",
+			label: "shell",
+			family: "tool",
+			state: "failed",
+			detail: {
+				arguments: '{"command":"go test ./..."}',
+				summary: "Ran go test ./...",
+				output,
+				error: "exit status 1",
+			},
+		};
+		const tree = render(
+			<TimelineItem
+				item={failedStep}
+				hubId="hub"
+				sessionRef="step-failed"
+				activityPresentation={{ mode: "critical", summary: "Ran go test ./..." }}
+			/>,
+		);
+		const toggle = pressable(tree, "Expand Ran go test ./...");
+		expect(toggle).toBeDefined();
+		act(() => toggle?.props.onPress());
+		// The preview holds the opening lines; the last one waits behind the
+		// full-log control, so a long output cannot flood the transcript.
+		const text = renderedText(tree);
+		expect(text).toContain("line 1");
+		expect(text).not.toContain("line 60");
+		expect(text).toContain("Show all 60 lines");
+	});
 });
 
 describe("a run in the transcript", () => {
