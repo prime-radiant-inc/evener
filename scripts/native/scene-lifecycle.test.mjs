@@ -1,8 +1,7 @@
 // Exercise the installed Expo plugin against its shipped Swift template. This
-// is generated lifecycle coverage, not a check that app.json repeats a flag.
+// is generated lifecycle coverage, not a check that the config repeats a flag.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -10,7 +9,7 @@ import test from 'node:test';
 const root = fileURLToPath(new URL('../../mobile-native/', import.meta.url));
 const require = createRequire(`${root}package.json`);
 const { withBuildProperties } = require('expo-build-properties');
-const app = JSON.parse(readFileSync(`${root}app.json`, 'utf8')).expo;
+const app = JSON.parse(execFileSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(require("./app.config.js").expo))'], { cwd: root, env: {}, encoding: 'utf8' }));
 const props = app.plugins.find(p => Array.isArray(p) && p[0] === 'expo-build-properties')[1];
 const template = execFileSync('tar', ['-xOf', `${root}node_modules/expo/template.tgz`, 'package/ios/HelloWorld/AppDelegate.swift'], { encoding: 'utf8' });
 
@@ -25,6 +24,8 @@ async function generate() {
 }
 
 test('prebuild delegates window startup to the Expo scene lifecycle', async () => {
+ assert.equal(Object.hasOwn(app.ios, 'appleTeamId'), false);
+ assert.equal(app.plugins.includes('@bacons/apple-targets'), false);
  const { plist, swift } = await generate();
  const manifest = plist.UIApplicationSceneManifest;
  assert.ok(manifest);

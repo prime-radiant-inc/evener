@@ -433,3 +433,27 @@ This records the two shipped sheets: New session, where a session is set up and 
 - **Don't** color a row's glyph or draw it on a tile; glyphs are bare and ink-mid.
 - **Don't** let one host's answers land in another host's form, or show a place's plugins after the form has left it.
 - **Don't** discard a draft without asking; only Cancel discards, and swiping the sheet down keeps it.
+
+## Share to Evener
+
+The iOS share sheet offers Evener for text and web links. The extension saves what was shared and opens the app; the choice of where it goes happens here, in one sheet over whatever was in front. Nothing is sent by picking a destination.
+
+### The Share target sheet
+- **Header:** the title "Share to Evener" and Cancel. Cancel asks before dropping the share.
+- **The shared text:** up to four lines at the top, in 15pt ink-mid, the same quiet inset the sheets use for a summary. It is the content being placed, not an editable field.
+- **New session:** a row under it with a `plus` glyph in accent ink and "New session" in 17pt semibold accent. It opens New session with the text already in the prompt, so the host, project, model and effort this phone remembers still apply.
+- **The search field:** "Search sessions", the Board's own field and its 250ms debounce. A query replaces the live list with the Board's grouped results: live matches first, then past ones. A past session is a normal result and opens the same way.
+- **Live:** a LIVE band of the active hub's sessions in the Board's attention order (Needs you, Working, Idle), each row a title, its state word and its project. No swipes, no Row menu: this sheet chooses, it doesn't manage.
+- **States:** with no ready hub it says the session list waits for one and the share stays put. A share that can't be written to a draft stays in the sheet with the reason, and its file is kept.
+
+### Share Do's and Don'ts
+
+#### Do:
+- **Do** write the shared text into the destination's saved draft before dropping the share, so a crash or a failed open loses nothing.
+- **Do** append to an existing draft rather than replacing it.
+- **Do** use the active hub, the one the Board shows; switching hubs stays in the Hub sheet.
+
+#### Don't:
+- **Don't** send anything automatically; the composer holds the text and Send is yours.
+- **Don't** drop a share the person dismissed without choosing; the next launch or foreground offers it again.
+- **Don't** explain a past session's shut-down state here; its own screen already does.

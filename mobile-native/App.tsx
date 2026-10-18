@@ -36,6 +36,12 @@ import { ProjectScreen, ProjectsScreen, SessionLocationScreen } from "./src/Proj
 import { SessionDeletionScreen } from "./src/SessionDeletionScreen";
 import { ConversationScreen, type Routes } from "./src/screens";
 import { ModelSheet } from "./src/session/ModelSheet";
+import { drafts } from "./src/nativeDrafts";
+import { appGroupSharePort } from "./src/share/appGroupSharePort";
+import type { SharedPayload } from "./src/share/sharePayload";
+import { ShareTargetSheet } from "./src/share/ShareTargetSheet";
+import { useShareIntake } from "./src/share/useShareIntake";
+import { installShareIntake } from "./src/share/shareIntakeHost";
 import { CommandsSheet } from "./src/session/CommandsSheet";
 import { NotesSheet } from "./src/session/NotesSheet";
 import { SessionInfoSheet } from "./src/session/SessionInfoSheet";
@@ -57,6 +63,7 @@ import { ErrorMessage, useColors } from "./src/ui";
 
 const Stack = createNativeStackNavigator<Routes>();
 const navigationRef = createNavigationContainerRef<Routes>();
+const sharePort = appGroupSharePort();
 
 /** The root stack's routes up to the focused one, as alerts read them. */
 function stackRoutes(state: NavigationState) {
@@ -92,6 +99,23 @@ export default function App() {
 function Navigation() {
 	const { loading, initialLocation, activeProfile, restorationError, client, state: connectionState } = useConnection();
 	const [state, setState] = useState<NavigationState>();
+	const [pendingShare, setPendingShare] = useState<SharedPayload | null>(null);
+	const [navigationReady, setNavigationReady] = useState(false);
+	const intake = useShareIntake({
+		port: sharePort,
+		ready: connectionState === "ready",
+		onShare: setPendingShare,
+	});
+	// The New session sheet takes ownership of a share the picker handed it;
+	// this is how it reports the placement back to the one intake.
+	installShareIntake(intake);
+	// A share arrives possibly before the navigator is ready; it opens the
+	// sheet as soon as the container can take a route.
+	useEffect(() => {
+		if (!pendingShare || !navigationReady) return;
+		navigationRef.navigate("ShareTarget", { item: pendingShare });
+		setPendingShare(null);
+	}, [pendingShare, navigationReady]);
 	// What no open session is sending goes on a ready connection (ruling 17).
 	useEffect(() => {
 		outboxFlush.bind(activeProfile?.id ?? null, connectionState === "ready" ? client : null);
@@ -132,6 +156,7 @@ function Navigation() {
 				ref={navigationRef}
 				initialState={restoredStack(initialLocation)}
 				onReady={() => {
+						setNavigationReady(true);
 					const root = navigationRef.getRootState();
 					if (root) reportRoutes(stackRoutes(root));
 				}}
@@ -178,6 +203,27 @@ function Navigation() {
 						component={NewSessionSheet}
 						options={{ presentation: "modal", headerShown: false }}
 					/>
+						<Stack.Screen
+							name="ShareTarget"
+							options={{ presentation: "modal", title: "Share to Evener" }}
+						>
+							{({ navigation, route }) => (
+								<ShareTargetSheet
+									navigation={navigation}
+									route={route}
+									drafts={drafts}
+									onPlaced={(item) => {
+										intake.forget(item.id);
+										void intake.advance(item.id);
+									}}
+									onDiscarded={(item) => {
+										intake.forget(item.id);
+										void intake.advance(item.id);
+									}}
+									onClosed={() => intake.release()}
+								/>
+							)}
+						</Stack.Screen>
 					<Stack.Screen
 						name="Conversation"
 						component={ConversationScreen}
