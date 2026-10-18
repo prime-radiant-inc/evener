@@ -27,6 +27,26 @@ test('workspace labels include only exact temporary path aliases', () => {
  }
 });
 
+test('path-validation diagnostics retain only allowlisted fields and path equality', () => {
+ assert.equal(typeof web.pathValidationTrace,'function');
+ const trace=web.pathValidationTrace(['/tmp/private-path-canary']);
+ trace.sent(JSON.stringify({id:1,method:'auth',params:{token:'credential-canary'}}));
+ trace.received(JSON.stringify({id:1,result:{token:'credential-canary'}}));
+ assert.deepEqual(trace.events,[]);
+ trace.sent(JSON.stringify({id:2,method:'evener/path/validate',params:{path:'/tmp/private-path-canary',kind:'dir',token:'credential-canary'}}));
+ trace.received(JSON.stringify({id:2,result:{valid:true,path:'/tmp/private-path-canary',secret:'credential-canary'}}));
+ trace.sent(JSON.stringify({id:3,method:'evener/path/validate',params:{path:'/unrelated-private-path'}}));
+ trace.received(JSON.stringify({id:3,error:{code:-32603,message:'credential-canary'}}));
+ assert.equal(trace.events.length,4);
+ assert.equal(trace.events[0].requested,true);
+ assert.equal(trace.events[1].valid,true);
+ assert.equal(trace.events[2].requested,false);
+ assert.equal(trace.events[3].errorCode,-32603);
+ assert.ok(trace.events.every(e=>e.method==='evener/path/validate' && Number.isFinite(e.timeMS)));
+ assert.ok(!JSON.stringify(trace.events).includes('canary'));
+ assert.ok(!JSON.stringify(trace.events).includes('private-path'));
+});
+
 test('capture readiness requires every started session in the rail without a never-run marker', async () => {
  assert.equal(typeof web.railCaptureReady, 'function', 'capture must expose its real DOM readiness predicate');
  const browser = await chromium.launch({ headless: true });
@@ -46,4 +66,25 @@ test('capture readiness requires every started session in the rail without a nev
  } finally {
   await browser.close();
  }
+});
+
+test('picker probe observes edited and confirmation state without storing input text',async()=>{
+ const browser=await chromium.launch({headless:true});
+ try {
+  const page=await browser.newPage();
+  await page.setContent('<div role="dialog"><form><input aria-label="Path"><section aria-label="Folders" aria-busy="true"></section><button disabled>Use this folder</button></form></div>');
+  await page.evaluate(web.installDirectoryProbe,['/tmp/private-path-canary']);
+  await page.getByRole('textbox',{name:'Path',exact:true}).fill('/tmp/private-path-canary');
+  await page.evaluate(()=>{
+   document.querySelector('input').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+   document.querySelector('section').setAttribute('aria-busy','false');
+   document.querySelector('button').disabled=false;
+  });
+  const events=await page.evaluate(()=>window.__evenerDirectoryProbe.events);
+  assert.ok(events.some(e=>e.inputMatches));
+  assert.ok(events.some(e=>e.stage==='before-Enter'));
+  assert.ok(events.some(e=>e.stage==='after-Enter'));
+  assert.ok(events.some(e=>e.confirmEnabled&&!e.pending));
+  assert.ok(!JSON.stringify(events).includes('canary'));
+ } finally {await browser.close();}
 });

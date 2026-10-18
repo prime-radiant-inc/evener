@@ -4,13 +4,58 @@ import { join } from 'node:path';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
-export async function recordWebFailure(error, phase) {
+export async function recordWebFailure(error, phase, details) {
  // The Go driver owns TMPDIR and removes it before the caller can inspect logs.
  const directory=await mkdtemp(join(process.platform==='win32'?tmpdir():'/tmp','evener-web-failure-'));
  const file=join(directory,'failure.json');
- await writeFile(file,JSON.stringify({phase,message:error.message,stack:error.stack}),{mode:0o600});
+ await writeFile(file,JSON.stringify({phase,message:error.message,stack:error.stack,details}),{mode:0o600});
  error.diagnosticsPath=file;
  error.tourPhase=`${phase}; private diagnostics: ${file}`;
+}
+
+export function pathValidationTrace(requestedPaths) {
+ const events=[],pending=new Map();let sequence=0;
+ const parse=payload=>{try{return JSON.parse(payload.toString());}catch{return {};}};
+ return {events,
+  sent(payload) {
+   const frame=parse(payload);if(frame.method!=='evener/path/validate')return;
+   const event={method:frame.method,event:'sent',call:++sequence,timeMS:Date.now(),requested:requestedPaths.includes(frame.params?.path)};
+   pending.set(frame.id,event);events.push(event);
+  },
+  received(payload) {
+   const frame=parse(payload),request=pending.get(frame.id);if(!request)return;
+   pending.delete(frame.id);
+   events.push({method:request.method,event:'response',call:request.call,timeMS:Date.now(),elapsedMS:Date.now()-request.timeMS,valid:frame.result?.valid===true,error:Boolean(frame.error||frame.result?.error),errorCode:Number.isSafeInteger(frame.error?.code)?frame.error.code:null,requested:request.requested});
+  },
+ };
+}
+
+// Read-only browser probe. Never store DOM prose, paths, or raw RPC frames.
+export function installDirectoryProbe(requestedPaths) {
+ window.__evenerDirectoryProbe?.close();
+ const events=[];let previous,identity,generation=0;
+ const sample=(stage,prevented=false)=>{
+  const input=document.querySelector('[role="dialog"] input[aria-label="Path"]');
+  const dialog=input?.closest('[role="dialog"]');
+  if(identity!==dialog){identity=dialog;generation++;}
+  const button=[...(dialog?.querySelectorAll('button')??[])].find(b=>b.textContent.trim()==='Use this folder');
+  const state={generation,present:Boolean(dialog),inputMatches:requestedPaths.includes(input?.value),pending:dialog?.querySelector('[aria-label="Folders"]')?.getAttribute('aria-busy')==='true',edited:Boolean(dialog?.querySelector('[data-state="edited"]')),error:Boolean(dialog?.querySelector('[role="alert"]')),confirmEnabled:Boolean(button&&!button.disabled)};
+  const encoded=JSON.stringify(state);if(stage==='mutation'&&encoded===previous)return;previous=encoded;
+  events.push({stage,timeMS:Date.now(),prevented,...state});if(events.length>100)events.shift();
+ };
+ const listener=event=>{
+  const isPath=event.target?.matches?.('input[aria-label="Path"]');
+  const isSubmit=event.type==='submit'&&event.target?.querySelector?.('input[aria-label="Path"]');
+  if(!isPath&&!isSubmit)return;
+  if(event.type==='keydown'&&event.key!=='Enter')return;
+  const stage=event.type==='keydown'?'Enter':event.type;
+  sample(`before-${stage}`);queueMicrotask(()=>sample(`after-${stage}`,event.defaultPrevented));
+ };
+ const observer=new MutationObserver(()=>sample('mutation'));
+ observer.observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['disabled','aria-busy','data-state']});
+ for(const name of ['input','keydown','submit'])document.addEventListener(name,listener,true);
+ window.__evenerDirectoryProbe={events,close(){observer.disconnect();for(const name of ['input','keydown','submit'])document.removeEventListener(name,listener,true);}};
+ sample('installed');
 }
 
 export function workspaceLabels(workspace) {
@@ -47,6 +92,11 @@ export async function open(options) {
    else socket.close();
   });
   const page = await context.newPage();
+  const requestedPaths=workspaceLabels(workspace),pathTrace=pathValidationTrace(requestedPaths);
+  page.on('websocket',socket=>{
+   socket.on('framesent',({payload})=>pathTrace.sent(payload));
+   socket.on('framereceived',({payload})=>pathTrace.received(payload));
+  });
   page.setDefaultTimeout(30_000);
   phase = "authentication";
   await page.goto(authURL);
@@ -56,6 +106,8 @@ export async function open(options) {
   if (new URL(page.url()).pathname.startsWith('/settings/')) await page.goto(url);
   phase = 'new session';
   await page.getByRole('button', { name: /^(?:\+ )?New session$/ }).click();
+  requestedPaths.splice(0,requestedPaths.length,...workspaceLabels(selectedWorkspace));
+  await page.evaluate(installDirectoryProbe,requestedPaths);
   phase = 'directory-open';
   await page.getByRole('button', { name: /^Working directory:/ }).click();
   phase = 'directory-path';
@@ -67,7 +119,10 @@ export async function open(options) {
   await page.getByRole('button', { name: /change model$/i }).click();
   await page.getByRole('combobox', { name: 'Model', exact: true }).fill(options.model.split('/')[1]);
   await page.getByRole('listbox', { name: 'Model', exact: true }).getByRole('option').first().click();
-  } catch (error) { await recordWebFailure(error,phase); throw error; }
+  } catch (error) {
+   const picker=await page.evaluate(()=>window.__evenerDirectoryProbe?.events??[]).catch(()=>[]);
+   await recordWebFailure(error,phase,{rpc:pathTrace.events,picker});throw error;
+  }
   }
   await newSession(workspace);
   return {
