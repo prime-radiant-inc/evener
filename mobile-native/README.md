@@ -60,6 +60,16 @@ platform configurations permit user-entered HTTP hubs; HTTPS should be used
 where transport encryption is needed. Native generated projects are ignored.
 Expo SDK 57 configuration reference: https://docs.expo.dev/versions/v57.0.0/.
 
+The iOS build uses Expo's scene lifecycle, required when building with the iOS 27
+SDK. Keep Expo at 57.0.23 or newer within SDK 57 and the
+`expo-build-properties` `ios.enableSceneSupport` option enabled. Prebuild makes
+the standard Swift AppDelegate an `ExpoReactNativeFactoryProvider` and delegates
+window startup to `EXExpoAppSceneDelegate`; do not hand-edit generated Swift or
+the scene manifest. See the [versioned build-properties reference](https://docs.expo.dev/versions/v57.0.0/sdk/build-properties/).
+`npm test` exercises that real plugin against the installed Expo template and
+checks generated lifecycle structure. An actual simulator Release launch remains
+necessary to verify native startup; Metro export alone cannot catch UIKit traps.
+
 ## Checks
 
 ```sh
