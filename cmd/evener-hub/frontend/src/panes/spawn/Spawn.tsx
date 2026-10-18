@@ -396,10 +396,10 @@ function SpawnForm({
     setConnectingProvider(false);
   }, [submittedSource]);
   const providerConnected = useCallback(
-    (name?: string) => {
+    (instance?: string | { name?: string }) => {
       setConnectingProvider(false);
       modelListCache.current.entries.clear();
-      setModelHandoff({ name });
+      setModelHandoff({ name: typeof instance === "string" ? instance : instance?.name });
       void providerSetup.retry();
     },
     [providerSetup.retry],
@@ -2636,6 +2636,7 @@ function SpawnForm({
                       refreshKey={modelListRevision}
                       onPick={handleModelPickEntry}
                       connectionRequest={modelHandoff}
+                      onOpenConnection={providerSetupIsLocal ? openProviderSetup : undefined}
                       data-testid="spawn-model-trigger"
                       valueTestId="spawn-model-value"
                     />

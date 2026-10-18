@@ -62,6 +62,10 @@ export interface ModelSwitchTriggerProps {
   onPick: (entry: ModelCatalogEntry) => void;
   /** A new completion opens a fresh catalog scoped to the actual instance. */
   connectionRequest?: { name?: string };
+  /** Opens the caller's existing connection settings flow when catalogue
+   * recovery needs more than a read retry. Omitted where that connection is
+   * not editable from this surface, such as a remote host. */
+  onOpenConnection?: () => void;
   /** Changes when the caller learns its model list has newer data for the
    * same scope (the hub announced a refreshed list on evener/auth/updated).
    * An open picker then reloads in place: it keeps showing its list while
@@ -93,6 +97,7 @@ export function ModelSwitchTrigger({
   loadCatalog,
   onPick,
   connectionRequest,
+  onOpenConnection,
   refreshKey,
   disabled = false,
   actionLabel = "change model",
@@ -225,6 +230,18 @@ export function ModelSwitchTrigger({
     onPick(entry);
   }
 
+  function retryCatalog(): void {
+    const generation = loadGenerationRef.current + 1;
+    loadGenerationRef.current = generation;
+    loadedLoaderRef.current = loadCatalog;
+    void startLoad(generation, loadCatalog, true);
+  }
+
+  function openConnection(): void {
+    closePicker();
+    onOpenConnection?.();
+  }
+
   const filteredCatalog =
     catalog && providerFilter
       ? {
@@ -233,6 +250,10 @@ export function ModelSwitchTrigger({
           recent: catalog.recent.filter((entry) => entry.provider === providerFilter),
         }
       : catalog;
+  const recoveryAvailable =
+    !loading &&
+    (error !== null ||
+      (filteredCatalog !== null && filteredCatalog.models.length === 0 && filteredCatalog.recent.length === 0));
   const panel = (
     <>
       {providerFilter && (
@@ -253,6 +274,16 @@ export function ModelSwitchTrigger({
         onPick={handlePick}
         variant={isMobile ? "sheet" : "default"}
       />
+      {recoveryAvailable && (
+        <div>
+          <Button onClick={retryCatalog}>Retry models</Button>
+          {onOpenConnection && (
+            <Button variant="quiet" onClick={openConnection}>
+              Connection settings
+            </Button>
+          )}
+        </div>
+      )}
     </>
   );
 

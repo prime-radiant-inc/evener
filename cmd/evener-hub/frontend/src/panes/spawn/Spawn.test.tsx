@@ -1402,6 +1402,60 @@ test("missing credentials surface setup in the composer without opening a dialog
   expectWorkingDir("/tmp/my-project");
 });
 
+test("local model catalogue repair opens the existing connection dialog without saving credentials", async () => {
+  const user = setupUser();
+  const client = readyClient((fake) => {
+    fake.on("model/list", () => {
+      throw new WireError("catalog unavailable", -32000);
+    });
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+
+  await user.click(modelTrigger());
+  await screen.findByRole("alert");
+  await user.click(screen.getByRole("button", { name: "Connection settings" }));
+  await act(async () => {
+    await vi.dynamicImportSettled();
+  });
+
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toEqual([]);
+});
+
+test("remote model catalogue recovery retries the remote read without offering local connection settings", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  let modelReads = 0;
+  const client = readyClient((fake) => {
+    fake.on("evener/host/request", (params) => {
+      const request = params as HostRequestParams;
+      if (request.method === "model/list") {
+        modelReads += 1;
+        throw new WireError("remote catalog unavailable", -32000);
+      }
+      return routedDiscoveryDefault(request.method);
+    });
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  await user.click(modelTrigger());
+  await screen.findByRole("alert");
+  expect(screen.queryByRole("button", { name: "Connection settings" })).toBeNull();
+  const beforeRetry = modelReads;
+  await user.click(screen.getByRole("button", { name: "Retry models" }));
+  await waitFor(() => expect(modelReads).toBeGreaterThan(beforeRetry));
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toEqual([]);
+});
+
 test("connection handoff shows the actual instance models and preserves draft until explicit Start", async () => {
   const user = setupUser();
   let saved = false;
