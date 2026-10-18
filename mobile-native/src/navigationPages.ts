@@ -109,6 +109,12 @@ export class NavigationPages<T> implements PageSource<T> {
 	 * so a retry re-reads to THIS depth, not to whatever survived the last
 	 * partial refresh. Cleared when the re-read finally reaches it. */
 	private owedDepth: number | null = null;
+	/** Whether the owed depth belongs to a recovery walk (an invalidation's
+	 * re-read, a manual press's continuation) rather than a plain failed page
+	 * read. A cancelled recovery's pages were visible and resume restores
+	 * them; a merely failed page's retry is the owner's to pace. */
+	private recoveryDepth = false;
+
 	/** Whether a failed read re-arms on its own. Off by default: a consumer
 	 * whose reads another owner already retries (the Board's own rebind,
 	 * useBoardReadRetry) must not double-fire it. */
@@ -184,6 +190,7 @@ export class NavigationPages<T> implements PageSource<T> {
 		// Hold the target across the reads: a failure of the reset read (page
 		// one) must not shrink the depth the retry still owes to what survived.
 		this.owedDepth = depth;
+		this.recoveryDepth = true;
 		const landed =
 			(await this.load(true, undefined, { walker: true })) === true &&
 			(this.offset >= depth || this.state.remaining <= 0 || (await this.walkToDepth(depth)) === true);
@@ -191,6 +198,7 @@ export class NavigationPages<T> implements PageSource<T> {
 		// a failure keeps what it owes for the next attempt to reach for.
 		if (landed) {
 			this.owedDepth = null;
+			this.recoveryDepth = false;
 			if (this.state.error !== null) this.publish({ error: null });
 		}
 		return landed;
@@ -247,10 +255,12 @@ export class NavigationPages<T> implements PageSource<T> {
 		// A failed read the pause held back is still owed, and so is a
 		// recovery cancelled mid-walk: its earlier pages may have landed clean,
 		// leaving neither stale nor error, while the depth it still owes is
-		// the only record of the rows the reader had. Read for it now, the
-		// same way an owed stale re-read runs on resume — but only where the
-		// page retries its own reads; an owner's resume path stands as before.
-		if (this.readRetry && (this.state.error !== null || this.owedDepth !== null)) this.rereads.request();
+		// the only record of the rows the reader had. The depth re-arms for
+		// every reader — the pages were visible, and returning must restore
+		// them — while the automatic retry of a merely failed read stays
+		// opt-in, where the page already owns its own retry pacing.
+		if (this.state.error !== null && this.readRetry) this.rereads.request();
+		else if (this.recoveryDepth && this.owedDepth !== null) this.rereads.request();
 		this.rereads.drain();
 	}
 	/** An explicit read means the owner is active again; its result stands
@@ -360,6 +370,7 @@ export class NavigationPages<T> implements PageSource<T> {
 				// The results have ended: the depth a recovery still owed
 				// cannot exist, so the recovery completes here.
 				this.owedDepth = null;
+				this.recoveryDepth = false;
 				this.rereads.settle();
 				this.clearRetry(true);
 				this.publish({
@@ -447,6 +458,7 @@ export class NavigationPages<T> implements PageSource<T> {
 			const exhausted = Number(data.remaining) === 0;
 			if (owed === null || this.offset >= owed || exhausted) {
 				this.owedDepth = null;
+				this.recoveryDepth = false;
 				this.clearRetry(true);
 				// Waiters see the recovery complete, never the landing of an
 				// intermediate page a walk still owes depth past.

@@ -64,7 +64,7 @@ it("does not accept a stale tombstone as mutation readback", async () => {
 	expect(pages.getSnapshot().stale).toBe(true);
 });
 
-function boundary(resource: "catalog" | "section" = "catalog") {
+function boundary(resource: "catalog" | "section" = "catalog", { readRetry = true } = {}) {
 	const requests: {
 		params: NavigationReadParams;
 		resolve: (value: NavigationReadResponse) => void;
@@ -97,7 +97,7 @@ function boundary(resource: "catalog" | "section" = "catalog") {
 			resource === "catalog" ? "projects" : "sessions",
 			(row) => row.ref ?? row.key,
 			2,
-			{ readRetry: true },
+			{ readRetry },
 		),
 	};
 }
@@ -392,6 +392,44 @@ describe("a failed read's own retry", () => {
 		await settled(pages);
 		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a3", "b3", "c3", "d3", "e3", "f3"]);
 		expect(pages.getSnapshot().error).toBeNull();
+	});
+
+	it("resume restores a cancelled recovery's depth without the retry opt-in", async () => {
+		const { requests, pages, requested, invalidate } = boundary("catalog", { readRetry: false });
+		pages.watch();
+		// Three pages loaded: the reader reached a depth of six rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 2, 1, 2));
+		await more;
+		const deepest = pages.more();
+		requests[2].resolve(response(["e", "f"], 0, 1, 4));
+		await deepest;
+		// A hub change starts a recovery; its first page lands clean and the
+		// reader leaves while the walk's deeper page is pending. Without the
+		// automatic-retry opt-in, the depth is the only thing that can bring
+		// the reader's pages back on resume.
+		invalidate({
+			generationId: "hub-generation",
+			sequence: 2,
+			targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+		});
+		await requested(4);
+		requests[3].resolve(response(["a2", "b2"], 2, 2));
+		await requested(5);
+		pages.cancel();
+		pages.resume();
+		// The recovery re-reads from the first page and completes the depth.
+		await requested(6);
+		requests[5].resolve(response(["a2", "b2"], 2, 2));
+		await requested(7);
+		requests[6].resolve(response(["c2", "d2"], 2, 2, 2));
+		await requested(8);
+		requests[7].resolve(response(["e2", "f2"], 0, 2, 4));
+		await settled(pages);
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a2", "b2", "c2", "d2", "e2", "f2"]);
 	});
 
 	it("a not_modified landing with depth owed keeps the error for a resume to re-arm", async () => {
