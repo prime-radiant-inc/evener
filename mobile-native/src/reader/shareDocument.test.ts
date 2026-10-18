@@ -59,4 +59,14 @@ describe("shareFileBaseName", () => {
 	it("replaces characters a share target would stumble on", () => {
 		expect(shareFileBaseName("studio:02w", "a/b c:d?.mp4")).toBe("studio_02w-a-b c_d_.mp4");
 	});
+
+	it("keeps a deeply nested name inside the filesystem's limit", () => {
+		// A valid source path can be far longer than one file name may be. The
+		// cache name must stay under iOS's 255-byte limit or the download's
+		// final move fails and sharing never works for that document.
+		const deep = `${Array.from({ length: 6 }, () => "a".repeat(90)).join("/")}/onboarding.mp4`;
+		const name = shareFileBaseName("local:abc", deep);
+		expect(name.length).toBeLessThanOrEqual(200);
+		expect(name.endsWith(".mp4")).toBe(true);
+	});
 });
