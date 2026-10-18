@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/cmdutil"
@@ -67,6 +68,7 @@ func TestOnboardingBrowser(t *testing.T) {
 	var requests []map[string]any
 	checks := 0
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAt := time.Now()
 		mu.Lock()
 		defer mu.Unlock()
 		if strings.HasPrefix(r.URL.Path, "/unavailable") {
@@ -99,7 +101,7 @@ func TestOnboardingBrowser(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		req["receivedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
+		req["receivedAt"] = receivedAt.UTC().Format(time.RFC3339Nano)
 		requests = append(requests, req)
 		if req["stream"] != true {
 			w.Header().Set("Content-Type", "application/json")
@@ -147,11 +149,14 @@ func TestOnboardingBrowser(t *testing.T) {
 	// every failure path, without touching unrelated rendezvous/service roots.
 	oldCommand := daemonProcessCommand
 	var children []*exec.Cmd
+	var launches []time.Time
 	var childMu sync.Mutex
 	daemonProcessCommand = func(bin string, args, env []string) *exec.Cmd {
+		attempted := time.Now()
 		cmd := oldCommand(bin, args, env)
 		childMu.Lock()
 		children = append(children, cmd)
+		launches = append(launches, attempted)
 		childMu.Unlock()
 		return cmd
 	}
@@ -166,11 +171,17 @@ func TestOnboardingBrowser(t *testing.T) {
 				}
 				_ = cmd.Process.Signal(syscall.SIGTERM)
 				deadline := time.Now().Add(10 * time.Second)
+				killed := false
 				for !errors.Is(cmd.Process.Signal(syscall.Signal(0)), os.ErrProcessDone) {
 					if time.Now().After(deadline) {
+						if killed {
+							t.Errorf("daemon %d not reaped after kill", cmd.Process.Pid)
+							break
+						}
+						killed = true
+						deadline = time.Now().Add(5 * time.Second)
 						_ = cmd.Process.Kill()
 						t.Errorf("daemon %d failed graceful shutdown", cmd.Process.Pid)
-						break
 					}
 					time.Sleep(10 * time.Millisecond) // production owns cmd.Wait, observe its reaping
 				}
@@ -185,7 +196,10 @@ func TestOnboardingBrowser(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		entries, err := rendezvous.List(run)
-		if err != nil || len(entries) != 0 || len(requests) != 0 {
+		childMu.Lock()
+		attempts := len(launches)
+		childMu.Unlock()
+		if err != nil || len(entries) != 0 || len(requests) != 0 || attempts != 0 {
 			http.Error(w, "session or generation before Start", 500)
 			return
 		}
@@ -203,6 +217,10 @@ func TestOnboardingBrowser(t *testing.T) {
 		t.Fatalf("browser: %v\n%s", err, out)
 	}
 	t.Logf("browser: %s", out)
+	entries, err := rendezvous.List(run)
+	if err != nil {
+		t.Fatal(err)
+	}
 	stopChildren()
 	if len(children) != 2 {
 		t.Fatalf("spawned %d daemons, want task and blank sessions", len(children))
@@ -212,27 +230,45 @@ func TestOnboardingBrowser(t *testing.T) {
 	if checks < 2 {
 		t.Errorf("model-list requests=%d, want failure and retry", checks)
 	}
-	var start time.Time
+	var starts []time.Time
+	var refs []string
 	for _, milestone := range skillGuardReadMilestones(t, filepath.Join(root, "milestones.jsonl")) {
-		if milestone.Milestone == "before-start" {
-			start, err = time.Parse(time.RFC3339Nano, milestone.At)
-			if err != nil {
+		switch milestone.Milestone {
+		case "start-activated":
+			var detail struct {
+				At float64 `json:"activatedAt"`
+			}
+			if err := json.Unmarshal(milestone.Detail, &detail); err != nil {
 				t.Fatal(err)
 			}
+			starts = append(starts, time.Unix(0, int64(detail.At*1e6)))
+		case "session-observed":
+			var detail struct {
+				Ref string `json:"ref"`
+			}
+			if err := json.Unmarshal(milestone.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			refs = append(refs, detail.Ref)
 		}
 	}
-	if start.IsZero() {
-		t.Fatal("missing explicit Start milestone")
+	if len(refs) != 2 || refs[0] == refs[1] {
+		t.Fatalf("browser session identities: %v", refs)
 	}
+	var generations []time.Time
 	var turns []map[string]any
 	for _, req := range requests {
 		received, err := time.Parse(time.RFC3339Nano, req["receivedAt"].(string))
-		if err != nil || received.Before(start) {
-			t.Fatal("generation preceded explicit Start")
+		if err != nil {
+			t.Fatal(err)
 		}
+		generations = append(generations, received)
 		if req["stream"] == true {
 			turns = append(turns, req)
 		}
+	}
+	if err := onboardingStarts(starts, launches, generations); err != nil {
+		t.Fatal(err)
 	}
 	if len(turns) != 1 {
 		t.Fatalf("streamed user turns=%d, want 1 (total generations=%d)", len(turns), len(requests))
@@ -245,30 +281,39 @@ func TestOnboardingBrowser(t *testing.T) {
 		t.Error("provider request lost draft")
 	}
 
-	var completed, empty int
-	err = filepath.WalkDir(state, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
+	for i, ref := range refs {
+		var entry rendezvous.Entry
+		for _, candidate := range entries {
+			if candidate.PID == children[i].Process.Pid {
+				entry = candidate
+			}
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".transcript.jsonl") {
-			return nil
+		if entry.SessionID == "" {
+			t.Fatal("spawned daemon missing rendezvous metadata")
 		}
+		path := filepath.Join(entry.StateDir, "sessions", entry.SessionID+".transcript.jsonl")
 		f, err := os.Open(path)
 		if err != nil {
-			return err
+			t.Fatal(err)
 		}
 		defer f.Close()
 		scanner := bufio.NewScanner(f)
 		scanner.Buffer(make([]byte, 4096), 4*1024*1024)
 		var input, reply, finished bool
 		userTurns := 0
+		var header transcript.Header
 		for scanner.Scan() {
 			var record struct {
 				Kind string      `json:"kind"`
 				Turn schema.Turn `json:"turn"`
 			}
 			if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
-				return err
+				t.Fatal(err)
+			}
+			if record.Kind == "header" {
+				if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if record.Kind != "entry" {
 				continue
@@ -285,19 +330,88 @@ func TestOnboardingBrowser(t *testing.T) {
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			return err
+			t.Fatal(err)
 		}
-		if input && reply && finished && userTurns == 1 {
-			completed++
+		if err := onboardingIdentity(ref, work, entry, header); err != nil {
+			t.Fatalf("launch %d: %v", i, err)
 		}
-		if userTurns == 0 && !reply && !finished {
-			empty++
+		if i == 0 && !(input && reply && finished && userTurns == 1) {
+			t.Fatal("active task session missing completed input/reply")
 		}
-		return nil
-	})
-	if err != nil || completed != 1 || empty != 1 {
-		t.Fatalf("durable completed=%d blank=%d err=%v", completed, empty, err)
+		if i == 1 && (userTurns != 0 || reply || finished) {
+			t.Fatal("active blank session contains user work")
+		}
 	}
 
 	t.Logf("verified model-list retry (%d requests), no generation/session before Start, one routed generation and durable input/reply", checks)
+}
+
+var errOnboardingIdentity = errors.New("onboarding identity mismatch")
+var errOnboardingDirectory = errors.New("onboarding directory mismatch")
+var errOnboardingStart = errors.New("onboarding operation before activation")
+
+func onboardingIdentity(ref, cwd string, entry rendezvous.Entry, header transcript.Header) error {
+	if ref != "local:"+entry.SessionID || header.SessionID != entry.SessionID {
+		return errOnboardingIdentity
+	}
+	if entry.WorkingDir != cwd || header.WorkingDir != cwd {
+		return errOnboardingDirectory
+	}
+	return nil
+}
+func onboardingStarts(starts, launches, generations []time.Time) error {
+	if len(starts) != 2 || len(launches) != 2 || !starts[1].After(starts[0]) {
+		return errOnboardingStart
+	}
+	for i, launch := range launches {
+		if launch.Before(starts[i]) || (i == 0 && !launch.Before(starts[1])) {
+			return errOnboardingStart
+		}
+	}
+	for _, generation := range generations {
+		if generation.Before(starts[0]) {
+			return errOnboardingStart
+		}
+	}
+	return nil
+}
+
+func TestOnboardingEvidenceRejectsMisrouting(t *testing.T) {
+	entry := rendezvous.Entry{SessionID: "fixture-a", WorkingDir: "/fixture/project"}
+	header := transcript.Header{SessionID: "fixture-a", WorkingDir: "/fixture/project"}
+	for _, tc := range []struct {
+		name, ref, cwd string
+		want           error
+	}{
+		{"matching", "local:fixture-a", "/fixture/project", nil},
+		{"wrong-session", "local:fixture-b", "/fixture/project", errOnboardingIdentity},
+		{"wrong-directory", "local:fixture-a", "/fixture/other", errOnboardingDirectory},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := onboardingIdentity(tc.ref, tc.cwd, entry, header); !errors.Is(err, tc.want) {
+				t.Fatalf("rejection=%v want=%v", err, tc.want)
+			}
+		})
+	}
+}
+func TestOnboardingEvidenceRejectsPreStartObservation(t *testing.T) {
+	at := time.Unix(100, 0)
+	starts := []time.Time{at, at.Add(time.Second)}
+	for _, tc := range []struct {
+		name                  string
+		launches, generations []time.Time
+		want                  error
+	}{
+		{"authorized", []time.Time{at.Add(time.Millisecond), at.Add(2 * time.Second)}, []time.Time{at.Add(time.Millisecond)}, nil},
+		// No rendezvous is supplied: an attempt alone must be rejected.
+		{"pre-rendezvous-launch", []time.Time{at.Add(-time.Millisecond), at.Add(2 * time.Second)}, nil, errOnboardingStart},
+		{"second-before-activation", []time.Time{at.Add(time.Millisecond), at.Add(time.Second - time.Millisecond)}, nil, errOnboardingStart},
+		{"generation-before-activation", []time.Time{at.Add(time.Millisecond), at.Add(2 * time.Second)}, []time.Time{at.Add(-time.Millisecond)}, errOnboardingStart},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := onboardingStarts(starts, tc.launches, tc.generations); !errors.Is(err, tc.want) {
+				t.Fatalf("rejection=%v want=%v", err, tc.want)
+			}
+		})
+	}
 }

@@ -17,15 +17,21 @@ credential, model selection, default model, session or browser storage is seeded
 The driver imports skillguard's exported Chrome lifecycle/input driver, not its
 scenarios or frontend fixtures. All UI actions go through the production app.
 The separate checkpoint URL only lets Node ask Go to verify that neither a
-provider generation nor a rendezvous session exists before Start.
+provider generation, process launch attempt nor rendezvous session exists before
+Start. Final checks compare both launch attempts and all generations with the
+actual Start activation event, captured synchronously before its React handler.
 
 Coverage: prerequisite ordering, directory/task drafts, API-key save and
 model-list failure/retry, provider-scoped explicit model choice and focus,
 explicit Start, actual provider reply, typed durable input/communication/turn
-completion, configured-user bypass and a distinct blank-session composer with
-an empty durable transcript. The provider verifies the saved credential reaches
-both listing and generation. Metadata generation after Start is allowed; exactly
-one streamed user turn is required.
+completion, configured-user bypass and a distinct blank-session composer whose
+transcript has no user input, fixture reply or completed execution. Startup and
+other bookkeeping records are permitted. Each active dock tab's session identity
+is joined to its spawned daemon PID, rendezvous metadata and exact transcript
+path/header. Both actual working-directory records must match the chosen path.
+Reply and composer queries are scoped to that active pane. The provider verifies
+the saved credential reaches both listing and generation. Metadata generation
+after Start is allowed; exactly one streamed user turn is required.
 
 Each run owns its home/config/state/cache, rendezvous root, credential file,
 provider listener, hub listener, daemons and Chrome profile. Implicit Ollama

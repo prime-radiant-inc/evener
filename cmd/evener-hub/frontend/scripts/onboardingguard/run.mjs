@@ -61,6 +61,40 @@ async function checkpoint(minChecks) {
   assert.equal(response.status, 200, body);
   assert.ok(JSON.parse(body).checks >= minChecks);
 }
+// Read the selected tab in the active dock group, then its controlled panel.
+// Never accept a reply/composer merely mounted in another pane.
+function activeSession() {
+  const tab = document.querySelector('.dv-groupview.dv-active-group [role="tab"][aria-selected="true"]');
+  const panel = tab && document.getElementById(tab.getAttribute("aria-controls"));
+  const bodies =
+    panel &&
+    [...panel.querySelectorAll('[data-pane-scaffold^="session:"]')].filter((e) => e.getBoundingClientRect().width > 0);
+  if (bodies?.length !== 1) return null;
+  const body = bodies[0];
+  const ref = body.dataset.paneScaffold.slice("session:".length);
+  const pane = body.parentElement;
+  const composer = pane.querySelector(`[data-composer="${ref}"] [contenteditable="true"]`);
+  if (!composer) return null;
+  return { ref, text: composer.textContent, reply: pane.textContent.includes("ONBOARDING_REPLY_72e") };
+}
+const active = `(${activeSession.toString()})()`;
+async function start() {
+  await wait(hasButton("Start"), "Start enabled");
+  // The timestamp is captured by the actual activation event, synchronously
+  // before React handles it, not before an asynchronous wait or CDP round trip.
+  const activatedAt = await read(`(() => {
+    const button = document.querySelector('[data-testid="spawn-submit"]');
+    if (!button || button.disabled) return null;
+    let at = null;
+    const record = () => { at = performance.timeOrigin + performance.now(); };
+    button.addEventListener('click', record, { capture: true, once: true });
+    button.click();
+    button.removeEventListener('click', record, true);
+    return at;
+  })()`);
+  assert.ok(activatedAt);
+  driver.milestone("start-activated", { activatedAt });
+}
 let stopping;
 async function stop() {
   stopping ??= driver.stop();
@@ -113,7 +147,12 @@ try {
     "explicit model committed",
   );
   await wait(`!document.querySelector('[role="dialog"]')`, "model choice closes dialog");
-  assert.ok(await read(`document.activeElement !== document.body`), "model handoff restores focus");
+  assert.ok(
+    await read(
+      `document.activeElement === document.querySelector('[data-testid="spawn-prompt-card"] [contenteditable="true"]') || document.activeElement === document.querySelector('[data-testid="spawn-model-trigger"]')`,
+    ),
+    "model handoff restores focus to task or model control",
+  );
   assert.equal(await read(`document.querySelector('[contenteditable="true"]').textContent`), "ONBOARDING_TASK_72e");
   assert.ok(
     await read(
@@ -122,22 +161,25 @@ try {
     "working directory retained",
   );
   await checkpoint(2);
-  driver.milestone("before-start");
-  await button("Start");
-  await wait(`document.body.textContent.includes('ONBOARDING_REPLY_72e')`, "real producer reply");
-  driver.milestone("reply");
-  const firstComposer = await read(`document.querySelector('[data-composer]').getAttribute('data-composer')`);
+  await start();
+  await wait(`${active}?.reply === true`, "active session producer reply");
+  const firstSession = await read(active);
+  driver.milestone("session-observed", firstSession);
   // A second launch is deliberately blank. Production routing, not injected
   // client state, must open a session with an editable composer and no turn.
   await navigateTo(driver.page, new URL("/new", args.url).href);
   await wait(`!!document.querySelector('[data-testid="spawn-submit"]')`, "configured user new session");
   assert.equal(await read(`!!document.querySelector('[data-testid="spawn-provider-prerequisite"]')`), false);
   await fill('[contenteditable="true"]', "");
-  await button("Start");
-  const blank = `[data-composer]:not([data-composer=${JSON.stringify(firstComposer)}]) [contenteditable="true"]`;
-  await wait(`!!document.querySelector(${JSON.stringify(blank)})`, "new blank session composer");
-  assert.equal(await read(`document.querySelector(${JSON.stringify(blank)}).textContent`), "");
-  driver.milestone("blank-composer");
+  await start();
+  await wait(
+    `${active} !== null && ${active}.ref !== ${JSON.stringify(firstSession.ref)}`,
+    "second active session composer",
+  );
+  const blankSession = await read(active);
+  assert.equal(blankSession.text, "");
+  assert.equal(blankSession.reply, false);
+  driver.milestone("session-observed", blankSession);
   console.log(
     "PASS prerequisite ordering, failed check/retry, explicit model, retained draft/directory, reply, blank composer",
   );
