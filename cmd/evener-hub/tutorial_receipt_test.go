@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
@@ -181,12 +183,7 @@ func runReceiptCLI(t *testing.T, candidateDir string) {
 	env := tutorialChildEnvironment(root)
 	stack := startHubStackWithOptions(t, fmt.Sprintf("default = \"fake\"\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"fakellm-not-a-secret\"\n", provider.BaseURL()), "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: env})
 	env = tutorialChildEnvironment(stack.home)
-	copyReceipt(t, stack.workDir, source)
-	for _, args := range [][]string{{"git", "init"}, {"git", "add", "README.md", "receipt.py", "check.py"}, {"git", "-c", "user.name=Tutorial", "-c", "user.email=tutorial@example.invalid", "commit", "-m", "Add first-task fixture"}} {
-		if r := recordCommand(t, stack.workDir, env, args...); r.ExitCode != 0 {
-			t.Fatalf("git setup: %s", r.Stderr)
-		}
-	}
+	prepareReceiptWorkspace(t, stack.workDir, env, source)
 	capture := func(id string, records []commandRecord) func() error {
 		return func() error {
 			b, err := json.Marshal(records)
@@ -217,49 +214,15 @@ func runReceiptCLI(t *testing.T, candidateDir string) {
 			_ = cmd.Wait()
 		}
 	}()
-	next := func() *fakellm.Call {
-		c, err := provider.Next(ctx.Done())
+	var changed []byte
+	var diff commandRecord
+	toolIDs, commandIDs := driveReceipt(t, provider, ctx, func(editID string) {
+		changed, err = os.ReadFile(filepath.Join(stack.workDir, "receipt.py"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		return c
-	}
-	call := next()
-	commandTool := receiptCommandTool(t, call)
-	var toolIDs []string
-	var commandIDs []string
-	for _, name := range []string{"README.md", "check.py", "receipt.py"} {
-		id := call.ToolCallID()
-		toolIDs = append(toolIDs, id)
-		call.RespondToolCall("read_file", map[string]any{"file_path": name, "intent": "Reading receipt fixture"})
-		call = next()
-		requireReceiptTool(t, call, id)
-	}
-	id := call.ToolCallID()
-	commandIDs = append(commandIDs, id)
-	toolIDs = append(toolIDs, id)
-	call.RespondToolCall(commandTool, map[string]any{"command": "python3 check.py", "mode": "foreground", "intent": "Reproducing receipt failure"})
-	call = next()
-	requireReceiptTool(t, call, id)
-	id = call.ToolCallID()
-	toolIDs = append(toolIDs, id)
-	call.RespondToolCall("edit_file", map[string]any{"file_path": "receipt.py", "old_string": brokenReceipt, "new_string": fixedReceipt, "intent": "Fixing quantity multiplication"})
-	call = next()
-	requireReceiptTool(t, call, id)
-	changed, err := os.ReadFile(filepath.Join(stack.workDir, "receipt.py"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	diff := recordCommand(t, stack.workDir, env, "git", "diff", "--", "receipt.py")
-
-	id = call.ToolCallID()
-	commandIDs = append(commandIDs, id)
-	toolIDs = append(toolIDs, id)
-	call.RespondToolCall(commandTool, map[string]any{"command": "python3 check.py", "mode": "foreground", "intent": "Checking repair"})
-	call = next()
-	requireReceiptTool(t, call, id)
-	toolIDs = append(toolIDs, call.ToolCallID())
-	call.RespondToolCall("communicate", communicateArgs("Updated receipt.py to multiply prices by quantities. The checker exited zero."))
+		diff = recordCommand(t, stack.workDir, env, "git", "diff", "--", "receipt.py")
+	})
 	err = cmd.Wait()
 	waited = true
 	exit := 0
@@ -348,7 +311,15 @@ func receiptToolResults(t *testing.T, root string) map[string]llm.ToolResultData
 		if err != nil {
 			return err
 		}
-		for _, line := range bytes.Split(bytes.TrimSpace(b), []byte("\n")) {
+		lines := bytes.Split(bytes.TrimSpace(b), []byte("\n"))
+		var header transcript.Header
+		if err := json.Unmarshal(lines[0], &header); err != nil {
+			return err
+		}
+		if header.ProfileID != "fake" || header.Model != fakellm.ModelID {
+			return fmt.Errorf("unexpected persisted provider/model: %q/%q", header.ProfileID, header.Model)
+		}
+		for _, line := range lines {
 			var entry transcript.Entry
 			if err := json.Unmarshal(line, &entry); err != nil {
 				return err
@@ -380,4 +351,177 @@ func receiptCommandTool(t *testing.T, call *fakellm.Call) string {
 	}
 	t.Fatal("provider did not advertise a command tool")
 	return ""
+}
+
+func driveReceipt(t *testing.T, provider *fakellm.Server, ctx context.Context, onEdit func(string)) ([]string, []string) {
+	next := func() *fakellm.Call {
+		c, err := provider.Next(ctx.Done())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	call := next()
+	if call.Body["model"] != fakellm.ModelID {
+		t.Fatal("unexpected launched model identity")
+	}
+	commandTool := receiptCommandTool(t, call)
+	var toolIDs []string
+	var commandIDs []string
+	for _, name := range []string{"README.md", "check.py", "receipt.py"} {
+		id := call.ToolCallID()
+		toolIDs = append(toolIDs, id)
+		call.RespondToolCall("read_file", map[string]any{"file_path": name, "intent": "Reading receipt fixture"})
+		call = next()
+		requireReceiptTool(t, call, id)
+	}
+	id := call.ToolCallID()
+	commandIDs = append(commandIDs, id)
+	toolIDs = append(toolIDs, id)
+	call.RespondToolCall(commandTool, map[string]any{"command": "python3 check.py", "mode": "foreground", "intent": "Reproducing receipt failure"})
+	call = next()
+	requireReceiptTool(t, call, id)
+	id = call.ToolCallID()
+	toolIDs = append(toolIDs, id)
+	call.RespondToolCall("edit_file", map[string]any{"file_path": "receipt.py", "old_string": brokenReceipt, "new_string": fixedReceipt, "intent": "Fixing quantity multiplication"})
+	call = next()
+	requireReceiptTool(t, call, id)
+	onEdit(id)
+	id = call.ToolCallID()
+	commandIDs = append(commandIDs, id)
+	toolIDs = append(toolIDs, id)
+	call.RespondToolCall(commandTool, map[string]any{"command": "python3 check.py", "mode": "foreground", "intent": "Checking repair"})
+	call = next()
+	requireReceiptTool(t, call, id)
+	toolIDs = append(toolIDs, call.ToolCallID())
+	call.RespondToolCall("communicate", communicateArgs("Updated receipt.py to multiply prices by quantities. The checker exited zero."))
+	return toolIDs, commandIDs
+}
+
+func runReceiptWeb(t *testing.T, candidateDir string) {
+	source := receiptBaseline(t)
+	defer assertReceiptSource(t, source)
+	provider, err := fakellm.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer provider.Close()
+	repo, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := settingsUIControllerBinary(t, repo)
+	root := tutorialOwnedRoot(t)
+	// Ollama is keyless and otherwise probes an ambient localhost service.
+	// Redirect its discovery to the owned fake HTTP server, then hide its models.
+	providerConfig := fmt.Sprintf("default = \"fake\"\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"fakellm-not-a-secret\"\n[providers.ollama]\nbase_url = %q\n[providers.ollama.models.\"*\"]\ndisabled = true\n", provider.BaseURL(), provider.BaseURL())
+	if _, err := registry.ParseConfig([]byte(providerConfig)); err != nil {
+		t.Fatal(err)
+	}
+	stack := startHubStackWithOptions(t, providerConfig, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(root)})
+	stack.workDir, err = filepath.EvalSymlinks(stack.workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepareReceiptWorkspace(t, stack.workDir, tutorialChildEnvironment(stack.home), source)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	url := "http://" + stack.addr
+	assertHubServesBuiltSPA(t, stack.addr, stack.token)
+	observer := stack.dialRPC(ctx, t)
+	models, modelErr := clientRequest[appwire.ModelListResponse](ctx, observer, appwire.MethodModelList, appwire.ModelListParams{Harness: "evener", CWD: stack.workDir})
+	if modelErr != nil {
+		t.Fatal(modelErr)
+	}
+	if len(models.Data) != 1 || models.Data[0].Provider != "fake" || models.Data[0].Model != fakellm.ModelID || len(models.Diagnostics) != 0 {
+		t.Fatal("isolated model catalogue must contain only fake model with no diagnostics")
+	}
+	driver := openTutorialDriver(t, ctx, map[string]any{"url": url, "authURL": url + "/auth/" + stack.token, "workspace": stack.workDir, "model": stack.model, "viewport": map[string]int{"width": 1280, "height": 900}, "outputDir": candidateDir})
+	pre := receiptCheck(t, stack.workDir)
+	checkpoint(t, "entry", []tourEvidence{{"baseline checker", pre.ExitCode == 1}}, driver.capture(t, candidateDir, "entry"))
+	driver.act(t, "start", map[string]any{"prompt": receiptPrompt})
+	var ref string
+	for ref == "" {
+		list, err := clientRequest[appwire.ThreadListResponse](ctx, observer, appwire.MethodThreadList, appwire.ThreadListParams{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, thread := range list.Data {
+			canonical, err := filepath.EvalSymlinks(thread.CWD)
+			owned, ownErr := filepath.EvalSymlinks(stack.workDir)
+			if err == nil && ownErr == nil && canonical == owned {
+				if ref != "" {
+					t.Fatal("multiple workspace sessions")
+				}
+				if thread.ModelProvider != fakellm.ModelID {
+					t.Fatalf("launched model identity: %q", thread.ModelProvider)
+				}
+				ref = thread.Evener.Ref
+				if ref == "" {
+					t.Fatal("UI-created session has no qualified reference")
+				}
+			}
+		}
+		if ref == "" {
+			select {
+			case <-ctx.Done():
+				t.Fatal("UI-created workspace session not found")
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
+	toolIDs, commandIDs := driveReceipt(t, provider, ctx, func(editID string) {
+		changed, err := os.ReadFile(filepath.Join(stack.workDir, "receipt.py"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		results := receiptToolResults(t, filepath.Join(stack.home, "state"))
+		result, ok := results[editID]
+		checkpoint(t, "action", []tourEvidence{{"actual edit", bytes.Equal(changed, []byte(strings.Replace(string(source["receipt.py"]), brokenReceipt, fixedReceipt, 1)))}, {"persisted edit", ok}, tutorialToolEvidence(result, nil)}, driver.capture(t, candidateDir, "action"))
+	})
+	awaitThread(ctx, t, observer, ref, "receipt turn completed", func(thread appwire.Thread) bool {
+		return thread.Evener.ActiveTurnID == "" && thread.Status.Type != "active"
+	})
+	results := receiptToolResults(t, filepath.Join(stack.home, "state"))
+	var evidence []tourEvidence
+	for _, id := range toolIDs {
+		result, ok := results[id]
+		evidence = append(evidence, tourEvidence{"persisted tool", ok}, tutorialToolEvidence(result, nil))
+	}
+	for i, id := range commandIDs {
+		expected := 1 - i
+		evidence = append(evidence, tutorialToolEvidence(results[id], &expected))
+	}
+	if err := receiptOracle(t, stack.workDir, source); err != nil {
+		t.Fatal(err)
+	}
+	checker, err := os.ReadFile(filepath.Join(stack.workDir, "check.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkerExit := receiptCheck(t, stack.workDir).ExitCode
+	checkerHash, baselineCheckerHash := sha256.Sum256(checker), sha256.Sum256(source["check.py"])
+	evidence = append(evidence, tourEvidence{"checker exit", checkerExit == 0}, tourEvidence{"checker hash", checkerHash == baselineCheckerHash})
+	checkpoint(t, "verified", evidence, driver.capture(t, candidateDir, "verified"))
+	driver.act(t, "close", nil)
+}
+
+func TestTutorialBrokenReceiptBlocksFinalCapture(t *testing.T) {
+	source := receiptBaseline(t)
+	work := t.TempDir()
+	copyReceipt(t, work, source)
+	captured := false
+	err := captureCheckpoint([]tourEvidence{{"receipt oracle", receiptOracle(t, work, source) == nil}}, func() error { captured = true; return nil })
+	if err == nil || captured {
+		t.Fatal("broken receipt authorized final capture")
+	}
+}
+
+func prepareReceiptWorkspace(t *testing.T, work string, env []string, source map[string][]byte) {
+	copyReceipt(t, work, source)
+	for _, args := range [][]string{{"git", "init"}, {"git", "add", "README.md", "receipt.py", "check.py"}, {"git", "-c", "user.name=Tutorial", "-c", "user.email=tutorial@example.invalid", "commit", "-m", "Add first-task fixture"}} {
+		if r := recordCommand(t, work, env, args...); r.ExitCode != 0 {
+			t.Fatalf("git setup: %s", r.Stderr)
+		}
+	}
 }

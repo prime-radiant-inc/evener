@@ -1,15 +1,19 @@
 package hub
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"image/png"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
@@ -139,10 +143,14 @@ func TestTutorialTours(t *testing.T) {
 	runTour(t, tc, out)
 }
 func runTour(t *testing.T, tc tourCase, candidateDir string) {
-	if tc != (tourCase{Scenario: "receipt", Surface: "cli"}) {
+	if tc.Scenario != "receipt" || (tc.Surface != "cli" && tc.Surface != "web") {
 		t.Fatal("unsupported tutorial row", tc)
 	}
-	runReceiptCLI(t, candidateDir)
+	if tc.Surface == "cli" {
+		runReceiptCLI(t, candidateDir)
+	} else {
+		runReceiptWeb(t, candidateDir)
+	}
 	body, err := json.Marshal(map[string]any{"scenario": tc.Scenario, "surface": tc.Surface, "executed": true, "passed": true, "checkpoints": []string{"entry", "action", "verified"}})
 	if err != nil {
 		t.Fatal(err)
@@ -170,4 +178,107 @@ func tutorialOwnedRoot(t *testing.T) string {
 		}
 	})
 	return root
+}
+
+var tutorialBrowserCache = os.Getenv("PLAYWRIGHT_BROWSERS_PATH")
+
+// The driver receives private control data over pipes, never argv or candidates.
+type tutorialDriver struct {
+	cmd    *exec.Cmd
+	input  io.WriteCloser
+	encode *json.Encoder
+	decode *json.Decoder
+	id     int
+	waited bool
+}
+
+func openTutorialDriver(t *testing.T, ctx context.Context, args map[string]any) *tutorialDriver {
+	t.Helper()
+	// Keep the deadline, but let cleanup close stdin before killing the driver
+	// when a scenario assertion fails and cancels its observer context.
+	deadline, _ := ctx.Deadline()
+	driverCtx, cancel := context.WithDeadline(context.Background(), deadline)
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(driverCtx, "node", "../../docs-site/scripts/tours/driver.mjs")
+	cmd.Env = tutorialChildEnvironment(t.TempDir())
+	cmd.Env = append(cmd.Env, "PLAYWRIGHT_BROWSERS_PATH="+tutorialBrowserCache)
+	input, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stderr = io.Discard // Browser diagnostics can contain private URLs.
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	d := &tutorialDriver{cmd: cmd, input: input, encode: json.NewEncoder(input), decode: json.NewDecoder(output)}
+	t.Cleanup(func() {
+		if d.waited {
+			return
+		}
+		_ = input.Close()
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error("tutorial driver exit:", err)
+			}
+		case <-time.After(5 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+			t.Error("tutorial driver did not close")
+		}
+	})
+	d.act(t, "open", args)
+	return d
+}
+func (d *tutorialDriver) act(t *testing.T, action string, args any) {
+	t.Helper()
+	d.id++
+	if err := d.encode.Encode(map[string]any{"id": d.id, "action": action, "args": args}); err != nil {
+		t.Fatal("driver input:", err)
+	}
+	var reply struct {
+		ID   int  `json:"id"`
+		OK   bool `json:"ok"`
+		Data struct {
+			Error string `json:"error"`
+		} `json:"data"`
+	}
+	if err := d.decode.Decode(&reply); err != nil {
+		t.Fatal("driver reply:", err)
+	}
+	if reply.ID != d.id || !reply.OK {
+		t.Fatalf("web driver %s failed: %s", action, reply.Data.Error)
+	}
+	if action == "close" {
+		_ = d.input.Close()
+		err := d.cmd.Wait()
+		d.waited = true
+		if err != nil {
+			t.Fatal("tutorial driver exit:", err)
+		}
+	}
+}
+func (d *tutorialDriver) capture(t *testing.T, out, id string) func() error {
+	return func() error {
+		d.act(t, "capture", map[string]any{"id": id})
+		f, err := os.Open(filepath.Join(out, id+".png"))
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		img, err := png.Decode(f)
+		if err != nil {
+			return err
+		}
+		if img.Bounds().Dx() != 1280 || img.Bounds().Dy() != 900 {
+			return fmt.Errorf("wrong screenshot dimensions")
+		}
+		return nil
+	}
 }

@@ -127,7 +127,7 @@ The checker uses only Python's standard library. It makes no model request and n
 
 ## Ask Evener to repair it
 
-Return to `/new` in the browser. Select the provider model you configured and set the working directory to the absolute `evener-first-task` path. Review the launch settings, including any access or project-trust choices, before starting.
+Choose **New session** in the browser. Open the **Working directory** picker, enter the absolute `evener-first-task` path in **Path**, press Enter, then choose **Use this folder**. Select the provider model you configured. Review the launch settings, including any access or project-trust choices, before starting.
 
 Paste the following into the **agent prompt**, not your terminal:
 
@@ -139,7 +139,7 @@ in receipt.py and rerun the check. Do not change check.py or README.md.
 Do not commit. Report what changed and the actual check result.
 ```
 
-Start the session. The conversation shows the agent's messages and tool calls. Watch for the initial failure, the edit to `receipt.py`, and the rerun. If the agent proposes unrelated work, correct it in the composer. [Daily work](daily-work.md) explains Send, Steer, and Stop.
+Choose **Start**. The conversation shows the agent's messages and tool calls. Watch for the initial failure, the edit to `receipt.py`, and the rerun. If the agent proposes unrelated work, correct it in the composer. [Daily work](daily-work.md) explains Send, Steer, and Stop.
 
 ### Use the CLI instead
 
@@ -166,13 +166,16 @@ correct. Run the independent checks below. If setup fails, fix the reported
 provider or Python prerequisite before retrying. If the task reaches its time
 or round limit, inspect the diff and checker result before continuing.
 
-Maintainer verification: the receipt CLI tour uses the real binary, tools and
+Maintainer verification: the receipt CLI and web tours use the real binary, tools and
 Python checker with a loopback scripted HTTP provider, `fake/fake-test-model`.
-It verifies the initial failure, the edit and the unchanged checker independently.
-It does not test live-provider authentication or model quality. Its images are
+They verify the initial failure, the edit and the unchanged checker independently.
+They do not test live-provider authentication or model quality. CLI images are
 labeled **Rendered command transcript** and retain stdout and stderr separately;
-they do not claim cross-stream timing. Run the partial check with
-`node docs-site/scripts/tours/refresh.mjs check --surfaces cli --scenario receipt`
+they do not claim cross-stream timing. Web captures come from the built browser
+client after real UI actions, not a mock conversation. Black rectangles hide the
+temporary workspace path labels without changing the live page's text.
+Run the partial check with
+`node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --scenario receipt`
 from the source checkout. This command publishes nothing.
 
 ## Check the result yourself
