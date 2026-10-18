@@ -58,6 +58,115 @@ beforeEach(() => {
   resetToastStoreForTests();
 });
 
+test("cached inventory keeps install disabled throughout a delayed retry", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: "formatter" }] }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  await screen.findByRole("button", { name: "Install" });
+  fake.on("evener/plugin/list", () => {
+    throw new Error("read failed");
+  });
+  await act(async () => {
+    await extensionsStore.getState().fetchPlugins();
+  });
+  expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(true);
+  const release = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/list");
+  await user.click(screen.getByRole("button", { name: "Retry plugins" }));
+  expect(extensionsStore.getState()).toMatchObject({ plugins: [LINTER], pluginsLoading: true, pluginsError: null });
+  expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Install" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(fake.calls.filter((c) => c.method === "evener/plugin/install")).toHaveLength(0);
+  await act(async () => release({ plugins: [LINTER] }));
+  expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("an install confirmation reconciles a target installed during inventory recovery", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: "formatter" }] }));
+  const installed = { ...LINTER, plugin: "formatter", enabled: false, autoUpgrade: true };
+  fake.on("evener/plugin/install", () => ({ plugins: [LINTER, { ...installed, enabled: true, autoUpgrade: false }] }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  await user.click(await screen.findByRole("button", { name: "Install" }));
+  const release = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/list");
+  await act(async () => {
+    void extensionsStore.getState().fetchPlugins();
+  });
+  expect(
+    (
+      within(screen.getByRole("dialog", { name: "Install plugin" })).getByRole("button", {
+        name: "Install",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  await act(async () => release({ plugins: [LINTER, installed] }));
+  const confirmation = screen.queryByRole("dialog", { name: "Install plugin" });
+  if (confirmation) await user.click(within(confirmation).getByRole("button", { name: "Install" }));
+  expect(fake.calls.filter((c) => c.method === "evener/plugin/install")).toHaveLength(0);
+  expect(extensionsStore.getState().plugins).toEqual([LINTER, installed]);
+  expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
+});
+
+test("cached installed details remain inspectable through failed reads and delayed recovery without mutations", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/plugin/list", () => ({ plugins: [{ ...LINTER, updateAvailable: true }] }));
+  fake.on("evener/plugin/enable", () => ({ plugins: [{ ...LINTER, enabled: true, autoUpgrade: true }] }));
+  fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: LINTER.plugin }] }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  fake.on("evener/plugin/list", () => {
+    throw new Error("read failed");
+  });
+  await act(async () => {
+    await extensionsStore.getState().fetchPlugins();
+  });
+  await user.click(screen.getByRole("button", { name: /linter/ }));
+  const details = screen.getByRole("dialog", { name: LINTER.plugin });
+  expect(within(details).getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-disabled")).toBe(
+    "true",
+  );
+  await user.click(within(details).getByRole("switch", { name: "Enabled by default" }));
+  await user.click(within(details).getByRole("switch", { name: "Auto-upgrade" }));
+  expect(within(details).getByRole("button", { name: "Upgrade" }).getAttribute("aria-disabled")).toBe("true");
+  await user.click(within(details).getByRole("button", { name: "Upgrade" }));
+  expect((within(details).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(within(details).getByRole("button", { name: "Close" }));
+  const release = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/list");
+  await user.click(screen.getByRole("button", { name: "Retry plugins" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await user.click(screen.getByRole("button", { name: /linter/ }));
+  const recovering = screen.getByRole("dialog", { name: LINTER.plugin });
+  expect(within(recovering).getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-disabled")).toBe(
+    "true",
+  );
+  await act(async () => release({ plugins: [{ ...LINTER, enabled: false, autoUpgrade: true }] }));
+  expect(within(recovering).getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe(
+    "false",
+  );
+  expect(within(recovering).getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-disabled")).not.toBe(
+    "true",
+  );
+  expect(
+    fake.calls.filter((c) => /evener\/plugin\/(install|enable|disable|setAutoUpgrade|remove|upgrade)$/.test(c.method)),
+  ).toHaveLength(0);
+  await user.click(within(recovering).getByRole("switch", { name: "Enabled by default" }));
+  expect(fake.calls.filter((c) => c.method === "evener/plugin/enable").map((c) => c.params)).toEqual([
+    { plugin: LINTER.plugin, marketplace: LINTER.marketplace },
+  ]);
+  expect(within(recovering).getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe(
+    "true",
+  );
+});
+
 test("first plugin journey navigates through Sources and explicitly browses the added catalog without installing", async () => {
   const fake = connectFakeClient();
   fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));

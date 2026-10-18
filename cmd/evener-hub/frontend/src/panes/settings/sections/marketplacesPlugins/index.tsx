@@ -194,9 +194,7 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
             onSources={() => handleSegmentChange("sources")}
           />
         ))}
-      {pluginsError === null && plugins !== null && (
-        <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />
-      )}
+      {plugins !== null && <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />}
       {marketplaces !== null && (
         <MarketplaceSheet
           name={selectedMarketplace}

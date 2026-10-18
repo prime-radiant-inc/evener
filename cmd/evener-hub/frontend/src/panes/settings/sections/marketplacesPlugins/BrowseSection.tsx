@@ -55,7 +55,9 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces, o
   const store = useExtensionsHostStore();
   const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
   const plugins = useExtensionsHostState((s) => s.plugins) ?? [];
-  const pluginsUnavailable = useExtensionsHostState((s) => s.plugins === null || s.pluginsError !== null);
+  const pluginsUnavailable = useExtensionsHostState(
+    (s) => s.plugins === null || s.pluginsError !== null || s.pluginsLoading,
+  );
   const browseCatalogs = useExtensionsHostState((s) => s.browseCatalogs);
   const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
   const toasts = useToasts();
@@ -156,6 +158,10 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces, o
   async function handleConfirmInstall() {
     const target = pendingInstall;
     if (target === null || pluginsUnavailable) return;
+    if (isInstalled(target.plugin, target.marketplace)) {
+      setPendingInstall(null);
+      return;
+    }
     try {
       await store.getState().installPlugin(target.plugin, target.marketplace);
       toasts.push("success", `Installed ${target.plugin}`);
@@ -228,7 +234,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces, o
         title="Install plugin"
         confirmLabel="Install"
         destructive={false}
-        busy={hubWriteBusy}
+        busy={hubWriteBusy || pluginsUnavailable}
         onConfirm={() => void handleConfirmInstall()}
         onCancel={() => setPendingInstall(null)}
       >

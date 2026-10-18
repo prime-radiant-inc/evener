@@ -118,6 +118,9 @@ actions never install or enable plugins; installation is a separate confirmation
 Plugin and marketplace read failures have separate retries. A failed marketplace
 read does not hide Installed; a failed plugin read does not prevent browsing
 catalogs, but installation waits until the installed inventory is available.
+Cached installed-plugin details remain inspectable during a failed read or retry.
+Plugin mutations wait for that retry to finish, and an install confirmation does
+not reinstall a target that the refreshed inventory already contains.
 Directory loading and editing recover independently of both inventories.
 Temporary marketplace read failures retain source add/edit drafts and let you
 keep typing; retry the read before saving. Untouched source editors follow
