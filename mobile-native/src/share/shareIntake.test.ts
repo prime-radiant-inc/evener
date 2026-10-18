@@ -75,3 +75,15 @@ it("offers one share when two wakes land at once", async () => {
 	await Promise.all([intake.offer(), intake.offer()]);
 	expect(offered.map((entry) => entry.id)).toEqual(["one"]);
 });
+
+it("offers the next share after a placed one advances the intake", async () => {
+	const offered: SharedPayload[] = [];
+	const intake = createShareIntake({
+		port: sharePort([share("one", HOUR), share("two", 2 * HOUR)]),
+		onShare: (entry) => offered.push(entry),
+	});
+	await intake.offer();
+	intake.forget("one");
+	await intake.advance();
+	expect(offered.map((entry) => entry.id)).toEqual(["one", "two"]);
+});

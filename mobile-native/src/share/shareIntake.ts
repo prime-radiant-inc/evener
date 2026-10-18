@@ -24,6 +24,9 @@ export interface ShareIntake {
 	/** A placed or explicitly discarded share is never offered again, even if
 	 * its file lingers. */
 	forget(id: string): void;
+	/** A placed or discarded share is done and the next pending one may be
+	 * offered now, without waiting for a foreground or URL. */
+	advance(): Promise<void>;
 	/** The app unmounted: nothing more is offered. */
 	dispose(): void;
 }
@@ -58,6 +61,9 @@ export function createShareIntake(options: ShareIntakeOptions): ShareIntake {
 		forget(id) {
 			done.add(id);
 			if (active === id) active = null;
+		},
+		async advance() {
+			await offer();
 		},
 		dispose() {
 			disposed = true;

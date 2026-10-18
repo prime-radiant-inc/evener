@@ -106,7 +106,7 @@ export function ShareTargetSheet({
 
 	function openSession(ref: string, title: string) {
 		const document = drafts.open({ hubId, sessionRef: ref });
-		if (!placeSharedText(document, item.text)) {
+		if (!placeSharedText(document, item)) {
 			setError("Your draft couldn't be saved on this device, so the share is still here. Try again.");
 			return;
 		}

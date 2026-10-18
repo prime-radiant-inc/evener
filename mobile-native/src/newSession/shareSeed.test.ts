@@ -4,7 +4,7 @@ import { createNewSessionStore, type DraftStorage } from "../newSession";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import { LaunchMemory } from "./launchMemory";
 import { memoryStorage } from "./newSessionTestUtils";
-import { seedSharedPrompt } from "./shareSeed";
+import { seedSharedPrompt, shareSeedLanded } from "./shareSeed";
 
 const HUB = "hub-1";
 
@@ -83,6 +83,42 @@ it("reports the seed did not land when the draft cannot be saved", () => {
 			false,
 		);
 		expect(environment.store.getState().storageError).not.toBeNull();
+	} finally {
+		environment.close();
+	}
+});
+
+it("reports the prompt it seeded, so a later check can tell it landed", () => {
+	const environment = opening();
+	try {
+		const seed = seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" });
+		expect(seed.prompt).toBe("What I shared");
+		expect(shareSeedLanded(environment.store, seed.prompt, "What I shared")).toBe(true);
+		expect(shareSeedLanded(environment.store, seed.prompt, "Something else")).toBe(false);
+	} finally {
+		environment.close();
+	}
+});
+
+it("does not append the same share twice when the sheet is reopened on it", () => {
+	const environment = opening();
+	try {
+		seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" });
+		seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" });
+		expect(environment.store.getState().prompt).toBe("What I shared");
+	} finally {
+		environment.close();
+	}
+});
+
+it("reports a seed the store could not take while it is starting an earlier session", () => {
+	const environment = opening();
+	try {
+		// A store mid-start ignores prompt edits; the seed must say so.
+		environment.store.setState({ submitting: true });
+		const seed = seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" });
+		expect(seed.saved).toBe(false);
+		expect(shareSeedLanded(environment.store, seed.prompt, "What I shared")).toBe(false);
 	} finally {
 		environment.close();
 	}

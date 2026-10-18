@@ -34,7 +34,7 @@ import { PluginChecklist } from "./PluginChecklist";
 import { ProjectPicker } from "./ProjectPicker";
 import { useSheetPlugins } from "./sheetPlugins";
 import { useSheetLaunchDefaults } from "./useLaunchDefaults";
-import { seedSharedPrompt } from "./shareSeed";
+import { seedSharedPrompt, shareSeedLanded } from "./shareSeed";
 
 const NewSessionStack = createNativeStackNavigator<NewSessionRoutes>();
 
@@ -59,30 +59,44 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 	const ready = activeProfile?.id === hubId && isReady(state) && !!client;
 	const store = creationStore(hubId, () => nativeDrafts().creation);
 	const memory = useMemo(() => launchMemory(hubId), [hubId]);
+	const prompt = useStore(store, (form) => form.prompt);
+	const submitting = useStore(store, (form) => form.submitting);
 
 	// The form is placed once, as it opens with its draft loaded.
 	const storageLoaded = useStore(store, (form) => form.storageLoaded);
 	const storageError = useStore(store, (form) => form.storageError);
 	const opened = useRef(false);
 	const stopOpening = useRef(() => {});
+	const seededShare = useRef<{ prompt: string; text: string } | null>(null);
 	useEffect(() => {
 		if (opened.current || !storageLoaded) return;
 		opened.current = true;
 		// A share's text rides through the one opening path, so it keeps the
 		// remembered host, project and model.
 		if (share) {
-			stopOpening.current = seedSharedPrompt(store, memory, share).stop;
+			const seed = seedSharedPrompt(store, memory, share);
+			stopOpening.current = seed.stop;
+			seededShare.current = { prompt: seed.prompt, text: share.text };
 			return;
 		}
 		stopOpening.current = openForm(store, memory.lastSetup());
 	}, [store, memory, storageLoaded, share]);
 	// The share's file goes once its text is durably saved: at the seed, or
 	// later through the form's Retry saving after a failed write. A share that
-	// never saved stays pending and is offered again.
+	// never saved stays pending and is offered again. The check reads the live
+	// store, because the seed changed it after this render's own values.
 	useEffect(() => {
-		if (!share || !storageLoaded || storageError) return;
+		const seed = seededShare.current;
+		if (!share || !seed || !shareSeedLanded(store, seed.prompt, seed.text)) return;
 		void completeShare(appGroupSharePort(), share.id).catch(() => {});
-	}, [share, storageLoaded, storageError]);
+	}, [share, store, prompt, storageError]);
+	// A store still starting an earlier session ignores prompt edits; the seed
+	// tries again once the store can take one.
+	useEffect(() => {
+		if (share && seededShare.current === null) return;
+		if (!share || !submitting) return;
+		seedSharedPrompt(store, memory, share);
+	}, [share, store, memory, submitting]);
 	useEffect(() => () => stopOpening.current(), []);
 
 	const bindTo = ready && client ? client : null;

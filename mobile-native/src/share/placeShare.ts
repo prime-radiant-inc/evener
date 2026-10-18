@@ -1,10 +1,11 @@
 import { mergeDraftText } from "@evener/appwire-client";
 import type { DraftDocument } from "../draftDocument";
 
-/** The merge each document is still trying to land. A failed save keeps the
- * merged text in the document, so a retry must write that same text, not merge
- * the share a second time on top of it. */
-const pending = new WeakMap<DraftDocument, string>();
+/** The merge a document is still trying to land, and which share it is for. A
+ * failed save keeps the merged text in the document, so a retry must write
+ * that same text, not merge the share a second time on top of it. A different
+ * share never reuses the attempt: its own text is what the person chose. */
+const pending = new WeakMap<DraftDocument, { shareId: string; merged: string }>();
 
 /**
  * Puts a share's text in a session's composer (spec: share intent). The write
@@ -14,15 +15,16 @@ const pending = new WeakMap<DraftDocument, string>();
  * so rather than dropping it. Calling again after a failure retries the same
  * merge instead of appending a copy.
  */
-export function placeSharedText(document: DraftDocument, text: string): boolean {
+export function placeSharedText(document: DraftDocument, share: { id: string; text: string }): boolean {
+	const { id, text } = share;
 	const before = document.getSnapshot();
 	if (!before.loaded) document.retry();
 	const loaded = document.getSnapshot();
 	if (!loaded.loaded) return false;
 	const attempted = pending.get(document);
-	const merged = attempted ?? mergeDraftText(loaded.record.draft, text);
-	if (attempted === undefined) {
-		pending.set(document, merged);
+	const merged = attempted?.shareId === id ? attempted.merged : mergeDraftText(loaded.record.draft, text);
+	if (attempted?.shareId !== id) {
+		pending.set(document, { shareId: id, merged });
 		document.edit(merged);
 	} else {
 		// The earlier attempt's text is still in the draft, unsaved or saved;
