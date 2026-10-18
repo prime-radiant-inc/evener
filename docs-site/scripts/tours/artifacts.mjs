@@ -83,7 +83,7 @@ export async function validateCandidate(root, required, {sourceRoot=repositoryRo
  };
  const raw=await read('manifest.json'); scanText(raw.toString()); const m=JSON.parse(raw);
  insist(m.version===1 && Array.isArray(m.rows) && Array.isArray(m.coverage),'Invalid manifest');
- insist(/^[a-f0-9]{40}$/.test(m.sourceRevision) && /^[a-f0-9]{64}$/.test(m.sourceTreeDigest),'Invalid source provenance');
+ insist(typeof m.sourceRevision==='string' && /^[a-f0-9]{40}$/.test(m.sourceRevision) && typeof m.sourceTreeDigest==='string' && /^[a-f0-9]{64}$/.test(m.sourceTreeDigest),'Invalid source provenance');
  // Publication preserves capture provenance, it does not assert a new execution.
  // Refresh and candidate review retain strict correspondence by default.
  if (!historicalProvenance) insist(m.sourceRevision===revision(sourceRoot)&&m.sourceTreeDigest===await sourceTreeDigest(sourceRoot),'Stale source correspondence');

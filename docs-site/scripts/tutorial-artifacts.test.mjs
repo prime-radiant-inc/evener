@@ -67,6 +67,8 @@ const mutations={
  'native deferral missing':f=>f.manifest.deferredSurfaces=[],
  'invalid revision':f=>f.manifest.sourceRevision='unknown',
  'invalid digest':f=>f.manifest.sourceTreeDigest='',
+ 'array revision':f=>f.manifest.sourceRevision=[f.manifest.sourceRevision],
+ 'array digest':f=>f.manifest.sourceTreeDigest=[f.manifest.sourceTreeDigest],
  'unlisted image':f=>f.publication.assets.splice(1,1),
  'unlisted manifest':f=>f.publication.assets.shift(),
  'unlisted text':f=>f.publication.assets.splice(2,1),
