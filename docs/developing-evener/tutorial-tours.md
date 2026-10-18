@@ -63,6 +63,11 @@ only that path. Treat this file as private, inspect it locally, and remove the
 directory after diagnosis. It is not candidate evidence and must not be copied
 into the site. Successful commands leave no diagnostic file.
 
+Web setup failures also retain the full Playwright error in a protected
+`failure.json` outside the Go-owned temporary root. Public errors identify the
+action phase and private file path, not the locator details. Apply the same
+local-inspection and deletion rule to this file.
+
 `manifest.json` version 1 records the revision, dirty-source digest, tool
 versions, explicit coverage, deferral, completeness, and each checkpoint's
 representation, hashes, dimensions, assertions, and result. CLI rows also name

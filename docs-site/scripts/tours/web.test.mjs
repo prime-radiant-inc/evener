@@ -2,6 +2,22 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { chromium } from '@playwright/test';
 import * as web from './web.mjs';
+import { readFile, rm, stat } from 'node:fs/promises';
+import { dirname } from 'node:path';
+
+test('web failure diagnostics retain details privately and expose only phase and path', async t => {
+ const error=new Error('private-locator-canary\nCall log: locator click failed');
+ assert.equal(typeof web.recordWebFailure,'function');
+ await web.recordWebFailure(error,'folder-confirm');
+ const file=error.diagnosticsPath;t.after(()=>rm(dirname(file),{recursive:true,force:true}));
+ assert.equal(error.tourPhase,`folder-confirm; private diagnostics: ${file}`);
+ assert.ok(!error.tourPhase.includes('private-locator-canary'));
+ assert.deepEqual(JSON.parse(await readFile(file,'utf8')),{phase:'folder-confirm',message:error.message,stack:error.stack});
+ if(process.platform!=='win32') {
+  assert.equal((await stat(dirname(file))).mode&0o777,0o700);
+  assert.equal((await stat(file)).mode&0o777,0o600);
+ }
+});
 
 test('workspace labels include only exact temporary path aliases', () => {
  assert.deepEqual(web.workspaceLabels('/private/tmp/owned/work'), ['/private/tmp/owned/work', '/tmp/owned/work']);

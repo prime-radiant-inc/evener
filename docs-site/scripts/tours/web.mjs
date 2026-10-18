@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';
 import { join } from 'node:path';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+
+export async function recordWebFailure(error, phase) {
+ // The Go driver owns TMPDIR and removes it before the caller can inspect logs.
+ const directory=await mkdtemp(join(process.platform==='win32'?tmpdir():'/tmp','evener-web-failure-'));
+ const file=join(directory,'failure.json');
+ await writeFile(file,JSON.stringify({phase,message:error.message,stack:error.stack}),{mode:0o600});
+ error.diagnosticsPath=file;
+ error.tourPhase=`${phase}; private diagnostics: ${file}`;
+}
 
 export function workspaceLabels(workspace) {
  return workspace.startsWith('/private/tmp/') ? [workspace, workspace.slice(8)] : workspace.startsWith('/tmp/') ? [workspace, `/private${workspace}`] : [workspace];
@@ -45,16 +56,18 @@ export async function open(options) {
   if (new URL(page.url()).pathname.startsWith('/settings/')) await page.goto(url);
   phase = 'new session';
   await page.getByRole('button', { name: /^(?:\+ )?New session$/ }).click();
-  phase = 'directory selection';
+  phase = 'directory-open';
   await page.getByRole('button', { name: /^Working directory:/ }).click();
+  phase = 'directory-path';
   await page.getByRole('textbox', { name: 'Path', exact: true }).fill(selectedWorkspace);
   await page.getByRole('textbox', { name: 'Path', exact: true }).press('Enter');
+  phase = 'folder-confirm';
   await page.getByRole('button', { name: 'Use this folder', exact: true }).click();
   phase = 'model selection';
   await page.getByRole('button', { name: /change model$/i }).click();
   await page.getByRole('combobox', { name: 'Model', exact: true }).fill(options.model.split('/')[1]);
   await page.getByRole('listbox', { name: 'Model', exact: true }).getByRole('option').first().click();
-  } catch (error) { error.tourPhase = phase + ': ' + error.message.split('\n')[0].replace(/(?:https?:|wss?:)\/\/\S+|\/[^\s]+/g, '[private path]'); throw error; }
+  } catch (error) { await recordWebFailure(error,phase); throw error; }
   }
   await newSession(workspace);
   return {
@@ -143,5 +156,5 @@ export async function open(options) {
    },
    async close() { await browser.close(); },
   };
- } catch (error) { error.tourPhase = phase + ': ' + error.message.split('\n')[0].replace(/(?:https?:|wss?:)\/\/\S+|\/[^\s]+/g, '[private path]'); await browser.close(); throw error; }
+ } catch (error) { if(!error.tourPhase)await recordWebFailure(error,phase); await browser.close(); throw error; }
 }
