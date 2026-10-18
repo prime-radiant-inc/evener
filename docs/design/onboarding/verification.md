@@ -243,3 +243,21 @@ tests passed; and `TestSkillComposerBrowser` passed in 44.31s.
 - Video decoding/privacy inspection and the desktop/narrow both-theme access
   sample are recorded above. Jesse's screencast review, broader visual acceptance
   and final-head CI remain pending; recording evidence is not merge approval.
+
+## Gate repair follow-up, 2026-10-18
+
+The later sequential `make test-web` passed typecheck, tests and lint. Its Session
+regression now deterministically crosses the liveness clock inside the awaited
+`act` scope. The cascade browser guard passed both alone and in the full browser
+gate after removing an unnecessary centering scroll before native recovery input;
+a trusted-press assertion checks the actual target.
+
+The later `make test-web-browser` still failed. Background transcripts still
+failed the 15s native-wheel movement assertion; three unsuccessful repair
+experiments were removed and investigation stopped. The same full run also
+failed `TestOnboardingBrowser` when its driver clicked disabled `OpenAI` while
+provider access was still being checked. Approved onboarding code was not changed
+for that newly observed failure. Ten other guard groups passed, including cascade.
+The earlier failure history above remains valid; there is no full browser-gate
+pass or new human approval. Detailed red/green evidence and retained log paths are
+in `.superpowers/sdd/2026-10-18-onboarding-first-run/gate-repair-report.md`.
