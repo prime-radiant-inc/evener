@@ -19,7 +19,7 @@ describe("the levels (spec 8.2; ruling 8)", () => {
 	it("lists the hub's five levels in order, each saying what it shows", () => {
 		expect(DETAIL_LEVELS.map((level) => [level.label, level.description])).toEqual([
 			["Chat", "Just the conversation"],
-			["Intent", "Plus one folded line for each run of steps"],
+			["Intent", "Plus one line for each action, saying what it set out to do"],
 			["Tools", "Plus every command it ran; tap one for its output"],
 			["Activity", "Plus every command's output, open as it arrives"],
 			["Full", "Everything, including the agent's reasoning"],
@@ -28,7 +28,7 @@ describe("the levels (spec 8.2; ruling 8)", () => {
 
 	it("confirms a change with the level and what it shows", () => {
 		expect(levelToast("full")).toBe("Full: everything, including the agent's reasoning");
-		expect(levelToast("intent")).toBe("Intent: plus one folded line for each run of steps");
+		expect(levelToast("intent")).toBe("Intent: plus one line for each action, saying what it set out to do");
 	});
 
 	it("names the current level in the menu", () => {

@@ -36,6 +36,8 @@ import { expect, onTestFinished, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ComposerFocus } from "./session/composerFocus";
 import { shrinkingScroller } from "./session/dockCard";
+import { isStep } from "./session/transcriptRows";
+import type { RunStep, TimelineRow } from "./timeline";
 
 // React 19's act() only drives effects when it is told it is inside a test
 // environment; vitest is not jest, so nothing sets this for us.
@@ -770,6 +772,14 @@ export function renderedText(tree: ReactTestRenderer): string {
  * nothing between them, the way nested Text elements run together on screen. */
 export function textOf(node: ReactTestInstance): string {
 	return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
+}
+
+/** Every step a level's rows show: a run's folded members where tool calls
+ * show, and the standalone activity rows Intent and Chat draw instead, since
+ * no run forms there. One rule, so a test cannot under-collect steps and pass
+ * on an empty list. */
+export function stepsIn(rows: readonly TimelineRow[]): RunStep[] {
+	return rows.flatMap((row) => (row.kind === "run" ? row.steps : isStep(row) ? [row] : []));
 }
 
 /** What each rendered host node whose testID starts with `prefix` says

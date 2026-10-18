@@ -11,11 +11,11 @@ import type { ThreadItem } from "@evener/appwire-client";
 import memoryCalls from "../../agent/testdata/toolwire/memory.json?raw";
 import { describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
-import { render, renderedText, textOf } from "./renderNative.testkit";
+import { render, renderedText, stepsIn, textOf } from "./renderNative.testkit";
 import { RunRow } from "./session/RunRow";
 import { displayForLevel } from "./session/detailLevels";
 import { stepEvidence } from "./session/evidence";
-import { answerTo, hideAnswerMessages, runSummary, sessionRows } from "./session/transcriptRows";
+import { answerTo, hideAnswerMessages, isStep, runSummary, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
 import { groupTimeline, type TimelineRow } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
@@ -38,13 +38,18 @@ type Run = Extract<TimelineRow, { kind: "run" }>;
 const RAW_NAMES =
 	/\b(read_file|grep|glob|list_dir|edit_file|write_file|apply_patch|shell|web_fetch|web_search|use_skill|github__create_issue|linear_app__list_issues|reindex_workspace)\b/;
 
-function rowsAt(level: Level): TimelineRow[] {
+function projectedAt(level: Level) {
 	const model = toolWireModel();
 	const { config, justTheConversation } = displayForLevel(level, null);
 	const conversation = projectConversation(model, undefined, config ?? undefined);
 	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
-	return hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns));
+	return {
+		presentation,
+		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns, { config })),
+	};
 }
+
+const rowsAt = (level: Level): TimelineRow[] => projectedAt(level).rows;
 
 const runsAt = (level: Level) => rowsAt(level).filter((row): row is Run => row.kind === "run");
 
@@ -65,7 +70,7 @@ it.each(["memory_read", "memory_search"])(
 		const { config, justTheConversation } = displayForLevel("full", null);
 		const conversation = projectConversation(model, undefined, config ?? undefined);
 		const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
-		const rows = hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns));
+		const rows = hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns, { config }));
 		const steps = rows.filter((row): row is Run => row.kind === "run").flatMap((run) => run.steps);
 		const step = steps.find((entry) => entry.label === name);
 		if (!step) throw new Error(`missing recorded ${name} native step`);
@@ -95,7 +100,27 @@ function stepText(run: Run): string {
 
 describe("a step with no intent", () => {
 	it.each(["intent", "tools", "full"] as const)("says what it did in the web's words, at %s", (level) => {
-		const text = runsAt(level).map(stepText).join("\n");
+		// Where tool calls show, the run's expanded steps carry the words. At
+		// Intent each action is its own row, so the screen's own intent line
+		// has to say them.
+		const { presentation, rows } = projectedAt(level);
+		const text = [
+			...rows.filter((row): row is Run => row.kind === "run").map(stepText),
+			...rows
+				.filter(isStep)
+				.map((row) =>
+					renderedText(
+						render(
+							<TimelineItem
+								item={row}
+								hubId="hub"
+								sessionRef="ref-tools"
+								activityPresentation={presentation.activityPresentation.get(row.id)}
+							/>,
+						),
+					),
+				),
+		].join("\n");
 		for (const summary of [
 			"Read agent/tree.go · lines 1-4",
 			"Read agent/tree.go · lines 2-3",
@@ -123,7 +148,7 @@ describe("a step with no intent", () => {
 // names what it acted on, and an edit, a write and a patch open to their diff
 // or path, which come from the arguments alone (#3306).
 describe("a call and its result, served as two items", () => {
-	const steps = (level: Level) => runsAt(level).flatMap((run) => run.steps);
+	const steps = (level: Level) => stepsIn(rowsAt(level));
 	const step = (level: Level, label: string) => {
 		const found = steps(level).find((candidate) => candidate.label === label);
 		if (!found) throw new Error(`no ${label} step at ${level}`);
@@ -158,11 +183,7 @@ describe("a question put to you, with the answer you gave", () => {
 		const rows = rowsAt(level);
 		const asked = rows.find((row) => row.kind === "activity" && row.label === "ask_user");
 		expect(asked).toBeDefined();
-		expect(
-			runsAt(level)
-				.flatMap((run) => run.steps)
-				.some((step) => step.label === "ask_user"),
-		).toBe(false);
+		expect(stepsIn(rows).some((step) => step.label === "ask_user")).toBe(false);
 		expect(answerTo(toolWireModel(), asked?.id ?? "")).toBe('"Ship tonight"');
 		expect(rows.some((row) => row.kind === "user" && row.text.startsWith("[answers]"))).toBe(false);
 	});

@@ -22,7 +22,7 @@ export interface DetailLevel {
 
 export const DETAIL_LEVELS: readonly DetailLevel[] = [
 	{ level: "chat", label: "Chat", description: "Just the conversation" },
-	{ level: "intent", label: "Intent", description: "Plus one folded line for each run of steps" },
+	{ level: "intent", label: "Intent", description: "Plus one line for each action, saying what it set out to do" },
 	{ level: "tools", label: "Tools", description: "Plus every command it ran; tap one for its output" },
 	{ level: "activity", label: "Activity", description: "Plus every command's output, open as it arrives" },
 	{ level: "full", label: "Full", description: "Everything, including the agent's reasoning" },

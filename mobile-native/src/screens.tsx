@@ -1324,9 +1324,10 @@ export function ConversationScreen({
 			hideAnswerMessages(
 				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], {
 					olderToLoad: olderPage !== null,
+					config: displayConfig,
 				}),
 			),
-		[presentation.items, conversation?.turns, olderPage],
+		[presentation.items, conversation?.turns, olderPage, displayConfig],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
 	// A subagent row's coordinator: this session, or on a subagent's screen,
