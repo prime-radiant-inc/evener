@@ -3,10 +3,12 @@ import { describe, expect, test } from "vitest";
 import {
   buildFormState,
   collectConfig,
+  collectScalar,
   globalDefaultHint,
   groupOptions,
   inactivePromptDependent,
   isCollectionKind,
+  isExactSafeInteger,
   isPromptCompositeWireField,
   matchesEnvCredentialError,
   optionSupportsLayer,
@@ -17,6 +19,40 @@ import {
   schemaPathKind,
 } from "./launchSchema";
 import type { LaunchConfigLayer, LaunchOption } from "./types.gen";
+
+describe("integer validation and collection share exact decimal semantics", () => {
+  const integerOption = { kind: "integer" } as LaunchOption;
+
+  test.each([
+    { raw: "  +007  ", value: 7 },
+    { raw: "\t-0012\n", value: -12 },
+    { raw: "0", value: 0 },
+    { raw: "-1", value: -1 },
+    { raw: "9007199254740991", value: 9007199254740991 },
+    { raw: "-9007199254740991", value: -9007199254740991 },
+  ])("accepts and normalizes '$raw' without extra restrictions", ({ raw, value }) => {
+    expect(isExactSafeInteger(raw)).toBe(true);
+    expect(collectScalar(integerOption, raw)).toEqual({ value });
+  });
+
+  test.each([
+    "",
+    " \t\n",
+    "1.5",
+    "1.0",
+    "1.0000000000000000001",
+    "1e2",
+    "0x10",
+    "NaN",
+    "Infinity",
+    "12abc",
+    "9007199254740992",
+    "-9007199254740992",
+  ])("does not collect empty or invalid '$raw'", (raw) => {
+    expect(isExactSafeInteger(raw)).toBe(false);
+    expect(collectScalar(integerOption, raw)).toBeNull();
+  });
+});
 
 describe("globalDefaultHint", () => {
   test("undefined on the global layer (no 'default' concept there)", () => {

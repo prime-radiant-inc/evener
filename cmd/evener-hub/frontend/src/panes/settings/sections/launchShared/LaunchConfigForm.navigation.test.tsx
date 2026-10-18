@@ -22,10 +22,26 @@ const OPTIONS: LaunchOption[] = [
     group: "Agent",
     kind: "text",
     perLaunch: true,
-    defaultableLayers: ["global"],
+    defaultableLayers: ["global", "project"],
   },
 ];
 const RESOLVED: LaunchConfigResolved = { effective: {}, layers: {}, provenance: {} };
+
+const INTEGER_OPTIONS: LaunchOption[] = [
+  ["max_rounds", "maxRounds", "Max rounds"],
+  ["max_subagent_depth", "maxSubagentDepth", "Max subagent depth"],
+  ["max_concurrent_delegate_turns", "maxConcurrentDelegateTurns", "Max concurrent delegates"],
+  ["max_retained_terminal", "maxRetainedTerminal", "Max retained terminal delegates"],
+  ["app_replay_size", "appReplaySize", "App replay size"],
+].map(([field, wireField, label]) => ({
+  field: field!,
+  wireField: wireField!,
+  label: label!,
+  group: "Limits",
+  kind: "integer",
+  perLaunch: field !== "app_replay_size",
+  defaultableLayers: field === "app_replay_size" ? ["global"] : ["global", "project"],
+}));
 
 const PROMPT_OPTIONS: LaunchOption[] = [
   ...OPTIONS,
@@ -71,6 +87,153 @@ function unloadPrevented() {
   window.dispatchEvent(event);
   return event.defaultPrevented;
 }
+
+function numericForm(
+  current: LaunchConfigLayer,
+  onSave: (config: LaunchConfigLayer) => Promise<LaunchConfigResolved>,
+  layer: "global" | "project" = "global",
+) {
+  return (
+    <SettingsDraftsProvider>
+      <LaunchConfigForm
+        options={[...OPTIONS, ...INTEGER_OPTIONS]}
+        layer={layer}
+        current={current}
+        validatePath={async (path) => ({ valid: true, path })}
+        successToast="Saved"
+        onSave={onSave}
+      />
+    </SettingsDraftsProvider>
+  );
+}
+
+test.each([
+  ...INTEGER_OPTIONS.map((option) => ({ label: option.label, layer: "global" as const })),
+  ...INTEGER_OPTIONS.filter((option) => option.defaultableLayers?.includes("project")).map((option) => ({
+    label: option.label,
+    layer: "project" as const,
+  })),
+])("invalid $label refuses the $layer write and retains edits and navigation protection", async ({ label, layer }) => {
+  window.history.replaceState({}, "", "/settings/launch");
+  const save = vi.fn(async () => RESOLVED);
+  const view = render(numericForm({ agent: "original" }, save, layer));
+  const user = userEvent.setup();
+  const editor = screen.getByRole("spinbutton", { name: label });
+  await user.type(editor, "1.5");
+  expect(editor).toHaveProperty("value", "1.5");
+  fireEvent.change(screen.getByRole("textbox", { name: "Agent" }), { target: { value: "submitted" } });
+  expect(unloadPrevented()).toBe(true);
+
+  await user.click(
+    screen.getByRole("button", { name: layer === "project" ? "Save local overrides" : "Save launch defaults" }),
+  );
+
+  expect(save).not.toHaveBeenCalled();
+  expect(screen.getByText("Enter an exact safe integer.")).toBeTruthy();
+  expect(screen.queryByText(/Saved at/)).toBeNull();
+  expect(editor).toHaveProperty("value", "1.5");
+  expect(unloadPrevented()).toBe(true);
+  // A same-owner refresh cannot erase either unsaved field after refusal.
+  view.rerender(numericForm({ agent: "host-newer" }, save, layer));
+  expect(editor).toHaveProperty("value", "1.5");
+  expect(screen.getByRole("textbox", { name: "Agent" })).toHaveProperty("value", "submitted");
+  act(() => navigate("/settings/theme"));
+  expect(window.location.pathname).toBe("/settings/launch");
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(screen.getByRole("spinbutton", { name: label })).toBe(editor);
+});
+
+test.each(["1e2", "1.0", "1.0000000000000000001", "9007199254740992", "-9007199254740992"])(
+  "nonempty integer spelling %s cannot silently become unset",
+  async (raw) => {
+    const save = vi.fn(async () => RESOLVED);
+    render(numericForm({}, save));
+    const editor = screen.getByRole("spinbutton", { name: "Max rounds" });
+    fireEvent.change(editor, { target: { value: raw } });
+    expect(editor).toHaveProperty("value", raw);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save launch defaults" }));
+    expect(save).not.toHaveBeenCalled();
+    expect(editor).toHaveProperty("value", raw);
+    expect(unloadPrevented()).toBe(true);
+  },
+);
+
+test.each([
+  { raw: "-1", value: -1 },
+  { raw: "0", value: 0 },
+  { raw: "7", value: 7 },
+  { raw: "007", value: 7 },
+  { raw: "-0", value: -0 },
+  { raw: "9007199254740991", value: 9007199254740991 },
+  { raw: "-9007199254740991", value: -9007199254740991 },
+])("valid integer spelling $raw persists and clears its dirty guard", async ({ raw, value }) => {
+  const save = vi.fn(async () => RESOLVED);
+  render(numericForm({}, save));
+  const editor = screen.getByRole("spinbutton", { name: "Max rounds" });
+  fireEvent.change(editor, { target: { value: raw } });
+  expect(editor).toHaveProperty("value", raw);
+  expect(unloadPrevented()).toBe(true);
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Save launch defaults" }));
+
+  expect(save).toHaveBeenCalledExactlyOnceWith({ maxRounds: value });
+  expect(editor).toHaveProperty("value", raw);
+  expect(unloadPrevented()).toBe(false);
+});
+
+test("correcting invalid numeric input clears its error and saved forms still follow host refreshes", async () => {
+  const save = vi.fn(async () => RESOLVED);
+  const view = render(numericForm({}, save));
+  const user = userEvent.setup();
+  const editor = screen.getByRole("spinbutton", { name: "Max rounds" });
+  fireEvent.change(editor, { target: { value: "1.5" } });
+  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+  expect(save).not.toHaveBeenCalled();
+  expect(screen.getByText("Enter an exact safe integer.")).toBeTruthy();
+  fireEvent.change(editor, { target: { value: "12" } });
+
+  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+
+  expect(save).toHaveBeenCalledExactlyOnceWith({ maxRounds: 12 });
+  expect(screen.queryByText("Enter an exact safe integer.")).toBeNull();
+  expect(unloadPrevented()).toBe(false);
+  view.rerender(numericForm({ maxRounds: 20 }, save));
+  expect(editor).toHaveProperty("value", "20");
+  expect(unloadPrevented()).toBe(false);
+});
+
+test("clearing every numeric override saves unset rather than rejecting empty input", async () => {
+  const save = vi.fn(async () => RESOLVED);
+  render(
+    numericForm(
+      { maxRounds: 3, maxSubagentDepth: 2, maxConcurrentDelegateTurns: 4, maxRetainedTerminal: 5, appReplaySize: 6 },
+      save,
+    ),
+  );
+  const user = userEvent.setup();
+  for (const option of INTEGER_OPTIONS) await user.clear(screen.getByRole("spinbutton", { name: option.label }));
+  expect(unloadPrevented()).toBe(true);
+
+  await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+
+  expect(save).toHaveBeenCalledExactlyOnceWith({});
+  expect(unloadPrevented()).toBe(false);
+  expect(screen.queryByText("Enter an exact safe integer.")).toBeNull();
+});
+
+test.each([
+  { raw: "  normalized-agent  ", payload: { agent: "normalized-agent" } },
+  { raw: "   ", payload: {} },
+])("saving normalized text '$raw' remains clean without erasing its visible spelling", async ({ raw, payload }) => {
+  const save = vi.fn(async () => RESOLVED);
+  render(numericForm({ agent: "original" }, save));
+  const editor = screen.getByRole("textbox", { name: "Agent" });
+  fireEvent.change(editor, { target: { value: raw } });
+  await userEvent.setup().click(screen.getByRole("button", { name: "Save launch defaults" }));
+  expect(save).toHaveBeenCalledExactlyOnceWith(payload);
+  expect(editor).toHaveProperty("value", raw);
+  expect(unloadPrevented()).toBe(false);
+});
 
 function promptForm(current: LaunchConfigLayer, onSave: (config: LaunchConfigLayer) => Promise<LaunchConfigResolved>) {
   return (

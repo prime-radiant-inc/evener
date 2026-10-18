@@ -28,6 +28,7 @@ import {
   inactivePromptDependent,
   inheritedItems,
   isCollectionKind,
+  isExactSafeInteger,
   isPromptCompositeWireField,
   type LaunchConfigLayer,
   type LaunchConfigLayerName,
@@ -272,19 +273,22 @@ export function LaunchConfigForm({
     setState((s) => ({ ...s, mcpLists: { ...s.mcpLists, [wireField]: items } }));
   }
 
-  // validateScalarPathFields mirrors assets/launchconfig.js's validate()
-  // item (1): every path-kind scalar input not currently inactive due to
-  // prompt-mode. pathList/mcpServerList entries are validated once, at
-  // add-time, in their own field components instead of re-validated here -
-  // a deliberate scope simplification from the legacy's own defensive
-  // re-validation pass (see this task's own report).
-  async function validateScalarPathFields(attempt: object): Promise<boolean> {
+  // Validate integers with collectConfig's exact rule so invalid nonempty
+  // edits cannot be silently omitted and then marked saved. Empty is unset.
+  // Path validation excludes inactive prompt leaves. pathList/mcpServerList
+  // entries are validated at add-time in their own field components.
+  async function validateScalarFields(attempt: object): Promise<boolean> {
     const modes = {
       systemPromptMode: state.scalars.systemPromptMode,
       systemPromptAppendMode: state.scalars.systemPromptAppendMode,
     };
     const errors: Record<string, string> = {};
     for (const opt of supportedOptions) {
+      if (opt.kind === "integer") {
+        const raw = state.scalars[opt.wireField] ?? "";
+        if (raw.trim() && !isExactSafeInteger(raw)) errors[opt.wireField] = "Enter an exact safe integer.";
+        continue;
+      }
       if (opt.kind !== "path" || !opt.pathKind) continue;
       if (inactivePromptDependent(opt.wireField, modes)) continue;
       const raw = (state.scalars[opt.wireField] ?? "").trim();
@@ -300,7 +304,7 @@ export function LaunchConfigForm({
   async function handleSubmit(): Promise<void> {
     if (busy) return;
     const attempt = lifetime.current;
-    const valid = await validateScalarPathFields(attempt);
+    const valid = await validateScalarFields(attempt);
     if (attempt !== lifetime.current) return;
     if (!valid) return; // matches the legacy's own "returns early, no save attempted" - no status-line change
     setBusy(true);
