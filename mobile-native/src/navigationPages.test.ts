@@ -161,10 +161,14 @@ describe("navigation pages", () => {
 		await next;
 		expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["a"]);
 		expect(pages.getSnapshot().stale).toBe(true);
-		await pages.more();
+		// The revision mismatch hands the page to the recovery flight, which
+		// re-reads from the first page on its own: the fresh read is already
+		// in flight, and the press that arrives meanwhile joins it.
+		const joined = pages.more();
 		expect(requests).toHaveLength(3);
 		expect(requests[2].params.offset).toBe(0);
 		requests[2].resolve(response(["b"], 0, 2));
+		await joined;
 		await settled(pages);
 		expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["b"]);
 	});
@@ -309,6 +313,111 @@ describe("a failed read's own retry", () => {
 		await settled(pages);
 		expect(pages.getSnapshot().rows).toMatchObject([{ key: "back" }]);
 	});
+
+	it("a failed recovery walk waits out the backoff instead of restarting at once", async () => {
+		const { requests, pages, requested, invalidate } = boundary();
+		pages.watch();
+		// Two pages loaded: the reader reached a depth of four rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 0, 1, 2));
+		await more;
+		// A hub change re-reads the loaded depth; the re-read's own walk fails
+		// on page two.
+		invalidate({
+			generationId: "hub-generation",
+			sequence: 2,
+			targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+		});
+		await requested(3);
+		requests[2].resolve(response(["a2", "b2"], 2, 2));
+		await requested(4);
+		requests[3].reject(new Error("request timed out"));
+		await settled(pages);
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The walk's own page-one landing must not leave a queued request that
+		// restarts the recovery the moment the failed walk ends: the next read
+		// waits for the backoff the failure armed.
+		const reads = requests.length;
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1) - 1);
+		expect(requests).toHaveLength(reads);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(requests).toHaveLength(reads + 1);
+	});
+
+	it("a refresh that joins a running recovery observes its completion, not a page", async () => {
+		const { requests, pages, requested, invalidate } = boundary();
+		pages.watch();
+		// Three pages loaded: the reader reached a depth of six rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 2, 1, 2));
+		await more;
+		const deepest = pages.more();
+		requests[2].resolve(response(["e", "f"], 0, 1, 4));
+		await deepest;
+		// A hub change re-reads the loaded depth. The re-read's reset lands
+		// the new revision, and its own walk fails on page two, so the
+		// recovery still owes the full depth.
+		invalidate({
+			generationId: "hub-generation",
+			sequence: 2,
+			targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+		});
+		await requested(4);
+		requests[3].resolve(response(["a2", "b2"], 2, 2));
+		await requested(5);
+		requests[4].reject(new Error("request timed out"));
+		await settled(pages);
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The reader presses Retry loading more: the press is a direct page
+		// read at the offset it reached for. It lands short of the owed depth,
+		// so its landing hands the rest of the recovery to the flight, whose
+		// re-read walks from the first page.
+		const manual = pages.more();
+		await requested(6);
+		// The refresh joins while the press's own read is still in flight.
+		// The press lands short of the owed depth, so its landing must hand
+		// the rest of the recovery to the flight without resolving the
+		// joined refresh: the depth is not restored yet.
+		const joined = pages.refresh();
+		let resolved = false;
+		void joined.then(() => {
+			resolved = true;
+		});
+		requests[5].resolve(response(["c2", "d2"], 2, 2, 2));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(resolved).toBe(false);
+		await manual;
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The flight's re-read walks the rest of the depth. The reset page
+		// stands (the revision has not changed again) while page three is
+		// still owed; the joined refresh must stay pending through it too.
+		await requested(7);
+		requests[6].resolve({
+			status: "not_modified",
+			generationId: "hub-generation",
+			revision: 2,
+			etag: "etag-0-2",
+		});
+		await requested(8);
+		requests[7].resolve(response(["e2", "f2"], 0, 2, 4));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(resolved).toBe(false);
+		// The not_modified reset landing must not have resolved the joined
+		// refresh either; the walk's last page completes the recovery, and
+		// the joined refresh resolves with it.
+		await joined;
+		expect(resolved).toBe(true);
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a2", "b2", "c2", "d2", "e2", "f2"]);
+		expect(pages.getSnapshot().error).toBeNull();
+	});
 });
 
 it("re-reads a relevant update without user action, keeping the visible rows until it lands", async () => {
@@ -337,9 +446,12 @@ it("re-reads a relevant update without user action, keeping the visible rows unt
 	});
 	expect(requests).toHaveLength(2);
 	expect(requests[1].params.offset).toBe(0);
-	await pages.more();
+	// The recovery flight owns the re-read; a press that arrives while it is
+	// in flight joins it rather than racing a second read.
+	const joined = pages.more();
 	expect(requests).toHaveLength(2);
 	requests[1].resolve(response(["b"], 0, 2));
+	await joined;
 	await settled(pages);
 	expect(pages.getSnapshot().rows).toMatchObject([{ key: "b" }]);
 	stop();

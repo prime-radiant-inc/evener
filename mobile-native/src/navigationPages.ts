@@ -353,6 +353,9 @@ export class NavigationPages<T> implements PageSource<T> {
 				this.offset = 0;
 				this.version = null;
 				this.mutationFloor = 0;
+				// The results have ended: the depth a recovery still owed
+				// cannot exist, so the recovery completes here.
+				this.owedDepth = null;
 				this.rereads.settle();
 				this.clearRetry(true);
 				this.publish({
@@ -369,11 +372,19 @@ export class NavigationPages<T> implements PageSource<T> {
 				// Every loaded page shares this version, so all of them stand.
 				this.version = decoded.version;
 				if (decoded.version.revision >= this.mutationFloor) this.mutationFloor = 0;
-				this.rereads.settle();
 				// A first page that stands can still owe deeper pages: the
-				// count retires with the recovery, not with one page.
-				if (this.owedDepth === null) this.clearRetry(true);
-				else this.clearRetry(false);
+				// count and the waiters retire with the recovery, not with a
+				// page that merely stands.
+				if (this.owedDepth === null || this.offset >= this.owedDepth || this.state.remaining <= 0) {
+					this.clearRetry(true);
+					this.rereads.settle();
+				} else {
+					this.clearRetry(false);
+					// A not-modified reset with depth still owed continues
+					// the recovery on the flight, the same as a direct read
+					// landing short.
+					if (!this.rereads.running) this.rereads.request();
+				}
 				this.publish({
 					loaded: true,
 					loading: false,
@@ -417,7 +428,6 @@ export class NavigationPages<T> implements PageSource<T> {
 			this.offset = offset + raw.length;
 			this.version = decoded.version;
 			if (decoded.version.revision >= this.mutationFloor) this.mutationFloor = 0;
-			this.rereads.settle();
 			// Recovery completes when the read reaches the depth it owes or
 			// the results end — only then does the failure count retire, so a
 			// later page that keeps failing grows the backoff instead of
@@ -427,13 +437,20 @@ export class NavigationPages<T> implements PageSource<T> {
 			if (owed === null || this.offset >= owed || exhausted) {
 				this.owedDepth = null;
 				this.clearRetry(true);
+				// Waiters see the recovery complete, never the landing of an
+				// intermediate page a walk still owes depth past.
+				this.rereads.settle();
 			} else {
 				this.clearRetry(false);
 				// A direct paging request that landed short of the owed depth
-				// (a manual Retry loading more) continues the recovery the same
-				// flight owns: the reread walks to the depth, and the flight's
-				// own retry pacing covers a read that cannot run yet.
-				this.rereads.request();
+				// (a manual Retry loading more, routed through the flight by
+				// more()) hands the rest of the depth to the flight, whose
+				// re-read walks to it; a refresh joining behind observes that
+				// walk's completion. The flight's own reads drive their walk
+				// themselves instead — a queued request from one would restart
+				// a failed walk at once, never waiting out the backoff its
+				// failure armed.
+				if (!this.rereads.running) this.rereads.request();
 			}
 			// The error says the page still owes its recovery: it holds until
 			// the depth is restored or the results end, whichever completes it.
@@ -448,7 +465,9 @@ export class NavigationPages<T> implements PageSource<T> {
 			});
 			return true;
 		} catch (cause) {
-			if (request !== this.request) return;
+			if (request !== this.request) {
+				return;
+			}
 			// A paging read that fails owed its next page: remember the depth
 			// it was reaching for, so the retry's re-read restores the reader's
 			// full depth instead of ending at whatever survived.
