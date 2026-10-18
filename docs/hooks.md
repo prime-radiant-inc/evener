@@ -324,9 +324,8 @@ The difference matters:
 { "type": "command", "command": "printf", "args": ["%s", "$HOME"] }
 ```
 
-In exec form, `$HOME` is passed **literally** — there is no shell to expand it, so
-the program receives the four characters `$HOME`. A path with spaces works
-without quoting gymnastics:
+Exec form passes `$HOME` literally; no shell expands it. Arguments containing
+spaces need no shell quoting:
 
 ```json
 { "type": "command", "command": "/opt/my plugin/check", "args": ["--mode", "strict"] }
@@ -427,22 +426,21 @@ Evener reads the command's **stdout**, **stderr**, and **exit code**.
 
 - **Exit 0, empty stdout** → success, no decision.
 - **Exit 0, plain-text stdout** → reaches the **model** only for `SessionStart` and
-  `UserPromptSubmit` (context events); for all other events it is shown to the
-  **user** as a diagnostic warning. This is a deliberate divergence from Claude,
-  which debug-logs non-context plain stdout to neither model nor user; Evener surfaces
-  it to the user so hook output never silently vanishes.
+  `UserPromptSubmit` (context events). Other fired events show it to the **user**
+  as a diagnostic warning, except `SessionEnd`, whose outputs are discarded.
 - **Exit 0, JSON stdout** → parsed as a structured decision (below).
 - **Exit 2** → an event-specific block/error (see the [exit-code
-  table](#exit-codes-per-event)). **JSON is ignored on exit 2** — only stderr is
-  used.
+  table](#exit-codes-per-event)). JSON is not parsed on exit 2. Failure text comes
+  from stderr when nonblank, otherwise stdout.
 - **Other non-zero** → a non-blocking error for the events Evener fires.
 - **Any non-zero from `SessionStart`** → summarized into a single user-facing
   warning; the hook's output never reaches the model (see [Failed `SessionStart`
   hooks](#failed-sessionstart-hooks)).
 
 > **JSON is parsed only on exit 0.** If your hook exits non-zero, any JSON it
-> printed is discarded; Evener uses the exit code and stderr. Print your decision
-> JSON only when you exit 0.
+> printed is not interpreted as a decision, but its bytes can become failure text
+> when stderr is blank. SessionStart failures remain user-only; SessionEnd outputs
+> are discarded. Print decision JSON only when you exit 0.
 
 The output JSON Evener reads (exit 0):
 
@@ -472,7 +470,7 @@ The output JSON Evener reads (exit 0):
   a `<SYSTEM-REMINDER>`.
 - The top-level `systemMessage` field is shown to the **user** (a `[warning]`-style
   message via Evener's diagnostic-warning channel) — it is **not** sent to the model.
-- `terminalSequence` must be a safe terminal notification sequence.
+- `terminalSequence` is parsed but has no consumer; it triggers no terminal notification.
 - `decision: "block"` blocks where the event supports it (e.g. `Stop`,
   `SubagentStop`).
 - For `PreToolUse`, `hookSpecificOutput.permissionDecision` honors `allow` and
@@ -486,8 +484,8 @@ The output JSON Evener reads (exit 0):
 
 ### Failed `SessionStart` hooks
 
-A `SessionStart` hook that exits **non-zero** — exit 2 included — is the one case
-where the failing hook's output never reaches the model. Its stderr (or its stdout
+A `SessionStart` hook that exits **non-zero** — exit 2 included — does not send
+its failure output to the model. Its stderr (or its stdout
 when stderr is empty) is summarized into **one operator-facing warning line**
 naming the event, the registering plugin and matcher, and the exit code, followed
 by the first non-empty line of that output (160 characters plus an ellipsis when truncated):
@@ -499,34 +497,30 @@ SessionStart hook my-plugin failed (exit 2): /path/to/hook.sh: permission denied
 A hook that never produced an exit code at all (a spawn failure, or a timeout
 kill) reads `SessionStart hook my-plugin failed to run: <error>` instead.
 
-The reasoning: a `SessionStart` hook's output is the session's FIRST steering
-input, and the model can do nothing with a permission denial or a broken script —
-a wall of shell stderr as opening context is worse than no context. Every other
-event keeps the Claude-compatible contract that a non-zero hook's stderr reaches
-the model, which is how a tool-event hook corrects it. This moves Evener toward
-Claude's own `SessionStart` rule, which
-[07](subagent-management/07-lifecycle-hooks-claude-compat.md#exit-code-semantics)
-records as "show stderr to user only".
+Failed `SessionStart` output goes to the user only. `SessionEnd` outputs are
+discarded because there is no following model turn. Other fired hook events can
+return failure context to the model according to the event's blocking and
+output-routing rules; see [Exit codes per event](#exit-codes-per-event).
 
 Write `SessionStart` diagnostics you want the MODEL to read on the **exit-0**
 path — plain stdout, or `hookSpecificOutput.additionalContext`.
 
 ### Exit codes per event
 
-Exit 2 blocks for some events and is informational for others. The Evener-fired
-subset:
+Exit 2 blocks for some events and is informational for others. Failure text is
+nonblank stderr, falling back to stdout. The Evener-fired subset:
 
 | Event | Exit 2 effect |
 |---|---|
-| `PreToolUse` | block the tool call — the stderr becomes the deny reason, surfaced to the model as the tool's error result |
+| `PreToolUse` | block the tool call — failure text becomes the deny reason, surfaced to the model as the tool's error result |
 | `Stop` | prevent stopping |
 | `SubagentStop` | prevent the subagent stopping |
-| `UserPromptSubmit` | **no block yet** — Claude erases the prompt here, but Evener does not yet enforce the block; stderr is delivered to the model |
-| `PreCompact` | **no block yet** — Claude blocks compaction here, but Evener does not yet enforce the block; stderr is delivered to the model |
-| `PostToolUse` | **no block** (cannot undo the tool) — stderr is delivered to the model as context |
+| `UserPromptSubmit` | **no block yet** — Claude erases the prompt here, but Evener does not yet enforce the block; failure text is delivered to the model |
+| `PreCompact` | **no block yet** — Claude blocks compaction here, but Evener does not yet enforce the block; failure text is delivered to the model |
+| `PostToolUse` | **no block** (cannot undo the tool) — failure text is delivered to the model as context |
 | `SessionStart` | **no block** — the failure is summarized to the **user**; neither stderr nor stdout reaches the model (see [Failed `SessionStart` hooks](#failed-sessionstart-hooks)) |
 | `SessionEnd` | **no block** — the session is ending, so the stderr is captured but not delivered (no following turn) |
-| `Notification` | **no block** — stderr is delivered to the model |
+| `Notification` | **no block** — failure text is delivered to the model |
 
 (The full Claude table, including the reserved events, is in
 [07 §Exit-code semantics](subagent-management/07-lifecycle-hooks-claude-compat.md#exit-code-semantics).)

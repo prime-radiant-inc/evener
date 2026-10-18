@@ -62,7 +62,7 @@ Later layers override earlier ones where the field's merge rule permits it. An u
 | Legacy `system_prompt_append` | Uses the first file, warns if more were supplied |
 | `app_replay_size` | Global only; other layers produce a diagnostic |
 
-Duplicate inline MCP names produce a diagnostic and fail launch validation; they are not a way to override a server. Launch environment keys containing `API_KEY`, `_KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` (case-insensitive) are refused. This is a guardrail, not a secret detector. Never hide a key under another name to bypass it.
+Duplicate inline MCP names produce a merge diagnostic, but do not fail launch validation on that basis. The runtime resolves duplicate server names with the later definition winning. Use distinct names unless you intend that replacement. Launch environment keys containing `API_KEY`, `_KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` (case-insensitive) are refused. This is a guardrail, not a secret detector. Never hide a key under another name to bypass it.
 
 After file merging, unset model, reasoning effort, and Responses continuation settings may fall back to `EVENER_MODEL`, `EVENER_REASONING_EFFORT`, and `EVENER_OPENAI_RESPONSES_CONTINUATION`. Configured values win over those fallbacks. `hub.toml` supplies the `api_log` floor, below explicit launch values. Other defaults come from the launch schema and the spawned runtime.
 

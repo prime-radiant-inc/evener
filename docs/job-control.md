@@ -225,9 +225,9 @@ branch on `type` and `id`; only shell rows carry `job_id`.
 
 `delegate` accepts an optional `delegation_allowance` integer. Absent means the default grant: one level below the creator's own allowance (`max(0, own-1)`), so a delegate can delegate in turn until the chain reaches a leaf. An explicit `0` means a leaf delegate that cannot itself delegate; absent and `0` are therefore distinct, unlike the strict-zero rule used elsewhere on the job-control surface. There is no `minimum`/`maximum`/`default` keyword on the schema property.
 
-**The grant rule.** A session may grant a child a `delegation_allowance` strictly less than its own allowance, so the chain always shortens and allowance 0 is a leaf. A grant `>=` the granter's own allowance is rejected with `invalid_request: delegation_allowance must be less than your own allowance (<A>); valid grants: <range>`, where `<A>` is the granter's allowance and `<range>` enumerates the grantable values (`0` at allowance 1, otherwise `0..<A-1>`). A session's own allowance is persisted in the delegate restore descriptor, so it survives restore. The current allowance is also reported on every `job_list` result (see `job_list`), so an agent can read its budget without re-reading its system prompt.
+**The grant rule.** A session may grant a child a `delegation_allowance` strictly less than its own allowance, so the chain always shortens and allowance 0 is a leaf. A grant `>=` the granter's own allowance is rejected with `invalid_request: delegation_allowance must be less than your own allowance (<A>); valid grants: <range>`, where `<A>` is the granter's allowance and `<range>` enumerates the grantable values (`0` at allowance 1, otherwise `0..<A-1>`). A session's own allowance is persisted in the delegate restore descriptor, so it survives restore. `job_list` reports `delegation_allowance` only when it exceeds 1; lower values are omitted, so absence does not distinguish allowance 0 from 1.
 
-**Availability matrix (allowance-gated).** Whether a child receives the delegation surface is governed by its granted allowance, not by a fixed depth gate. At allowance 0 the child is a leaf: it does not receive `delegate`, agent-type listings that require delegation are filtered out of its prompt, and its system prompt shows the leaf limits block. `job_watch` is present at every allowance — a session that can run jobs can always watch its own jobs — with each cross-session source authorizing itself (`parent` requires the `watch_parent:true` grant; a concrete job id must be owned by the watching session). At allowance > 0 the child receives `delegate` (added to the default surface for an untyped child; a typed agent gets it only if its tool list names it), may grant onward allowances strictly smaller than its own, is told its allowance in its prompt, and sees the delegation + background-jobs prompt sections. A typed agent's tool list governs *what* the child gets; allowance governs *whether* the delegation tools are grantable at all — allowance never injects tools into a type that does not list them.
+**Availability matrix (allowance-gated).** Whether a child receives the delegation surface is governed by its granted allowance, not by a fixed depth gate. At allowance 0 the child is a leaf: it does not receive `delegate`, agent-type listings that require delegation are filtered out of its prompt, and its system prompt shows the leaf limits block. `job_watch` is present at every allowance — a session that can run jobs can always watch its own jobs — with each cross-session source authorizing itself (`parent` requires the `watch_parent:true` grant; a concrete job ID must belong to the watching session or an authorized live descendant). At allowance > 0 the child receives `delegate` (added to the default surface for an untyped child; a typed agent gets it only if its tool list names it), may grant onward allowances strictly smaller than its own, is told its allowance in its prompt, and sees the delegation + background-jobs prompt sections. A typed agent's tool list governs *what* the child gets; allowance governs *whether* the delegation tools are grantable at all — allowance never injects tools into a type that does not list them.
 
 **Depth is the operator's knob.** A root session's allowance equals `MaxSubagentDepth` (default 2). Under defaults the root's allowance is 2, so its delegates receive allowance 1 by default and may delegate once more; their delegates are leaves. An operator caps the whole tree by lowering `MaxSubagentDepth` (1 makes every delegate a leaf), and a creator caps one branch by passing a smaller `delegation_allowance` or `0`.
 
@@ -650,7 +650,7 @@ watcher. There is no model-facing `send` object.
 
 Operations:
 
-- `operation="create"` requires `source`.
+- `operation="create"` requires `source`, except timers default an omitted source to `self`.
 - `operation="list"` takes no source or watch ID.
 - `operation="inspect"` requires `watch_id`.
 - `operation="clear"` requires `watch_id`.
@@ -832,7 +832,13 @@ identical arguments. To replace a timer, clear its `watch_id` and create another
   periodic progress.
 - Timers use `self` with `after_seconds` (60–86400) or `repeat_seconds`
   (60–3600). Out-of-range values fail rather than clamp; zero or null means
-  absent. A session may have at most eight live timers.
+  absent. Each source job manager may hold at most eight live timers.
+- Each source job manager may hold at most 32 live watches in total, including
+  timers. Creating a new watch at that cap fails `invalid_request` with
+  `too many watches (32 live); clear one first`. Reconfiguring an existing
+  non-timer key does not grow the set. Receiver-visible watch lists can exceed
+  32 because they also include watches held by descendant source managers;
+  the cap applies separately to each manager.
 - An optional `note` labels any watch and accompanies every fire.
 - Integer arguments to `job_watch` (`every`, `progress_interval_ms`, `after_seconds`,
   `repeat_seconds`) must be integral JSON numbers; strings and fractional numbers fail
@@ -1110,7 +1116,7 @@ tree walks. Detail comes from `job_status(target=...)`, then the typed transcrip
 ref (`job:` for shell, session ref for delegate).
 
 - `delegation_allowance` reports the calling session's current recursive-delegation budget: the largest value it may grant a child is one less (see Delegation allowance). It is omitted when `<= 1` (a leaf with no `delegate` tool, or a budget that can only grant `0` — a no-op knob) and present when the session can actually fan out, so an agent sees a meaningful budget without re-reading its system prompt.
-- `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), the public `source`, a one-line `condition` summary of the watch's trigger (`output_match`, `progress_interval_ms`, `after_seconds: N` or `repeat_seconds: N`, or `events` with an optional `every N`, plus a `note:` part for any watch that carries one; `inspect` and `list` render the note through that summary, which bounds the note at the same 2,048 characters storage keeps, so a stored note always shows in full), `deliveries` (model-facing deliveries so far; the budget counts the condition fires among them), and `created_at`. Receiver-owned watches are visible to the receiver, not to the descendant manager that physically observes the source. Drain-only residue from already-terminal watched jobs is not listed. `watches` rides with the result when non-empty (omitted from the lean scan when there are none); it is not subject to the job list's size bounding.
+- `watches` enumerates the session's currently active watch configurations (the same set `job_watch` installs), so an agent can re-orient on what it is already watching without re-deriving it. Each entry carries a stable `id` (preserved across an idempotent re-configure; a replacement gets a fresh `id`), the public `source`, a one-line `condition` summary of the watch's trigger (`output_match: <regex>`, `progress_interval_ms`, `after_seconds: N` or `repeat_seconds: N`, or `events` with an optional `every N`, plus a `note:` part for any watch that carries one; `inspect` and `list` render the note through that summary, which bounds the note at the same 2,048 characters storage keeps, so a stored note always shows in full), `deliveries` (model-facing deliveries so far; the budget counts the condition fires among them), and `created_at`. Receiver-owned watches are visible to the receiver, not to the descendant manager that physically observes the source. Drain-only residue from already-terminal watched jobs is not listed. `watches` rides with the result when non-empty (omitted from the lean scan when there are none); it is not subject to the job list's size bounding.
 - `recent_watches` is a bounded, latest-first ring of watches that have left the active set, so a watch that fired and then disappeared stays legible (it is not a watch vanishing into ambiguity). Each entry carries the same `id`/`source`/`condition`/`deliveries` plus `end_reason` — `auto_removed_terminal` (the watched job went terminal), `cleared` (`job_watch(operation="clear", watch_id=...)`), `replaced` (a different configuration superseded it), `fired` (a one-shot timer retired by its only fire), `budget_exhausted` (it hit the per-watch delivery budget), or `job_manager_closed` (the owning job manager shut down — session teardown — while the watch was still installed) — and `ended_at`. `runtime_lost` is a durable end reason too, written at restart for active watches that were not restored, but it never reaches this ring. Combined with `deliveries`, this distinguishes a watch that fired before it was removed from one that never fired, and both from a watch that was never installed (absent from both lists). Receiver-owned history is visible to the receiver, not the physical source owner. It is omitted from the lean scan when empty. The ring is a debugging aid, not a durable audit log, and does not survive process restart.
 
 `description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate descriptions derive from the stable descriptor/task.
@@ -1147,7 +1153,7 @@ Target shape:
 Semantics:
 
 - `max_wait_ms` unset (or `0`): the call returns promptly after the stop request is signalled, with whatever status the stop has reached. With a positive `max_wait_ms`, the tool performs one bounded wait of up to that many ms for the stop to finalize.
-- `max_wait_ms` is the caller-visible wait budget after Evener sends the stop request. It is not a runtime limit and does not delete the job if it expires. Default `max_wait_ms` for `job_stop` when positive is `5000`; minimum is `1000`; maximum is `60000`; `0` and absent mean return promptly; negative values fail `invalid_request`.
+- `max_wait_ms` is the caller-visible wait budget after Evener sends the stop request. It is not a runtime limit and does not delete the job if it expires. A positive `max_wait_ms` is clamped to 1000–60000 ms. Zero or omission means return promptly; negative values fail `invalid_request`.
 - For shell jobs, signal the process/process group where supported.
 - For a delegate, fence the whole stable subtree, cancel its active run and
   descendant model/shell work, and discard queued deliveries that cannot commit
@@ -1434,9 +1440,9 @@ notifications are armed when a shell call returns before terminal state.
 Delegate creation always returns after durable admission, so its generation's
 terminal packet is delivered later unless an idle-starting `delegate_send`
 waiter receives it inline. Steering an already-running delegate does not arm a
-second packet. An observer that successfully calls `communicate(end_turn=true)`
-uses that callback as the owner signal and suppresses a redundant terminal
-packet.
+second packet. An observer's `communicate(end_turn=true)` result arrives in its
+ordinary owner report packet; there is no separate observer callback and no
+suppression of that packet. See [observer guidance](#job_watch).
 
 Shell notification example:
 
@@ -1836,8 +1842,13 @@ subtrees, not stable history. On delegate admission or cold restore, the
 controller claims enough exact reclaimable idle subtrees, closes them
 post-order, and clears only matching runtime pointers. Reclamation never
 deletes or rewrites the stable aggregate, descriptor, transcript, outcome,
-lineage, watches, delivery state, or resumability; there is no timer or
-background unload protocol.
+lineage, watches, delivery state, or resumability.
+
+An idle-release timer can also release a quiescent delegate's resident subtree
+before the capacity backstop is needed. Release checks generation and lifecycle
+safety gates; a refused attempt can leave the runtime resident and retry later.
+The timer is not a deadline guarantee. Releasing runtime memory preserves the
+durable delegate and its resumability.
 
 **`job_list` windowing.** `job_list` paginates the newest-first listing with `limit` (default 50, max 100) and `offset` (default 0); a truncated or offset listing reports its window and the full filtered total (`showing 51-100 of 257 jobs.`) so a page size can never be mistaken for a system cap.
 

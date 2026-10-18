@@ -285,11 +285,11 @@ No substring or longest-prefix matching anywhere.
 A model id matching nothing is still resolvable: it's synthesized from
 provider-level caps, matching glob rows, and the provider's surface and
 family. `Warnings` carries `model not in catalog`; the wire id is the
-reference verbatim; the context window is unset, which the agent treats as
-"unknown" — compaction budgets against a conservative assumed window (128K),
-disclosed once as a warning naming the remedy (declare `context_window` on
-the model's row), until a live listing or a user row supplies the real one.
-Catalog and declared windows keep governing untouched. The anthropic
+reference verbatim. The synthesized row inherits any context window from
+provider-level capabilities or matching glob rows. Only when the resolved row
+has no window does the agent budget compaction against an assumed 128K window
+and warn once to declare `context_window`. A live listing or user row can supply
+a model-specific window. Catalog and declared windows remain authoritative. The anthropic
 protocol's required `max_tokens` falls back to 32000.
 This is how a model released this morning works before the cache refreshes.
 **Exception:** the `oauth-openai-codex` transport enforces a model
@@ -555,8 +555,7 @@ Source: [`effectiveAPIKeyEnv`](../llm/registry/instances.go).
 
 ## Cloud transports: Azure, Bedrock, Vertex
 
-None of these three needs request signing or non-SSE framing — that's why
-they fit the same transport model as everything else.
+These presets use SSE streaming and do not require request signing.
 
 **Azure.** `base_url = https://{AZURE_RESOURCE_NAME}.openai.azure.com/openai/v1`;
 `auth = header`, `auth_header = api-key` (Entra bearer tokens work through
@@ -578,13 +577,12 @@ alias_of = "claude-opus-4-5"  # facts, the anthropic protocol, the Foundry /anth
 
 **Bedrock.** `amazon-bedrock` uses Anthropic's Messages API on
 `bedrock-mantle` (`https://bedrock-mantle.{AWS_REGION}.api.aws/anthropic/v1`),
-bearer token via `x-api-key`. Mantle serves exactly the six unprefixed Claude
-ids its own `/v1/models` catalog lists; `global.`/`us.`/`eu.`/`jp.`/`au.`
-inference-profile ids resolve for metadata and stay usable by explicit
-reference, but are hidden from `evener models list` and 404 on this endpoint
-(verified live 2026-08-31 — see spec §9.3) because they address
-`bedrock-runtime`'s `InvokeModel`/`Converse` path, not Mantle. Nine Mantle
-OpenAI-shaped rows (gpt-oss, gpt-5.x, grok) also exist, via a separate
+bearer token via `x-api-key`. Use unprefixed Claude IDs from Mantle's own
+`/v1/models` catalog. The `global.`/`us.`/`eu.`/`jp.`/`au.` inference-profile IDs
+resolve for metadata and remain accepted as explicit references, but are hidden
+from `evener models list`. They address `bedrock-runtime`'s
+`InvokeModel`/`Converse` path, not the Mantle endpoint. Catalog resolution alone
+does not prove endpoint access. Mantle's OpenAI-shaped models use a separate
 bearer-auth preset. Token counting is estimate-only — exact counting is
 tracked as
 [issue #565](https://github.com/prime-radiant-inc/evener/issues/565).
@@ -795,13 +793,13 @@ generation, the zai and qwen thinking toggles) do move to `medium`. Set
 the off level that reaches the wire, and on any other model it means no
 reasoning control at all, so the provider decides.
 
-**Per-model clamping and vouching.** Each resolved row advertises the levels
-it supports (`EffortValues` → `Profile.ReasoningEffortLevels()`), so an
-over-range request (e.g. `xhigh` to a model capped at `high`) is reduced rather
-than rejected. A row that states no ladder vouches for no level: the effort
-still sizes budget-shaped thinking, but a field that spells the level is
-omitted rather than sent (see
-[Reasoning and thinking dialects](#reasoning-and-thinking-dialects)).
+**Supported effort levels.** When a model lists supported levels, Evener clamps
+requests to that list; for example, `xhigh` becomes `high` on a model capped at
+`high`. Missing level metadata does not have one universal result. Most named-level
+fields are omitted, but OpenRouter passes explicit effort through, and Google's
+level-shaped models pass it through when no supported-level list is supplied.
+Budget-shaped thinking can still use effort to size its token budget. See
+[Reasoning and thinking dialects](#reasoning-and-thinking-dialects) for each mapping.
 
 **Provider mapping.** The openai-chat dialects send the `reasoning_effort`
 enum (see [Reasoning and thinking dialects](#reasoning-and-thinking-dialects)
@@ -851,5 +849,3 @@ transcript marker.
 - [`ollama.md`](ollama.md) — running Evener against a local Ollama server.
 - [`superpowers/specs/2026-08-28-provider-registry-design.md`](superpowers/specs/2026-08-28-provider-registry-design.md)
   — the registry design: data model, layers, resolution, and the flag day.
-- Historical point-in-time audits live under `docs/audit-logs/` (Feb 2026;
-  paths there predate the `internal/llm` → `llm/` move).

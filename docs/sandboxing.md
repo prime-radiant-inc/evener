@@ -416,15 +416,10 @@ the shell. With
 `EVENER_NO_USER_SKILLS=1`, which loads no user skills, the skills directory stays
 masked. The locations follow `$XDG_CONFIG_HOME` the way Evener does.
 
-The denylist is **user-extensible in both directions** and never model-changeable
-mid-session:
-
-- **Add** paths to mask (absolute, `~/`-relative, or bare-relative to `$HOME`).
-- **Remove** paths from the *credential* set to un-mask them.
-
-The pseudo-filesystem floor (`/proc`, `/sys`, …) is **not removable** — a stray or
-malicious removal can never re-open `/proc`. Only the credential set and your own
-additions are removable.
+The shipped CLI and settings expose no denylist add/remove controls. Internal
+sandbox policy supports additions and credential-path removals, but those fields
+are not a user configuration surface. The pseudo-filesystem floor (`/proc`,
+`/sys`, …) remains non-removable even through that internal policy.
 
 ## Git config and hooks are read-only
 
@@ -466,15 +461,19 @@ surface is pre-created — none has content that could be more correct than the 
 file or directory the mount leaves, and an empty `config`, `config.worktree`,
 `gitdir`, or `hooks` carries no directive.
 
-Because every config file git reads is read-only **and** `$HOME` config files are
-unwritable, a `core.hooksPath` redirect cannot persist and no hook can be planted to
-run later, unsandboxed. The visible cost is that `git config --local ...` fails
-inside a sandboxed session — that write is exactly the persistence vector, so its
-denial is by design, not a bug.
+Protected Git configuration and default hook directories cannot be modified by
+the sandboxed session, so `git config --local ...` fails. This does not protect
+every custom hook location: an existing `core.hooksPath` pointing into a writable
+root, such as a repository's `.githooks`, remains writable. Changes there can run
+as hooks in a later unsandboxed Git invocation.
 
-## Caches are contained, never poisoned
+## Cache isolation and writable-root exceptions
 
-Invariant: a sandboxed session can never poison a cache that a later build consumes.
+Evener isolates caches with overlays or session-private redirects, subject to
+writable-root exceptions. Under the overlay strategy, npm and Cargo caches
+already covered by a persistent write grant remain writable. Their changes can
+affect later builds. Go caches receive stricter handling: locations that share
+persistent write roots are redirected into session scratch, as detailed below.
 
 - `workspace-write` serves the language cache roots (`~/.cache` alongside a set
   `$XDG_CACHE_HOME`, `~/.npm` and `~/.cargo` alongside a set `$npm_config_cache`
@@ -542,8 +541,8 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   gets the scratch alone, as does `restricted`, which cannot read it.
 - `restricted` always uses the session-private redirect.
 
-The overlay is a performance optimization (warm vs cold reads); the no-poisoning
-floor holds either way.
+Overlays preserve warm cache reads; session-private redirects start cold. The
+persistent writable-root exceptions above still apply to the overlay strategy.
 
 ## The environment floor
 
@@ -573,8 +572,8 @@ env` value — the Go toolchain does not read it from the process environment
 modified"), so setting it in the floor would have been a no-op. The only ways
 to actually silence the line are a per-session `HOME` redirect or granting a
 new writable root for Go's config directory; both were rejected as broader
-than the problem warrants. Ruled 2026-08-06: accept and document the noise
-rather than ship an env var that does nothing.
+than the problem warrants. Evener leaves the warning visible rather than set an
+ineffective environment variable.
 
 ssh-agent and gpg-agent Unix sockets are not bind-mounted into the sandbox, and
 spawned commands inherit no Evener file descriptors beyond stdio — not Evener's live
@@ -588,17 +587,14 @@ tools that default to deny.)
 
 `--sandbox-net off` governs the **tool plane**:
 
-- **Model-authored** spawned processes (the shell, `rg`, hook commands) get
-  `--unshare-net` — no network interfaces at all, so no TCP, UDP, DNS, **or
-  loopback**. Loopback is the sharp edge: `net=off` may break tests that start or
-  connect to a local network server, which is why the `delegate` tool's
-  `sandbox_net` description says so up front. MCP server subprocesses are the one
-  exception: see "Hooks and MCP under a sandbox" below — they are trusted
-  infrastructure, not model-directed egress, and net=off does not sever them
-  (ruled by Jesse 2026-08-07, kata 83pm).
+- **Model-authored** spawned processes (the shell, `rg`, hook commands) lose
+  network access, including loopback. Linux uses bubblewrap's `--unshare-net`;
+  macOS uses Seatbelt network restrictions. This can break tests that start or
+  connect to a local server. MCP server subprocesses retain network access;
+  see [Hooks and MCP under a sandbox](#hooks-and-mcp-under-a-sandbox).
 - Evener-process tool egress — `web_fetch` and `web_search` — is disabled with a
   legible error. These are model-directed egress and stay refused under net=off
-  regardless of the kata 83pm MCP carve-out.
+  regardless of the MCP network exception.
 - Provider-native web egress (server-side web search or fetch the provider runs for
   the model) is disabled, and the provider-capability registry **fails closed** for
   unknown capabilities, so `net=off` can't be silently false through a path you
@@ -655,18 +651,19 @@ took the session's first steering input with it.
 - **Hook commands** (SessionStart, PreToolUse, PostToolUse, …) run under the session
   sandbox, same as any model-authored spawned process, with their configured paths
   granted — including staying network-severed under `net=off`.
-- **stdio MCP servers** are spawned under the session sandbox, with the directories
-  holding their programs and script files granted. Unlike a model-authored spawn,
-  their subprocess keeps network access even under `net=off` — they are still
-  kernel-confined on every other axis (filesystem, exec floor, fd hygiene), just not
-  network-unshared.
+- **stdio MCP servers** are spawned under the session sandbox. Trusted
+  configuration layers can add read/exec roots for their programs and scripts;
+  project configuration cannot. Unlike model-authored spawns, all configured MCP
+  server subprocesses retain network access under `net=off`, including servers
+  from project configuration. Filesystem confinement, the exec floor, and file
+  descriptor hygiene still apply.
 - **Remote (HTTP/SSE) MCP servers** are no longer refused under `net=off` — they
   connect the same as under `net=on`.
 
-> Ruled by Jesse 2026-08-07 (kata 83pm): MCP servers are trusted infrastructure —
-> launched only from config layers the model cannot write (the per-project layer is
-> already excluded below) — so `net=off` does not sever them. Model-directed egress
-> (`web_fetch`/`web_search`) and model-spawned processes remain net-less.
+The network exception includes project-configured MCP servers. Excluding project
+configuration from filesystem grants does not exclude those servers from discovery
+or connection. Model-directed egress (`web_fetch`/`web_search`) and model-spawned
+processes remain network-blocked under `net=off`.
 
 The grant is tightly bounded:
 

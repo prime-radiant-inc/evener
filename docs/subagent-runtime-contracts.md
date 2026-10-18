@@ -224,9 +224,9 @@ and the `http`/`mcp_tool`/`agent` handlers are parsed-but-inert. See
   delegate task-seed failures (`agent/subagents.go`). A warning with no display surface
   is treated as a bug.
 - **Policy denials name the action and the boundary**, not just "not allowed" — e.g. the
-  `grant_tools` rejections above, `"agent_type %q is top-level only: it requires root-only
-  tools"`, and the delegation-allowance / ownership errors in the stable delegate
-  controller.
+  `grant_tools` rejections above and the delegation-allowance and ownership
+  errors in the stable delegate controller. A role's tool policy and the child's
+  allowance govern which delegation tools it can receive.
 - **Compatibility gaps are reported, not half-accepted.** Recognized-but-unsupported and
   unknown hook events are recorded (`Instance.UnsupportedHooks`/`UnknownHooks`) and turned
   into load-time warnings; reserved handler fields are captured for diagnostics rather

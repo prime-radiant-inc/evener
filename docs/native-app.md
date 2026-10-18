@@ -51,7 +51,7 @@ Open a known session and confirm that its recent conversation appears. Send a ha
 
 The app also offers **Paste pairing link** and **Enter the address**. Manual entry needs the hub's base address, such as `https://hub.example.invalid:9180` (a schematic example, not a working server). Include the `http://` or `https://` scheme and any required port, but no session path. This base address is also called the hub's **origin**.
 
-Manual entry also needs the hub's **bearer token**, a secret that grants access to the hub. It is not a provider API key. The hub operator can obtain it from the `auth-token` file in the hub state root, normally `~/.local/state/evener/auth-token`. Transfer it privately, and keep it out of screenshots, prompts, and source control. The app stores credentials in the phone's secure credential storage, SecureStore.
+Manual entry also needs the hub's **bearer token**, a secret that grants access to the hub. It is not a provider API key. The hub operator can obtain it from the `auth-token` file in the hub state root, `${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth-token` by default. A `hub_state_root` override in `hub.toml` relocates it. Transfer it privately, and keep it out of screenshots, prompts, and source control. The app stores credentials in the phone's secure credential storage, SecureStore.
 
 Pairing grants access to the hub. It does not configure model credentials, make an unreachable address reachable, or start a stopped hub. The [device-pairing reference](device-pairing.md) defines invitation expiry, approval, and credential delivery for client authors.
 
