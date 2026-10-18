@@ -126,12 +126,12 @@ export function PinAssignmentScreen({ route, navigation }: NativeStackScreenProp
 													? `${currentAssignment ? "Currently" : "Last seen"} in ${observed.section.name}`
 													: currentAssignment
 														? "Not pinned"
-														: "Last seen without a pinned section"}
+														: "Last seen without a pinned category"}
 									</Copy>
 								) : null}
 							</View>
 						}
-						title={title || "Pin session"}
+						title={title || "Pin to category"}
 						hubName={activeProfile?.name ?? "Hub"}
 						sections={page?.rows ?? []}
 						selection={selected?.draft?.selection ?? null}

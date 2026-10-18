@@ -272,7 +272,8 @@ describe("effort", () => {
 		const tree = sheet();
 		const segments = tree.root.findAll((node) => node.props.accessibilityRole === "radio");
 		expect(segments.map((node) => node.props.accessibilityLabel)).toEqual(["Low", "Medium", "High"]);
-		expect(segments.map((node) => node.props.accessibilityState.selected)).toEqual([false, false, true]);
+		// The shared Segmented marks its choice with `checked`, as a radio does.
+		expect(segments.map((node) => node.props.accessibilityState.checked)).toEqual([false, false, true]);
 		const high = segments[2];
 		if (!high) throw new Error("no High");
 		expect([high.props.style].flat()[0]).toMatchObject({ backgroundColor: palette.accentBg });

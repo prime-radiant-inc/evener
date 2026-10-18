@@ -126,7 +126,8 @@ import {
 	exactRestoreDue,
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
-import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
+import { type ErrorAction, errorAction } from "./session/errorAction";
+import { originatingInput } from "./session/turnRetryInput";
 import {
 	type Ghost,
 	type GhostAction,
@@ -216,7 +217,9 @@ import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow } from "./timeline";
 import { hasUsageLines, projectNativeTranscript } from "./transcriptPresentation";
 import { refreshLoadedArchivedLists } from "./archivedLists";
+import { SymbolView } from "expo-symbols";
 import { Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { useDisplayChoices } from "./display/displayContext";
 import { haptic } from "./haptics";
 import { Button } from "./sheet/Grouped";
 
@@ -370,6 +373,8 @@ export function ConversationScreen({
 	const { activeProfile, profiles, client, state: connectionState } = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
+	const textScale = useTextScale();
+	const displayChoices = useDisplayChoices();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	// Find in session (ruling 29), open while non-null. The current match is
 	// remembered by its row's reader key, since older pages prepend rows.
@@ -1080,6 +1085,18 @@ export function ConversationScreen({
 	// can depend on the boolean rather than on the conversation object, which
 	// changes on every streamed frame.
 	const canStop = connected && conversation !== null && conversationControls(conversation).stop;
+	// The facts both ⋯ surfaces read (the iOS header menu and the Android
+	// sheet): one object, so a new capability lands in both or neither.
+	const menuFacts = {
+		current: menuLevel,
+		hasDocuments: documents.length > 0,
+		connected,
+		sharedNotes: !!conversation?.capabilities.sharedNotes,
+		canAside,
+		canShutDown,
+		canStop,
+		choose: (action: SessionMenuAction) => chooseSessionActionRef.current(action),
+	};
 	function openAside(ref: string, title: string) {
 		Keyboard.dismiss();
 		navigation.push("Conversation", {
@@ -1240,19 +1257,7 @@ export function ConversationScreen({
 					: undefined,
 			// iOS draws these as a native menu and ignores headerRight; Android
 			// ignores them and keeps headerRight's SessionMenu.
-			unstable_headerRightItems: () =>
-				hasConversation
-					? sessionMenu({
-							current: menuLevel,
-							hasDocuments: documents.length > 0,
-							connected,
-							sharedNotes: !!conversation?.capabilities.sharedNotes,
-							canAside,
-							canShutDown,
-							canStop,
-							choose: (action) => chooseSessionActionRef.current(action),
-						})
-					: [],
+			unstable_headerRightItems: () => (hasConversation ? sessionMenu(menuFacts) : []),
 			headerRight: () => (
 				<Pressable
 					accessibilityRole="button"
@@ -1271,9 +1276,10 @@ export function ConversationScreen({
 						opacity: !hasConversation ? 0.4 : pressed ? 0.6 : 1,
 					})}
 				>
-					<Text allowFontScaling={false} style={{ fontSize: 24, color: colors.text }}>
-						⋮
-					</Text>
+					{/* The Android/older-RN fallback for the ⋯ iOS draws as a native
+						    menu (sessionMenu's ellipsis.circle): a symbol, so Dynamic Type
+						    grows it with everything else. */}
+					<SymbolView name="ellipsis" tintColor={colors.text} size={20 * textScale} />
 				</Pressable>
 			),
 		});
@@ -1318,9 +1324,10 @@ export function ConversationScreen({
 			hideAnswerMessages(
 				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], {
 					olderToLoad: olderPage !== null,
+					config: displayConfig,
 				}),
 			),
-		[presentation.items, conversation?.turns, olderPage],
+		[presentation.items, conversation?.turns, olderPage, displayConfig],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
 	// A subagent row's coordinator: this session, or on a subagent's screen,
@@ -1449,6 +1456,9 @@ export function ConversationScreen({
 		openedFor.current = null;
 		openingLandedNow.current = false;
 		setOpeningLanded(false);
+		// Each session's opening gets its own caps: a round a previous session
+		// consumed must not shorten the next one's.
+		setOpeningCapRound(0);
 	}, [route.params.hubId, route.params.ref, follow.dispatch]);
 	// A layout effect, so a cell's layout or the cap can never read the rows of
 	// the render before (a passive effect leaves a window after the commit),
@@ -1469,11 +1479,12 @@ export function ConversationScreen({
 		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 		if (lastRowMeasured()) landOpening();
 	}
-	// Where the session opens (spec 7.3, ruling 31), decided once per route on
-	// the first layout with rows: the live end while a question or approval
-	// waits, the start of a reply that finished since you last reached the
-	// end, or where you left off. It only sets the reading position; the
-	// restore effect below moves the list there.
+	// Where the session opens (spec 7.3, ruling 31; Jesse, 2026-10-18: always
+	// the latest), decided once per route on the first layout with rows: the
+	// live end while a question or approval waits, or the start of a reply
+	// that finished since you last reached the end when the open-at-unread-
+	// replies setting is on. It only sets the reading position; the restore
+	// effect below moves the list there.
 	useEffect(() => {
 		const routeKey = `${route.params.hubId}\u0000${route.params.ref}`;
 		if (
@@ -1490,12 +1501,9 @@ export function ConversationScreen({
 			timelineRows,
 			conversation.turns.map((turn) => turn.id),
 			pendingQuestions(conversation).length > 0 || conversation.pendingEscalations.length > 0,
+			displayChoices.openAtUnreadReplies,
 		);
-		if (target.kind === "live") {
-			readerAnchor.current = null;
-			follow.dispatch({ type: "follow" });
-			pinOpeningToEnd();
-		} else if (target.kind === "row") {
+		if (target.kind === "row") {
 			readerAnchor.current = readerAnchorAt(
 				route.params.hubId,
 				route.params.ref,
@@ -1508,8 +1516,22 @@ export function ConversationScreen({
 			follow.dispatch({ type: "unfollow" });
 			appliedReaderRestore.current = null;
 			readerRestoreAttempts.current.reset();
+		} else {
+			// The latest is the resting answer.
+			readerAnchor.current = null;
+			follow.dispatch({ type: "follow" });
+			pinOpeningToEnd();
 		}
-	}, [conversation, snapshot.status, timelineRows, focused, bindingInstance, route.params.hubId, route.params.ref]);
+	}, [
+		conversation,
+		snapshot.status,
+		timelineRows,
+		focused,
+		bindingInstance,
+		route.params.hubId,
+		route.params.ref,
+		displayChoices.openAtUnreadReplies,
+	]);
 	// A session with no rows has nowhere to travel. One with rows shows after
 	// OPENING_REVEAL_CAP_MS however far it got, so an opening that can't land
 	// (its reading position never measures) never leaves the transcript hidden.
@@ -1518,6 +1540,10 @@ export function ConversationScreen({
 	// or offline) gives way to the live end, and the position is dropped
 	// (Jesse, 2026-09-29): showing the top and then jumping, or a blank wait,
 	// is worse. The end's last row lands it, with a fresh cap behind that.
+	// A position whose row is loaded but not yet measured gets one more cap
+	// first: the list sits at its approximate offset, far above the row, and
+	// showing it there is the visible "way up" jump; the row measuring lands
+	// the exact restore, and the second cap reveals the list if it never does.
 	function capOpening() {
 		const anchor = readerAnchor.current;
 		if (anchor && resolveReaderAnchor(anchor, rowsNow.current) === null) {
@@ -1527,6 +1553,13 @@ export function ConversationScreen({
 			pinOpeningToEnd();
 			setOpeningCapRound((round) => round + 1);
 			return;
+		}
+		if (anchor && openingCapRound === 0) {
+			const index = resolveReaderAnchor(anchor, rowsNow.current);
+			if (index !== null && !readerMeasurements.current.has(readerKey(rowsNow.current[index]))) {
+				setOpeningCapRound((round) => round + 1);
+				return;
+			}
 		}
 		landOpening();
 	}
@@ -2521,18 +2554,40 @@ export function ConversationScreen({
 		},
 		[store],
 	);
-	// An error row's Retry sends Jesse's sentence as your message through
-	// Send's own path (ruling 26), leaving whatever you were typing alone.
+	// An error row's Retry re-sends the input that opened the failed turn
+	// through Send's own path (ruling 26): your words and images again, never a
+	// sentence invented for you, and whatever you were typing stays alone.
+	const toastShow = useToast().show;
 	const retryFailedTurn = useCallback(async () => {
 		const kind = liveSendKind();
 		if (!service || kind === null) return;
+		const live = store.getState();
+		const latest = live.conversation?.turns[live.conversation.turns.length - 1];
+		const origin = latest ? originatingInput(live.conversation.turns, latest.id) : undefined;
+		if (origin?.kind !== "retry") return;
 		setActionError(null);
+		// Images whose bytes did not survive (a reloaded turn's sha-routed
+		// sources) stay behind: the request goes out with the text it can
+		// re-send, and the person is told what to re-attach, as on the web.
+		const dropped = origin.input.sourceImageCount - (origin.input.attachments?.length ?? 0);
 		try {
-			await document.submitText(RETRY_MESSAGE, (text, images) => deliver(service, kind, text, images));
+			await document.submitText(
+				origin.input.text,
+				async (text, images) => deliver(service, kind, text, images),
+				origin.input.attachments,
+			);
+			if (dropped > 0)
+				toastShow({
+					text:
+						dropped === 1
+							? "Retried without an attached image. Re-attach it to ask about it again."
+							: `Retried without ${dropped} attached images. Re-attach them to ask about them again.`,
+					kind: "retry:dropped-images",
+				});
 		} catch {
 			// As with Send, a refusal leaves the unconfirmed ghost to say so.
 		}
-	}, [liveSendKind, service, document, deliver]);
+	}, [liveSendKind, service, document, deliver, store, toastShow]);
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
 			if (errorAction === "resume") void controls?.resume();
@@ -2975,10 +3030,11 @@ export function ConversationScreen({
 				<SessionMenu
 					title={conversation?.name || route.params.title}
 					hubName={activeProfile?.name ?? "Hub"}
-					connected={connected}
+					menu={menuFacts}
 					deletionAvailable={deletionAvailable}
 					close={() => setSessionMenuOpen(false)}
 					choose={openSessionDestination}
+					onAction={(action) => chooseSessionActionRef.current(action)}
 				/>
 			) : null}
 			<KeyboardAvoidingView

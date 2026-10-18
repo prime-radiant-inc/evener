@@ -1,9 +1,10 @@
-import type { ReactNode } from "react";
-import { ActivityIndicator, ScrollView, TextInput, View } from "react-native";
+import { type ReactNode, useMemo } from "react";
+import { ScrollView, View } from "react-native";
 import { updating } from "./navigationPages";
 import type { PinAssignmentSelection } from "./pinAssignmentDrafts";
-import { Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
-import { Button } from "./sheet/Grouped";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Button, Group, Row, TextFieldRow } from "./sheet/Grouped";
+import { Spinner } from "./sheet/Spinner";
 
 export type PinAssignmentSection = { id: string; name: string; count: number };
 export interface PinAssignmentEditorProps {
@@ -78,6 +79,17 @@ export function PinAssignmentEditor({
 			: !connected
 				? "offline"
 				: null;
+	const chosenId = selection?.kind === "existing" ? selection.sectionId : null;
+	const creating = selection?.kind === "new";
+	const rows = useMemo(
+		() =>
+			sections.map((section) => ({
+				section,
+				label: `${section.name} · ${section.count} ${section.count === 1 ? "session" : "sessions"}`,
+				checked: chosenId === section.id,
+			})),
+		[sections, chosenId],
+	);
 	return (
 		<View style={[styles.fill, { backgroundColor: colors.background }]}>
 			<ScrollView
@@ -105,21 +117,23 @@ export function PinAssignmentEditor({
 						<Copy muted>{BLOCKED[reason]}</Copy>
 					</View>
 				) : null}
-				<View accessibilityRole="radiogroup" accessibilityLabel="Pinned section" style={{ gap: 4 }}>
-					{sections.map((section) => (
-						<Choice
-							key={section.id}
-							label={`${section.name} · ${section.count} ${section.count === 1 ? "session" : "sessions"}`}
-							selected={selection?.kind === "existing" && selection.sectionId === section.id}
-							disabled={blocked}
-							onPress={() => change({ kind: "existing", sectionId: section.id })}
-						/>
-					))}
-				</View>
-				<View style={{ gap: 8 }}>
-					<Choice
-						label="Create a new pinned section"
-						selected={selection?.kind === "new"}
+				{rows.length > 0 ? (
+					<Group label="Pinned categories" section="pin-categories">
+						{rows.map(({ section, label, checked }) => (
+							<Row
+								key={section.id}
+								label={label}
+								checked={checked}
+								disabled={blocked}
+								onPress={() => change({ kind: "existing", sectionId: section.id })}
+							/>
+						))}
+					</Group>
+				) : null}
+				<Group label="New category" section="pin-new-category">
+					<Row
+						label="Create a new category"
+						checked={creating}
 						disabled={blocked}
 						onPress={() =>
 							change({
@@ -128,37 +142,32 @@ export function PinAssignmentEditor({
 							})
 						}
 					/>
-					<TextInput
-						accessibilityLabel="New pinned section name"
-						value={selection?.kind === "new" ? selection.name : ""}
-						placeholder="Section name"
-						editable={!blocked && selection?.kind === "new"}
+					<TextFieldRow
+						label="New category name"
+						value={creating ? (selection?.name ?? "") : ""}
 						onChangeText={(name) => change({ kind: "new", name })}
-						style={[
-							styles.input,
-							{
-								color: colors.text,
-								borderColor: colors.border,
-								backgroundColor: colors.surface,
-							},
-						]}
+						disabled={blocked || !creating}
+						machine={false}
+						placeholder="Category name"
 					/>
-					{selection?.kind === "new" && !validName(selection.name) ? <Copy muted>Use 1–80 characters.</Copy> : null}
-				</View>
+				</Group>
+				{creating && !validName(selection?.kind === "new" ? selection.name : "") ? (
+					<Copy muted>Use 1–80 characters.</Copy>
+				) : null}
 				<View style={[styles.row, { flexWrap: "wrap" }]}>
 					<Button
 						primary
 						compact
-						label={selection?.kind === "new" ? "Create and pin" : "Pin to section"}
+						label={creating ? "Create and pin" : "Pin to category"}
 						disabled={blocked || !valid}
 						onPress={save}
 					/>
 					<Button text quiet label="Unpin" disabled={blocked} onPress={unpin} />
 				</View>
-				{loading ? <ActivityIndicator accessibilityLabel="Loading pinned sections" /> : null}
+				{loading ? <Spinner label="Loading pinned categories" /> : null}
 				{updating({ loading, error, stale, remaining }) ? <Copy muted>Updating…</Copy> : null}
 				{!loading && remaining > 0 ? (
-					<Button text label={`Load more sections (${remaining} remaining)`} disabled={blocked} onPress={more} />
+					<Button text label={`Load more categories (${remaining} remaining)`} disabled={blocked} onPress={more} />
 				) : null}
 				{uncertain ? (
 					<Button text quiet label="Check again" disabled={!connected || loading || pending} onPress={refresh} />

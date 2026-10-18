@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Pressable, View } from "react-native";
+import { FoldChevron } from "./board/BoardRow";
 import { basename, parentOf } from "@evener/appwire-client";
 import type { MCPServerSpec } from "@evener/appwire-client";
 import { Copy, useColors } from "./ui";
@@ -29,7 +30,12 @@ export function LaunchResourceRow({
 					onPress={() => setExpanded(!expanded)}
 					style={{ flex: 1, minWidth: 0, minHeight: 48, paddingVertical: 6 }}
 				>
-					<Copy>{`${expanded ? "⌄" : "›"} ${title}`}</Copy>
+					<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+						<FoldChevron folded={!expanded} />
+						<View style={{ flex: 1, minWidth: 0 }}>
+							<Copy>{title}</Copy>
+						</View>
+					</View>
 					<Copy muted numberOfLines={1}>
 						{hint}
 					</Copy>

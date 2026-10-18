@@ -51,7 +51,11 @@ import type {
 	MutationPersistenceSnapshot,
 	PendingTurnEntry,
 } from "@evener/appwire-client/state/mutation";
-import { ownPendingSend, reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
+import {
+	appliedMutationIdentities,
+	ownPendingSend,
+	reconcilePendingEntries,
+} from "@evener/appwire-client/state/mutation";
 import { create } from "zustand";
 import type {
 	ActivityMember,
@@ -3075,6 +3079,19 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// when it carries one, else by threadId; a frame naming neither is
 				// not about this thread. Silently drop everything else.
 				if (!notificationTargetsThread(n, state.conversation)) return;
+				// A frame that names a mutation the daemon has moved past proves that
+				// send landed (appliedMutationIdentities), so its durable record
+				// retires now instead of waiting for a wide enough read. The
+				// applied-only rule: this store draws the message itself, so a queue
+				// row the daemon merely holds must not retire it early.
+				const settle = pendingPort?.settleIdentities;
+				const settledIds = settle === undefined ? [] : appliedMutationIdentities(n);
+				if (settle !== undefined && settledIds.length > 0) {
+					void settle(settledIds).catch(() => {
+						// A failed settlement proves nothing and changes nothing: the
+						// record stays for the next frame or authoritative read.
+					});
+				}
 				// A status frame the hub relays names pageBefore for its thread; one
 				// straight from a daemon names none and leaves the last answer.
 				if (n.method === "thread/status/changed" && n.params.threadId === state.conversation.threadId)

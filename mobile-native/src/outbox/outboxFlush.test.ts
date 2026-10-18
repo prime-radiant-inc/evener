@@ -560,9 +560,16 @@ it("backs off further while the outbox stays unreadable after each settle", asyn
 	try {
 		const outbox = runtime();
 		await outbox.submit(message());
+		// A queued message stays owed to the daemon throughout, so the target keeps
+		// retrying after the first send is retired for having landed. This test is
+		// about the backoff while the outbox stays unreadable, not retirement.
+		await outbox.submit(message({ kind: "queue", input: [{ type: "text", text: "later" }] }));
 		const client = new FakeClient("ready");
 		client.on("thread/read", () => read("ref-1"));
 		client.on("turn/start", applied);
+		client.on("turn/queue", () => {
+			throw new Error("connection reset mid-request");
+		});
 		const listOutbox = outbox.storage.listOutbox.bind(outbox.storage);
 		vi.spyOn(outbox.storage, "listOutbox").mockImplementation(async (...args) => {
 			if (methods(client).includes("turn/start")) throw new Error("the database is busy");

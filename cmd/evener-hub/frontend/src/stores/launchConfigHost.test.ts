@@ -144,26 +144,30 @@ test("resetLaunchConfigHostStoresForTests drops the per-host schema cache", asyn
 // per-host instance (and its schema cache) would be handed to the new
 // registration, and a response the old registration had in flight could land in
 // it. The instance is keyed on the registry's own row instead.
-test("a host re-registered under the same name does not serve the previous registration's cached schema", async () => {
-  const fake = connectFakeClient();
-  let reads = 0;
-  fake.on("evener/host/request", () => {
-    reads += 1;
-    return schema(`read-${reads}`) as never;
-  });
-  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "old.example:22" })] } });
-  const first = launchConfigStoreForHost("beta");
-  expect((await first.getState().schema()).options[0]?.description).toBe("schema for read-1");
+test.each([{ address: "new.example:22" }, { address: "old.example:22", incarnationId: "replacement" }])(
+  "a host re-registered under the same name does not serve the previous registration's cached schema (%j)",
+  async (replacement) => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("evener/host/request", () => {
+      reads += 1;
+      return schema(`read-${reads}`) as never;
+    });
+    hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "old.example:22" })] } });
+    const first = launchConfigStoreForHost("beta");
+    expect((await first.getState().schema()).options[0]?.description).toBe("schema for read-1");
 
-  // Removed, then added again under the same name at a different address.
-  hostsStore.setState({ load: { phase: "ready", hosts: [] } });
-  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "new.example:22" })] } });
+    // Keep the observed-removal regression, while incarnation replacement also
+    // covers a remove and re-add that happens entirely between polls.
+    if (!("incarnationId" in replacement)) hostsStore.setState({ load: { phase: "ready", hosts: [] } });
+    hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", ...replacement })] } });
 
-  const second = launchConfigStoreForHost("beta");
-  expect(second).not.toBe(first);
-  expect((await second.getState().schema()).options[0]?.description).toBe("schema for read-2");
-  expect(reads).toBe(2);
-});
+    const second = launchConfigStoreForHost("beta");
+    expect(second).not.toBe(first);
+    expect((await second.getState().schema()).options[0]?.description).toBe("schema for read-2");
+    expect(reads).toBe(2);
+  },
+);
 
 // The other half of that rule: the registry re-publishes on every materially
 // different snapshot - an attach, a version report - and none of those is a
@@ -182,7 +186,18 @@ test("a live-state change on an unchanged registration keeps the instance and it
   expect((await store.getState().schema()).options[0]?.description).toBe("schema for read-1");
 
   hostsStore.setState({
-    load: { phase: "ready", hosts: [{ ...registered, attached: true, serverVersion: "1.2.3", midAttach: true }] },
+    load: {
+      phase: "ready",
+      hosts: [
+        {
+          ...registered,
+          generation: registered.generation + 1,
+          attached: true,
+          serverVersion: "1.2.3",
+          midAttach: true,
+        },
+      ],
+    },
   });
   hostsStore.setState({ load: { phase: "ready", hosts: [registered] } });
 

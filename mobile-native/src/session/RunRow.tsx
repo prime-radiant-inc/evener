@@ -8,6 +8,7 @@ import { composeStepWords, isExitOnly } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { Fragment } from "react";
 import { Pressable, Text, View } from "react-native";
+import { FoldChevron } from "../board/BoardRow";
 import { scaledType, typeRoles } from "../design/tokens";
 import { toggleDisclosure, useDisclosureOpen } from "../nativeDisclosure";
 import type { RunStep, TimelineRow } from "../timeline";
@@ -150,20 +151,29 @@ export function RunRow({
 	const summary = runSummary(run.steps);
 	const open = live || expanded;
 	const line = (
-		<Text
-			allowFontScaling={allowFontScaling}
-			style={{ fontSize: 14 * scale, lineHeight: 19 * scale, color: palette.inkMid, fontVariant: ["tabular-nums"] }}
-		>
-			{live ? null : open ? "▾ " : "▸ "}
-			{`${runHeadText(summary)} · `}
-			{summary.parts.map((part, index) => (
-				<Fragment key={part.key}>
-					{index > 0 ? ", " : null}
-					{part.text}
-					{part.failed > 0 ? <Text style={{ color: palette.dangerInk }}>{runPartFailedText(part)}</Text> : null}
-				</Fragment>
-			))}
-		</Text>
+		<View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+			{live ? null : <FoldChevron folded={!open} />}
+			<Text
+				style={{
+					flex: 1,
+					minWidth: 0,
+					fontSize: 14 * scale,
+					lineHeight: 19 * scale,
+					color: palette.inkMid,
+					fontVariant: ["tabular-nums"],
+				}}
+				allowFontScaling={allowFontScaling}
+			>
+				{`${runHeadText(summary)} · `}
+				{summary.parts.map((part, index) => (
+					<Fragment key={part.key}>
+						{index > 0 ? ", " : null}
+						{part.text}
+						{part.failed > 0 ? <Text style={{ color: palette.dangerInk }}>{runPartFailedText(part)}</Text> : null}
+					</Fragment>
+				))}
+			</Text>
+		</View>
 	);
 	return (
 		<View>

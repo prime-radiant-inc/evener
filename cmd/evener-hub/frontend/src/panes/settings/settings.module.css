@@ -14,8 +14,10 @@
 }
 
 .filterRow {
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   margin-bottom: var(--space-2);
+  padding: var(--space-1);
 }
 
 .clusterHeader {

@@ -44,6 +44,10 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
   const browseCatalogs = useExtensionsHostState((s) => s.browseCatalogs);
   const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
+  const pluginsUnavailable = useExtensionsHostState(
+    (s) => s.plugins === null || s.pluginsError !== null || s.pluginsLoading,
+  );
+  const mutationDisabled = hubWriteBusy || pluginsUnavailable;
   const isMobile = useIsMobile();
   const toasts = useToasts();
 
@@ -82,7 +86,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   }, [target, store]);
 
   async function handleToggleEnable(currentlyEnabled: boolean) {
-    if (target === null) return;
+    if (target === null || mutationDisabled) return;
     try {
       if (currentlyEnabled) await store.getState().disablePlugin(target.plugin, target.marketplace);
       else await store.getState().enablePlugin(target.plugin, target.marketplace);
@@ -92,7 +96,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   }
 
   async function handleToggleAutoUpgrade(currentlyAutoUpgrade: boolean) {
-    if (target === null) return;
+    if (target === null || mutationDisabled) return;
     try {
       await store.getState().setPluginAutoUpgrade(target.plugin, target.marketplace, !currentlyAutoUpgrade);
     } catch (err) {
@@ -101,7 +105,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   }
 
   async function handleUpgrade() {
-    if (target === null) return;
+    if (target === null || mutationDisabled) return;
     try {
       await store.getState().upgradePlugin(target.plugin, target.marketplace);
       toasts.push("success", `Upgraded ${target.plugin}`);
@@ -111,7 +115,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
   }
 
   async function handleConfirmRemove() {
-    if (target === null) return;
+    if (target === null || mutationDisabled) return;
     try {
       await store.getState().removePlugin(target.plugin, target.marketplace);
       toasts.push("success", `Removed ${target.plugin}`);
@@ -145,11 +149,11 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
               {/* Offered only when the hub's update check found one; an older hub
                   without the check offers none. */}
               {entry.updateAvailable && (
-                <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={hubWriteBusy}>
+                <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={mutationDisabled}>
                   Upgrade
                 </Button>
               )}
-              <Button variant="danger" disabled={hubWriteBusy} onClick={() => setPendingRemove(true)}>
+              <Button variant="danger" disabled={mutationDisabled} onClick={() => setPendingRemove(true)}>
                 Remove
               </Button>
             </>
@@ -177,14 +181,14 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
               <Switch
                 checked={entry.enabled}
                 onChange={() => void handleToggleEnable(entry.enabled)}
-                pending={hubWriteBusy}
+                pending={mutationDisabled}
                 label="Enabled by default"
                 description="Used by new sessions with the default plugin selection. Custom launches and existing sessions keep their own selections."
               />
               <Switch
                 checked={entry.autoUpgrade}
                 onChange={() => void handleToggleAutoUpgrade(entry.autoUpgrade)}
-                pending={hubWriteBusy}
+                pending={mutationDisabled}
                 label="Auto-upgrade"
               />
             </div>
@@ -195,7 +199,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
         open={pendingRemove && target !== null}
         title="Remove plugin"
         confirmLabel="Remove"
-        busy={hubWriteBusy}
+        busy={mutationDisabled}
         onConfirm={() => void handleConfirmRemove()}
         onCancel={() => setPendingRemove(false)}
       >

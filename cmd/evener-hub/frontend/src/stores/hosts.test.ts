@@ -925,6 +925,9 @@ describe("host registration identity", () => {
     // A different registration.
     expect(sameHostRegistration(registered, { ...registered, address: "elsewhere:22" })).toBe(false);
     expect(sameHostRegistration(registered, { ...registered, removed: true })).toBe(false);
+    expect(sameHostRegistration(registered, { ...registered, incarnationId: "replacement" })).toBe(false);
+    // Mutation generations advance within the same incarnation.
+    expect(sameHostRegistration(registered, { ...registered, generation: registered.generation + 1 })).toBe(true);
     // An absent and an empty root list describe the same host (the wire omits
     // empty optional arrays).
     expect(sameHostRegistration({ ...registered, roots: ["/a", "/b"] }, { ...registered, roots: undefined })).toBe(

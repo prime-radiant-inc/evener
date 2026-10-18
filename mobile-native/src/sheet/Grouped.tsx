@@ -18,6 +18,7 @@ import {
 } from "react";
 import { AccessibilityInfo, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
 import { fonts, type Palette, scaledType, space, uiType } from "../design/tokens";
+import { haptic } from "../haptics";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 
 /** Above a section label. */
@@ -771,7 +772,8 @@ export function GroupFooter({
 }
 
 /** A segmented control (spec 16.1: the chosen segment is accent-bg with accent
- * ink, never an ink fill). A tap on the chosen segment does nothing. */
+ * ink, never an ink fill; 16.6: a selection tick on a change). A tap on the
+ * chosen segment does nothing. */
 export function Segmented<T extends string>({
 	label,
 	options,
@@ -811,11 +813,15 @@ export function Segmented<T extends string>({
 						accessibilityState={{ checked: chosen, disabled }}
 						disabled={disabled}
 						onPress={() => {
-							if (!chosen) onChange(option.value);
+							if (!chosen) {
+								haptic("selection");
+								onChange(option.value);
+							}
 						}}
 						style={{
 							flex: 1,
-							minHeight: 40,
+							// Spec 16.6: a segment is an action target.
+							minHeight: 44,
 							alignItems: "center",
 							justifyContent: "center",
 							borderRadius: 20,

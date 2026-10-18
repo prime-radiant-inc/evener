@@ -686,6 +686,20 @@ it("opens Find in session from the Android ⋯ menu", async () => {
 	await act(async () => tree.unmount());
 });
 
+it("draws the header's ⋯ fallback as a symbol that follows Dynamic Type", async () => {
+	const { tree } = mount();
+	await settle();
+
+	const fallback = render(menuButton());
+	// The fallback (Android and older RN; iOS draws the native menu) is a
+	// SymbolView ellipsis, never a Text glyph pinned against Dynamic Type.
+	const [symbol] = fallback.root.findAll((node) => String(node.type) === "SymbolView");
+	expect(symbol?.props.name).toBe("ellipsis");
+	expect(fallback.root.findAll((node) => node.props.allowFontScaling === false)).toEqual([]);
+	act(() => fallback.unmount());
+	await act(async () => tree.unmount());
+});
+
 it("shuts the session down after a confirmation and stays on it (ruling 19)", async () => {
 	const { tree, requests } = mount(withCapabilities({ shutdown: true }), { "thread/shutdown": {} });
 	await settle();
@@ -924,7 +938,7 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 	await act(async () => tree.unmount());
 });
 
-it("opens the live run where tool calls show, and leaves it to its line at Intent", async () => {
+it("opens the live run where tool calls show, and shows the action's own line at Intent", async () => {
 	const running = {
 		...thread,
 		status: { type: "active" },
@@ -955,7 +969,11 @@ it("opens the live run where tool calls show, and leaves it to its line at Inten
 	const folds = () => withTestID(tree, "run-fold");
 	act(() => detailLevels("hub-1").set(ref, "intent"));
 	await settle();
-	expect(folds()[0]?.props.accessibilityState).toEqual({ expanded: false });
+	// Intent draws one line per action, never a folded run (Jesse,
+	// 2026-10-18): the call is a step row of its own, so there is no run to
+	// fold, and its words are on screen.
+	expect(folds()).toEqual([]);
+	expect(renderedText(tree)).toContain("Ran ls");
 	act(() => detailLevels("hub-1").set(ref, "tools"));
 	await settle();
 	expect(folds()).toEqual([]);
@@ -1356,7 +1374,7 @@ it("says Update needed, with the spec's hint, when no retry can fix the connecti
 	await act(async () => tree.unmount());
 });
 
-it("says Reconnecting… and then how old the session is while the hub is out of reach", async () => {
+it("says why the connection closed while the hub is out of reach, and goes without a word when it returns", async () => {
 	const { tree, client } = mount(busy);
 	await settle();
 	vi.useFakeTimers();
@@ -1373,20 +1391,18 @@ it("says Reconnecting… and then how old the session is while the hub is out of
 				vi.advanceTimersByTime(ms);
 			});
 		expect(status()).toBeNull();
+		// A blip this fresh reconnects without a word.
 		advance(2000);
-		const reconnecting = status();
-		expect(reconnecting).not.toBeNull();
+		// Once the drop is old enough to speak, the bar carries the close's own
+		// sentence — the hub's words for why it is out of reach.
+		const why = status();
+		expect(why).toBe(OLD_TRANSPORT_ERROR);
 		advance(28_000);
-		const offline = status();
-		expect(offline).not.toBe(reconnecting);
-		expect(offline).toMatch(/\b1m\b/);
-		// The status re-renders once a minute of the data's age, one tick per
-		// act.
-		advance(30_000);
-		advance(60_000);
-		advance(60_000);
-		expect(status()).toMatch(/\b3m\b/);
-		expect(renderedText(tree)).not.toContain(OLD_TRANSPORT_ERROR);
+		// The sentence stays while the connection stays down — it runs no clock.
+		expect(status()).toBe(why);
+		advance(120_000);
+		expect(status()).toBe(why);
+		expect(renderedText(tree)).toContain(OLD_TRANSPORT_ERROR);
 		expect(hasTestID(tree, "connection-status")).toBe(true);
 
 		// Back in reach, the bar goes without a word.

@@ -1,5 +1,6 @@
 import type { ModelCatalog } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { reconnectDelay } from "./hubConnection";
 
 interface State {
 	catalog: ModelCatalog | null;
@@ -11,6 +12,11 @@ export class HubModels {
 	private state: State = { catalog: null, loading: false, error: null };
 	private version = 0;
 	private disposed = false;
+	/** The failed read's own retry, so a picker that stays open sees the list
+	 * come back without touching anything (the same capped backoff the rest of
+	 * the app's reads use). Null once a read lands. */
+	private rereadTimer: ReturnType<typeof setTimeout> | null = null;
+	private rereadFailures = 0;
 	private listeners = new Set<() => void>();
 	constructor(private client: ConversationClientLike | null) {}
 	getSnapshot = () => this.state;
@@ -44,18 +50,36 @@ export class HubModels {
 					diagnostics: result.diagnostics ?? [],
 				},
 			});
+			this.clearReread();
 		} catch {
 			if (version === this.version)
 				this.publish({
 					error: "Could not load this hub's models.",
 				});
+			if (version === this.version && !this.disposed) this.armReread();
 		} finally {
 			if (version === this.version) this.publish({ loading: false });
 		}
 	};
+	private armReread() {
+		this.rereadFailures += 1;
+		if (this.rereadTimer !== null) clearTimeout(this.rereadTimer);
+		this.rereadTimer = setTimeout(() => {
+			this.rereadTimer = null;
+			void this.refresh();
+		}, reconnectDelay(this.rereadFailures));
+	}
+	private clearReread() {
+		if (this.rereadTimer !== null) {
+			clearTimeout(this.rereadTimer);
+			this.rereadTimer = null;
+		}
+		this.rereadFailures = 0;
+	}
 	dispose() {
 		this.disposed = true;
 		this.version += 1;
+		this.clearReread();
 		this.listeners.clear();
 	}
 }

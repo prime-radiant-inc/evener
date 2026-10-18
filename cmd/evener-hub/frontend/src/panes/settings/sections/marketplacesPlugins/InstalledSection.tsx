@@ -7,7 +7,7 @@
 
 import type { PluginEntry } from "@evener/appwire-client";
 import { useState } from "react";
-import { type CadenceState, EmptyState, Input, ListRow, StatusDot } from "../../../../widgets";
+import { Button, type CadenceState, EmptyState, Input, ListRow, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useExtensionsHostState } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
@@ -21,6 +21,7 @@ const CLASS = {
 
 export interface InstalledSectionProps {
   onSelect: (target: { plugin: string; marketplace: string }) => void;
+  onBrowse?: () => void;
 }
 
 // See the pre-redesign comment that lived here: StatusDot's CadenceState has
@@ -32,7 +33,7 @@ function pluginStatus(plugin: PluginEntry): CadenceState {
   return "idle";
 }
 
-export function InstalledSection({ onSelect }: InstalledSectionProps) {
+export function InstalledSection({ onSelect, onBrowse }: InstalledSectionProps) {
   const plugins = useExtensionsHostState((s) => s.plugins) ?? [];
   const [filterQuery, setFilterQuery] = useState("");
 
@@ -57,7 +58,12 @@ export function InstalledSection({ onSelect }: InstalledSectionProps) {
       <ul aria-label="Installed plugins" className={CLASS.list}>
         {plugins.length === 0 ? (
           <li>
-            <EmptyState size="compact" reason="empty" title="No plugins installed yet. Install one from Browse." />
+            <EmptyState
+              size="compact"
+              reason="empty"
+              title="No plugins installed yet."
+              action={onBrowse && <Button onClick={onBrowse}>Browse plugins</Button>}
+            />
           </li>
         ) : visible.length === 0 ? (
           <li>
