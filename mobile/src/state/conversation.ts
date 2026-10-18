@@ -52,7 +52,7 @@ import type {
 	PendingTurnEntry,
 } from "@evener/appwire-client/state/mutation";
 import {
-	notificationMutationIdentities,
+	appliedMutationIdentities,
 	ownPendingSend,
 	reconcilePendingEntries,
 } from "@evener/appwire-client/state/mutation";
@@ -3080,10 +3080,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// not about this thread. Silently drop everything else.
 				if (!notificationTargetsThread(n, state.conversation)) return;
 				// A frame that names a mutation the daemon has moved past proves that
-				// send landed (notificationMutationIdentities), so its durable record
-				// retires now instead of waiting for a wide enough read.
+				// send landed (appliedMutationIdentities), so its durable record
+				// retires now instead of waiting for a wide enough read. The
+				// applied-only rule: this store draws the message itself, so a queue
+				// row the daemon merely holds must not retire it early.
 				const settle = pendingPort?.settleIdentities;
-				const settledIds = settle === undefined ? [] : notificationMutationIdentities(n);
+				const settledIds = settle === undefined ? [] : appliedMutationIdentities(n);
 				if (settle !== undefined && settledIds.length > 0) {
 					void settle(settledIds).catch(() => {
 						// A failed settlement proves nothing and changes nothing: the

@@ -79,6 +79,6 @@ export type {
 export { acceptedRecord, carriesOptimisticInput, createClientIdentity } from "./records";
 export type { SecureRandomSource } from "./secureUUID";
 export { createSecureUUID } from "./secureUUID";
-export { notificationMutationIdentities } from "./settledIdentities";
+export { appliedMutationIdentities, notificationMutationIdentities } from "./settledIdentities";
 export type { MutationSubmissionCommitted, MutationSubmissionOptions } from "./submission";
 export { createSubmissionRunner, submitWithPendingTracking } from "./submission";

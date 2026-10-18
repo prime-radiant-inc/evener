@@ -3237,8 +3237,11 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		];
 		const { tree, hub } = await mount(served);
 		const shown = () => textOf(transcriptList(tree)).split("check the logs").length - 1;
-		const frame = (notification: Record<string, unknown>) =>
-			act(() => hub.notify(notification as unknown as AnyNotification));
+		// A frame that names a mutation id settles its durable record, and that
+		// settlement is async: await the same act block so its re-render lands
+		// inside it.
+		const frame = async (notification: Record<string, unknown>) =>
+			act(async () => hub.notify(notification as unknown as AnyNotification));
 		await type(tree, "check the logs");
 		await press(tree, "Queue message");
 		const clientMutationId = String(hub.requests.find((r) => r.method === "turn/queue")?.params.clientMutationId);
@@ -3247,7 +3250,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			...queueState(texts, revision),
 			clientMutationIds: texts.map(() => clientMutationId),
 		});
-		frame({
+		await frame({
 			method: "thread/queueChanged",
 			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue(["check the logs"], 1) },
 		});
@@ -3255,12 +3258,12 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		expect(lastGhost(tree)).toEqual(["queued"]);
 		// The turn ends and the hub takes the message for the next one: the
 		// queue frame comes first, then the message's own item.
-		frame({
+		await frame({
 			method: "thread/queueChanged",
 			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue([], 2) },
 		});
 		expect(shown()).toBe(1);
-		frame({
+		await frame({
 			method: "history/updated",
 			params: {
 				threadId: served.id,

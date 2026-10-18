@@ -22,3 +22,15 @@ export function notificationMutationIdentities(n: AnyNotification): string[] {
   }
   return [];
 }
+
+// The ids a frame proves the daemon has APPLIED, not merely received. A
+// `thread/queueChanged` frame names the ids still in its queue - proof the
+// daemon holds them, which settles a transport question - and the ids this
+// push's transition consumed, which have left the queue. A composer row that
+// also draws the message itself must wait for the recorded item: settling it
+// when the queue row is confirmed would make the message blink out between
+// the drain and the item that replaces it.
+export function appliedMutationIdentities(n: AnyNotification): string[] {
+  if (n.method === "thread/queueChanged") return validConsumedClientMutationIds(n.params.consumedClientMutationIds);
+  return notificationMutationIdentities(n);
+}
