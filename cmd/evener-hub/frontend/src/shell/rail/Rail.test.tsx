@@ -23,9 +23,10 @@ import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { lazy } from "react";
+import { lazy, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
+import { SettingsDraftsProvider, useSettingsDirty } from "../../panes/settings/settingsDrafts";
 import {
   archivedListKey,
   archivedListStore,
@@ -36,10 +37,12 @@ import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, setCacheChannelFactoryForTests, threadsStore } from "../../stores/threads";
+import { Input } from "../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { hoverForTooltip } from "../../widgets/tooltip/tooltipTestUtils";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "../activitybar/activitySidebarStore";
 import { ClientProvider } from "../clientContext";
+import { StackHost } from "../mobile/StackHost";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { adaptNavigationResources, archiveSessionIdentity, Rail } from "./Rail";
@@ -1842,6 +1845,78 @@ describe("resource-backed Rail", () => {
       restoreSessionPane();
       restoreDetailsPane();
       act(() => resetActivitySidebarStoreForTests());
+    }
+  });
+
+  test("mobile rail Overview asks before opening its session and sidebar over a dirty Settings editor", async ({
+    onTestFinished,
+  }) => {
+    function Draft() {
+      const [value, setValue] = useState("");
+      useSettingsDirty(value !== "");
+      return <Input aria-label="Settings draft" value={value} onChange={(event) => setValue(event.target.value)} />;
+    }
+    const restoreViewport = installMobileViewport();
+    resetActivitySidebarStoreForTests();
+    const restoreSettings = registerPaneForTests({
+      id: "settings",
+      singleton: true,
+      title: () => "Settings",
+      component: lazy(async () => ({
+        default: () => (
+          <SettingsDraftsProvider>
+            <Draft />
+          </SettingsDraftsProvider>
+        ),
+      })),
+    });
+    const restoreSession = registerPaneForTests({
+      id: "session",
+      title: () => "session",
+      component: lazy(async () => ({ default: () => null })),
+    });
+    try {
+      installState([
+        sectionResource("live", [summary({ ref: "local:active", session_id: "active", title: "Active" })]),
+      ]);
+      const settings = workspaceStore.getState().replacePrimary("settings", { section: "theme" });
+      const openPane = vi.spyOn(workspaceStore.getState(), "openPane");
+      const openSidebar = vi.spyOn(activitySidebarStore.getState(), "openFor");
+      onTestFinished(() => {
+        openPane.mockRestore();
+        openSidebar.mockRestore();
+      });
+      render(
+        <>
+          <StackHost />
+          <Rail />
+        </>,
+      );
+      const editor = await screen.findByRole("textbox", { name: "Settings draft" });
+      fireEvent.change(editor, { target: { value: "unsaved" } });
+      const request = async () => {
+        fireEvent.click(screen.getByRole("button", { name: /actions for active/i }));
+        await act(async () => fireEvent.click(screen.getByRole("menuitem", { name: "Overview" })));
+      };
+      await request();
+      expect(screen.getByRole("textbox", { name: "Settings draft" })).toBe(editor);
+      expect(workspaceStore.getState().focusedPaneId).toBe(settings);
+      expect(openPane).not.toHaveBeenCalled();
+      expect(openSidebar).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Stay" }));
+      expect(screen.getByRole("textbox", { name: "Settings draft" })).toBe(editor);
+      expect(editor).toHaveProperty("value", "unsaved");
+      await request();
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Discard changes" })));
+      expect(openPane).toHaveBeenCalledExactlyOnceWith("session", { ref: "local:active" });
+      expect(openSidebar).toHaveBeenCalledExactlyOnceWith("local:active");
+      expect(editor.isConnected).toBe(false);
+    } finally {
+      cleanup();
+      restoreViewport();
+      restoreSettings();
+      restoreSession();
+      resetActivitySidebarStoreForTests();
     }
   });
 

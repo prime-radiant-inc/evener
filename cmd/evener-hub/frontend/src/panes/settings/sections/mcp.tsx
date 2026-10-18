@@ -14,7 +14,8 @@
 
 import type { MCPServerSpec, SettingsOverviewResponse } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { connectionStore } from "../../../stores/connection";
 import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
 import { isLocalHost, LOCAL_HOST } from "../../../stores/hostRouting";
 import {
@@ -87,6 +88,20 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   const layer = useExtensionsStoreForHost(host, (s) => s.launchLayer);
   const launchLayerError = useExtensionsStoreForHost(host, (s) => s.launchLayerError);
   const toasts = useToasts();
+  const lifetime = useRef({ host, store });
+  useLayoutEffect(() => {
+    const invalidate = () => {
+      lifetime.current = { host, store };
+    };
+    invalidate();
+    const unsubscribe = connectionStore.subscribe((current, previous) => {
+      if (current.client !== previous.client || current.state !== previous.state) invalidate();
+    });
+    return () => {
+      invalidate();
+      unsubscribe();
+    };
+  }, [host, store]);
 
   const [pendingRemoveServerIndex, setPendingRemoveServerIndex] = useState<number | null>(null);
   const [removeServerBusy, setRemoveServerBusy] = useState(false);
@@ -129,7 +144,11 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   }
 
   async function handleAddConfig(path: string): Promise<CollectionAddResult> {
+    const attempt = lifetime.current;
     const validated = await store.getState().validatePath(path, "file");
+    // Validation does not outlive its editor or connection. A write already
+    // issued retains its normal outcome, but a discarded Add must not start one.
+    if (attempt !== lifetime.current) return { ok: false, error: "Settings changed. Add the config file again." };
     if (!validated.valid) return { ok: false, error: validated.error || "path does not exist" };
     const current = writableLayer();
     if (current === null) return { ok: false, error: refusal() };
@@ -160,8 +179,10 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
   async function handleAddServer(value: string): Promise<CollectionAddResult> {
     const entry = parseMcpServerEntry(value);
     if (entry === null) return { ok: false, error: MCP_SERVER_ENTRY_USAGE };
+    const attempt = lifetime.current;
     try {
       const validated = await store.getState().validatePath(entry.command, "command");
+      if (attempt !== lifetime.current) return { ok: false, error: "Settings changed. Add the server again." };
       if (!validated.valid) return { ok: false, error: validated.error || "command not found" };
       const current = writableLayer();
       if (current === null) return { ok: false, error: refusal() };
