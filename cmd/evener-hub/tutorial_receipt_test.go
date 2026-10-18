@@ -61,10 +61,10 @@ type transcriptOwned struct {
 
 type commandRecord struct {
 	Argv     []string         `json:"argv"`
-	CwdLabel string           `json:"cwdLabel"`
+	CwdLabel string           `json:"cwdLabel"` //nolint:tagliatelle // Matches the JavaScript tutorial command-record wire field cwdLabel.
 	Stdout   string           `json:"stdout"`
 	Stderr   string           `json:"stderr"`
-	ExitCode int              `json:"exitCode"`
+	ExitCode int              `json:"exitCode"` //nolint:tagliatelle // Matches the JavaScript tutorial command-record wire field exitCode.
 	Owned    *transcriptOwned `json:"owned,omitempty"`
 }
 
@@ -72,7 +72,7 @@ func receiptBaseline(t *testing.T) map[string][]byte {
 	t.Helper()
 	result := map[string][]byte{}
 	for _, name := range []string{"README.md", "check.py", "receipt.py"} {
-		b, err := os.ReadFile(filepath.Join("../../docs/examples/first-task", name))
+		b, err := os.ReadFile(filepath.Join("..", "..", "docs", "examples", "first-task", name))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -155,7 +155,7 @@ func receiptOracle(t *testing.T, work string, baseline map[string][]byte) error 
 		return fmt.Errorf("incorrect amounts: %v", actual)
 	}
 	if receiptCheck(t, work).ExitCode != 0 {
-		return fmt.Errorf("checker failed")
+		return errors.New("checker failed")
 	}
 	return nil
 }
@@ -212,7 +212,7 @@ func runReceiptCLI(t *testing.T, candidateDir string) {
 	}()
 	var changed []byte
 	var diff commandRecord
-	toolIDs, commandIDs := driveReceipt(t, provider, ctx, func(editID string) {
+	toolIDs, commandIDs := driveReceipt(ctx, t, provider, func(editID string) {
 		changed, err = os.ReadFile(filepath.Join(stack.workDir, "receipt.py"))
 		if err != nil {
 			t.Fatal(err)
@@ -231,7 +231,7 @@ func runReceiptCLI(t *testing.T, candidateDir string) {
 	}
 	invocation := commandRecord{Argv: args, CwdLabel: "receipt-workspace", Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exit, Owned: &transcriptOwned{Executable: bin, Paths: []string{stack.workDir, stack.home}}}
 	if exit != 0 {
-		t.Fatalf("CLI exit %d: %s", exit, redactHubStackLog([]byte(stderr.String())))
+		t.Fatalf("CLI exit %d: %s", exit, redactHubStackLog(stderr.Bytes()))
 	}
 	if err := receiptOracle(t, stack.workDir, source); err != nil {
 		t.Fatal(err)
@@ -349,7 +349,7 @@ func receiptCommandTool(t *testing.T, call *fakellm.Call) string {
 	return ""
 }
 
-func driveReceipt(t *testing.T, provider *fakellm.Server, ctx context.Context, onEdit func(string)) ([]string, []string) {
+func driveReceipt(ctx context.Context, t *testing.T, provider *fakellm.Server, onEdit func(string)) ([]string, []string) {
 	next := func() *fakellm.Call {
 		c, err := provider.Next(ctx.Done())
 		if err != nil {
@@ -432,7 +432,7 @@ func runReceiptWeb(t *testing.T, candidateDir string) {
 	if len(models.Data) != 1 || models.Data[0].Provider != "fake" || models.Data[0].Model != fakellm.ModelID || len(models.Diagnostics) != 0 {
 		t.Fatal("isolated model catalogue must contain only fake model with no diagnostics")
 	}
-	driver := openTutorialDriver(t, ctx, map[string]any{"url": url, "authURL": url + "/auth/" + stack.token, "workspace": stack.workDir, "model": stack.model, "viewport": map[string]int{"width": 1280, "height": 900}, "outputDir": candidateDir})
+	driver := openTutorialDriver(ctx, t, map[string]any{"url": url, "authURL": url + "/auth/" + stack.token, "workspace": stack.workDir, "model": stack.model, "viewport": map[string]int{"width": 1280, "height": 900}, "outputDir": candidateDir})
 	pre := receiptCheck(t, stack.workDir)
 	checkpoint(t, "entry", []tourEvidence{{"baseline checker", pre.ExitCode == 1}}, driver.capture(t, candidateDir, "entry"))
 	driver.act(t, "start", map[string]any{"prompt": receiptPrompt})
@@ -466,7 +466,7 @@ func runReceiptWeb(t *testing.T, candidateDir string) {
 			}
 		}
 	}
-	toolIDs, commandIDs := driveReceipt(t, provider, ctx, func(editID string) {
+	toolIDs, commandIDs := driveReceipt(ctx, t, provider, func(editID string) {
 		changed, err := os.ReadFile(filepath.Join(stack.workDir, "receipt.py"))
 		if err != nil {
 			t.Fatal(err)

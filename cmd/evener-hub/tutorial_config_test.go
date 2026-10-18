@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,7 +56,7 @@ func configProvider(t *testing.T) (*fakellm.Server, string) {
 
 // Identify the launch while its first request is held. OriginalPrompt in the
 // disk snapshot can still be empty until naming or the input's autosave finishes.
-func configRunningThread(t *testing.T, ctx context.Context, client *appwire.Client, work, prompt string, call *fakellm.Call) appwire.Thread {
+func configRunningThread(ctx context.Context, t *testing.T, client *appwire.Client, work, prompt string, call *fakellm.Call) appwire.Thread {
 	t.Helper()
 	if dailyUserCount(call, prompt) != 1 {
 		t.Fatal("configuration provider request did not carry launch input")
@@ -120,7 +120,7 @@ func configFindMeta(t *testing.T, root string, matches func(schema.SessionMeta) 
 		}
 		if matches(meta) {
 			if pathFound != "" {
-				return fmt.Errorf("multiple configuration sessions")
+				return errors.New("multiple configuration sessions")
 			}
 			found, pathFound = meta, path
 		}
@@ -156,7 +156,7 @@ func configOutcome(t *testing.T, root, work, sessionID, prompt string, rounds in
 		t.Fatal(err)
 	}
 	reads, writes := 0, 0
-	for _, line := range bytes.Split(bytes.TrimSpace(b), []byte("\n")) {
+	for line := range bytes.SplitSeq(bytes.TrimSpace(b), []byte("\n")) {
 		var entry transcript.Entry
 		if err := json.Unmarshal(line, &entry); err != nil {
 			t.Fatal(err)
@@ -197,7 +197,7 @@ func configOutcome(t *testing.T, root, work, sessionID, prompt string, rounds in
 
 // Both limits receive the same script. The runtime, not this provider script,
 // must prevent the second tool round at a one-round bound.
-func configScript(t *testing.T, p *fakellm.Server, parent context.Context, first *fakellm.Call) func() {
+func configScript(parent context.Context, t *testing.T, p *fakellm.Server, first *fakellm.Call) func() {
 	t.Helper()
 	configToolCatalogue(t, first)
 	if first.Body["model"] != fakellm.ModelID {
@@ -260,62 +260,64 @@ func runConfigCLI(t *testing.T, out string) {
 	}
 	var records []commandRecord
 	for _, rounds := range []int{1, 4} {
-		prompt := configPrompt + " Bound " + strconv.Itoa(rounds) + "."
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		args := []string{bin, "--model", "fake/" + fakellm.ModelID, "--max-rounds", strconv.Itoa(rounds), "--sandbox", "off", prompt}
-		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-		cmd.Dir = stack.workDir
-		cmd.Env = env
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Start(); err != nil {
-			cancel()
-			t.Fatal(err)
-		}
-		done := false
-		defer func() {
-			if !done {
-				_ = cmd.Process.Kill()
-				_ = cmd.Wait()
+		func() {
+			prompt := configPrompt + " Bound " + strconv.Itoa(rounds) + "."
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			args := []string{bin, "--model", "fake/" + fakellm.ModelID, "--max-rounds", strconv.Itoa(rounds), "--sandbox", "off", prompt}
+			cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+			cmd.Dir = stack.workDir
+			cmd.Env = env
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			if err := cmd.Start(); err != nil {
+				cancel()
+				t.Fatal(err)
 			}
+			done := false
+			defer func() {
+				if !done {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+				cancel()
+			}()
+			// Observe the effective launch while the first provider request is held.
+			call, err := p.Next(ctx.Done())
+			if err != nil {
+				t.Fatal(err)
+			}
+			configToolCatalogue(t, call)
+			if call.Body["model"] != fakellm.ModelID {
+				t.Fatal("CLI model flag did not reach effective launch")
+			}
+			// One-shot CLI has no live RPC identity. Check the round bound and
+			// persisted prompt after cmd.Wait, never at this provider boundary.
+			if rounds == 1 {
+				input := recordCommand(t, stack.workDir, env, "cat", "input.json")
+				input.CwdLabel = "configuration-workspace"
+				checkpoint(t, "entry", []tourEvidence{{"effective launch", true}, {"input read", input.ExitCode == 0}}, capture("entry", []commandRecord{input}))
+			}
+			stopScript := configScript(ctx, t, p, call)
+			err = cmd.Wait()
+			done = true
+			stopScript()
 			cancel()
+			expectedExit := 0
+			if rounds == 1 {
+				expectedExit = 1
+			}
+			if cmd.ProcessState.ExitCode() != expectedExit {
+				t.Fatalf("configuration CLI failed: %v: %s", err, redactHubStackLog(stderr.Bytes()))
+			}
+			configOutcome(t, filepath.Join(stack.home, "state"), stack.workDir, "", prompt, rounds)
+			records = append(records, commandRecord{Argv: args, CwdLabel: "configuration-workspace", Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: expectedExit, Owned: &transcriptOwned{Executable: bin, Paths: []string{stack.workDir, stack.home}}})
+			id := "action"
+			if rounds > 1 {
+				id = "verified"
+			}
+			checkpoint(t, id, []tourEvidence{{"effective bound and file effects", true}}, capture(id, records))
 		}()
-		// Observe the effective launch while the first provider request is held.
-		call, err := p.Next(ctx.Done())
-		if err != nil {
-			t.Fatal(err)
-		}
-		configToolCatalogue(t, call)
-		if call.Body["model"] != fakellm.ModelID {
-			t.Fatal("CLI model flag did not reach effective launch")
-		}
-		// One-shot CLI has no live RPC identity. Check the round bound and
-		// persisted prompt after cmd.Wait, never at this provider boundary.
-		if rounds == 1 {
-			input := recordCommand(t, stack.workDir, env, "cat", "input.json")
-			input.CwdLabel = "configuration-workspace"
-			checkpoint(t, "entry", []tourEvidence{{"effective launch", true}, {"input read", input.ExitCode == 0}}, capture("entry", []commandRecord{input}))
-		}
-		stopScript := configScript(t, p, ctx, call)
-		err = cmd.Wait()
-		done = true
-		stopScript()
-		cancel()
-		expectedExit := 0
-		if rounds == 1 {
-			expectedExit = 1
-		}
-		if cmd.ProcessState.ExitCode() != expectedExit {
-			t.Fatalf("configuration CLI failed: %v: %s", err, redactHubStackLog(stderr.Bytes()))
-		}
-		configOutcome(t, filepath.Join(stack.home, "state"), stack.workDir, "", prompt, rounds)
-		records = append(records, commandRecord{Argv: args, CwdLabel: "configuration-workspace", Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: expectedExit, Owned: &transcriptOwned{Executable: bin, Paths: []string{stack.workDir, stack.home}}})
-		id := "action"
-		if rounds > 1 {
-			id = "verified"
-		}
-		checkpoint(t, id, []tourEvidence{{"effective bound and file effects", true}}, capture(id, records))
 	}
 }
 
@@ -352,12 +354,12 @@ func runConfigWeb(t *testing.T, out string) {
 	}
 	url := "http://" + stack.addr
 	assertHubServesBuiltSPA(t, stack.addr, stack.token)
-	driver := openTutorialDriver(t, ctx, map[string]any{"url": url, "authURL": url + "/auth/" + stack.token, "workspace": stack.workDir, "workspaces": []string{other}, "model": stack.model, "scenario": "configuration", "viewport": map[string]int{"width": 1280, "height": 900}, "outputDir": out})
+	driver := openTutorialDriver(ctx, t, map[string]any{"url": url, "authURL": url + "/auth/" + stack.token, "workspace": stack.workDir, "workspaces": []string{other}, "model": stack.model, "scenario": "configuration", "viewport": map[string]int{"width": 1280, "height": 900}, "outputDir": out})
 	oldPrompt := "Keep this original session active while project defaults change."
 	driver.act(t, "start", map[string]any{"prompt": oldPrompt})
-	held := dailyNext(t, ctx, p)
+	held := dailyNext(ctx, t, p)
 	state := filepath.Join(stack.home, "state")
-	oldThread := configRunningThread(t, ctx, observer, stack.workDir, oldPrompt, held)
+	oldThread := configRunningThread(ctx, t, observer, stack.workDir, oldPrompt, held)
 	oldMeta, _ := configMeta(t, state, oldThread.SessionID)
 	if oldMeta.Config.MaxToolRoundsPerInput != -1 {
 		t.Fatalf("initial effective rounds=%d", oldMeta.Config.MaxToolRoundsPerInput)
@@ -403,14 +405,14 @@ func runConfigWeb(t *testing.T, out string) {
 		}
 		prompt := configPrompt + " Bound " + strconv.Itoa(rounds) + "."
 		driver.act(t, "start", map[string]any{"prompt": prompt, "workspace": stack.workDir})
-		call := dailyNext(t, ctx, p)
-		thread := configRunningThread(t, ctx, observer, stack.workDir, prompt, call)
+		call := dailyNext(ctx, t, p)
+		thread := configRunningThread(ctx, t, observer, stack.workDir, prompt, call)
 		meta, _ := configMeta(t, state, thread.SessionID)
 		if meta.Config.MaxToolRoundsPerInput != rounds {
 			t.Fatal("new session did not inherit project bound")
 		}
 		ref := thread.Evener.Ref
-		stopScript := configScript(t, p, ctx, call)
+		stopScript := configScript(ctx, t, p, call)
 		awaitThread(ctx, t, observer, ref, "bounded session completed", func(thread appwire.Thread) bool {
 			return thread.Evener.ActiveTurnID == "" && thread.Status.Type != "active"
 		})

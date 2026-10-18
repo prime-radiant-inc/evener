@@ -64,7 +64,7 @@ func dailyEffectOracle(path, nonce string) error {
 		return err
 	}
 	if effect.Nonce != nonce || len(effect.Receipts) != 1 || effect.Receipts[0] != nonce {
-		return fmt.Errorf("incorrect effect receipt")
+		return errors.New("incorrect effect receipt")
 	}
 	return nil
 }
@@ -100,7 +100,7 @@ func dailyStack(t *testing.T, web bool) (*fakellm.Server, hubStack, string) {
 	return provider, stack, bin
 }
 
-func dailyNext(t *testing.T, ctx context.Context, provider *fakellm.Server) *fakellm.Call {
+func dailyNext(ctx context.Context, t *testing.T, provider *fakellm.Server) *fakellm.Call {
 	t.Helper()
 	call, err := provider.Next(ctx.Done())
 	if err != nil {
@@ -136,16 +136,55 @@ func dailyUserCount(call *fakellm.Call, nonce string) int {
 	return count
 }
 
-func dailyWrite(t *testing.T, ctx context.Context, provider *fakellm.Server, call *fakellm.Call, name, nonce string) *fakellm.Call {
+func dailyWrite(ctx context.Context, t *testing.T, provider *fakellm.Server, call *fakellm.Call, name, nonce string) *fakellm.Call {
 	t.Helper()
 	// Append rather than overwrite: a duplicate execution leaves two receipts
 	// and is rejected by the independent file oracle.
-	command := fmt.Sprintf(`python3 -c 'import json,pathlib; p=pathlib.Path("%s"); d=json.loads(p.read_text()) if p.exists() else {"nonce":"%s","receipts":[]}; d["receipts"].append("%s"); p.write_text(json.dumps(d))'`, name, nonce, nonce)
+	command := fmt.Sprintf(`python3 -c 'import json,pathlib; p=pathlib.Path(%q); d=json.loads(p.read_text()) if p.exists() else {"nonce":%q,"receipts":[]}; d["receipts"].append(%q); p.write_text(json.dumps(d))'`, name, nonce, nonce)
 	id := call.ToolCallID()
 	call.RespondToolCall(receiptCommandTool(t, call), map[string]any{"command": command, "mode": "foreground", "intent": "Recording the requested daily-work effect"})
-	next := dailyNext(t, ctx, provider)
+	next := dailyNext(ctx, t, provider)
 	requireReceiptTool(t, next, id)
 	return next
+}
+
+func dailyWorkspaceMatches(work, workspace string) (bool, error) {
+	cwd, err := filepath.EvalSymlinks(work)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return cwd == workspace, nil
+}
+
+func TestTutorialDailyWorkspaceMatches(t *testing.T) {
+	root := t.TempDir()
+	workspace, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, path     string
+		match, wantErr bool
+	}{
+		{"owned", root, true, false},
+		{"unrelated", t.TempDir(), false, false},
+		{"missing", filepath.Join(root, "missing"), false, false},
+		{"invalid parent", filepath.Join(file, "child"), false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			match, err := dailyWorkspaceMatches(tc.path, workspace)
+			if match != tc.match || (err != nil) != tc.wantErr {
+				t.Fatalf("match=%v error=%v, want match=%v error=%v", match, err, tc.match, tc.wantErr)
+			}
+		})
+	}
 }
 
 func dailyTranscript(t *testing.T, root, workspace string) (transcript.Header, []transcript.Entry) {
@@ -168,15 +207,18 @@ func dailyTranscript(t *testing.T, root, workspace string) (transcript.Header, [
 		if err != nil {
 			return err
 		}
-		cwd, err := filepath.EvalSymlinks(h.WorkingDir)
-		if err != nil || cwd != workspace {
+		matches, err := dailyWorkspaceMatches(h.WorkingDir, workspace)
+		if err != nil {
+			return err
+		}
+		if !matches {
 			return nil
 		}
 		if header.SessionID != "" {
-			return fmt.Errorf("multiple owned sessions")
+			return errors.New("multiple owned sessions")
 		}
 		if h.ProfileID != "fake" || h.Model != fakellm.ModelID {
-			return fmt.Errorf("unexpected persisted model")
+			return errors.New("unexpected persisted model")
 		}
 		header = h
 		for _, line := range lines[1:] {
@@ -248,13 +290,13 @@ func runDailyWeb(t *testing.T, out string) {
 	}
 	url := "http://" + stack.addr
 	assertHubServesBuiltSPA(t, stack.addr, stack.token)
-	driver := openTutorialDriver(t, ctx, map[string]any{"url": url, "authURL": url + "/auth/" + stack.token, "workspace": stack.workDir, "model": stack.model, "scenario": "daily", "viewport": map[string]int{"width": 1280, "height": 900}, "outputDir": out})
+	driver := openTutorialDriver(ctx, t, map[string]any{"url": url, "authURL": url + "/auth/" + stack.token, "workspace": stack.workDir, "model": stack.model, "scenario": "daily", "viewport": map[string]int{"width": 1280, "height": 900}, "outputDir": out})
 	const opening = "d4a10f26"
 	const steer = "e5b21a37"
 	const queued = "f6c32b48"
 	const continuation = "a7d43c59"
 	driver.act(t, "start", map[string]any{"prompt": "Read the workspace and wait for my next instruction. Reference: " + opening})
-	call := dailyNext(t, ctx, provider)
+	call := dailyNext(ctx, t, provider)
 	if dailyUserCount(call, opening) != 1 {
 		t.Fatal("opening user input")
 	}
@@ -290,19 +332,19 @@ func runDailyWeb(t *testing.T, out string) {
 	}
 	id := call.ToolCallID()
 	call.RespondToolCall("read_file", map[string]any{"file_path": filepath.Base(stack.readableFile), "intent": "Reading before the next tool boundary"})
-	call = dailyNext(t, ctx, provider)
+	call = dailyNext(ctx, t, provider)
 	requireReceiptTool(t, call, id)
 	if dailyUserCount(call, steer) != 1 || dailyUserCount(call, queued) != 0 {
 		t.Fatal("steer/queue boundary")
 	}
-	call = dailyWrite(t, ctx, provider, call, "steered.json", steer)
+	call = dailyWrite(ctx, t, provider, call, "steered.json", steer)
 	call.RespondToolCall("communicate", communicateArgs("Recorded the steering receipt. The queued task follows."))
-	call = dailyNext(t, ctx, provider)
+	call = dailyNext(ctx, t, provider)
 	if dailyUserCount(call, queued) != 1 {
 		t.Fatal("queued user input")
 	}
 	second := awaitActiveTurn(ctx, t, observer, ref, first)
-	call = dailyWrite(t, ctx, provider, call, "queued.json", queued)
+	call = dailyWrite(ctx, t, provider, call, "queued.json", queued)
 	_, entries := dailyTranscript(t, filepath.Join(stack.home, "state"), stack.workDir)
 	queuedDeliveryCount := dailyDelivery(t, entries, queued, schema.TurnUserInput, second)
 	if queuedDeliveryCount != 1 {
@@ -330,7 +372,7 @@ func runDailyWeb(t *testing.T, out string) {
 	call.RespondToolCall(cancelledTool, map[string]any{"command": `python3 -c 'from pathlib import Path; Path("cancelled.json").write_text("{}")'`, "mode": "foreground", "intent": "Recording a cancelled effect"})
 	awaitThread(ctx, t, observer, ref, "interrupted turn ended", func(thread appwire.Thread) bool { return thread.Evener.ActiveTurnID == "" })
 	driver.act(t, "send", map[string]any{"prompt": "Continue here. Record one receipt in continued.json for nonce " + continuation})
-	call = dailyNext(t, ctx, provider)
+	call = dailyNext(ctx, t, provider)
 	third := awaitActiveTurn(ctx, t, observer, ref, second)
 	if third == first {
 		t.Fatal("continuation reused first turn")
@@ -338,7 +380,7 @@ func runDailyWeb(t *testing.T, out string) {
 	if dailyUserCount(call, continuation) != 1 || dailyUserCount(call, queued) != 1 {
 		t.Fatal("continuation input or duplicate queued history")
 	}
-	call = dailyWrite(t, ctx, provider, call, "continued.json", continuation)
+	call = dailyWrite(ctx, t, provider, call, "continued.json", continuation)
 	call.RespondToolCall("communicate", communicateArgs("Continued in this session and wrote continued.json. Review the three receipt files."))
 	awaitThread(ctx, t, observer, ref, "continuation complete", func(thread appwire.Thread) bool { return thread.Evener.ActiveTurnID == "" })
 	cancelledPath := filepath.Join(stack.workDir, "cancelled.json")
@@ -391,7 +433,7 @@ func runDailyCLI(t *testing.T, out string) {
 				_ = cmd.Wait()
 			}
 		}()
-		call := dailyNext(t, ctx, provider)
+		call := dailyNext(ctx, t, provider)
 		if dailyUserCount(call, nonce) != 1 {
 			t.Fatal("CLI user input")
 		}
@@ -399,7 +441,7 @@ func runDailyCLI(t *testing.T, out string) {
 			status := recordCommand(t, stack.workDir, env, "git", "status", "--short")
 			checkpoint(t, "entry", []tourEvidence{{"held CLI provider call", true}, {"workspace status", status.ExitCode == 0}}, capture("entry", status))
 		}
-		call = dailyWrite(t, ctx, provider, call, name, nonce)
+		call = dailyWrite(ctx, t, provider, call, name, nonce)
 		call.RespondToolCall("communicate", communicateArgs("Wrote "+name+". Review its receipt before continuing."))
 		err := cmd.Wait()
 		waited = true

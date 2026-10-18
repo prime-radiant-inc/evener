@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -222,7 +223,7 @@ func checkExtensionOutcome(root, beforeHash, workspaceHash, sentNonce string) er
 		calls := map[string]string{}
 		skillActivations := map[string]bool{}
 		skillResults := map[string]bool{}
-		for _, line := range bytes.Split(bytes.TrimSpace(b), []byte("\n")) {
+		for line := range bytes.SplitSeq(bytes.TrimSpace(b), []byte("\n")) {
 			var entry transcript.Entry
 			if err := json.Unmarshal(line, &entry); err != nil {
 				return err
@@ -251,7 +252,7 @@ func checkExtensionOutcome(root, beforeHash, workspaceHash, sentNonce string) er
 							return err
 						}
 						if args.Message != sentNonce {
-							return fmt.Errorf("echo call argument differs from input nonce")
+							return errors.New("echo call argument differs from input nonce")
 						}
 					}
 					calls[c.ID] = c.Name
@@ -283,7 +284,7 @@ func checkExtensionOutcome(root, beforeHash, workspaceHash, sentNonce string) er
 		return fmt.Errorf("missing records: hook=%v skill=%v committed=%v plugin=%v echo=%v", hookFound, skillFound, skillCommitted, pluginConfigured, echoFound)
 	}
 	if echoNonce != sentNonce || workspaceHash != beforeHash {
-		return fmt.Errorf("extension effects disagree")
+		return errors.New("extension effects disagree")
 	}
 	return nil
 }
@@ -304,14 +305,14 @@ func runExtensionsCLI(t *testing.T, out string) {
 	}
 	stack := startHubStackWithOptions(t, providers, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(home)})
 	env := append(tutorialChildEnvironment(home), "EVENER_EXAMPLE_MCP_SERVER="+server)
-	examples := filepath.Join(repo, "docs/examples/extensions")
+	examples := filepath.Join(repo, "docs", "examples", "extensions")
 	var records []commandRecord
 	for _, copy := range [][2]string{{"skills/change-summary/SKILL.md", "skills/change-summary/SKILL.md"}, {"commands/summarize-change.md", ".evener/commands/summarize-change.md"}, {"mcp.json", ".mcp.json"}} {
 		dst := filepath.Join(stack.workDir, copy[1])
 		if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
 			t.Fatal(err)
 		}
-		r := recordCommand(t, repo, env, "cp", filepath.Join("docs/examples/extensions", copy[0]), dst)
+		r := recordCommand(t, repo, env, "cp", filepath.Join("docs", "examples", "extensions", copy[0]), dst)
 		if r.ExitCode != 0 {
 			t.Fatal("copy example failed")
 		}
@@ -341,73 +342,75 @@ for line in open(sys.argv[1]):
 	}
 	sentNonce := extensionNonce(t)
 	for index, command := range []string{"/summarize-change", "/hello-plugin:hello"} {
-		nonce := extensionNonce(t)
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		args := []string{bin, "--verbose", "--model", "fake/" + fakellm.ModelID, "--sandbox", "off", "--plugin-dir", filepath.Join(examples, "hello-plugin"), "--mcp-config", filepath.Join(stack.workDir, ".mcp.json"), command + " " + nonce}
-		cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-		cmd.Dir = stack.workDir
-		cmd.Env = env
-		var stdout, stderr bytes.Buffer
-		cmd.Stdout = &stdout
-		cmd.Stderr = &stderr
-		if err := cmd.Start(); err != nil {
-			cancel()
-			t.Fatal(err)
-		}
-		done := false
-		defer func() {
-			if !done {
-				_ = cmd.Process.Kill()
-				_ = cmd.Wait()
+		func() {
+			nonce := extensionNonce(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			args := []string{bin, "--verbose", "--model", "fake/" + fakellm.ModelID, "--sandbox", "off", "--plugin-dir", filepath.Join(examples, "hello-plugin"), "--mcp-config", filepath.Join(stack.workDir, ".mcp.json"), command + " " + nonce}
+			cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+			cmd.Dir = stack.workDir
+			cmd.Env = env
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			if err := cmd.Start(); err != nil {
+				cancel()
+				t.Fatal(err)
 			}
+			done := false
+			defer func() {
+				if !done {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+				cancel()
+			}()
+			first := dailyNext(ctx, t, p)
+			extensionExpanded(t, first, nonce, command)
+			if index == 0 {
+				first.RespondToolCall("use_skill", map[string]any{"skill_name": "change-summary", "intent": "Loading the installed summary skill"})
+				next := dailyNext(ctx, t, p)
+				next.RespondToolCall("example__echo", map[string]any{"message": sentNonce})
+				first = dailyNext(ctx, t, p)
+			}
+			first.RespondToolCall("communicate", communicateArgs("Extension walkthrough complete. No files changed."))
+			err := cmd.Wait()
+			done = true
 			cancel()
+			if err != nil {
+				t.Fatalf("extension CLI: %v: %s", err, redactHubStackLog(stderr.Bytes()))
+			}
+			loaded := false
+			for line := range bytes.SplitSeq(stderr.Bytes(), []byte("\n")) {
+				var event struct {
+					Kind events.EventKind        `json:"kind"`
+					Data events.PluginLoadedData `json:"data"`
+				}
+				if json.Unmarshal(line, &event) == nil && event.Kind == events.EventPluginLoaded && event.Data.Name == "hello-plugin" {
+					loaded = true
+				}
+			}
+			if !loaded {
+				t.Fatal("plugin load record absent")
+			}
+			log := filepath.Join(home, fmt.Sprintf("extension-%d.jsonl", index))
+			if err := os.WriteFile(log, stderr.Bytes(), 0600); err != nil {
+				t.Fatal(err)
+			}
+			r := recordCommand(t, stack.workDir, env, "python3", query, log)
+			if r.ExitCode != 0 {
+				t.Fatal("CLI event query failed")
+			}
+			r.CwdLabel = "extensions-workspace"
+			r.Owned = &transcriptOwned{Paths: []string{stack.workDir, home, examples}}
+			if index == 0 {
+				records = nil
+			}
+			records = append(records, r)
+			if index == 0 {
+				extensionOutcome(t, filepath.Join(home, "state"), stack.workDir, before, sentNonce)
+				checkpoint(t, "action", []tourEvidence{{"skill hook and MCP execution", true}}, capture("action"))
+			}
 		}()
-		first := dailyNext(t, ctx, p)
-		extensionExpanded(t, first, nonce, command)
-		if index == 0 {
-			first.RespondToolCall("use_skill", map[string]any{"skill_name": "change-summary", "intent": "Loading the installed summary skill"})
-			next := dailyNext(t, ctx, p)
-			next.RespondToolCall("example__echo", map[string]any{"message": sentNonce})
-			first = dailyNext(t, ctx, p)
-		}
-		first.RespondToolCall("communicate", communicateArgs("Extension walkthrough complete. No files changed."))
-		err := cmd.Wait()
-		done = true
-		cancel()
-		if err != nil {
-			t.Fatalf("extension CLI: %v: %s", err, redactHubStackLog(stderr.Bytes()))
-		}
-		loaded := false
-		for _, line := range bytes.Split(stderr.Bytes(), []byte("\n")) {
-			var event struct {
-				Kind events.EventKind        `json:"kind"`
-				Data events.PluginLoadedData `json:"data"`
-			}
-			if json.Unmarshal(line, &event) == nil && event.Kind == events.EventPluginLoaded && event.Data.Name == "hello-plugin" {
-				loaded = true
-			}
-		}
-		if !loaded {
-			t.Fatal("plugin load record absent")
-		}
-		log := filepath.Join(home, fmt.Sprintf("extension-%d.jsonl", index))
-		if err := os.WriteFile(log, stderr.Bytes(), 0600); err != nil {
-			t.Fatal(err)
-		}
-		r := recordCommand(t, stack.workDir, env, "python3", query, log)
-		if r.ExitCode != 0 {
-			t.Fatal("CLI event query failed")
-		}
-		r.CwdLabel = "extensions-workspace"
-		r.Owned = &transcriptOwned{Paths: []string{stack.workDir, home, examples}}
-		if index == 0 {
-			records = nil
-		}
-		records = append(records, r)
-		if index == 0 {
-			extensionOutcome(t, filepath.Join(home, "state"), stack.workDir, before, sentNonce)
-			checkpoint(t, "action", []tourEvidence{{"skill hook and MCP execution", true}}, capture("action"))
-		}
 	}
 	extensionOutcome(t, filepath.Join(home, "state"), stack.workDir, before, sentNonce)
 	checkpoint(t, "verified", []tourEvidence{{"plugin command routing and unchanged workspace", true}}, capture("verified"))
@@ -433,7 +436,7 @@ func runExtensionsWeb(t *testing.T, out string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	examples := filepath.Join(repo, "docs/examples/extensions")
+	examples := filepath.Join(repo, "docs", "examples", "extensions")
 	for _, copy := range [][2]string{{"skills/change-summary/SKILL.md", "skills/change-summary/SKILL.md"}, {"commands/summarize-change.md", ".evener/commands/summarize-change.md"}, {"mcp.json", ".mcp.json"}} {
 		dst := filepath.Join(stack.workDir, copy[1])
 		if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
@@ -444,7 +447,7 @@ func runExtensionsWeb(t *testing.T, out string) {
 		}
 	}
 	config := fmt.Sprintf("plugin_dirs = [%q]\nmcp_configs = [%q]\nsandbox = \"off\"\n", filepath.Join(examples, "hello-plugin"), filepath.Join(stack.workDir, ".mcp.json"))
-	if err := os.WriteFile(filepath.Join(home, "config/evener/launch.toml"), []byte(config), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "config", "evener", "launch.toml"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}
 	before := extensionHash(t, stack.workDir)
@@ -453,11 +456,11 @@ func runExtensionsWeb(t *testing.T, out string) {
 	observer := stack.dialRPC(ctx, t)
 	url := "http://" + stack.addr
 	assertHubServesBuiltSPA(t, stack.addr, stack.token)
-	driver := openTutorialDriver(t, ctx, map[string]any{"url": url, "authURL": url + "/auth/" + stack.token, "workspace": stack.workDir, "model": stack.model, "scenario": "extensions", "viewport": map[string]int{"width": 1280, "height": 900}, "outputDir": out})
+	driver := openTutorialDriver(ctx, t, map[string]any{"url": url, "authURL": url + "/auth/" + stack.token, "workspace": stack.workDir, "model": stack.model, "scenario": "extensions", "viewport": map[string]int{"width": 1280, "height": 900}, "outputDir": out})
 	checkpoint(t, "entry", []tourEvidence{{"host installation and baseline hash", true}}, driver.capture(t, out, "entry"))
 	nonce := extensionNonce(t)
 	driver.act(t, "start", map[string]any{"prompt": "/summarize-change " + nonce})
-	first := dailyNext(t, ctx, p)
+	first := dailyNext(ctx, t, p)
 	extensionExpanded(t, first, nonce, "/summarize-change")
 	list, err := clientRequest[appwire.ThreadListResponse](ctx, observer, appwire.MethodThreadList, appwire.ThreadListParams{})
 	if err != nil {
@@ -473,10 +476,10 @@ func runExtensionsWeb(t *testing.T, out string) {
 		t.Fatalf("UI-created workspace not listed: %+v", list.Data)
 	}
 	first.RespondToolCall("use_skill", map[string]any{"skill_name": "change-summary", "intent": "Loading the installed summary skill"})
-	next := dailyNext(t, ctx, p)
+	next := dailyNext(ctx, t, p)
 	sentNonce := extensionNonce(t)
 	next.RespondToolCall("example__echo", map[string]any{"message": sentNonce})
-	next = dailyNext(t, ctx, p)
+	next = dailyNext(ctx, t, p)
 	extensionOutcome(t, filepath.Join(home, "state"), stack.workDir, before, sentNonce)
 	checkpoint(t, "action", []tourEvidence{{"skill hook and correlated MCP result", true}}, driver.capture(t, out, "action"))
 	next.RespondToolCall("communicate", communicateArgs("The local skill ran and the echo server returned the nonce. No files changed."))
@@ -486,7 +489,7 @@ func runExtensionsWeb(t *testing.T, out string) {
 	awaitThread(ctx, t, observer, ref, "extension turn completed", idle)
 	pluginNonce := extensionNonce(t)
 	driver.act(t, "send", map[string]any{"prompt": "/hello-plugin:hello " + pluginNonce})
-	next = dailyNext(t, ctx, p)
+	next = dailyNext(ctx, t, p)
 	extensionExpanded(t, next, pluginNonce, "/hello-plugin:hello")
 	next.RespondToolCall("communicate", communicateArgs("The local plugin command completed. No files changed."))
 	awaitThread(ctx, t, observer, ref, "plugin command completed", idle)

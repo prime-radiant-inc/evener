@@ -11,6 +11,30 @@ export const surfaces = ['cli', 'web'];
 export const checkpoints = ['entry', 'action', 'verified'];
 export const fullMatrix = scenarios.flatMap(scenario => surfaces.flatMap(surface => checkpoints.map(checkpoint => ({ scenario, surface, checkpoint }))));
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
+// Process output is untrusted. Return only fixed vocabulary and validated Go
+// test locations, never error prose, paths, URLs, or driver argument values.
+export function classifyTourFailure(output) {
+ const summary={step:'unknown',code:'unknown',location:'unknown'};
+ const files=['tutorial_config_test.go','tutorial_config_identity_test.go','tutorial_daily_test.go','tutorial_extensions_test.go','tutorial_receipt_test.go','tutorial_tours_test.go','tutorial_support_test.go'];
+ const actions=['open','configure','start','capture','close','send','stop','steer'];
+ const phases=['browser launch','authentication','new session','directory-open','directory-path','folder-confirm','model selection'];
+ for(const line of output.split('\n')) {
+  const location=/^\s+([a-z_]+\.go):([1-9][0-9]{0,5}): /.exec(line);
+  if(location&&files.includes(location[1])&&!/checkpoint (entry|action|verified) passed$/.test(line)&&summary.location==='unknown')summary.location=`${location[1]}:${Number(location[2])}`;
+  for(const action of actions) {
+   const prefix=`Web driver action failed: ${action} (`;
+   if(!line.includes(prefix))continue;
+   for(const phase of phases)if(line.includes(`${prefix}${phase})`)||line.includes(`${prefix}${phase}; private diagnostics: `)) {
+    summary.step=phase;summary.code='web-driver-failed';
+   }
+   for(const [category,code] of [['TimeoutError','timeout'],['ambiguous locator','ambiguous-locator'],['Error','web-driver-failed'],['AssertionError','assertion-failed']])if(line.includes(`${prefix}${category})`)) {
+    summary.step=action;summary.code=code;
+   }
+  }
+  if(line.includes('context deadline exceeded'))summary.code='deadline-exceeded';
+ }
+ return summary;
+}
 const id = row => `${row.scenario}/${row.surface}/${row.checkpoint}`;
 function insist(condition, message) { if (!condition) throw new Error(message); }
 export function revision(root = repositoryRoot) {

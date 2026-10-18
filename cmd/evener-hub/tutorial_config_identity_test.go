@@ -48,7 +48,7 @@ func TestTutorialConfigRunningIdentityBeforePromptSave(t *testing.T) {
 				t.Error(err)
 			}
 		})
-		call := dailyNext(t, ctx, p)
+		call := dailyNext(ctx, t, p)
 		if dailyUserCount(call, prompt) != 1 {
 			t.Fatal("provider did not receive launch input")
 		}
@@ -82,12 +82,12 @@ func TestTutorialConfigRunningIdentityBeforePromptSave(t *testing.T) {
 			t.Fatalf("expected pre-input disk snapshot, got %+v", disk)
 		}
 		t.Logf("live session exists and is active, disk OriginalPrompt=%q", disk.OriginalPrompt)
-		thread := configRunningThread(t, ctx, client, stack.workDir, prompt, call)
+		thread := configRunningThread(ctx, t, client, stack.workDir, prompt, call)
 		meta, _ := configMeta(t, state, thread.SessionID)
 		if meta.ID != started.Thread.SessionID || meta.Config.MaxToolRoundsPerInput != rounds {
 			t.Fatal("wrong effective launch")
 		}
-		stopScript := configScript(t, p, ctx, call)
+		stopScript := configScript(ctx, t, p, call)
 		awaitThread(ctx, t, client, started.Thread.Evener.Ref, "completed", func(thread appwire.Thread) bool {
 			return thread.Evener.ActiveTurnID == "" && thread.Status.Type != "active"
 		})

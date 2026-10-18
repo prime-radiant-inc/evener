@@ -10,6 +10,32 @@ import { generateCandidate } from './refresh.mjs';
 import * as refresh from './refresh.mjs';
 
 const hash = b => createHash('sha256').update(b).digest('hex');
+test('failure summary emits only allowlisted structure, never diagnostic text',()=>{
+ const classify=artifacts.classifyTourFailure;
+ assert.equal(typeof classify,'function');
+ assert.deepEqual(classify('    tutorial_extensions_test.go:456: web driver open failed: Web driver action failed: open (folder-confirm; private diagnostics: /tmp/secret/failure.json)'),{step:'folder-confirm',code:'web-driver-failed',location:'tutorial_extensions_test.go:456'});
+ assert.deepEqual(classify('    tutorial_daily_test.go:302: context deadline exceeded'),{step:'unknown',code:'deadline-exceeded',location:'tutorial_daily_test.go:302'});
+ assert.deepEqual(classify('    tutorial_extensions_test.go:460: Web driver action failed: capture (TimeoutError)'),{step:'capture',code:'timeout',location:'tutorial_extensions_test.go:460'});
+ for(const raw of [
+  'Bearer secret-canary /Users/private/path https://example/auth/token',
+  '    /tmp/tutorial_extensions_test.go:456: private payload',
+  '    tutorial_secret_test.go:456: private payload',
+  '    tutorial_extensions_test.go:456secret: private payload',
+  'Web driver action failed: secret-canary (secret-canary)',
+  'Web driver action failed: open-secret (folder-confirm-secret)',
+ ]) assert.deepEqual(classify(raw),{step:'unknown',code:'unknown',location:'unknown'});
+ const injected='    tutorial_extensions_test.go:456: Web driver action failed: open (folder-confirm; private diagnostics: /tmp/secret-canary) Bearer secret-canary\nRAW SECRET';
+ assert.deepEqual(classify(injected),{step:'folder-confirm',code:'web-driver-failed',location:'tutorial_extensions_test.go:456'});
+});
+test('failed process exposes structural summary but keeps injected diagnostics private',async t=>{
+ const raw='    tutorial_extensions_test.go:456: Web driver action failed: open (folder-confirm; private diagnostics: /tmp/private-secret-canary) Bearer secret-canary\nRAW SECRET';
+ let failure;
+ try {await refresh.run(process.execPath,['-e',`process.stderr.write(${JSON.stringify(raw)});process.exitCode=1`],{});}catch(error){failure=error;}
+ assert.ok(failure?.diagnosticsPath);
+ t.after(()=>rm(dirname(failure.diagnosticsPath),{recursive:true,force:true}));
+ assert.equal(failure.message,`Command failed (1); step=folder-confirm code=web-driver-failed location=tutorial_extensions_test.go:456; private diagnostics: ${failure.diagnosticsPath}`);
+ assert.equal(JSON.parse(await readFile(failure.diagnosticsPath,'utf8')).stderr,raw);
+});
 test('failed real process retains exact output privately outside candidate and approved files',async t=>{
  const f=await fixture(t);const out=join(f.base,'failed-process');
  const approved=await readFile(join(f.repo,'docs/assets/tutorials/approved.png'));
@@ -22,7 +48,7 @@ test('failed real process retains exact output privately outside candidate and a
  assert.ok(failure?.diagnosticsPath,'failure must report a private diagnostics path');
  const log=failure.diagnosticsPath;t.after(()=>rm(dirname(log),{recursive:true,force:true}));
  assert.ok(relative(out,log).startsWith('..'));assert.ok(relative(f.repo,log).startsWith('..'));
- assert.equal(failure.message,`Command failed (7); private diagnostics: ${log}`);
+ assert.equal(failure.message,`Command failed (7); step=unknown code=unknown location=unknown; private diagnostics: ${log}`);
  assert.deepEqual(JSON.parse(await readFile(log,'utf8')),{exitCode:7,signal:null,stdout:'private stdout\n',stderr:'private stderr\n'});
  assert.deepEqual(await readdir(out),[]);
  assert.deepEqual(await readFile(join(f.repo,'docs/assets/tutorials/approved.png')),approved);

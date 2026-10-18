@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/png"
 	"io"
@@ -127,7 +128,7 @@ type tourEvidence struct {
 
 func captureCheckpoint(evidence []tourEvidence, capture func() error) error {
 	if len(evidence) == 0 {
-		return fmt.Errorf("checkpoint has no evidence")
+		return errors.New("checkpoint has no evidence")
 	}
 	for _, e := range evidence {
 		if !e.Passed {
@@ -221,7 +222,7 @@ func tutorialOwnedRoot(t *testing.T) string {
 	if _, err := rand.Read(id[:]); err != nil {
 		t.Fatal(err)
 	}
-	root := filepath.Join("/tmp", fmt.Sprintf("evener-tutorial-%x", id))
+	root := filepath.Join(string(filepath.Separator), "tmp", fmt.Sprintf("evener-tutorial-%x", id))
 	if err := os.Mkdir(root, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +246,7 @@ type tutorialDriver struct {
 	waited bool
 }
 
-func openTutorialDriver(t *testing.T, ctx context.Context, args map[string]any) *tutorialDriver {
+func openTutorialDriver(ctx context.Context, t *testing.T, args map[string]any) *tutorialDriver {
 	t.Helper()
 	// Keep the deadline, but let cleanup close stdin before killing the driver
 	// when a scenario assertion fails and cancels its observer context.
@@ -330,7 +331,7 @@ func (d *tutorialDriver) capture(t *testing.T, out, id string) func() error {
 			return err
 		}
 		if img.Bounds().Dx() != 1280 || img.Bounds().Dy() != 900 {
-			return fmt.Errorf("wrong screenshot dimensions")
+			return errors.New("wrong screenshot dimensions")
 		}
 		return nil
 	}

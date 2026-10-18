@@ -4,7 +4,7 @@ import { tmpdir, homedir, platform } from 'node:os';
 import { join, resolve, relative, isAbsolute, dirname, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { renderTranscript } from './transcript.mjs';
-import { repositoryRoot, fullMatrix, scenarios, surfaces, checkpoints, revision, sourceTreeDigest, sha256, pngDimensions, rejectSymlinks, validateCandidate } from './artifacts.mjs';
+import { repositoryRoot, fullMatrix, scenarios, surfaces, checkpoints, revision, sourceTreeDigest, sha256, pngDimensions, rejectSymlinks, validateCandidate, classifyTourFailure } from './artifacts.mjs';
 
 export async function generateCandidate({out, sourceRoot=repositoryRoot, required=fullMatrix, collect, signal}) {
  signal?.throwIfAborted();
@@ -47,7 +47,8 @@ export async function run(command,args,options,signal) {
   const directory=await mkdtemp(join(tmpdir(),'evener-tour-failure-'));
   const diagnosticsPath=join(directory,'process.json');
   await writeFile(diagnosticsPath,JSON.stringify(result),{mode:0o600});
-  const error=Error(`Command failed (${result.exitCode}); private diagnostics: ${diagnosticsPath}`);
+  const {step,code,location}=classifyTourFailure(`${result.stdout}\n${result.stderr}`);
+  const error=Error(`Command failed (${result.exitCode}); step=${step} code=${code} location=${location}; private diagnostics: ${diagnosticsPath}`);
   error.diagnosticsPath=diagnosticsPath;
   throw error;
  }
