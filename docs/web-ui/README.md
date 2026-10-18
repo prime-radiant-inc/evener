@@ -126,6 +126,10 @@ latest** or **Keep my edits** before Save; neither choice saves by itself.
 Host switching keeps reads and saves bound to the selected host, and replacement
 host registrations never inherit drafts. Skill directories remain separate.
 
+Source and shortcut recovery applies while staying in the same editing context.
+Save or cancel before leaving: Settings does not provide a Stay/Discard navigation
+confirmation. These recovery behaviors do not change launch-form saving.
+
 The former General summary's runtime, listen address, masked token and token
 age belong to Hub; state/index paths, run directory and page size belong to Storage; version
 and credits belong to About. Hub and Storage fold these read-only facts under
