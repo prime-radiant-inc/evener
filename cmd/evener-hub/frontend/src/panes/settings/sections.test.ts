@@ -39,6 +39,12 @@ test("preferences lead the navigation in task order", () => {
 });
 
 test.each([
+  ["Desktop notifications", "notifications"],
+  ["Phone density", "theme"],
+  ["mobile layout", "transcript"],
+  ["desktop layout", "transcript"],
+  ["quiet", "notifications"],
+  ["pairing", "mobile"],
   ["composer", "keybindings"],
   ["favicon", "notifications"],
   ["transcript", "transcript"],

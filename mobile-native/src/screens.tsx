@@ -219,6 +219,7 @@ import { hasUsageLines, projectNativeTranscript } from "./transcriptPresentation
 import { refreshLoadedArchivedLists } from "./archivedLists";
 import { SymbolView } from "expo-symbols";
 import { Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { useDisplayChoices } from "./display/displayContext";
 import { haptic } from "./haptics";
 import { Button } from "./sheet/Grouped";
 
@@ -373,6 +374,7 @@ export function ConversationScreen({
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const textScale = useTextScale();
+	const displayChoices = useDisplayChoices();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	// Find in session (ruling 29), open while non-null. The current match is
 	// remembered by its row's reader key, since older pages prepend rows.
@@ -1476,11 +1478,12 @@ export function ConversationScreen({
 		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 		if (lastRowMeasured()) landOpening();
 	}
-	// Where the session opens (spec 7.3, ruling 31), decided once per route on
-	// the first layout with rows: the live end while a question or approval
-	// waits, the start of a reply that finished since you last reached the
-	// end, or where you left off. It only sets the reading position; the
-	// restore effect below moves the list there.
+	// Where the session opens (spec 7.3, ruling 31; Jesse, 2026-10-18: always
+	// the latest), decided once per route on the first layout with rows: the
+	// live end while a question or approval waits, or the start of a reply
+	// that finished since you last reached the end when the open-at-unread-
+	// replies setting is on. It only sets the reading position; the restore
+	// effect below moves the list there.
 	useEffect(() => {
 		const routeKey = `${route.params.hubId}\u0000${route.params.ref}`;
 		if (
@@ -1497,12 +1500,9 @@ export function ConversationScreen({
 			timelineRows,
 			conversation.turns.map((turn) => turn.id),
 			pendingQuestions(conversation).length > 0 || conversation.pendingEscalations.length > 0,
+			displayChoices.openAtUnreadReplies,
 		);
-		if (target.kind === "live") {
-			readerAnchor.current = null;
-			follow.dispatch({ type: "follow" });
-			pinOpeningToEnd();
-		} else if (target.kind === "row") {
+		if (target.kind === "row") {
 			readerAnchor.current = readerAnchorAt(
 				route.params.hubId,
 				route.params.ref,
@@ -1515,8 +1515,22 @@ export function ConversationScreen({
 			follow.dispatch({ type: "unfollow" });
 			appliedReaderRestore.current = null;
 			readerRestoreAttempts.current.reset();
+		} else {
+			// The latest is the resting answer.
+			readerAnchor.current = null;
+			follow.dispatch({ type: "follow" });
+			pinOpeningToEnd();
 		}
-	}, [conversation, snapshot.status, timelineRows, focused, bindingInstance, route.params.hubId, route.params.ref]);
+	}, [
+		conversation,
+		snapshot.status,
+		timelineRows,
+		focused,
+		bindingInstance,
+		route.params.hubId,
+		route.params.ref,
+		displayChoices.openAtUnreadReplies,
+	]);
 	// A session with no rows has nowhere to travel. One with rows shows after
 	// OPENING_REVEAL_CAP_MS however far it got, so an opening that can't land
 	// (its reading position never measures) never leaves the transcript hidden.

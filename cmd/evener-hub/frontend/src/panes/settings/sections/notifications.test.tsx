@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
@@ -108,9 +108,48 @@ describe("Title bar count / Browser tab indicator / Sound - plain toggles, no pe
 });
 
 describe("Desktop notifications - permission-gated toggle", () => {
+  test("a pending permission decision prevents duplicate requests without blocking other preferences", async () => {
+    let resolve!: (value: NotificationPermission) => void;
+    const decision = new Promise<NotificationPermission>((resolvePromise) => {
+      resolve = resolvePromise;
+    });
+    FakeNotification.requestPermission.mockReturnValue(decision);
+    const user = userEvent.setup();
+    renderWithToasts();
+    const desktop = screen.getByRole("switch", { name: "Desktop notifications" });
+    await user.click(desktop);
+    expect(desktop.getAttribute("aria-disabled")).toBe("true");
+    expect(document.activeElement).toBe(desktop);
+    expect(screen.getByTestId("notification-availability").getAttribute("role")).toBe("status");
+    await user.click(desktop);
+    await user.click(screen.getByRole("switch", { name: "Sound" }));
+    expect(prefsStore.getState().notifications.sound).toBe(true);
+    expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      FakeNotification.permission = "granted";
+      resolve("granted");
+      await decision;
+    });
+    expect(desktop.hasAttribute("aria-disabled")).toBe(false);
+    expect(prefsStore.getState().notifications.os).toBe(true);
+  });
+
+  test("dismissing the browser prompt leaves the preference off with a persistent status", async () => {
+    FakeNotification.requestPermission.mockResolvedValue("default");
+    const user = userEvent.setup();
+    renderWithToasts();
+    await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
+    expect(prefsStore.getState().notifications.os).toBe(false);
+    expect(screen.getByTestId("notification-availability").getAttribute("role")).toBe("status");
+    expect(toastKinds()).toEqual(["warning"]);
+  });
+
   test("turning ON while permission is 'default' requests permission; granted commits true and toasts success", async () => {
     FakeNotification.permission = "default";
-    FakeNotification.requestPermission.mockResolvedValue("granted");
+    FakeNotification.requestPermission.mockImplementation(async () => {
+      FakeNotification.permission = "granted";
+      return "granted";
+    });
     const user = userEvent.setup();
     renderWithToasts();
 
@@ -119,11 +158,18 @@ describe("Desktop notifications - permission-gated toggle", () => {
     expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(toastKinds()).toEqual(["success"]));
     expect(prefsStore.getState().notifications.os).toBe(true);
+    expect(screen.queryByRole("alert")).toBeNull();
+    await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
+    await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
+    expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
   });
 
   test("turning ON while permission is 'default' and the user denies: reverts to false, warning toast, no commit", async () => {
     FakeNotification.permission = "default";
-    FakeNotification.requestPermission.mockResolvedValue("denied");
+    FakeNotification.requestPermission.mockImplementation(async () => {
+      FakeNotification.permission = "denied";
+      return "denied";
+    });
     const user = userEvent.setup();
     renderWithToasts();
 
@@ -132,9 +178,13 @@ describe("Desktop notifications - permission-gated toggle", () => {
     await waitFor(() => expect(toastKinds()).toEqual(["warning"]));
     expect(prefsStore.getState().notifications.os).toBe(false);
     expect(screen.getByRole("switch", { name: "Desktop notifications" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByTestId("notification-availability").getAttribute("role")).toBe("status");
+    await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
+    expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
+    expect(prefsStore.getState().notifications.os).toBe(true);
   });
 
-  test("if requestPermission() itself rejects, reverts to false but shows NO toast at all", async () => {
+  test("a rejected permission request rolls back with visible alert and supports an explicit retry", async () => {
     FakeNotification.permission = "default";
     FakeNotification.requestPermission.mockRejectedValue(new Error("blocked"));
     const user = userEvent.setup();
@@ -142,9 +192,17 @@ describe("Desktop notifications - permission-gated toggle", () => {
 
     await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
 
-    // Let the rejected promise's handler run before asserting silence.
-    await vi.waitFor(() => expect(prefsStore.getState().notifications.os).toBe(false));
-    expect(toastKinds()).toEqual([]);
+    expect(screen.getByTestId("notification-availability").getAttribute("role")).toBe("alert");
+    expect(prefsStore.getState().notifications.os).toBe(false);
+    expect(toastKinds()).toEqual(["warning"]);
+    FakeNotification.requestPermission.mockImplementation(async () => {
+      FakeNotification.permission = "granted";
+      return "granted";
+    });
+    await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
+    expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(2);
+    expect(prefsStore.getState().notifications.os).toBe(true);
+    expect(screen.queryByTestId("notification-availability")).toBeNull();
   });
 
   test("turning ON when permission is already 'granted' commits unconditionally without prompting again", async () => {
@@ -164,13 +222,15 @@ describe("Desktop notifications - permission-gated toggle", () => {
     const user = userEvent.setup();
     renderWithToasts();
 
+    expect(screen.getByTestId("notification-availability").getAttribute("role")).toBe("status");
     await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
 
     expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
     expect(prefsStore.getState().notifications.os).toBe(true);
+    expect(toastKinds()).toEqual(["warning"]);
   });
 
-  test("turning OFF never checks or re-requests permission, and commits unconditionally", async () => {
+  test("turning OFF never requests permission, and commits unconditionally", async () => {
     prefsStore.getState().setNotification("os", true);
     FakeNotification.permission = "granted";
     const user = userEvent.setup();
@@ -192,6 +252,8 @@ describe("Desktop notifications - permission-gated toggle", () => {
     await user.click(screen.getByRole("switch", { name: "Desktop notifications" }));
 
     expect(prefsStore.getState().notifications.os).toBe(true);
+    expect(screen.getByTestId("notification-availability").getAttribute("role")).toBe("status");
+    expect(toastKinds()).toEqual(["warning"]);
   });
 });
 

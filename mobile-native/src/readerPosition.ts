@@ -126,23 +126,25 @@ export function resolveReaderAnchor(anchor: ReaderAnchor, rows: readonly Timelin
 	return inRun >= 0 ? inRun : null;
 }
 
-export type OpeningTarget = { kind: "live" } | { kind: "anchor" } | { kind: "row"; index: number };
+export type OpeningTarget = { kind: "live" } | { kind: "row"; index: number };
 
-/** Where a session opens (spec 7.3, ruling 31). While a question or approval
- * waits: the live end, where the dock is. After a reply that finished since
- * you last reached the end: the start of that reply, past your own message,
- * its time marker and any attachments row (a step's images ride inside its
- * run, and any other attachments row follows the row that produced it).
- * Otherwise where you left off, and failing that the live end. Turn ids,
+/** Where a session opens (spec 7.3, ruling 31; Jesse, 2026-10-18): always at
+ * the latest, never at a spot saved up the history. The one exception: with
+ * the open-at-unread-replies setting on, a reply that finished since you last
+ * reached the end opens at its start, past your own message, its time marker
+ * and any attachments row (a step's images ride inside its run, and any
+ * other attachments row follows the row that produced it). While a question
+ * or approval waits, the live end still wins, where the dock is. Turn ids,
  * never clocks, decide what is newer. */
 export function openingTarget(
 	anchor: ReaderAnchor | null,
 	rows: readonly TimelineRow[],
 	turnIds: readonly string[],
 	askPending: boolean,
+	openAtUnreadReplies: boolean,
 ): OpeningTarget {
 	if (askPending) return { kind: "live" };
-	if (anchor?.turnsSeen) {
+	if (openAtUnreadReplies && anchor?.turnsSeen) {
 		const seen = turnIds.indexOf(anchor.turnsSeen);
 		const newer = seen === -1 ? undefined : turnIds[seen + 1];
 		if (newer !== undefined) {
@@ -152,7 +154,7 @@ export function openingTarget(
 			if (index !== -1) return { kind: "row", index };
 		}
 	}
-	return anchor ? { kind: "anchor" } : { kind: "live" };
+	return { kind: "live" };
 }
 export function isReaderAnchorLoaded(
 	anchor: ReaderAnchor,

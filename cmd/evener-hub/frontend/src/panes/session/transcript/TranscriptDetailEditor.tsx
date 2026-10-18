@@ -9,6 +9,7 @@ import {
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { useEffect, useId, useRef, useState } from "react";
+import { useIsMobile } from "../../../shell/useIsMobile";
 import {
   Disclosure,
   FormRow,
@@ -48,6 +49,11 @@ const LEVEL_OPTIONS: SegmentedControlOption<ContentChoice>[] = [
   { value: "custom", label: "Custom" },
 ];
 
+const LEVEL_SELECT_OPTIONS: SelectOption[] = LEVEL_OPTIONS.map(({ value, label, accessibleLabel }) => ({
+  value,
+  label: accessibleLabel ?? label,
+}));
+
 const HOOK_EXIT_OPTIONS: SelectOption[] = [
   { value: "none", label: "None" },
   { value: "successful", label: "Successful" },
@@ -65,6 +71,8 @@ export function TranscriptDetailEditor({
   compact = false,
 }: TranscriptDetailEditorProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const isMobile = useIsMobile();
+  const contentId = useId();
   const hookExitId = useId();
   const lastCustom = useRef<ContentVector | undefined>(undefined);
   const config = normalizeConfig(value);
@@ -117,14 +125,26 @@ export function TranscriptDetailEditor({
 
   return (
     <section className={rootClassName} aria-label="Transcript detail editor">
-      <SegmentedControl
-        label="Transcript detail"
-        value={config.content.kind === "preset" ? config.content.level : "custom"}
-        options={LEVEL_OPTIONS}
-        disabled={disabled}
-        fullWidth
-        onChange={selectContent}
-      />
+      {isMobile && !compact ? (
+        <FormRow label="Transcript detail" htmlFor={contentId}>
+          <Select
+            id={contentId}
+            value={config.content.kind === "preset" ? config.content.level : "custom"}
+            options={LEVEL_SELECT_OPTIONS}
+            disabled={disabled}
+            onChange={(event) => selectContent(event.target.value as ContentChoice)}
+          />
+        </FormRow>
+      ) : (
+        <SegmentedControl
+          label="Transcript detail"
+          value={config.content.kind === "preset" ? config.content.level : "custom"}
+          options={LEVEL_OPTIONS}
+          disabled={disabled}
+          fullWidth
+          onChange={selectContent}
+        />
+      )}
       <Disclosure
         open={advancedOpen}
         onOpenChange={setAdvancedOpen}
