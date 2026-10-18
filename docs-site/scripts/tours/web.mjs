@@ -29,20 +29,35 @@ export async function open(options) {
   phase = "authentication";
   await page.goto(authURL);
   await page.waitForURL(u => !u.pathname.startsWith('/auth/'));
+  async function newSession(selectedWorkspace) {
+  try {
+  if (new URL(page.url()).pathname.startsWith('/settings/')) await page.goto(url);
   phase = 'new session';
-  await page.getByRole('button', { name: 'New session', exact: true }).click();
+  await page.getByRole('button', { name: /^(?:\+ )?New session$/ }).click();
   phase = 'directory selection';
   await page.getByRole('button', { name: /^Working directory:/ }).click();
-  await page.getByRole('textbox', { name: 'Path', exact: true }).fill(workspace);
+  await page.getByRole('textbox', { name: 'Path', exact: true }).fill(selectedWorkspace);
   await page.getByRole('textbox', { name: 'Path', exact: true }).press('Enter');
   await page.getByRole('button', { name: 'Use this folder', exact: true }).click();
   phase = 'model selection';
   await page.getByRole('button', { name: /change model$/i }).click();
   await page.getByRole('combobox', { name: 'Model', exact: true }).fill(options.model.split('/')[1]);
-  await page.getByRole('listbox', { name: 'Model', exact: true }).getByRole('option').click();
+  await page.getByRole('listbox', { name: 'Model', exact: true }).getByRole('option').first().click();
+  } catch (error) { error.tourPhase = phase + ': ' + error.message.split('\n')[0].replace(/(?:https?:|wss?:)\/\/\S+|\/[^\s]+/g, '[private path]'); throw error; }
+  }
+  await newSession(workspace);
   return {
    async act(action, args = {}) {
-    if (action === 'start') {
+    if (action === 'configure') {
+     assert.equal(args.scope, 'project');
+     assert.equal(args.field, 'max_rounds');
+     assert.ok([workspace, ...(options.workspaces ?? [])].includes(args.workspace ?? workspace));
+     await page.goto(`${url}/settings/project?cwd=${encodeURIComponent(args.workspace ?? workspace)}`);
+     await page.getByRole('spinbutton', { name: 'Max rounds', exact: true }).fill(String(args.value));
+     await page.getByRole('button', { name: 'Save launch defaults', exact: true }).click();
+     await page.locator('[data-testid="launch-config-status"][data-state="saved"]').waitFor();
+    } else if (action === 'start') {
+     if (args.workspace) await newSession(args.workspace);
      const prompt = page.getByRole('textbox', { name: 'Prompt', exact: true });
      await prompt.fill('');
      const lines = args.prompt.split('\n');
@@ -66,21 +81,27 @@ export async function open(options) {
     } else if (action === 'capture') {
      assert.ok(['entry', 'action', 'verified'].includes(args.id));
      assert.ok(!page.url().includes('/auth/'));
+     if (options.scenario === 'configuration' && args.id === 'entry') await page.getByTestId('composer-stop').waitFor({ state: 'visible' });
+     if (options.scenario === 'configuration' && args.id === 'action') await page.getByRole('spinbutton', { name: 'Max rounds', exact: true }).scrollIntoViewIfNeeded();
+     if (options.scenario === 'configuration' && args.id === 'verified') {
+      await page.locator('[data-tool-name="apply_patch"]').waitFor({ state: 'visible' });
+      await page.locator('[data-testid="agent-message-item"][data-live="false"]').waitFor({ state: 'visible' });
+     }
      if (options.scenario === 'daily') {
       if (args.id === 'entry') await page.getByTestId('composer-stop').waitFor({ state: 'visible' });
       if (args.id === 'action') await page.locator('[data-tool-name="shell"], [data-tool-name="exec_command"]').first().waitFor({ state: 'visible' });
-     } else {
+     } else if (options.scenario !== 'configuration') {
       if (args.id === 'entry') await page.locator('[data-testid="spawn-plugin-summary"][data-state="ready"]').waitFor({ state: 'visible' });
       if (args.id === 'action') await page.locator('[data-tool-name="edit_file"]').waitFor({ state: 'visible' });
      }
-     if (args.id === 'verified') {
+     if (args.id === 'verified' && options.scenario !== 'configuration') {
       const completed = page.locator('[data-testid="agent-message-item"][data-live="false"]');
       await (options.scenario === 'daily' ? completed.nth(1) : completed).waitFor({ state: 'visible' });
      }
      await page.evaluate(() => document.fonts.ready);
      // Opaque screenshot masks redact only exact owned workspace labels.
      // The live DOM and all runtime evidence remain unchanged.
-     const aliases = workspaceLabels(workspace);
+     const aliases = [workspace, ...(options.workspaces ?? [])].flatMap(workspaceLabels);
      const masks = aliases.map(path => page.getByText(path, { exact: true }));
      assert.ok((await Promise.all(masks.map(mask => mask.count()))).some(count => count > 0), 'owned workspace label must be present for redaction');
      await page.mouse.move(0, 0);

@@ -15,6 +15,74 @@ Use launch settings to choose how a new session runs, provider settings to choos
 
 For a single CLI invocation, use [CLI flags](cli.md#one-shot-options). The layered `launch.toml` resolver described here belongs to hub launches; do not assume a direct CLI invocation reads those files.
 
+## Try a bounded launch
+
+First [install Evener](getting-started.md) and [connect a provider](connecting-a-provider.md).
+Live authentication, OAuth/device login, and provider compatibility are **untested
+prerequisites** of this walkthrough. The automated checks below use a local
+scripted provider, not a live account.
+
+### CLI: set the limit for this invocation
+
+From a disposable working directory, create a small input file:
+
+```sh
+printf '{"value":42}\n' > input.json
+```
+
+Set `MODEL` to a configured `instance/model` identifier, then run from that same
+directory:
+
+```sh
+evener --model "$MODEL" --max-rounds 1 \
+  'Read input.json, then copy its contents to forbidden.json.'
+```
+
+A run that exhausts this limit exits nonzero. The limit bounds tool-call rounds
+per input, not individual tool calls or file permissions. A live model might
+combine reading and writing in one round, or finish without using a tool. Do not
+treat the limit as a guarantee that a particular file remains untouched.
+
+For a fresh session with more room to work, rerun the command with
+`--max-rounds 4`. Inspect the actual tool records and file contents; a success
+message alone proves neither. Direct CLI flags do not save hub launch defaults.
+
+### Web: save a project default, then start a new session
+
+1. Choose the intended host and working directory. Open the project's menu and
+   choose **Project settings**.
+2. Under **Local overrides**, set **Max rounds** to `1` and choose
+   **Save launch defaults**. This saves the private project layer, not credentials
+   or user-wide defaults.
+3. Start a **new session** in that directory. Select your configured model and
+   leave the round limit inherited rather than overriding it for this launch.
+4. Ask it to read `input.json`, then copy it to `forbidden.json`. Inspect the
+   resulting tools, limit status, and files, with the same live-model caveat as
+   the CLI example.
+5. Save `4` in the same project editor and start another new session. An already
+   running session keeps its original configuration. Another directory's project
+   defaults remain separate.
+
+### Contributor checks, not provider setup
+
+From the Evener checkout root, follow the [build setup](developing-evener/building.md)
+and [testing prerequisites](developing-evener/testing.md). These tours need Go,
+Node 22.13 or newer, the frontend and docs-site dependencies, and Playwright
+Chromium. They build and launch the real CLI and web hub in disposable projects.
+
+```sh
+go test ./cmd/evener-hub -run '^TestTutorialConfigEffectiveLaunch$' -count=1
+node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --scenario configuration
+```
+
+The scripted provider requests a read in one round and a write in the next.
+The checks read persisted effective model/limit fields and actual tool records:
+one round produces one read, no write, and no `forbidden.json`; four rounds allow
+the write and the independent file check passes. The web check also saves through
+the real project editor, checks project isolation, and confirms that a running
+session's configuration does not change. These are partial CLI/web checks, not
+native coverage or screenshot publication.
+
 ## Locate the files
 
 `<config-root>` means `${XDG_CONFIG_HOME:-$HOME/.config}/evener`. `<state-root>` means `${XDG_STATE_HOME:-$HOME/.local/state}/evener`. Set XDG variables in the environment of the host process, not in your browser.

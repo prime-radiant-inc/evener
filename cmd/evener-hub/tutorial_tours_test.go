@@ -143,11 +143,18 @@ func TestTutorialTours(t *testing.T) {
 	runTour(t, tc, out)
 }
 func runTour(t *testing.T, tc tourCase, candidateDir string) {
-	if (tc.Scenario != "receipt" && tc.Scenario != "daily") || (tc.Surface != "cli" && tc.Surface != "web") {
+	if (tc.Scenario != "receipt" && tc.Scenario != "daily" && tc.Scenario != "configuration") || (tc.Surface != "cli" && tc.Surface != "web") {
 		t.Fatal("unsupported tutorial row", tc)
 	}
 	coverage := "receipt-repair"
-	if tc.Scenario == "daily" {
+	if tc.Scenario == "configuration" {
+		coverage = "effective-launch-bounds"
+		if tc.Surface == "cli" {
+			runConfigCLI(t, candidateDir)
+		} else {
+			runConfigWeb(t, candidateDir)
+		}
+	} else if tc.Scenario == "daily" {
 		if tc.Surface == "cli" {
 			coverage = "sequential-resume"
 			runDailyCLI(t, candidateDir)

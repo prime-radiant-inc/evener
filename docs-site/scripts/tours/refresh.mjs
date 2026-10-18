@@ -8,8 +8,8 @@ import { renderTranscript } from './transcript.mjs';
 
 const args = process.argv.slice(2);
 const surfaces = args[2]?.split(',') ?? [];
-if (args[0] !== 'check' || args[1] !== '--surfaces' || args[3] !== '--scenario' || !['receipt', 'daily'].includes(args[4]) || args.length !== 5 || !surfaces.length || surfaces.some(s => !['cli', 'web'].includes(s))) {
- console.error('Use check --surfaces cli,web --scenario receipt|daily. No assets were published.');
+if (args[0] !== 'check' || args[1] !== '--surfaces' || args[3] !== '--scenario' || !['receipt', 'daily', 'configuration'].includes(args[4]) || args.length !== 5 || !surfaces.length || surfaces.some(s => !['cli', 'web'].includes(s))) {
+ console.error('Use check --surfaces cli,web --scenario receipt|daily|configuration. No assets were published.');
  process.exitCode = 1;
 } else {
  const root = fileURLToPath(new URL('../../../', import.meta.url));
