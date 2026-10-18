@@ -90,13 +90,22 @@ export async function open(options) {
      if (options.scenario === 'daily') {
       if (args.id === 'entry') await page.getByTestId('composer-stop').waitFor({ state: 'visible' });
       if (args.id === 'action') await page.locator('[data-tool-name="shell"], [data-tool-name="exec_command"]').first().waitFor({ state: 'visible' });
+     } else if (options.scenario === 'extensions') {
+      if (args.id === 'entry') await page.locator('[data-testid="spawn-plugin-summary"][data-state="ready"]').waitFor({ state: 'visible' });
+      if (args.id === 'action') {
+       const echo = page.locator('[data-tool-name="example__echo"]');
+       await echo.waitFor({ state: 'visible' });
+       const disclosure = echo.getByTestId('tool-row-trigger');
+       if (await disclosure.getAttribute('aria-expanded') !== 'true') await disclosure.click();
+       await echo.getByTestId('tool-call-body').waitFor({ state: 'visible' });
+      }
      } else if (options.scenario !== 'configuration') {
       if (args.id === 'entry') await page.locator('[data-testid="spawn-plugin-summary"][data-state="ready"]').waitFor({ state: 'visible' });
       if (args.id === 'action') await page.locator('[data-tool-name="edit_file"]').waitFor({ state: 'visible' });
      }
      if (args.id === 'verified' && options.scenario !== 'configuration') {
       const completed = page.locator('[data-testid="agent-message-item"][data-live="false"]');
-      await (options.scenario === 'daily' ? completed.nth(1) : completed).waitFor({ state: 'visible' });
+      await (['daily', 'extensions'].includes(options.scenario) ? completed.nth(1) : completed).waitFor({ state: 'visible' });
      }
      await page.evaluate(() => document.fonts.ready);
      // Opaque screenshot masks redact only exact owned workspace labels.
