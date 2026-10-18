@@ -26,7 +26,6 @@ function fakePort(files: Record<string, string>): SharePort & { removed: string[
 			removed.push(name);
 			delete files[name];
 		},
-		now: () => 0,
 	};
 }
 

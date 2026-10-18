@@ -11,6 +11,24 @@ private let hostScheme = "evener-native"
 private let sharePrefix = "share-"
 private let maxPendingShares = 10
 
+/// Keeps the app group small: a share older than the newest maxPendingShares
+/// is dropped, so a share left behind by a crash cannot collect forever. This
+/// runs off the main actor, so it is a free function rather than a method.
+private func prunePendingShares(in container: URL) throws {
+	let files = try FileManager.default.contentsOfDirectory(
+		at: container,
+		includingPropertiesForKeys: [.creationDateKey]
+	).filter { $0.lastPathComponent.hasPrefix(sharePrefix) && $0.pathExtension == "json" }
+	// Read each date once, then sort, rather than a filesystem read per
+	// comparison.
+	let dated = files.map { file in
+		((try? file.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast, file)
+	}
+	for (_, stale) in dated.sorted(by: { $0.0 < $1.0 }).dropLast(maxPendingShares) {
+		try? FileManager.default.removeItem(at: stale)
+	}
+}
+
 /// Takes the shared text or web link, saves it, and asks Evener to come
 /// forward. The share sheet dismisses only when the save and the open have both
 /// been attempted; if either fails the view stays with what happened, so the
@@ -62,8 +80,12 @@ final class ShareViewController: UIViewController {
 		]
 		do {
 			let data = try JSONSerialization.data(withJSONObject: payload)
-			try data.write(to: file, options: .atomic)
-			try prunePendingShares(in: container)
+			// The write and the prune are file work the share sheet does not
+			// need to wait for on the main thread.
+			try await Task.detached(priority: .userInitiated) {
+				try data.write(to: file, options: .atomic)
+				try prunePendingShares(in: container)
+			}.value
 		} catch {
 			try? FileManager.default.removeItem(at: file)
 			finish(failed: "Evener couldn't save this. Try sharing it again.")
@@ -102,24 +124,6 @@ final class ShareViewController: UIViewController {
 			provider.loadItem(forTypeIdentifier: type, options: nil) { value, _ in
 				continuation.resume(returning: value)
 			}
-		}
-	}
-
-	/// Keeps the app group small: a share older than the newest
-	/// maxPendingShares is dropped, so a share left behind by a crash cannot
-	/// collect forever.
-	private func prunePendingShares(in container: URL) throws {
-		let files = try FileManager.default.contentsOfDirectory(
-			at: container,
-			includingPropertiesForKeys: [.creationDateKey]
-		).filter { $0.lastPathComponent.hasPrefix(sharePrefix) && $0.pathExtension == "json" }
-		let ordered = files.sorted {
-			let left = (try? $0.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
-			let right = (try? $1.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
-			return left < right
-		}
-		for stale in ordered.dropLast(maxPendingShares) {
-			try? FileManager.default.removeItem(at: stale)
 		}
 	}
 

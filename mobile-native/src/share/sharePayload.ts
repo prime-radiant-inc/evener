@@ -19,16 +19,17 @@ export interface SharePort {
 	list(): Promise<string[]>;
 	read(name: string): Promise<string>;
 	remove(name: string): Promise<void>;
-	now(): number;
 }
-
-/** A share no one has placed for this long is dropped at startup. */
-export const SHARE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** The one file name a share's id reads from. The extension writes and the app
  * deletes by this same name, so neither has a second spelling to keep level. */
 export function shareFileName(id: string): string {
 	return `share-${id}.json`;
+}
+
+/** Whether a directory entry is a share file, by the one naming rule. */
+export function isShareFileName(name: string): boolean {
+	return name.startsWith("share-") && name.endsWith(".json");
 }
 
 /** The payload a file holds, or null when the file is not one. A file whose id
@@ -56,7 +57,7 @@ export function parseSharePayload(fileName: string, raw: string): SharedPayload 
 export async function pendingShares(port: SharePort): Promise<SharedPayload[]> {
 	const shares: SharedPayload[] = [];
 	for (const name of await port.list()) {
-		if (!name.startsWith("share-") || !name.endsWith(".json")) continue;
+		if (!isShareFileName(name)) continue;
 		let raw: string;
 		try {
 			raw = await port.read(name);
@@ -72,13 +73,4 @@ export async function pendingShares(port: SharePort): Promise<SharedPayload[]> {
 /** Drops a share that has been placed or explicitly discarded. */
 export async function completeShare(port: SharePort, id: string): Promise<void> {
 	await port.remove(shareFileName(id));
-}
-
-/** Removes shares older than SHARE_MAX_AGE_MS. Runs at startup: a share left
- * behind by a crash is worth offering, but one from a week ago is not. */
-export async function expireShares(port: SharePort): Promise<void> {
-	const cutoff = port.now() - SHARE_MAX_AGE_MS;
-	for (const share of await pendingShares(port)) {
-		if (Date.parse(share.createdAt) < cutoff) await completeShare(port, share.id);
-	}
 }

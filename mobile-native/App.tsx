@@ -211,9 +211,8 @@ function Navigation() {
 									onPlaced={(item) => {
 										void completeShare(sharePort, item.id).catch(() => {});
 										intake.forget(item.id);
-										intake.release();
 									}}
-									onHandedOff={() => intake.release()}
+									onClosed={() => intake.release()}
 								/>
 							)}
 						</Stack.Screen>

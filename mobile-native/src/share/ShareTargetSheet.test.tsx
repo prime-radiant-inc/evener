@@ -128,6 +128,16 @@ const labels = (tree: ReactTestRenderer) =>
 		.findAll((node) => typeof node.props.accessibilityLabel === "string")
 		.map((node) => node.props.accessibilityLabel as string);
 
+/** The row for a session, by the first part of its spoken label: the Board's
+ * own row and result row lead with the title and add state, age and project. */
+const rowTitled = (tree: ReactTestRenderer, title: string) =>
+	tree.root.find(
+		(node) =>
+			node.props.accessibilityRole === "button" &&
+			typeof node.props.accessibilityLabel === "string" &&
+			(node.props.accessibilityLabel as string).startsWith(`${title},`),
+	);
+
 it("lists live sessions in attention order", async () => {
 	const { client } = hub();
 	connect(client);
@@ -135,9 +145,9 @@ it("lists live sessions in attention order", async () => {
 	const tree = render(sheet(navigation));
 	await settleMicrotasks();
 	const rendered = labels(tree);
-	const order = rendered.indexOf("Fix retry loop") < rendered.indexOf("Build the picker");
-	expect(order).toBe(true);
-	expect(rendered.indexOf("Build the picker")).toBeLessThan(rendered.indexOf("Old notes"));
+	const position = (title: string) => rendered.findIndex((label) => label.startsWith(`${title},`));
+	expect(position("Fix retry loop")).toBeLessThan(position("Build the picker"));
+	expect(position("Build the picker")).toBeLessThan(position("Old notes"));
 });
 
 it("opens the chosen session with the shared text in its draft", async () => {
@@ -147,9 +157,7 @@ it("opens the chosen session with the shared text in its draft", async () => {
 	const onPlaced = vi.fn();
 	const tree = render(sheet(navigation, onPlaced));
 	await settleMicrotasks();
-	const row = tree.root.find(
-		(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "Build the picker",
-	);
+	const row = rowTitled(tree, "Build the picker");
 	act(() => row.props.onPress());
 	await settleMicrotasks();
 	expect(navigation.navigate).toHaveBeenCalledWith("Conversation", {
@@ -170,9 +178,7 @@ it("appends to a session's existing draft instead of replacing it", async () => 
 	const navigation = { navigate: vi.fn(), goBack: vi.fn() };
 	const tree = render(sheet(navigation));
 	await settleMicrotasks();
-	const row = tree.root.find(
-		(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "Build the picker",
-	);
+	const row = rowTitled(tree, "Build the picker");
 	act(() => row.props.onPress());
 	await settleMicrotasks();
 	expect(
@@ -204,9 +210,7 @@ it("searches with the Board's backend and offers a past result", async () => {
 	act(() => field.props.onChangeText("report"));
 	await until(() => expect(searches.at(-1)).toBe("report"));
 	expect(searches.at(-1)).toBe("report");
-	const row = tree.root.find(
-		(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "Quarterly report",
-	);
+	const row = rowTitled(tree, "Quarterly report");
 	act(() => row.props.onPress());
 	await settleMicrotasks();
 	expect(
@@ -244,12 +248,29 @@ it("keeps the share when the draft write does not land", async () => {
 		/>,
 	);
 	await settleMicrotasks();
-	const row = tree.root.find(
-		(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "Build the picker",
-	);
+	const row = rowTitled(tree, "Build the picker");
 	act(() => row.props.onPress());
 	await settleMicrotasks();
 	expect(onPlaced).not.toHaveBeenCalled();
 	expect(navigation.navigate).not.toHaveBeenCalled();
 	expect(tree.root.findAll((node) => node.props.testID === "share-error").length).toBeGreaterThan(0);
+});
+
+it("releases the intake when the sheet closes without choosing", async () => {
+	const { client } = hub();
+	connect(client);
+	const navigation = { navigate: vi.fn(), goBack: vi.fn() };
+	const onClosed = vi.fn();
+	const tree = render(
+		<ShareTargetSheet
+			navigation={navigation as never}
+			route={{ key: "ShareTarget", name: "ShareTarget", params: { item: share } } as never}
+			drafts={new DraftLibrary(() => repository)}
+			onPlaced={vi.fn()}
+			onClosed={onClosed}
+		/>,
+	);
+	await settleMicrotasks();
+	act(() => tree.unmount());
+	expect(onClosed).toHaveBeenCalledTimes(1);
 });

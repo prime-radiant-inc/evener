@@ -25,7 +25,8 @@ function fakeGroup(entries: Array<ReturnType<typeof file>>) {
 		listed,
 		directory: {
 			exists: true,
-			list: () => listed,
+			list: vi.fn(() => listed),
+			file: (name: string) => listed.find((entry) => entry.name === name) ?? null,
 		} as unknown as ShareGroupDirectory,
 	};
 }
@@ -43,6 +44,8 @@ it("reads a share's text from the directory", async () => {
 	const { directory } = fakeGroup([share]);
 	const port = appGroupSharePort(() => directory);
 	expect(await port.read("share-a.json")).toBe('{"id":"a"}');
+	// The read resolves its file without enumerating the directory again.
+	expect(directory.list).toHaveBeenCalledTimes(0);
 });
 
 it("removes only the file it names", async () => {

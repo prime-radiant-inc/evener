@@ -36,7 +36,9 @@ it("applies the remembered setup when the form opens empty, then appends the sha
 	const environment = opening();
 	environment.memory.recordStart({ host: "local", cwd: "/project", model: null, effort: "", overrides: {} });
 	try {
-		expect(seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" })).toBe(true);
+		expect(seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" }).saved).toBe(
+			true,
+		);
 		const form = environment.store.getState();
 		expect(form.cwd).toBe("/project");
 		expect(form.prompt).toBe("What I shared");
@@ -50,7 +52,9 @@ it("keeps a saved draft's prompt, as New session already does, and appends to it
 	environment.store.getState().setPrompt("What I was writing");
 	environment.memory.recordStart({ host: "local", cwd: "/project", model: null, effort: "", overrides: {} });
 	try {
-		expect(seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" })).toBe(true);
+		expect(seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" }).saved).toBe(
+			true,
+		);
 		const form = environment.store.getState();
 		expect(form.cwd).toBe("");
 		expect(form.prompt).toBe("What I was writing\n\nWhat I shared");
@@ -62,7 +66,9 @@ it("keeps a saved draft's prompt, as New session already does, and appends to it
 it("places the shared text alone when the saved prompt was empty", () => {
 	const environment = opening();
 	try {
-		expect(seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" })).toBe(true);
+		expect(seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" }).saved).toBe(
+			true,
+		);
 		expect(environment.store.getState().prompt).toBe("What I shared");
 	} finally {
 		environment.close();
@@ -73,7 +79,9 @@ it("reports the seed did not land when the draft cannot be saved", () => {
 	const environment = opening();
 	try {
 		environment.control.failWrite = true;
-		expect(seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" })).toBe(false);
+		expect(seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" }).saved).toBe(
+			false,
+		);
 		expect(environment.store.getState().storageError).not.toBeNull();
 	} finally {
 		environment.close();

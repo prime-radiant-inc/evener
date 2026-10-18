@@ -4,16 +4,18 @@
 // into its saved draft, so the composer holds it when the session opens; only
 // after that write lands is the share dropped from the app group.
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
-import type { NavigationSessionSummary, SearchResult } from "@evener/appwire-client";
+import { Pressable, ScrollView, Text, View } from "react-native";
+import type { SearchResult } from "@evener/appwire-client";
+import { countSearchMatches } from "@evener/appwire-client";
 import { useConnection } from "../ConnectionProvider";
 import type { DraftLibrary } from "../draftLibrary";
 import { isReady } from "../connectionDisplay";
 import { createBoardController } from "../board/boardData";
-import { type SearchScope, createSearchController, searchResultMark, sessionResults } from "../board/boardSearch";
-import { liveBands, stateWord } from "../board/attention";
-import { BandHeader, Hairline } from "../board/BoardRow";
-import { StateMark } from "../board/StateMark";
+import { type SearchScope, createSearchController, sessionResults } from "../board/boardSearch";
+import { liveBands, liveRows, usualPlace } from "../board/attention";
+import { BandHeader, BoardRow, Hairline } from "../board/BoardRow";
+import { ResultRow } from "../board/SearchResults";
+import { SearchField } from "../sheet/SearchField";
 import { SymbolView } from "expo-symbols";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { placeSharedText } from "./placeShare";
@@ -33,13 +35,19 @@ export interface ShareTargetSheetProps {
 	/** The share went with the New session sheet, which seeds the prompt and
 	 * completes the share itself. The file stays until that seed lands. */
 	onHandedOff?(item: SharedPayload): void;
+	/** The sheet went away, chosen or not: the intake may offer the next share.
+	 * This is the swipe-down path too, which no callback of its own reports. */
+	onClosed?(): void;
 }
 
-/** The search field's height, as the Board's: never shorter than the 44pt
- * touch target. */
-const FIELD_MIN_HEIGHT = 44;
-
-export function ShareTargetSheet({ navigation, route, drafts, onPlaced, onHandedOff }: ShareTargetSheetProps) {
+export function ShareTargetSheet({
+	navigation,
+	route,
+	drafts,
+	onPlaced,
+	onHandedOff,
+	onClosed,
+}: ShareTargetSheetProps) {
 	const { item } = route.params;
 	const { activeProfile, client, state, fatal } = useConnection();
 	const { palette } = useColors();
@@ -47,6 +55,8 @@ export function ShareTargetSheet({ navigation, route, drafts, onPlaced, onHanded
 	const [error, setError] = useState<string | null>(null);
 	const connected = isReady(state) && activeProfile !== null;
 	const hubId = activeProfile?.id ?? "";
+	// A sheet dismissed by a swipe unmounts with nothing else to say so.
+	useEffect(() => () => onClosed?.(), [onClosed]);
 
 	// The live sessions, read exactly as the Board reads them.
 	const [board] = useState(() => createBoardController());
@@ -65,7 +75,8 @@ export function ShareTargetSheet({ navigation, route, drafts, onPlaced, onHanded
 	const [scope, setScope] = useState<SearchScope>("all");
 
 	const bands = liveBands(boardSnapshot.live.rows, boardSnapshot.needsYou.rows, () => true);
-	const rows = [...bands.needsYou, ...bands.working, ...bands.idle];
+	const rows = liveRows(bands);
+	const usual = usualPlace(boardSnapshot.live.rows);
 
 	// A place that took the text: drop the share, then show the destination.
 	function placed() {
@@ -137,27 +148,8 @@ export function ShareTargetSheet({ navigation, route, drafts, onPlaced, onHanded
 				</Text>
 			</Pressable>
 			<Hairline />
-			<View
-				style={{
-					minHeight: FIELD_MIN_HEIGHT,
-					marginHorizontal: 16,
-					marginVertical: 8,
-					paddingHorizontal: 12,
-					borderRadius: 10,
-					justifyContent: "center",
-					backgroundColor: palette.surface,
-					borderWidth: 0.5,
-					borderColor: palette.edge,
-				}}
-			>
-				<TextInput
-					accessibilityLabel="Search sessions"
-					placeholder="Search sessions"
-					autoCapitalize="none"
-					allowFontScaling={allowFontScaling}
-					onChangeText={search.setQuery}
-					style={{ fontSize: 17 * scale, color: palette.inkHi }}
-				/>
+			<View style={{ marginHorizontal: 16, marginVertical: 8 }}>
+				<SearchField label="Search sessions" value={searchSnapshot.query} onChangeText={search.setQuery} />
 			</View>
 			{error ? (
 				<Text
@@ -187,64 +179,24 @@ export function ShareTargetSheet({ navigation, route, drafts, onPlaced, onHanded
 			) : (
 				<>
 					{rows.length ? <BandHeader text="LIVE" /> : null}
-					{rows.map((row) => (
-						<LiveRow
-							key={row.row.ref}
-							row={row.row}
-							state={row.state}
-							onOpen={() => openSession(row.row.ref, row.row.title)}
+					{rows.map((item) => (
+						<BoardRow
+							key={item.row.ref}
+							item={item}
+							variant={bands.idle.some((idle) => idle.row.ref === item.row.ref) ? "quiet" : "signal"}
+							moving={false}
+							connected
+							usual={usual}
+							hostLabel={(hostId) => hostId}
+							hasDraft={false}
+							msSinceRead={null}
+							now={Date.now()}
+							onOpen={(row) => openSession(row.ref, row.title)}
 						/>
 					))}
 				</>
 			)}
 		</ScrollView>
-	);
-}
-
-function LiveRow({
-	row,
-	state,
-	onOpen,
-}: {
-	row: NavigationSessionSummary;
-	state: ReturnType<typeof liveBands>["needsYou"][number]["state"];
-	onOpen(): void;
-}) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<Pressable
-			accessibilityRole="button"
-			accessibilityLabel={row.title}
-			onPress={onOpen}
-			style={({ pressed }) => ({
-				minHeight: 64,
-				paddingHorizontal: 16,
-				paddingVertical: 8,
-				flexDirection: "row",
-				alignItems: "center",
-				columnGap: 10,
-				backgroundColor: pressed ? palette.pressed : palette.page,
-			})}
-		>
-			<StateMark state={state} connected />
-			<View style={{ flex: 1, minWidth: 0 }}>
-				<Text
-					allowFontScaling={allowFontScaling}
-					numberOfLines={1}
-					style={{ fontSize: 17 * scale, fontWeight: "600", color: palette.inkHi }}
-				>
-					{row.title || "Untitled session"}
-				</Text>
-				<Text
-					allowFontScaling={allowFontScaling}
-					numberOfLines={1}
-					style={{ marginTop: 2, fontSize: 13 * scale, color: palette.inkLow }}
-				>
-					{[stateWord(state), row.project].filter(Boolean).join(" · ")}
-				</Text>
-			</View>
-		</Pressable>
 	);
 }
 
@@ -294,59 +246,10 @@ function SearchHits({
 					</Pressable>
 				))}
 			</View>
-			<BandHeader text={`SESSIONS · ${results.length}`} />
+			<BandHeader text={`SESSIONS · ${countSearchMatches(results)}`} />
 			{results.map((grouped) => (
-				<SearchRow key={grouped.result.ref} result={grouped.result} connected={connected} onOpen={onOpen} />
+				<ResultRow key={grouped.result.ref} row={grouped} connected={connected} onOpen={onOpen} />
 			))}
 		</>
-	);
-}
-
-function SearchRow({
-	result,
-	connected,
-	onOpen,
-}: {
-	result: SearchResult;
-	connected: boolean;
-	onOpen(result: SearchResult): void;
-}) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<Pressable
-			accessibilityRole="button"
-			accessibilityLabel={result.title}
-			onPress={() => onOpen(result)}
-			style={({ pressed }) => ({
-				minHeight: 64,
-				paddingHorizontal: 16,
-				paddingVertical: 8,
-				flexDirection: "row",
-				alignItems: "center",
-				columnGap: 10,
-				backgroundColor: pressed ? palette.pressed : palette.page,
-			})}
-		>
-			<StateMark state={searchResultMark(result)} connected={connected} />
-			<View style={{ flex: 1, minWidth: 0 }}>
-				<Text
-					allowFontScaling={allowFontScaling}
-					numberOfLines={1}
-					style={{ fontSize: 17 * scale, fontWeight: "600", color: palette.inkHi }}
-				>
-					{result.title || "Untitled session"}
-				</Text>
-				{result.project ? (
-					<Text
-						allowFontScaling={allowFontScaling}
-						numberOfLines={1}
-						style={{ marginTop: 2, fontSize: 13 * scale, color: palette.inkLow }}
-					>
-						{result.project}
-					</Text>
-				) : null}
-			</View>
-		</Pressable>
 	);
 }

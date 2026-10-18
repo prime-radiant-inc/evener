@@ -67,10 +67,13 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 	useEffect(() => {
 		if (opened.current || !storageLoaded) return;
 		opened.current = true;
-		// A share seeded after openForm keeps the remembered host, project and
-		// model; the share file goes only once the prompt is saved.
+		// A share's text rides through the one opening path, so it keeps the
+		// remembered host, project and model; its file goes only once the
+		// prompt is saved.
 		if (share) {
-			if (seedSharedPrompt(store, memory, share)) void completeShare(appGroupSharePort(), share.id);
+			const seed = seedSharedPrompt(store, memory, share);
+			stopOpening.current = seed.stop;
+			if (seed.saved) void completeShare(appGroupSharePort(), share.id);
 			return;
 		}
 		stopOpening.current = openForm(store, memory.lastSetup());

@@ -13,5 +13,5 @@ export function placeSharedText(document: DraftDocument, text: string): boolean 
 	if (!before.loaded) return false;
 	document.edit(mergeDraftText(before.record.draft, text));
 	const after = document.getSnapshot();
-	return after.loaded && !after.error && after.record.draft !== before.record.draft;
+	return !after.error && after.record.draft !== before.record.draft;
 }

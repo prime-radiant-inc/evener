@@ -2,31 +2,8 @@ import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { renderHook, settle } from "../renderNative.testkit";
 import { useShareIntake } from "./useShareIntake";
-import { type SharePort, type SharedPayload, shareFileName } from "./sharePayload";
-
-const HOUR = 60 * 60 * 1000;
-
-function share(id: string, at: number): SharedPayload {
-	return { id, text: `text ${id}`, createdAt: new Date(at).toISOString() };
-}
-
-function port(shares: SharedPayload[]): SharePort {
-	const files = new Map(shares.map((entry) => [shareFileName(entry.id), entry]));
-	return {
-		async list() {
-			return [...files.keys()];
-		},
-		async read(name) {
-			const entry = files.get(name);
-			if (!entry) throw new Error("gone");
-			return JSON.stringify(entry);
-		},
-		async remove(name) {
-			files.delete(name);
-		},
-		now: () => 0,
-	};
-}
+import type { SharedPayload } from "./sharePayload";
+import { HOUR, share, sharePort } from "./shareTestkit";
 
 const harness = vi.hoisted(() => ({
 	urls: [] as ((event: { url: string }) => void)[],
@@ -72,7 +49,7 @@ beforeEach(() => {
 
 it("offers a share when the extension's URL opens the app", async () => {
 	const offered: SharedPayload[] = [];
-	const subject = port([share("one", HOUR)]);
+	const subject = sharePort([share("one", HOUR)]);
 	harness.initialURL = "evener-native://share";
 	renderHook(() => useShareIntake({ port: subject, onShare: (entry) => offered.push(entry) }));
 	await settle();
@@ -81,7 +58,7 @@ it("offers a share when the extension's URL opens the app", async () => {
 
 it("offers a share when the app comes forward", async () => {
 	const offered: SharedPayload[] = [];
-	renderHook(() => useShareIntake({ port: port([share("one", HOUR)]), onShare: (entry) => offered.push(entry) }));
+	renderHook(() => useShareIntake({ port: sharePort([share("one", HOUR)]), onShare: (entry) => offered.push(entry) }));
 	await settle();
 	expect(offered).toEqual([]);
 	await act(async () => {
@@ -94,14 +71,14 @@ it("offers a share when the app comes forward", async () => {
 it("ignores a URL that is not a share", async () => {
 	const offered: SharedPayload[] = [];
 	harness.initialURL = "evener-native://elsewhere";
-	renderHook(() => useShareIntake({ port: port([share("one", HOUR)]), onShare: (entry) => offered.push(entry) }));
+	renderHook(() => useShareIntake({ port: sharePort([share("one", HOUR)]), onShare: (entry) => offered.push(entry) }));
 	await settle();
 	expect(offered).toEqual([]);
 });
 
 it("does not offer the same share twice while its sheet is up", async () => {
 	const offered: SharedPayload[] = [];
-	renderHook(() => useShareIntake({ port: port([share("one", HOUR)]), onShare: (entry) => offered.push(entry) }));
+	renderHook(() => useShareIntake({ port: sharePort([share("one", HOUR)]), onShare: (entry) => offered.push(entry) }));
 	await act(async () => {
 		for (const listener of harness.urls) listener({ url: "evener-native://share" });
 	});
@@ -115,7 +92,7 @@ it("does not offer the same share twice while its sheet is up", async () => {
 it("stops listening when the app unmounts", async () => {
 	const offered: SharedPayload[] = [];
 	const tree = renderHook(() =>
-		useShareIntake({ port: port([share("one", HOUR)]), onShare: (entry) => offered.push(entry) }),
+		useShareIntake({ port: sharePort([share("one", HOUR)]), onShare: (entry) => offered.push(entry) }),
 	);
 	tree.unmount();
 	await act(async () => {
@@ -130,7 +107,7 @@ it("offers a share once when the hub connection turns ready", async () => {
 	const connection = { ready: false };
 	const tree = renderHook(() =>
 		useShareIntake({
-			port: port([share("one", HOUR)]),
+			port: sharePort([share("one", HOUR)]),
 			onShare: (entry) => offered.push(entry),
 			ready: connection.ready,
 		}),

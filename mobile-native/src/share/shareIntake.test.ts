@@ -1,38 +1,13 @@
 import { expect, it } from "vitest";
 import { createShareIntake } from "./shareIntake";
-import { type SharePort, type SharedPayload, shareFileName } from "./sharePayload";
-
-const HOUR = 60 * 60 * 1000;
-
-function share(id: string, at: number): SharedPayload {
-	return { id, text: `text ${id}`, createdAt: new Date(at).toISOString() };
-}
-
-/** A directory of share files that answers immediately, as expo-file-system's
- * app group reads do. */
-function port(shares: SharedPayload[]): SharePort {
-	const files = new Map(shares.map((entry) => [shareFileName(entry.id), entry]));
-	return {
-		async list() {
-			return [...files.keys()];
-		},
-		async read(name) {
-			const entry = files.get(name);
-			if (!entry) throw new Error("gone");
-			return JSON.stringify(entry);
-		},
-		async remove(name) {
-			files.delete(name);
-		},
-		now: () => 0,
-	};
-}
+import type { SharedPayload } from "./sharePayload";
+import { HOUR, share, sharePort } from "./shareTestkit";
 
 it("offers the oldest pending share once", async () => {
 	const older = share("older", HOUR);
 	const newer = share("newer", 2 * HOUR);
 	const offered: SharedPayload[] = [];
-	const intake = createShareIntake({ port: port([newer, older]), onShare: (entry) => offered.push(entry) });
+	const intake = createShareIntake({ port: sharePort([newer, older]), onShare: (entry) => offered.push(entry) });
 	await intake.offer();
 	expect(offered.map((entry) => entry.id)).toEqual(["older"]);
 	expect(intake.busy).toBe(true);
@@ -43,7 +18,7 @@ it("offers the oldest pending share once", async () => {
 it("offers the next share once the sheet releases", async () => {
 	const offered: SharedPayload[] = [];
 	const intake = createShareIntake({
-		port: port([share("one", HOUR), share("two", 2 * HOUR)]),
+		port: sharePort([share("one", HOUR), share("two", 2 * HOUR)]),
 		onShare: (entry) => offered.push(entry),
 	});
 	await intake.offer();
@@ -55,7 +30,7 @@ it("offers the next share once the sheet releases", async () => {
 it("never offers a share again after it was forgotten", async () => {
 	const offered: SharedPayload[] = [];
 	const intake = createShareIntake({
-		port: port([share("one", HOUR), share("two", 2 * HOUR)]),
+		port: sharePort([share("one", HOUR), share("two", 2 * HOUR)]),
 		onShare: (entry) => offered.push(entry),
 	});
 	await intake.offer();
@@ -77,11 +52,20 @@ it("offers nothing when the directory cannot be read", async () => {
 				throw new Error("no container");
 			},
 			async remove() {},
-			now: () => 0,
 		},
 		onShare: (entry) => offered.push(entry),
 	});
 	await intake.offer();
 	expect(offered).toEqual([]);
 	expect(intake.busy).toBe(false);
+});
+
+it("offers one share when two wakes land at once", async () => {
+	const offered: SharedPayload[] = [];
+	const intake = createShareIntake({
+		port: sharePort([share("one", HOUR), share("two", 2 * HOUR)]),
+		onShare: (entry) => offered.push(entry),
+	});
+	await Promise.all([intake.offer(), intake.offer()]);
+	expect(offered.map((entry) => entry.id)).toEqual(["one"]);
 });
