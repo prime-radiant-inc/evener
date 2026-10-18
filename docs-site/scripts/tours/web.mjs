@@ -6,9 +6,20 @@ export function workspaceLabels(workspace) {
  return workspace.startsWith('/private/tmp/') ? [workspace, workspace.slice(8)] : workspace.startsWith('/tmp/') ? [workspace, `/private${workspace}`] : [workspace];
 }
 
+// Runs in the browser. Conversation panes also carry data-session-ref, so
+// only a row with the rail's title can certify navigation readiness.
+export function railCaptureReady(refs) {
+ const rows = [...document.querySelectorAll('[data-session-ref]')].filter(row => row.querySelector('[data-testid="rail-row-title"]'));
+ return refs.every(ref => {
+  const matching = rows.filter(row => row.getAttribute('data-session-ref') === ref);
+  return matching.length > 0 && matching.every(row => !row.querySelector('[data-testid="rail-row-not-started"]'));
+ });
+}
+
 export async function open(options) {
  const { url, authURL, workspace, viewport, outputDir } = options;
  assert.deepEqual(viewport, { width: 1280, height: 900 });
+ const startedRefs = new Set();
  let phase = "browser launch";
  let browser;
  try {
@@ -71,6 +82,7 @@ export async function open(options) {
       error.tourPhase = 'session navigation, alerts: ' + (await page.getByRole('alert').allTextContents()).join(' | ').replace(/(?:https?:|wss?:)\/\/\S+|\/[^\s]+/g, '[private path]');
       throw error;
      }
+     startedRefs.add(decodeURIComponent(new URL(page.url()).pathname.slice(3)));
     } else if (action === 'send' || action === 'steer') {
      const message = page.getByRole('textbox', { name: 'Message', exact: true });
      await message.fill('');
@@ -106,6 +118,9 @@ export async function open(options) {
      if (args.id === 'verified' && options.scenario !== 'configuration') {
       const completed = page.locator('[data-testid="agent-message-item"][data-live="false"]');
       await (['daily', 'extensions'].includes(options.scenario) ? completed.nth(1) : completed).waitFor({ state: 'visible' });
+     }
+     if (new URL(page.url()).pathname.startsWith('/s/')) {
+      await page.waitForFunction(railCaptureReady, [...startedRefs], { timeout: 10_000 });
      }
      await page.evaluate(() => document.fonts.ready);
      // Opaque screenshot masks redact only exact owned workspace labels.
