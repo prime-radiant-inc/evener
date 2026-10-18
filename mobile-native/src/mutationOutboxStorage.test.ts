@@ -1401,3 +1401,31 @@ test("pruneUnlistedAccepted keeps an accepted record the read actually named", a
 	await expect(storage.pruneUnlistedAccepted(TARGET, 9999, new Set([send.clientMutationId]))).resolves.toEqual([]);
 	expect(rawRow("mutation_optimistic", send.clientMutationId)).toBeDefined();
 });
+
+// RoboRev 998: an accepted record written by the previous schema has no
+// accepted_at, and the prune's fence would exclude it forever - so exactly the
+// rows this fix exists to heal could never retire. The migration backfills it
+// from enqueue time, which is always earlier than any read after the upgrade.
+test("pre-accepted_at accepted rows are backfilled so a later read can retire them", async () => {
+	database.exec("DROP TABLE mutation_optimistic");
+	database.exec(`CREATE TABLE mutation_optimistic (client_mutation_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
+		origin_client_id TEXT, target_ref TEXT NOT NULL, thread_id TEXT, instance_id TEXT, method TEXT NOT NULL,
+		payload TEXT NOT NULL, attachments TEXT NOT NULL, optimistic_display TEXT NOT NULL,
+		composer_text TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
+		state TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0, unresolved_attempts INTEGER NOT NULL DEFAULT 0,
+		stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0, recovery_kind TEXT, recovery_reason TEXT)`);
+	database
+		.prepare(
+			`INSERT INTO mutation_optimistic (client_mutation_id, version, target_ref, method, payload,
+			 attachments, optimistic_display, intent_sequence, created_at, state)
+			 VALUES (?, 1, ?, 'turn/start', '{}', '[]', '{}', 1, 900, 'accepted')`,
+		)
+		.run("mutation-old", TARGET);
+
+	openStorage();
+
+	expect(
+		database.prepare("SELECT accepted_at FROM mutation_optimistic WHERE client_mutation_id = ?").get("mutation-old"),
+	).toMatchObject({ accepted_at: 900 });
+	await expect(storage.pruneUnlistedAccepted(TARGET, 1000, new Set())).resolves.toEqual(["mutation-old"]);
+});
