@@ -182,10 +182,12 @@ export function LaunchConfigForm({
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const toast = useToasts();
   const lifetime = useRef<object>({});
+  const submission = useRef<object | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: owner changes invalidate preflight and save continuations
   useLayoutEffect(() => {
     const invalidate = () => {
       lifetime.current = {};
+      submission.current = null;
     };
     invalidate();
     const unsubscribe = connectionStore.subscribe((current, previous) => {
@@ -302,13 +304,17 @@ export function LaunchConfigForm({
   }
 
   async function handleSubmit(): Promise<void> {
-    if (busy) return;
+    // React's busy state renders the button, but admission must be synchronous
+    // and cover validation too. Keep newer edits editable while this snapshot saves.
+    if (submission.current !== null) return;
+    const admitted = {};
+    submission.current = admitted;
     const attempt = lifetime.current;
-    const valid = await validateScalarFields(attempt);
-    if (attempt !== lifetime.current) return;
-    if (!valid) return; // matches the legacy's own "returns early, no save attempted" - no status-line change
     setBusy(true);
     try {
+      const valid = await validateScalarFields(attempt);
+      if (attempt !== lifetime.current) return;
+      if (!valid) return; // no save attempted and no status-line change
       const resolved = await onSave(collectConfig(supportedOptions, state));
       if (attempt !== lifetime.current) return;
       // Rebase only the submitted state. Edits made while saving stay dirty.
@@ -339,7 +345,10 @@ export function LaunchConfigForm({
       setStatus({ kind: "error", text: `Error: ${message}` });
       toast.push("error", "Save failed");
     } finally {
-      if (attempt === lifetime.current) setBusy(false);
+      if (submission.current === admitted) {
+        submission.current = null;
+        setBusy(false);
+      }
     }
   }
 

@@ -145,16 +145,16 @@ export function McpSection({ useOverviewStore, host = LOCAL_HOST }: McpSectionPr
 
   async function handleAddConfig(path: string): Promise<CollectionAddResult> {
     const attempt = lifetime.current;
-    const validated = await store.getState().validatePath(path, "file");
-    // Validation does not outlive its editor or connection. A write already
-    // issued retains its normal outcome, but a discarded Add must not start one.
-    if (attempt !== lifetime.current) return { ok: false, error: "Settings changed. Add the config file again." };
-    if (!validated.valid) return { ok: false, error: validated.error || "path does not exist" };
-    const current = writableLayer();
-    if (current === null) return { ok: false, error: refusal() };
-    const canonical = validated.path || path;
-    const nextList = [...(current.mcpConfigs ?? []), canonical];
     try {
+      const validated = await store.getState().validatePath(path, "file");
+      // Validation does not outlive its editor or connection. A write already
+      // issued retains its normal outcome, but a discarded Add must not start one.
+      if (attempt !== lifetime.current) return { ok: false, error: "Settings changed. Add the config file again." };
+      if (!validated.valid) return { ok: false, error: validated.error || "path does not exist" };
+      const current = writableLayer();
+      if (current === null) return { ok: false, error: refusal() };
+      const canonical = validated.path || path;
+      const nextList = [...(current.mcpConfigs ?? []), canonical];
       await store.getState().setLaunchLayer({ ...current, mcpConfigs: nextList });
       return { ok: true };
     } catch (err) {

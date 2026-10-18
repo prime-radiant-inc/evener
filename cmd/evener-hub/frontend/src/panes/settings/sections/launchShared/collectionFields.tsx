@@ -27,6 +27,7 @@
 // validation UI surfaced here.
 
 import {
+  friendlyErrorMessage,
   type LaunchOption,
   type MCPServerSpec,
   type PathValidateResponse,
@@ -494,7 +495,12 @@ export function McpServerListField({
   async function handleAdd(trimmed: string): Promise<CollectionAddResult> {
     const entry = parseMcpServerEntry(trimmed);
     if (entry === null) return { ok: false, error: MCP_SERVER_ENTRY_USAGE };
-    const result = await validateCommand(entry.command);
+    let result: PathValidateResponse;
+    try {
+      result = await validateCommand(entry.command);
+    } catch (err) {
+      return { ok: false, error: friendlyErrorMessage(err) };
+    }
     if (!result.valid) return { ok: false, error: result.error || "invalid command" };
     onChange([...items, { ...entry, command: result.path || entry.command }]);
     return { ok: true };

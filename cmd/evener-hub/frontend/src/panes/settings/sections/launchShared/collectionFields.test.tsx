@@ -1,6 +1,7 @@
-import type { LaunchOption } from "@evener/appwire-client";
+import { type LaunchOption, type PathValidateResponse, WireError } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
@@ -651,6 +652,30 @@ describe("McpServerListField", () => {
     kind: "mcpServerList",
     perLaunch: true,
   };
+
+  test("a rejected command validation retains the proposal and reports failure before explicit retry", async () => {
+    const validation = deferred<PathValidateResponse>();
+    const validateCommand = vi.fn((_command: string) => validation.promise);
+    const onChange = vi.fn();
+    render(<McpServerListField option={mcpOption} items={[]} onChange={onChange} validateCommand={validateCommand} />);
+    const user = userEvent.setup();
+    const input = screen.getByRole("textbox", { name: "MCP servers" });
+    await user.type(input, "search /usr/bin/search --port 9000");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(input).toHaveProperty("disabled", true);
+    await act(async () => validation.reject(new WireError("command validation unavailable", -32000)));
+    expect(screen.getByRole("alert").textContent).toBe("command validation unavailable");
+    expect(input).toHaveProperty("value", "search /usr/bin/search --port 9000");
+    expect(input).toHaveProperty("disabled", false);
+    expect(onChange).not.toHaveBeenCalled();
+    validateCommand.mockImplementation(async (command) => ({ valid: true, path: command }));
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(onChange).toHaveBeenCalledExactlyOnceWith([
+      { name: "search", command: "/usr/bin/search", args: ["--port", "9000"] },
+    ]);
+    expect(input).toHaveProperty("value", "");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 
   test("renders 'name → command args' per row", () => {
     render(

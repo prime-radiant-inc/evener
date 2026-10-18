@@ -77,6 +77,94 @@ test("an incomplete inline MCP proposal stays on its original editor when naviga
 });
 
 for (const kind of ["config", "server"] as const) {
+  test(`${kind} synchronous duplicate Add admits only one validation and write`, async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+    fake.on("evener/paths/complete", () => ({ data: [] }));
+    const validation = deferred<{ path: string; valid: boolean }>();
+    const validate = vi.fn(() => validation.promise);
+    fake.on("evener/path/validate", validate);
+    const write = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+    fake.on("evener/launch/setLayer", write);
+    render(<McpSection useOverviewStore={overviewHook()} />);
+    await launchLayerLoaded();
+    const user = userEvent.setup();
+    if (kind === "server")
+      fireEvent.change(screen.getByRole("textbox", { name: "Inline MCP servers" }), {
+        target: { value: "search /usr/bin/search-mcp" },
+      });
+    else {
+      await user.click(screen.getByRole("button", { name: /^New config file:/ }));
+      await screen.findByRole("combobox", { name: "Path" });
+      await user.keyboard("/etc/mcp.json{Enter}");
+    }
+    const form = screen.getAllByRole("button", { name: "Add" })[kind === "config" ? 0 : 1]!.closest("form")!;
+    await act(async () => {
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
+    expect(validate).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      validation.resolve({ path: kind === "config" ? "/etc/mcp.json" : "/usr/bin/search-mcp", valid: true }),
+    );
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([false, true])(
+    `${kind} Add recovers rejected validation with retained draft, reconnect=%s`,
+    async (reconnect) => {
+      const fake = connectFakeClient();
+      fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+      fake.on("evener/paths/complete", () => ({ data: [] }));
+      const validation = deferred<{ path: string; valid: boolean }>();
+      fake.on("evener/path/validate", () => validation.promise);
+      const write = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+      fake.on("evener/launch/setLayer", write);
+      render(
+        <SettingsDraftsProvider>
+          <McpSection useOverviewStore={overviewHook()} />
+        </SettingsDraftsProvider>,
+      );
+      await launchLayerLoaded();
+      const user = userEvent.setup();
+      if (kind === "server") await addInlineServer(user, "search /usr/bin/search-mcp");
+      else {
+        await user.click(screen.getByRole("button", { name: /^New config file:/ }));
+        await screen.findByRole("combobox", { name: "Path" });
+        await user.keyboard("/etc/mcp.json{Enter}");
+        await user.click(screen.getAllByRole("button", { name: "Add" })[0]!);
+      }
+      if (reconnect) {
+        act(() => connectionStore.setState({ state: "idle" }));
+        act(() => connectionStore.setState({ state: "ready" }));
+        await waitFor(() => expect(extensionsStore.getState().launchLayerLoading).toBe(false));
+      }
+      await act(async () => validation.reject(new WireError("MCP validation disconnected", -32000)));
+      expect(screen.getByText("MCP validation disconnected")).toBeTruthy();
+      const button = screen.getAllByRole("button", { name: "Add" })[kind === "config" ? 0 : 1]!;
+      expect(button).toHaveProperty("disabled", false);
+      if (kind === "server")
+        expect(screen.getByRole("textbox", { name: "Inline MCP servers" })).toHaveProperty(
+          "value",
+          "search /usr/bin/search-mcp",
+        );
+      else expect(screen.getByRole("button", { name: /^New config file:/ }).textContent).toContain("/etc/mcp.json");
+      expect(write).not.toHaveBeenCalled();
+      act(() => navigate("/settings/theme"));
+      await user.click(screen.getByRole("button", { name: "Stay" }));
+      fake.on("evener/path/validate", ({ path }) => ({ valid: true, path }));
+      await user.click(button);
+      expect(write).toHaveBeenCalledExactlyOnceWith({
+        cwd: "/",
+        layer: "global",
+        config:
+          kind === "config"
+            ? { mcpConfigs: ["/etc/mcp.json"], mcps: [] }
+            : { mcpConfigs: [], mcps: [{ name: "search", command: "/usr/bin/search-mcp", args: [] }] },
+      });
+    },
+  );
+
   test.each(["discard", "unmount", "host", "connection", "replacement", "same owner"] as const)(
     `${kind} delayed Add validation preserves write ownership through %s`,
     async (change) => {
