@@ -1,5 +1,6 @@
 import { readFile, readdir, lstat } from 'node:fs/promises';
-import { resolve, join, relative, isAbsolute, sep } from 'node:path';
+import { resolve, join, relative, isAbsolute, sep, dirname } from 'node:path';
+import { devNull } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -37,12 +38,18 @@ export function classifyTourFailure(output) {
 }
 const id = row => `${row.scenario}/${row.surface}/${row.checkpoint}`;
 function insist(condition, message) { if (!condition) throw new Error(message); }
+// Explicit-root local Git operations must not inherit another repository or
+// caller configuration. Keep repository-local configuration and hooks intact.
+export function gitEnvironment(root) {
+ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
+ return { ...env, GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_SYSTEM: devNull, GIT_CONFIG_NOSYSTEM: '1', GIT_CEILING_DIRECTORIES: dirname(resolve(root)) };
+}
 export function revision(root = repositoryRoot) {
- return execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+ return execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8', env: gitEnvironment(root) }).trim();
 }
 // Hash working bytes, including untracked active sources. Native is deferred.
 export async function sourceTreeDigest(root = repositoryRoot) {
- const paths = execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { maxBuffer: 32 * 1024 * 1024 }).toString().split('\0').filter(Boolean);
+ const paths = execFileSync('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { maxBuffer: 32 * 1024 * 1024, env: gitEnvironment(root) }).toString().split('\0').filter(Boolean);
  const relevant = p => /^(agent\/|appwire\/|appwire-client\/|auth\/|buildinfo\/|cmd\/|cmdutil\/|execsupport\/|frontmatter\/|hubapi\/|identifier\/|internal\/|invariant\/|llm\/|rendezvous\/|server\/|test\/|envvars\/|scripts\/|make\/|Makefile$|docs\/examples\/|go\.(mod|sum|work|work.sum)$|docs-site\/(package(-lock)?\.json|scripts\/tours\/))/.test(p) && !/^docs-site\/scripts\/tours\/(native[^/]*|xctest\/)/.test(p);
  const digest = createHash('sha256');
  for (const path of [...new Set(paths)].filter(relevant).sort()) {

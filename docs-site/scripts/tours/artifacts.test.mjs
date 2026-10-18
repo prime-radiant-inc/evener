@@ -11,6 +11,83 @@ import { generateCandidate } from './refresh.mjs';
 import * as refresh from './refresh.mjs';
 
 const hash = b => createHash('sha256').update(b).digest('hex');
+for (const mode of ['signing', 'hooks', 'template', 'selection', 'read-chain']) {
+ test(`Git isolation: ${mode}`, async t => {
+  const f = await candidateFixture(t, required);
+  const decoy = await candidateFixture(t, []);
+  await writeFile(join(decoy.repo, 'go.sum'), 'decoy source\n');
+  decoy.git('add', '.');
+  decoy.git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'decoy');
+  const source = await readFile(join(f.repo,'go.mod'));
+  const expectedDigest = createHash('sha256').update(JSON.stringify(['go.mod',source.length])).update(source).digest('hex');
+  assert.equal(f.manifest.sourceTreeDigest, expectedDigest);
+  assert.notEqual(decoy.git('rev-parse','HEAD').trim(), f.manifest.sourceRevision);
+  async function snapshot(path) {
+   const entries = await readdir(path, { withFileTypes: true });
+   const result = {};
+   for (const entry of entries.sort((a,b)=>a.name.localeCompare(b.name))) {
+    result[entry.name] = entry.isDirectory() ? await snapshot(join(path,entry.name)) : hash(await readFile(join(path,entry.name)));
+   }
+   return result;
+  }
+  const before = await snapshot(decoy.repo);
+  const hooks = join(f.base, 'hooks');
+  const template = join(f.base, 'template');
+  await mkdir(hooks);
+  await mkdir(join(template, 'hooks'), { recursive: true });
+  for (const dir of [hooks, join(template, 'hooks')]) {
+   await writeFile(join(dir,'pre-commit'), '#!/bin/sh\nexit 71\n', { mode: 0o755 });
+  }
+  const config = join(f.base, 'host.gitconfig');
+  await writeFile(config, mode === 'signing'
+   ? `[commit]\n gpgsign = true\n[user]\n signingkey = missing-test-key\n[gpg]\n program = ${join(f.base,'missing-gpg')}\n`
+   : `[core]\n hooksPath = ${hooks}\n`);
+  // Build the child baseline independently of the production environment helper.
+  const env = { PATH: process.env.PATH, HOME: f.base, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+  if (mode === 'signing' || mode === 'hooks') env.GIT_CONFIG_GLOBAL = config;
+  if (mode === 'template') env.GIT_TEMPLATE_DIR = template;
+  if (mode === 'selection' || mode === 'read-chain') Object.assign(env, {
+   GIT_DIR: join(decoy.repo,'.git'), GIT_COMMON_DIR: join(decoy.repo,'.git'),
+   GIT_WORK_TREE: decoy.repo, GIT_INDEX_FILE: join(decoy.repo,'.git/index'),
+   GIT_CONFIG: config, GIT_CONFIG_SYSTEM: config, GIT_CONFIG_GLOBAL: config,
+   GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: hooks,
+   GIT_CONFIG_PARAMETERS: "'commit.gpgsign=true'", GIT_TEMPLATE_DIR: template,
+  });
+  const script = `
+   import assert from 'node:assert/strict';
+   import { candidateFixture } from ${JSON.stringify(new URL('./artifact-test-support.mjs',import.meta.url).href)};
+   import * as artifacts from ${JSON.stringify(new URL('./artifacts.mjs',import.meta.url).href)};
+   import { writeFile } from 'node:fs/promises';
+   import { join } from 'node:path';
+   const cleanup=[];
+   try {
+    ${mode === 'read-chain' ? `
+     assert.equal(artifacts.revision(${JSON.stringify(f.repo)}), ${JSON.stringify(f.manifest.sourceRevision)});
+     assert.equal(await artifacts.sourceTreeDigest(${JSON.stringify(f.repo)}), ${JSON.stringify(expectedDigest)});
+     await artifacts.validateCandidate(${JSON.stringify(f.root)}, artifacts.fullMatrix, {sourceRoot:${JSON.stringify(f.repo)}});
+    ` : `
+     const f=await candidateFixture({after:fn=>cleanup.push(fn)}, artifacts.fullMatrix, ${JSON.stringify(f.base)});
+     await artifacts.validateCandidate(f.root, artifacts.fullMatrix, {sourceRoot:f.repo});
+     f.git('-c','user.name=Test','-c','user.email=test@example.invalid','commit','--allow-empty','-qm','historical provenance');
+     assert.equal(f.git('rev-list','--count','HEAD').trim(),'2');
+     assert.notEqual(artifacts.revision(f.repo),f.manifest.sourceRevision);
+     await assert.rejects(artifacts.validateCandidate(f.root, artifacts.fullMatrix, {sourceRoot:f.repo}));
+     await artifacts.validateCandidate(f.root, artifacts.fullMatrix, {sourceRoot:f.repo,historicalProvenance:true});
+     await writeFile(join(f.repo,'go.mod'),'module changed\\n');
+     assert.notEqual(await artifacts.sourceTreeDigest(f.repo),f.manifest.sourceTreeDigest);
+     // Repository-local hooks remain active, unlike ambient hooks.
+     f.git('config','core.hooksPath',${JSON.stringify(hooks)});
+     assert.throws(()=>f.git('-c','user.name=Test','-c','user.email=test@example.invalid','commit','--allow-empty','-qm','must fail'));
+    `}
+   } finally { for(const fn of cleanup.reverse()) await fn(); }
+  `;
+  try {
+   execFileSync(process.execPath, ['--input-type=module','-e',script], {env, stdio:'pipe'});
+  } finally {
+   assert.deepEqual(await snapshot(decoy.repo), before, 'decoy repository must remain byte-identical');
+  }
+ });
+}
 test('internally-created check and fixture roots canonicalize a symlinked temp parent',async t=>{
  const base=await realpath(await mkdtemp(join(tmpdir(),'tour-symlink-test-')));
  t.after(()=>rm(base,{recursive:true,force:true}));

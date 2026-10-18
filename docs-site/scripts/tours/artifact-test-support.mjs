@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { deflateSync } from 'node:zlib';
-import { sourceTreeDigest } from './artifacts.mjs';
+import { sourceTreeDigest, gitEnvironment } from './artifacts.mjs';
 
 const hash = b => createHash('sha256').update(b).digest('hex');
 // Cached buffers stay private. Return copies so callers cannot mutate the cache.
@@ -54,9 +54,12 @@ export async function candidateFixture(t, required, parent=tmpdir()) {
   await writeFile(join(repo, 'docs/assets/tutorials/approved.png'), independentPNG(1, 1));
   await writeFile(join(repo, 'docs-site/publication.json'), '{}');
   await writeFile(join(repo, 'go.mod'), 'module example\n');
-  execFileSync('git', ['init', '-q', repo]);
-  execFileSync('git', ['-C', repo, 'add', '.']);
-  execFileSync('git', ['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture']);
+  const git = (...args) => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', env: gitEnvironment(repo) });
+  const template = join(base, 'empty-git-template');
+  await mkdir(template);
+  git('init', '-q', `--template=${template}`);
+  git('add', '.');
+  git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture');
   const root = join(base, 'candidate');
   await mkdir(root);
   const rows = [];
@@ -83,7 +86,7 @@ export async function candidateFixture(t, required, parent=tmpdir()) {
   }
   const manifest = {
     version: 1,
-    sourceRevision: execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+    sourceRevision: git('rev-parse', 'HEAD').trim(),
     sourceTreeDigest: await sourceTreeDigest(repo),
     toolVersions: { node: process.version, go: 'go1.26', playwright: '1.56.1' },
     coverage: required,
@@ -93,5 +96,5 @@ export async function candidateFixture(t, required, parent=tmpdir()) {
   };
   const save = () => writeFile(join(root, 'manifest.json'), JSON.stringify(manifest));
   await save();
-  return { base, repo, root, manifest, save };
+  return { base, repo, root, manifest, save, git };
 }

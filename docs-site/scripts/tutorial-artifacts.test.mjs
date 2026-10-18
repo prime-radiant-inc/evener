@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { independentPNG, candidateFixture } from './tours/artifact-test-support.mjs';
 import * as artifacts from './tours/artifacts.mjs';
 import { checkTutorialAssets } from './check.mjs';
@@ -14,15 +13,15 @@ function png(width, height) {
 }
 const required = ['receipt','daily','configuration','extensions'].flatMap(scenario => ['cli','web'].flatMap(surface => ['entry','action','verified'].map(checkpoint => ({scenario,surface,checkpoint}))));
 async function fixture(t) {
- const {base,repo,root,manifest,save} = await candidateFixture(t, required);
+ const {base,repo,root,manifest,save,git} = await candidateFixture(t, required);
  const rows = manifest.rows;
  const publication={assets:['docs/assets/tutorials/manifest.json',...rows.flatMap(r=>[r.file,...(r.text?[r.text.file]:[])].map(p=>'docs/assets/tutorials/'+p))]};
- return {base,repo,root,manifest,save,publication};
+ return {base,repo,root,manifest,save,publication,git};
 }
 
 test('publication accepts historical provenance but current candidates reject source drift',async t=>{
  const f=await fixture(t);
- execFileSync('git',['-C',f.repo,'-c','user.name=Test','-c','user.email=test@example.invalid','commit','--allow-empty','-qm','later unrelated commit']);
+ f.git('-c','user.name=Test','-c','user.email=test@example.invalid','commit','--allow-empty','-qm','later unrelated commit');
  await assert.rejects(artifacts.validateCandidate(f.root,required,{sourceRoot:f.repo}),/Stale source/);
  const m=await checkTutorialAssets({root:f.repo,assetRoot:f.root,publication:f.publication});
  assert.equal(m.sourceRevision,f.manifest.sourceRevision); assert.equal(m.sourceTreeDigest,f.manifest.sourceTreeDigest); assert.equal(m.rows.length,24);
