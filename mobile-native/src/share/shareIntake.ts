@@ -4,7 +4,7 @@
 // (URL, foreground, hub ready) offers it again, so nothing is lost. A placed
 // share is forgotten and never offered again.
 import type { SharePort, SharedPayload } from "./sharePayload";
-import { pendingShares } from "./sharePayload";
+import { pendingShares, shareFileName } from "./sharePayload";
 
 export interface ShareIntakeOptions {
 	/** Called with the oldest pending share, one at a time. The app opens its
@@ -24,9 +24,11 @@ export interface ShareIntake {
 	/** A placed or explicitly discarded share is never offered again, even if
 	 * its file lingers. */
 	forget(id: string): void;
-	/** A placed or discarded share is done and the next pending one may be
-	 * offered now, without waiting for a foreground or URL. */
-	advance(): Promise<void>;
+	/** A placed or discarded share is done: its file is deleted, and the next
+	 * pending one may be offered now, without waiting for a foreground or URL.
+	 * A delete that fails leaves the share pending, so a restart offers it
+	 * again instead of losing the record silently. */
+	advance(id: string): Promise<void>;
 	/** The app unmounted: nothing more is offered. */
 	dispose(): void;
 }
@@ -62,7 +64,14 @@ export function createShareIntake(options: ShareIntakeOptions): ShareIntake {
 			done.add(id);
 			if (active === id) active = null;
 		},
-		async advance() {
+		async advance(id) {
+			try {
+				await options.port.remove(shareFileName(id));
+			} catch {
+				// The file is still there: offering it again is the honest
+				// outcome, since the app cannot say it was placed.
+				return;
+			}
 			await offer();
 		},
 		dispose() {

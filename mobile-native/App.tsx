@@ -38,9 +38,10 @@ import { ConversationScreen, type Routes } from "./src/screens";
 import { ModelSheet } from "./src/session/ModelSheet";
 import { drafts } from "./src/nativeDrafts";
 import { appGroupSharePort } from "./src/share/appGroupSharePort";
-import { completeShare, type SharedPayload } from "./src/share/sharePayload";
+import type { SharedPayload } from "./src/share/sharePayload";
 import { ShareTargetSheet } from "./src/share/ShareTargetSheet";
 import { useShareIntake } from "./src/share/useShareIntake";
+import { installShareIntake } from "./src/share/shareIntakeHost";
 import { CommandsSheet } from "./src/session/CommandsSheet";
 import { NotesSheet } from "./src/session/NotesSheet";
 import { SessionInfoSheet } from "./src/session/SessionInfoSheet";
@@ -105,6 +106,9 @@ function Navigation() {
 		ready: connectionState === "ready",
 		onShare: setPendingShare,
 	});
+	// The New session sheet takes ownership of a share the picker handed it;
+	// this is how it reports the placement back to the one intake.
+	installShareIntake(intake);
 	// A share arrives possibly before the navigator is ready; it opens the
 	// sheet as soon as the container can take a route.
 	useEffect(() => {
@@ -209,14 +213,12 @@ function Navigation() {
 									route={route}
 									drafts={drafts}
 									onPlaced={(item) => {
-										void completeShare(sharePort, item.id).catch(() => {});
 										intake.forget(item.id);
-										void intake.advance();
+										void intake.advance(item.id);
 									}}
 									onDiscarded={(item) => {
-										void completeShare(sharePort, item.id).catch(() => {});
 										intake.forget(item.id);
-										void intake.advance();
+										void intake.advance(item.id);
 									}}
 									onClosed={() => intake.release()}
 								/>

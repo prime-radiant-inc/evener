@@ -84,6 +84,19 @@ it("offers the next share after a placed one advances the intake", async () => {
 	});
 	await intake.offer();
 	intake.forget("one");
-	await intake.advance();
+	await intake.advance("one");
 	expect(offered.map((entry) => entry.id)).toEqual(["one", "two"]);
+});
+
+it("keeps a placed share pending when its file cannot be deleted", async () => {
+	const offered: SharedPayload[] = [];
+	const subject = sharePort([share("one", HOUR)]);
+	subject.remove = async () => {
+		throw new Error("disk busy");
+	};
+	const intake = createShareIntake({ port: subject, onShare: (entry) => offered.push(entry) });
+	await intake.offer();
+	intake.forget("one");
+	await intake.advance("one");
+	expect(offered.map((entry) => entry.id)).toEqual(["one"]);
 });

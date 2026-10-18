@@ -4,7 +4,7 @@ import { createNewSessionStore, type DraftStorage } from "../newSession";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import { LaunchMemory } from "./launchMemory";
 import { memoryStorage } from "./newSessionTestUtils";
-import { seedSharedPrompt, shareSeedLanded } from "./shareSeed";
+import { retrySharedSeed, seedSharedPrompt, shareSeedLanded } from "./shareSeed";
 
 const HUB = "hub-1";
 
@@ -92,9 +92,9 @@ it("reports the prompt it seeded, so a later check can tell it landed", () => {
 	const environment = opening();
 	try {
 		const seed = seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" });
-		expect(seed.prompt).toBe("What I shared");
-		expect(shareSeedLanded(environment.store, seed.prompt, "What I shared")).toBe(true);
-		expect(shareSeedLanded(environment.store, seed.prompt, "Something else")).toBe(false);
+		expect(seed.text).toBe("What I shared");
+		expect(shareSeedLanded(environment.store, seed.text)).toBe(true);
+		expect(shareSeedLanded(environment.store, "Something else")).toBe(false);
 	} finally {
 		environment.close();
 	}
@@ -103,9 +103,22 @@ it("reports the prompt it seeded, so a later check can tell it landed", () => {
 it("does not append the same share twice when the sheet is reopened on it", () => {
 	const environment = opening();
 	try {
-		seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" });
-		seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" });
+		seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "  What I shared\n" });
+		seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "  What I shared\n" });
 		expect(environment.store.getState().prompt).toBe("What I shared");
+	} finally {
+		environment.close();
+	}
+});
+
+it("reports a landing after the text was edited around, without appending it again", () => {
+	const environment = opening();
+	try {
+		const seed = seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" });
+		environment.store.getState().setPrompt(`${seed.text} and more I typed`);
+		expect(shareSeedLanded(environment.store, seed.text)).toBe(true);
+		expect(retrySharedSeed(environment.store, seed.text)).toBe(true);
+		expect(environment.store.getState().prompt).toBe("What I shared and more I typed");
 	} finally {
 		environment.close();
 	}
@@ -118,7 +131,7 @@ it("reports a seed the store could not take while it is starting an earlier sess
 		environment.store.setState({ submitting: true });
 		const seed = seedSharedPrompt(environment.store, environment.memory, { id: "s1", text: "What I shared" });
 		expect(seed.saved).toBe(false);
-		expect(shareSeedLanded(environment.store, seed.prompt, "What I shared")).toBe(false);
+		expect(shareSeedLanded(environment.store, seed.text)).toBe(false);
 	} finally {
 		environment.close();
 	}

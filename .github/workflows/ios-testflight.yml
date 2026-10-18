@@ -305,7 +305,11 @@ jobs:
           if test -n "${IOS_PROFILE_PATH:-}"; then
             rm -f "$IOS_PROFILE_PATH" || cleanup_status=1
           fi
+          if test -n "${IOS_SHARE_PROFILE_PATH:-}"; then
+            rm -f "$IOS_SHARE_PROFILE_PATH" || cleanup_status=1
+          fi
           rm -f "$RUNNER_TEMP/evener-distribution.p12" "$RUNNER_TEMP/evener.mobileprovision" "$RUNNER_TEMP/evener-profile.plist" || cleanup_status=1
+          rm -f "$RUNNER_TEMP/evener-share.mobileprovision" "$RUNNER_TEMP/evener-share-profile.plist" || cleanup_status=1
           rm -f "$RUNNER_TEMP/evener-keychains.txt" "$RUNNER_TEMP/evener-default-keychain.txt" || cleanup_status=1
           exit "$cleanup_status"
 

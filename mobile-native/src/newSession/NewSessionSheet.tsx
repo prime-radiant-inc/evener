@@ -35,6 +35,7 @@ import { ProjectPicker } from "./ProjectPicker";
 import { useSheetPlugins } from "./sheetPlugins";
 import { useSheetLaunchDefaults } from "./useLaunchDefaults";
 import { seedSharedPrompt, shareSeedLanded } from "./shareSeed";
+import { currentShareIntake } from "../share/shareIntakeHost";
 
 const NewSessionStack = createNativeStackNavigator<NewSessionRoutes>();
 
@@ -67,37 +68,59 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 	const storageError = useStore(store, (form) => form.storageError);
 	const opened = useRef(false);
 	const stopOpening = useRef(() => {});
-	const seededShare = useRef<{ prompt: string; text: string } | null>(null);
+	const seededShare = useRef<{ text: string } | null>(null);
+	const reported = useRef(false);
 	useEffect(() => {
 		if (opened.current || !storageLoaded) return;
+		// A store still starting an earlier session ignores prompt edits: the
+		// form is placed now, and the share waits for the store to take it.
+		if (share && submitting) {
+			opened.current = true;
+			stopOpening.current = openForm(store, memory.lastSetup());
+			return;
+		}
 		opened.current = true;
 		// A share's text rides through the one opening path, so it keeps the
 		// remembered host, project and model.
 		if (share) {
 			const seed = seedSharedPrompt(store, memory, share);
 			stopOpening.current = seed.stop;
-			seededShare.current = { prompt: seed.prompt, text: share.text };
+			seededShare.current = { text: seed.text };
 			return;
 		}
 		stopOpening.current = openForm(store, memory.lastSetup());
-	}, [store, memory, storageLoaded, share]);
+	}, [store, memory, storageLoaded, share, submitting]);
 	// The share's file goes once its text is durably saved: at the seed, or
 	// later through the form's Retry saving after a failed write. A share that
 	// never saved stays pending and is offered again. The check reads the live
 	// store, because the seed changed it after this render's own values.
 	useEffect(() => {
 		const seed = seededShare.current;
-		if (!share || !seed || !shareSeedLanded(store, seed.prompt, seed.text)) return;
-		void completeShare(appGroupSharePort(), share.id).catch(() => {});
+		if (!share || !seed || reported.current || !shareSeedLanded(store, seed.text)) return;
+		reported.current = true;
+		// The picker handed this share to this sheet, so its intake is the one
+		// that deletes the file and offers the next pending share.
+		const intake = currentShareIntake();
+		intake?.forget(share.id);
+		if (intake) void intake.advance(share.id);
+		else void completeShare(appGroupSharePort(), share.id).catch(() => {});
 	}, [share, store, prompt, storageError]);
-	// A store still starting an earlier session ignores prompt edits; the seed
-	// tries again once the store can take one.
+	// The store finished its earlier start: the deferred seed runs now.
 	useEffect(() => {
-		if (share && seededShare.current === null) return;
-		if (!share || !submitting) return;
-		seedSharedPrompt(store, memory, share);
+		if (!share || !opened.current || seededShare.current || submitting) return;
+		const seed = seedSharedPrompt(store, memory, share);
+		stopOpening.current = seed.stop;
+		seededShare.current = { text: seed.text };
 	}, [share, store, memory, submitting]);
-	useEffect(() => () => stopOpening.current(), []);
+	// Leaving with the share still unplaced hands it back to the intake, so a
+	// later wake offers it again instead of it being stranded as "busy".
+	useEffect(
+		() => () => {
+			stopOpening.current();
+			if (share && !reported.current) currentShareIntake()?.release();
+		},
+		[share],
+	);
 
 	const bindTo = ready && client ? client : null;
 	// A new or lost connection rebinds the store, which makes anything in

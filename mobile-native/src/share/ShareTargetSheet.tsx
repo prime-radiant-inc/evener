@@ -185,6 +185,8 @@ export function ShareTargetSheet({
 				testID="share-new-session"
 				accessibilityRole="button"
 				accessibilityLabel="New session"
+				accessibilityState={{ disabled: !activeProfile }}
+				disabled={!activeProfile}
 				onPress={startNew}
 				style={({ pressed }) => ({
 					minHeight: 48,
@@ -194,6 +196,7 @@ export function ShareTargetSheet({
 					alignItems: "center",
 					columnGap: 10,
 					backgroundColor: pressed ? palette.pressed : palette.page,
+					opacity: activeProfile ? 1 : 0.4,
 				})}
 			>
 				<View style={{ width: 28, alignItems: "center" }}>

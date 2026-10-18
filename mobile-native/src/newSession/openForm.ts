@@ -24,7 +24,8 @@ export function openForm(
 	const hasDraft = form.cwd.trim() !== "" || form.prompt.trim() !== "" || form.images.length > 0;
 	// A share only adds to the prompt; every other starting rule stands.
 	const stop = !hasDraft ? (lastSetup ? (form.applySetup(lastSetup), () => {}) : takeRecentProject(store)) : () => {};
-	if (shared) store.getState().setPrompt(mergeDraftText(store.getState().prompt, shared));
+	const current = store.getState().prompt;
+	if (shared && !current.includes(shared)) store.getState().setPrompt(mergeDraftText(current, shared));
 	return stop;
 }
 

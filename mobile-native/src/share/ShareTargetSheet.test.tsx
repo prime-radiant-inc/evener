@@ -222,7 +222,8 @@ it("searches with the Board's backend and offers a past result", async () => {
 
 it("offers no sessions and searches nothing while the hub is not ready", async () => {
 	const { searcher } = hub();
-	connect(null, "reconnecting");
+	// No hub configured at all, which is the case New session cannot answer.
+	harness.connection = { client: null, state: "reconnecting", activeProfile: null, fatal: false };
 	const navigation = { replace: vi.fn(), goBack: vi.fn() };
 	const tree = render(sheet(navigation));
 	await settleMicrotasks();
@@ -240,6 +241,10 @@ it("offers no sessions and searches nothing while the hub is not ready", async (
 	act(() => field.props.onChangeText("report"));
 	await settleMicrotasks();
 	expect(searcher).not.toHaveBeenCalled();
+	// New session needs a hub to start on; with none the row is disabled, so
+	// the share is not handed to a sheet that would immediately close.
+	const newSession = tree.root.find((node) => node.props.testID === "share-new-session");
+	expect(newSession.props.disabled).toBe(true);
 });
 
 it("keeps the share when the draft write does not land", async () => {
