@@ -185,8 +185,9 @@ try {
   );
 } catch (error) {
   try {
-    writeFileSync(path.join(args["artifact-dir"], "page.txt"), await read("document.body.innerText"));
-    console.error(await read("document.body.innerText"));
+    const body = await read("document.body.innerText");
+    writeFileSync(path.join(args["artifact-dir"], "page.txt"), body);
+    console.error(body);
   } catch {}
   throw error;
 } finally {

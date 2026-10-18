@@ -1823,11 +1823,11 @@ function SpawnForm({
         return;
       }
       const field = owner.querySelector<HTMLElement>('[data-launch-field="sandbox"]');
-      (
-        field?.querySelector<HTMLSelectElement>("select") ??
-        field?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]') ??
-        field?.querySelector<HTMLElement>('[role="radio"]')
-      )?.focus();
+      const selected = field?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]');
+      const firstEnabled = field?.querySelector<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]):not([aria-disabled="true"])',
+      );
+      (selected ?? firstEnabled)?.focus();
     });
   }
 
