@@ -1354,14 +1354,50 @@ test("pruneUnlistedAccepted retires only old accepted turn records of the target
 	});
 	await storage.settleReceipt(note.clientMutationId, "pending");
 
-	await expect(storage.pruneUnlistedAccepted(TARGET, 1500)).resolves.toEqual([send.clientMutationId]);
+	await expect(storage.pruneUnlistedAccepted(TARGET, 1500, new Set())).resolves.toEqual([send.clientMutationId]);
 	expect(rawRow("mutation_optimistic", send.clientMutationId)).toBeUndefined();
 	expect(rawRow("mutation_optimistic", recent.clientMutationId)).toBeDefined();
 	expect(rawRow("mutation_optimistic", note.clientMutationId)).toBeDefined();
 });
 
+// RoboRev #996: acceptance is its own moment. A request enqueued before a read
+// can have its pending receipt land after that read's snapshot, and the
+// replacement client's read never saw the record - so pruning by enqueue time
+// would drop a send the snapshot had no evidence about.
+test("pruneUnlistedAccepted keeps a record accepted after the read began", async () => {
+	let now = 1000;
+	storage = new MutationOutboxSQLite(port, { createMutationId: () => "mutation-late", now: () => now });
+	const send = await storage.enqueueIntent({
+		...intent("enqueued before the read, accepted after it"),
+		method: "turn/start",
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "late receipt" }] },
+	});
+	// The read starts at 1500 and snapshots without this record; the receipt
+	// lands at 2000, still before the read's reconcile runs.
+	now = 2000;
+	await storage.settleReceipt(send.clientMutationId, "pending");
+
+	await expect(storage.pruneUnlistedAccepted(TARGET, 1500, new Set())).resolves.toEqual([]);
+	expect(rawRow("mutation_optimistic", send.clientMutationId)).toBeDefined();
+});
+
 test("pruneUnlistedAccepted leaves a submitting row alone", async () => {
 	const queued = await storage.enqueueIntent(intent("still owed to the daemon"));
-	await expect(storage.pruneUnlistedAccepted(TARGET, 9999)).resolves.toEqual([]);
+	await expect(storage.pruneUnlistedAccepted(TARGET, 9999, new Set())).resolves.toEqual([]);
 	expect(rawRow("mutation_outbox", queued.clientMutationId)).toBeDefined();
+});
+
+test("pruneUnlistedAccepted keeps an accepted record the read actually named", async () => {
+	storage = new MutationOutboxSQLite(port, { createMutationId: () => "mutation-named", now: () => 1000 });
+	const send = await storage.enqueueIntent({
+		...intent("named by the read, settlement failed"),
+		method: "turn/start",
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "named" }] },
+	});
+	await storage.settleReceipt(send.clientMutationId, "pending");
+
+	// The read named this id, so it is still pending on the daemon; a failed
+	// settlement must not let the absence rule delete what the read proved.
+	await expect(storage.pruneUnlistedAccepted(TARGET, 9999, new Set([send.clientMutationId]))).resolves.toEqual([]);
+	expect(rawRow("mutation_optimistic", send.clientMutationId)).toBeDefined();
 });

@@ -42,7 +42,11 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> & {
 	discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean>;
 	discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean>;
 	releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean>;
-	pruneUnlistedAccepted(targetRef: string, createdBefore: number): Promise<string[]>;
+	pruneUnlistedAccepted(
+		targetRef: string,
+		acceptedBefore: number,
+		authoritativeIds: ReadonlySet<string>,
+	): Promise<string[]>;
 };
 
 export type NativeMutationStorageListener = (targetRefs: readonly string[]) => void;
@@ -54,9 +58,9 @@ export interface NativeMutationReadLease {
 	readonly registrationToken: symbol;
 	readonly readToken: symbol;
 	readonly expectedThreadId?: string;
-	// When the read began. An accepted record created after this was not in
-	// flight when the read's snapshot was taken, so absence cannot prove it
-	// landed; the abandon-on-absence rule skips it.
+	// When the read began. A send accepted after this was not in the snapshot
+	// the read saw, so its absence cannot prove it landed; the
+	// abandon-on-absence rule skips it.
 	readonly startedAt: number;
 }
 
@@ -303,7 +307,6 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	// notification, so a composer's pending rows clear without waiting for a
 	// read wide enough to still name the id.
 	async settleIdentities(clientMutationIds: readonly string[]): Promise<void> {
-		if (clientMutationIds.length === 0) return;
 		await this.#dispatcher.reconcileIdentities(clientMutationIds);
 	}
 
@@ -401,7 +404,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			// landed - the same absence rule restoreProvenAbsent applies to a
 			// parked row, with the receipt's "applied" standing in for proof that
 			// resending could never help.
-			const pruned = await this.storage.pruneUnlistedAccepted(lease.targetKey, lease.startedAt);
+			const pruned = await this.storage.pruneUnlistedAccepted(lease.targetKey, lease.startedAt, authoritativeIds);
 			if (pruned.length > 0) this.#notifyStorageChange([lease.targetKey]);
 			if (!this.#isCurrentRead(lease)) return "stale";
 		} else {

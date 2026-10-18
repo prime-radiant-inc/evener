@@ -32,6 +32,7 @@ export {
   imagePlaceholder,
   normalizeText,
   ownPendingSend,
+  PENDING_TURN_METHODS,
   pendingEntryPreview,
   queueEntryPreviewText,
   reconcilePendingEntries,
