@@ -308,7 +308,21 @@ export function LaunchConfigForm({
       const resolved = await onSave(collectConfig(supportedOptions, state));
       if (attempt !== lifetime.current) return;
       // Rebase only the submitted state. Edits made while saving stay dirty.
-      setSeed((currentSeed) => ({ ...currentSeed, baseline: state }));
+      // Inactive prompt inputs remain editable but collectConfig omits them.
+      // Their saved value is empty, not the draft still visible in the form.
+      // Keep the submitted identity when nothing was omitted so clean forms
+      // still follow subsequent host refreshes.
+      let baseline = state;
+      const modes = {
+        systemPromptMode: state.scalars.systemPromptMode,
+        systemPromptAppendMode: state.scalars.systemPromptAppendMode,
+      };
+      for (const wire of PROMPT_DEPENDENT_WIRE_FIELDS) {
+        if (inactivePromptDependent(wire, modes) && state.scalars[wire]) {
+          baseline = { ...baseline, scalars: { ...baseline.scalars, [wire]: "" } };
+        }
+      }
+      setSeed((currentSeed) => ({ ...currentSeed, baseline }));
       setStatus({ kind: "saved", text: formatSavedAt() });
       toast.push("success", successToast);
       onSaved?.(resolved);
