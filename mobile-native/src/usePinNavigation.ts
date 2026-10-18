@@ -104,16 +104,26 @@ export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?:
 		// A settled clean state asks nothing more; the effect retires the
 		// count through clearReconcileRetry.
 		if (settled && !settled.uncertain && !settled.pending) return;
+		// The binding that armed this retry owns it: a late completion from a
+		// retired screen must not occupy the current owner's timer.
+		const arming = binding;
 		retryCount.current += 1;
 		retryTimer.current = setTimeout(() => {
+			if (owner.current !== arming) {
+				retryTimer.current = null;
+				return;
+			}
 			retryTimer.current = null;
 			// Re-arm from the attempt's own settled outcome: a failure that
 			// never entered pending (a journal read that still throws)
 			// publishes uncertain-not-pending and must ask again, and success
 			// retires through the effect like any landing.
-			if (isCurrent()) void actions?.reconcile().finally(armReconcileRetry);
+			const again = () => {
+				if (owner.current === arming) armReconcileRetry();
+			};
+			if (isCurrent()) void actions?.reconcile().finally(again);
 		}, reconnectDelay(retryCount.current));
-	}, [actions, isCurrent]);
+	}, [actions, isCurrent, binding]);
 	const page = useSyncExternalStore(pages?.subscribe ?? noSubscription, pages?.getSnapshot ?? noSnapshot);
 	const action = useSyncExternalStore(actions?.subscribe ?? noSubscription, actions?.getSnapshot ?? noSnapshot);
 	// The reconciliation's own outcome arms or retires its retry: success clears

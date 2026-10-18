@@ -258,10 +258,10 @@ export class NavigationPages<T> implements PageSource<T> {
 		// so it cannot strand what it owes on a changed first page.
 		if (this.owedDepth !== null) {
 			this.rereads.request();
-			// A flight already running carries this refresh; one armed now
-			// settles when its recovery does — the caller observes the pages'
-			// own completion, never an immediate true.
-			return this.recovery ?? Promise.resolve(true);
+			// The caller observes the flight's own completion — a recovery
+			// already running, or one queued behind the request in flight —
+			// never an immediate true while pages are loading.
+			return this.rereads.settled().then(() => this.recovery === null);
 		}
 		return this.load(true);
 	}
