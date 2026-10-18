@@ -80,9 +80,24 @@ export class NavigationPages<T> implements PageSource<T> {
 	private owner: (() => void) | null = null;
 	private paused = false;
 	private rereads = singleFlight(
-		() => this.rereadLoadedDepth(),
+		() => this.recover(),
 		() => !this.paused && !this.state.loading,
 	);
+	/** The recovery flight a joined refresh observes, resolved when the
+	 * re-read settles: handing a refresh to the flight must not report done
+	 * while pages are still loading. */
+	private recovery: Promise<boolean> | null = null;
+	private recover(): Promise<boolean> {
+		const flight = (async () => {
+			try {
+				return await this.rereadLoadedDepth();
+			} finally {
+				this.recovery = null;
+			}
+		})();
+		this.recovery = flight;
+		return flight;
+	}
 	/** The retry a failed read arms on its own when the constructor's readRetry
 	 * opts in (the same capped backoff the Board's failed reads retry on,
 	 * useBoardReadRetry): grows with each failure in a row, retires when a read
@@ -169,12 +184,19 @@ export class NavigationPages<T> implements PageSource<T> {
 		// Hold the target across the reads: a failure of the reset read (page
 		// one) must not shrink the depth the retry still owes to what survived.
 		this.owedDepth = depth;
-		if ((await this.load(true)) !== true) return;
-		while (this.offset < depth && this.state.remaining > 0) if ((await this.load(false)) !== true) return;
+		const landed =
+			(await this.load(true)) === true &&
+			(this.offset >= depth || this.state.remaining <= 0 || (await this.walkToDepth(depth)) === true);
 		// Recovery completes at the depth it owed, or when the results end:
 		// either way the error clears with it.
 		this.owedDepth = null;
-		if (this.state.error !== null) this.publish({ error: null });
+		if (landed && this.state.error !== null) this.publish({ error: null });
+		return landed;
+	}
+	/** Walk the remaining pages to the depth a recovery owes. */
+	private async walkToDepth(depth: number): Promise<boolean> {
+		while (this.offset < depth && this.state.remaining > 0) if ((await this.load(false)) !== true) return false;
+		return true;
 	}
 	private invalidate(p: NavigationInvalidatedPayload) {
 		if (this.notifiedGeneration !== p.generationId) {
@@ -234,7 +256,10 @@ export class NavigationPages<T> implements PageSource<T> {
 		// so it cannot strand what it owes on a changed first page.
 		if (this.owedDepth !== null) {
 			this.rereads.request();
-			return Promise.resolve(true);
+			// A flight already running carries this refresh; one armed now
+			// settles when its recovery does — the caller observes the pages'
+			// own completion, never an immediate true.
+			return this.recovery ?? Promise.resolve(true);
 		}
 		return this.load(true);
 	}
