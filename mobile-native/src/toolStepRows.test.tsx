@@ -11,7 +11,7 @@ import type { ThreadItem } from "@evener/appwire-client";
 import memoryCalls from "../../agent/testdata/toolwire/memory.json?raw";
 import { describe, expect, it, vi } from "vitest";
 import { projectConversation } from "./projectedRows";
-import { render, renderedText, textOf } from "./renderNative.testkit";
+import { render, renderedText, stepsIn, textOf } from "./renderNative.testkit";
 import { RunRow } from "./session/RunRow";
 import { displayForLevel } from "./session/detailLevels";
 import { stepEvidence } from "./session/evidence";
@@ -52,14 +52,6 @@ function projectedAt(level: Level) {
 const rowsAt = (level: Level): TimelineRow[] => projectedAt(level).rows;
 
 const runsAt = (level: Level) => rowsAt(level).filter((row): row is Run => row.kind === "run");
-
-// A level's steps: a run's folded steps where tool calls show, and the
-// standalone activity rows that Intent and Chat draw instead (a run never
-// forms at those levels).
-const stepsAt = (level: Level) =>
-	rowsAt(level).flatMap((row) =>
-		row.kind === "run" ? row.steps : row.kind === "activity" && isStep(row) ? [row] : [],
-	);
 
 it.each(["memory_read", "memory_search"])(
 	"carries real %s output and artifact recovery through generic native rows",
@@ -113,9 +105,9 @@ describe("a step with no intent", () => {
 		// has to say them.
 		const { presentation, rows } = projectedAt(level);
 		const text = [
-			...runsAt(level).map(stepText),
+			...rows.filter((row): row is Run => row.kind === "run").map(stepText),
 			...rows
-				.filter((row) => row.kind === "activity" && isStep(row))
+				.filter(isStep)
 				.map((row) =>
 					renderedText(
 						render(
@@ -156,7 +148,7 @@ describe("a step with no intent", () => {
 // names what it acted on, and an edit, a write and a patch open to their diff
 // or path, which come from the arguments alone (#3306).
 describe("a call and its result, served as two items", () => {
-	const steps = (level: Level) => stepsAt(level);
+	const steps = (level: Level) => stepsIn(rowsAt(level));
 	const step = (level: Level, label: string) => {
 		const found = steps(level).find((candidate) => candidate.label === label);
 		if (!found) throw new Error(`no ${label} step at ${level}`);
@@ -191,11 +183,7 @@ describe("a question put to you, with the answer you gave", () => {
 		const rows = rowsAt(level);
 		const asked = rows.find((row) => row.kind === "activity" && row.label === "ask_user");
 		expect(asked).toBeDefined();
-		expect(
-			runsAt(level)
-				.flatMap((run) => run.steps)
-				.some((step) => step.label === "ask_user"),
-		).toBe(false);
+		expect(stepsIn(rows).some((step) => step.label === "ask_user")).toBe(false);
 		expect(answerTo(toolWireModel(), asked?.id ?? "")).toBe('"Ship tonight"');
 		expect(rows.some((row) => row.kind === "user" && row.text.startsWith("[answers]"))).toBe(false);
 	});

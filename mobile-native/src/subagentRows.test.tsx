@@ -26,12 +26,12 @@ import { act } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { markers, withTestID } from "./markerTestUtils";
 import { projectConversation } from "./projectedRows";
-import { render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
+import { render, renderedText, stepsIn, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
 import { findMatches } from "./session/findInSession";
-import { hideAnswerMessages, isStep, sessionRows } from "./session/transcriptRows";
+import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
-import { groupTimeline, type RunStep, type TimelineRow } from "./timeline";
+import { groupTimeline, type TimelineRow } from "./timeline";
 import { hasFinishedSubagentRow } from "./session/subagentLine";
 import { forgetSubagentTrees, holdSubagentTree, subagentTree } from "./subagents/subagentTree";
 import { useTranscriptSubagentTree } from "./subagents/useTranscriptSubagentTree";
@@ -280,9 +280,7 @@ describe("a message sent to a subagent", () => {
 		expect(rows.filter(isSubagent)).toHaveLength(1);
 		// At Intent each action is its own row; where tool calls show they
 		// fold into a run. Either way the send is a step, never a subagent.
-		const steps = rows.flatMap((row) =>
-			row.kind === "run" ? row.steps : row.kind === "activity" && isStep(row) ? [row] : [],
-		);
+		const steps = stepsIn(rows);
 		expect(steps.map((step) => step.label)).toContain("delegate_send");
 		// Its line names the delegate it messaged, set apart, and the status
 		// the send's footer reports.
@@ -370,16 +368,9 @@ describe("Chat", () => {
 					: [],
 		);
 
-	// Chat and Intent fold no runs (each action is a row of its own), so a
-	// step is either a run's member or a standalone activity row.
-	const stepsOf = (rows: TimelineRow[]) =>
-		rows.flatMap((row) =>
-			row.kind === "run" ? row.steps : row.kind === "activity" && isStep(row) ? [row as RunStep] : [],
-		);
-
 	it("drops settled steps and keeps its subagents", () => {
 		const { rows } = rowsAt("chat");
-		const steps = stepsOf(rows);
+		const steps = stepsIn(rows);
 		expect(steps).toEqual([]);
 		expect(rows.filter(isSubagent)).toHaveLength(1);
 		expect(rows.map((row) => row.kind)).toEqual(expect.arrayContaining(["user", "assistant"]));
@@ -387,7 +378,7 @@ describe("Chat", () => {
 
 	it("keeps a failed step, with its image, and drops a successful one with its image", () => {
 		const { rows } = rowsAt("chat", subagent(), extra);
-		const steps = stepsOf(rows);
+		const steps = stepsIn(rows);
 		expect(steps.map((step) => [step.label, step.state])).toEqual([["shell", "failed"]]);
 		expect(images(rows)).toEqual(["broke.png"]);
 	});

@@ -161,7 +161,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		// Intent draws one line per action (Jesse, 2026-10-18): no run folds
 		// them away, and each line carries the action's own words.
 		expect(runsOf(rows)).toEqual([]);
-		const actions = rows.filter((row): row is Activity => row.kind === "activity" && isStep(row));
+		const actions = rows.filter((row): row is Activity => isStep(row));
 		expect(actions.length).toBeGreaterThanOrEqual(2);
 		for (const action of actions) expect(action.detail.description ?? action.detail.summary ?? "").not.toBe("");
 		const lines = subagentsOf(rows).map((row) => subagentLine(row, model.delegates, NOW));

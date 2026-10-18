@@ -58,11 +58,8 @@ export interface SessionRowsOptions {
 	 * list's first key with it, which the list's position keeping needs to
 	 * find again. The marker appears once the history is whole. */
 	olderToLoad?: boolean;
-	/** The transcript's display config. Where the level draws intent lines
-	 * instead of tool calls, each action stays a line of its own rather than
-	 * folding into a run: the reader asked for each action's intent, not a
-	 * count of the steps behind it, and a failure must not hide behind that
-	 * count (Jesse, 2026-10-18). */
+	/** The transcript's display config, which decides whether runs fold (see
+	 * foldRuns below). Absent, runs fold, as they always did. */
 	config?: TranscriptDisplayConfigV1 | null;
 }
 
@@ -76,9 +73,9 @@ export function sessionRows(
 	let run: RunRow | null = null;
 	let lastTurn: string | undefined;
 	const marked = new Set<string>();
-	// The shared rule for what a level shows, so the phone folds exactly where
-	// the web does: intent lines are not steps, and must not disappear behind a
-	// run's "N steps" line.
+	// Where the level hides tool calls it draws intent lines instead, so each
+	// action stays its own row: folding them would hide the intents the reader
+	// asked for, and any failure behind a run's "N steps" count.
 	const foldRuns = config ? contentVectorForConfig(config).toolCalls : true;
 	for (const row of rows) {
 		if (inTray(row) || row.kind === "question") continue;
@@ -102,12 +99,7 @@ export function sessionRows(
 			run = null;
 			lastTurn = turnId;
 		}
-		if (isStep(row)) {
-			if (!foldRuns) {
-				run = null;
-				out.push(row);
-				continue;
-			}
+		if (foldRuns && isStep(row)) {
 			if (!run) {
 				run = {
 					kind: "run",
