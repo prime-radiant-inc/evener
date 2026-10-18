@@ -347,6 +347,110 @@ describe("a failed read's own retry", () => {
 		expect(requests).toHaveLength(reads + 1);
 	});
 
+	it("a mutation readback landing short beside a superseded recovery still queues the walk", async () => {
+		const { requests, pages, requested, invalidate } = boundary();
+		pages.watch();
+		// Three pages loaded: the reader reached a depth of six rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 2, 1, 2));
+		await more;
+		const deepest = pages.more();
+		requests[2].resolve(response(["e", "f"], 0, 1, 4));
+		await deepest;
+		// A hub change starts a recovery whose page two is slow to answer.
+		invalidate({
+			generationId: "hub-generation",
+			sequence: 2,
+			targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+		});
+		await requested(4);
+		requests[3].resolve(response(["a2", "b2"], 2, 2));
+		await requested(5);
+		// The reader archives a project: the mutation readback supersedes the
+		// walk's in-flight page two and lands a first page short of the depth.
+		// Its landing must still hand the rest of the depth to the flight,
+		// superseded walk or not.
+		const after = pages.refreshAfter({
+			generation_id: "hub-generation",
+			targets: [{ kind: "catalog", catalog: "projects", revision: 3 }],
+		});
+		await requested(6);
+		requests[5].resolve(response(["a3", "b3"], 2, 3));
+		await expect(after).resolves.toBeUndefined();
+		// The superseded walk's late answer arrives and is discarded; the
+		// flight still owes the depth and re-reads for it.
+		requests[4].resolve(response(["c2", "d2"], 2, 2, 2));
+		await requested(7);
+		requests[6].resolve(response(["a3", "b3"], 2, 3));
+		await requested(8);
+		requests[7].resolve(response(["c3", "d3"], 2, 3, 2));
+		await requested(9);
+		requests[8].resolve(response(["e3", "f3"], 0, 3, 4));
+		await settled(pages);
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a3", "b3", "c3", "d3", "e3", "f3"]);
+		expect(pages.getSnapshot().error).toBeNull();
+	});
+
+	it("a not_modified landing with depth owed keeps the error for a resume to re-arm", async () => {
+		const { requests, pages, requested, invalidate } = boundary();
+		pages.watch();
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 2, 1, 2));
+		await more;
+		const deepest = pages.more();
+		requests[2].resolve(response(["e", "f"], 0, 1, 4));
+		await deepest;
+		invalidate({
+			generationId: "hub-generation",
+			sequence: 2,
+			targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+		});
+		await requested(4);
+		requests[3].resolve(response(["a2", "b2"], 2, 2));
+		await requested(5);
+		requests[4].reject(new Error("request timed out"));
+		await settled(pages);
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The reader presses Retry loading more, then leaves the screen while
+		// the recovery's reset is pending. The hub answers not_modified — the
+		// rows stand — but the depth is still owed, so the error must hold:
+		// resume() re-arms a failed read from the error, and a cleared error
+		// would strand the recovery.
+		const manual = pages.more();
+		await requested(6);
+		requests[5].resolve({
+			status: "not_modified",
+			generationId: "hub-generation",
+			revision: 2,
+			etag: "etag-0-2",
+		});
+		await manual;
+		expect(pages.getSnapshot().error).toBeTruthy();
+		pages.cancel();
+		pages.resume();
+		// The recovery re-reads from the first page and completes the depth.
+		await requested(7);
+		requests[6].resolve({
+			status: "not_modified",
+			generationId: "hub-generation",
+			revision: 2,
+			etag: "etag-0-2",
+		});
+		await requested(8);
+		requests[7].resolve(response(["c2", "d2"], 2, 2, 2));
+		await requested(9);
+		requests[8].resolve(response(["e2", "f2"], 0, 2, 4));
+		await settled(pages);
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a2", "b2", "c2", "d2", "e2", "f2"]);
+		expect(pages.getSnapshot().error).toBeNull();
+	});
+
 	it("a refresh that joins a running recovery observes its completion, not a page", async () => {
 		const { requests, pages, requested, invalidate } = boundary();
 		pages.watch();

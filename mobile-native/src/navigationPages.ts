@@ -185,7 +185,7 @@ export class NavigationPages<T> implements PageSource<T> {
 		// one) must not shrink the depth the retry still owes to what survived.
 		this.owedDepth = depth;
 		const landed =
-			(await this.load(true)) === true &&
+			(await this.load(true, undefined, { walker: true })) === true &&
 			(this.offset >= depth || this.state.remaining <= 0 || (await this.walkToDepth(depth)) === true);
 		// Recovery completes at the depth it owed, or when the results end;
 		// a failure keeps what it owes for the next attempt to reach for.
@@ -197,7 +197,8 @@ export class NavigationPages<T> implements PageSource<T> {
 	}
 	/** Walk the remaining pages to the depth a recovery owes. */
 	private async walkToDepth(depth: number): Promise<boolean> {
-		while (this.offset < depth && this.state.remaining > 0) if ((await this.load(false)) !== true) return false;
+		while (this.offset < depth && this.state.remaining > 0)
+			if ((await this.load(false, undefined, { walker: true })) !== true) return false;
 		return true;
 	}
 	private invalidate(p: NavigationInvalidatedPayload) {
@@ -280,7 +281,7 @@ export class NavigationPages<T> implements PageSource<T> {
 	private async load(
 		reset: boolean,
 		receipt?: NavigationMutation,
-		{ recovered = false, retried = false } = {},
+		{ recovered = false, retried = false, walker = false } = {},
 	): Promise<boolean | undefined> {
 		if (!reset && (this.state.loading || this.state.stale || !this.state.remaining)) return;
 		const request = ++this.request,
@@ -372,9 +373,12 @@ export class NavigationPages<T> implements PageSource<T> {
 				// Every loaded page shares this version, so all of them stand.
 				this.version = decoded.version;
 				if (decoded.version.revision >= this.mutationFloor) this.mutationFloor = 0;
+				const incomplete = this.owedDepth !== null && this.offset < this.owedDepth;
 				// A first page that stands can still owe deeper pages: the
 				// count and the waiters retire with the recovery, not with a
-				// page that merely stands.
+				// page that merely stands, and the error the recovery owes
+				// holds with it — a cleared error would leave a cancelled
+				// recovery nothing to re-arm on resume.
 				if (this.owedDepth === null || this.offset >= this.owedDepth || this.state.remaining <= 0) {
 					this.clearRetry(true);
 					this.rereads.settle();
@@ -389,7 +393,7 @@ export class NavigationPages<T> implements PageSource<T> {
 					loaded: true,
 					loading: false,
 					stale: false,
-					error: null,
+					error: incomplete ? this.state.error : null,
 				});
 				return true;
 			}
@@ -442,15 +446,18 @@ export class NavigationPages<T> implements PageSource<T> {
 				this.rereads.settle();
 			} else {
 				this.clearRetry(false);
-				// A direct paging request that landed short of the owed depth
-				// (a manual Retry loading more, routed through the flight by
-				// more()) hands the rest of the depth to the flight, whose
-				// re-read walks to it; a refresh joining behind observes that
-				// walk's completion. The flight's own reads drive their walk
-				// themselves instead — a queued request from one would restart
-				// a failed walk at once, never waiting out the backoff its
-				// failure armed.
-				if (!this.rereads.running) this.rereads.request();
+				// An independent read that landed short of the owed depth (a
+				// manual Retry loading more, a mutation readback) hands the
+				// rest of the depth to the flight, whose re-read walks to it;
+				// a refresh joining behind observes that walk's completion.
+				// A read the walk itself drives queues nothing: it drives its
+				// own next page, and a queued request left behind by a failed
+				// walk would restart the recovery without waiting out the
+				// backoff the failure armed. The running flag alone cannot
+				// tell them apart — a mutation readback can supersede the
+				// walk's in-flight read while the flight is still running —
+				// so the walk marks its own reads.
+				if (!walker) this.rereads.request();
 			}
 			// The error says the page still owes its recovery: it holds until
 			// the depth is restored or the results end, whichever completes it.
