@@ -191,3 +191,44 @@ Commit only after review. Deploying, publishing, and merging are separate decisi
 Tell Evener durable preferences and project decisions that should affect later work. Ask it to correct obsolete notes when those decisions change. [Memory](memory.md) explains what persists and where; a transcript is the record of this session, while memory is selected knowledge for future sessions.
 
 For reusable procedures, use [extensions](extensions.md). For repeatable unattended runs, use [automation](automation.md) and the [CLI reference](cli.md). Those guides own the exact configuration and command contracts.
+
+## Captured walkthrough
+
+These checkpoints use a scripted fake provider, not live-provider authentication.
+CLI images render recorded command output; web images are browser screenshots.
+Owned temporary paths are masked. Native verification is deferred. See the
+[capture provenance and review process](developing-evener/tutorial-tours.md#review-and-publication).
+
+### CLI transcript checkpoints
+
+**Entry.** `git status --short` lists an untracked `NOTES.md`.
+
+![Daily CLI entry checkpoint](assets/tutorials/daily/cli/entry.png)
+
+[Read the entry command transcript](assets/tutorials/daily/cli/entry.txt).
+
+**Action.** The command reports writing `initial.json`, and `--list-sessions` lists the saved session.
+
+![Daily CLI action checkpoint](assets/tutorials/daily/cli/action.png)
+
+[Read the action command transcript](assets/tutorials/daily/cli/action.txt).
+
+**Verified.** The `--resume` command uses the saved session ID; the final command prints both receipt files.
+
+![Daily CLI verified checkpoint](assets/tutorials/daily/cli/verified.png)
+
+[Read the verified command transcript](assets/tutorials/daily/cli/verified.txt).
+
+### Web checkpoints
+
+**Entry.** The session shows the request to read the workspace and wait, with Stop and Steer controls available.
+
+![Daily web entry checkpoint](assets/tutorials/daily/web/entry.png)
+
+**Action.** The conversation shows the steering request, its response, and the queued request with a tool row.
+
+![Daily web action checkpoint](assets/tutorials/daily/web/action.png)
+
+**Verified.** An interrupted marker precedes the continuation request and the report that `continued.json` was written.
+
+![Daily web verified checkpoint](assets/tutorials/daily/web/verified.png)

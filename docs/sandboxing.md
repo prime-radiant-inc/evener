@@ -370,6 +370,17 @@ file tool nor a spawned process can read them:
   (`/run/docker.sock`, `/var/run/docker.sock`, `/run/podman/podman.sock`,
   `/run/containerd/containerd.sock`, `/run/dbus/system_bus_socket`).
 
+**The default state root is not on this denylist.** In `read-only` and
+`workspace-write`, file tools can read outside the worktree except where masked.
+That can include OAuth records in
+`${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth/`, the hub's `auth-token`, and
+secrets in `run/`. These modes do not guarantee that Evener's own state secrets
+are hidden from the session. File mode `0600` does not block processes running
+as the file's owner. `--sandbox-net off` does not block file-tool reads or
+prevent their contents entering model context. `restricted` excludes these
+paths only when they are outside its granted read roots. Relocated state roots
+must be checked against the effective policy too.
+
 Masking `/proc` is load-bearing: without it a `read_file("/proc/<evener-pid>/environ")`
 would leak Evener's own environment, including the provider API key. Masking the
 daemon sockets turns a `connect()` into `ECONNREFUSED`, so a session cannot drive a

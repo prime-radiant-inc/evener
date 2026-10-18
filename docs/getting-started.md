@@ -215,3 +215,44 @@ projects as part of this cleanup.
 Start with a clean Git working tree, a small task, and a test command you already trust. Tell Evener which files it may change and what it must leave alone. Keep deployment, credential changes, and destructive operations outside a first experiment.
 
 Continue with [daily work](daily-work.md) for steering and review, [concepts](concepts.md) for session lifetimes, or [the CLI](cli.md) for noninteractive tasks. The [native app guide](native-app.md) explains how an iPhone connects to the same hub.
+
+## Captured walkthrough
+
+These checkpoints use a scripted fake provider, not live-provider authentication.
+CLI images render recorded command output; web images are browser screenshots.
+Owned temporary paths are masked. Native verification is deferred. See the
+[capture provenance and review process](developing-evener/tutorial-tours.md#review-and-publication).
+
+### CLI transcript checkpoints
+
+**Entry.** The baseline checker fails before the repair.
+
+![Receipt CLI entry checkpoint](assets/tutorials/receipt/cli/entry.png)
+
+[Read the entry command transcript](assets/tutorials/receipt/cli/entry.txt).
+
+**Action.** The diff multiplies each price by its quantity.
+
+![Receipt CLI action checkpoint](assets/tutorials/receipt/cli/action.png)
+
+[Read the action command transcript](assets/tutorials/receipt/cli/action.txt).
+
+**Verified.** The transcript ends with `PASS: 4 receipt cases` and exit code 0.
+
+![Receipt CLI verified checkpoint](assets/tutorials/receipt/cli/verified.png)
+
+[Read the verified command transcript](assets/tutorials/receipt/cli/verified.txt).
+
+### Web checkpoints
+
+**Entry.** The workspace and model are selected, ready for the repair request.
+
+![Receipt web entry checkpoint](assets/tutorials/receipt/web/entry.png)
+
+**Action.** The tool rows show a failed checker run followed by an edit to `receipt.py`.
+
+![Receipt web action checkpoint](assets/tutorials/receipt/web/action.png)
+
+**Verified.** The final response reports the quantity repair and a checker exit code of zero.
+
+![Receipt web verified checkpoint](assets/tutorials/receipt/web/verified.png)

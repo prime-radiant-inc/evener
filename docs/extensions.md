@@ -109,3 +109,44 @@ the transient plugin-loaded announcement is not retained by `thread/read`.
 Scripted tool choice proves integration, not that a model follows the skill or
 chooses the requested tool. Native verification is deferred. Contributor setup
 and check commands belong in the [example README](examples/extensions/README.md#deterministic-checks).
+
+## Captured walkthrough
+
+These checkpoints use a scripted fake provider, not live-provider authentication.
+CLI images render recorded command output; web images are browser screenshots.
+Owned temporary paths are masked. Native verification is deferred. See the
+[capture provenance and review process](developing-evener/tutorial-tours.md#review-and-publication).
+
+### CLI transcript checkpoints
+
+**Entry.** Three copy commands install the example skill file, command file, and MCP configuration.
+
+![Extensions CLI entry checkpoint](assets/tutorials/extensions/cli/entry.png)
+
+[Read the entry command transcript](assets/tutorials/extensions/cli/entry.txt).
+
+**Action.** The event output lists the startup hook, loaded plugin, activated skill, and matching MCP call and result.
+
+![Extensions CLI action checkpoint](assets/tutorials/extensions/cli/action.png)
+
+[Read the action command transcript](assets/tutorials/extensions/cli/action.txt).
+
+**Verified.** The event output includes a second startup hook and the expanded greeting request.
+
+![Extensions CLI verified checkpoint](assets/tutorials/extensions/cli/verified.png)
+
+[Read the verified command transcript](assets/tutorials/extensions/cli/verified.txt).
+
+### Web checkpoints
+
+**Entry.** The New session form lists `hello-plugin` under configured plugins.
+
+![Extensions web entry checkpoint](assets/tutorials/extensions/web/entry.png)
+
+**Action.** The conversation shows the startup-hook message, activated skill, and matching echo input and output.
+
+![Extensions web action checkpoint](assets/tutorials/extensions/web/action.png)
+
+**Verified.** The conversation shows the expanded greeting request and the agent's report that the plugin command completed.
+
+![Extensions web verified checkpoint](assets/tutorials/extensions/web/verified.png)

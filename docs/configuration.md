@@ -209,3 +209,44 @@ Do not infer live-session reload from a settings page updating. If a provider ch
 The exact launch field catalog is [schema.go](../cmd/evener-hub/internal/launchconfig/schema.go); file behavior is defined by [resolver.go](../cmd/evener-hub/internal/launchconfig/resolver.go), [merge.go](../cmd/evener-hub/internal/launchconfig/merge.go), [paths.go](../cmd/evener-hub/internal/launchconfig/paths.go), and [runtime_defaults.go](../cmd/evener-hub/internal/launchconfig/runtime_defaults.go). These are implementation links, not alternate user procedures.
 
 Next: [Connect a provider](connecting-a-provider.md), [operate the hub](evener-hub.md), or [troubleshoot a setting](troubleshooting.md). Before moving state or upgrading, read [storage and backups](security.md#storage-and-backups).
+
+## Captured walkthrough
+
+These checkpoints use a scripted fake provider, not live-provider authentication.
+CLI images render recorded command output; web images are browser screenshots.
+Owned temporary paths are masked. Native verification is deferred. See the
+[capture provenance and review process](developing-evener/tutorial-tours.md#review-and-publication).
+
+### CLI transcript checkpoints
+
+**Entry.** The input file contains the value the session will copy.
+
+![Configuration CLI entry checkpoint](assets/tutorials/configuration/cli/entry.png)
+
+[Read the entry command transcript](assets/tutorials/configuration/cli/entry.txt).
+
+**Action.** The command reads `input.json`, then exits with the round-limit error at limit 1.
+
+![Configuration CLI action checkpoint](assets/tutorials/configuration/cli/action.png)
+
+[Read the action command transcript](assets/tutorials/configuration/cli/action.txt).
+
+**Verified.** The transcript contrasts the limit-1 error with a limit-4 run that reports copying the file.
+
+![Configuration CLI verified checkpoint](assets/tutorials/configuration/cli/verified.png)
+
+[Read the verified command transcript](assets/tutorials/configuration/cli/verified.txt).
+
+### Web checkpoints
+
+**Entry.** The active session shows the request to stay open while project defaults change.
+
+![Configuration web entry checkpoint](assets/tutorials/configuration/web/entry.png)
+
+**Action.** Project settings show Max rounds set to 1 and a saved-settings confirmation.
+
+![Configuration web action checkpoint](assets/tutorials/configuration/web/action.png)
+
+**Verified.** The session shows a read, a patch to `forbidden.json`, and a report that the input was copied.
+
+![Configuration web verified checkpoint](assets/tutorials/configuration/web/verified.png)
