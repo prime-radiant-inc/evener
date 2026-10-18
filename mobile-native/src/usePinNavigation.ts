@@ -53,13 +53,19 @@ export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?:
 	// cannot stand in for it.
 	const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const retryCount = useRef(0);
-	const clearReconcileRetry = useCallback(() => {
+	/** Cancel the pending timer, keeping the failure count: a reconcile that
+	 * passes through pending (its own retry, or a mutation) must not restart
+	 * the backoff curve. */
+	const cancelReconcileTimer = useCallback(() => {
 		if (retryTimer.current !== null) {
 			clearTimeout(retryTimer.current);
 			retryTimer.current = null;
 		}
-		retryCount.current = 0;
 	}, []);
+	const clearReconcileRetry = useCallback(() => {
+		cancelReconcileTimer();
+		retryCount.current = 0;
+	}, [cancelReconcileTimer]);
 	useEffect(
 		() => () => {
 			if (retryTimer.current !== null) clearTimeout(retryTimer.current);
@@ -110,8 +116,24 @@ export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?:
 		if (!actions) return;
 		if (action?.uncertain && !action.pending && ready && focused) armReconcileRetry();
 		else if (!action?.uncertain) clearReconcileRetry();
-		return clearReconcileRetry;
-	}, [actions, binding, action?.uncertain, action?.pending, ready, focused, armReconcileRetry, clearReconcileRetry]);
+		// A pending transition only cancels the timer (the count keeps growing
+		// the backoff); a change of actions or binding drops the count too, so
+		// a new screen starts its retry fresh.
+		return () => {
+			cancelReconcileTimer();
+			retryCount.current = 0;
+		};
+	}, [
+		actions,
+		binding,
+		action?.uncertain,
+		action?.pending,
+		ready,
+		focused,
+		armReconcileRetry,
+		clearReconcileRetry,
+		cancelReconcileTimer,
+	]);
 	// A mutation's own confirmation re-reads everything, so catalog changes
 	// wait for it; the follower drains on each action state change.
 	useEffect(() => {

@@ -166,9 +166,15 @@ export class NavigationPages<T> implements PageSource<T> {
 		// A partial refresh can leave fewer rows loaded than the reader had
 		// reached; the owed depth remembers it until the re-read catches up.
 		const depth = Math.max(this.offset, this.owedDepth ?? 0);
+		// Hold the target across the reads: a failure of the reset read (page
+		// one) must not shrink the depth the retry still owes to what survived.
+		this.owedDepth = depth;
 		if ((await this.load(true)) !== true) return;
 		while (this.offset < depth && this.state.remaining > 0) if ((await this.load(false)) !== true) return;
+		// Recovery completes at the depth it owed, or when the results end:
+		// either way the error clears with it.
 		this.owedDepth = null;
+		if (this.state.error !== null) this.publish({ error: null });
 	}
 	private invalidate(p: NavigationInvalidatedPayload) {
 		if (this.notifiedGeneration !== p.generationId) {

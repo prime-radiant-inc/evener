@@ -1,4 +1,5 @@
 import { openDatabaseSync } from "expo-sqlite";
+import { randomUUID } from "expo-crypto";
 import { DraftLibrary } from "./draftLibrary";
 import { DraftRepository } from "./draftRepository";
 
@@ -12,4 +13,4 @@ export function nativeDrafts(): DraftRepository {
 	return repository;
 }
 
-export const drafts = new DraftLibrary(nativeDrafts);
+export const drafts = new DraftLibrary(nativeDrafts, randomUUID);

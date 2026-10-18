@@ -34,10 +34,6 @@ export class DraftDocument {
 	private listeners = new Set<() => void>();
 	private forgotten = false;
 	private unsavedImages = new Map<string, DraftImageData>();
-	/** Fresh identities for re-issued attachments: one counter per document,
-	 * never derived from the bytes, so two retries can never collide in
-	 * storage even with the same marker and byte length. */
-	private reissueCount = 0;
 
 	imagePreviews(images: DraftImage[] = this.snapshot.record.images ?? []): InputAttachment[] {
 		return images.map((image) => {
@@ -52,6 +48,10 @@ export class DraftDocument {
 	constructor(
 		private repository: () => Pick<DraftRepository, "read" | "write" | "imageInputs">,
 		private destination: DraftDestination,
+		/** Fresh identities for re-issued attachments. The default is unique
+		 * across app restarts; production passes the app's own randomUUID. */
+		private createImageId: () => string = () =>
+			`reissue-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
 	) {
 		this.retry();
 	}
@@ -211,7 +211,7 @@ export class DraftDocument {
 		if (reissued) {
 			for (const attachment of reissued) {
 				const data: DraftImageData = {
-					id: `reissue-${++this.reissueCount}`,
+					id: this.createImageId(),
 					marker: attachment.marker,
 					mediaType: attachment.mediaType,
 					...(attachment.name === undefined ? {} : { name: attachment.name }),
