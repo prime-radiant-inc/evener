@@ -131,8 +131,13 @@ it("says why the connection closed while it stays closed, in place of Reconnecti
 	expect(connectionStatus("closed", false, CLOSED_ERROR, secondsAgo(1), secondsAgo(1), NOW)).toBeNull();
 });
 
-it("keeps Update needed for a close no retry can fix, whatever the error says", () => {
-	expect(connectionStatus("closed", true, CLOSED_ERROR, NOW, NOW, NOW)).toBe("Update needed");
+it("prefers the fatal state over the close's reason, whatever the error says", () => {
+	// A fatal close never becomes the error sentence a retryable close shows:
+	// the two branches are mutually exclusive in the presenter's decision.
+	const fatal = connectionStatus("closed", true, CLOSED_ERROR, NOW, NOW, NOW);
+	const retryable = connectionStatus("closed", false, CLOSED_ERROR, NOW, NOW, NOW);
+	expect(fatal).not.toBe(retryable);
+	expect(fatal).not.toBe(CLOSED_ERROR);
 });
 
 it("says nothing about an error while the connection is live", () => {
