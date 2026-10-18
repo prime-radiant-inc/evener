@@ -138,7 +138,7 @@ PASS  web-lint (1.3s)
 Only then did `make test-web-browser` run. The registered `web-skillguard`
 passed in 67.1s, along with layout, overflow, shell, spawn, transcript-scroll,
 retirement, Mermaid, memory and background-jobs guards. The overall target
-exited 2 because two unrelated existing guards failed:
+exited 2 because two existing guards failed:
 
 - `web-cascadeguard`: timed out after 15s waiting for the selected-leaf sidebar
   entrance to settle before recovery reconnect.
@@ -146,8 +146,21 @@ exited 2 because two unrelated existing guards failed:
   movement of the older reader; later milestones consequently were absent.
 
 Each failure reproduced when its exact Go browser test ran alone, so neither is
-credited as a pass or dismissed as concurrency. Their files are outside this
-onboarding docs/gate unit and were not changed.
+credited as a pass or dismissed as concurrency. Cause and regression provenance
+remain undetermined: no fixed-base comparison established that these failures
+predate this branch or are unrelated. Their files are outside this onboarding
+docs/gate unit and were not changed. These checks remain unwaived.
+
+The final-review repair wave subsequently ran `make test-web` sequentially after
+409 focused Spawn/access/Advanced/mobile tests and TypeScript passed. The full
+gate exited 2: typecheck and lint passed, but `Session.test.tsx`'s
+“a merely-resumable local session shows no standalone Resume notice” failed on
+unexpected unwrapped `ConversationBody` act updates (`testSetup.ts:50`). Vitest
+reported 18,522 passed, one failed and 14 expected failures; the later Node script
+tests did not run. This failure is outside the repair's owned files, has
+undetermined cause/provenance, and is not waived or classified as preexisting.
+The exact Session case passed once alone (one passed, 121 skipped); that does not
+change the failed full-suite result.
 
 The exact selector registered in the passing `web-skillguard` was also run with
 verbose names:
@@ -180,5 +193,9 @@ tests passed; and `TestSkillComposerBrowser` passed in 44.31s.
   redesign, or widget API was added.
 - The optional disposable exercise remains a documentation convenience. The
   primary getting-started path now uses a developer's own reviewed project.
-- Video capture, video playback verification, screencast review, simplify-code,
-  and final independent whole-branch review remain pending. No video link exists.
+- Simplification completed at `ace66564a0`. The final independent whole-branch
+  review completed with changes requested, not acceptance. Its inherited-access
+  disclosure and browser-failure provenance repairs await scoped rereview.
+- Video capture, playback/privacy verification, Jesse's screencast review,
+  both-theme acceptance and final-head CI remain pending here. Recording evidence
+  is handled separately; this index does not approve it in advance.

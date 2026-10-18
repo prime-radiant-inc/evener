@@ -1797,13 +1797,11 @@ function SpawnForm({
     ...(preservedEffort === null ? [] : [{ value: preservedEffort, label: preservedEffort }]),
     { value: "none", label: effortLabel("none", effortLevels) },
   ];
-  // Access mode is the chip-level face of the launch-config sandbox field
-  // (floor §1.8), so its empty option follows the same rule as Effort's:
-  // name the inherited sandbox in the chip's own friendly wording
-  // ("Workspace write (default)") once resolve lands, plain "(default)"
-  // until then.
+  // The preview includes explicit access overrides. Only name it as the
+  // inherited default when no sandbox override contributed to that preview.
+  const sandboxOverride = mergeAccessModeSandbox(advancedOverrides, accessMode)?.sandbox?.trim();
   const accessOptions = [
-    { value: "", label: accessModeDefaultLabel(resolvedDefaults?.sandbox ?? "") },
+    { value: "", label: accessModeDefaultLabel(sandboxOverride ? "" : (resolvedDefaults?.sandbox ?? "")) },
     ...ACCESS_MODE_OPTIONS,
   ];
   const effectiveSandbox = typeof resolvedDefaults?.sandbox === "string" ? resolvedDefaults.sandbox.trim() : "";
@@ -2975,7 +2973,9 @@ function SpawnForm({
             resolveConfig={resolveConfig}
             loadCatalog={loadCatalog}
             complete={complete}
-            resolvedDefaults={resolvedDefaults ?? undefined}
+            resolvedDefaults={
+              sandboxOverride ? { ...resolvedDefaults, sandbox: undefined } : (resolvedDefaults ?? undefined)
+            }
           >
             <FormRow label="Harness" htmlFor="spawn-harness">
               <Select

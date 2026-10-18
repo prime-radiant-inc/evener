@@ -3696,6 +3696,85 @@ test("Access mode names the resolved sandbox default once launch/resolve lands",
   expect(accessRow?.textContent).toContain(accessOptionLabels()[0]);
 });
 
+test.each(["desktop", "mobile"])("%s access inheritance survives an explicit mode round trip", async (surface) => {
+  const user = setupUser();
+  const inheritedSandbox = "off";
+  const fake = readyClient((client) => {
+    client.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "sandbox",
+          wireField: "sandbox",
+          label: "Sandbox",
+          group: "sandbox",
+          kind: "select",
+          perLaunch: true,
+          choices: ["", "off", "read-only", "workspace-write", "restricted"].map((value) => ({ value, label: value })),
+        },
+      ],
+    }));
+    client.on("evener/launch/resolve", ({ launchOverrides }) => ({
+      effective: {
+        model: "anthropic/claude-sonnet-4-5",
+        sandbox: (launchOverrides as { sandbox?: string } | undefined)?.sandbox ?? inheritedSandbox,
+      },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const select = screen.getByLabelText("Access mode") as HTMLSelectElement;
+  const option = (value: string) => Array.from(select.options).find((entry) => entry.value === value);
+  const unqualifiedDefault = option("")?.textContent;
+  const sandboxSelect = screen.getByLabelText("Sandbox") as HTMLSelectElement;
+  const sandboxDefault = () => Array.from(sandboxSelect.options).find((entry) => entry.value === "")?.textContent;
+  const unqualifiedSandboxDefault = sandboxDefault();
+  const mobileOptions = async () => {
+    const row = screen.getByTestId("spawn-mobile-config").querySelector('[data-label="Access mode"] button');
+    if (!(row instanceof HTMLElement)) throw new Error("missing access row");
+    await user.click(row);
+    return within(screen.getByRole("dialog"))
+      .getAllByRole("button")
+      .filter((button) => button.hasAttribute("aria-pressed"));
+  };
+  await setWorkingDir(user, "/tmp/inherited-access");
+  const summary = screen.getByTestId("spawn-effective-access");
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe(inheritedSandbox));
+  expect(option("")?.textContent).toContain(option("full")?.textContent);
+  if (surface === "desktop") {
+    await user.selectOptions(select, "read-only");
+  } else {
+    const index = Array.from(select.options).findIndex((entry) => entry.value === "read-only");
+    const target = (await mobileOptions())[index];
+    if (!target) throw new Error("missing explicit access option");
+    await user.click(target);
+  }
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe("read-only"));
+  expect(option("")?.textContent).toBe(unqualifiedDefault);
+  expect(sandboxDefault()).toBe(unqualifiedSandboxDefault);
+  if (surface === "desktop") {
+    await user.selectOptions(select, "");
+  } else {
+    const options = await mobileOptions();
+    const inherit = options[0];
+    if (!inherit) throw new Error("missing inherited access option");
+    expect(inherit.textContent).toBe(unqualifiedDefault);
+    await user.click(inherit);
+  }
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe(inheritedSandbox));
+  const resolve = fake.calls.filter((call) => call.method === "evener/launch/resolve").at(-1);
+  expect(resolve?.params).not.toHaveProperty("launchOverrides.sandbox");
+  expect(select.value).toBe("");
+  expect(option("")?.textContent).toContain(option("full")?.textContent);
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).not.toHaveProperty(
+    "launchOverrides.sandbox",
+  );
+});
+
 test("missing provider prerequisite precedes the editable composer and suppresses the later model prerequisite", async () => {
   const client = readyClient((fake) => {
     fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
