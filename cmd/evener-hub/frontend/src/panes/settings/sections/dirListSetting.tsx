@@ -17,13 +17,13 @@
 // CollectionEditor's own immediate-fire onRemove, keyed on a `pending` path
 // exactly like every other confirm-gated row in this settings cluster.
 
-import type { LaunchConfigLayer } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { connectionStore } from "../../../stores/connection";
 import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import {
+  Button,
   type CollectionAddResult,
   CollectionEditor,
   ConfirmDialog,
@@ -209,6 +209,16 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
   // race this guards against.
   useHostScopedLoad(host, () => store.getState().fetchLaunchLayer(), [store]);
 
+  // Retaining a loaded editor preserves typing, not permission to replace a
+  // whole layer from a failed or still-refreshing snapshot. Recheck after
+  // asynchronous validation, immediately before composing the write.
+  function writableLayer() {
+    const { launchLayer, launchLayerLoading, launchLayerError } = store.getState();
+    return launchLayer !== null && !launchLayerLoading && launchLayerError === null ? launchLayer : null;
+  }
+
+  const readRefusal = "Launch settings are not ready. Retry the read, then try the change again.";
+
   async function handleAdd(path: string): Promise<CollectionAddResult> {
     const attempt = lifetime.current;
     const validated = await store.getState().validatePath(path, "dir");
@@ -216,7 +226,8 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
     // still own the attempt. A write already issued keeps its normal outcome.
     if (attempt !== lifetime.current) return { ok: false, error: "Settings changed. Add the directory again." };
     if (!validated.valid) return { ok: false, error: validated.error || "path does not exist" };
-    const current = store.getState().launchLayer ?? ({} as LaunchConfigLayer);
+    const current = writableLayer();
+    if (current === null) return { ok: false, error: readRefusal };
     const canonical = validated.path || path;
     const nextList = [...(current[wireField] ?? []), canonical];
     try {
@@ -228,7 +239,11 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
   }
 
   async function handleRemove(path: string): Promise<void> {
-    const current = store.getState().launchLayer ?? ({} as LaunchConfigLayer);
+    const current = writableLayer();
+    if (current === null) {
+      toasts.push("error", readRefusal);
+      return;
+    }
     const nextList = (current[wireField] ?? []).filter((p) => p !== path);
     try {
       await store.getState().setLaunchLayer({ ...current, [wireField]: nextList });
@@ -258,6 +273,9 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
       {error !== null && (
         <InlineNotice tone="danger" live="status" data-reason="unavailable">
           Failed to load: {error}
+          <Button variant="secondary" disabled={loading} onClick={() => void store.getState().fetchLaunchLayer()}>
+            Retry
+          </Button>
         </InlineNotice>
       )}
       {loading && layer === null ? (

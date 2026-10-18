@@ -178,6 +178,7 @@ export function setSettingsHostRouteSync(sync: SettingsHostRouteSync | null): vo
 
 type NavigationGuard = (proceed: () => void) => boolean;
 let navigationGuard: NavigationGuard | null = null;
+let guardedPopState: ((event: PopStateEvent) => void) | null = null;
 let deferUntilRestored: ((proceed: () => void) => boolean) | null = null;
 let contextOverride: string | null = null;
 let historyUnrestored = false;
@@ -220,13 +221,19 @@ function setContextOverride(target: string | null, unrestored = false): void {
   for (const listener of contextListeners) listener();
 }
 
-// The compatibility override must survive Settings unmount, but never a later
-// ordinary traversal. A guarded traversal decides adoption in its own handler.
+// Register before any route consumer mounts. Native Window popstate can invoke
+// earlier subscribers before a later capture listener, so installing the DOM
+// listener with Settings is too late to protect its editor from shell adoption.
+// The active handler still belongs to Settings' lifetime, not to this listener.
 if (typeof window !== "undefined") {
   window.addEventListener(
     "popstate",
-    () => {
-      if (navigationGuard === null && !publishingContext) setContextOverride(null);
+    (event) => {
+      if (publishingContext) return;
+      if (guardedPopState !== null) guardedPopState(event);
+      // A compatibility override survives Settings unmount, but never a later
+      // ordinary traversal. Guarded traversal decides adoption in its handler.
+      else setContextOverride(null);
     },
     true,
   );
@@ -357,9 +364,9 @@ export function installNavigationGuard(guard: NavigationGuard): () => void {
       window.history.go(-delta);
     }
   };
-  window.addEventListener("popstate", onPopState, true);
+  guardedPopState = onPopState;
   return () => {
-    window.removeEventListener("popstate", onPopState, true);
+    if (guardedPopState === onPopState) guardedPopState = null;
     if (navigationGuard === guard) navigationGuard = null;
     if (deferUntilRestored === defer) deferUntilRestored = null;
     afterRestore = null;

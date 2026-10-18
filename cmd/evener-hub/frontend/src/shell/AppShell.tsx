@@ -439,6 +439,13 @@ function openRouteAsPane(
     workspaceStore.getState().replacePrimary("spawn", route.params);
     return;
   }
+  // Leaving Settings for the root is a completed navigation, not an extra
+  // welcome tab beside its discarded editor. Other root-route workspaces keep
+  // their existing restore/open-beside behavior.
+  if (workspaceStore.getState().mainPane()?.type === "settings") {
+    workspaceStore.getState().replacePrimary("welcome", {});
+    return;
+  }
   workspaceStore.getState().openPane("welcome", {});
 }
 

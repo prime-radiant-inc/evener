@@ -5621,6 +5621,45 @@ test.each([
   },
 );
 
+test.each([false, true])(
+  "Discard to Welcome removes the Settings draft rather than retaining it beside the destination, mobile=%s",
+  async (mobile) => {
+    if (mobile) installMobileViewport();
+    resetAgentsDocStoreForTests();
+    const user = userEvent.setup();
+    const client = new FakeClient("ready");
+    client.on("evener/settings/agentsDoc/get", () => ({
+      path: "/fixture/AGENTS.md",
+      exists: true,
+      content: "root-baseline",
+    }));
+    client.on("evener/host/list", () => ({ hosts: [] }));
+    for (const [index, path] of ["/", "/settings/theme", "/settings/agents-md"].entries()) {
+      window.history.pushState({ evenerNavigationIndex: index }, "", path);
+    }
+    const view = render(<AppShell client={client} />);
+    try {
+      const editor = await screen.findByRole("textbox", { name: "AGENTS.md contents" });
+      await waitFor(() => expect(editor).toHaveProperty("value", "root-baseline"));
+      fireEvent.change(editor, { target: { value: "root-draft" } });
+      act(() => window.history.go(-2));
+      await screen.findByRole("button", { name: "Stay" });
+      await waitFor(() => expect(window.location.pathname).toBe("/settings/agents-md"));
+      await user.click(screen.getByRole("button", { name: "Discard changes" }));
+      await waitFor(() => expect(window.location.pathname).toBe("/"));
+      await waitFor(() => expect(workspaceStore.getState().panes.some((pane) => pane.type === "settings")).toBe(false));
+      expect(editor.isConnected).toBe(false);
+      act(() => window.history.go(2));
+      const returned = await screen.findByRole("textbox", { name: "AGENTS.md contents" });
+      await waitFor(() => expect(returned).toHaveProperty("value", "root-baseline"));
+      expect(screen.queryByRole("button", { name: "Stay" })).toBeNull();
+    } finally {
+      view.unmount();
+      act(() => navigate("/"));
+    }
+  },
+);
+
 test("live-session shortcut asks before replacing an edited Settings workspace", async () => {
   resetAgentsDocStoreForTests();
   const user = userEvent.setup();

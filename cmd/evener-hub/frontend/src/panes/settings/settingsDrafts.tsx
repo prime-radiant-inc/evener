@@ -1,4 +1,5 @@
 import { createContext, type ReactNode, useContext, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { installNavigationGuard } from "../../shell/routing";
 import { ConfirmDialog } from "../../widgets";
 
@@ -79,16 +80,22 @@ export function SettingsDraftsProvider({ children }: { children: ReactNode }) {
   return (
     <Drafts.Provider value={drafts}>
       {children}
-      <ConfirmDialog
-        open={confirming}
-        title="Discard unsaved changes?"
-        confirmLabel="Discard changes"
-        cancelLabel="Stay"
-        onConfirm={discard}
-        onCancel={stay}
-      >
-        Your changes have not been saved. Stay to finish editing, or discard them and leave this form.
-      </ConfirmDialog>
+      {/* A navigation request can originate in the mobile rail or an editor
+          sheet. Its answer must sit above those sibling overlays, not behind
+          their scrims merely because Settings appears earlier in the shell. */}
+      {createPortal(
+        <ConfirmDialog
+          open={confirming}
+          title="Discard unsaved changes?"
+          confirmLabel="Discard changes"
+          cancelLabel="Stay"
+          onConfirm={discard}
+          onCancel={stay}
+        >
+          Your changes have not been saved. Stay to finish editing, or discard them and leave this form.
+        </ConfirmDialog>,
+        document.body,
+      )}
     </Drafts.Provider>
   );
 }

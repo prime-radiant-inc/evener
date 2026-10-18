@@ -17,6 +17,27 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+test("a route subscriber installed before Settings never adopts rejected traversal or restoration", async () => {
+  window.history.pushState({ evenerNavigationIndex: 10 }, "", "/settings/theme");
+  window.history.pushState({ evenerNavigationIndex: 11 }, "", "/settings/agents-md");
+  // Both callbacks are at Window. Native Chrome popstate invokes an earlier
+  // shell subscriber before a later Settings listener, even with capture.
+  // Matching capture here exercises that registration-order boundary in jsdom.
+  const adopted = vi.fn();
+  window.addEventListener("popstate", adopted, true);
+  const guard = vi.fn(() => false);
+  const remove = installNavigationGuard(guard);
+  try {
+    window.history.back();
+    await vi.waitFor(() => expect(guard).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/settings/agents-md"));
+    expect(adopted).not.toHaveBeenCalled();
+  } finally {
+    remove();
+    window.removeEventListener("popstate", adopted, true);
+  }
+});
+
 test("unindexed Back and Stay preserve the destination entry for Forward and Back", async () => {
   window.history.pushState({}, "", "/older");
   window.history.pushState({}, "", "/settings/theme");

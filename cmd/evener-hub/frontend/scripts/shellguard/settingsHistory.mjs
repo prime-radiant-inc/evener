@@ -7,7 +7,10 @@ import { applyViewport, closePage, connectPage, evaluate, navigateTo, openPage }
 import { startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 
 const EDITOR = 'textarea[aria-label="AGENTS.md contents"]';
-const DIALOG = '[role="dialog"]';
+// Mobile Sessions is also a dialog and may remain open after Stay. Locate the
+// unsaved-changes confirmation by its action, not every overlay in the shell.
+const CONFIRMATION = `Array.from(document.querySelectorAll('[role="dialog"]')).find(dialog =>
+  Array.from(dialog.querySelectorAll('button')).some(button => button.textContent.trim() === 'Discard changes'))`;
 const BASELINE = "browser-history-baseline";
 const DRAFT = "browser-history-baseline unsaved-browser-input";
 const VIEWPORTS = [
@@ -50,13 +53,13 @@ async function choose(send, clickControl, name) {
     send,
     `(() => {
     document.querySelector('[data-history-action]')?.removeAttribute('data-history-action');
-    const button = Array.from(document.querySelectorAll('${DIALOG} button')).find(button => button.textContent.trim() === ${JSON.stringify(name)});
+    const button = Array.from((${CONFIRMATION})?.querySelectorAll('button') ?? []).find(button => button.textContent.trim() === ${JSON.stringify(name)});
     if (!button) throw new Error('Confirmation action missing');
     button.dataset.historyAction = '';
   })()`,
   );
   await clickControl(send, "[data-history-action]");
-  await wait(send, `!document.querySelector('${DIALOG}')`, "confirmation dismissed");
+  await wait(send, `!(${CONFIRMATION})`, "confirmation dismissed");
 }
 
 async function edit(send, clickControl) {
@@ -105,7 +108,7 @@ async function traverse(send, delta, expectedIndex, confirming = true) {
   await evaluate(send, `history.go(${delta})`);
   await wait(
     send,
-    `window.settingsHistoryWitness().traversals.length > ${before} && window.settingsHistoryWitness().current.index === ${expectedIndex} && ${confirming ? `!!document.querySelector('${DIALOG}')` : `!document.querySelector('${DIALOG}')`}`,
+    `window.settingsHistoryWitness().traversals.length > ${before} && window.settingsHistoryWitness().current.index === ${expectedIndex} && ${confirming ? `!!(${CONFIRMATION})` : `!(${CONFIRMATION})`}`,
     "real traversal and cursor settlement",
   );
 }
@@ -263,13 +266,13 @@ async function existingSessionCase(page, viewport, clickControl) {
   await clickControl(send, '[data-session-ref="local:p0-s0"]');
   await wait(
     send,
-    `!!document.querySelector('${DIALOG}') || !document.querySelector(${JSON.stringify(EDITOR)})`,
+    `!!(${CONFIRMATION}) || !document.querySelector(${JSON.stringify(EDITOR)})`,
     "rail selection resolves",
   );
   const state = await evaluate(
     send,
     `({ editor: document.querySelector(${JSON.stringify(EDITOR)})?.value,
-    dialog: !!document.querySelector('${DIALOG}'), stacked: document.querySelector('[data-stacked-pane-type]')?.dataset.stackedPaneType,
+    dialog: !!(${CONFIRMATION}), stacked: document.querySelector('[data-stacked-pane-type]')?.dataset.stackedPaneType,
     route: window.settingsHistoryWitness(), workspace: window.overviewGuardState() })`,
   );
   assert.equal(
@@ -318,7 +321,7 @@ async function unloadCase(page, viewport, clickControl) {
   assert.equal(await evaluate(send, `document.querySelector(${JSON.stringify(EDITOR)})?.value`), DRAFT);
   assert.equal((await witness(send)).current.key, initial.current.key);
   assert.equal(
-    await evaluate(send, `document.querySelector('${DIALOG}') === null`),
+    await evaluate(send, `document.querySelector('[role="dialog"]') === null`),
     true,
     "native prompt is not the app confirmation",
   );

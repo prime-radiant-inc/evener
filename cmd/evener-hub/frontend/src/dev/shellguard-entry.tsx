@@ -1,3 +1,6 @@
+// Keep the passive history witness ahead of routing's module-level listener.
+import "./shellguardSettingsHistory";
+
 import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 // Browser-verification harness for the desktop shell's page height.
 //

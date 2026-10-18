@@ -1,10 +1,32 @@
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 
+// Imported first by the fixture entry: observe real browser events before the
+// router's early interception can stop downstream application subscribers.
+// This observer never changes the event or the native Navigation API.
+const nativeNavigation = window.navigation;
+const traversals: { url: string; key: string; index: number; state: unknown; trusted: boolean }[] = [];
+if (new URLSearchParams(window.location.search).has("settingsHistory")) {
+  window.addEventListener(
+    "popstate",
+    (event) => {
+      const entry = nativeNavigation?.currentEntry;
+      if (!entry) throw new Error("Native currentEntry disappeared");
+      traversals.push({
+        url: location.pathname + location.search,
+        key: entry.key,
+        index: entry.index,
+        state: history.state,
+        trusted: event.isTrusted,
+      });
+    },
+    true,
+  );
+}
+
 // This opt-in shellguard fixture seeds actual same-document browser history
 // before AppShell mounts. It never simulates Navigation API entry identity.
 export async function prepareSettingsHistory(mode: string): Promise<void> {
   if (!["native", "indexed", "legacy"].includes(mode)) throw new Error(`Unknown history fixture: ${mode}`);
-  const nativeNavigation = window.navigation;
   if (!nativeNavigation) throw new Error("Settings browser acceptance requires Chrome's native Navigation API");
   const urls = ["/", "/settings/theme?history=first", "/settings/agents-md", "/settings/theme?history=forward"];
   for (const [index, url] of urls.entries()) {
@@ -29,22 +51,7 @@ export async function prepareSettingsHistory(mode: string): Promise<void> {
       return original(data, unused, url);
     };
   }
-  const traversals: { url: string; key: string; index: number; state: unknown; trusted: boolean }[] = [];
-  window.addEventListener(
-    "popstate",
-    (event) => {
-      const entry = nativeNavigation.currentEntry;
-      if (!entry) throw new Error("Native currentEntry disappeared");
-      traversals.push({
-        url: location.pathname + location.search,
-        key: entry.key,
-        index: entry.index,
-        state: history.state,
-        trusted: event.isTrusted,
-      });
-    },
-    true,
-  );
+  traversals.length = 0;
   const routing = await import("../shell/routing");
   const target = window as typeof window & { settingsHistoryWitness?: () => unknown };
   target.settingsHistoryWitness = () => ({

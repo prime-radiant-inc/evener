@@ -85,7 +85,9 @@ Back preserves the list's search and scroll position. Desktop keeps the list
 beside the selected page.
 
 Edited forms ask before changing section, host or project, closing Settings,
-or leaving through an app action or browser history. **Stay** keeps the same
+or leaving through an app action or browser history. Opening an already-open
+session or cycling sessions asks before workspace focus can replace the editor.
+**Stay** keeps the same
 editor and input. **Discard changes** visits the originally requested destination
 once, without saving. Confirmed saves clear protection for the saved input;
 failed saves and temporary read or connection failures retain it. Capturing a
@@ -150,6 +152,11 @@ Plugin and marketplace read failures have separate retries. A failed marketplace
 read does not hide Installed; a failed plugin read does not prevent browsing
 catalogs, but installation waits until the installed inventory is available.
 Directory loading and editing recover independently of both inventories.
+Plugin and skill directory drafts remain editable through a failed refresh.
+Add and Remove require a loaded, error-free global layer with no read in flight,
+so retained data cannot overwrite unrelated launch settings. **Retry** reloads
+that layer without saving or clearing the staged directory; apply the change
+explicitly after recovery.
 Temporary marketplace read failures retain source add/edit drafts and let you
 keep typing; retry the read before saving. Untouched source editors follow
 canonical changes. An edited source that changes elsewhere requires **Reload

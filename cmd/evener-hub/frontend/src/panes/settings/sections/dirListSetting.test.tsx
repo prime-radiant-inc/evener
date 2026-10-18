@@ -1,11 +1,11 @@
-import { ConnectionClosedError, friendlyErrorMessage, WireError } from "@evener/appwire-client";
+import { ConnectionClosedError, friendlyErrorMessage, type LaunchConfigLayer, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { navigate } from "../../../shell/routing";
 import { connectionStore } from "../../../stores/connection";
-import { resetExtensionsStoreForTests } from "../../../stores/extensions";
+import { extensionsStoreForHost, resetExtensionsStoreForTests } from "../../../stores/extensions";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import { SettingsDraftsProvider } from "../settingsDrafts";
 import { DirListSetting, PathListEditor } from "./dirListSetting";
@@ -240,6 +240,62 @@ describe("PathListEditor", () => {
 });
 
 describe("DirListSetting", () => {
+  test.each(["failed", "loading"] as const)(
+    "refuses Add and Remove from a %s refresh, keeps the staged path and writes only after fresh recovery",
+    async (state) => {
+      const user = userEvent.setup();
+      const fake = connectFakeClient();
+      fake.on("evener/launch/getLayer", () => ({ model: "stale-model", pluginDirs: ["/opt/plugins"] }));
+      fake.on("evener/paths/complete", () => ({ data: [] }));
+      const setLayer = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+      fake.on("evener/launch/setLayer", setLayer);
+      render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
+      await screen.findByText("/opt/plugins");
+      await typePath(user, "/opt/new");
+      const field = picker();
+      let finishRead: (layer: LaunchConfigLayer) => void = () => {};
+      fake.on("evener/launch/getLayer", () =>
+        state === "failed"
+          ? Promise.reject(new WireError("read-fixture", -32000))
+          : new Promise<LaunchConfigLayer>((resolve) => {
+              finishRead = resolve;
+            }),
+      );
+      let reading: Promise<void> = Promise.resolve();
+      await act(async () => {
+        reading = extensionsStoreForHost("local").getState().fetchLaunchLayer();
+      });
+      await user.click(screen.getByRole("button", { name: "Add" }));
+      await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+      expect(setLayer).not.toHaveBeenCalled();
+      expect(picker()).toBe(field);
+      expect(field.textContent).toContain("/opt/new");
+      await user.click(screen.getByRole("button", { name: "Remove /opt/plugins" }));
+      await user.click(screen.getByRole("button", { name: "Remove" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(setLayer).not.toHaveBeenCalled();
+      const fresh = { model: "fresh-model", pluginDirs: ["/opt/plugins", "/opt/external"] };
+      if (state === "failed") {
+        fake.on("evener/launch/getLayer", () => fresh);
+        await user.click(screen.getByRole("button", { name: "Retry" }));
+      } else {
+        await act(async () => {
+          finishRead(fresh);
+          await reading;
+        });
+      }
+      await screen.findByText("/opt/external");
+      expect(picker()).toBe(field);
+      expect(setLayer).not.toHaveBeenCalled();
+      await user.click(screen.getByRole("button", { name: "Add" }));
+      expect(setLayer).toHaveBeenCalledExactlyOnceWith({
+        cwd: "/",
+        layer: "global",
+        config: { ...fresh, pluginDirs: [...fresh.pluginDirs, "/opt/new"] },
+      });
+    },
+  );
+
   test("shows a loading state before the launch layer resolves", async () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => new Promise(() => {}));
