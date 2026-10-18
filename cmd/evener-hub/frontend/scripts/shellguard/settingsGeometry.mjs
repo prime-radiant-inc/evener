@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyViewport, closePage, connectPage, evaluate, navigateTo, openPage } from "../browserGuardCdp.mjs";
+import { applyViewport, closePage, connectPage, evaluate, navigateTo, openPage, waitForFonts } from "../browserGuardCdp.mjs";
 import { startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 
 async function wait(send, predicate) {
@@ -15,9 +15,9 @@ async function wait(send, predicate) {
       if (performance.now() > deadline) throw new Error('Settings geometry did not settle');
       await new Promise(resolve => requestAnimationFrame(resolve));
     }
-    await document.fonts.ready;
   })()`,
   );
+  await waitForFonts(send);
 }
 
 async function measureSearch(send) {

@@ -146,12 +146,15 @@ export function MarketplaceSheet({
     seed(entry);
   }, [entry?.name, store, connectionClient]);
 
+  // The re-fetch warning tracks the source the form SHOWS, not the request: it
+  // belongs on screen from the moment a kind is picked, which is before that
+  // kind's field has a value and so before the model reports a source change
+  // at all. A source nobody touched promises nothing, even when its field sits
+  // empty because the entry had no URL to seed it with.
+  const sourceTouched = baseline !== null && draft !== null && marketplaceSourceTouched(baseline, draft);
   // Empty/incomplete input is still a draft, even when it cannot produce a
   // valid edit request. It must not be silently reseeded by a refresh.
-  const dirty =
-    baseline !== null &&
-    draft !== null &&
-    (draft.name.trim() !== baseline.name.trim() || marketplaceSourceTouched(baseline, draft));
+  const dirty = baseline !== null && draft !== null && (draft.name.trim() !== baseline.name.trim() || sourceTouched);
   const canonicalChanged =
     baseline !== null &&
     entry !== undefined &&
@@ -189,12 +192,6 @@ export function MarketplaceSheet({
 
   const open = name !== null && entry !== undefined;
   const params = baseline !== null && draft !== null ? marketplaceEditParams(baseline, draft) : null;
-  // The re-fetch warning tracks the source the form SHOWS, not the request: it
-  // belongs on screen from the moment a kind is picked, which is before that
-  // kind's field has a value and so before the model reports a source change
-  // at all. A source nobody touched promises nothing, even when its field sits
-  // empty because the entry had no URL to seed it with.
-  const sourceTouched = baseline !== null && draft !== null && marketplaceSourceTouched(baseline, draft);
   // A half-picked source is the one thing that blocks an otherwise valid save:
   // it would go out as a rename alone while the picker on screen says the
   // source moved too.
