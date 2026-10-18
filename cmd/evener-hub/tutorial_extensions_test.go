@@ -180,7 +180,6 @@ func extensionOutcome(t *testing.T, root, work, beforeHash, sentNonce string) {
 }
 
 func checkExtensionOutcome(root, beforeHash, workspaceHash, sentNonce string) error {
-	var hook events.HookEndData
 	hookFound, skillFound, echoFound := false, false, false
 	skillCommitted := false
 	pluginConfigured := false
@@ -233,7 +232,6 @@ func checkExtensionOutcome(root, beforeHash, workspaceHash, sentNonce string) er
 				if v.ExitCode != 0 {
 					return fmt.Errorf("startup hook failed with exit %d", v.ExitCode)
 				}
-				hook = events.HookEndData{Event: v.Event, Matcher: v.Matcher, PluginName: v.PluginName, ExitCode: v.ExitCode}
 				hookFound = true
 			}
 			if state := turn.SkillState; state != nil {
@@ -284,7 +282,7 @@ func checkExtensionOutcome(root, beforeHash, workspaceHash, sentNonce string) er
 	if !hookFound || !skillFound || !skillCommitted || !pluginConfigured || !echoFound {
 		return fmt.Errorf("missing records: hook=%v skill=%v committed=%v plugin=%v echo=%v", hookFound, skillFound, skillCommitted, pluginConfigured, echoFound)
 	}
-	if hook.ExitCode != 0 || echoNonce != sentNonce || workspaceHash != beforeHash {
+	if echoNonce != sentNonce || workspaceHash != beforeHash {
 		return fmt.Errorf("extension effects disagree")
 	}
 	return nil
@@ -324,11 +322,7 @@ func runExtensionsCLI(t *testing.T, out string) {
 	before := extensionHash(t, stack.workDir)
 	capture := func(id string) func() error {
 		return func() error {
-			b, err := json.Marshal(records)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(filepath.Join(out, id+".json"), b, 0600)
+			return writeTutorialCommandRecords(filepath.Join(out, id+".json"), records)
 		}
 	}
 	checkpoint(t, "entry", []tourEvidence{{"installed examples and baseline hash", true}}, capture("entry"))

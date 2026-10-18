@@ -51,7 +51,7 @@ func configProvider(t *testing.T) (*fakellm.Server, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(p.Close)
-	return p, fmt.Sprintf("default = \"fake\"\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"fakellm-not-a-secret\"\n[providers.ollama]\nbase_url = %q\n[providers.ollama.models.\"*\"]\ndisabled = true\n", p.BaseURL(), p.BaseURL())
+	return p, tutorialProviderConfig(p.BaseURL())
 }
 
 // Identify the launch while its first request is held. OriginalPrompt in the
@@ -255,11 +255,7 @@ func runConfigCLI(t *testing.T, out string) {
 	}
 	capture := func(id string, records []commandRecord) func() error {
 		return func() error {
-			b, err := json.Marshal(records)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(filepath.Join(out, id+".json"), b, 0600)
+			return writeTutorialCommandRecords(filepath.Join(out, id+".json"), records)
 		}
 	}
 	var records []commandRecord

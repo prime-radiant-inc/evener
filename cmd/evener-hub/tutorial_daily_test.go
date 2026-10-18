@@ -88,7 +88,7 @@ func dailyStack(t *testing.T, web bool) (*fakellm.Server, hubStack, string) {
 	} else {
 		bin = filepath.Join(liveStackBinaries(t, repo), "evener")
 	}
-	config := fmt.Sprintf("default = \"fake\"\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"fakellm-not-a-secret\"\n[providers.ollama]\nbase_url = %q\n[providers.ollama.models.\"*\"]\ndisabled = true\n", provider.BaseURL(), provider.BaseURL())
+	config := tutorialProviderConfig(provider.BaseURL())
 	stack := startHubStackWithOptions(t, config, "fake/"+fakellm.ModelID, bin, hubStackOptions{ChildEnv: tutorialChildEnvironment(tutorialOwnedRoot(t))})
 	stack.workDir, err = filepath.EvalSymlinks(stack.workDir)
 	if err != nil {
@@ -370,11 +370,7 @@ func runDailyCLI(t *testing.T, out string) {
 				records[i].CwdLabel = "daily-workspace"
 				records[i].Owned = &transcriptOwned{Executable: bin, Paths: []string{stack.workDir, stack.home}}
 			}
-			b, err := json.Marshal(records)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(filepath.Join(out, id+".json"), b, 0600)
+			return writeTutorialCommandRecords(filepath.Join(out, id+".json"), records)
 		}
 	}
 	run := func(extra []string, nonce, name string, entry bool) commandRecord {

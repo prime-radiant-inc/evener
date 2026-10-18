@@ -186,11 +186,7 @@ func runReceiptCLI(t *testing.T, candidateDir string) {
 	prepareReceiptWorkspace(t, stack.workDir, env, source)
 	capture := func(id string, records []commandRecord) func() error {
 		return func() error {
-			b, err := json.Marshal(records)
-			if err != nil {
-				return err
-			}
-			return os.WriteFile(filepath.Join(candidateDir, id+".json"), b, 0600)
+			return writeTutorialCommandRecords(filepath.Join(candidateDir, id+".json"), records)
 		}
 	}
 	pre := receiptCheck(t, stack.workDir)
@@ -414,7 +410,7 @@ func runReceiptWeb(t *testing.T, candidateDir string) {
 	root := tutorialOwnedRoot(t)
 	// Ollama is keyless and otherwise probes an ambient localhost service.
 	// Redirect its discovery to the owned fake HTTP server, then hide its models.
-	providerConfig := fmt.Sprintf("default = \"fake\"\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"fakellm-not-a-secret\"\n[providers.ollama]\nbase_url = %q\n[providers.ollama.models.\"*\"]\ndisabled = true\n", provider.BaseURL(), provider.BaseURL())
+	providerConfig := tutorialProviderConfig(provider.BaseURL())
 	if _, err := registry.ParseConfig([]byte(providerConfig)); err != nil {
 		t.Fatal(err)
 	}
