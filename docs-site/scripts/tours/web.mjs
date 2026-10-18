@@ -56,18 +56,34 @@ export async function open(options) {
       error.tourPhase = 'session navigation, alerts: ' + (await page.getByRole('alert').allTextContents()).join(' | ').replace(/(?:https?:|wss?:)\/\/\S+|\/[^\s]+/g, '[private path]');
       throw error;
      }
+    } else if (action === 'send' || action === 'steer') {
+     const message = page.getByRole('textbox', { name: 'Message', exact: true });
+     await message.fill('');
+     await message.pressSequentially(args.prompt);
+     await page.getByTestId(action === 'steer' ? 'composer-steer' : 'composer-submit').click();
+    } else if (action === 'stop') {
+     await page.getByTestId('composer-stop').click();
     } else if (action === 'capture') {
      assert.ok(['entry', 'action', 'verified'].includes(args.id));
      assert.ok(!page.url().includes('/auth/'));
-     if (args.id === 'entry') await page.locator('[data-testid="spawn-plugin-summary"][data-state="ready"]').waitFor({ state: 'visible' });
-     if (args.id === 'action') await page.locator('[data-tool-name="edit_file"]').waitFor({ state: 'visible' });
-     if (args.id === 'verified') await page.locator('[data-testid="agent-message-item"][data-live="false"]').waitFor({ state: 'visible' });
+     if (options.scenario === 'daily') {
+      if (args.id === 'entry') await page.getByTestId('composer-stop').waitFor({ state: 'visible' });
+      if (args.id === 'action') await page.locator('[data-tool-name="shell"], [data-tool-name="exec_command"]').first().waitFor({ state: 'visible' });
+     } else {
+      if (args.id === 'entry') await page.locator('[data-testid="spawn-plugin-summary"][data-state="ready"]').waitFor({ state: 'visible' });
+      if (args.id === 'action') await page.locator('[data-tool-name="edit_file"]').waitFor({ state: 'visible' });
+     }
+     if (args.id === 'verified') {
+      const completed = page.locator('[data-testid="agent-message-item"][data-live="false"]');
+      await (options.scenario === 'daily' ? completed.nth(1) : completed).waitFor({ state: 'visible' });
+     }
      await page.evaluate(() => document.fonts.ready);
      // Opaque screenshot masks redact only exact owned workspace labels.
      // The live DOM and all runtime evidence remain unchanged.
      const aliases = workspaceLabels(workspace);
      const masks = aliases.map(path => page.getByText(path, { exact: true }));
      assert.ok((await Promise.all(masks.map(mask => mask.count()))).some(count => count > 0), 'owned workspace label must be present for redaction');
+     await page.mouse.move(0, 0);
      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
      const png = await page.screenshot({ path: join(outputDir, `${args.id}.png`), animations: 'disabled', mask: masks, maskColor: '#000000' });
      const dimensions = await page.evaluate(async data => {

@@ -16,7 +16,8 @@ export async function runDriver(input, output) {
     output.write(`${JSON.stringify({ id, ok: true, data })}\n`);
    } catch (error) {
     // Browser errors contain auth URLs and local paths. Keep them private.
-    output.write(`${JSON.stringify({ id, ok: false, data: { error: `Web driver action failed: ${action} (${error.tourPhase ?? error.name})` } })}\n`);
+    const category = error.message?.includes('strict mode violation') ? 'ambiguous locator' : error.name;
+    output.write(`${JSON.stringify({ id, ok: false, data: { error: `Web driver action failed: ${action} (${error.tourPhase ?? category})` } })}\n`);
     process.exitCode = 1;
     break;
    }

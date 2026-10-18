@@ -2,7 +2,36 @@
 
 A useful Evener session ends with a result you can inspect, not just a convincing answer. Give the agent a bounded task, intervene when the direction changes, and review the files and checks before accepting its work.
 
-This guide assumes you have completed [provider setup](getting-started.md#connect-a-provider-before-starting-work) and can open your hub in a browser. All interface paths below are relative to that hub, normally `http://127.0.0.1:9180`.
+This guide assumes you have completed [provider setup](getting-started.md#connect-a-provider-before-starting-work). The browser instructions use your hub, normally `http://127.0.0.1:9180`. The CLI runs one request at a time and resumes saved sessions explicitly. It does not offer the browser's interactive Send, Steer, and Stop controls.
+
+## Try a CLI continuation
+
+Use a fresh directory so the two files below cannot overwrite existing work. Run these commands with your configured provider and model:
+
+```sh
+mkdir daily-workspace
+cd daily-workspace
+git init
+evener 'Write initial.json with nonce b8e54d60 and a receipts array containing that nonce once.'
+evener --list-sessions
+```
+
+Wait for the first command to finish. Identify the session you just ran in the listing, using its creation time, then substitute its ID for `SESSION_ID`. Do not guess if another run started at the same time:
+
+```sh
+evener --resume SESSION_ID 'Continue by writing continued.json with nonce c9f65e71 and a receipts array containing that nonce once.'
+python3 -c 'import json; print(json.dumps({p:json.load(open(p)) for p in ["initial.json","continued.json"]},sort_keys=True))'
+```
+
+Check that each file has its requested nonce and exactly one matching receipt. This is sequential continuation of the same saved conversation, not a queued request to a running CLI process. Keep using the same working directory; resuming a conversation does not undo file changes made since its last turn.
+
+The deterministic tutorial check runs this CLI path and the browser controls below against a local scripted provider. It verifies files and persisted session identity, not a live model's ability to follow these prompts:
+
+```sh
+node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --scenario daily
+```
+
+These checks cover CLI and web only. They do not publish screenshots.
 
 ## Start with a task you can check
 
@@ -61,6 +90,27 @@ the parser internally instead.
 ```
 
 Steering cannot retract a command that already ran. If the agent is about to take an unsafe action, use Stop, then inspect what actually happened. Do not send a second copy of a destructive request because the first copy has not appeared in the transcript yet.
+
+### Try the browser controls
+
+In a fresh workspace, start a session with `Read the workspace and wait for my next instruction. Reference: d4a10f26`. While a turn is active:
+
+1. Type `Record one receipt in steered.json for nonce e5b21a37` and choose **Steer**. This changes the current turn at a tool boundary.
+2. Type `Next, record one receipt in queued.json for nonce f6c32b48` and choose **Send**. Confirm that one message is queued before sending anything else.
+3. Let the first turn finish. The queued request starts a later turn. Inspect `steered.json` and `queued.json` for distinct nonces and one receipt each.
+4. Choose **Stop** while work is active. Wait for the turn to stop, then send `Continue here. Record one receipt in continued.json for nonce a7d43c59`.
+5. Inspect `continued.json` and the earlier files. Stop must not erase completed receipts, and continuation must not duplicate the queued receipt.
+
+```mermaid
+flowchart LR
+    Active[Active turn] --> Steer[Steer at a tool boundary]
+    Steer --> Complete[First turn finishes]
+    Complete --> Queued[Queued request starts a later turn]
+    Queued --> Stop[Stop interrupts active work]
+    Stop --> Continue[Send continues the session]
+```
+
+A live model may finish before you press a control. The automated tour holds real HTTP provider requests at these boundaries so it can verify queue depth, delivery order, cancellation, and file effects without a timing race. It also checks that a late response from the cancelled request cannot write `cancelled.json`. This does not promise that Stop can undo a command that has already executed.
 
 ## Return after a break
 

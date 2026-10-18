@@ -143,15 +143,24 @@ func TestTutorialTours(t *testing.T) {
 	runTour(t, tc, out)
 }
 func runTour(t *testing.T, tc tourCase, candidateDir string) {
-	if tc.Scenario != "receipt" || (tc.Surface != "cli" && tc.Surface != "web") {
+	if (tc.Scenario != "receipt" && tc.Scenario != "daily") || (tc.Surface != "cli" && tc.Surface != "web") {
 		t.Fatal("unsupported tutorial row", tc)
 	}
-	if tc.Surface == "cli" {
+	coverage := "receipt-repair"
+	if tc.Scenario == "daily" {
+		if tc.Surface == "cli" {
+			coverage = "sequential-resume"
+			runDailyCLI(t, candidateDir)
+		} else {
+			coverage = "interactive-turn-controls"
+			runDailyWeb(t, candidateDir)
+		}
+	} else if tc.Surface == "cli" {
 		runReceiptCLI(t, candidateDir)
 	} else {
 		runReceiptWeb(t, candidateDir)
 	}
-	body, err := json.Marshal(map[string]any{"scenario": tc.Scenario, "surface": tc.Surface, "executed": true, "passed": true, "checkpoints": []string{"entry", "action", "verified"}})
+	body, err := json.Marshal(map[string]any{"scenario": tc.Scenario, "surface": tc.Surface, "coverage": coverage, "executed": true, "passed": true, "checkpoints": []string{"entry", "action", "verified"}})
 	if err != nil {
 		t.Fatal(err)
 	}
