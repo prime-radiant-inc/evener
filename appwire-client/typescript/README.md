@@ -20,7 +20,12 @@ its notification reducer, the activity tree parser, merge and disclosure
 rules, the lossless job-output page codec, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
 delegate status rule, the delegate timing and model derivations both apps'
-delegate details render from,
+delegate details render from, and the originating-input lookback a failed
+turn's Retry re-issues (the composer-style text with rebuilt "[image N]"
+anchors, the image bytes that survived, or the explicit reason they did not),
+which the web's failure end-cap and the native error row share
+(`originatingInput`, with `retryItem`, `findOriginatingItem` and
+`originFromItem` for the item-stable store selectors),
 the shared slash invocation rules, and two command catalog stores with distinct
 owners (`createCommandCatalog(client)`, the controller palette's global list,
 and `createSessionCommandCatalog(client, ref)`, the owning session's loaded
