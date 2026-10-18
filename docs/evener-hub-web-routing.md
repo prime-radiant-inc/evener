@@ -9,9 +9,9 @@ health, and subscription-debug surfaces.
   `/settings`, `/settings/:section`, and `/credentials`.
 - `/s/:ref/images/:sha` serves session images through the
   [session route handler](../cmd/evener-hub/web_workspace.go).
-- `/doc/file` serves raw session documents; `/doc/image` serves document images;
-  `/doc/download` serves one whole session file, uncapped, for a client that
-  saves it or hands it to another app.
+- `/doc/file` serves one session document in two representations: `format=raw`
+  is the capped head a doc pane renders, `format=download` is the whole file a
+  client saves or hands to another app. `/doc/image` serves document images.
 - `/api/health` and `/api/debug/subscriptions` expose health and subscription
   diagnostics.
 
@@ -128,16 +128,17 @@ retry series. Reload, reopen, visibility or connection re-entry, and reader
 refresh triggers start a new series. Image load callbacks do not expose HTTP
 status, so failed image loads keep paced retries.
 
-`/doc/download` is the one fetch that does not stop at the pane cap: the body is
-the file itself, with its type from its extension and its own name in
-`Content-Disposition`. It shares the containment rules above (the path must
-resolve inside the session's folder, and the open goes through that folder's
-root) and refuses a non-regular file. The body is served as content, so `HEAD`
-and `Range` work and an interrupted transfer resumes. Its type table is the
-whole answer: an extension it does not list is `application/octet-stream`, never
-a type borrowed from the host's mime tables. It serves local sessions only; a
-host-qualified id answers 501 rather than reading locally. Proxying a whole file
-to the owning host is not implemented: `evener/session/document` answers only the
-first 512 KiB, so a session on another host cannot be shared yet. Native saves
-the body to its cache and opens the system share sheet for it (the Reader, and a
-touch-and-hold on a transcript document chip).
+`/doc/file?format=download` is the one representation that does not stop at the
+pane cap: the body is the file itself, with its type from its extension and its
+own name in `Content-Disposition`. It shares the raw read's containment rules
+(the path must resolve inside the session's folder, and the open goes through
+that folder's root) and refuses a non-regular file. The body is served as
+content, so `HEAD` and `Range` work and an interrupted transfer resumes. Its
+type table is the whole answer: an extension it does not list is
+`application/octet-stream`, never a type borrowed from the host's mime tables.
+It serves local sessions only; a host-qualified id answers 501 rather than
+reading locally. Proxying a whole file to the owning host is not implemented:
+`evener/session/document` answers only the first 512 KiB, so a session on
+another host cannot be shared yet. Native saves the body to its cache and opens
+the system share sheet for it (the Reader, and a touch-and-hold on a transcript
+document chip).

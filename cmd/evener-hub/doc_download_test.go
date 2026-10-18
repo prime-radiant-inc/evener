@@ -1,10 +1,9 @@
 package hub
 
-// Tests for /doc/download, the whole-file read a native client saves or hands
-// to another app. Unlike /doc/file it has no 512 KiB pane cap, so the body is
-// the file byte for byte. It shares /doc/file's containment rules: a path that
-// escapes the session cwd is refused, and a host-qualified session id is never
-// read locally.
+// Tests for /doc/file's download representation, the whole-file read a native
+// client saves or hands to another app. The raw representation stops at the
+// pane cap; this one does not, and it streams as content so Range and HEAD
+// work.
 
 import (
 	"bytes"
@@ -13,13 +12,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
 func docDownloadRequest(t *testing.T, web *WebServer, session, path string) *httptest.ResponseRecorder {
 	t.Helper()
-	u := "/doc/download?session=" + session + "&path=" + path
+	u := "/doc/file?format=download&session=" + session + "&path=" + path
 	req := httptest.NewRequest(http.MethodGet, u, nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
@@ -63,6 +61,64 @@ func TestDocDownload_NamesTheFileAndItsType(t *testing.T) {
 	}
 }
 
+// An unlisted extension is opaque bytes, never a type borrowed from the host's
+// own mime tables: a download is an attachment, and a host-dependent type would
+// make the same file arrive differently on two hubs.
+func TestDocDownload_UnlistedExtensionIsOpaque(t *testing.T) {
+	web, cwd, sessionID := docServeTestServer(t)
+	if err := os.WriteFile(filepath.Join(cwd, "notes.unknownext"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resp := docDownloadRequest(t, web, sessionID, "notes.unknownext")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.Code)
+	}
+	if ct := resp.Header().Get("Content-Type"); ct != "application/octet-stream" {
+		t.Fatalf("Content-Type = %q, want application/octet-stream", ct)
+	}
+}
+
+// Range matters for a large attachment: an interrupted transfer resumes instead
+// of starting over, and the body is the requested slice.
+func TestDocDownload_ServesARange(t *testing.T) {
+	web, cwd, sessionID := docServeTestServer(t)
+	body := bytes.Repeat([]byte("0123456789"), 100)
+	if err := os.WriteFile(filepath.Join(cwd, "clip.mp4"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u := "/doc/file?format=download&session=" + sessionID + "&path=clip.mp4"
+	req := httptest.NewRequest(http.MethodGet, u, nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Range", "bytes=10-19")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("status = %d, want 206", rec.Code)
+	}
+	if got := rec.Body.String(); got != "0123456789" {
+		t.Fatalf("body = %q, want the requested ten bytes", got)
+	}
+}
+
+// HEAD answers the metadata without a body.
+func TestDocDownload_HeadHasNoBody(t *testing.T) {
+	web, cwd, sessionID := docServeTestServer(t)
+	if err := os.WriteFile(filepath.Join(cwd, "clip.mp4"), []byte("abcd"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	u := "/doc/file?format=download&session=" + sessionID + "&path=clip.mp4"
+	req := httptest.NewRequest(http.MethodHead, u, nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("HEAD carried %d bytes", rec.Body.Len())
+	}
+}
+
 func TestDocDownload_RefusesAPathOutsideTheSession(t *testing.T) {
 	web, _, sessionID := docServeTestServer(t)
 	outside := filepath.Join(t.TempDir(), "secret.txt")
@@ -73,19 +129,19 @@ func TestDocDownload_RefusesAPathOutsideTheSession(t *testing.T) {
 	if resp.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", resp.Code)
 	}
-	if strings.Contains(resp.Body.String(), "secret") {
+	if bytes.Contains(resp.Body.Bytes(), []byte("secret")) {
 		t.Fatalf("the refused body carried the file's contents")
 	}
 }
 
-func TestDocDownload_RefusesAHostQualifiedSessionWithoutReadingLocally(t *testing.T) {
+// The host-to-host read carries only the raw head, so a download of a remote
+// session is refused rather than served short.
+func TestDocDownload_RefusesAHostQualifiedSession(t *testing.T) {
 	web, _, _ := docServeTestServer(t)
 	resp := docDownloadRequest(t, web, "studio:02wMz5Txv1C3Hut0M8GCeB", "onboarding.mp4")
 	if resp.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want 501", resp.Code)
 	}
-	// An error body is fine; a file response is not. The disposition header is
-	// what makes it one.
 	if disposition := resp.Header().Get("Content-Disposition"); disposition != "" {
 		t.Fatalf("the refusal was shaped as a file download (%q)", disposition)
 	}
@@ -96,5 +152,25 @@ func TestDocDownload_MissingFileIs404(t *testing.T) {
 	resp := docDownloadRequest(t, web, sessionID, "nope.mp4")
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", resp.Code)
+	}
+}
+
+// The two representations do not leak into each other: a raw read of the same
+// file still stops at the cap and still reports the truncation.
+func TestDocFile_RawStillCapsAfterDownloadWasAdded(t *testing.T) {
+	web, cwd, sessionID := docServeTestServer(t)
+	body := bytes.Repeat([]byte("x"), docFileMaxBytes+1)
+	if err := os.WriteFile(filepath.Join(cwd, "big.mp4"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resp := docRawRequest(t, web, sessionID, "big.mp4")
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.Code)
+	}
+	if resp.Body.Len() != docFileMaxBytes {
+		t.Fatalf("raw body = %d bytes, want the %d-byte cap", resp.Body.Len(), docFileMaxBytes)
+	}
+	if resp.Header().Get("X-Doc-Truncated") != "true" {
+		t.Fatal("raw read of an oversized file did not report truncation")
 	}
 }

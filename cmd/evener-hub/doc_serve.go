@@ -62,21 +62,42 @@ func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request
 	return cwd, abs, true
 }
 
-// handleDocFile serves a session file's literal bytes for the React
-// doc-viewer pane, which renders the content itself. The route has a single
-// mode, ?format=raw; a request that omits format or sends any other value is a
-// client error (400 with a hint naming the parameter). A host-qualified session
-// id names a session on another host, so its file is read by the owning host
-// (serveRemoteSessionDocument); a local id reads this hub's own filesystem.
+// The representations /doc/file serves: the capped head a pane renders, and
+// the whole file a client saves or shares.
+const (
+	docFormatRaw      = "raw"
+	docFormatDownload = "download"
+)
+
+// parseDocFormat answers the request itself when `format` names no
+// representation, so every caller refuses the same way.
+func parseDocFormat(w http.ResponseWriter, r *http.Request) (string, bool) {
+	format := r.URL.Query().Get("format")
+	if format != docFormatRaw && format != docFormatDownload {
+		http.Error(w, "format=raw or format=download required", http.StatusBadRequest)
+		return "", false
+	}
+	return format, true
+}
+
+// handleDocFile serves one session file's bytes. `format` names the
+// representation, and a request that omits it or sends any other value is a
+// client error (400 with a hint naming the parameter):
 //
-// For a local session the guard chain below (session/path presence, cwd
-// containment) runs before the format check, so a raw and a non-raw request
-// reject the same out-of-cwd or unknown-session input identically — only a
-// contained path reaches the format gate, where a raw request is served
-// (writeDocFileRaw) and anything else is refused. The format gate runs before
-// the file is read and hashed, so a request the route would refuse never pays
-// for the read. A host-qualified session checks the format first, so the host
-// is never asked for a request this route would refuse.
+//   - raw: the head a doc pane renders, capped at docFileMaxBytes with the
+//     truncation and revision headers writeDocFileRaw describes.
+//   - download: the whole file, as an attachment, streamed through
+//     http.ServeContent so Range and HEAD work and a large file resumes.
+//
+// Both modes share one guard chain: session/path presence, then cwd
+// containment, so an unknown session or an escaping path is refused identically
+// whatever the format. Containment runs before the format gate for exactly that
+// reason; the gate then runs before the file is opened or hashed.
+//
+// A host-qualified session id names a session on another host, so its file is
+// read by the owning host (serveRemoteSessionDocument); a local id reads this
+// hub's own filesystem. The host-to-host read carries only the raw head, so a
+// download of a remote session is refused rather than served short.
 //
 // Security: the only file paths we serve are ones that resolve to a location
 // inside the session's cwd. We clean the request path, reject any residual
@@ -85,7 +106,9 @@ func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request
 // read itself opens through an os.Root at the cwd (openDocInRoot), so a
 // symlink swapped in after the check cannot lead it out either.
 func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	// HEAD is the download representation answering its own metadata; raw keeps
+	// GET, checked once the representation is known.
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
 		return
 	}
@@ -98,23 +121,35 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 	if ref, ok := hostQualifiedRouteRef(session); ok {
 		// Checked before the host is asked: a request this route would refuse
 		// is never forwarded.
-		if r.URL.Query().Get("format") != "raw" {
-			http.Error(w, "format=raw required", http.StatusBadRequest)
+		format, ok := parseDocFormat(w, r)
+		if !ok {
+			return
+		}
+		// The host-to-host read answers only the raw head, so a whole file is
+		// refused here instead of being served short.
+		if format != docFormatRaw {
+			http.Error(w, "remote session not supported", http.StatusNotImplemented)
 			return
 		}
 		s.serveRemoteSessionDocument(w, r, ref, rel)
 		return
 	}
 
-	// Resolved before the format gate so raw and non-raw reject the same
-	// out-of-cwd or missing path identically; the gate precedes the read.
 	cwd, abs, ok := s.resolveLocalDocTarget(w, r, session, rel)
 	if !ok {
 		return
 	}
 
-	if r.URL.Query().Get("format") != "raw" {
-		http.Error(w, "format=raw required", http.StatusBadRequest)
+	format, ok := parseDocFormat(w, r)
+	if !ok {
+		return
+	}
+	if format == docFormatDownload {
+		s.writeDocDownload(w, r, cwd, abs)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -166,38 +201,12 @@ func downloadMediaType(name string) string {
 	return "application/octet-stream"
 }
 
-// handleDocDownload streams a session file's whole bytes, for a client that
-// will save it or hand it to another app. /doc/file stops at docFileMaxBytes
-// because a pane shows a head; a shared attachment must be the real file, so
-// this route copies the open file with no cap of its own.
-//
-// Containment is /doc/file's: the path must resolve inside the session's cwd
-// (fspaths.ResolveInRoot), and the open goes through an os.Root at that cwd
-// (openDocInRoot), so a symlink swapped in after the check cannot lead out. A
-// non-regular file is refused: a FIFO would make the copy wait forever. A
-// host-qualified session id is refused rather than read locally: proxying a
-// whole file to the owning host is not implemented yet (evener/session/document
-// answers only the first 512 KiB), so a session on another host cannot be
-// downloaded.
-func (s *WebServer) handleDocDownload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
-		return
-	}
-	session := canonicalRouteID(r.URL.Query().Get("session"))
-	rel := r.URL.Query().Get("path")
-	if session == "" || rel == "" {
-		http.NotFound(w, r)
-		return
-	}
-	if _, ok := hostQualifiedRouteRef(session); ok {
-		http.Error(w, "remote session not supported", http.StatusNotImplemented)
-		return
-	}
-	cwd, abs, ok := s.resolveLocalDocTarget(w, r, session, rel)
-	if !ok {
-		return
-	}
+// writeDocDownload streams abs, an already-contained session file, as an
+// attachment. A pane shows a head; a file handed to another app must be the
+// whole thing, so this reads with no cap of its own. The open goes through the
+// session's cwd root (docOpen), and a non-regular file is refused: a FIFO would
+// make the copy wait forever.
+func (s *WebServer) writeDocDownload(w http.ResponseWriter, r *http.Request, cwd, abs string) {
 	f, err := docOpen(cwd, abs)
 	if err != nil {
 		http.NotFound(w, r)

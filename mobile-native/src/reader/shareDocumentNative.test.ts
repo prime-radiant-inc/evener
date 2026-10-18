@@ -73,7 +73,7 @@ describe("shareSessionDocument", () => {
 		harness.release.shift()?.();
 		await sharing;
 		expect(harness.downloads[0]?.url).toBe(
-			"https://hub.test/doc/download?session=local%3Aabc&path=docs%2Fonboarding.mp4",
+			"https://hub.test/doc/file?format=download&session=local%3Aabc&path=docs%2Fonboarding.mp4",
 		);
 		expect(harness.downloads[0]?.headers).toEqual({ Authorization: "Bearer secret" });
 		expect(harness.shared).toHaveLength(1);

@@ -161,7 +161,7 @@ failures are session-unavailable results. S05's shared document read demand
 preserves and paces visible, connected readers' retry intent through those faults.
 The next read after metadata recovery uses its fresh directory without an index
 rebuild. Browser DocPane, native Reader, raw HTTP, image HTTP and the native
-share download retain the same owning-session boundary; the download route
+share download retain the same owning-session boundary; the download format
 serves the whole file where a pane read stops at its cap. See
 [session document reads](../evener-hub-web-routing.md#session-document-reads).
 

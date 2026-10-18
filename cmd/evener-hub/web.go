@@ -321,7 +321,6 @@ func (s *WebServer) Handler() http.Handler {
 	// Document panes — read-only file/markdown viewer framed by a side pane.
 	mux.HandleFunc("/doc/file", s.handleDocFile)
 	mux.HandleFunc("/doc/image", s.handleDocImage)
-	mux.HandleFunc("/doc/download", s.handleDocDownload)
 
 	// Settings
 	mux.HandleFunc("/settings", s.handleSettings)

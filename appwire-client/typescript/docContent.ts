@@ -14,8 +14,9 @@
 //   request itself comes from the DocPort the host supplies, so this module
 //   names no browser global, no origin and no credentials policy of its own.
 //
-//   docDownloadURL - the href for /doc/download, which serves a whole file
-//   uncapped so a native client can save it or hand it to another app.
+//   docDownloadURL - /doc/file?format=download, the same route's whole-file
+//   representation, for a native client that saves it or hands it to another
+//   app.
 
 export * from "./documentReadDemand";
 export * from "./fileReferences";
@@ -183,12 +184,12 @@ export function docImageReadURL(origin: string, session: string, readTarget: str
   return `${docImageURL(origin, session, readTarget)}&read=${encodeURIComponent(generation)}`;
 }
 
-// docDownloadURL builds the /doc/download href for a session-scoped,
+// docDownloadURL builds the /doc/file?format=download href for a session-scoped,
 // cwd-relative path: the whole-file read a native client saves or hands to
-// another app. Unlike /doc/file's raw variant there is no pane cap, so the
+// another app. Unlike the raw representation there is no pane cap, so the
 // response body is the file itself.
 export function docDownloadURL(origin: string, session: string, path: string): string {
-  return docSessionURL(origin, "download", session, path);
+  return docSessionURL(origin, "file", session, path, "format=download&");
 }
 
 // filenameOf returns the last segment of a slash path: a document's name when
