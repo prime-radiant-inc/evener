@@ -2,8 +2,9 @@
 //
 // iOS picks a custom face by PostScript name and silently falls back to the
 // system font when the name matches nothing, so this reads the names out of
-// the font files app.json embeds rather than trusting tokens.ts.
+// the font files the Expo config embeds rather than trusting tokens.ts.
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { fonts } from "./tokens";
@@ -49,13 +50,13 @@ function familyName(path: string): string {
 }
 
 function embeddedFonts(): string[] {
-	const app = JSON.parse(readFileSync(`${root}app.json`, "utf8"));
+	const app = createRequire(import.meta.url)(`${root}app.config.js`);
 	const plugin = app.expo.plugins.find((p: unknown) => Array.isArray(p) && p[0] === "expo-font");
-	if (!plugin) throw new Error("app.json has no expo-font plugin");
+	if (!plugin) throw new Error("app.config.js has no expo-font plugin");
 	return plugin[1].fonts;
 }
 
-it("app.json embeds exactly the faces tokens.ts names, and they exist", () => {
+it("the Expo config embeds exactly the faces tokens.ts names, and they exist", () => {
 	const files = embeddedFonts();
 	for (const f of files) expect(existsSync(`${root}${f}`), f).toBe(true);
 	expect(files.map((f) => postScriptName(`${root}${f}`)).sort()).toEqual(

@@ -55,7 +55,7 @@ source, a URL, environment variables exposed by Expo, or screenshots.
 
 For standalone development builds, use `npm run ios`. The historical Android
 command is `npm run android` when deferred Android work resumes.
-`npx expo prebuild` generates the native directories from app.json. Both native
+`npx expo prebuild` generates the native directories from app.config.js. Both native
 platform configurations permit user-entered HTTP hubs; HTTPS should be used
 where transport encryption is needed. Native generated projects are ignored.
 Expo SDK 57 configuration reference: https://docs.expo.dev/versions/v57.0.0/.

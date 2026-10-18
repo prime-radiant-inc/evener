@@ -112,7 +112,7 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             # A tag-push run carries no manual input: take the next build
             # number from App Store Connect for the current marketing version.
-            IOS_MARKETING_VERSION="$(node -p 'require("./app.json").expo.version')" \
+            IOS_MARKETING_VERSION="$(node -p 'require("./app.config.js").expo.version')" \
               bundle exec fastlane ios next_build_number
             build_number="$(cat "$IOS_BUILD_NUMBER_OUTPUT")"
           else
@@ -141,11 +141,14 @@ jobs:
           done
       - name: Generate iOS project and install pods
         working-directory: mobile-native
+        env:
+          # The share extension's target needs the team id at prebuild time.
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           npx expo prebuild --platform ios --no-install
           cp Podfile.lock ios/Podfile.lock
           bundle exec pod install --deployment --project-directory=ios
-          printf 'IOS_MARKETING_VERSION=%s\n' "$(node -p 'require("./app.json").expo.version')" >> "$GITHUB_ENV"
+          printf 'IOS_MARKETING_VERSION=%s\n' "$(node -p 'require("./app.config.js").expo.version')" >> "$GITHUB_ENV"
       - name: Reject duplicate App Store Connect build
         working-directory: mobile-native
         env:
@@ -154,7 +157,7 @@ jobs:
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
         run: |
-          IOS_MARKETING_VERSION="$(node -p 'require("./app.json").expo.version')" \
+          IOS_MARKETING_VERSION="$(node -p 'require("./app.config.js").expo.version')" \
             bundle exec fastlane ios preflight
       - name: Import distribution signing assets
         working-directory: mobile-native
@@ -234,7 +237,7 @@ jobs:
           IOS_RECEIPT_PATH: ${{ github.workspace }}/mobile-native/build/testflight-receipt.json
           IOS_IPA_PATH: ${{ github.workspace }}/mobile-native/build/Evener.ipa
         run: |
-          IOS_MARKETING_VERSION="$(node -p 'require("./app.json").expo.version')" \
+          IOS_MARKETING_VERSION="$(node -p 'require("./app.config.js").expo.version')" \
             bundle exec fastlane ios testflight
       - name: Upload archive and diagnostics
         if: always()
