@@ -3825,6 +3825,68 @@ test("effective access Change focuses Access mode", async () => {
   await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Access mode")));
 });
 
+test.each([false, true])("Advanced sandbox select owns Change focus, initially open=%s", async (initiallyOpen) => {
+  const user = setupUser();
+  // launchconfig/schema.go: sandbox is a select, including an inherit choice.
+  const sandboxOption: LaunchOption = {
+    field: "sandbox",
+    wireField: "sandbox",
+    label: "Sandbox",
+    group: "sandbox",
+    kind: "select",
+    perLaunch: true,
+    choices: [
+      { value: "", label: "(inherit)" },
+      { value: "off", label: "off" },
+      { value: "read-only", label: "read-only" },
+      { value: "workspace-write", label: "workspace-write" },
+      { value: "restricted", label: "restricted" },
+    ],
+  };
+  const fake = readyClient((client) => {
+    client.on("evener/launch/schema", () => ({ options: [sandboxOption] }));
+    client.on("evener/launch/resolve", ({ launchOverrides }) => ({
+      effective: { sandbox: (launchOverrides as { sandbox?: string } | undefined)?.sandbox ?? "workspace-write" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  const unrelated = vi.fn();
+  render(
+    <>
+      <button type="button" aria-controls="unrelated-panel" aria-expanded="false" onClick={unrelated}>
+        Unrelated disclosure
+      </button>
+      <ClientProvider client={fake}>
+        <Spawn params={{}} paneId="spawn-1" focused />
+        <Toast />
+      </ClientProvider>
+    </>,
+  );
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Access mode"), "full");
+  await user.selectOptions(screen.getByLabelText("Sandbox"), "restricted");
+  await setWorkingDir(user, "/tmp/advanced-effective-access");
+
+  const summary = screen.getByTestId("spawn-effective-access");
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe("restricted"));
+  expect(summary.getAttribute("data-access")).toBe("restricted");
+  expect(summary.getAttribute("data-source")).toBe("advanced");
+  const resolveCall = fake.calls.find(
+    (call) =>
+      call.method === "evener/launch/resolve" &&
+      (call.params as { cwd?: string }).cwd === "/tmp/advanced-effective-access",
+  );
+  expect(resolveCall?.params).toMatchObject({ launchOverrides: { sandbox: "restricted" } });
+  expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("full");
+  if (!initiallyOpen) await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(within(summary).getByRole("button", { name: "Change" }));
+  expect(unrelated).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Advanced options" }).getAttribute("aria-expanded")).toBe("true");
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("combobox", { name: "Sandbox" })));
+});
+
 test("Advanced sandbox override wins in effective access and Change focuses its control", async () => {
   const user = setupUser();
   const sandboxOption: LaunchOption = {

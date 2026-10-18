@@ -1822,13 +1822,11 @@ function SpawnForm({
         owner.querySelector<HTMLElement>("#spawn-access")?.focus();
         return;
       }
-      const radioOptions = schemaOptions.filter((option) => option.kind === "radio");
-      const sandboxIndex = radioOptions.findIndex((option) => option.wireField === "sandbox");
-      const group =
-        sandboxIndex < 0 ? undefined : owner.querySelectorAll<HTMLElement>('[role="radiogroup"]')[sandboxIndex];
+      const field = owner.querySelector<HTMLElement>('[data-launch-field="sandbox"]');
       (
-        group?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]') ??
-        group?.querySelector<HTMLElement>('[role="radio"]')
+        field?.querySelector<HTMLSelectElement>("select") ??
+        field?.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]') ??
+        field?.querySelector<HTMLElement>('[role="radio"]')
       )?.focus();
     });
   }
