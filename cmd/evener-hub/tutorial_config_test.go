@@ -54,7 +54,52 @@ func configProvider(t *testing.T) (*fakellm.Server, string) {
 	return p, fmt.Sprintf("default = \"fake\"\n[providers.fake]\nbase = \"openai-compatible\"\nbase_url = %q\napi_key = \"fakellm-not-a-secret\"\n[providers.ollama]\nbase_url = %q\n[providers.ollama.models.\"*\"]\ndisabled = true\n", p.BaseURL(), p.BaseURL())
 }
 
-func configMeta(t *testing.T, root, prompt string) (schema.SessionMeta, string) {
+// Identify the launch while its first request is held. OriginalPrompt in the
+// disk snapshot can still be empty until naming or the input's autosave finishes.
+func configRunningThread(t *testing.T, ctx context.Context, client *appwire.Client, work, prompt string, call *fakellm.Call) appwire.Thread {
+	t.Helper()
+	if dailyUserCount(call, prompt) != 1 {
+		t.Fatal("configuration provider request did not carry launch input")
+	}
+	work, err := filepath.EvalSymlinks(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, err := clientRequest[appwire.ThreadListResponse](ctx, client, appwire.MethodThreadList, appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found appwire.Thread
+	for _, thread := range list.Data {
+		cwd, err := filepath.EvalSymlinks(thread.CWD)
+		if err != nil || cwd != work {
+			continue
+		}
+		read, err := clientRequest[appwire.ThreadReadResponse](ctx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: thread.Evener.Ref})
+		if err != nil {
+			t.Fatal(err)
+		}
+		thread = read.Thread
+		if thread.Evener.ActiveTurnID == "" || thread.Status.Type != "active" {
+			continue
+		}
+		if found.SessionID != "" {
+			t.Fatal("multiple active configuration sessions")
+		}
+		found = thread
+	}
+	if found.SessionID == "" || found.Evener.Ref == "" {
+		t.Fatal("active configuration session missing")
+	}
+	return found
+}
+
+func configMeta(t *testing.T, root, sessionID string) (schema.SessionMeta, string) {
+	t.Helper()
+	return configFindMeta(t, root, func(meta schema.SessionMeta) bool { return meta.ID == sessionID })
+}
+
+func configFindMeta(t *testing.T, root string, matches func(schema.SessionMeta) bool) (schema.SessionMeta, string) {
 	t.Helper()
 	var found schema.SessionMeta
 	var pathFound string
@@ -73,7 +118,7 @@ func configMeta(t *testing.T, root, prompt string) (schema.SessionMeta, string) 
 		if err := json.Unmarshal(b, &meta); err != nil {
 			return err
 		}
-		if meta.OriginalPrompt == prompt {
+		if matches(meta) {
 			if pathFound != "" {
 				return fmt.Errorf("multiple configuration sessions")
 			}
@@ -93,9 +138,19 @@ func configMeta(t *testing.T, root, prompt string) (schema.SessionMeta, string) 
 	return found, pathFound
 }
 
-func configOutcome(t *testing.T, root, work, prompt string, rounds int) {
+func configOutcome(t *testing.T, root, work, sessionID, prompt string, rounds int) {
 	t.Helper()
-	meta, path := configMeta(t, root, prompt)
+	// CLI callers wait for process exit, web callers observe the held turn
+	// becoming inactive. Both barriers follow processOneInput's deferred save.
+	meta, path := configFindMeta(t, root, func(meta schema.SessionMeta) bool {
+		if sessionID != "" {
+			return meta.ID == sessionID
+		}
+		return meta.OriginalPrompt == prompt
+	})
+	if meta.OriginalPrompt != prompt {
+		t.Fatal("completed session prompt differs")
+	}
 	b, err := os.ReadFile(strings.TrimSuffix(path, ".meta.json") + ".transcript.jsonl")
 	if err != nil {
 		t.Fatal(err)
@@ -236,10 +291,11 @@ func runConfigCLI(t *testing.T, out string) {
 			t.Fatal(err)
 		}
 		configToolCatalogue(t, call)
-		meta, _ := configMeta(t, filepath.Join(stack.home, "state"), prompt)
-		if meta.Config.MaxToolRoundsPerInput != rounds || call.Body["model"] != fakellm.ModelID {
-			t.Fatal("CLI flags did not reach effective launch")
+		if call.Body["model"] != fakellm.ModelID {
+			t.Fatal("CLI model flag did not reach effective launch")
 		}
+		// One-shot CLI has no live RPC identity. Check the round bound and
+		// persisted prompt after cmd.Wait, never at this provider boundary.
 		if rounds == 1 {
 			input := recordCommand(t, stack.workDir, env, "cat", "input.json")
 			input.CwdLabel = "configuration-workspace"
@@ -257,7 +313,7 @@ func runConfigCLI(t *testing.T, out string) {
 		if cmd.ProcessState.ExitCode() != expectedExit {
 			t.Fatalf("configuration CLI failed: %v: %s", err, redactHubStackLog(stderr.Bytes()))
 		}
-		configOutcome(t, filepath.Join(stack.home, "state"), stack.workDir, prompt, rounds)
+		configOutcome(t, filepath.Join(stack.home, "state"), stack.workDir, "", prompt, rounds)
 		records = append(records, commandRecord{Argv: args, CwdLabel: "configuration-workspace", Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: expectedExit, Owned: &transcriptOwned{Executable: bin, Paths: []string{stack.workDir, stack.home}}})
 		id := "action"
 		if rounds > 1 {
@@ -305,24 +361,12 @@ func runConfigWeb(t *testing.T, out string) {
 	driver.act(t, "start", map[string]any{"prompt": oldPrompt})
 	held := dailyNext(t, ctx, p)
 	state := filepath.Join(stack.home, "state")
-	oldMeta, _ := configMeta(t, state, oldPrompt)
+	oldThread := configRunningThread(t, ctx, observer, stack.workDir, oldPrompt, held)
+	oldMeta, _ := configMeta(t, state, oldThread.SessionID)
 	if oldMeta.Config.MaxToolRoundsPerInput != -1 {
 		t.Fatalf("initial effective rounds=%d", oldMeta.Config.MaxToolRoundsPerInput)
 	}
-	findRef := func(id string) string {
-		list, err := clientRequest[appwire.ThreadListResponse](ctx, observer, appwire.MethodThreadList, appwire.ThreadListParams{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, thread := range list.Data {
-			if thread.SessionID == id {
-				return thread.Evener.Ref
-			}
-		}
-		t.Fatal("UI-created session not listed")
-		return ""
-	}
-	oldRef := findRef(oldMeta.ID)
+	oldRef := oldThread.Evener.Ref
 	active := func(thread appwire.Thread) bool {
 		return thread.Evener.ActiveTurnID != "" && thread.Status.Type == "active"
 	}
@@ -347,7 +391,7 @@ func runConfigWeb(t *testing.T, out string) {
 	if got := resolve(other); got.Effective.MaxRounds == nil || *got.Effective.MaxRounds != 7 {
 		t.Fatal("target save changed other project")
 	}
-	unchanged, _ := configMeta(t, state, oldPrompt)
+	unchanged, _ := configMeta(t, state, oldThread.SessionID)
 	if !reflect.DeepEqual(oldMeta.Config, unchanged.Config) {
 		t.Fatal("save rewrote existing effective session")
 	}
@@ -363,14 +407,19 @@ func runConfigWeb(t *testing.T, out string) {
 		}
 		prompt := configPrompt + " Bound " + strconv.Itoa(rounds) + "."
 		driver.act(t, "start", map[string]any{"prompt": prompt, "workspace": stack.workDir})
-		stopScript := configScript(t, p, ctx, dailyNext(t, ctx, p))
-		meta, _ := configMeta(t, state, prompt)
-		ref := findRef(meta.ID)
+		call := dailyNext(t, ctx, p)
+		thread := configRunningThread(t, ctx, observer, stack.workDir, prompt, call)
+		meta, _ := configMeta(t, state, thread.SessionID)
+		if meta.Config.MaxToolRoundsPerInput != rounds {
+			t.Fatal("new session did not inherit project bound")
+		}
+		ref := thread.Evener.Ref
+		stopScript := configScript(t, p, ctx, call)
 		awaitThread(ctx, t, observer, ref, "bounded session completed", func(thread appwire.Thread) bool {
 			return thread.Evener.ActiveTurnID == "" && thread.Status.Type != "active"
 		})
 		stopScript()
-		configOutcome(t, state, stack.workDir, prompt, rounds)
+		configOutcome(t, state, stack.workDir, thread.SessionID, prompt, rounds)
 	}
 	checkpoint(t, "verified", []tourEvidence{{"new effective bounds and independent file effects", true}}, driver.capture(t, out, "verified"))
 	driver.act(t, "close", nil)
