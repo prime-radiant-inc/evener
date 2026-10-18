@@ -551,3 +551,29 @@ test("an open picker shows the hub's refreshed model list when it is announced",
   });
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(4));
 });
+
+// Component + real store integration: the transport models a hub retaining its
+// empty successful response until the RPC explicitly requests live discovery.
+test("session picker retry refreshes a cached empty catalogue through the RPC", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("model/list", (params) =>
+    params.refresh
+      ? modelListResponse()
+      : { data: [], diagnostics: [{ provider: "openai", message: "fixture failure" }] },
+  );
+  fake.on("thread/model/set", () => ({}));
+  render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
+  await user.click(trigger());
+  await user.click(await screen.findByRole("button", { name: "Retry models" }));
+  const recovered = await screen.findByRole("option", { name: /gpt-5\.5/i });
+  await user.click(recovered);
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "thread/model/set").at(-1)?.params).toEqual({
+      ref: "ref_a",
+      modelProvider: "openai",
+      model: "gpt-5.5",
+    }),
+  );
+  expect(fake.calls.filter((call) => call.method === "model/list").at(-1)?.params).toEqual({ refresh: true });
+});

@@ -664,3 +664,78 @@ test("a refresh key change while the first load is out reloads bypassing the cac
   await act(async () => resolveFirst({ models: [], recent: [] }));
   expect(screen.getAllByRole("option")).toHaveLength(2);
 });
+
+test("partial catalogue recovery keeps healthy models usable while retrying", async () => {
+  const user = userEvent.setup();
+  const partial: ModelCatalog = {
+    models: catalog().models.filter((entry) => entry.provider === "anthropic"),
+    recent: [],
+    diagnostics: [{ provider: "openai", message: "fixture diagnostic" }],
+  };
+  let complete: (value: ModelCatalog) => void = () => {};
+  const loadCatalog = vi.fn(async (refresh?: boolean) =>
+    refresh
+      ? new Promise<ModelCatalog>((resolve) => {
+          complete = resolve;
+        })
+      : partial,
+  );
+  const onOpenConnection = vi.fn();
+  const { props } = renderTrigger({ loadCatalog, onOpenConnection, value: "" });
+  await user.click(screen.getByTestId("trigger"));
+  await screen.findByRole("option", { name: /Sonnet/ });
+  expect(screen.getByRole("button", { name: "Connection settings" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Retry models" }));
+  expect(screen.getByRole("option", { name: /Sonnet/ })).toBeTruthy();
+  await act(async () => complete(catalog()));
+  await user.click(await screen.findByRole("option", { name: /GPT-5.5/ }));
+  expect(props.onPick).toHaveBeenCalledWith(catalog().models[1]);
+  expect(loadCatalog).toHaveBeenLastCalledWith(true);
+  expect(onOpenConnection).not.toHaveBeenCalled();
+});
+
+test("partial catalogue failure offers connection repair without blocking healthy selection", async () => {
+  const user = userEvent.setup();
+  const onOpenConnection = vi.fn();
+  const { props } = renderTrigger({
+    value: "",
+    onOpenConnection,
+    loadCatalog: async () => ({ ...catalog(), diagnostics: [{ provider: "other", message: "fixture diagnostic" }] }),
+  });
+  await user.click(screen.getByTestId("trigger"));
+  await user.click(await screen.findByRole("option", { name: /Sonnet/ }));
+  expect(props.onPick).toHaveBeenCalledWith(catalog().models[0]);
+  await user.click(screen.getByTestId("trigger"));
+  await user.click(await screen.findByRole("button", { name: "Connection settings" }));
+  expect(onOpenConnection).toHaveBeenCalledOnce();
+  expect(screen.queryByRole("combobox")).toBeNull();
+});
+
+test("scoped catalogue recovery ignores other providers until showing all models", async () => {
+  const user = userEvent.setup();
+  const { props, rerender } = renderTrigger({
+    value: "",
+    onOpenConnection: vi.fn(),
+    loadCatalog: async () => ({ ...catalog(), diagnostics: [{ provider: "openai", message: "fixture diagnostic" }] }),
+  });
+  rerender(<ModelSwitchTrigger {...props} connectionRequest={{ name: "anthropic" }} />);
+  await screen.findByRole("option", { name: /Sonnet/ });
+  expect(screen.queryByRole("button", { name: "Retry models" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Connection settings" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Show all models" }));
+  expect(screen.getByRole("button", { name: "Retry models" })).toBeTruthy();
+});
+
+test("a failed partial-catalogue retry retains selectable healthy models", async () => {
+  const user = userEvent.setup();
+  const loadCatalog = vi.fn(async (refresh?: boolean) => {
+    if (refresh) throw new WireError("fixture transport failure", -32000);
+    return { ...catalog(), diagnostics: [{ provider: "other", message: "fixture diagnostic" }] };
+  });
+  const { props } = renderTrigger({ value: "", loadCatalog });
+  await user.click(screen.getByTestId("trigger"));
+  await user.click(await screen.findByRole("button", { name: "Retry models" }));
+  expect(loadCatalog).toHaveBeenLastCalledWith(true);
+  await user.click(screen.getByRole("option", { name: /Sonnet/ }));
+  expect(props.onPick).toHaveBeenCalledWith(catalog().models[0]);
+});

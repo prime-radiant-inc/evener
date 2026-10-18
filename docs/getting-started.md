@@ -187,17 +187,24 @@ permissions, observe the work, and verify it independently.
 Use this exercise if you do not have a suitable project. It copies a small
 `total_cents` bug and an independent checker into a disposable Git repository:
 
+Choose a parent directory where neither `evener-docs` nor `evener-first-task`
+exists. Run this whole block together. The checks and `&&` chain stop setup if
+either path already exists or any setup command fails; do not continue by
+running the copy commands separately.
+
 ```sh
-git clone --depth 1 https://github.com/prime-radiant-inc/evener.git evener-docs
-mkdir evener-first-task
-cp evener-docs/docs/examples/first-task/README.md evener-first-task/
-cp evener-docs/docs/examples/first-task/receipt.py evener-first-task/
-cp evener-docs/docs/examples/first-task/check.py evener-first-task/
-cd evener-first-task
-git init
-git add README.md receipt.py check.py
-git -c user.name='Tutorial' -c user.email='tutorial@example.invalid' commit -m 'Add first-task fixture'
-pwd
+[ ! -e evener-docs ] && [ ! -L evener-docs ] &&
+[ ! -e evener-first-task ] && [ ! -L evener-first-task ] &&
+mkdir evener-docs evener-first-task &&
+git clone --depth 1 https://github.com/prime-radiant-inc/evener.git evener-docs &&
+cp evener-docs/docs/examples/first-task/README.md evener-first-task/ &&
+cp evener-docs/docs/examples/first-task/receipt.py evener-first-task/ &&
+cp evener-docs/docs/examples/first-task/check.py evener-first-task/ &&
+cd evener-first-task &&
+git init &&
+git add README.md receipt.py check.py &&
+git -c user.name='Tutorial' -c user.email='tutorial@example.invalid' commit -m 'Add first-task fixture' &&
+pwd &&
 python3 check.py
 ```
 

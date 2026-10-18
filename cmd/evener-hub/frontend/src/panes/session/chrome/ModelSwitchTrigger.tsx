@@ -15,7 +15,7 @@
 // identical component, which is the whole point of issue #198.
 //
 // Ordinary picker rows offer models and nothing else: provider setup is not a
-// model choice and never enters ModelCatalogPanel. After a failed or empty
+// model choice and never enters ModelCatalogPanel. After a failed, partial or empty
 // read, a pane-level caller such as Spawn may compose one Connection settings
 // recovery action outside the panel, handing off to its existing setup flow;
 // no widget API owns provider setup.
@@ -235,7 +235,9 @@ export function ModelSwitchTrigger({
     const generation = loadGenerationRef.current + 1;
     loadGenerationRef.current = generation;
     loadedLoaderRef.current = loadCatalog;
-    void startLoad(generation, loadCatalog, true);
+    // Keep healthy choices usable while retrying a partial provider failure.
+    const keepModels = listShown && (catalog.models.length > 0 || catalog.recent.length > 0);
+    void startLoad(generation, loadCatalog, true, keepModels);
   }
 
   function openConnection(): void {
@@ -249,11 +251,13 @@ export function ModelSwitchTrigger({
           ...catalog,
           models: catalog.models.filter((entry) => entry.provider === providerFilter),
           recent: catalog.recent.filter((entry) => entry.provider === providerFilter),
+          diagnostics: catalog.diagnostics?.filter((entry) => !entry.provider || entry.provider === providerFilter),
         }
       : catalog;
   const recoveryAvailable =
     !loading &&
     (error !== null ||
+      (filteredCatalog?.diagnostics?.length ?? 0) > 0 ||
       (filteredCatalog !== null && filteredCatalog.models.length === 0 && filteredCatalog.recent.length === 0));
   const panel = (
     <>
