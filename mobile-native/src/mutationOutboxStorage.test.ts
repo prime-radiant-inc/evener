@@ -1429,3 +1429,46 @@ test("pre-accepted_at accepted rows are backfilled so a later read can retire th
 	).toMatchObject({ accepted_at: 900 });
 	await expect(storage.pruneUnlistedAccepted(TARGET, 1000, new Set())).resolves.toEqual(["mutation-old"]);
 });
+
+// RoboRev 999: the column addition and its backfill must commit together. A
+// process that died between them would leave accepted_at present and every
+// accepted row at 0, and the migration above would never run the backfill
+// again - permanently excluding those rows from the prune.
+test("a failed accepted_at backfill rolls the column back, so the next start migrates and heals", async () => {
+	database.exec("DROP TABLE mutation_optimistic");
+	database.exec(`CREATE TABLE mutation_optimistic (client_mutation_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
+		origin_client_id TEXT, target_ref TEXT NOT NULL, thread_id TEXT, instance_id TEXT, method TEXT NOT NULL,
+		payload TEXT NOT NULL, attachments TEXT NOT NULL, optimistic_display TEXT NOT NULL,
+		composer_text TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
+		state TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0, unresolved_attempts INTEGER NOT NULL DEFAULT 0,
+		stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0, recovery_kind TEXT, recovery_reason TEXT)`);
+	database
+		.prepare(
+			`INSERT INTO mutation_optimistic (client_mutation_id, version, target_ref, method, payload,
+			 attachments, optimistic_display, intent_sequence, created_at, state)
+			 VALUES (?, 1, ?, 'turn/start', '{}', '[]', '{}', 1, 900, 'accepted')`,
+		)
+		.run("mutation-old", TARGET);
+
+	// The first start's backfill dies mid-migration (the constructor's UPDATE
+	// goes through execSync, the bare-statement path).
+	const originalExecSync = port.execSync;
+	port.execSync = (sql: string) => {
+		if (sql.includes("SET accepted_at = created_at")) throw new Error("disk unavailable");
+		originalExecSync(sql);
+	};
+	expect(() => openStorage()).toThrow("disk unavailable");
+	port.execSync = originalExecSync;
+	// The rollback left the previous schema intact, so the next start retries
+	// the whole migration instead of finding a column it never backfilled.
+	expect(
+		database
+			.prepare("PRAGMA table_info(mutation_optimistic)")
+			.all()
+			.some((column) => column.name === "accepted_at"),
+	).toBe(false);
+
+	openStorage();
+
+	await expect(storage.pruneUnlistedAccepted(TARGET, 1000, new Set())).resolves.toEqual(["mutation-old"]);
+});

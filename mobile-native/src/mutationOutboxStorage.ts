@@ -254,12 +254,16 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		// its enqueue time: it was accepted at some point before the upgrade, so
 		// any read after the upgrade began later than its acceptance - and leaving
 		// it at 0 would permanently exclude exactly the records this prune exists
-		// to heal.
+		// to heal. The ALTER and its backfill commit together: a process that died
+		// between them would leave the column present and the rows unstamped, and
+		// no later start would retry the backfill.
 		for (const table of Object.values(TABLES)) {
 			const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
 			if (!columns.some((column) => column.name === "accepted_at")) {
-				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN accepted_at INTEGER NOT NULL DEFAULT 0`);
-				this.db.execSync(`UPDATE ${table} SET accepted_at = created_at WHERE state = 'accepted'`);
+				withSavepoint(this.db, `mutation_accepted_at_${table}`, () => {
+					this.db.execSync(`ALTER TABLE ${table} ADD COLUMN accepted_at INTEGER NOT NULL DEFAULT 0`);
+					this.db.execSync(`UPDATE ${table} SET accepted_at = created_at WHERE state = 'accepted'`);
+				});
 			}
 		}
 	}
