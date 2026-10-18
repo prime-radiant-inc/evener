@@ -1522,6 +1522,10 @@ export function ConversationScreen({
 	// or offline) gives way to the live end, and the position is dropped
 	// (Jesse, 2026-09-29): showing the top and then jumping, or a blank wait,
 	// is worse. The end's last row lands it, with a fresh cap behind that.
+	// A position whose row is loaded but not yet measured gets one more cap
+	// first: the list sits at its approximate offset, far above the row, and
+	// showing it there is the visible "way up" jump; the row measuring lands
+	// the exact restore, and the second cap reveals the list if it never does.
 	function capOpening() {
 		const anchor = readerAnchor.current;
 		if (anchor && resolveReaderAnchor(anchor, rowsNow.current) === null) {
@@ -1531,6 +1535,13 @@ export function ConversationScreen({
 			pinOpeningToEnd();
 			setOpeningCapRound((round) => round + 1);
 			return;
+		}
+		if (anchor && openingCapRound === 0) {
+			const index = resolveReaderAnchor(anchor, rowsNow.current);
+			if (index !== null && !readerMeasurements.current.has(readerKey(rowsNow.current[index]))) {
+				setOpeningCapRound((round) => round + 1);
+				return;
+			}
 		}
 		landOpening();
 	}

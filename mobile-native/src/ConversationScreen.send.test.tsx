@@ -1516,7 +1516,7 @@ describe("opening a session", () => {
 		expect(opacity(tree)).toBe(1);
 	});
 
-	it("shows the list after a second even when the opening never lands", async () => {
+	it("shows the list after two caps even when the opening never lands", async () => {
 		savePosition("ref-open-cap");
 		const { tree } = await mount(twoTurns("ref-open-cap"));
 		vi.useFakeTimers();
@@ -1527,6 +1527,38 @@ describe("opening a session", () => {
 			// stay hidden.
 			expect(opacity(tree)).toBe(0);
 			await advanceFakeTimers(1);
+			// Its row is loaded but still unmeasured: the first cap holds the
+			// list hidden rather than show the approximate position, and the
+			// second reveals it (never a permanent blank).
+			expect(opacity(tree)).toBe(0);
+			await advanceFakeTimers(1000);
+			expect(opacity(tree)).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// The cap must not show the list while the saved position's row is
+	// resolved but unmeasured: the list sits at the approximate offset, far
+	// above the row, and showing it there is the "way up" jump (Jesse,
+	// 2026-10-17). It shows only once the exact restore lands, or at the end
+	// of a second cap after that.
+	it("does not show the list at the cap while the saved position's row is still unmeasured", async () => {
+		savePosition("ref-open-cap-unmeasured");
+		const { tree } = await mount(twoTurns("ref-open-cap-unmeasured"));
+		vi.useFakeTimers();
+		try {
+			layOutViewport(tree);
+			await advanceFakeTimers(999);
+			expect(opacity(tree)).toBe(0);
+			await advanceFakeTimers(1);
+			// The anchor's row is loaded but never measured: the cap keeps the
+			// list hidden rather than show the approximate position.
+			expect(opacity(tree)).toBe(0);
+			// The row finally measures: the exact restore lands and shows the
+			// list at the saved position.
+			layOutRow(tree, 3, 9_523);
+			await advanceFakeTimers(0);
 			expect(opacity(tree)).toBe(1);
 		} finally {
 			vi.useRealTimers();
