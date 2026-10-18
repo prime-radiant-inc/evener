@@ -13,6 +13,7 @@
 // previous on the LAST - needsYouCycle.ts's nextNeedsYouRef precedent for
 // "current not in the cycle list".
 
+import { requestNavigation } from "./routing";
 import { workspaceStore } from "./workspace";
 
 export type SessionCycleDirection = "next" | "previous";
@@ -29,5 +30,5 @@ export function cycleSessionPane(direction: SessionCycleDirection): void {
     const step = direction === "next" ? 1 : -1;
     target = sessions[(index + step + sessions.length) % sessions.length];
   }
-  if (target) state.focusPane(target.id);
+  if (target) requestNavigation(() => workspaceStore.getState().focusPane(target.id));
 }

@@ -1,7 +1,9 @@
-import type { LaunchOption } from "@evener/appwire-client";
+import { type LaunchOption, type PathValidateResponse, WireError } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
@@ -652,6 +654,30 @@ describe("McpServerListField", () => {
     perLaunch: true,
   };
 
+  test("a rejected command validation retains the proposal and reports failure before explicit retry", async () => {
+    const validation = deferred<PathValidateResponse>();
+    const validateCommand = vi.fn((_command: string) => validation.promise);
+    const onChange = vi.fn();
+    render(<McpServerListField option={mcpOption} items={[]} onChange={onChange} validateCommand={validateCommand} />);
+    const user = userEvent.setup();
+    const input = screen.getByRole("textbox", { name: "MCP servers" });
+    await user.type(input, "search /usr/bin/search --port 9000");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(input).toHaveProperty("disabled", true);
+    await act(async () => validation.reject(new WireError("command validation unavailable", -32000)));
+    expect(screen.getByRole("alert").textContent).toBe("command validation unavailable");
+    expect(input).toHaveProperty("value", "search /usr/bin/search --port 9000");
+    expect(input).toHaveProperty("disabled", false);
+    expect(onChange).not.toHaveBeenCalled();
+    validateCommand.mockImplementation(async (command) => ({ valid: true, path: command }));
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(onChange).toHaveBeenCalledExactlyOnceWith([
+      { name: "search", command: "/usr/bin/search", args: ["--port", "9000"] },
+    ]);
+    expect(input).toHaveProperty("value", "");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   test("renders 'name → command args' per row", () => {
     render(
       <McpServerListField
@@ -675,6 +701,22 @@ describe("McpServerListField", () => {
       expect(onChange).toHaveBeenCalledWith([{ name: "fs", command: "mcp-fs", args: ["--root", "/"] }]),
     );
     expect(validateCommand).toHaveBeenCalledWith("mcp-fs");
+  });
+
+  test("a pending add preserves refreshed server arguments and canonicalizes only its new command", async () => {
+    const validation = deferred<PathValidateResponse>();
+    const onChange = vi.fn();
+    const props = { option: mcpOption, onChange, validateCommand: () => validation.promise };
+    const view = render(<McpServerListField {...props} items={[{ name: "fs", command: "/bin/fs", args: ["old"] }]} />);
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "MCP servers" }), 'fs /bin/fs "a b"');
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    view.rerender(<McpServerListField {...props} items={[{ name: "fs", command: "/bin/fs", args: ["current"] }]} />);
+    await act(async () => validation.resolve({ valid: true, path: "/canonical/fs" }));
+    expect(onChange).toHaveBeenCalledExactlyOnceWith([
+      { name: "fs", command: "/bin/fs", args: ["current"] },
+      { name: "fs", command: "/canonical/fs", args: ["a b"] },
+    ]);
   });
 
   test("an invalid command is rejected inline and not added", async () => {
@@ -754,6 +796,178 @@ describe("McpServerListField", () => {
     expect(within(list).getByText("docs → npx docs-mcp")).toBeTruthy();
     expect(list.querySelector("[data-reason='empty']")).toBeNull();
   });
+});
+
+describe.each(["path", "MCP"] as const)("%s local list validation lifecycle", (kind) => {
+  const option =
+    kind === "path"
+      ? pathListOption({ pathKind: "file" })
+      : { ...pathListOption(), field: "mcps", wireField: "mcps", label: "MCP servers", kind: "mcpServerList" as const };
+  const old = kind === "path" ? "/old.json" : "old";
+  const keep = kind === "path" ? "/keep.json" : "keep";
+  const current = kind === "path" ? "/current.json" : "current";
+  const added = kind === "path" ? "/new.json" : "new";
+  const valid = { valid: true, path: kind === "path" ? "/new.json" : "/bin/new" };
+
+  // Real controlled parent: both removal and a same-owner refresh change the
+  // field's actual props while the injected wire validator remains pending.
+  function Harness({
+    validate,
+    onWrite,
+  }: {
+    validate: () => Promise<PathValidateResponse>;
+    onWrite: (revision: number, items: string[]) => void;
+  }) {
+    const [items, setItems] = useState([old, keep]);
+    const [revision, setRevision] = useState(0);
+    const [owner, setOwner] = useState(0);
+    const onChange = (next: string[]) => {
+      onWrite(revision, next);
+      setItems(next);
+    };
+    return (
+      <>
+        {kind === "path" ? (
+          <PathListField key={owner} option={option} items={items} onChange={onChange} validatePath={validate} />
+        ) : (
+          <McpServerListField
+            key={owner}
+            option={option}
+            items={items.map((name) => ({ name, command: `/bin/${name}`, args: [] }))}
+            onChange={(next) => onChange(next.map((item) => item.name))}
+            validateCommand={validate}
+          />
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            setItems([current]);
+            setRevision((r) => r + 1);
+          }}
+        >
+          Refresh same owner
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setItems([current]);
+            setOwner((o) => o + 1);
+          }}
+        >
+          Replace owner
+        </button>
+        <output aria-label="Current entries">{JSON.stringify(items)}</output>
+      </>
+    );
+  }
+
+  async function beginAdd() {
+    const user = userEvent.setup();
+    if (kind === "path") await typePath(user, "/new.json");
+    else await user.type(screen.getByRole("textbox", { name: "MCP servers" }), "new /bin/new");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    return user;
+  }
+
+  test.each(["valid", "rejected", "invalid"] as const)(
+    "%s validation never resurrects a newer removal",
+    async (outcome) => {
+      connectPathLister({});
+      const validation = deferred<PathValidateResponse>();
+      const onWrite = vi.fn();
+      render(<Harness validate={() => validation.promise} onWrite={onWrite} />);
+      const user = await beginAdd();
+      const remove = screen.getByRole("button", { name: kind === "path" ? `Remove ${old}` : /Remove old/ });
+      expect(remove).toHaveProperty("disabled", false);
+      await user.click(remove);
+      expect(screen.getByLabelText("Current entries").textContent).toBe(JSON.stringify([keep]));
+      onWrite.mockClear();
+      await act(async () => {
+        if (outcome === "valid") validation.resolve(valid);
+        else if (outcome === "rejected") validation.reject(new WireError("validator unavailable", -32000));
+        else validation.resolve({ valid: false, path: "", error: "validator refusal" });
+      });
+      // Path-list transport rejection intentionally stages the original path;
+      // MCP validation rejection intentionally retains the unsubmitted proposal.
+      if (outcome === "valid" || (kind === "path" && outcome === "rejected")) {
+        expect(screen.getByLabelText("Current entries").textContent).toBe(JSON.stringify([keep, added]));
+        expect(onWrite).toHaveBeenCalledExactlyOnceWith(0, [keep, added]);
+      } else {
+        expect(screen.getByLabelText("Current entries").textContent).toBe(JSON.stringify([keep]));
+        if (kind === "path") expect(screen.getByRole("button", { name: /browse/i }).textContent).toContain("/new.json");
+        else expect(screen.getByRole("textbox", { name: "MCP servers" })).toHaveProperty("value", "new /bin/new");
+        expect(screen.getByRole("alert").textContent).toBe(
+          outcome === "invalid" ? "validator refusal" : "validator unavailable",
+        );
+        expect(onWrite).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  test("a valid add composes with current same-owner items and callback", async () => {
+    connectPathLister({});
+    const validation = deferred<PathValidateResponse>();
+    const onWrite = vi.fn();
+    render(<Harness validate={() => validation.promise} onWrite={onWrite} />);
+    const user = await beginAdd();
+    await user.click(screen.getByRole("button", { name: "Refresh same owner" }));
+    await act(async () => validation.resolve(valid));
+    expect(screen.getByLabelText("Current entries").textContent).toBe(JSON.stringify([current, added]));
+    expect(onWrite).toHaveBeenCalledExactlyOnceWith(1, [current, added]);
+  });
+
+  test("an old validation cannot call into a replacement field after remount", async () => {
+    connectPathLister({});
+    const validation = deferred<PathValidateResponse>();
+    const onWrite = vi.fn();
+    render(<Harness validate={() => validation.promise} onWrite={onWrite} />);
+    const user = await beginAdd();
+    await user.click(screen.getByRole("button", { name: "Replace owner" }));
+    await act(async () => validation.resolve(valid));
+    expect(screen.getByLabelText("Current entries").textContent).toBe(JSON.stringify([current]));
+    expect(onWrite).not.toHaveBeenCalled();
+    // The new field is healthy and independent of the old pending admission.
+    await beginAdd();
+    expect(screen.getByLabelText("Current entries").textContent).toBe(JSON.stringify([current, added]));
+    expect(onWrite).toHaveBeenCalledTimes(1);
+  });
+
+  if (kind === "path") {
+    test("a canonical path removed during validation may be added again", async () => {
+      connectPathLister({});
+      const validation = deferred<PathValidateResponse>();
+      const onWrite = vi.fn();
+      render(<Harness validate={() => validation.promise} onWrite={onWrite} />);
+      const user = await beginAdd();
+      await user.click(screen.getByRole("button", { name: "Remove /old.json" }));
+      onWrite.mockClear();
+      await act(async () => validation.resolve({ valid: true, path: "/old.json" }));
+      expect(screen.getByLabelText("Current entries").textContent).toBe('["/keep.json","/old.json"]');
+      expect(onWrite).toHaveBeenCalledExactlyOnceWith(0, ["/keep.json", "/old.json"]);
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    test.each(["/new.json", "/current.json"])(
+      "a newly present duplicate %s retains the proposal for explicit retry",
+      async (canonical) => {
+        connectPathLister({});
+        const validation = deferred<PathValidateResponse>();
+        const onChange = vi.fn();
+        const props = { option, onChange, validatePath: () => validation.promise };
+        const view = render(<PathListField {...props} items={[]} />);
+        const user = await beginAdd();
+        view.rerender(<PathListField {...props} items={[canonical]} />);
+        await act(async () => validation.resolve({ valid: true, path: canonical }));
+        expect(onChange).not.toHaveBeenCalled();
+        expect(screen.getByRole("alert").textContent).toBe("Already added.");
+        expect(screen.getByRole("button", { name: /browse/i }).textContent).toContain("/new.json");
+        view.rerender(<PathListField {...props} items={[]} />);
+        await user.click(screen.getByRole("button", { name: "Add" }));
+        expect(onChange).toHaveBeenCalledExactlyOnceWith([canonical]);
+        expect(screen.queryByRole("alert")).toBeNull();
+      },
+    );
+  }
 });
 
 describe("parseMcpServerEntry", () => {

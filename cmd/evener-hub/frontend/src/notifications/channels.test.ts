@@ -1,4 +1,7 @@
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { type ChangeEvent, createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { SettingsDraftsProvider, useSettingsDirty } from "../panes/settings/settingsDrafts";
 import type { AttentionEntry } from "./attention";
 import { fireOsNotification, playTone } from "./channels";
 
@@ -12,6 +15,16 @@ function entry(overrides: Partial<AttentionEntry> = {}): AttentionEntry {
     needsResponse: false,
     ...overrides,
   };
+}
+
+function SettingsEditor() {
+  const [value, setValue] = useState("original");
+  useSettingsDirty(value !== "original");
+  return createElement("input", {
+    "aria-label": "Settings draft",
+    value,
+    onChange: (event: ChangeEvent<HTMLInputElement>) => setValue(event.target.value),
+  });
 }
 
 // --- Notification double ---------------------------------------------------
@@ -51,6 +64,7 @@ class FakeAudioContext {
 }
 
 beforeEach(() => {
+  window.history.replaceState({}, "", "/");
   FakeNotification.instances = [];
   FakeNotification.permission = "granted";
   FakeAudioContext.instances = [];
@@ -58,6 +72,7 @@ beforeEach(() => {
   vi.spyOn(document, "hasFocus").mockReturnValue(false); // unfocused by default
 });
 afterEach(() => {
+  cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -95,14 +110,60 @@ describe("fireOsNotification", () => {
     expect(() => fireOsNotification(entry())).not.toThrow();
   });
 
-  test("click navigates to the session pane", () => {
+  test("click navigates to the session pane", async () => {
+    window.history.replaceState({ notificationFixture: true }, "", "/settings/theme");
     vi.stubGlobal("Notification", FakeNotification);
     const focus = vi.spyOn(window, "focus").mockImplementation(() => {});
     const push = vi.spyOn(window.history, "pushState");
+    const replace = vi.spyOn(window.history, "replaceState");
     fireOsNotification(entry({ ref: "local:r1" }));
     FakeNotification.instances[0]?.onclick?.();
     expect(focus).toHaveBeenCalledOnce();
-    expect(push).toHaveBeenCalledWith({}, "", "/s/local%3Ar1");
+    expect(replace).toHaveBeenCalledExactlyOnceWith({ notificationFixture: true, evenerNavigationIndex: 0 }, "");
+    expect(push).toHaveBeenCalledExactlyOnceWith({ evenerNavigationIndex: 1 }, "", "/s/local%3Ar1");
+    expect(window.location.pathname).toBe("/s/local%3Ar1");
+    expect(window.history.state).toEqual({ evenerNavigationIndex: 1 });
+    window.history.back();
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/settings/theme"));
+    expect(window.history.state).toEqual({ notificationFixture: true, evenerNavigationIndex: 0 });
+    window.history.forward();
+    await vi.waitFor(() => expect(window.location.pathname).toBe("/s/local%3Ar1"));
+    expect(window.history.state).toEqual({ evenerNavigationIndex: 1 });
+  });
+
+  test("click asks before leaving dirty Settings, Stay retains input, and Discard visits the first notification once", () => {
+    window.history.replaceState({ evenerNavigationIndex: 37 }, "", "/settings/agents-md");
+    vi.stubGlobal("Notification", FakeNotification);
+    const focus = vi.spyOn(window, "focus").mockImplementation(() => {});
+    render(createElement(SettingsDraftsProvider, null, createElement(SettingsEditor)));
+    const editor = screen.getByRole("textbox", { name: "Settings draft" });
+    fireEvent.change(editor, { target: { value: "unsaved notification draft" } });
+    const push = vi.spyOn(window.history, "pushState");
+    const replace = vi.spyOn(window.history, "replaceState");
+    fireOsNotification(entry({ ref: "local:r1" }));
+    act(() => FakeNotification.instances[0]?.onclick?.());
+    expect(focus).toHaveBeenCalledOnce();
+    expect(window.location.pathname).toBe("/settings/agents-md");
+    expect(window.history.state).toEqual({ evenerNavigationIndex: 37 });
+    expect(push).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Stay" }));
+    expect(screen.getByRole("textbox", { name: "Settings draft" })).toBe(editor);
+    expect(editor).toHaveProperty("value", "unsaved notification draft");
+    expect(screen.queryByRole("button", { name: "Discard changes" })).toBeNull();
+    expect(window.location.pathname).toBe("/settings/agents-md");
+    expect(window.history.state).toEqual({ evenerNavigationIndex: 37 });
+    expect(push).not.toHaveBeenCalled();
+    act(() => FakeNotification.instances[0]?.onclick?.());
+    fireOsNotification(entry({ ref: "local:r2" }));
+    act(() => FakeNotification.instances[1]?.onclick?.());
+    expect(push).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(focus).toHaveBeenCalledTimes(3);
+    expect(push).toHaveBeenCalledExactlyOnceWith({ evenerNavigationIndex: 38 }, "", "/s/local%3Ar1");
+    expect(replace).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/s/local%3Ar1");
+    expect(window.history.state).toEqual({ evenerNavigationIndex: 38 });
   });
 });
 

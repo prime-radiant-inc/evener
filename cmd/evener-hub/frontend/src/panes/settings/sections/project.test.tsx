@@ -81,9 +81,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  cleanup();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   setQueryCwd(null);
-  cleanup();
 });
 
 describe("no cwd in the query string", () => {
@@ -94,7 +94,7 @@ describe("no cwd in the query string", () => {
 });
 
 describe("3-state loaded contract", () => {
-  test("loading, then ready: fetches schema + project layer + global layer (global read-only, for hints)", async () => {
+  test("loading, then ready: reads the project layer and resolver inheritance without writing defaults", async () => {
     setQueryCwd("/repo");
     const fake = connectFakeClient();
     const calls: string[] = [];
@@ -106,12 +106,17 @@ describe("3-state loaded contract", () => {
       calls.push(`getLayer:${params.layer}`);
       return params.layer === "project" ? PROJECT_LAYER : GLOBAL_LAYER;
     });
+    fake.on("evener/launch/resolve", () => ({
+      effective: GLOBAL_LAYER,
+      layers: { global: GLOBAL_LAYER },
+      provenance: { agent: "global" },
+    }));
     render(<ProjectSection sectionId="project" />);
     expect(screen.getByRole("status", { name: "Loading project launch settings" })).toBeTruthy();
     await screen.findByLabelText("Agent");
-    expect(calls).toEqual(["schema", "getLayer:project", "getLayer:global"]);
-    // The global layer is read-only context for the "default: X" hint, never itself editable here.
-    expect(screen.getByText("default: evener")).toBeTruthy();
+    expect(calls).toEqual(["schema", "getLayer:project"]);
+    expect((screen.getByLabelText("Agent") as HTMLInputElement).placeholder).toContain(GLOBAL_LAYER.agent);
+    expect(fake.calls.filter((call) => call.method === "evener/launch/setLayer")).toEqual([]);
   });
 
   test("error is a distinct third state (not '2-state, stays loading forever')", async () => {
@@ -155,7 +160,7 @@ describe("save", () => {
     const user = userEvent.setup();
     await user.type(await screen.findByLabelText("Agent"), "local-agent");
     await waitFor(() => expect(screen.getByTestId("inrepo-status").getAttribute("data-state")).toBe("error"));
-    await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+    await user.click(screen.getByRole("button", { name: "Save local overrides" }));
     await waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0]).toMatchObject({ cwd: "/repo", layer: "project", config: { agent: "local-agent" } });
   });
@@ -178,16 +183,13 @@ describe("save", () => {
     );
     await screen.findByLabelText("Agent");
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+    await user.click(screen.getByRole("button", { name: "Save local overrides" }));
     await waitFor(() => expect(screen.getByTestId("launch-config-status").getAttribute("data-state")).toBe("saved"));
     expect(getToasts().at(-1)?.kind).toBe("success");
   });
 });
 
 describe("resolved-default labels", () => {
-  // A boolean field is the readable case: on the project layer its unset
-  // marker is "(use global default)", which the resolve's effective layer
-  // turns into "true (use global default)".
   const BOOL_SCHEMA: LaunchOptionSchemaResponse = {
     options: [
       {
@@ -202,9 +204,11 @@ describe("resolved-default labels", () => {
     ],
   };
 
-  function boolOptionLabels(): (string | null)[] {
+  function inheritedBoolean(): string {
     const select = screen.getByLabelText("Sandbox network egress") as HTMLSelectElement;
-    return Array.from(select.options).map((o) => o.textContent);
+    expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "true", "false"]);
+    expect(select.value).toBe("");
+    return select.options[0]?.textContent ?? "";
   }
 
   test("an unset field names the effective layer's value once resolve(cwd) lands", async () => {
@@ -214,15 +218,15 @@ describe("resolved-default labels", () => {
     fake.on("evener/launch/getLayer", () => ({}));
     fake.on("evener/launch/resolve", (params) => {
       expect(params.cwd).toBe("/repo");
-      return { effective: { sandboxNet: true }, layers: {}, provenance: {} };
+      return { effective: { sandboxNet: true }, layers: {}, provenance: { sandbox_net: "builtin" } };
     });
     render(<ProjectSection sectionId="project" />);
 
     await screen.findByLabelText("Sandbox network egress");
-    await waitFor(() => expect(boolOptionLabels()).toEqual(["true (use global default)", "true", "false"]));
+    await waitFor(() => expect(inheritedBoolean()).toContain(String(true)));
   });
 
-  test("a failed resolve leaves the plain (use global default) marker", async () => {
+  test("a failed resolve keeps unset selectable without claiming a resolved boolean", async () => {
     setQueryCwd("/repo");
     const fake = connectFakeClient();
     fake.on("evener/launch/schema", () => BOOL_SCHEMA);
@@ -233,7 +237,8 @@ describe("resolved-default labels", () => {
     render(<ProjectSection sectionId="project" />);
 
     await screen.findByLabelText("Sandbox network egress");
-    expect(boolOptionLabels()).toEqual(["(use global default)", "true", "false"]);
+    expect(inheritedBoolean()).not.toContain(String(true));
+    expect(inheritedBoolean()).not.toContain(String(false));
   });
 
   test("saving refreshes the labels from setLayer's own returned resolved config", async () => {
@@ -241,15 +246,23 @@ describe("resolved-default labels", () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/schema", () => BOOL_SCHEMA);
     fake.on("evener/launch/getLayer", () => ({}));
-    fake.on("evener/launch/resolve", () => ({ effective: { sandboxNet: true }, layers: {}, provenance: {} }));
-    fake.on("evener/launch/setLayer", () => ({ effective: { sandboxNet: false }, layers: {}, provenance: {} }));
+    fake.on("evener/launch/resolve", () => ({
+      effective: { sandboxNet: true },
+      layers: {},
+      provenance: { sandbox_net: "builtin" },
+    }));
+    fake.on("evener/launch/setLayer", () => ({
+      effective: { sandboxNet: false },
+      layers: {},
+      provenance: { sandbox_net: "builtin" },
+    }));
     render(<ProjectSection sectionId="project" />);
 
     await screen.findByLabelText("Sandbox network egress");
-    await waitFor(() => expect(boolOptionLabels()).toEqual(["true (use global default)", "true", "false"]));
+    await waitFor(() => expect(inheritedBoolean()).toContain(String(true)));
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
-    await waitFor(() => expect(boolOptionLabels()).toEqual(["false (use global default)", "true", "false"]));
+    await user.click(screen.getByRole("button", { name: "Save local overrides" }));
+    await waitFor(() => expect(inheritedBoolean()).toContain(String(false)));
   });
 });

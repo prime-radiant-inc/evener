@@ -1,5 +1,5 @@
 import { markCacheSessionsDeleted } from "../stores/threads";
-import { navigate, paneToURL, urlToPane } from "./routing";
+import { navigate, navigationLocation, paneToURL, urlToPane } from "./routing";
 import { workspaceStore } from "./workspace";
 
 // n15j's safety contract for any delete that actually happened: "if the
@@ -52,7 +52,7 @@ export function closePanesForDeletedSessions(deletedIDs: string[]): void {
 // one session from the rail is not a reason to move the user off whatever they
 // were looking at.
 function leaveDeadRoute(goneRefs: ReadonlySet<string>): void {
-  const route = urlToPane(window.location.pathname);
+  const route = urlToPane(navigationLocation().pathname);
   if (route?.type !== "session") return;
   const routedRef = (route.params as { ref?: unknown }).ref;
   if (typeof routedRef !== "string" || !goneRefs.has(routedRef)) return;

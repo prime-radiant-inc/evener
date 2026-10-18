@@ -28,6 +28,7 @@ import {
   inactivePromptDependent,
   inheritedItems,
   isCollectionKind,
+  isExactSafeInteger,
   isPromptCompositeWireField,
   type LaunchConfigLayer,
   type LaunchConfigLayerName,
@@ -43,9 +44,11 @@ import {
   sameJsonValue,
   schemaPathKind,
 } from "@evener/appwire-client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { connectionStore } from "../../../../stores/connection";
 import { Button, Eyebrow, InlineNotice, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useSettingsDirty } from "../../settingsDrafts";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 import { type LaunchFormPaths, PromptCompositeField, ScalarField } from "./fields";
 import styles from "./LaunchConfigForm.module.css";
@@ -65,13 +68,11 @@ export interface LaunchConfigFormProps {
   options: LaunchOption[];
   layer: LaunchConfigLayerName;
   current: LaunchConfigLayer;
-  /** The (separately-fetched) global layer, project-layer callers only -
-   * drives the inline "default: {value}" hints. */
+  /** Inherited defaults for project-layer inline hints. The project caller
+   * supplies global + trusted repo values, excluding its local layer. */
   globalDefaults?: LaunchConfigLayer;
-  /** The effective layer of the caller's launch/resolve for this cwd
-   * (undefined until it lands or after it fails): unset fields whose empty
-   * marker is the generic one prepend their entry here - "high (default)",
-   * "true (use global default)". */
+  /** Display defaults for unset fields. Project callers must exclude their
+   * local layer, including from collection values. Undefined after read failure. */
   resolvedDefaults?: LaunchConfigLayer;
   successToast: string;
   validatePath: (path: string, kind: string) => Promise<PathValidateResponse>;
@@ -150,6 +151,7 @@ export function LaunchConfigForm({
     return { owner: draftOwner ?? host, current, baseline };
   });
   const [state, setState] = useState<LaunchFormState>(seed.baseline);
+  useSettingsDirty(!sameJsonValue(state, seed.baseline));
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   // Whether the host's values moved under an EDITED draft: the draft stays
   // (it is the user's), and this is what says so instead of leaving a later
@@ -179,12 +181,33 @@ export function LaunchConfigForm({
   const [busy, setBusy] = useState(false);
   const clearTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const toast = useToasts();
+  const lifetime = useRef<object>({});
+  const submission = useRef<object | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: owner changes invalidate preflight and save continuations
+  useLayoutEffect(() => {
+    const invalidate = () => {
+      lifetime.current = {};
+      submission.current = null;
+    };
+    invalidate();
+    const unsubscribe = connectionStore.subscribe((current, previous) => {
+      if (current.client !== previous.client || current.state !== previous.state) {
+        invalidate();
+        setBusy(false);
+      }
+    });
+    return () => {
+      invalidate();
+      unsubscribe();
+    };
+  }, [owner]);
   if (seed.owner !== owner) {
     const baseline = buildFormState(supportedOptions, current);
     setSeed({ owner, current, baseline });
     setState(baseline);
     setFieldErrors({});
     setSaveStatus(null);
+    setBusy(false);
     setConflict(false);
   } else if (seed.current !== current) {
     // A same-owner re-read: the pane refreshed this host's layer while the form
@@ -252,24 +275,28 @@ export function LaunchConfigForm({
     setState((s) => ({ ...s, mcpLists: { ...s.mcpLists, [wireField]: items } }));
   }
 
-  // validateScalarPathFields mirrors assets/launchconfig.js's validate()
-  // item (1): every path-kind scalar input not currently inactive due to
-  // prompt-mode. pathList/mcpServerList entries are validated once, at
-  // add-time, in their own field components instead of re-validated here -
-  // a deliberate scope simplification from the legacy's own defensive
-  // re-validation pass (see this task's own report).
-  async function validateScalarPathFields(): Promise<boolean> {
+  // Validate integers with collectConfig's exact rule so invalid nonempty
+  // edits cannot be silently omitted and then marked saved. Empty is unset.
+  // Path validation excludes inactive prompt leaves. pathList/mcpServerList
+  // entries are validated at add-time in their own field components.
+  async function validateScalarFields(attempt: object): Promise<boolean> {
     const modes = {
       systemPromptMode: state.scalars.systemPromptMode,
       systemPromptAppendMode: state.scalars.systemPromptAppendMode,
     };
     const errors: Record<string, string> = {};
     for (const opt of supportedOptions) {
+      if (opt.kind === "integer") {
+        const raw = state.scalars[opt.wireField] ?? "";
+        if (raw.trim() && !isExactSafeInteger(raw)) errors[opt.wireField] = "Enter an exact safe integer.";
+        continue;
+      }
       if (opt.kind !== "path" || !opt.pathKind) continue;
       if (inactivePromptDependent(opt.wireField, modes)) continue;
       const raw = (state.scalars[opt.wireField] ?? "").trim();
       if (!raw) continue;
       const result = await validatePath(raw, schemaPathKind(opt.pathKind));
+      if (attempt !== lifetime.current) return false;
       if (!result.valid) errors[opt.wireField] = result.error || "invalid path";
     }
     setFieldErrors(errors);
@@ -277,16 +304,40 @@ export function LaunchConfigForm({
   }
 
   async function handleSubmit(): Promise<void> {
-    if (busy) return;
-    const valid = await validateScalarPathFields();
-    if (!valid) return; // matches the legacy's own "returns early, no save attempted" - no status-line change
+    // React's busy state renders the button, but admission must be synchronous
+    // and cover validation too. Keep newer edits editable while this snapshot saves.
+    if (submission.current !== null) return;
+    const admitted = {};
+    submission.current = admitted;
+    const attempt = lifetime.current;
     setBusy(true);
     try {
+      const valid = await validateScalarFields(attempt);
+      if (attempt !== lifetime.current) return;
+      if (!valid) return; // no save attempted and no status-line change
       const resolved = await onSave(collectConfig(supportedOptions, state));
+      if (attempt !== lifetime.current) return;
+      // Rebase only the submitted state. Edits made while saving stay dirty.
+      // Inactive prompt inputs remain editable but collectConfig omits them.
+      // Their saved value is empty, not the draft still visible in the form.
+      // Keep the submitted identity when nothing was omitted so clean forms
+      // still follow subsequent host refreshes.
+      let baseline = state;
+      const modes = {
+        systemPromptMode: state.scalars.systemPromptMode,
+        systemPromptAppendMode: state.scalars.systemPromptAppendMode,
+      };
+      for (const wire of PROMPT_DEPENDENT_WIRE_FIELDS) {
+        if (inactivePromptDependent(wire, modes) && state.scalars[wire]) {
+          baseline = { ...baseline, scalars: { ...baseline.scalars, [wire]: "" } };
+        }
+      }
+      setSeed((currentSeed) => ({ ...currentSeed, baseline }));
       setStatus({ kind: "saved", text: formatSavedAt() });
       toast.push("success", successToast);
       onSaved?.(resolved);
     } catch (err) {
+      if (attempt !== lifetime.current) return;
       const message = err instanceof Error ? err.message : String(err);
       if (matchesEnvCredentialError(message) && supportedOptions.some((o) => o.wireField === "env")) {
         setFieldErrors((e) => ({ ...e, env: message }));
@@ -294,7 +345,10 @@ export function LaunchConfigForm({
       setStatus({ kind: "error", text: `Error: ${message}` });
       toast.push("error", "Save failed");
     } finally {
-      setBusy(false);
+      if (submission.current === admitted) {
+        submission.current = null;
+        setBusy(false);
+      }
     }
   }
 
@@ -331,7 +385,11 @@ export function LaunchConfigForm({
               onChange={(v) => updateList(opt.wireField, v)}
               validatePath={validatePath}
               paths={paths}
-              inheritedItems={inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)}
+              inheritedItems={
+                layer === "project"
+                  ? asStringList(effective)
+                  : inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)
+              }
             />
           );
         case "modelList":
@@ -343,7 +401,9 @@ export function LaunchConfigForm({
               onChange={(v) => updateList(opt.wireField, v)}
               explicitEmpty={state.explicitEmpty[opt.wireField] ?? false}
               onExplicitEmptyChange={(checked) => updateExplicitEmpty(opt.wireField, checked)}
-              inheritedItems={inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)}
+              inheritedItems={
+                state.explicitEmpty[opt.wireField] || state.lists[opt.wireField]?.length ? [] : asStringList(effective)
+              }
             />
           );
         case "envMap": {
@@ -365,7 +425,11 @@ export function LaunchConfigForm({
               items={state.mcpLists[opt.wireField] ?? []}
               onChange={(v) => updateMcpList(opt.wireField, v)}
               validateCommand={(command) => validatePath(command, "command")}
-              inheritedItems={inheritedItems(effective, state.mcpLists[opt.wireField] ?? [], (s) => s.name, asMcpList)}
+              inheritedItems={
+                layer === "project"
+                  ? asMcpList(effective)
+                  : inheritedItems(effective, state.mcpLists[opt.wireField] ?? [], (s) => s.name, asMcpList)
+              }
             />
           );
       }
@@ -435,7 +499,7 @@ export function LaunchConfigForm({
       )}
       <div className={CLASS.actions}>
         <Button type="button" onClick={() => void handleSubmit()} disabled={busy}>
-          Save launch defaults
+          {layer === "project" ? "Save local overrides" : "Save launch defaults"}
         </Button>
         <p className={CLASS.status} aria-live="polite" data-testid="launch-config-status" data-state={status?.kind}>
           {status?.text}

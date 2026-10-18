@@ -5,7 +5,7 @@ import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { chromeStore } from "../../shell/chromeStore";
 import { installKeybindings } from "../../shell/installKeybindings";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { navigate, paneToURL } from "../../shell/routing";
+import { navigate, paneToURL, requestNavigation } from "../../shell/routing";
 import { useIsMobile } from "../../shell/useIsMobile";
 import { workspaceStore } from "../../shell/workspace";
 import { prefsStore, usePrefsStore } from "../../stores/prefs";
@@ -34,6 +34,7 @@ import { StorageSection } from "./sections/storage";
 import { ThemeSection } from "./sections/theme";
 import { TranscriptSection } from "./sections/transcript";
 import styles from "./settings.module.css";
+import { SettingsDraftsProvider } from "./settingsDrafts";
 import { settingsURL, useSettingsHost, useSettingsHostURLSync } from "./settingsHost";
 
 // McpSection's overview dependency is injected (its own McpSectionProps seam,
@@ -131,7 +132,15 @@ function showSettingsList(): void {
  * trap the legacy's `hidden`-attribute toggling fell into), so its filter
  * text and scroll position survive the drill-down round trip.
  */
-export default function Settings({ params, paneId }: PaneProps<SettingsPaneParams>) {
+export default function Settings(props: PaneProps<SettingsPaneParams>) {
+  return (
+    <SettingsDraftsProvider>
+      <SettingsBody {...props} />
+    </SettingsDraftsProvider>
+  );
+}
+
+function SettingsBody({ params, paneId }: PaneProps<SettingsPaneParams>) {
   const rememberedSection = usePrefsStore((s) => s.lastSettingsSection);
   // The route's selected host (component 07b's host-context): this pane is the
   // settings route's shell, so it is where a URL that names a host is adopted
@@ -201,9 +210,11 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
   // paneToURL/navigate keeps the URL and the workspace in agreement, so
   // there is nothing left for reconciliation to "fix".
   const handleClose = useCallback(() => {
-    const url = paneToURL("welcome", {});
-    if (url !== null) navigate(url);
-    workspaceStore.getState().closePane(paneId);
+    requestNavigation(() => {
+      const url = paneToURL("welcome", {});
+      if (url !== null) navigate(url);
+      workspaceStore.getState().closePane(paneId);
+    });
   }, [paneId]);
 
   // Escape closes the pane, via the keybindings dispatcher: the pane pushes

@@ -1,4 +1,5 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { deferred } from "@evener/appwire-client/testing/deferred";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, test, vi } from "vitest";
@@ -54,6 +55,65 @@ function ControlledCollectionEditor(props: {
     />
   );
 }
+
+test.each(["resolve", "reject"] as const)(
+  "synchronous duplicate submits admit one caller and permit retry after %s",
+  async (outcome) => {
+    const pending = deferred<void>();
+    const onAdd = vi.fn(async (): Promise<CollectionAddResult> => {
+      try {
+        await pending.promise;
+        return { ok: true };
+      } catch {
+        return { ok: false, error: "Caller-mapped failure" };
+      }
+    });
+    render(<CollectionEditor<DirItem> {...baseProps({ onAdd })} />);
+    const input = screen.getByPlaceholderText("/opt/plugins");
+    fireEvent.change(input, { target: { value: "/pending" } });
+    const form = screen.getByRole("button", { name: "Add" }).closest("form")!;
+    act(() => {
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
+    expect(onAdd).toHaveBeenCalledExactlyOnceWith("/pending");
+    expect(input).toHaveProperty("disabled", true);
+    await act(async () => {
+      if (outcome === "reject") pending.reject(new Error("transport failure"));
+      else pending.resolve();
+    });
+    expect(input).toHaveProperty("disabled", false);
+    expect(input).toHaveProperty("value", outcome === "reject" ? "/pending" : "");
+    if (outcome === "reject") expect(screen.getByRole("alert").textContent).toBe("Caller-mapped failure");
+    onAdd.mockImplementation(async () => ({ ok: true }));
+    fireEvent.change(input, { target: { value: "/retry" } });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Add" }));
+    expect(onAdd).toHaveBeenCalledTimes(2);
+    expect(onAdd).toHaveBeenLastCalledWith("/retry");
+    expect(input).toHaveProperty("value", "");
+    expect(screen.queryByRole("alert")).toBeNull();
+  },
+);
+
+test("an unmounted pending Add cannot affect the next editor instance", async () => {
+  const pending = deferred<CollectionAddResult>();
+  const oldAdd = vi.fn(() => pending.promise);
+  const first = render(<CollectionEditor<DirItem> {...baseProps({ onAdd: oldAdd })} />);
+  fireEvent.change(screen.getByPlaceholderText("/opt/plugins"), { target: { value: "/old" } });
+  await userEvent.setup().click(screen.getByRole("button", { name: "Add" }));
+  first.unmount();
+  const newAdd = vi.fn(async (): Promise<CollectionAddResult> => ({ ok: true }));
+  render(<CollectionEditor<DirItem> {...baseProps({ onAdd: newAdd })} />);
+  const input = screen.getByPlaceholderText("/opt/plugins");
+  fireEvent.change(input, { target: { value: "/new" } });
+  await act(async () => pending.resolve({ ok: false, error: "old failure" }));
+  expect(input).toHaveProperty("value", "/new");
+  expect(input).toHaveProperty("disabled", false);
+  expect(screen.queryByRole("alert")).toBeNull();
+  await userEvent.setup().click(screen.getByRole("button", { name: "Add" }));
+  expect(newAdd).toHaveBeenCalledExactlyOnceWith("/new");
+  expect(oldAdd).toHaveBeenCalledExactlyOnceWith("/old");
+});
 
 test("renders the list with an accessible name", () => {
   render(<CollectionEditor<DirItem> {...baseProps()} />);

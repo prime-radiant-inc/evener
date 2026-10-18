@@ -900,6 +900,33 @@ function oklabMix(colorA: RGB, colorB: RGB, fractionOfA: number): RGB {
   ]);
 }
 
+test.each(["dark", "light"])("primary button normal and hover text clear AA in %s", (theme) => {
+  const css = STYLESHEETS["widgets/button/button.module.css"];
+  if (!css) throw new Error("Missing button stylesheet");
+  const block = extractBlock(TOKENS_CSS, new RegExp(`\\[data-theme="${theme}"\\][^{]*\\{`));
+  function tokenColor(declaration: string | undefined): RGB {
+    const name = /^var\((--[\w-]+)\)$/.exec(declaration ?? "")?.[1];
+    const value = name && declaredToken(block, name);
+    if (!value) throw new Error(`Unresolved color: ${declaration}`);
+    return parseHexColor(value);
+  }
+  const foreground = tokenColor(declarationInRule(css, "primary", "color"));
+  const background = tokenColor(declarationInRule(css, "primary", "background"));
+  expect(contrastRatio(foreground, background), `${theme} normal contrast`).toBeGreaterThanOrEqual(4.5);
+
+  // Read the actual enabled hover rule, not a separately chosen test palette.
+  const hover = declarationInRule(
+    css,
+    'primary:hover:not\\(:disabled\\):not\\(\\[aria-disabled="true"\\]\\)',
+    "background",
+  );
+  const mix = /^color-mix\(in oklab, (var\(--[\w-]+\)) (\d+)%, (var\(--[\w-]+\))\)$/.exec(hover ?? "");
+  if (!mix) throw new Error(`Unsupported hover color: ${hover}`);
+  const hoverBackground = oklabMix(tokenColor(mix[1]), tokenColor(mix[3]), Number(mix[2]) / 100);
+  expect(contrastRatio(foreground, hoverBackground), `${theme} hover contrast`).toBeGreaterThanOrEqual(4.5);
+  expect(hoverBackground).not.toEqual(background);
+});
+
 test("the four -ink companions clear 4.5:1 on their theme's lightest text grounds", () => {
   const themes = [
     {

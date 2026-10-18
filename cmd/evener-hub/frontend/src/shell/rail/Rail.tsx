@@ -73,7 +73,7 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { activitySidebarStore } from "../activitybar/activitySidebarStore";
 import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
-import { navigate } from "../routing";
+import { navigate, requestNavigation } from "../routing";
 import { openSessionByRef } from "../sessionPlacement";
 import { useIsMobile } from "../useIsMobile";
 import { currentSessionRef, useWorkspaceStore, workspaceStore } from "../workspace";
@@ -1540,8 +1540,10 @@ function NavigationRail({
   const rowActions = useMemo<RailRowActions>(
     () => ({
       onOpenOverview: (session) => {
-        workspaceStore.getState().openPane("session", { ref: session.ref });
-        activitySidebarStore.getState().openFor(session.ref);
+        requestNavigation(() => {
+          workspaceStore.getState().openPane("session", { ref: session.ref });
+          activitySidebarStore.getState().openFor(session.ref);
+        });
       },
       onRenameSession: (session, name) =>
         runAction(

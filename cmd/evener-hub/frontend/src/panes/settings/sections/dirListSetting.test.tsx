@@ -1,11 +1,15 @@
-import { ConnectionClosedError, friendlyErrorMessage, WireError } from "@evener/appwire-client";
+import { ConnectionClosedError, friendlyErrorMessage, type LaunchConfigLayer, WireError } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { navigate } from "../../../shell/routing";
 import { connectionStore } from "../../../stores/connection";
-import { resetExtensionsStoreForTests } from "../../../stores/extensions";
+import { extensionsStoreForHost, resetExtensionsStoreForTests } from "../../../stores/extensions";
+import { hostsStore } from "../../../stores/hosts";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { SettingsDraftsProvider } from "../settingsDrafts";
 import { DirListSetting, PathListEditor } from "./dirListSetting";
 import { alertReasons, statusReasons } from "./reasonTestUtils";
 
@@ -19,11 +23,13 @@ function connectFakeClient(): FakeClient {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
+  hostsStore.getState().resetForTests();
   resetToastStoreForTests();
 });
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState({}, "", "/");
   vi.restoreAllMocks();
 });
 
@@ -53,6 +59,188 @@ async function typePath(user: ReturnType<typeof userEvent.setup>, path: string, 
   }
 }
 
+test.each(["unmount", "host", "connection", "client", "same owner"] as const)(
+  "directory delayed validation preserves write ownership through %s",
+  async (change) => {
+    const fake = connectFakeClient();
+    const layer = { pluginDirs: [] };
+    fake.on("evener/launch/getLayer", () => layer);
+    fake.on("evener/paths/complete", () => ({ data: [] }));
+    const write = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+    fake.on("evener/launch/setLayer", write);
+    const tree = (host = "local") => (
+      <DirListSetting wireField="pluginDirs" label="Plugin directories" copy="Directories" host={host} />
+    );
+    const view = render(tree());
+    await screen.findByText("No plugin directories. Add one below.");
+    const user = userEvent.setup();
+    await typePath(user, "/pending");
+    const validation = deferred<{ path: string; valid: boolean }>();
+    const validate = vi.fn(() => validation.promise);
+    fake.on("evener/path/validate", validate);
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(validate).toHaveBeenCalledTimes(1);
+    if (change === "unmount") view.unmount();
+    else if (change === "host") {
+      fake.on("evener/host/request", (request) => {
+        const { method } = request as { method: string };
+        if (method === "evener/launch/setLayer") return write() as never;
+        expect(method).toBe("evener/launch/getLayer");
+        return layer as never;
+      });
+      act(() =>
+        hostsStore.setState({
+          load: {
+            phase: "ready",
+            hosts: [
+              {
+                name: "beta",
+                generation: 1,
+                incarnationId: "beta-1",
+                origin: "hub.toml",
+                attached: true,
+                midAttach: false,
+                removed: false,
+              },
+            ],
+          },
+        }),
+      );
+      view.rerender(tree("beta"));
+      await waitFor(() => expect(extensionsStoreForHost("beta").getState().launchLayerLoading).toBe(false));
+    } else if (change === "connection") {
+      act(() => connectionStore.setState({ state: "idle" }));
+      act(() => connectionStore.setState({ state: "ready" }));
+      await waitFor(() => expect(extensionsStoreForHost("local").getState().launchLayerLoading).toBe(false));
+    } else if (change === "client") {
+      const replacement = new FakeClient("ready");
+      replacement.on("evener/launch/getLayer", () => layer);
+      replacement.on("evener/launch/setLayer", write);
+      await act(async () => connectionStore.getState().connect(replacement));
+      await waitFor(() => expect(extensionsStoreForHost("local").getState().launchLayerLoading).toBe(false));
+    }
+    await act(async () => validation.resolve({ path: "/pending", valid: true }));
+    if (change === "same owner")
+      expect(write).toHaveBeenCalledExactlyOnceWith({
+        cwd: "/",
+        layer: "global",
+        config: { pluginDirs: ["/pending"] },
+      });
+    else expect(write).not.toHaveBeenCalled();
+  },
+);
+
+test("directory old validation cannot write into a same-name replacement registration", async () => {
+  const fake = connectFakeClient();
+  const register = (generation: number) =>
+    hostsStore.setState({
+      load: {
+        phase: "ready",
+        hosts: [
+          {
+            name: "beta",
+            generation,
+            incarnationId: `beta-${generation}`,
+            origin: "hub.toml",
+            attached: true,
+            midAttach: false,
+            removed: false,
+          },
+        ],
+      },
+    });
+  register(1);
+  const layer = { pluginDirs: [] };
+  const write = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+  const validation = deferred<{ valid: boolean; path: string }>();
+  let adding = false;
+  fake.on("evener/host/request", (request) => {
+    const { method, params } = request as { method: string; params: { path: string } };
+    if (method === "evener/launch/getLayer") return layer as never;
+    if (method === "evener/paths/complete") return { data: [] } as never;
+    if (method === "evener/path/validate")
+      return (adding ? validation.promise : { valid: true, path: params.path }) as never;
+    expect(method).toBe("evener/launch/setLayer");
+    return write() as never;
+  });
+  const tree = () => (
+    <DirListSetting wireField="pluginDirs" label="Plugin directories" copy="Directories" host="beta" />
+  );
+  const view = render(tree());
+  await screen.findByText("No plugin directories. Add one below.");
+  const user = userEvent.setup();
+  await typePath(user, "/pending");
+  adding = true;
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  const previousStore = extensionsStoreForHost("beta");
+  act(() => register(2));
+  view.rerender(tree());
+  expect(extensionsStoreForHost("beta")).not.toBe(previousStore);
+  await waitFor(() => expect(extensionsStoreForHost("beta").getState().launchLayerLoading).toBe(false));
+  await act(async () => validation.resolve({ valid: true, path: "/pending" }));
+  expect(write).not.toHaveBeenCalled();
+});
+
+test("directory synchronous duplicate Add admits only one validation and write", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
+  fake.on("evener/paths/complete", () => ({ data: [] }));
+  const write = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+  fake.on("evener/launch/setLayer", write);
+  render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="Directories" />);
+  await screen.findByText("No plugin directories. Add one below.");
+  await typePath(userEvent.setup(), "/pending");
+  const validation = deferred<{ valid: boolean; path: string }>();
+  const validate = vi.fn(() => validation.promise);
+  fake.on("evener/path/validate", validate);
+  const form = screen.getByRole("button", { name: "Add" }).closest("form")!;
+  await act(async () => {
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+  });
+  expect(validate).toHaveBeenCalledTimes(1);
+  await act(async () => validation.resolve({ valid: true, path: "/pending" }));
+  expect(write).toHaveBeenCalledTimes(1);
+});
+
+test.each([false, true])(
+  "directory Add recovers rejected validation with retained draft, reconnect=%s",
+  async (reconnect) => {
+    const fake = connectFakeClient();
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
+    fake.on("evener/paths/complete", () => ({ data: [] }));
+    const write = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+    fake.on("evener/launch/setLayer", write);
+    render(
+      <SettingsDraftsProvider>
+        <DirListSetting wireField="pluginDirs" label="Plugin directories" copy="Directories" />
+      </SettingsDraftsProvider>,
+    );
+    await screen.findByText("No plugin directories. Add one below.");
+    const user = userEvent.setup();
+    await typePath(user, "/pending");
+    const validation = deferred<{ valid: boolean; path: string }>();
+    fake.on("evener/path/validate", () => validation.promise);
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByRole("button", { name: "Add" })).toHaveProperty("disabled", true);
+    if (reconnect) {
+      act(() => connectionStore.setState({ state: "idle" }));
+      act(() => connectionStore.setState({ state: "ready" }));
+      await waitFor(() => expect(extensionsStoreForHost("local").getState().launchLayerLoading).toBe(false));
+    }
+    await act(async () => validation.reject(new WireError("directory validation disconnected", -32000)));
+    expect(screen.getByText("directory validation disconnected")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add" })).toHaveProperty("disabled", false);
+    expect(picker().textContent).toContain("/pending");
+    expect(write).not.toHaveBeenCalled();
+    act(() => navigate("/settings/theme"));
+    await user.click(screen.getByRole("button", { name: "Stay" }));
+    fake.on("evener/path/validate", ({ path }) => ({ valid: true, path }));
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(write).toHaveBeenCalledExactlyOnceWith({ cwd: "/", layer: "global", config: { pluginDirs: ["/pending"] } });
+  },
+);
+
 describe("PathListEditor", () => {
   function baseProps(overrides: Partial<Parameters<typeof PathListEditor>[0]> = {}) {
     return {
@@ -79,6 +267,28 @@ describe("PathListEditor", () => {
     expect(screen.getByRole("list", { name: "Plugin directories" })).toBeTruthy();
     expect(screen.getByText("/opt/plugins")).toBeTruthy();
     expect(screen.getByText("/home/user/.evener/plugins")).toBeTruthy();
+  });
+
+  test("a staged directory asks before navigation, Stay retains it and Add clears its protection", async () => {
+    const props = baseProps();
+    const user = userEvent.setup();
+    render(
+      <SettingsDraftsProvider>
+        <PathListEditor {...props} />
+      </SettingsDraftsProvider>,
+    );
+    await typePath(user, "/typed/path");
+    const field = picker();
+    act(() => navigate("/settings/theme"));
+    await user.click(screen.getByRole("button", { name: "Stay" }));
+    expect(picker()).toBe(field);
+    expect(field.textContent).toContain("/typed/path");
+    expect(props.onAdd).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(props.onAdd).toHaveBeenCalledWith("/typed/path");
+    act(() => navigate("/settings/theme"));
+    expect(screen.queryByRole("button", { name: "Stay" })).toBeNull();
+    expect(window.location.pathname).toBe("/settings/theme");
   });
 
   test("renders the empty message and no rows when items is empty", () => {
@@ -215,6 +425,62 @@ describe("PathListEditor", () => {
 });
 
 describe("DirListSetting", () => {
+  test.each(["failed", "loading"] as const)(
+    "refuses Add and Remove from a %s refresh, keeps the staged path and writes only after fresh recovery",
+    async (state) => {
+      const user = userEvent.setup();
+      const fake = connectFakeClient();
+      fake.on("evener/launch/getLayer", () => ({ model: "stale-model", pluginDirs: ["/opt/plugins"] }));
+      fake.on("evener/paths/complete", () => ({ data: [] }));
+      const setLayer = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+      fake.on("evener/launch/setLayer", setLayer);
+      render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
+      await screen.findByText("/opt/plugins");
+      await typePath(user, "/opt/new");
+      const field = picker();
+      let finishRead: (layer: LaunchConfigLayer) => void = () => {};
+      fake.on("evener/launch/getLayer", () =>
+        state === "failed"
+          ? Promise.reject(new WireError("read-fixture", -32000))
+          : new Promise<LaunchConfigLayer>((resolve) => {
+              finishRead = resolve;
+            }),
+      );
+      let reading: Promise<void> = Promise.resolve();
+      await act(async () => {
+        reading = extensionsStoreForHost("local").getState().fetchLaunchLayer();
+      });
+      await user.click(screen.getByRole("button", { name: "Add" }));
+      await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+      expect(setLayer).not.toHaveBeenCalled();
+      expect(picker()).toBe(field);
+      expect(field.textContent).toContain("/opt/new");
+      await user.click(screen.getByRole("button", { name: "Remove /opt/plugins" }));
+      await user.click(screen.getByRole("button", { name: "Remove" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(setLayer).not.toHaveBeenCalled();
+      const fresh = { model: "fresh-model", pluginDirs: ["/opt/plugins", "/opt/external"] };
+      if (state === "failed") {
+        fake.on("evener/launch/getLayer", () => fresh);
+        await user.click(screen.getByRole("button", { name: "Retry" }));
+      } else {
+        await act(async () => {
+          finishRead(fresh);
+          await reading;
+        });
+      }
+      await screen.findByText("/opt/external");
+      expect(picker()).toBe(field);
+      expect(setLayer).not.toHaveBeenCalled();
+      await user.click(screen.getByRole("button", { name: "Add" }));
+      expect(setLayer).toHaveBeenCalledExactlyOnceWith({
+        cwd: "/",
+        layer: "global",
+        config: { ...fresh, pluginDirs: [...fresh.pluginDirs, "/opt/new"] },
+      });
+    },
+  );
+
   test("shows a loading state before the launch layer resolves", async () => {
     const fake = connectFakeClient();
     fake.on("evener/launch/getLayer", () => new Promise(() => {}));

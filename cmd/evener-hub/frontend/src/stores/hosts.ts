@@ -390,12 +390,15 @@ export function currentHostRegistration(host: string): HostRegistration {
  * - and deliberately not on the live session fields the hub reports about a
  * connection (attached, serverName/serverVersion/hubVersion, os/arch,
  * lastAttachError, midAttach): those move without the registration changing, so
- * an instance rebuilt on one would lose that host's cache for no reason. Roots
+ * an instance rebuilt on one would lose that host's cache for no reason. The
+ * incarnation identifies a replacement even with identical configuration,
+ * unlike generation, which advances on updates within that incarnation. Roots
  * compare as lists, so an absent and an empty one describe the same host (the
  * wire omits empty optional arrays - sameRoots). */
 export function sameHostRegistration(a: HostRow, b: HostRow): boolean {
   return (
     a.name === b.name &&
+    a.incarnationId === b.incarnationId &&
     a.address === b.address &&
     a.user === b.user &&
     a.keyPath === b.keyPath &&

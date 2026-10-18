@@ -73,12 +73,13 @@
  */
 
 .primary {
-  background: var(--accent);
+  /* The AA companion also supplies a readable ground for inverted text. */
+  background: var(--accent-ink);
   color: var(--surface-0);
 }
 
 .primary:hover:not(:disabled):not([aria-disabled="true"]) {
-  background: color-mix(in oklab, var(--accent) 78%, var(--ink-hi));
+  background: color-mix(in oklab, var(--accent-ink) 78%, var(--ink-hi));
 }
 
 /* The design language's bordered common control (2026-05-22 design language

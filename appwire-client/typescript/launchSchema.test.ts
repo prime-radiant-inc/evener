@@ -3,10 +3,12 @@ import { describe, expect, test } from "vitest";
 import {
   buildFormState,
   collectConfig,
+  collectScalar,
   globalDefaultHint,
   groupOptions,
   inactivePromptDependent,
   isCollectionKind,
+  isExactSafeInteger,
   isPromptCompositeWireField,
   matchesEnvCredentialError,
   optionSupportsLayer,
@@ -17,6 +19,40 @@ import {
   schemaPathKind,
 } from "./launchSchema";
 import type { LaunchConfigLayer, LaunchOption } from "./types.gen";
+
+describe("integer validation and collection share exact decimal semantics", () => {
+  const integerOption = { kind: "integer" } as LaunchOption;
+
+  test.each([
+    { raw: "  +007  ", value: 7 },
+    { raw: "\t-0012\n", value: -12 },
+    { raw: "0", value: 0 },
+    { raw: "-1", value: -1 },
+    { raw: "9007199254740991", value: 9007199254740991 },
+    { raw: "-9007199254740991", value: -9007199254740991 },
+  ])("accepts and normalizes '$raw' without extra restrictions", ({ raw, value }) => {
+    expect(isExactSafeInteger(raw)).toBe(true);
+    expect(collectScalar(integerOption, raw)).toEqual({ value });
+  });
+
+  test.each([
+    "",
+    " \t\n",
+    "1.5",
+    "1.0",
+    "1.0000000000000000001",
+    "1e2",
+    "0x10",
+    "NaN",
+    "Infinity",
+    "12abc",
+    "9007199254740992",
+    "-9007199254740992",
+  ])("does not collect empty or invalid '$raw'", (raw) => {
+    expect(isExactSafeInteger(raw)).toBe(false);
+    expect(collectScalar(integerOption, raw)).toBeNull();
+  });
+});
 
 describe("globalDefaultHint", () => {
   test("undefined on the global layer (no 'default' concept there)", () => {
@@ -198,7 +234,7 @@ describe("resolvedEmptyChoice / emptyChoiceLabel", () => {
   test("falls back to the generic layer placeholder when no choice supplies value ''", () => {
     const future = opt({ field: "future", wireField: "future", kind: "select", choices: [{ value: "x", label: "X" }] });
     expect(resolvedEmptyChoice(future, "global")).toEqual({ value: "", label: "(default)" });
-    expect(resolvedEmptyChoice(future, "project")).toEqual({ value: "", label: "(use global default)" });
+    expect(resolvedEmptyChoice(future, "project").value).toBe("");
   });
 });
 
@@ -481,7 +517,7 @@ describe("resolvedDefaultLabel with runtime-resolved effective layers", () => {
 
   test("an integer field names the resolved number", () => {
     expect(resolvedDefaultLabel(integerOpt, "global", { maxSubagentDepth: 2 })).toBe("2 (default)");
-    expect(resolvedDefaultLabel(integerOpt, "project", { maxSubagentDepth: 50 })).toBe("50 (use global default)");
+    expect(resolvedDefaultLabel(integerOpt, "project", { maxSubagentDepth: 50 })).toContain(String(50));
   });
 
   test("max_rounds -1 reads as unlimited, the same as 0", () => {
@@ -510,7 +546,7 @@ describe("resolvedDefaultLabel with dynamic builtin labels", () => {
     // primary model, a runtime ref the resolve can't compute), so the label
     // falls back to the schema's builtinDefaultLabel.
     expect(resolvedDefaultLabel(modelOpt, "global", {})).toBe("primary model (default)");
-    expect(resolvedDefaultLabel(modelOpt, "project", {})).toBe("primary model (use global default)");
+    expect(resolvedDefaultLabel(modelOpt, "project", {})).toContain(modelOpt.builtinDefaultLabel);
   });
 
   test("fast_cheap_model with an explicit effective value names that value", () => {

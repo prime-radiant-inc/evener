@@ -151,29 +151,32 @@ test("resetExtensionsStoreForTests drops a per-host instance so it is rebuilt fr
 // registration's cached catalog must not be served for it (nor a response the
 // old registration had in flight land in it). The instance is keyed on the
 // registry's own row, so the re-registration builds a fresh one.
-test("a host re-registered under the same name is rebuilt, never served the previous registration's data", async () => {
-  const fake = connectFakeClient();
-  let reads = 0;
-  fake.on("evener/host/request", () => {
-    reads += 1;
-    return { marketplaces: [{ ...MARKETPLACE, lastUpdated: reads }] } as never;
-  });
-  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "old.example:22" })] } });
-  const first = extensionsInstanceForHost("beta");
-  await first.store.getState().fetchMarketplaces();
-  expect(first.store.getState().marketplaces).toEqual([{ ...MARKETPLACE, lastUpdated: 1 }]);
+test.each([{ address: "new.example:22" }, { address: "old.example:22", incarnationId: "replacement" }])(
+  "a host re-registered under the same name is rebuilt, never served the previous registration's data (%j)",
+  async (replacement) => {
+    const fake = connectFakeClient();
+    let reads = 0;
+    fake.on("evener/host/request", () => {
+      reads += 1;
+      return { marketplaces: [{ ...MARKETPLACE, lastUpdated: reads }] } as never;
+    });
+    hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "old.example:22" })] } });
+    const first = extensionsInstanceForHost("beta");
+    await first.store.getState().fetchMarketplaces();
+    expect(first.store.getState().marketplaces).toEqual([{ ...MARKETPLACE, lastUpdated: 1 }]);
 
-  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "new.example:22" })] } });
+    hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", ...replacement })] } });
 
-  const second = extensionsInstanceForHost("beta");
-  expect(second.store).not.toBe(first.store);
-  // The new registration starts with nothing: the old one's catalog is not
-  // carried over, it is re-read.
-  expect(second.store.getState().marketplaces).toBeNull();
-  await second.store.getState().fetchMarketplaces();
-  expect(second.store.getState().marketplaces).toEqual([{ ...MARKETPLACE, lastUpdated: 2 }]);
-  expect(reads).toBe(2);
-});
+    const second = extensionsInstanceForHost("beta");
+    expect(second.store).not.toBe(first.store);
+    // The new registration starts with nothing: the old one's catalog is not
+    // carried over, it is re-read.
+    expect(second.store.getState().marketplaces).toBeNull();
+    await second.store.getState().fetchMarketplaces();
+    expect(second.store.getState().marketplaces).toEqual([{ ...MARKETPLACE, lastUpdated: 2 }]);
+    expect(reads).toBe(2);
+  },
+);
 
 // A pane can resolve a remote host before the registry has answered (a deep
 // link mounts before the picker's own list read lands). The first answer
@@ -194,7 +197,10 @@ test("an attach report on an unchanged registration keeps the instance", () => {
   const instance = extensionsInstanceForHost("beta");
 
   hostsStore.setState({
-    load: { phase: "ready", hosts: [{ ...registered, attached: true, serverVersion: "1.2.3" }] },
+    load: {
+      phase: "ready",
+      hosts: [{ ...registered, generation: registered.generation + 1, attached: true, serverVersion: "1.2.3" }],
+    },
   });
 
   expect(extensionsInstanceForHost("beta").store).toBe(instance.store);

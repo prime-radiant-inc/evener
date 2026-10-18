@@ -130,11 +130,9 @@ export function groupOptions(options: LaunchOption[]): OptionGroup[] {
 
 const GLOBAL_DEFAULT_HINT_MAX_LEN = 80;
 
-// globalDefaultHint: the inline "default: {value}" text next to a field on
-// the project-layer page only, sourced from the (separately-fetched) global
-// layer - never rendered on the global-layer page itself (no "default" to
-// show there). Truncates at 80 chars with an ellipsis, matching
-// assets/launchconfig.js's own appendGlobalDefault exactly.
+// globalDefaultHint formats the caller's lower-layer values on project forms.
+// Web project settings supplies global + trusted repo values, never its local
+// layer. Other callers may supply only global defaults. Truncates at 80 chars.
 export function globalDefaultHint(
   wireField: string,
   layer: LaunchConfigLayerName,
@@ -157,7 +155,7 @@ export function matchesEnvCredentialError(message: string): boolean {
 }
 
 export function emptyChoiceLabel(layer: LaunchConfigLayerName): string {
-  return layer === "project" ? "(use global default)" : "(default)";
+  return layer === "project" ? "(use inherited default)" : "(default)";
 }
 
 // resolvedEmptyChoice: every select/radio field in the real schema
@@ -180,11 +178,11 @@ export function resolvedEmptyChoice(opt: LaunchOption, layer: LaunchConfigLayerN
 // one of THESE: a schema-supplied custom empty label ("(inherit)", "Evener
 // default", the Go "(default: off)" family) already says what unset means in
 // that field's own terms and stays verbatim.
-const GENERIC_EMPTY_LABELS: ReadonlySet<string> = new Set(["(default)", "(use global default)"]);
+const GENERIC_EMPTY_LABELS: ReadonlySet<string> = new Set(["(default)", "(use inherited default)"]);
 
 // resolvedDefaultLabel: the "<value> (default)" (global) / "<value> (use
-// global default)" (project) label for a field whose unset marker is the
-// generic one, once a launch/resolve effective layer is known - the value a
+// inherited default)" (project) label for a field whose unset marker is the
+// generic one, once the caller's display defaults are known - the value a
 // session started now would inherit for it, so "(default)" never stands in
 // for an answer the hub actually has. undefined when the effective layer
 // hasn't landed (or failed), or the field's empty marker is a schema-supplied

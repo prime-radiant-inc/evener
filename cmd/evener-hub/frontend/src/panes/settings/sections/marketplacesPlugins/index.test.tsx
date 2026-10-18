@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { SettingsDraftsProvider } from "../../settingsDrafts";
 import { alertReasons, statusReasons } from "../reasonTestUtils";
 import { MarketplacesPluginsSection } from "./index";
 import { chipKinds } from "./marketplacesTestUtils";
@@ -57,6 +58,222 @@ beforeEach(() => {
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
 });
+
+test("first plugin journey navigates through Sources and explicitly browses the added catalog without installing", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
+  fake.on("evener/plugin/list", () => ({ plugins: [] }));
+  fake.on("evener/marketplace/add", () => ({ marketplaces: [ACME] }));
+  fake.on("evener/marketplace/browse", () => ({
+    name: ACME.name,
+    plugins: [{ name: "formatter", description: "Fixture formatter" }],
+  }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await user.click(await screen.findByRole("button", { name: "Browse plugins" }));
+  expect(screen.getByRole("radio", { name: "Browse" }).getAttribute("aria-checked")).toBe("true");
+  await user.click(screen.getByRole("button", { name: "Manage sources" }));
+  expect(screen.getByRole("radio", { name: "Sources (0)" }).getAttribute("aria-checked")).toBe("true");
+  await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
+  await user.type(screen.getByLabelText("Git URL"), "https://example.com/acme.git");
+  expect(fake.calls.filter((c) => c.method === "evener/marketplace/add")).toHaveLength(0);
+  await user.click(
+    within(screen.getByLabelText("Git URL").closest("form") as HTMLFormElement).getByRole("button", { name: "Add" }),
+  );
+  expect(fake.calls.filter((c) => c.method === "evener/marketplace/add").map((c) => c.params)).toEqual([
+    { name: "", source: { kind: "url", url: "https://example.com/acme.git" } },
+  ]);
+  expect(screen.getByRole("radio", { name: "Sources (1)" }).getAttribute("aria-checked")).toBe("true");
+  expect(fake.calls.filter((c) => c.method === "evener/marketplace/browse")).toHaveLength(0);
+  await user.click(screen.getByRole("button", { name: "Browse plugins" }));
+  expect(screen.getByRole("radio", { name: "Browse" }).getAttribute("aria-checked")).toBe("true");
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  expect(await screen.findByRole("list", { name: `${ACME.name} plugins` })).toBeTruthy();
+  expect(fake.calls.filter((c) => /evener\/plugin\/(install|enable|disable)$/.test(c.method))).toHaveLength(0);
+});
+
+test.each(["plugin", "marketplace"] as const)(
+  "a failed %s read leaves the other segment usable and retries only that read",
+  async (failed) => {
+    const fake = connectSeededClient();
+    fake.on(`evener/${failed}/list`, () => {
+      throw new Error("temporary failure");
+    });
+    fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: "formatter" }] }));
+    const user = userEvent.setup();
+    render(<MarketplacesPluginsSection />);
+    await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
+    if (failed === "marketplace") {
+      await user.click(screen.getByRole("button", { name: /linter/ }));
+      expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
+      await user.click(screen.getByRole("button", { name: "Close" }));
+    } else {
+      await user.click(screen.getByRole("radio", { name: "Browse" }));
+      await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+      expect(await screen.findByRole("list", { name: `${ACME.name} plugins` })).toBeTruthy();
+      expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(true);
+    }
+    const before = fake.calls.filter((c) => c.method.endsWith("/list")).map((c) => c.method);
+    if (failed === "plugin") fake.on("evener/plugin/list", () => ({ plugins: [LINTER] }));
+    else fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+    await user.click(
+      screen.getByRole("button", { name: failed === "plugin" ? "Retry plugins" : "Retry marketplaces" }),
+    );
+    await waitFor(() => expect(statusReasons()).toEqual([]));
+    expect(fake.calls.filter((c) => c.method.endsWith("/list")).map((c) => c.method)).toEqual([
+      ...before,
+      `evener/${failed}/list`,
+    ]);
+  },
+);
+
+test.each(["add", "edit"] as const)("retains an %s source draft through a failed read and recovery", async (kind) => {
+  const fake = connectSeededClient();
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+  if (kind === "add") await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
+  else await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+  const label = kind === "add" ? "Git URL" : "owner/repo";
+  await user.clear(screen.getByLabelText(label));
+  await user.type(screen.getByLabelText(label), "draft/value");
+  fake.on("evener/marketplace/list", () => {
+    throw new Error("temporary failure");
+  });
+  await act(async () => {
+    await extensionsStore.getState().fetchMarketplaces();
+  });
+  expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe("draft/value");
+  await user.type(screen.getByLabelText(label), "2");
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  await act(async () => {
+    await extensionsStore.getState().fetchMarketplaces();
+  });
+  expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe("draft/value2");
+  expect(fake.calls.filter((c) => /evener\/marketplace\/(add|edit)$/.test(c.method))).toHaveLength(0);
+});
+
+test.each(["add", "edit"] as const)(
+  "protects an %s source draft before segment change and preserves it on Stay",
+  async (kind) => {
+    const fake = connectSeededClient();
+    const user = userEvent.setup();
+    render(
+      <SettingsDraftsProvider>
+        <MarketplacesPluginsSection />
+      </SettingsDraftsProvider>,
+    );
+    await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+    if (kind === "add") await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
+    else await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+    const label = kind === "add" ? "Git URL" : "owner/repo";
+    const editor = screen.getByLabelText(label);
+    await user.clear(editor);
+    await user.type(editor, "pending/source");
+    if (kind === "edit") {
+      await user.click(screen.getByRole("button", { name: "Close" }));
+    } else {
+      await user.click(screen.getByRole("radio", { name: "Browse" }));
+    }
+    await user.click(screen.getByRole("button", { name: "Stay" }));
+    expect(screen.getByLabelText(label)).toBe(editor);
+    expect(editor).toHaveProperty("value", "pending/source");
+    await user.click(screen.getByRole("radio", { name: "Browse" }));
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(screen.getByRole("radio", { name: "Browse" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByLabelText(label)).toBeNull();
+    expect(fake.calls.filter((call) => /evener\/marketplace\/(add|edit)$/.test(call.method))).toHaveLength(0);
+  },
+);
+
+test("an untouched source follows canonical changes without arming Save", async () => {
+  const fake = connectSeededClient();
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+  await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+  fake.on("evener/marketplace/list", () => ({
+    marketplaces: [{ ...ACME, source: { kind: "github", repo: "canonical/repo" } }],
+  }));
+  await act(async () => {
+    await extensionsStore.getState().fetchMarketplaces();
+  });
+  expect((screen.getByLabelText("owner/repo") as HTMLInputElement).value).toBe("canonical/repo");
+  expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(fake.calls.filter((c) => c.method === "evener/marketplace/edit")).toHaveLength(0);
+});
+
+test("an incomplete source draft survives metadata refresh and same-client reconnect", async () => {
+  const fake = connectSeededClient();
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+  await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+  await user.clear(screen.getByLabelText("owner/repo"));
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [{ ...ACME, lastUpdated: 2 }] }));
+  await act(async () => {
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+  });
+  expect((screen.getByLabelText("owner/repo") as HTMLInputElement).value).toBe("");
+  expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByRole("button", { name: "Reload latest" })).toBeNull();
+  expect(fake.calls.filter((c) => c.method === "evener/marketplace/edit")).toHaveLength(0);
+});
+
+test("a source pin change requires a conflict choice even when the visible repository is unchanged", async () => {
+  const fake = connectSeededClient();
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+  await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+  await user.type(screen.getByLabelText("Name"), "-draft");
+  fake.on("evener/marketplace/list", () => ({
+    marketplaces: [{ ...ACME, source: { ...ACME.source, ref: "release" } }],
+  }));
+  await act(async () => {
+    await extensionsStore.getState().fetchMarketplaces();
+  });
+  expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Reload latest" }));
+  expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(ACME.name);
+  expect(fake.calls.filter((c) => c.method === "evener/marketplace/edit")).toHaveLength(0);
+});
+
+test.each(["Reload latest", "Keep my edits"])(
+  "an edited source requires explicit conflict resolution via %s",
+  async (choice) => {
+    const fake = connectSeededClient();
+    fake.on("evener/marketplace/edit", () => ({
+      marketplaces: [{ ...ACME, source: { kind: "github", repo: "draft/repo" } }],
+    }));
+    const user = userEvent.setup();
+    render(<MarketplacesPluginsSection />);
+    await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+    await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+    await user.clear(screen.getByLabelText("owner/repo"));
+    await user.type(screen.getByLabelText("owner/repo"), "draft/repo");
+    fake.on("evener/marketplace/list", () => ({
+      marketplaces: [{ ...ACME, source: { kind: "github", repo: "canonical/repo" } }],
+    }));
+    await act(async () => {
+      await extensionsStore.getState().fetchMarketplaces();
+    });
+    expect((screen.getByLabelText("owner/repo") as HTMLInputElement).value).toBe("draft/repo");
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole("button", { name: choice }));
+    expect(fake.calls.filter((c) => c.method === "evener/marketplace/edit")).toHaveLength(0);
+    if (choice === "Reload latest") {
+      expect((screen.getByLabelText("owner/repo") as HTMLInputElement).value).toBe("canonical/repo");
+      expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    } else {
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(fake.calls.filter((c) => c.method === "evener/marketplace/edit").map((c) => c.params)).toEqual([
+        { name: ACME.name, source: { kind: "github", repo: "draft/repo" } },
+      ]);
+    }
+  },
+);
 
 afterEach(() => {
   cleanup();
@@ -283,7 +500,7 @@ test("a later accepted notification publication clears a same-name applied remov
   );
 
   await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
-  fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
+  act(() => fake.emitNotification({ method: "evener/marketplace/updated", params: {} }));
   await waitFor(() => expect(listCalls).toBe(3), { timeout: 1000 });
   await waitFor(() => expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy());
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);

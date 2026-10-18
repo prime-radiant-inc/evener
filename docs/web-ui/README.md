@@ -52,6 +52,8 @@ Settings groups controls by task:
 
 Search matches destination names and control keywords, such as font, Enter,
 tokens, marketplace and plugin directory. Results open the owning page.
+Phone density opens Appearance; desktop or mobile layout opens Conversation
+display; desktop notifications or quiet opens Notifications. Pairing still opens Devices.
 Appearance is the default. Explicit unknown or retired `general`, `display`
 `plugins` and `inrepo` section URLs open Appearance, without aliases or a remembered
 section overriding that request. A host-qualified URL retains its host scope.
@@ -64,19 +66,59 @@ only after approval of the reviewed hash; `.evener/launch.local.toml` overrides
 remain separate. Discovery checks that directory, not its ancestors. Repository
 inspection failures do not prevent editing local overrides.
 
+**Save local overrides** writes only this directory's local layer. Unset fields
+show inherited values from trusted repository settings over session defaults,
+not the saved local value. Clearing a field previews that fallback before saving.
+An explicit empty model-fallback chain still means no fallbacks. Inheritance
+hints disappear when resolution fails; runtime defaults hidden by an override
+are not guessed from that override.
+
 Conversation display edits one device layout at a time, initially the current
 device class. Both shared layouts remain available through the layout selector.
-Use the shared default clears only the selected layout's browser-local override.
+Scope and the local-override action appear before the editor. Editing a shared
+default keeps both browser-local layout choices. **Use the shared default** clears
+only the selected layout's browser-local override, without writing shared defaults.
 The preview stays visible; Technical details contains revisions and inventories.
 
 On phones, settings opens as a full-width list. Drilling into a page and using
 Back preserves the list's search and scroll position. Desktop keeps the list
 beside the selected page.
 
+Edited forms ask before changing section, host or project, closing Settings,
+or leaving through an app action or browser history. Opening an already-open
+session or cycling sessions asks before workspace focus can replace the editor.
+**Stay** keeps the same
+editor and input. **Discard changes** visits the originally requested destination
+once, without saving. Confirmed saves clear protection for the saved input;
+failed saves and temporary read or connection failures retain it. Capturing a
+shortcut counts as an edit, even before choosing a chord. Autosaved preferences
+do not prompt. While an editor is dirty, Settings asks the browser to show its
+native warning on refresh or close; drafts are not persisted for a later visit.
+
+Back and Forward restore the accepted cursor when app history indices or the
+browser Navigation API identify it. With older unindexed history and no usable
+Navigation API, Settings keeps the accepted editor instead of overwriting a
+history entry. A notice explains that the address bar may name another page.
+Stay retains input; Discard adopts the first requested destination once, even
+if history moved again while the question was open. Neither answer rewrites or
+truncates those unknown entries. A later app navigation realigns the address bar;
+an ordinary unguarded history traversal adopts its actual destination.
+
+A replaced host registration is different from a temporary disconnect. Settings
+discards the old registration's local input, remounts its editors and shows a
+replacement notice. No draft or pending write is reassigned to the new host.
+An incarnation change counts as replacement even when configuration is identical;
+an ordinary mutation-generation change alone does not. Same-registration
+reconnects retain input and do not show that notice.
+
 Input & shortcuts brings Enter-to-send and keyboard customization together.
 Enter-to-send and character-key accessibility stay visible. Customize shortcuts
 opens the searchable editor; folding or filtering it preserves captured chords
 and pending writes. Synchronization failures and retry remain visible outside it.
+Failed saves and same-hub reconnects retain the proposed shortcut. **Retry**
+reloads the hub's current shortcuts without saving again. Once recovery finishes,
+focus the retained capture and press Enter to save explicitly, or Escape to cancel.
+Replacing the hub connection discards its proposal; it never moves to another hub.
 Enter-to-send and character-key enablement remain browser-local; keyboard
 overrides retain their existing hub synchronization. Appearance and notification
 preferences retain their existing browser storage. Conversation display keeps
@@ -85,13 +127,42 @@ change persistence or introduce new synchronization.
 
 Notifications shows Loud for only when sound or desktop notifications are enabled.
 Hiding that control preserves its selection. Browser tab indicator is independent
-of those channels.
+of those channels. The desktop switch records a browser-local preference, not a
+promise that the browser can deliver notifications. Inline status explains blocked
+or unsupported notifications; toggling on preserves the preference in those cases
+but warns that delivery is unavailable. A browser permission prompt appears only
+when enabling with an undecided permission. Denying or dismissing that prompt
+leaves the preference off; a rejected request also leaves it off and raises an
+inline alert with retry guidance. Other preferences remain usable while the browser
+prompt is pending. Resolved permission choices never trigger another prompt.
+To recover from a denial, allow notifications in the browser's site settings and
+reload. Unsupported browsers can use sound instead.
 
 Plugins has one home with Installed, Browse and Sources views. Sources contains
-marketplaces and additional plugin directories under one host picker. Directory
-loading and editing recover independently of plugin and marketplace inventory
-failures; inventory retries preserve directory drafts. Host switching keeps
-reads and saves bound to the selected host. Skill directories remain separate.
+marketplaces and additional plugin directories under one host picker. With no
+installed plugins, **Browse plugins** opens Browse. With no marketplaces,
+**Manage sources** opens Sources, where **+ Add marketplace** accepts a reviewed
+repository URL, `owner/repo`, or local directory containing a
+`.claude-plugin/marketplace.json` catalog. See the
+[plugin marketplace guide](../plugins.md#install-from-a-marketplace).
+After adding a source, **Browse plugins** opens its catalog list. These navigation
+actions never install or enable plugins; installation is a separate confirmation.
+
+Plugin and marketplace read failures have separate retries. A failed marketplace
+read does not hide Installed; a failed plugin read does not prevent browsing
+catalogs, but installation waits until the installed inventory is available.
+Directory loading and editing recover independently of both inventories.
+Plugin and skill directory drafts remain editable through a failed refresh.
+Add and Remove require a loaded, error-free global layer with no read in flight,
+so retained data cannot overwrite unrelated launch settings. **Retry** reloads
+that layer without saving or clearing the staged directory; apply the change
+explicitly after recovery.
+Temporary marketplace read failures retain source add/edit drafts and let you
+keep typing; retry the read before saving. Untouched source editors follow
+canonical changes. An edited source that changes elsewhere requires **Reload
+latest** or **Keep my edits** before Save; neither choice saves by itself.
+Host switching keeps reads and saves bound to the selected host, and replacement
+host registrations never inherit drafts. Skill directories remain separate.
 
 The former General summary's runtime, listen address, masked token and token
 age belong to Hub; state/index paths, run directory and page size belong to Storage; version

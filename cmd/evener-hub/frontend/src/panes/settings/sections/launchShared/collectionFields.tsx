@@ -27,15 +27,17 @@
 // validation UI surfaced here.
 
 import {
+  friendlyErrorMessage,
   type LaunchOption,
   type MCPServerSpec,
   type PathValidateResponse,
   validatePathListAdd,
 } from "@evener/appwire-client";
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
 import { CollectionEditor, FormRow, Input, PathField, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { SettingsDraft, useSettingsDirty } from "../../settingsDrafts";
 import styles from "./collectionFields.module.css";
 import { controllerLaunchFormPaths, type LaunchFormPaths } from "./fields";
 import { SettingsModelCatalog } from "./SettingsModelCatalog";
@@ -44,6 +46,19 @@ const CLASS = {
   section: requireClass(styles.section, "collectionFields.module.css", "section"),
   envField: requireClass(styles.envField, "collectionFields.module.css", "envField"),
 };
+
+/** Validation can outlive a removal or refresh. Compose only with this field's
+ * latest committed inputs, and never call its parent after unmount. */
+function useAddTarget<T>(target: T) {
+  const latest = useRef<T | null>(null);
+  useLayoutEffect(() => {
+    latest.current = target;
+    return () => {
+      latest.current = null;
+    };
+  });
+  return latest;
+}
 
 // --- pathList / modelList: both a plain string[] behind CollectionEditor ---
 
@@ -73,11 +88,16 @@ function StringListField({
   renderAddField,
   inheritedItems = [],
 }: StringListFieldProps) {
+  const addTarget = useAddTarget({ items, onChange, explicitEmpty });
   async function handleAdd(trimmed: string): Promise<CollectionAddResult> {
+    if (items.includes(trimmed)) return { ok: false, error: "Already added." };
     const outcome = await validateAdd(trimmed);
     if (!outcome.ok) return { ok: false, error: outcome.error };
-    onChange([...items, outcome.value]);
-    if (explicitEmpty?.checked) explicitEmpty.onChange(false);
+    const current = addTarget.current;
+    if (current === null) return { ok: false, error: "Settings changed. Add the entry again." };
+    if (current.items.includes(outcome.value)) return { ok: false, error: "Already added." };
+    current.onChange([...current.items, outcome.value]);
+    if (current.explicitEmpty?.checked) current.explicitEmpty.onChange(false);
     return { ok: true };
   }
 
@@ -95,7 +115,21 @@ function StringListField({
           emptyMessage={emptyMessage}
           addPlaceholder={addPlaceholder}
           onAdd={handleAdd}
-          renderAddField={renderAddField}
+          renderAddField={(props) => (
+            <SettingsDraft dirty={props.value !== ""}>
+              {renderAddField ? (
+                renderAddField(props)
+              ) : (
+                <Input
+                  aria-label={option.label}
+                  value={props.value}
+                  onChange={(event) => props.onChange(event.target.value)}
+                  disabled={props.disabled}
+                  placeholder={addPlaceholder}
+                />
+              )}
+            </SettingsDraft>
+          )}
         />
         {explicitEmpty && (
           <Switch checked={explicitEmpty.checked} onChange={explicitEmpty.onChange} label={explicitEmpty.label} />
@@ -135,8 +169,9 @@ function pathFieldKind(pathKind: string | undefined): PathFieldKind {
 
 /** pathList kind: skillsDirs/pluginDirs/mcpConfigs. Adds come from the shared
  * path picker (PathAddField below), and every add goes through the shared
- * validatePathListAdd decision - dedupe, then server-side evener/path/validate
- * before being accepted, using the server-canonicalized path when one comes
+ * validatePathListAdd validation/canonicalization. StringListField dedupes
+ * before validation and against current items afterward. Server-side
+ * evener/path/validate runs before acceptance, using the canonical path when one comes
  * back - matching the legacy's own "blocks the add on failure, shows a
  * field-level error" / "uses valid.path if present else the raw trimmed input"
  * behaviors. The spawn pane's own Advanced-options pathList control shares that
@@ -152,7 +187,9 @@ export function PathListField({ option, items, onChange, validatePath, inherited
       onChange={onChange}
       addPlaceholder={placeholder}
       emptyMessage={`No ${option.label.toLowerCase()} configured.`}
-      validateAdd={(trimmed) => validatePathListAdd(option, items, trimmed, validatePath)}
+      // StringListField checks duplicates before validation and against its
+      // current list afterward, not the snapshot captured by this RPC.
+      validateAdd={(trimmed) => validatePathListAdd(option, [], trimmed, validatePath)}
       inheritedItems={inheritedItems}
       renderAddField={({ value, onChange: setDraft, disabled }) => (
         <PathAddField
@@ -255,10 +292,7 @@ export function ModelListField({
       onChange={onChange}
       addPlaceholder="provider/model"
       emptyMessage={`No ${option.label.toLowerCase()} configured.`}
-      validateAdd={async (trimmed) => {
-        if (items.includes(trimmed)) return { ok: false, error: "Already added." };
-        return { ok: true, value: trimmed };
-      }}
+      validateAdd={async (trimmed) => ({ ok: true, value: trimmed })}
       explicitEmpty={{ checked: explicitEmpty, onChange: onExplicitEmptyChange, label: "No model fallbacks" }}
       inheritedItems={inheritedItems}
       renderAddField={({ value, onChange: setDraft }) => (
@@ -323,6 +357,7 @@ function EnvAddFields({
   const eq = value.indexOf("=");
   const name = eq === -1 ? value : value.slice(0, eq);
   const envValue = eq === -1 ? "" : value.slice(eq + 1);
+  useSettingsDirty(name !== "" || envValue !== "");
 
   return (
     <>
@@ -475,12 +510,20 @@ export function McpServerListField({
   validateCommand,
   inheritedItems = [],
 }: McpServerListFieldProps) {
+  const addTarget = useAddTarget({ items, onChange });
   async function handleAdd(trimmed: string): Promise<CollectionAddResult> {
     const entry = parseMcpServerEntry(trimmed);
     if (entry === null) return { ok: false, error: MCP_SERVER_ENTRY_USAGE };
-    const result = await validateCommand(entry.command);
+    let result: PathValidateResponse;
+    try {
+      result = await validateCommand(entry.command);
+    } catch (err) {
+      return { ok: false, error: friendlyErrorMessage(err) };
+    }
     if (!result.valid) return { ok: false, error: result.error || "invalid command" };
-    onChange([...items, { ...entry, command: result.path || entry.command }]);
+    const current = addTarget.current;
+    if (current === null) return { ok: false, error: "Settings changed. Add the entry again." };
+    current.onChange([...current.items, { ...entry, command: result.path || entry.command }]);
     return { ok: true };
   }
 
@@ -497,6 +540,17 @@ export function McpServerListField({
         emptyMessage="No MCP servers configured."
         addPlaceholder="name command args..."
         onAdd={handleAdd}
+        renderAddField={({ value, onChange, disabled }) => (
+          <SettingsDraft dirty={value !== ""}>
+            <Input
+              aria-label={option.label}
+              value={value}
+              onChange={(event) => onChange(event.target.value)}
+              disabled={disabled}
+              placeholder="name command args..."
+            />
+          </SettingsDraft>
+        )}
       />
     </FormRow>
   );

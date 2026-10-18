@@ -44,6 +44,7 @@ import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
 import type { SessionZoomParams } from "../panes/zoom/intent";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
+import { resetAgentsDocStoreForTests } from "../stores/agentsDoc";
 import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
 import * as backgroundTranscriptsModule from "../stores/backgroundTranscripts";
 import { connectionStore } from "../stores/connection";
@@ -77,7 +78,7 @@ import { focusedSessionPaneId, focusedSessionRef } from "./focusedSession";
 import { resolveFocusedComposer } from "./holdhints/HoldHints";
 import { paletteStore } from "./palette/paletteController";
 import { conversationPaneLifetime } from "./paneLifetime";
-import { navigate, refParam } from "./routing";
+import { navigate, navigationLocation, refParam } from "./routing";
 import {
   documentPaneState,
   getDockviewApi,
@@ -506,6 +507,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetAgentsDocStoreForTests();
   window.history.pushState({}, "", "/");
   // The command palette store is a module singleton; reset it so one test's
   // open palette never leaks into the next.
@@ -5535,6 +5537,162 @@ function navClientWithLive(sessions: NavigationSessionSummary[]): FakeClient {
   }));
   return client;
 }
+
+test.each([
+  { next: "app", mobile: false },
+  { next: "history", mobile: false },
+  { next: "app", mobile: true },
+  { next: "history", mobile: true },
+])(
+  "unknown legacy traversal adopts the first destination after Settings unmount, then clears on $next navigation, mobile=$mobile",
+  async ({ next, mobile }) => {
+    if (mobile) installMobileViewport();
+    resetAgentsDocStoreForTests();
+    const user = userEvent.setup();
+    const client = new FakeClient("ready");
+    client.on("evener/settings/agentsDoc/get", () => ({
+      path: "/fixture/AGENTS.md",
+      exists: true,
+      content: "original",
+    }));
+    client.on("evener/host/list", () => ({ hosts: [] }));
+    for (const path of ["/older", "/new?dir=%2Ffirst", "/settings/theme", "/settings/agents-md"]) {
+      window.history.pushState({}, "", path);
+    }
+    const view = render(<AppShell client={client} />);
+    const editor = await screen.findByRole("textbox", { name: "AGENTS.md contents" });
+    await waitFor(() => expect(editor).toHaveProperty("value", "original"));
+    fireEvent.change(editor, { target: { value: "legacy draft" } });
+    const push = vi.spyOn(window.history, "pushState");
+    const replace = vi.spyOn(window.history, "replaceState");
+    const adopted = vi.fn();
+    window.addEventListener("popstate", adopted);
+    try {
+      await act(async () => {
+        window.history.go(-2);
+        await vi.waitFor(() => expect(window.location.pathname).toBe("/new"));
+      });
+      expect(screen.getByRole("button", { name: "Stay" })).toBeTruthy();
+      expect(editor).toHaveProperty("value", "legacy draft");
+      await act(async () => {
+        window.history.back();
+        await vi.waitFor(() => expect(window.location.pathname).toBe("/older"));
+      });
+      await user.click(screen.getByRole("button", { name: "Discard changes" }));
+      await waitFor(() => expect(workspaceStore.getState().mainPane()?.type).toBe("spawn"));
+      expect(navigationLocation().pathname).toBe("/new");
+      expect(navigationLocation().search).toBe("?dir=%2Ffirst");
+      expect(window.location.pathname).toBe("/older");
+      expect(screen.queryByRole("textbox", { name: "AGENTS.md contents" })).toBeNull();
+      await waitFor(() =>
+        expect(screen.getByLabelText(/^Working directory:/, { selector: "#spawn-cwd" }).textContent).toContain(
+          "/first",
+        ),
+      );
+      expect(document.querySelector('[data-reason="history-unrestored"]')).not.toBeNull();
+      expect(push).not.toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
+      expect(adopted).toHaveBeenCalledTimes(1);
+      if (next === "history") {
+        // The first rejected destination is still the next browser entry.
+        await act(async () => {
+          window.history.forward();
+          await vi.waitFor(() => expect(window.location.pathname).toBe("/new"));
+        });
+        expect(window.location.search).toBe("?dir=%2Ffirst");
+      } else {
+        act(() => navigate("/settings/theme"));
+      }
+      expect(navigationLocation().href).toBe(window.location.href);
+      expect(document.querySelector('[data-reason="history-unrestored"]')).toBeNull();
+      await act(async () => {
+        window.history.back();
+        await vi.waitFor(() => expect(window.location.pathname).toBe("/older"));
+      });
+      expect(navigationLocation().href).toBe(window.location.href);
+    } finally {
+      push.mockRestore();
+      replace.mockRestore();
+      window.removeEventListener("popstate", adopted);
+      view.unmount();
+      act(() => navigate("/"));
+      vi.unstubAllGlobals();
+    }
+  },
+);
+
+test.each([false, true])(
+  "Discard to Welcome removes the Settings draft rather than retaining it beside the destination, mobile=%s",
+  async (mobile) => {
+    if (mobile) installMobileViewport();
+    resetAgentsDocStoreForTests();
+    const user = userEvent.setup();
+    const client = new FakeClient("ready");
+    client.on("evener/settings/agentsDoc/get", () => ({
+      path: "/fixture/AGENTS.md",
+      exists: true,
+      content: "root-baseline",
+    }));
+    client.on("evener/host/list", () => ({ hosts: [] }));
+    for (const [index, path] of ["/", "/settings/theme", "/settings/agents-md"].entries()) {
+      window.history.pushState({ evenerNavigationIndex: index }, "", path);
+    }
+    const view = render(<AppShell client={client} />);
+    try {
+      const editor = await screen.findByRole("textbox", { name: "AGENTS.md contents" });
+      await waitFor(() => expect(editor).toHaveProperty("value", "root-baseline"));
+      fireEvent.change(editor, { target: { value: "root-draft" } });
+      act(() => window.history.go(-2));
+      await screen.findByRole("button", { name: "Stay" });
+      await waitFor(() => expect(window.location.pathname).toBe("/settings/agents-md"));
+      await user.click(screen.getByRole("button", { name: "Discard changes" }));
+      await waitFor(() => expect(window.location.pathname).toBe("/"));
+      await waitFor(() => expect(workspaceStore.getState().panes.some((pane) => pane.type === "settings")).toBe(false));
+      expect(editor.isConnected).toBe(false);
+      act(() => window.history.go(2));
+      const returned = await screen.findByRole("textbox", { name: "AGENTS.md contents" });
+      await waitFor(() => expect(returned).toHaveProperty("value", "root-baseline"));
+      expect(screen.queryByRole("button", { name: "Stay" })).toBeNull();
+    } finally {
+      view.unmount();
+      act(() => navigate("/"));
+    }
+  },
+);
+
+test("live-session shortcut asks before replacing an edited Settings workspace", async () => {
+  resetAgentsDocStoreForTests();
+  const user = userEvent.setup();
+  const client = navClientWithLive([LIVE_CYCLE_A, LIVE_CYCLE_B]);
+  client.on("evener/settings/agentsDoc/get", () => ({ path: "/fixture/AGENTS.md", exists: true, content: "original" }));
+  client.on("evener/host/list", () => ({ hosts: [] }));
+  render(<AppShell client={client} />);
+  await rail().findByText("Live A");
+  act(() => navigate("/settings/agents-md"));
+  const editor = await screen.findByRole("textbox", { name: "AGENTS.md contents" });
+  await waitFor(() => expect(editor).toHaveProperty("value", "original"));
+  fireEvent.change(editor, { target: { value: "retained shortcut draft" } });
+  screen.getByRole("button", { name: "Close settings" }).focus();
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  expect(workspaceStore.getState().mainPane()?.type).toBe("settings");
+  expect(window.location.pathname).toBe("/settings/agents-md");
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(screen.getByRole("textbox", { name: "AGENTS.md contents" })).toBe(editor);
+  expect(editor).toHaveProperty("value", "retained shortcut draft");
+  screen.getByRole("button", { name: "Close settings" }).focus();
+  await user.keyboard("{Alt>}{Shift>}{ArrowRight}{/Shift}{/Alt}");
+  act(() => navigate("/new"));
+  const committed = vi.fn();
+  window.addEventListener("popstate", committed);
+  try {
+    await user.click(screen.getByRole("button", { name: "Discard changes" }));
+    expect(window.location.pathname).toBe("/s/local%3Alive-a");
+    expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:live-a" });
+    expect(committed).toHaveBeenCalledTimes(1);
+  } finally {
+    window.removeEventListener("popstate", committed);
+  }
+});
 
 test("Alt+Shift+ArrowRight/Left navigate across the rail's live sessions, wrapping", async () => {
   const user = userEvent.setup();

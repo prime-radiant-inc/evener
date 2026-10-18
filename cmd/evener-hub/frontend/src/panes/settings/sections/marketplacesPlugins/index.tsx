@@ -3,9 +3,10 @@
 
 import type { AppwireClientLike } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
+import { requestNavigation } from "../../../../shell/routing";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { LOCAL_HOST } from "../../../../stores/hostRouting";
-import { InlineNotice, SegmentedControl, Skeleton } from "../../../../widgets";
+import { Button, InlineNotice, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "../hostScopedSurface";
 import { useHostScopedLoad } from "../useConnectedEffect";
@@ -54,8 +55,8 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   const [activeSegment, setActiveSegment] = useState<SegmentId>("installed");
   const [selectedPlugin, setSelectedPlugin] = useState<{ plugin: string; marketplace: string } | null>(null);
   const [selectedMarketplace, setSelectedMarketplace] = useState<string | null>(null);
-  // The registry removal can finish while the sheet is unmounted by the page's
-  // load-error gate. Keep its no-repeat marker at the page lifecycle, and tie
+  // The registry removal can finish after its sheet closes. Keep its
+  // no-repeat marker at the page lifecycle, and tie
   // it to the host that owns the catalog AND the client that owns the
   // connection: a new host or a new hub starts unblocked.
   const [appliedRemovalGuard, setAppliedRemovalGuard] = useState<AppliedRemovalGuard>(() => ({
@@ -114,17 +115,16 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   }, [store]);
 
   function handleSegmentChange(segment: SegmentId) {
-    setActiveSegment(segment);
-    // Each sheet belongs to the segment whose row opened it - the plugin
-    // detail sheet to Installed, the marketplace editor to Sources.
-    // Navigating away closes both rather than leaving an editor floating
-    // over an unrelated list.
-    setSelectedPlugin(null);
-    setSelectedMarketplace(null);
+    requestNavigation(() => {
+      setActiveSegment(segment);
+      // Each sheet belongs to the segment whose row opened it - the plugin
+      // detail sheet to Installed, the marketplace editor to Sources.
+      // Navigating away closes both rather than leaving an editor floating
+      // over an unrelated list.
+      setSelectedPlugin(null);
+      setSelectedMarketplace(null);
+    });
   }
-
-  const loadError = marketplacesError ?? pluginsError;
-  const stillLoading = (marketplacesLoading || marketplaces === null) && (pluginsLoading || plugins === null);
 
   const pluginCount = plugins?.length ?? 0;
   const marketplaceCount = marketplaces?.length ?? 0;
@@ -146,29 +146,61 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
         Installation makes a plugin available on this host. Enabled defaults apply to new sessions using the default
         plugin selection; custom launches choose their own plugins. Existing sessions keep their selected plugins.
       </p>
-      {activeSegment === "sources" ? (
-        <SourcesSection host={host} onSelectMarketplace={setSelectedMarketplace} />
-      ) : loadError !== null ? (
-        <InlineNotice tone="danger" live="status" data-reason="unavailable">
-          Failed to load: {loadError}
+      {pluginsError !== null && (
+        <InlineNotice
+          tone="danger"
+          live="status"
+          data-reason="unavailable"
+          action={
+            <Button size="sm" onClick={() => void store.getState().fetchPlugins()} disabled={pluginsLoading}>
+              Retry plugins
+            </Button>
+          }
+        >
+          Failed to load plugins: {pluginsError}
         </InlineNotice>
-      ) : stillLoading ? (
-        <Skeleton />
-      ) : (
-        <>
-          {activeSegment === "installed" && <InstalledSection onSelect={setSelectedPlugin} />}
-          {activeSegment === "browse" && (
-            <BrowseSection
-              expandedMarketplaces={expandedMarketplaces}
-              setExpandedMarketplaces={setExpandedMarketplaces}
-            />
-          )}
-        </>
       )}
-      {loadError === null && !stillLoading && (
+      {marketplacesError !== null && activeSegment !== "sources" && (
+        <InlineNotice
+          tone="danger"
+          live="status"
+          data-reason="unavailable"
+          action={
+            <Button size="sm" onClick={() => void store.getState().fetchMarketplaces()} disabled={marketplacesLoading}>
+              Retry marketplaces
+            </Button>
+          }
+        >
+          Failed to load marketplaces: {marketplacesError}
+        </InlineNotice>
+      )}
+      {activeSegment === "sources" && (
+        <SourcesSection
+          host={host}
+          onSelectMarketplace={(name) => requestNavigation(() => setSelectedMarketplace(name))}
+          onBrowse={() => handleSegmentChange("browse")}
+        />
+      )}
+      {activeSegment === "installed" &&
+        (plugins === null ? (
+          pluginsError === null && <Skeleton />
+        ) : (
+          <InstalledSection onSelect={setSelectedPlugin} onBrowse={() => handleSegmentChange("browse")} />
+        ))}
+      {activeSegment === "browse" &&
+        (marketplaces === null ? (
+          marketplacesError === null && <Skeleton />
+        ) : (
+          <BrowseSection
+            expandedMarketplaces={expandedMarketplaces}
+            setExpandedMarketplaces={setExpandedMarketplaces}
+            onSources={() => handleSegmentChange("sources")}
+          />
+        ))}
+      {pluginsError === null && plugins !== null && (
         <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />
       )}
-      {marketplacesError === null && marketplaces !== null && !stillLoading && (
+      {marketplaces !== null && (
         <MarketplaceSheet
           name={selectedMarketplace}
           onClose={() => setSelectedMarketplace(null)}

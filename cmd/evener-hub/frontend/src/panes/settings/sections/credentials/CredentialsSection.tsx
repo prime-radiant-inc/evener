@@ -36,6 +36,7 @@ import {
   safeCredentialTestResult,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { requestNavigation } from "../../../../shell/routing";
 import { useAuthStatusesStore } from "../../../../stores/authStatuses";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
 import {
@@ -490,8 +491,10 @@ export function CredentialsSection({
   // open - the confirm nests over it, and the store keeps it live.
   function openEditorFromSheet(editor: (name: string) => void): void {
     const name = selectedInstance;
-    setSelectedInstance(null);
-    if (name !== null) editor(name);
+    requestNavigation(() => {
+      setSelectedInstance(null);
+      if (name !== null) editor(name);
+    });
   }
 
   // useCallback'd (not a plain inline arrow) so its identity stays stable
@@ -578,7 +581,7 @@ export function CredentialsSection({
         <ProviderInstanceGroups
           instances={instances}
           availableProviders={availableProviders}
-          onSelect={setSelectedInstance}
+          onSelect={(name) => requestNavigation(() => setSelectedInstance(name))}
           authStatuses={authStatuses}
         />
       )}

@@ -1,5 +1,5 @@
 import { parseZoomParams } from "../panes/zoom/intent";
-import { navigate, paneToURL, refParam } from "./routing";
+import { navigate, paneToURL, refParam, requestNavigation } from "./routing";
 import { type OpenPaneRecord, recordConversationOpenParent, workspaceStore } from "./workspace";
 
 // A session pane's identity is the ref in its own params, derived here rather
@@ -17,13 +17,13 @@ function isSessionPaneFor(pane: OpenPaneRecord, ref: string): boolean {
 // (see openRouteAsPane). Callers that already know the placement they want
 // use the two helpers below directly.
 export function openSessionByRef(ref: string): void {
-  const workspace = workspaceStore.getState();
-  const existing = workspace.panes.find((pane) => isSessionPaneFor(pane, ref));
-  if (existing) {
-    workspace.focusPane(existing.id);
-  }
-  const url = paneToURL("session", { ref });
-  if (url) navigate(url);
+  requestNavigation(() => {
+    const workspace = workspaceStore.getState();
+    const existing = workspace.panes.find((pane) => isSessionPaneFor(pane, ref));
+    if (existing) workspace.focusPane(existing.id);
+    const url = paneToURL("session", { ref });
+    if (url) navigate(url);
+  });
 }
 
 // A legacy cascade retains its original route role: opening the session a cascade

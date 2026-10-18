@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useRef, useState } from "react";
 import { Button } from "../button";
 import { IconButton } from "../iconbutton";
 import { Input } from "../input";
@@ -127,20 +127,26 @@ export function CollectionEditor<T>({
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
 
   const trimmed = draft.trim();
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (trimmed === "" || busy) return;
+    if (trimmed === "" || inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
-    const result = await onAdd(trimmed);
-    setBusy(false);
-    if (result.ok) {
-      setDraft("");
-      setError(null);
-    } else {
-      setError(result.error);
+    try {
+      const result = await onAdd(trimmed);
+      if (result.ok) {
+        setDraft("");
+        setError(null);
+      } else {
+        setError(result.error);
+      }
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
     }
   }
 

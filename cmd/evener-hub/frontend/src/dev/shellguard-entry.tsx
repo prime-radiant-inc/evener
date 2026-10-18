@@ -1,3 +1,6 @@
+// Keep the passive history witness ahead of routing's module-level listener.
+import "./shellguardSettingsHistory";
+
 import { APPWIRE_PROTOCOL_VERSION } from "@evener/appwire-client";
 // Browser-verification harness for the desktop shell's page height.
 //
@@ -46,6 +49,7 @@ import {
   activityThread,
   activityWatch,
 } from "../stores/sessionActivityTestUtils";
+import { prepareSettingsHistory, scriptSettingsHistory } from "./shellguardSettingsHistory";
 import "../styles/tokens.css";
 import "../styles/global.css";
 import { PaneScaffold } from "../widgets/panescaffold";
@@ -404,11 +408,14 @@ const root = rootEl;
 // The guard's own URL (/shellguard.html) resolves to no pane, which would
 // render NotFound and no rail. Stand on the welcome route instead - no
 // navigation, just the pathname AppShell's router reads at first render.
-window.history.replaceState({}, "", "/");
+const settingsHistoryMode = new URLSearchParams(window.location.search).get("settingsHistory");
+if (!settingsHistoryMode) window.history.replaceState({}, "", "/");
 
 async function boot(): Promise<void> {
+  if (settingsHistoryMode) await prepareSettingsHistory(settingsHistoryMode);
   const { AppShell } = await import("../shell/AppShell");
   const fake = new FakeClient("ready");
+  if (settingsHistoryMode) scriptSettingsHistory(fake);
   fake.on("evener/navigation/read", navigationRead);
   fake.on("thread/read", ({ ref }) => {
     const response = activityDetailsThread(ref, {
@@ -948,6 +955,12 @@ target.settledShell = (async () => {
   const deadline = performance.now() + 15_000;
   const expectedRows = PROJECT_COUNT * (1 + SESSION_COUNT); // every project row plus every expanded session row
   for (;;) {
+    if (
+      settingsHistoryMode &&
+      document.querySelector<HTMLTextAreaElement>('textarea[aria-label="AGENTS.md contents"]')?.value ===
+        "browser-history-baseline"
+    )
+      return true;
     // Every project row plus every session row is in the accessibility tree
     // only once the rail has rendered the full expanded tree.
     const treeRowCount = document.querySelectorAll('[role="treeitem"]').length;

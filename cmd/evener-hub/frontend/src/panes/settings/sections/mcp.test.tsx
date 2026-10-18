@@ -4,13 +4,17 @@ import {
   type SettingsOverviewResponse,
   WireError,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { navigate, requestNavigation } from "../../../shell/routing";
 import { connectionStore } from "../../../stores/connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../../stores/extensions";
+import { hostsStore } from "../../../stores/hosts";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { SettingsDraftsProvider } from "../settingsDrafts";
 import { McpSection, type SettingsOverviewLike } from "./mcp";
 
 function connectFakeClient(): FakeClient {
@@ -42,13 +46,218 @@ function overviewHook(overrides: Partial<SettingsOverviewLike> = {}): () => Sett
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();
+  hostsStore.getState().resetForTests();
   resetToastStoreForTests();
 });
 
 afterEach(() => {
   cleanup();
+  window.history.replaceState({}, "", "/");
   vi.restoreAllMocks();
 });
+
+test("an incomplete inline MCP proposal stays on its original editor when navigation is declined", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  render(
+    <SettingsDraftsProvider>
+      <McpSection useOverviewStore={overviewHook()} />
+    </SettingsDraftsProvider>,
+  );
+  const user = userEvent.setup();
+  const editor = await screen.findByRole("textbox", { name: "Inline MCP servers" });
+  await act(async () => {
+    fireEvent.change(editor, { target: { value: "unfinished-server" } });
+  });
+  act(() => navigate("/settings/theme"));
+  await user.click(screen.getByRole("button", { name: "Stay" }));
+  expect(screen.getByRole("textbox", { name: "Inline MCP servers" })).toBe(editor);
+  expect(editor).toHaveProperty("value", "unfinished-server");
+  expect(fake.calls.some((call) => call.method === "evener/launch/setLayer")).toBe(false);
+});
+
+for (const kind of ["config", "server"] as const) {
+  test(`${kind} synchronous duplicate Add admits only one validation and write`, async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+    fake.on("evener/paths/complete", () => ({ data: [] }));
+    const validation = deferred<{ path: string; valid: boolean }>();
+    const validate = vi.fn(() => validation.promise);
+    fake.on("evener/path/validate", validate);
+    const write = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+    fake.on("evener/launch/setLayer", write);
+    render(<McpSection useOverviewStore={overviewHook()} />);
+    await launchLayerLoaded();
+    const user = userEvent.setup();
+    if (kind === "server")
+      fireEvent.change(screen.getByRole("textbox", { name: "Inline MCP servers" }), {
+        target: { value: "search /usr/bin/search-mcp" },
+      });
+    else {
+      await user.click(screen.getByRole("button", { name: /^New config file:/ }));
+      await screen.findByRole("combobox", { name: "Path" });
+      await user.keyboard("/etc/mcp.json{Enter}");
+    }
+    const form = screen.getAllByRole("button", { name: "Add" })[kind === "config" ? 0 : 1]!.closest("form")!;
+    await act(async () => {
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    });
+    expect(validate).toHaveBeenCalledTimes(1);
+    await act(async () =>
+      validation.resolve({ path: kind === "config" ? "/etc/mcp.json" : "/usr/bin/search-mcp", valid: true }),
+    );
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([false, true])(
+    `${kind} Add recovers rejected validation with retained draft, reconnect=%s`,
+    async (reconnect) => {
+      const fake = connectFakeClient();
+      fake.on("evener/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+      fake.on("evener/paths/complete", () => ({ data: [] }));
+      const validation = deferred<{ path: string; valid: boolean }>();
+      fake.on("evener/path/validate", () => validation.promise);
+      const write = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+      fake.on("evener/launch/setLayer", write);
+      render(
+        <SettingsDraftsProvider>
+          <McpSection useOverviewStore={overviewHook()} />
+        </SettingsDraftsProvider>,
+      );
+      await launchLayerLoaded();
+      const user = userEvent.setup();
+      if (kind === "server") await addInlineServer(user, "search /usr/bin/search-mcp");
+      else {
+        await user.click(screen.getByRole("button", { name: /^New config file:/ }));
+        await screen.findByRole("combobox", { name: "Path" });
+        await user.keyboard("/etc/mcp.json{Enter}");
+        await user.click(screen.getAllByRole("button", { name: "Add" })[0]!);
+      }
+      if (reconnect) {
+        act(() => connectionStore.setState({ state: "idle" }));
+        act(() => connectionStore.setState({ state: "ready" }));
+        await waitFor(() => expect(extensionsStore.getState().launchLayerLoading).toBe(false));
+      }
+      await act(async () => validation.reject(new WireError("MCP validation disconnected", -32000)));
+      expect(screen.getByText("MCP validation disconnected")).toBeTruthy();
+      const button = screen.getAllByRole("button", { name: "Add" })[kind === "config" ? 0 : 1]!;
+      expect(button).toHaveProperty("disabled", false);
+      if (kind === "server")
+        expect(screen.getByRole("textbox", { name: "Inline MCP servers" })).toHaveProperty(
+          "value",
+          "search /usr/bin/search-mcp",
+        );
+      else expect(screen.getByRole("button", { name: /^New config file:/ }).textContent).toContain("/etc/mcp.json");
+      expect(write).not.toHaveBeenCalled();
+      act(() => navigate("/settings/theme"));
+      await user.click(screen.getByRole("button", { name: "Stay" }));
+      fake.on("evener/path/validate", ({ path }) => ({ valid: true, path }));
+      await user.click(button);
+      expect(write).toHaveBeenCalledExactlyOnceWith({
+        cwd: "/",
+        layer: "global",
+        config:
+          kind === "config"
+            ? { mcpConfigs: ["/etc/mcp.json"], mcps: [] }
+            : { mcpConfigs: [], mcps: [{ name: "search", command: "/usr/bin/search-mcp", args: [] }] },
+      });
+    },
+  );
+
+  test.each(["discard", "unmount", "host", "connection", "replacement", "same owner"] as const)(
+    `${kind} delayed Add validation preserves write ownership through %s`,
+    async (change) => {
+      const user = userEvent.setup();
+      const fake = connectFakeClient();
+      const layer = { mcpConfigs: [], mcps: [] };
+      const validation = deferred<{ path: string; valid: boolean }>();
+      fake.on("evener/launch/getLayer", () => layer);
+      fake.on("evener/paths/complete", () => ({ data: [] }));
+      const validate = vi.fn(() => validation.promise);
+      fake.on("evener/path/validate", validate);
+      const write = vi.fn(() => ({ effective: {}, layers: {}, provenance: {} }));
+      fake.on("evener/launch/setLayer", write);
+      const overview = overviewHook();
+      const tree = (host = "local") => (
+        <SettingsDraftsProvider>
+          <McpSection useOverviewStore={overview} host={host} />
+        </SettingsDraftsProvider>
+      );
+      const view = render(tree());
+      await launchLayerLoaded();
+      if (kind === "server") {
+        await addInlineServer(user, "search /usr/bin/search-mcp --port 9000");
+      } else {
+        await user.click(screen.getByRole("button", { name: /^New config file:/ }));
+        await screen.findByRole("combobox", { name: "Path" });
+        await user.keyboard("/etc/mcp.json");
+        await user.keyboard("{Enter}");
+        await user.click(screen.getAllByRole("button", { name: "Add" })[0]!);
+      }
+      const path = kind === "server" ? "/usr/bin/search-mcp" : "/etc/mcp.json";
+      expect(validate).toHaveBeenCalledExactlyOnceWith({ path, kind: kind === "server" ? "command" : "file" });
+      expect(write).not.toHaveBeenCalled();
+      if (change === "discard") {
+        act(() => requestNavigation(() => view.unmount()));
+        await user.click(screen.getByRole("button", { name: "Discard changes" }));
+        expect(screen.queryByRole("textbox", { name: "Inline MCP servers" })).toBeNull();
+      } else if (change === "unmount") {
+        view.unmount();
+      } else if (change === "host") {
+        fake.on("evener/host/request", (request) => {
+          const { method } = request as { method: string };
+          if (method === "evener/launch/setLayer") return write() as never;
+          expect(method).toBe("evener/launch/getLayer");
+          return layer as never;
+        });
+        act(() =>
+          hostsStore.setState({
+            load: {
+              phase: "ready",
+              hosts: [
+                {
+                  name: "beta",
+                  generation: 1,
+                  incarnationId: "beta-1",
+                  origin: "hub.toml",
+                  attached: true,
+                  midAttach: false,
+                  removed: false,
+                },
+              ],
+            },
+          }),
+        );
+        view.rerender(tree("beta"));
+        await launchLayerLoaded();
+      } else if (change === "connection") {
+        act(() => connectionStore.setState({ state: "idle" }));
+        act(() => connectionStore.setState({ state: "ready" }));
+        await waitFor(() => expect(extensionsStore.getState().launchLayerLoading).toBe(false));
+      } else if (change === "replacement") {
+        const replacement = new FakeClient("ready");
+        replacement.on("evener/launch/getLayer", () => layer);
+        replacement.on("evener/launch/setLayer", write);
+        await act(async () => connectionStore.getState().connect(replacement));
+        await waitFor(() => expect(extensionsStore.getState().launchLayerLoading).toBe(false));
+      }
+      await act(async () => validation.resolve({ path, valid: true }));
+      if (change === "same owner") {
+        expect(write).toHaveBeenCalledExactlyOnceWith({
+          cwd: "/",
+          layer: "global",
+          config:
+            kind === "config"
+              ? { mcpConfigs: [path], mcps: [] }
+              : { mcpConfigs: [], mcps: [{ name: "search", command: path, args: ["--port", "9000"] }] },
+        });
+      } else {
+        expect(write).not.toHaveBeenCalled();
+      }
+    },
+  );
+}
 
 test("calls the injected overview hook's fetch on mount", async () => {
   connectFakeClient();

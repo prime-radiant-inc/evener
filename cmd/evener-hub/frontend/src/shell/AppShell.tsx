@@ -6,7 +6,7 @@
 import type { AppwireClientLike, NavigationSessionLocation } from "@evener/appwire-client";
 import { ACTIONS, AppwireClient, rpcURLFromLocation } from "@evener/appwire-client";
 import { isNavigationUnavailable, isSettledGone, keyID } from "@evener/appwire-client/state/navigation";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
 import { MotionProvider } from "../motion";
@@ -28,6 +28,7 @@ import {
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
 import { syncSettingsHostToRoute } from "../stores/settingsHost";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
+import { InlineNotice } from "../widgets";
 import { ActivitySidebar } from "./activitybar/ActivitySidebar";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
@@ -44,7 +45,16 @@ import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { adjacentLiveSessionRef } from "./rail/liveSessionCycle";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
-import { navigate, refParam, urlToPane } from "./routing";
+import {
+  isHistoryUnrestored,
+  navigate,
+  navigationLocation,
+  refParam,
+  replaceNavigationContext,
+  requestNavigation,
+  subscribeNavigationContext,
+  urlToPane,
+} from "./routing";
 import { cycleSessionPane } from "./sessionCycle";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
@@ -149,20 +159,17 @@ function adoptClientSlot(fresh: AppwireClientLike): ClientSlot {
 // doesn't fire popstate on its own, so this listens for the same synthetic
 // popstate routing.ts's navigate() dispatches.
 function readPathname(): string {
-  const route = urlToPane(window.location.pathname);
+  const location = navigationLocation();
+  const route = urlToPane(location.pathname);
   if (route?.type === "settings") {
     const { section } = route.params as { section?: string };
     if (section !== undefined && !isKnownSettingsSection(section)) {
       // Reconcile the URL before pane placement, so mobile URL sync never
       // receives retired params and cannot push them over this replacement.
-      window.history.replaceState(
-        window.history.state,
-        "",
-        `/settings/${resolveSettingsSection(section, null)}${window.location.search}${window.location.hash}`,
-      );
+      replaceNavigationContext(`/settings/${resolveSettingsSection(section, null)}${location.search}${location.hash}`);
     }
   }
-  return window.location.pathname;
+  return navigationLocation().pathname;
 }
 
 function usePathname(): string {
@@ -177,7 +184,8 @@ function usePathname(): string {
       // not name - because the pane's own adoption runs only in a passive mount
       // effect. navigate() mirrors the app's own navigations; this is the door
       // the browser's Back/Forward comes through (M1, round 6).
-      syncSettingsHostToRoute(window.location.pathname, window.location.search);
+      const location = navigationLocation();
+      syncSettingsHostToRoute(location.pathname, location.search);
       setPathname(nextPathname);
     };
     window.addEventListener("popstate", onPopState);
@@ -431,6 +439,13 @@ function openRouteAsPane(
     workspaceStore.getState().replacePrimary("spawn", route.params);
     return;
   }
+  // Leaving Settings for the root is a completed navigation, not an extra
+  // welcome tab beside its discarded editor. Other root-route workspaces keep
+  // their existing restore/open-beside behavior.
+  if (workspaceStore.getState().mainPane()?.type === "settings") {
+    workspaceStore.getState().replacePrimary("welcome", {});
+    return;
+  }
   workspaceStore.getState().openPane("welcome", {});
 }
 
@@ -449,6 +464,7 @@ function reconcileWelcomeRouteWithLocation(location: NavigationSessionLocation |
 }
 
 export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateClient }: AppShellProps) {
+  const historyUnrestored = useSyncExternalStore(subscribeNavigationContext, isHistoryUnrestored);
   const [slot, setSlot] = useState(() => createClientSlot(injectedClient));
   const { client, owned } = slot;
   // A banner retry wires a fresh client into connectionStore; adopting it
@@ -787,16 +803,17 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
     // focus must survive a boot placement), so the chord refocuses whatever
     // the placement left in main itself.
     const openLiveSession = (ref: string): void => {
-      openNeedsYouSession(ref);
-      const workspace = workspaceStore.getState();
-      const main = workspace.mainPane();
-      if (main === null || main.type !== "session" || refParam(main.params) !== ref) {
-        openTopLevelSession(ref);
-      }
-      const placed = workspaceStore.getState().mainPane();
-      // focusPane already no-ops for a pane that is focused or absent, so
-      // this needs no guard of its own.
-      if (placed !== null) workspaceStore.getState().focusPane(placed.id);
+      requestNavigation(() => {
+        openNeedsYouSession(ref);
+        const workspace = workspaceStore.getState();
+        const main = workspace.mainPane();
+        if (main === null || main.type !== "session" || refParam(main.params) !== ref) {
+          openTopLevelSession(ref);
+        }
+        const placed = workspaceStore.getState().mainPane();
+        // The approval covers placement and focus, not just its URL.
+        if (placed !== null) workspaceStore.getState().focusPane(placed.id);
+      });
     };
     const demandLivePage = (direction: "next" | "previous", beforeRefs: ReadonlySet<string>) => {
       const state = navigationStore.getState();
@@ -1122,6 +1139,12 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
             createClient={bannerCreateClient}
             onClientReplaced={handleClientReplaced}
           />
+          {historyUnrestored && (
+            <InlineNotice data-reason="history-unrestored">
+              Your browser could not restore this history position. The address bar may not match the page shown. Your
+              current page is retained. Choose an app destination to match the address bar again.
+            </InlineNotice>
+          )}
           <ToastRegion />
           <CommandPalette />
           {/* The cheatsheet overlay and the hold-modifier hints (Phase 4a):
