@@ -80,7 +80,7 @@ export async function open(options) {
  let browser;
  try {
  browser = await chromium.launch({ headless: true });
- } catch (error) { error.tourPhase = phase; throw error; }
+ } catch (error) { await recordWebFailure(error,phase); throw error; }
  try {
   const context = await browser.newContext({ viewport, deviceScaleFactor: 1, serviceWorkers: 'block', reducedMotion: 'reduce' });
   // This guard only denies external traffic. It never supplies a response.

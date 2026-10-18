@@ -2,8 +2,41 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { chromium } from '@playwright/test';
 import * as web from './web.mjs';
-import { readFile, rm, stat } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile, rm, stat, mkdtemp, mkdir } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+
+test('real browser launch failure retains private diagnostics without leaking driver inputs',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'tour-launch-failure-'));
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ const cache=join(root,'private-browser-canary');await mkdir(cache);
+ const result=spawnSync(process.execPath,[fileURLToPath(new URL('./driver.mjs',import.meta.url))],{
+  env:{...process.env,PLAYWRIGHT_BROWSERS_PATH:cache},encoding:'utf8',
+  input:JSON.stringify({id:1,action:'open',args:{url:'http://127.0.0.1:1',authURL:'http://127.0.0.1:1/auth/private-auth-canary',workspace:join(root,'private-workspace-canary'),outputDir:root,viewport:{width:1280,height:900}}})+'\n',
+ });
+ assert.equal(result.error,undefined);
+ assert.equal(result.status,1);
+ const reply=JSON.parse(result.stdout);
+ assert.equal(reply.id,1);assert.equal(reply.ok,false);
+ // Extract the diagnostic locator, not Playwright's human-readable error.
+ const file=reply.data.error.match(/private diagnostics: ([^)]+)/)?.[1];
+ assert.ok(file);
+ t.after(()=>rm(dirname(file),{recursive:true,force:true}));
+ const diagnostic=JSON.parse(await readFile(file,'utf8'));
+ assert.equal(diagnostic.phase,'browser launch');
+ assert.ok(diagnostic.message.includes(cache));
+ assert.ok(diagnostic.stack.includes(cache));
+ for(const secret of [cache,'private-browser-canary','private-auth-canary','private-workspace-canary']) {
+  assert.equal(result.stdout.includes(secret),false);
+  assert.equal(result.stderr.includes(secret),false);
+ }
+ if(process.platform!=='win32') {
+  assert.equal((await stat(dirname(file))).mode&0o777,0o700);
+  assert.equal((await stat(file)).mode&0o777,0o600);
+ }
+});
 
 test('web failure diagnostics retain details privately and expose only phase and path', async t => {
  const error=new Error('private-locator-canary\nCall log: locator click failed');

@@ -782,9 +782,9 @@ Rules:
 #### Registration and timers
 
 Non-timer watches allow one active configuration per
-`(watcher_session_id, source identity, receiver identity, condition hash)`.
-An identical create is idempotent. A replacement reports
-`replaced_existing=true`.
+`(watcher_session_id, source identity, receiver identity)`.
+An identical create is idempotent. Changing the conditions for that same
+identity replaces the existing watch and reports `replaced_existing=true`.
 
 **Timers are additive:** every timer create adds an independent watch, even with
 identical arguments. To replace a timer, clear its `watch_id` and create another.
