@@ -1954,3 +1954,100 @@ test("hands out what it submitted as a copy that later submissions don't change"
 	expect([...earlier.keys()]).toEqual(["mutation-1"]);
 	await runtime.stop();
 });
+
+// The stuck-sending regression: a send's receipt carries "pending", so the
+// phone keeps an accepted optimistic record until an authoritative read names
+// its id. The daemon drops a start from its pending projection the moment the
+// turn is incorporated, so once that turn's user item leaves a bounded read's
+// window nothing would name the id again - and the composer showed the message
+// as still sending with no action available.
+test("an authoritative read retires an accepted record it cannot name", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+		now: () => 100,
+	});
+	const client = new FakeClient("ready");
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+	});
+	const targetKey = nativeMutationTargetKey("hub-1", "ref-1");
+	const changes: string[][] = [];
+	const unsubscribe = runtime.subscribeStorage((targetRefs) => changes.push([...targetRefs]));
+
+	// A later authoritative read whose window no longer holds the send's item:
+	// the id is absent from the complete projection, so the record retires.
+	const nextLease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(nextLease!, readResponse("ref-1"));
+
+	expect(await runtime.storage.getOptimistic("mutation-1")).toBeUndefined();
+	expect(changes).toEqual([[targetKey]]);
+	unsubscribe();
+	await runtime.stop();
+});
+
+test("a non-authoritative read never retires an accepted record", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+		now: () => 100,
+	});
+	const client = new FakeClient("ready");
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	const opening = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(opening!, readResponse("ref-1"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+	});
+
+	const reconnect = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(reconnect!, readResponse("ref-1", { authoritative: false }));
+
+	expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+	await runtime.stop();
+});
+
+test("a live frame naming a sent id retires its accepted record", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+	});
+
+	await runtime.settleIdentities(["mutation-1"]);
+
+	expect(await runtime.storage.getOptimistic("mutation-1")).toBeUndefined();
+	await runtime.stop();
+});
+
+test("a live frame naming another mutation leaves this record alone", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+	await vi.waitFor(async () => {
+		expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+	});
+
+	await runtime.settleIdentities(["mutation-other"]);
+
+	expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
+	await runtime.stop();
+});

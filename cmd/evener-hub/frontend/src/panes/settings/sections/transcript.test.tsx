@@ -151,6 +151,38 @@ test("clearing the selected browser override follows shared defaults without wri
   expect(client.calls.filter((call) => call.method === "evener/settings/transcriptDisplay/patch")).toEqual([]);
 });
 
+test("scope and its clear action precede editing, while shared changes preserve both local layouts", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/settings/transcriptDisplay/patch", (params) => ({
+    layout: params.layout,
+    config: params.config,
+    revision: 2,
+  }));
+  await mountReadySection(client);
+  const desktop = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  const mobile = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  act(() => {
+    transcriptDisplayStore.getState().setLocal("desktop", desktop);
+    transcriptDisplayStore.getState().setLocal("mobile", mobile);
+  });
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("radio", { name: "Full detail" }));
+  await savedOnce();
+  expect(transcriptDisplayStore.getState().local).toEqual({ desktop, mobile });
+  expect(transcriptDisplayStore.getState().effective("desktop")).toEqual(desktop);
+  const scope = screen.getByTestId("transcript-display-scope");
+  const controls = screen.getByTestId("transcript-display-controls-desktop");
+  expect(scope.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const clear = within(scope).getByRole("button");
+  expect(clear.compareDocumentPosition(controls) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await user.click(clear);
+  expect(transcriptDisplayStore.getState().local).toEqual({ mobile });
+  expect(transcriptDisplayStore.getState().effective("desktop")).toEqual(
+    transcriptDisplayStore.getState().hub.desktop?.config,
+  );
+  expect(client.calls.filter((call) => call.method === "evener/settings/transcriptDisplay/patch")).toHaveLength(1);
+});
+
 test("shows an accessible status for an unknown or older hub", () => {
   renderWithToasts();
   expect(screen.getAllByRole("status")).toHaveLength(1);

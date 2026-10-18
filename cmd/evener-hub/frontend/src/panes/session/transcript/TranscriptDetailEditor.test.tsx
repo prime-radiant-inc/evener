@@ -5,7 +5,8 @@ import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfi
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { startTransition, useState } from "react";
-import { expect, test, vi } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
+import { installMobileViewport } from "../testing/mobileViewport";
 import { TranscriptDetailEditor } from "./TranscriptDetailEditor";
 
 function ControlledEditor({
@@ -41,6 +42,64 @@ function clickAdvanced(): HTMLElement {
   if (!summary) throw new Error("Missing advanced disclosure");
   return summary;
 }
+
+test("narrow full editor selects every preset and restores Custom without changing Advanced", async () => {
+  onTestFinished(installMobileViewport());
+  const user = userEvent.setup();
+  const initial = makeTranscriptDisplayConfig(
+    { kind: "custom", toolIntent: true, toolCalls: false, reasoning: true, expandByDefault: true },
+    { roundTimings: true, tokenCounts: true, hookExits: "all" },
+  );
+  const changes: TranscriptDisplayConfigV1[] = [];
+  render(<ControlledEditor initial={initial} onChange={(next) => changes.push(next)} />);
+  const select = screen.getByRole("combobox", { name: "Transcript detail" });
+  expect(select).toHaveProperty("value", "custom");
+  expect(screen.queryByRole("radiogroup", { name: "Transcript detail" })).toBeNull();
+
+  for (const level of ["chat", "intent", "tools", "activity", "full"]) {
+    await user.selectOptions(select, level);
+    expect(changes.at(-1)?.content).toEqual({ kind: "preset", level });
+    expect(changes.at(-1)?.advanced).toEqual(initial.advanced);
+  }
+  await user.selectOptions(select, "custom");
+  expect(latestContent(changes)).toEqual(initial.content);
+  await user.click(clickAdvanced());
+  await user.click(screen.getByRole("switch", { name: "Reasoning" }));
+  await user.selectOptions(select, "chat");
+  await user.selectOptions(select, "custom");
+  expect(latestContent(changes)).toEqual({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: false,
+    reasoning: false,
+    expandByDefault: true,
+  });
+  expect(changes.at(-1)?.advanced).toEqual(initial.advanced);
+});
+
+test("disabled narrow full editor cannot change the selected preset", async () => {
+  onTestFinished(installMobileViewport());
+  const onChange = vi.fn();
+  render(
+    <TranscriptDetailEditor
+      value={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
+      disabled
+      onChange={onChange}
+    />,
+  );
+  const select = screen.getByRole("combobox", { name: "Transcript detail" });
+  expect(select).toHaveProperty("disabled", true);
+  await userEvent.setup().selectOptions(select, "custom");
+  expect(select).toHaveProperty("value", "tools");
+  expect(onChange).not.toHaveBeenCalled();
+});
+
+test("compact mobile live editor retains its existing segmented presentation", () => {
+  onTestFinished(installMobileViewport());
+  render(<TranscriptDetailEditor value={makeTranscriptDisplayConfig()} compact onChange={() => {}} />);
+  expect(screen.getByRole("radiogroup", { name: "Transcript detail" })).toBeTruthy();
+  expect(screen.queryByRole("combobox", { name: "Transcript detail" })).toBeNull();
+});
 
 test("renders six explicit choices and gives Full its full accessible name", () => {
   render(

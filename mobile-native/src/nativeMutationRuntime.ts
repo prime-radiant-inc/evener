@@ -42,6 +42,11 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> & {
 	discardRecovery(clientMutationId: string, targetRef: string): Promise<boolean>;
 	discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean>;
 	releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean>;
+	pruneUnlistedAccepted(
+		targetRef: string,
+		acceptedBefore: number,
+		authoritativeIds: ReadonlySet<string>,
+	): Promise<string[]>;
 };
 
 export type NativeMutationStorageListener = (targetRefs: readonly string[]) => void;
@@ -53,6 +58,10 @@ export interface NativeMutationReadLease {
 	readonly registrationToken: symbol;
 	readonly readToken: symbol;
 	readonly expectedThreadId?: string;
+	// When the read began. A send accepted after this was not in the snapshot
+	// the read saw, so its absence cannot prove it landed; the
+	// abandon-on-absence rule skips it.
+	readonly startedAt: number;
 }
 
 // Native storage scopes records by hub and conversation. The wire payload
@@ -290,6 +299,17 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		return () => this.#storageListeners.delete(listener);
 	}
 
+	// The durable records a live frame proves the daemon has moved past
+	// (notificationMutationIdentities): a recorded item, or a queue transition.
+	// Positive evidence settles an accepted record (already applied) and an
+	// outbox row alike - the frame names work the daemon has applied, so
+	// resending could never help. The projection follows through the storage
+	// notification, so a composer's pending rows clear without waiting for a
+	// read wide enough to still name the id.
+	async settleIdentities(clientMutationIds: readonly string[]): Promise<void> {
+		await this.#dispatcher.reconcileIdentities(clientMutationIds);
+	}
+
 	registerTarget(hubId: string, targetRef: string, client: AppwireClientLike | null): () => void {
 		const key = nativeMutationTargetKey(hubId, targetRef);
 		const current = this.#targets.get(key);
@@ -346,6 +366,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			registrationToken: target.token,
 			readToken,
 			expectedThreadId,
+			startedAt: this.#now(),
 		};
 	}
 
@@ -373,6 +394,18 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		const mutationStateAuthoritative = response.thread.evener.mutationStateAuthoritative === true;
 		if (mutationStateAuthoritative && !restartRequired && !notLoaded && !resumeRequired) {
 			await this.#dispatcher.restoreProvenAbsent(lease.targetKey, authoritativeIds);
+			if (!this.#isCurrentRead(lease)) return "stale";
+			// An accepted record is already applied; it is kept only until a read
+			// shows it reflected. The daemon stops naming a start or queue the
+			// moment its turn is incorporated, so once that turn's item leaves a
+			// bounded read's window no later read can name the id, and the record
+			// would render as a send still on its way forever. This projection is
+			// complete and authoritative, so an accepted record absent from it has
+			// landed - the same absence rule restoreProvenAbsent applies to a
+			// parked row, with the receipt's "applied" standing in for proof that
+			// resending could never help.
+			const pruned = await this.storage.pruneUnlistedAccepted(lease.targetKey, lease.startedAt, authoritativeIds);
+			if (pruned.length > 0) this.#notifyStorageChange([lease.targetKey]);
 			if (!this.#isCurrentRead(lease)) return "stale";
 		} else {
 			const records = await this.storage.listOutbox(lease.targetKey);

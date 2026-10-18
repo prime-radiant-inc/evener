@@ -24,13 +24,13 @@ export const SETTINGS_CLUSTERS: SettingsCluster[] = [
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "theme",
-    searchTerms: ["theme", "font", "color", "density", "text size", "transcript width", "conversation width"],
+    searchTerms: ["theme", "font", "color", "phone density", "text size", "transcript width", "conversation width"],
     label: "Appearance",
     cluster: "preferences",
   },
   {
     id: "transcript",
-    searchTerms: ["transcript", "tokens", "cost", "thinking", "tool calls"],
+    searchTerms: ["transcript", "tokens", "cost", "thinking", "tool calls", "desktop layout", "mobile layout"],
     label: "Conversation display",
     cluster: "preferences",
   },
@@ -42,7 +42,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "notifications",
-    searchTerms: ["sound", "audio", "alerts", "favicon"],
+    searchTerms: ["desktop notifications", "sound", "audio", "alerts", "favicon", "quiet"],
     label: "Notifications",
     cluster: "preferences",
   },

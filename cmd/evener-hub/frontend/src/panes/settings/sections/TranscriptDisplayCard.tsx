@@ -99,26 +99,26 @@ export function TranscriptDisplayCard({
             <h2 id={`${cardId}-heading`}>{name} default</h2>
           </header>
 
-          <div className={CLASS.controls} data-testid={`transcript-display-controls-${layout}`}>
-            <TranscriptDetailEditor value={config} onChange={onChange} compact={false} disabled={disabled} />
-          </div>
-
           {localOverride === undefined ? (
             <p className={CLASS.scope} data-testid="transcript-display-scope" data-state="hub-default">
-              No browser-local live override is set for this layout. This browser follows the hub default unless a live
-              transcript choice is made.
+              Editing the shared {name.toLowerCase()} default. This browser follows it until you choose a local live
+              view.
             </p>
           ) : (
             <div className={CLASS.scope} data-testid="transcript-display-scope" data-state="local-override">
               <p>
-                A browser-local live view is overriding this hub default ({contentSummary(localOverride.content)}).
-                Changing this card does not replace that local choice.
+                Editing the shared {name.toLowerCase()} default. This browser uses a local live view (
+                {contentSummary(localOverride.content)}). Changes here keep that local choice.
               </p>
               <Button variant="secondary" onClick={onClearLocal}>
                 Use the shared default
               </Button>
             </div>
           )}
+
+          <div className={CLASS.controls} data-testid={`transcript-display-controls-${layout}`}>
+            <TranscriptDetailEditor value={config} onChange={onChange} compact={false} disabled={disabled} />
+          </div>
 
           {saveState === "saving" && (
             <p className={CLASS.status} role="status" aria-live="polite">
