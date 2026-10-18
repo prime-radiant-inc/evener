@@ -82,6 +82,9 @@ export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 		item.kind === "run" ||
 		item.kind === "time" ||
 		item.kind === "note" ||
+		// Intent draws one line per action where a run would fold them: the
+		// lines read as one list, so they keep the run's rhythm.
+		(item.kind === "activity" && item.summaryOnly === true && item.state === "completed") ||
 		(item.kind === "notice" && noticeLabel(item) !== undefined);
 	return routine(before) || routine(after) ? 8 : 24;
 }

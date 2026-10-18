@@ -29,9 +29,9 @@ import { projectConversation } from "./projectedRows";
 import { render, renderedText, textOf, unmountMountedTrees } from "./renderNative.testkit";
 import { displayForLevel } from "./session/detailLevels";
 import { findMatches } from "./session/findInSession";
-import { hideAnswerMessages, sessionRows } from "./session/transcriptRows";
+import { hideAnswerMessages, isStep, sessionRows } from "./session/transcriptRows";
 import { TimelineItem } from "./TimelineItem";
-import { groupTimeline, type TimelineRow } from "./timeline";
+import { groupTimeline, type RunStep, type TimelineRow } from "./timeline";
 import { hasFinishedSubagentRow } from "./session/subagentLine";
 import { forgetSubagentTrees, holdSubagentTree, subagentTree } from "./subagents/subagentTree";
 import { useTranscriptSubagentTree } from "./subagents/useTranscriptSubagentTree";
@@ -137,7 +137,7 @@ function rowsAt(level: Level, delegate = subagent(), extra: Extra = {}) {
 	const conversation = projectConversation(model, undefined, config ?? undefined);
 	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
 	return {
-		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns)),
+		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns, { config })),
 		delegates: conversation.delegates,
 	};
 }
@@ -278,7 +278,11 @@ describe("a message sent to a subagent", () => {
 	it.each(["intent", "tools", "full"] as const)("is a step in the run at %s, never a subagent row", (level) => {
 		const { rows } = rowsAt(level);
 		expect(rows.filter(isSubagent)).toHaveLength(1);
-		const steps = rows.flatMap((row) => (row.kind === "run" ? row.steps : []));
+		// At Intent each action is its own row; where tool calls show they
+		// fold into a run. Either way the send is a step, never a subagent.
+		const steps = rows.flatMap((row) =>
+			row.kind === "run" ? row.steps : row.kind === "activity" && isStep(row) ? [row] : [],
+		);
 		expect(steps.map((step) => step.label)).toContain("delegate_send");
 		// Its line names the delegate it messaged, set apart, and the status
 		// the send's footer reports.
@@ -366,9 +370,16 @@ describe("Chat", () => {
 					: [],
 		);
 
+	// Chat and Intent fold no runs (each action is a row of its own), so a
+	// step is either a run's member or a standalone activity row.
+	const stepsOf = (rows: TimelineRow[]) =>
+		rows.flatMap((row) =>
+			row.kind === "run" ? row.steps : row.kind === "activity" && isStep(row) ? [row as RunStep] : [],
+		);
+
 	it("drops settled steps and keeps its subagents", () => {
 		const { rows } = rowsAt("chat");
-		const steps = rows.flatMap((row) => (row.kind === "run" ? row.steps : []));
+		const steps = stepsOf(rows);
 		expect(steps).toEqual([]);
 		expect(rows.filter(isSubagent)).toHaveLength(1);
 		expect(rows.map((row) => row.kind)).toEqual(expect.arrayContaining(["user", "assistant"]));
@@ -376,7 +387,7 @@ describe("Chat", () => {
 
 	it("keeps a failed step, with its image, and drops a successful one with its image", () => {
 		const { rows } = rowsAt("chat", subagent(), extra);
-		const steps = rows.flatMap((row) => (row.kind === "run" ? row.steps : []));
+		const steps = stepsOf(rows);
 		expect(steps.map((step) => [step.label, step.state])).toEqual([["shell", "failed"]]);
 		expect(images(rows)).toEqual(["broke.png"]);
 	});

@@ -938,7 +938,7 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 	await act(async () => tree.unmount());
 });
 
-it("opens the live run where tool calls show, and leaves it to its line at Intent", async () => {
+it("opens the live run where tool calls show, and shows the action's own line at Intent", async () => {
 	const running = {
 		...thread,
 		status: { type: "active" },
@@ -969,7 +969,11 @@ it("opens the live run where tool calls show, and leaves it to its line at Inten
 	const folds = () => withTestID(tree, "run-fold");
 	act(() => detailLevels("hub-1").set(ref, "intent"));
 	await settle();
-	expect(folds()[0]?.props.accessibilityState).toEqual({ expanded: false });
+	// Intent draws one line per action, never a folded run (Jesse,
+	// 2026-10-18): the call is a step row of its own, so there is no run to
+	// fold, and its words are on screen.
+	expect(folds()).toEqual([]);
+	expect(renderedText(tree)).toContain("Ran ls");
 	act(() => detailLevels("hub-1").set(ref, "tools"));
 	await settle();
 	expect(folds()).toEqual([]);

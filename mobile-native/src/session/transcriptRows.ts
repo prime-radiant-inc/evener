@@ -10,6 +10,7 @@
 import {
 	answeredAskUserSuffix,
 	type AskUserQuestion,
+	contentVectorForConfig,
 	housekeepingAction,
 	mcpToolParts,
 	memoryMutation,
@@ -19,6 +20,7 @@ import {
 	taskListChanges,
 	type ToolFamily,
 	type TurnModel,
+	type TranscriptDisplayConfigV1,
 	toolFamily,
 	words,
 } from "@evener/appwire-client";
@@ -56,18 +58,28 @@ export interface SessionRowsOptions {
 	 * list's first key with it, which the list's position keeping needs to
 	 * find again. The marker appears once the history is whole. */
 	olderToLoad?: boolean;
+	/** The transcript's display config. Where the level draws intent lines
+	 * instead of tool calls, each action stays a line of its own rather than
+	 * folding into a run: the reader asked for each action's intent, not a
+	 * count of the steps behind it, and a failure must not hide behind that
+	 * count (Jesse, 2026-10-18). */
+	config?: TranscriptDisplayConfigV1 | null;
 }
 
 export function sessionRows(
 	rows: readonly TimelineRow[],
 	turns: readonly TurnTimes[],
-	{ timeZone, olderToLoad = false }: SessionRowsOptions = {},
+	{ timeZone, olderToLoad = false, config }: SessionRowsOptions = {},
 ): TimelineRow[] {
 	const byId = new Map(turns.map((turn) => [turn.id, turn]));
 	const out: TimelineRow[] = [];
 	let run: RunRow | null = null;
 	let lastTurn: string | undefined;
 	const marked = new Set<string>();
+	// The shared rule for what a level shows, so the phone folds exactly where
+	// the web does: intent lines are not steps, and must not disappear behind a
+	// run's "N steps" line.
+	const foldRuns = config ? contentVectorForConfig(config).toolCalls : true;
 	for (const row of rows) {
 		if (inTray(row) || row.kind === "question") continue;
 		const turnId = rowTurnId(row);
@@ -91,6 +103,11 @@ export function sessionRows(
 			lastTurn = turnId;
 		}
 		if (isStep(row)) {
+			if (!foldRuns) {
+				run = null;
+				out.push(row);
+				continue;
+			}
 			if (!run) {
 				run = {
 					kind: "run",
