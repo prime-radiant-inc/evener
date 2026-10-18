@@ -112,7 +112,7 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
             # A tag-push run carries no manual input: take the next build
             # number from App Store Connect for the current marketing version.
-            IOS_MARKETING_VERSION="$(node -p 'require("./app.json").expo.version')" \
+            IOS_MARKETING_VERSION="$(node -p 'require("./app.config.js").expo.version')" \
               bundle exec fastlane ios next_build_number
             build_number="$(cat "$IOS_BUILD_NUMBER_OUTPUT")"
           else
@@ -129,6 +129,8 @@ jobs:
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
           IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_DISTRIBUTION_PROVISIONING_PROFILE_BASE64 }}
           IOS_PROVISIONING_PROFILE_NAME: ${{ vars.IOS_DISTRIBUTION_PROVISIONING_PROFILE_NAME }}
+          IOS_SHARE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_SHARE_DISTRIBUTION_PROVISIONING_PROFILE_BASE64 }}
+          IOS_SHARE_PROVISIONING_PROFILE_NAME: ${{ vars.IOS_SHARE_DISTRIBUTION_PROVISIONING_PROFILE_NAME }}
           IOS_INTERNAL_TESTFLIGHT_GROUP: ${{ vars.IOS_INTERNAL_TESTFLIGHT_GROUP }}
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
@@ -136,16 +138,19 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
-          for name in IOS_CERTIFICATE_P12_BASE64 IOS_CERTIFICATE_PASSWORD IOS_PROVISIONING_PROFILE_BASE64 IOS_PROVISIONING_PROFILE_NAME IOS_INTERNAL_TESTFLIGHT_GROUP APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_CONTENT APPLE_TEAM_ID; do
+          for name in IOS_CERTIFICATE_P12_BASE64 IOS_CERTIFICATE_PASSWORD IOS_PROVISIONING_PROFILE_BASE64 IOS_PROVISIONING_PROFILE_NAME IOS_SHARE_PROVISIONING_PROFILE_BASE64 IOS_SHARE_PROVISIONING_PROFILE_NAME IOS_INTERNAL_TESTFLIGHT_GROUP APP_STORE_CONNECT_API_KEY_ID APP_STORE_CONNECT_API_ISSUER_ID APP_STORE_CONNECT_API_KEY_CONTENT APPLE_TEAM_ID; do
             test -n "${!name}" || { echo "Missing required distribution credential: $name" >&2; exit 1; }
           done
       - name: Generate iOS project and install pods
         working-directory: mobile-native
+        env:
+          # The share extension's target needs the team id at prebuild time.
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           npx expo prebuild --platform ios --no-install
           cp Podfile.lock ios/Podfile.lock
           bundle exec pod install --deployment --project-directory=ios
-          printf 'IOS_MARKETING_VERSION=%s\n' "$(node -p 'require("./app.json").expo.version')" >> "$GITHUB_ENV"
+          printf 'IOS_MARKETING_VERSION=%s\n' "$(node -p 'require("./app.config.js").expo.version')" >> "$GITHUB_ENV"
       - name: Reject duplicate App Store Connect build
         working-directory: mobile-native
         env:
@@ -154,7 +159,7 @@ jobs:
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
         run: |
-          IOS_MARKETING_VERSION="$(node -p 'require("./app.json").expo.version')" \
+          IOS_MARKETING_VERSION="$(node -p 'require("./app.config.js").expo.version')" \
             bundle exec fastlane ios preflight
       - name: Import distribution signing assets
         working-directory: mobile-native
@@ -164,6 +169,8 @@ jobs:
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERTIFICATE_PASSWORD }}
           IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_DISTRIBUTION_PROVISIONING_PROFILE_BASE64 }}
           IOS_PROVISIONING_PROFILE_NAME: ${{ vars.IOS_DISTRIBUTION_PROVISIONING_PROFILE_NAME }}
+          IOS_SHARE_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_SHARE_DISTRIBUTION_PROVISIONING_PROFILE_BASE64 }}
+          IOS_SHARE_PROVISIONING_PROFILE_NAME: ${{ vars.IOS_SHARE_DISTRIBUTION_PROVISIONING_PROFILE_NAME }}
         run: |
           set -euo pipefail
           umask 077
@@ -171,10 +178,12 @@ jobs:
           keychain="$RUNNER_TEMP/evener-signing.keychain-db"
           cert="$RUNNER_TEMP/evener-distribution.p12"
           profile="$RUNNER_TEMP/evener.mobileprovision"
+          share_profile="$RUNNER_TEMP/evener-share.mobileprovision"
           security list-keychains -d user > "$RUNNER_TEMP/evener-keychains.txt"
           security default-keychain -d user > "$RUNNER_TEMP/evener-default-keychain.txt"
           echo "$IOS_CERTIFICATE_P12_BASE64" | base64 -D > "$cert"
           echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 -D > "$profile"
+          echo "$IOS_SHARE_PROVISIONING_PROFILE_BASE64" | base64 -D > "$share_profile"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
@@ -197,7 +206,19 @@ jobs:
             mkdir -p "$(dirname "$profile_path")"
             cp "$profile" "$profile_path"
           fi
-          IOS_BUNDLE_IDENTIFIER="$IOS_BUNDLE_IDENTIFIER" bundle exec ruby scripts/configure-ios-distribution.rb ios/Evener.xcodeproj build/ExportOptions.plist
+          # The share extension's bundle id needs its own profile.
+          share_plist="$RUNNER_TEMP/evener-share-profile.plist"
+          security cms -D -i "$share_profile" > "$share_plist"
+          share_uuid="$(/usr/libexec/PlistBuddy -c 'Print :UUID' "$share_plist")"
+          share_path="$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/$share_uuid.mobileprovision"
+          if test -e "$share_path"; then
+            cmp -s "$share_profile" "$share_path" || { echo "A different profile already occupies the share extension's UUID" >&2; exit 1; }
+          else
+            echo "IOS_SHARE_PROFILE_PATH=$share_path" >> "$GITHUB_ENV"
+            mkdir -p "$(dirname "$share_path")"
+            cp "$share_profile" "$share_path"
+          fi
+          IOS_BUNDLE_IDENTIFIER="$IOS_BUNDLE_IDENTIFIER" IOS_SHARE_PROVISIONING_PROFILE_NAME="$IOS_SHARE_PROVISIONING_PROFILE_NAME" bundle exec ruby scripts/configure-ios-distribution.rb ios/Evener.xcodeproj build/ExportOptions.plist
       - name: Archive and export signed IPA
         working-directory: mobile-native
         env:
@@ -208,7 +229,10 @@ jobs:
           mkdir -p build
           build_number="$IOS_BUILD_NUMBER"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" ios/Evener/Info.plist
-          xcodebuild -workspace ios/Evener.xcworkspace -scheme Evener -configuration Release -sdk iphoneos -destination generic/platform=iOS archive -archivePath "$PWD/build/Evener.xcarchive" | tee build/xcodebuild-archive.log
+          # The extension is a bundle of its own, so the app's version alone does
+          # not reach it: the command-line setting applies to every target in
+          # the scheme, keeping the app and its extension on one build number.
+          xcodebuild -workspace ios/Evener.xcworkspace -scheme Evener -configuration Release -sdk iphoneos -destination generic/platform=iOS CURRENT_PROJECT_VERSION="$build_number" archive -archivePath "$PWD/build/Evener.xcarchive" | tee build/xcodebuild-archive.log
           xcodebuild -exportArchive -archivePath "$PWD/build/Evener.xcarchive" -exportOptionsPlist build/ExportOptions.plist -exportPath build/export | tee build/xcodebuild-export.log
           shopt -s nullglob
           exported_ipas=(build/export/*.ipa)
@@ -217,6 +241,9 @@ jobs:
             exit 1
           fi
           mv "${exported_ipas[0]}" build/Evener.ipa
+          # The embedded extension must carry the same build number as the app.
+          extension_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "build/Evener.xcarchive/Products/Applications/Evener.app/PlugIns/EvenerShareExtension.appex/Info.plist")"
+          test "$extension_version" = "$build_number" || { echo "Extension build version $extension_version does not match $build_number" >&2; exit 1; }
       - name: Record artifact identity
         working-directory: mobile-native
         run: |
@@ -234,7 +261,7 @@ jobs:
           IOS_RECEIPT_PATH: ${{ github.workspace }}/mobile-native/build/testflight-receipt.json
           IOS_IPA_PATH: ${{ github.workspace }}/mobile-native/build/Evener.ipa
         run: |
-          IOS_MARKETING_VERSION="$(node -p 'require("./app.json").expo.version')" \
+          IOS_MARKETING_VERSION="$(node -p 'require("./app.config.js").expo.version')" \
             bundle exec fastlane ios testflight
       - name: Upload archive and diagnostics
         if: always()
@@ -278,7 +305,11 @@ jobs:
           if test -n "${IOS_PROFILE_PATH:-}"; then
             rm -f "$IOS_PROFILE_PATH" || cleanup_status=1
           fi
+          if test -n "${IOS_SHARE_PROFILE_PATH:-}"; then
+            rm -f "$IOS_SHARE_PROFILE_PATH" || cleanup_status=1
+          fi
           rm -f "$RUNNER_TEMP/evener-distribution.p12" "$RUNNER_TEMP/evener.mobileprovision" "$RUNNER_TEMP/evener-profile.plist" || cleanup_status=1
+          rm -f "$RUNNER_TEMP/evener-share.mobileprovision" "$RUNNER_TEMP/evener-share-profile.plist" || cleanup_status=1
           rm -f "$RUNNER_TEMP/evener-keychains.txt" "$RUNNER_TEMP/evener-default-keychain.txt" || cleanup_status=1
           exit "$cleanup_status"
 

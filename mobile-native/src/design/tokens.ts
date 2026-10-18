@@ -186,7 +186,7 @@ export function paletteFor(scheme: string | null | undefined): Palette {
 	return scheme === "dark" ? palettes.dark : palettes.light;
 }
 
-/** iOS PostScript names of the embedded Source Serif 4 faces (app.json's
+/** iOS PostScript names of the embedded Source Serif 4 faces (app.config.js's
  * expo-font plugin) and the app's existing machine face. Markdown's strong
  * and em reach the SemiBold, Italic and SemiBold Italic faces by trait
  * matching inside the "Source Serif 4" family, so every face here is in use
