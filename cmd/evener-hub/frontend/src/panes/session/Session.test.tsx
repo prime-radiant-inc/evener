@@ -3427,7 +3427,11 @@ test("a merely-resumable local session shows no standalone Resume notice", async
   // has loaded (hasQueuedNonSend / hasBlockedUnknown). Session reads that at
   // render, so load the outbox and re-render - the pane's own liveness tick
   // does the same within a tick - before asserting the notice is dropped.
-  await refreshPendingTurnsProjection(ref);
+  // The explicit read can publish to ConversationBody before the later flush
+  // starts, so its own updates must also run within act.
+  await act(async () => {
+    await refreshPendingTurnsProjection(ref);
+  });
   // Readiness now follows the fence's own ownership check: the runtime's
   // startup discovery scan starts an all-targets read that out-ranks this
   // specific one, so settle the outstanding projection work and let the latest
