@@ -397,6 +397,7 @@ describe("a failed read's own retry", () => {
 	it("a not_modified landing with depth owed keeps the error for a resume to re-arm", async () => {
 		const { requests, pages, requested, invalidate } = boundary();
 		pages.watch();
+		// Three pages loaded: the reader reached a depth of six rows.
 		const first = pages.refresh();
 		requests[0].resolve(response(["a", "b"], 2));
 		await first;
@@ -406,6 +407,7 @@ describe("a failed read's own retry", () => {
 		const deepest = pages.more();
 		requests[2].resolve(response(["e", "f"], 0, 1, 4));
 		await deepest;
+		// A hub change starts a recovery whose page two fails.
 		invalidate({
 			generationId: "hub-generation",
 			sequence: 2,
@@ -417,35 +419,52 @@ describe("a failed read's own retry", () => {
 		requests[4].reject(new Error("request timed out"));
 		await settled(pages);
 		expect(pages.getSnapshot().error).toBeTruthy();
-		// The reader presses Retry loading more, then leaves the screen while
-		// the recovery's reset is pending. The hub answers not_modified — the
-		// rows stand — but the depth is still owed, so the error must hold:
-		// resume() re-arms a failed read from the error, and a cleared error
-		// would strand the recovery.
-		const manual = pages.more();
+		// The reader presses Try again: a conditional reset whose base is
+		// the revision the store already holds. The hub answers not_modified
+		// — the rows stand — but the depth is still owed, so the error must
+		// hold through that landing: a cleared error would strand the
+		// recovery with nothing for a resume to re-arm.
+		const manual = pages.refresh();
 		await requested(6);
+		expect(requests[5].params.base).toMatchObject({
+			generationId: "hub-generation",
+			revision: 2,
+			etag: "etag-0-2",
+		});
 		requests[5].resolve({
 			status: "not_modified",
 			generationId: "hub-generation",
 			revision: 2,
 			etag: "etag-0-2",
 		});
-		await manual;
+		await Promise.resolve();
+		await Promise.resolve();
 		expect(pages.getSnapshot().error).toBeTruthy();
+		// The walk's page two is pending; the reader leaves the screen. The
+		// recovery is cancelled mid-walk with neither stale nor error able
+		// to re-arm it — only the depth it still owes.
+		await requested(7);
 		pages.cancel();
 		pages.resume();
-		// The recovery re-reads from the first page and completes the depth.
-		await requested(7);
-		requests[6].resolve({
+		// The recovery re-reads from the first page, the hub answers
+		// not_modified again, and the walk completes the depth.
+		await requested(8);
+		expect(requests[7].params.base).toMatchObject({
+			generationId: "hub-generation",
+			revision: 2,
+			etag: "etag-0-2",
+		});
+		requests[7].resolve({
 			status: "not_modified",
 			generationId: "hub-generation",
 			revision: 2,
 			etag: "etag-0-2",
 		});
-		await requested(8);
-		requests[7].resolve(response(["c2", "d2"], 2, 2, 2));
 		await requested(9);
-		requests[8].resolve(response(["e2", "f2"], 0, 2, 4));
+		requests[8].resolve(response(["c2", "d2"], 2, 2, 2));
+		await requested(10);
+		requests[9].resolve(response(["e2", "f2"], 0, 2, 4));
+		await manual;
 		await settled(pages);
 		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a2", "b2", "c2", "d2", "e2", "f2"]);
 		expect(pages.getSnapshot().error).toBeNull();

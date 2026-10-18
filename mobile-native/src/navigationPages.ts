@@ -244,10 +244,13 @@ export class NavigationPages<T> implements PageSource<T> {
 	resume() {
 		this.paused = false;
 		if (this.state.stale) this.scheduleReread();
-		// A failed read the pause held back is still owed: read it now, the
+		// A failed read the pause held back is still owed, and so is a
+		// recovery cancelled mid-walk: its earlier pages may have landed clean,
+		// leaving neither stale nor error, while the depth it still owes is
+		// the only record of the rows the reader had. Read for it now, the
 		// same way an owed stale re-read runs on resume — but only where the
 		// page retries its own reads; an owner's resume path stands as before.
-		if (this.readRetry && this.state.error !== null) this.rereads.request();
+		if (this.readRetry && (this.state.error !== null || this.owedDepth !== null)) this.rereads.request();
 		this.rereads.drain();
 	}
 	/** An explicit read means the owner is active again; its result stands
@@ -314,7 +317,7 @@ export class NavigationPages<T> implements PageSource<T> {
 				decoded = decodeNavigationResponse(key, base, wire);
 			} catch (cause) {
 				if (!recovered && cause instanceof Error && cause.message.includes("installed base"))
-					return this.load(true, receipt, { recovered: true, retried });
+					return this.load(true, receipt, { recovered: true, retried, walker });
 				throw new Error("Could not read this navigation page. Try again.");
 			}
 			const receiptRevision = receipt ? requiredRevision(this.resourceKey, receipt.targets) : 0;
@@ -342,7 +345,7 @@ export class NavigationPages<T> implements PageSource<T> {
 				// the result; a deeper page funnels into a re-read from the top.
 				if (!reset) this.reread();
 				else if (epoch !== this.notificationEpoch && !retried)
-					return this.load(reset, receipt, { recovered, retried: true });
+					return this.load(reset, receipt, { recovered, retried: true, walker });
 				return false;
 			}
 			if (decoded.version.generationId !== this.mutationGeneration) {
@@ -386,8 +389,12 @@ export class NavigationPages<T> implements PageSource<T> {
 					this.clearRetry(false);
 					// A not-modified reset with depth still owed continues
 					// the recovery on the flight, the same as a direct read
-					// landing short.
-					if (!this.rereads.running) this.rereads.request();
+					// landing short. The walker flag — not the flight's
+					// running state — tells an independent readback from the
+					// walk's own reset: a readback superseding the walk's
+					// in-flight page leaves the flight running, but its
+					// landing still owes the depth a continuation.
+					if (!walker) this.rereads.request();
 				}
 				this.publish({
 					loaded: true,
