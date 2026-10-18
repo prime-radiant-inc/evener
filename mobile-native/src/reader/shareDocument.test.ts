@@ -3,17 +3,21 @@ import { type ShareDocumentDeps, ShareUnavailable, shareDocument, shareFileBaseN
 
 const target = { origin: "https://hub.test", token: "secret", sessionRef: "local:abc", path: "docs/onboarding.mp4" };
 
-function deps(overrides: Partial<ShareDocumentDeps> = {}): ShareDocumentDeps & {
-	available: ReturnType<typeof vi.fn>;
-	download: ReturnType<typeof vi.fn>;
-	share: ReturnType<typeof vi.fn>;
-} {
+type Fixture = {
+	available: ReturnType<typeof vi.fn<() => Promise<boolean>>>;
+	download: ReturnType<
+		typeof vi.fn<(target: ShareDocumentDeps["download"] extends (t: infer P) => unknown ? P : never) => Promise<string>>
+	>;
+	share: ReturnType<typeof vi.fn<(url: string) => Promise<void>>>;
+};
+
+function deps(overrides: Partial<Fixture> = {}): Fixture {
 	return {
 		available: vi.fn(async () => true),
 		download: vi.fn(async () => "file:///cache/evener-share/local_abc-onboarding.mp4"),
 		share: vi.fn(async () => undefined),
 		...overrides,
-	} as never;
+	};
 }
 
 describe("shareDocument", () => {
@@ -39,10 +43,20 @@ describe("shareDocument", () => {
 
 describe("shareFileBaseName", () => {
 	it("keeps the file's own name and makes it unique to the session", () => {
-		expect(shareFileBaseName("local:abc", "docs/onboarding.mp4")).toBe("local_abc-onboarding.mp4");
+		expect(shareFileBaseName("local:abc", "docs/onboarding.mp4")).toBe("local_abc-docs-onboarding.mp4");
+	});
+
+	it("keeps two same-named files in different folders apart", () => {
+		// The cache outlives one share, and the sheet may still be open on the
+		// first file when the second downloads: a shared name would overwrite it.
+		const publicReport = shareFileBaseName("local:abc", "public/report.pdf");
+		const privateReport = shareFileBaseName("local:abc", "private/report.pdf");
+		expect(publicReport).not.toBe(privateReport);
+		expect(publicReport.endsWith(".pdf")).toBe(true);
+		expect(privateReport.endsWith(".pdf")).toBe(true);
 	});
 
 	it("replaces characters a share target would stumble on", () => {
-		expect(shareFileBaseName("studio:02w", "a/b c:d?.mp4")).toBe("studio_02w-b c_d_.mp4");
+		expect(shareFileBaseName("studio:02w", "a/b c:d?.mp4")).toBe("studio_02w-a-b c_d_.mp4");
 	});
 });

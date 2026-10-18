@@ -44,7 +44,7 @@ const harness = vi.hoisted(() => ({
 	appState: [] as ((state: string) => void)[],
 	focused: true,
 	markdowns: [] as string[],
-	shares: [] as { origin: string; token: string; sessionRef: string; path: string }[],
+	shares: [] as { origin: string; token: string; sessionRef: string; path: string; namePath?: string }[],
 	shareFailure: null as Error | null,
 }));
 // What the Reader holds, whether and as what kind, and the count Back shows.
@@ -135,7 +135,7 @@ vi.mock("../alerts/alertsContext", () => ({
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory }));
 vi.mock("./shareDocumentNative", () => ({
-	shareSessionDocument: async (target: { origin: string; token: string; sessionRef: string; path: string }) => {
+	shareSessionDocument: async (target: import("./shareDocument").DocumentShareTarget) => {
 		harness.shares.push(target);
 		if (harness.shareFailure) throw harness.shareFailure;
 	},
@@ -832,7 +832,13 @@ it("shares the document through its hub from the Document actions menu", async (
 	await act(async () => menuAction(navigation, "Share").onPress());
 	await settleMicrotasks();
 	expect(harness.shares).toEqual([
-		{ origin: "https://hub.test", token: "secret", sessionRef: "local:fix", path: `/work/a/${PATH}` },
+		{
+			origin: "https://hub.test",
+			token: "secret",
+			sessionRef: "local:fix",
+			path: `/work/a/${PATH}`,
+			namePath: PATH,
+		},
 	]);
 });
 
@@ -840,7 +846,7 @@ it("offers sharing from the nav bar itself, not only inside ⋯", async () => {
 	const { navigation } = await mount();
 	const button = headerItems(navigation).find((item) => item.type === "button" && item.accessibilityLabel === "Share");
 	if (button?.type !== "button") throw new Error("no share button");
-	expect(button.accessibilityLabel).toBe("Share");
+	expect(button.icon).toEqual({ type: "sfSymbol", name: "square.and.arrow.up" });
 	await act(async () => button.onPress?.());
 	await settleMicrotasks();
 	expect(harness.shares).toHaveLength(1);

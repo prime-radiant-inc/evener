@@ -3,6 +3,7 @@
 import { docDownloadURL } from "@evener/appwire-client/docContent";
 import { Directory, File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
+import { docAuthHeaders } from "../nativeDocPort";
 import { type DocumentShareTarget, shareDocument, shareFileBaseName, type ShareDocumentDeps } from "./shareDocument";
 
 /** Where a document waits while it is offered to another app. The cache, not
@@ -15,32 +16,36 @@ const SHARE_DIR = "evener-share";
  * file into place only on success, so a failed transfer leaves nothing. */
 async function downloadForShare(target: DocumentShareTarget): Promise<string> {
 	const directory = new Directory(Paths.cache, SHARE_DIR);
-	if (!directory.exists) directory.create({ intermediates: true });
-	const destination = new File(directory, shareFileBaseName(target.sessionRef, target.path));
+	directory.create({ intermediates: true, idempotent: true });
+	const destination = new File(directory, shareFileBaseName(target.sessionRef, target.namePath ?? target.path));
 	const file = await File.downloadFileAsync(
 		docDownloadURL(target.origin, target.sessionRef, target.path),
 		destination,
 		{
-			headers: target.token ? { Authorization: `Bearer ${target.token}` } : {},
+			headers: docAuthHeaders(target.token),
 			idempotent: true,
 		},
 	);
 	return file.uri;
 }
 
-/** UIActivityViewController, whose "Open in…" reaches every installed app
- * that handles the file's type. */
-async function openShareSheet(url: string): Promise<void> {
-	await Sharing.shareAsync(url);
-}
-
 const deps: ShareDocumentDeps = {
 	available: () => Sharing.isAvailableAsync(),
 	download: downloadForShare,
-	share: openShareSheet,
+	// UIActivityViewController, whose "Open in…" reaches every installed app
+	// that handles the file's type.
+	share: (url) => Sharing.shareAsync(url),
 };
 
-/** Saves one session document and opens the share sheet for it. */
+// One share at a time. iOS cannot present a second activity sheet over the
+// first, and a second download would otherwise replace a file the open sheet
+// is still offering. A share that fails does not block the next one.
+let current: Promise<void> = Promise.resolve();
+
+/** Saves one session document and opens the share sheet for it, after any
+ * share already in flight finishes. */
 export function shareSessionDocument(target: DocumentShareTarget): Promise<void> {
-	return shareDocument(target, deps);
+	const next = current.then(() => shareDocument(target, deps));
+	current = next.catch(() => undefined);
+	return next;
 }

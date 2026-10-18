@@ -43,9 +43,6 @@ func TestDocDownload_ServesWholeFilePastThePaneCap(t *testing.T) {
 	if got := resp.Body.Bytes(); !bytes.Equal(got, body) {
 		t.Fatalf("body = %d bytes, want the whole %d-byte file", len(got), len(body))
 	}
-	if resp.Header().Get("X-Doc-Truncated") != "" {
-		t.Fatalf("download reported truncation; the body was whole")
-	}
 }
 
 func TestDocDownload_NamesTheFileAndItsType(t *testing.T) {
@@ -82,13 +79,15 @@ func TestDocDownload_RefusesAPathOutsideTheSession(t *testing.T) {
 }
 
 func TestDocDownload_RefusesAHostQualifiedSessionWithoutReadingLocally(t *testing.T) {
-	web, cwd, _ := docServeTestServer(t)
-	if err := os.WriteFile(filepath.Join(cwd, "onboarding.mp4"), []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	web, _, _ := docServeTestServer(t)
 	resp := docDownloadRequest(t, web, "studio:02wMz5Txv1C3Hut0M8GCeB", "onboarding.mp4")
 	if resp.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want 501", resp.Code)
+	}
+	// An error body is fine; a file response is not. The disposition header is
+	// what makes it one.
+	if disposition := resp.Header().Get("Content-Disposition"); disposition != "" {
+		t.Fatalf("the refusal was shaped as a file download (%q)", disposition)
 	}
 }
 

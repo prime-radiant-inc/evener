@@ -17,7 +17,6 @@ import {
 	type NativeSyntheticEvent,
 	Platform,
 	Pressable,
-	Alert,
 	Text,
 	View,
 	type ViewToken,
@@ -302,24 +301,20 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 		// The read target, not the display path: an absolute reference inside
 		// the session's folder reads as the same file either way, and this is
 		// exactly what the Reader itself fetched.
-		shareDocument(reference.readTarget).catch(() =>
-			Alert.alert("Could not share this document", "It could not be saved from this hub. Try again."),
-		);
-	}, [shareDocument, reference.readTarget]);
+		shareDocument(reference.readTarget, reference.path);
+	}, [shareDocument, reference.readTarget, reference.path]);
 
 	useEffect(() => {
 		const items: NativeStackHeaderItem[] = [
-			...(Platform.OS === "ios"
-				? [
-						{
-							type: "button" as const,
-							label: "Share",
-							accessibilityLabel: "Share",
-							icon: { type: "sfSymbol" as const, name: "square.and.arrow.up" as const },
-							onPress: share,
-						},
-					]
-				: []),
+			// Offered wherever the menu offers it; whether the platform can share
+			// at all is the share seam's check, not a screen's.
+			{
+				type: "button" as const,
+				label: "Share",
+				accessibilityLabel: "Share",
+				icon: { type: "sfSymbol" as const, name: "square.and.arrow.up" as const },
+				onPress: share,
+			},
 			...(hasOutline
 				? [
 						{

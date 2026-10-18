@@ -17,29 +17,36 @@ export interface DocumentShareTarget {
 	sessionRef: string;
 	/** The session-scoped path the hub resolves inside its working directory. */
 	path: string;
+	/** The same file as the person sees it, relative to the session's folder.
+	 * A Reader holding an absolute target still names the share from here, so
+	 * the host's own path never reaches the file name another app receives. */
+	namePath?: string;
 }
-
-/** Saves the document to a local file and returns its file:// URL. */
-export type DownloadForShare = (target: DocumentShareTarget) => Promise<string>;
-
-/** Opens the share sheet for a local file:// URL. */
-export type OpenShareSheet = (url: string) => Promise<void>;
 
 export interface ShareDocumentDeps {
 	/** Whether the platform can share files at all. */
 	available: () => Promise<boolean>;
-	download: DownloadForShare;
-	share: OpenShareSheet;
+	/** Saves the document to a local file and returns its file:// URL. */
+	download: (target: DocumentShareTarget) => Promise<string>;
+	/** Opens the share sheet for a local file:// URL. */
+	share: (url: string) => Promise<void>;
 }
 
-/** The local file name a shared document takes. Two sessions can name the
- * same file and the cache outlives one share, so the name carries the session
- * too; characters a file system or a share target would stumble on are
- * replaced. */
+/** The local file name a shared document takes: the session and the whole
+ * path, because the cache outlives one share and a sheet can still be open on
+ * the first file when the second downloads. `public/report.pdf` and
+ * `private/report.pdf` must not share a destination, or the second download
+ * replaces the bytes the first sheet is offering. Characters a file system or
+ * a share target would stumble on are replaced, and the file keeps its own
+ * extension so the receiving app still recognizes the type. */
 export function shareFileBaseName(sessionRef: string, path: string): string {
 	const session = sessionRef.replace(/[^\w.\-]+/g, "_");
 	const name = filenameOf(path).replace(/[^\w.\- ]+/g, "_");
-	return `${session}-${name}`;
+	// The path without its basename, so one folder's report does not collide
+	// with another's: `docs/a.mp4` becomes `docs-a.mp4` under the session.
+	const folders = path.slice(0, Math.max(path.lastIndexOf("/"), 0));
+	const folder = folders.replace(/^\/+|\/+$/g, "").replace(/[^\w.\- ]+/g, "_");
+	return [session, folder, name].filter((part) => part !== "").join("-");
 }
 
 /** Saves the document, then opens the share sheet for it. Rejects when the

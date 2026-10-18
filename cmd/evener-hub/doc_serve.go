@@ -39,6 +39,29 @@ const docFileMaxBytes = 512 * 1024
 // ~/git was 3.2 MB. A larger file is served without a revision.
 const docRevisionMaxBytes = 16 * 1024 * 1024
 
+// resolveLocalDocTarget resolves a local session id and a cwd-relative path to
+// the session's current working directory and a contained absolute path. It
+// answers the request itself when it cannot, so every local doc route refuses
+// an unknown session, an escape attempt and a missing path identically: 503 for
+// a session whose folder cannot be resolved, 403 for an escape, 404 otherwise.
+func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request, session, rel string) (string, string, bool) {
+	cwd, err := s.localSessionCWD(r.Context(), session)
+	if err != nil {
+		serveSessionRootError(w, r, err)
+		return "", "", false
+	}
+	abs, err := fspaths.ResolveInRoot(cwd, rel)
+	if err != nil {
+		if errors.Is(err, fspaths.ErrPathEscapesRoot) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return "", "", false
+		}
+		http.NotFound(w, r)
+		return "", "", false
+	}
+	return cwd, abs, true
+}
+
 // handleDocFile serves a session file's literal bytes for the React
 // doc-viewer pane, which renders the content itself. The route has a single
 // mode, ?format=raw; a request that omits format or sends any other value is a
@@ -83,23 +106,10 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cwd, err := s.localSessionCWD(r.Context(), session)
-	if err != nil {
-		serveSessionRootError(w, r, err)
-		return
-	}
-
-	// Resolve before the format gate so raw and non-raw reject the same
+	// Resolved before the format gate so raw and non-raw reject the same
 	// out-of-cwd or missing path identically; the gate precedes the read.
-	abs, err := fspaths.ResolveInRoot(cwd, rel)
-	if err != nil {
-		// A path that escapes the cwd, or that doesn't resolve, is refused.
-		// 403 for an escape attempt; 404 for a missing file.
-		if errors.Is(err, fspaths.ErrPathEscapesRoot) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		http.NotFound(w, r)
+	cwd, abs, ok := s.resolveLocalDocTarget(w, r, session, rel)
+	if !ok {
 		return
 	}
 
@@ -116,10 +126,12 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 	writeDocFileRaw(w, r, doc)
 }
 
-// downloadTypes names the media types a download serves, by extension. Go's
-// mime package consults the host's own tables, so its answer differs between
-// macOS and Linux; these are the types agent-written attachments actually use,
-// and the list is what makes the header the same on every hub.
+// downloadTypes names the media types a download serves, by extension. It is
+// the whole table, not a supplement to Go's mime package: that package consults
+// the host's own tables, so its answer differs between macOS and Linux, and it
+// names text/html for .htm. A download is an attachment the receiving app
+// decides what to do with, so an unlisted extension gets
+// application/octet-stream rather than a type guessed from the host.
 var downloadTypes = map[string]string{
 	".mp4":  "video/mp4",
 	".m4v":  "video/x-m4v",
@@ -136,7 +148,6 @@ var downloadTypes = map[string]string{
 	".txt":  "text/plain; charset=utf-8",
 	".md":   "text/markdown; charset=utf-8",
 	".json": "application/json",
-	".html": "text/html; charset=utf-8",
 	".png":  "image/png",
 	".jpg":  "image/jpeg",
 	".jpeg": "image/jpeg",
@@ -145,14 +156,11 @@ var downloadTypes = map[string]string{
 }
 
 // downloadMediaType names what a download's bytes are, without trusting them.
-// The extension is the only input: sniffing a video's header is unreliable and
-// a sniffed text/html would let a file the agent wrote run as a page.
+// The extension is the only input: sniffing a video's header is unreliable, and
+// anything unlisted is served as opaque bytes rather than a page.
 func downloadMediaType(name string) string {
 	ext := strings.ToLower(filepath.Ext(name))
 	if mediaType, ok := downloadTypes[ext]; ok {
-		return mediaType
-	}
-	if mediaType := mime.TypeByExtension(ext); mediaType != "" {
 		return mediaType
 	}
 	return "application/octet-stream"
@@ -186,18 +194,8 @@ func (s *WebServer) handleDocDownload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "remote session not supported", http.StatusNotImplemented)
 		return
 	}
-	cwd, err := s.localSessionCWD(r.Context(), session)
-	if err != nil {
-		serveSessionRootError(w, r, err)
-		return
-	}
-	abs, err := fspaths.ResolveInRoot(cwd, rel)
-	if err != nil {
-		if errors.Is(err, fspaths.ErrPathEscapesRoot) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		http.NotFound(w, r)
+	cwd, abs, ok := s.resolveLocalDocTarget(w, r, session, rel)
+	if !ok {
 		return
 	}
 	f, err := docOpen(cwd, abs)
@@ -214,11 +212,12 @@ func (s *WebServer) handleDocDownload(w http.ResponseWriter, r *http.Request) {
 	name := filepath.Base(abs)
 	w.Header().Set("Content-Type", downloadMediaType(name))
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
-	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	// A download is a snapshot of the file now, not a cacheable resource.
 	w.Header().Set("Cache-Control", "private, no-store")
-	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, f)
+	// ServeContent streams the open file: it answers HEAD and Range, and a
+	// read error aborts the transfer instead of sending a short body under a
+	// full Content-Length. A type is already set, so it does not sniff.
+	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
 // sessionDocumentFromHub serves the evener/session/document AppWire method: one
@@ -284,19 +283,8 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cwd, err := s.localSessionCWD(r.Context(), session)
-	if err != nil {
-		serveSessionRootError(w, r, err)
-		return
-	}
-
-	abs, err := fspaths.ResolveInRoot(cwd, rel)
-	if err != nil {
-		if errors.Is(err, fspaths.ErrPathEscapesRoot) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		http.NotFound(w, r)
+	cwd, abs, ok := s.resolveLocalDocTarget(w, r, session, rel)
+	if !ok {
 		return
 	}
 
