@@ -33,14 +33,26 @@ export async function generateCandidate({out, sourceRoot=repositoryRoot, require
   throw error;
  }
 }
-function run(command,args,options,signal) {
+export async function run(command,args,options,signal) {
  signal?.throwIfAborted();
- return new Promise((resolveRun,reject)=>{
+ const result=await new Promise((resolveRun,reject)=>{
   // A handled interrupt stops between bounded tours, not inside Go cleanup.
   const child=spawn(command,args,{...options,stdio:['ignore','pipe','pipe']});let stdout='',stderr='';
+  child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
   child.stdout.on('data',data=>stdout+=data);child.stderr.on('data',data=>stderr+=data);
-  child.on('error',reject);child.on('close',(code)=>signal?.aborted?reject(signal.reason):code===0?resolveRun(stdout):reject(Error(`${command} failed (${code}); private output withheld`)));
+  child.on('error',reject);child.on('close',(exitCode,signal)=>resolveRun({exitCode,signal,stdout,stderr}));
  });
+ if(result.exitCode!==0) {
+  // Never put raw process output in candidates or public error messages.
+  const directory=await mkdtemp(join(tmpdir(),'evener-tour-failure-'));
+  const diagnosticsPath=join(directory,'process.json');
+  await writeFile(diagnosticsPath,JSON.stringify(result),{mode:0o600});
+  const error=Error(`Command failed (${result.exitCode}); private diagnostics: ${diagnosticsPath}`);
+  error.diagnosticsPath=diagnosticsPath;
+  throw error;
+ }
+ signal?.throwIfAborted();
+ return result.stdout;
 }
 async function collectTours(out,required,signal) {
  const privateRoot=await mkdtemp(join(tmpdir(),'evener-tour-private-'));

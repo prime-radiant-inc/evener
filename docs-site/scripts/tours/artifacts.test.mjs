@@ -1,15 +1,39 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { deflateSync } from 'node:zlib';
 import * as artifacts from './artifacts.mjs';
 import { generateCandidate } from './refresh.mjs';
+import * as refresh from './refresh.mjs';
 
 const hash = b => createHash('sha256').update(b).digest('hex');
+test('failed real process retains exact output privately outside candidate and approved files',async t=>{
+ const f=await fixture(t);const out=join(f.base,'failed-process');
+ const approved=await readFile(join(f.repo,'docs/assets/tutorials/approved.png'));
+ const publication=await readFile(join(f.repo,'docs-site/publication.json'));
+ assert.equal(typeof refresh.run,'function');
+ let failure;
+ try {
+  await generateCandidate({out,sourceRoot:f.repo,required,collect:()=>refresh.run(process.execPath,['-e',"process.stdout.write('private stdout\\n');process.stderr.write('private stderr\\n');process.exitCode=7"],{cwd:f.repo})});
+ } catch(error) { failure=error; }
+ assert.ok(failure?.diagnosticsPath,'failure must report a private diagnostics path');
+ const log=failure.diagnosticsPath;t.after(()=>rm(dirname(log),{recursive:true,force:true}));
+ assert.ok(relative(out,log).startsWith('..'));assert.ok(relative(f.repo,log).startsWith('..'));
+ assert.equal(failure.message,`Command failed (7); private diagnostics: ${log}`);
+ assert.deepEqual(JSON.parse(await readFile(log,'utf8')),{exitCode:7,signal:null,stdout:'private stdout\n',stderr:'private stderr\n'});
+ assert.deepEqual(await readdir(out),[]);
+ assert.deepEqual(await readFile(join(f.repo,'docs/assets/tutorials/approved.png')),approved);
+ assert.deepEqual(await readFile(join(f.repo,'docs-site/publication.json')),publication);
+ if(process.platform!=='win32') {
+  assert.equal((await stat(dirname(log))).mode&0o777,0o700);
+  assert.equal((await stat(log)).mode&0o777,0o600);
+ }
+ assert.equal(await refresh.run(process.execPath,['-e',"process.stdout.write('success');process.stderr.write('not a failure')"],{cwd:f.repo}),'success');
+});
 // Independent PNG fixture encoder, producing real RGB scanlines.
 function png(width, height) {
  function chunk(type, data) {

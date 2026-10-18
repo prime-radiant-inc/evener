@@ -57,6 +57,12 @@ interrupt waits for the current bounded Go tour to finish so its cleanup runs.
 A forced process kill may leave temporary state for manual inspection. Never
 publish it.
 
+When a child command fails, the wrapper retains its stdout/stderr in a separate
+owned temporary directory (0700), in `process.json` (0600). The error reports
+only that path. Treat this file as private, inspect it locally, and remove the
+directory after diagnosis. It is not candidate evidence and must not be copied
+into the site. Successful commands leave no diagnostic file.
+
 `manifest.json` version 1 records the revision, dirty-source digest, tool
 versions, explicit coverage, deferral, completeness, and each checkpoint's
 representation, hashes, dimensions, assertions, and result. CLI rows also name
