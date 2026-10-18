@@ -129,7 +129,10 @@ export function TimelineItem({
 	// A tool step's evidence, for the rows that show one: the same renderer a
 	// run uses, so an expanded failed call keeps its 40-line preview, its ANSI
 	// handling and its full-log viewer here too.
-	const step = item.kind === "activity" && item.family === "tool" ? item : NO_STEP;
+	// Every activity but a thought shows this evidence: a tool step, and an
+	// unknown forward-compatible item, whose body the projection put in its
+	// detail. A thought has its own row.
+	const step = item.kind === "activity" && item.family !== "reasoning" ? item : NO_STEP;
 	const evidence = useStepEvidence(step);
 	// A thought the projector didn't show reads as one quiet line, with no
 	// error rule, unless the thought itself failed.

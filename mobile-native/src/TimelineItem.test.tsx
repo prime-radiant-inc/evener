@@ -545,6 +545,25 @@ describe("a tool step", () => {
 		expect(text).not.toContain("line 60");
 		expect(text).toContain("Show all 60 lines");
 	});
+
+	// An unknown, forward-compatible item type is a neutral activity row that
+	// never disappears (projectedRows). Opening it must still show the body the
+	// projection gave it (RoboRev on PR #4740).
+	it("opens an unknown activity row to its own body", () => {
+		const unknownRow: TimelineRow = {
+			kind: "activity",
+			id: "unknown-1",
+			label: "Activity",
+			family: "unknown",
+			state: "completed",
+			detail: { output: "a future item's body" },
+		};
+		const tree = render(<TimelineItem item={unknownRow} hubId="hub" sessionRef="unknown-row" />);
+		const toggle = pressable(tree, "Expand Activity");
+		expect(toggle).toBeDefined();
+		act(() => toggle?.props.onPress());
+		expect(renderedText(tree)).toContain("a future item's body");
+	});
 });
 
 describe("a run in the transcript", () => {
