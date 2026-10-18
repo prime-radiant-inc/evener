@@ -25,7 +25,7 @@ python3 -c 'import json; print(json.dumps({p:json.load(open(p)) for p in ["initi
 
 Check that each file has its requested nonce and exactly one matching receipt. This is sequential continuation of the same saved conversation, not a queued request to a running CLI process. Keep using the same working directory; resuming a conversation does not undo file changes made since its last turn.
 
-The deterministic tutorial check runs this CLI path and the browser controls below against a local scripted provider. It verifies files and persisted session identity, not a live model's ability to follow these prompts:
+For contributors, the deterministic tutorial check runs this CLI path and the browser controls below against a local scripted provider. Run it from the Evener repository root after installing the [tour prerequisites](developing-evener/tutorial-tours.md#run-serially). It verifies files and persisted session identity, not a live model's ability to follow these prompts:
 
 ```sh
 node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --scenario daily
@@ -110,7 +110,9 @@ flowchart LR
     Stop --> Continue[Send continues the session]
 ```
 
-A live model may finish before you press a control. The automated tour holds real HTTP provider requests at these boundaries so it can verify queue depth, delivery order, cancellation, and file effects without a timing race. It also checks that a late response from the cancelled request cannot write `cancelled.json`. This does not promise that Stop can undo a command that has already executed.
+A live model may finish before you press a control; asking it to wait does not keep a turn active. If the control disappears, inspect the files and delivery state first. Retry the exercise in a fresh workspace with another bounded task that takes time. Do not resend a message whose delivery is uncertain.
+
+The automated tour holds real HTTP provider requests at these boundaries to verify queue depth, delivery order, cancellation, and file effects. It cancels a held request, then attempts to answer it and checks that `cancelled.json` is absent. This covers a cancelled held request, not a race with an already-delivered response. Stop cannot undo a command that has already executed.
 
 ## Return after a break
 

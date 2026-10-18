@@ -71,8 +71,13 @@ test('source digest includes dirty and untracked active source but excludes defe
 test('source digest covers runtime dependencies outside agent',async t=>{const f=await fixture(t);const before=await artifacts.sourceTreeDigest(f.repo);await mkdir(join(f.repo,'llm'));await writeFile(join(f.repo,'llm/provider.go'),'package llm');assert.notEqual(await artifacts.sourceTreeDigest(f.repo),before);});
 test('cancelled generation cannot mark a collected candidate complete',async t=>{
  const f=await fixture(t);const controller=new AbortController();const out=join(f.base,'cancelled');
+ const publicationFile=join(f.repo,'docs-site/publication.json');const before=await readFile(publicationFile);
+ const image=join(f.repo,'docs/assets/tutorials/approved.png');const imageBefore=await readFile(image);
  await assert.rejects(generateCandidate({out,sourceRoot:f.repo,required,signal:controller.signal,collect:async destination=>{const {cp}=await import('node:fs/promises');await cp(f.root,destination,{recursive:true});controller.abort();}}));
  assert.equal(JSON.parse(await readFile(join(out,'manifest.json'),'utf8')).complete,false);
+ assert.deepEqual(await readFile(publicationFile),before);
+ assert.deepEqual(await readFile(image),imageBefore);
+ assert.equal(hash(await readFile(image)),hash(imageBefore));
 });
 test('failed generation never rewrites a symlinked manifest target',async t=>{
  const f=await fixture(t);const publicationFile=join(f.repo,'docs-site/publication.json');const before=await readFile(publicationFile);

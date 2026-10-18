@@ -14,12 +14,14 @@ The CLI daily-work tour verifies sequential resume, not interactive web controls
 
 `complete: true` means the selected full CLI/web matrix passed artifact
 validation. It does not mean native was verified or publication was approved.
-Known contradictory sidebar captures remain a publication blocker. Reviewers
-must check screenshots against the tutorial, even when validation succeeds.
+Reviewers must check screenshots against the tutorial, even when validation
+succeeds. Earlier contradictory sidebar captures must not be selected; use a
+fresh run with the sidebar readiness check.
 
 ## Run serially
 
-Use Node 22, Go, installed docs-site and frontend dependencies, Python 3, and
+Run these contributor commands from the Evener repository root. Use Node 22,
+Go, installed docs-site and frontend dependencies, Python 3, and
 the Playwright Chromium browser. Set `PLAYWRIGHT_BROWSERS_PATH` when the browser
 cache is outside the default location. The web tour builds the frontend before
 embedding it in the test binary. Do not run frontend builds or tours concurrently.
@@ -78,3 +80,45 @@ valid complete manifest; use a new output directory for the next attempt.
 This tool has no acceptance command and never writes approved images or
 `docs-site/publication.json`. Selecting and publishing reviewed assets is a
 separate task.
+
+## Review and publication
+
+Review the full 24-row candidate against the relevant working source before
+selecting files. `refresh` and `validate` require both the recorded revision and
+source digest to match the checkout. Freeze relevant source during review; a
+change requires fresh evidence. Inspect every image for legibility, clipping,
+private data, and agreement with the instructions. CLI PNGs render recorded
+commands and output, not an interactive terminal; the paired `.txt` files are
+selectable output. Web PNGs capture the real browser UI, with exact owned
+workspace labels masked rather than rewritten.
+
+After independent evidence review and image inspection, copy only the selected
+PNG/text files and their matching `manifest.json` to `docs/assets/tutorials/`.
+List each path in `docs-site/publication.json.assets`. Keep the manifest and
+selected files together in Git; never copy raw logs or an entire run directory.
+Use ordinary relative Markdown image and text links. Instructions and meaningful
+alt text must explain the result without requiring the image.
+
+`npm --prefix docs-site run build` validates the checked-in set before staging
+it. Missing rows, files, explicit asset entries, native deferral, or passing
+evidence fail the build, as do changed hashes and wrong representations.
+The recorded `sourceRevision` and `sourceTreeDigest` are historical capture
+provenance, not a claim that every later main revision reran those captures.
+Publication validates their format and preserves their values; it does not
+require equality with a future HEAD or working tree. This exception applies
+only to checked-in publication, never current-candidate validation. Do not edit
+provenance to make an old capture look current.
+
+CI provisions Go, Python, Node, frontend/docs dependencies, and Chromium. It
+executes all four CLI/web scenarios before building and browser-checking the
+docs site. Missing requested-lane prerequisites fail. Pages deploys checked-in
+reviewed assets from main, not runtime candidates. Native remains deferred and
+unverified; there is no native publication lane. Host installation, live provider
+authentication, model quality, physical devices, and camera pairing are not
+proved by these scripted-provider tours.
+
+Before publication, request independent full-corpus audits from different OpenAI
+and Lunaroute models. Supply the revision, executed matrix, and coverage limits;
+require source or executed evidence, deduplicate findings, and fix confirmed
+issues. Missing audits leave the publication gate incomplete. These reviews are
+opt-in, not live-provider dependencies in deterministic CI.

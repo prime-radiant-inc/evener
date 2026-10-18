@@ -169,7 +169,10 @@ or round limit, inspect the diff and checker result before continuing.
 Maintainer verification: the receipt CLI and web tours use the real binary, tools and
 Python checker with a loopback scripted HTTP provider, `fake/fake-test-model`.
 They verify the initial failure, the edit and the unchanged checker independently.
-They do not test live-provider authentication or model quality. CLI images are
+They do not test host installation, live-provider authentication, or model quality.
+Native verification is deferred. The [tour manifest and review process](developing-evener/tutorial-tours.md#review-and-publication)
+record capture revision, source digest, and representation; historical captures
+do not imply a new run on every main revision. CLI images are
 labeled **Rendered command transcript** and retain stdout and stderr separately;
 they do not claim cross-stream timing. Web captures come from the built browser
 client after real UI actions, not a mock conversation. Black rectangles hide the

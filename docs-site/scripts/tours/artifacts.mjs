@@ -74,7 +74,7 @@ async function inventory(root, prefix='') {
  }
  return paths.sort();
 }
-export async function validateCandidate(root, required, {sourceRoot=repositoryRoot, pending=false}={}) {
+export async function validateCandidate(root, required, {sourceRoot=repositoryRoot, pending=false, historicalProvenance=false}={}) {
  await rejectSymlinks(root);
  const read = async path => {
   insist(typeof path==='string' && !isAbsolute(path) && path.split('/').every(p=>p&&p!=='.'&&p!=='..') && !path.includes('\\'),'Unsafe artifact path');
@@ -83,7 +83,10 @@ export async function validateCandidate(root, required, {sourceRoot=repositoryRo
  };
  const raw=await read('manifest.json'); scanText(raw.toString()); const m=JSON.parse(raw);
  insist(m.version===1 && Array.isArray(m.rows) && Array.isArray(m.coverage),'Invalid manifest');
- insist(m.sourceRevision===revision(sourceRoot)&&m.sourceTreeDigest===await sourceTreeDigest(sourceRoot),'Stale source correspondence');
+ insist(/^[a-f0-9]{40}$/.test(m.sourceRevision) && /^[a-f0-9]{64}$/.test(m.sourceTreeDigest),'Invalid source provenance');
+ // Publication preserves capture provenance, it does not assert a new execution.
+ // Refresh and candidate review retain strict correspondence by default.
+ if (!historicalProvenance) insist(m.sourceRevision===revision(sourceRoot)&&m.sourceTreeDigest===await sourceTreeDigest(sourceRoot),'Stale source correspondence');
  insist(m.toolVersions && ['node','go','playwright'].every(k=>typeof m.toolVersions[k]==='string'&&m.toolVersions[k]),'Missing tool versions');
  insist(JSON.stringify(m.deferredSurfaces)===JSON.stringify(['native']),'Native deferral must be explicit');
  const valid=new Set(fullMatrix.map(id)), wanted=new Set(required.map(id));

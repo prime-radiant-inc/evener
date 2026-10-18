@@ -4,6 +4,11 @@ The native app connects your iPhone to an Evener hub. The agent still runs on th
 
 **Distribution limitation:** this guide documents the source-build path and the repository's internal TestFlight tooling. It does not promise a public App Store listing or an open TestFlight invitation. The current delivery scope is iPhone. iPad work is paused, and Android delivery is deferred despite retained Android sources.
 
+**Tutorial verification is deferred:** the executed tutorial matrix covers CLI
+and web only. These iPhone instructions, simulator interaction, physical-device
+behavior, and camera pairing have not been verified by those tours. Browser
+screenshots are not native evidence. See the [coverage limits](developing-evener/tutorial-tours.md#active-coverage).
+
 ## Obtain a build
 
 If your organization supplies a signed build or a TestFlight invitation, use that distribution channel and confirm which source version it contains. A hub snapshot and an older phone build may not implement the same protocol.

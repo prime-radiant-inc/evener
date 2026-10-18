@@ -49,6 +49,9 @@ message alone proves neither. Direct CLI flags do not save hub launch defaults.
 
 ### Web: save a project default, then start a new session
 
+On the selected host, create `input.json` containing `{"value":42}` in a fresh
+working directory, as in the CLI example. The browser does not upload this file.
+
 1. Choose the intended host and working directory. Open the project's menu and
    choose **Project settings**.
 2. Under **Local overrides**, set **Max rounds** to `1` and choose
@@ -81,7 +84,8 @@ one round produces one read, no write, and no `forbidden.json`; four rounds allo
 the write and the independent file check passes. The web check also saves through
 the real project editor, checks project isolation, and confirms that a running
 session's configuration does not change. These are partial CLI/web checks, not
-native coverage or screenshot publication.
+native coverage or screenshot publication. The tour opens the project settings
+route directly; it does not verify the menu navigation described above.
 
 ## Locate the files
 

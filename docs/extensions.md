@@ -87,6 +87,11 @@ is a setup failure, even if the assistant still answers.
 
 ## What the automated walkthrough proves
 
+The [tour manifest and review process](developing-evener/tutorial-tours.md#review-and-publication)
+record the capture revision and source digest. CLI images render recorded command
+output; web images capture the browser. Neither proves live-provider
+authentication, model quality, or native behavior.
+
 The CLI and web tours execute the real examples with scripted model responses.
 They check command-argument routing, skill delivery, plugin execution, the
 startup hook's identity and exit code, a call-ID-correlated MCP nonce, and

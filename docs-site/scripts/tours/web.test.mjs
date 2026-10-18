@@ -3,6 +3,14 @@ import { test } from 'node:test';
 import { chromium } from '@playwright/test';
 import * as web from './web.mjs';
 
+test('workspace labels include only exact temporary path aliases', () => {
+ assert.deepEqual(web.workspaceLabels('/private/tmp/owned/work'), ['/private/tmp/owned/work', '/tmp/owned/work']);
+ assert.deepEqual(web.workspaceLabels('/tmp/owned/work'), ['/tmp/owned/work', '/private/tmp/owned/work']);
+ for (const path of ['/tmp', '/private/tmp', '/tmp-other/work', '/private/tmp-other/work', '/work/tmp/owned', 'tmp/owned', '/Users/example/work']) {
+  assert.deepEqual(web.workspaceLabels(path), [path]);
+ }
+});
+
 test('capture readiness requires every started session in the rail without a never-run marker', async () => {
  assert.equal(typeof web.railCaptureReady, 'function', 'capture must expose its real DOM readiness predicate');
  const browser = await chromium.launch({ headless: true });

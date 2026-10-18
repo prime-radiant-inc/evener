@@ -117,6 +117,8 @@ test("supports reference links, images through explicit asset selection, and sam
   await assert.rejects(prepare(f));
   f.manifest.assets = ["docs/pic.svg"];
   await prepare(f);
+  assert.match(await readFile(path.join(f.out, "index.md"), "utf8"), /!\[image\]\(\/assets\/docs\/pic\.svg\)/);
+  assert.match(await readFile(path.join(f.out, "public/markdown/index.md"), "utf8"), /!\[image\]\(https:\/\/prime-radiant-inc\.github\.io\/evener\/assets\/docs\/pic\.svg\)/);
   assert.equal(
     await readFile(path.join(f.out, "public/assets/docs/pic.svg"), "utf8"),
     '<svg xmlns="http://www.w3.org/2000/svg"/>',
