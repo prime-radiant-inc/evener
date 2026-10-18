@@ -6,6 +6,7 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { evaluate, navigateTo } from "../browserGuardCdp.mjs";
 import { Driver } from "../skillguard/run.mjs";
+import { captureAccessViews, record } from "./record.mjs";
 
 const args = Object.fromEntries(
   Array.from({ length: (process.argv.length - 2) / 2 }, (_, i) => [
@@ -19,11 +20,15 @@ const driver = new Driver({
   milestonePath: path.join(args["artifact-dir"], "milestones.jsonl"),
 });
 const read = (source) => evaluate(driver.send, source);
+const pause = async (ms = 1800) => {
+  if (args["record-video"]) await new Promise((resolve) => setTimeout(resolve, ms));
+};
 const wait = (source, label) => driver.waitPage(source, { label });
 const hasButton = (name) =>
   `[...document.querySelectorAll('button')].some(b => (b.textContent.trim() === ${JSON.stringify(name)} || b.getAttribute('aria-label') === ${JSON.stringify(name)}) && !b.disabled)`;
 async function button(name) {
   await wait(hasButton(name), `button ${name}`);
+  await pause();
   await driver.clickByText(name);
 }
 async function fill(selector, value) {
@@ -96,6 +101,7 @@ async function start() {
   driver.milestone("start-activated", { activatedAt });
 }
 let stopping;
+let finishRecording;
 async function stop() {
   stopping ??= driver.stop();
   await stopping;
@@ -105,8 +111,18 @@ process.once("SIGTERM", () => {
 });
 try {
   await driver.start();
+  if (args["record-video"]) {
+    await driver.send("Emulation.setDeviceMetricsOverride", {
+      width: 1440,
+      height: 1000,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+  }
   await navigateTo(driver.page, args.url);
   await wait(`!!document.querySelector('[data-testid="spawn-provider-prerequisite"]')`, "fresh missing access route");
+  if (args["record-video"]) finishRecording = await record(driver.page, args["artifact-dir"], args["record-video"]);
+  await pause(3000);
   assert.ok(
     await read(
       `!!(document.querySelector('[data-testid="spawn-provider-prerequisite"]').compareDocumentPosition(document.querySelector('[data-testid="spawn-prompt-card"]')) & Node.DOCUMENT_POSITION_FOLLOWING)`,
@@ -114,9 +130,11 @@ try {
     "provider prerequisite must precede composer",
   );
   await fill('[contenteditable="true"]', "ONBOARDING_TASK_72e");
+  await pause();
   await driver.click("#spawn-cwd");
   await wait(hasButton("Use this folder"), "initial directory resolved");
   await fill('input[aria-label="Path"]', args.work);
+  await pause();
   await button("Go");
   await button("Use this folder");
   await button("Connect provider");
@@ -125,9 +143,11 @@ try {
   await button("Save and check");
   await wait(hasButton("Retry check"), "failed model listing offers retry");
   await checkpoint(1);
+  await pause(3000);
   await button("Retry check");
   await button("Choose model");
   await wait(`document.querySelectorAll('[role="option"]').length > 0`, "provider scoped catalogue");
+  await pause(3000);
   assert.ok(
     await read(`[...document.querySelectorAll('[role="option"]')].every(e => e.id.includes(':openai/'))`),
     "handoff is scoped to connected instance",
@@ -161,16 +181,19 @@ try {
     "working directory retained",
   );
   await checkpoint(2);
+  await pause(5000);
   await start();
   await wait(`${active}?.reply === true`, "active session producer reply");
   const firstSession = await read(active);
   driver.milestone("session-observed", firstSession);
+  await pause(5000);
   // A second launch is deliberately blank. Production routing, not injected
   // client state, must open a session with an editable composer and no turn.
   await navigateTo(driver.page, new URL("/new", args.url).href);
   await wait(`!!document.querySelector('[data-testid="spawn-submit"]')`, "configured user new session");
   assert.equal(await read(`!!document.querySelector('[data-testid="spawn-provider-prerequisite"]')`), false);
   await fill('[contenteditable="true"]', "");
+  await pause(3000);
   await start();
   await wait(
     `${active} !== null && ${active}.ref !== ${JSON.stringify(firstSession.ref)}`,
@@ -180,6 +203,12 @@ try {
   assert.equal(blankSession.text, "");
   assert.equal(blankSession.reply, false);
   driver.milestone("session-observed", blankSession);
+  await pause(4000);
+  if (finishRecording) {
+    await finishRecording();
+    finishRecording = null;
+    await captureAccessViews(driver, args.url, args["record-video"]);
+  }
   console.log(
     "PASS prerequisite ordering, failed check/retry, explicit model, retained draft/directory, reply, blank composer",
   );

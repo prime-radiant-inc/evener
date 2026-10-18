@@ -36,6 +36,8 @@ func TestOnboardingBrowser(t *testing.T) {
 		t.Skip("requires Chrome and production frontend")
 	}
 	requireFreshDist(t)
+	// Read before isolation. Only video and sanitized visual evidence escape TempDir.
+	recordVideo := os.Getenv("EVENER_ONBOARDING_VIDEO")
 	root := t.TempDir()
 	repo := skillGuardRepoRoot(t)
 	binary := filepath.Join(root, "evener")
@@ -209,6 +211,9 @@ func TestOnboardingBrowser(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "node", "scripts/onboardingguard/run.mjs", "--url", hubedge.AuthURLFor(hub.URL, token), "--artifact-dir", root, "--work", work, "--checkpoint", checkpoint.URL)
+	if recordVideo != "" {
+		cmd.Args = append(cmd.Args, "--record-video", recordVideo)
+	}
 	cmd.Dir = filepath.Join(repo, "cmd/evener-hub/frontend")
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 15 * time.Second

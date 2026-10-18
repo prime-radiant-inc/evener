@@ -39,16 +39,34 @@ probing is redirected to the fixture's unavailable endpoint. Catalogue refresh
 is offline. Cleanup runs on failure too. Test temp files are removed, so failure
 page text is included in the Go output rather than pointing to deleted artifacts.
 
-## Later recording work
+## Optional recording
 
-This guard does not record video. Reuse its isolated provider, production binary
-and actual UI path for the separate recording task. Put retained recordings in
-a session-owned artifact directory outside source, not this test's temporary
-root. Use a separate headed Chrome profile and explicit recording lifecycle,
-show the provider as scripted, and start capture after authentication so private
-links stay out of frame. Keep fixture keys masked and retain a sanitized evidence
-manifest, not the auth URL or credential file. Do not leave a test paused on its
-three-minute hang deadline as a recording server.
+Set `EVENER_ONBOARDING_VIDEO` to an absolute, new `.mp4` path outside source
+and put `ffmpeg` with libx264 on PATH. Create its parent directory first:
+
+```sh
+EVENER_ONBOARDING_VIDEO=/absolute/session-artifacts/onboarding.mp4 \
+  go test -tags browserguard ./cmd/evener-hub -run '^TestOnboardingBrowser$' -count=1 -v
+```
+
+This runs the same assertions with finite reading pauses. CDP screencast capture
+begins after authentication and records only the page viewport, never the address
+bar. Chrome remains headless with its own disposable profile. Frame timestamps
+preserve elapsed time, including the pauses, in a 20fps H.264 MP4. A separate
+offscreen canvas supplies a persistent recording annotation identifying the
+scripted provider and fixture reply; it never changes production UI. The output
+adds that 72px annotation above the 1440×1000 viewport.
+
+The MP4 and eight access-view PNGs plus `access-views.json` leave the test's temporary root.
+After the video, the driver captures resolved access and the real Change button's
+focused owner at 1440×1000 and 390×844 in light and dark. CDP emulates the system
+theme, which the production preference listener applies. No UI or RPC is replaced.
+The JSON records theme, dimensions, access state and focus, not authentication data.
+Frames, caption, fixture credentials,
+browser profile and daemon state are removed by the normal finite lifecycle.
+Encoding refuses to overwrite an existing video. Inspect representative frames
+and decode the finished video before publishing it; a video alone does not prove
+the Go assertions passed. The test is never paused as a recording server.
 
 This guard is a desktop smoke acceptance path, not the complete visual/theme,
 OAuth, remote-host, access-mode, catalogue-recovery or repository gate matrix.

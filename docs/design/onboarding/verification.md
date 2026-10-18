@@ -15,9 +15,53 @@ durable transcript. The external provider in acceptance is scripted. The hub,
 AppWire path, spawner, daemon, embedded production frontend and transcript writes
 are real.
 
-A screencast has **not** been recorded. There is no video address to publish yet.
-The final whole-branch independent review and screencast review are also pending;
-this page will not turn either pending item into an implied pass.
+A fixed-head screencast and desktop/narrow light/dark access screenshots are now
+retained below. Jesse's screencast approval remains pending. This evidence does
+not supersede the failed full web gate or the outstanding review/CI conditions.
+
+## Recorded actual flow
+
+[Open the local MP4](file:///Users/jesse/.local/state/evener/artifacts/onboarding-first-run-2026-10-18/onboarding.mp4).
+This is a retained local artifact, not a public hosting URL. Recorded production
+head: `271bc85260470d6d4af6d1740a0ca3edf6725494`, after `make web-preflight` and
+`make build-web`. Format: H.264 MP4, 1440×1072, 20fps, 44.45 seconds, 834,544 bytes,
+silent. The top 72px labels the scripted local provider and fixture-generated reply.
+
+The page-only CDP capture shows fresh provider setup, masked fixture-key entry,
+failed listing and Retry check, explicit model choice, retained task/directory,
+effective access, Start, the real daemon's fixture reply and a second blank
+session. The hub, frontend, AppWire, spawner, daemon and transcript writes are real;
+only external HTTP provider responses are scripted. No UI or RPC was mocked.
+The terminal command roster and terminal-to-hub handoff are **not** in this video:
+capture begins in the authenticated production page, excluding auth links.
+
+Sibling artifacts in the same retained directory:
+
+- `video-contact.png`: sampled flow overview (last empty tile is unused).
+- `video-model-choice.png`: full-resolution model-picker frame at 24 seconds.
+- `access-{1440,390}-{light,dark}-{summary,change}.png`: eight actual-app
+  screenshots, at 1440×1000 and 390×844. Both themes were inspected. Access text
+  wraps within the viewport; Change opens Advanced options and focuses Access mode.
+- `access-views.json`: sanitized dimensions, resolved sandbox and focus evidence.
+  Every case has page width equal to viewport width; every Change case focuses
+  `spawn-access`. This samples inherited Full access, not all access overrides.
+
+The recording run passed `TestOnboardingBrowser`, both `TestOnboardingEvidence*`
+tests and all seven evidence subcases in 58.066s. It verified ten listing requests,
+no generation/session before Start, one streamed task generation, matching durable
+input/reply and a distinct empty session. The ordinary unrecorded selection also
+passed in 6.456s. Pinned Biome and Node syntax checks passed for recording tooling.
+`ffprobe` opened the file; `ffmpeg -v error -i onboarding.mp4 -f null -` decoded
+the complete video with no errors. Representative video frames and all eight
+screenshots were visually inspected: no auth URL, unmasked key, token or personal
+state was visible. Only fixture paths and a loopback provider endpoint appear.
+No interactive media-player playback or human acceptance is claimed.
+
+Video SHA-256: `bd2982f0ee15d3a677ec9719c11573dc65fefbe3fb3f69a56921746214b2c004`.
+The finite guard cleaned its private Chrome profile, daemons, listeners, fixture
+state and raw frames. Superseded recordings were deleted. Full provenance and
+commands are in the local task report
+`.superpowers/sdd/2026-10-18-onboarding-first-run/task-5-recording-report.md`.
 
 ## Evidence layers
 
@@ -196,6 +240,6 @@ tests passed; and `TestSkillComposerBrowser` passed in 44.31s.
 - Simplification completed at `ace66564a0`. The final independent whole-branch
   review completed with changes requested, not acceptance. Its inherited-access
   disclosure and browser-failure provenance repairs await scoped rereview.
-- Video capture, playback/privacy verification, Jesse's screencast review,
-  both-theme acceptance and final-head CI remain pending here. Recording evidence
-  is handled separately; this index does not approve it in advance.
+- Video decoding/privacy inspection and the desktop/narrow both-theme access
+  sample are recorded above. Jesse's screencast review, broader visual acceptance
+  and final-head CI remain pending; recording evidence is not merge approval.
