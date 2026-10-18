@@ -187,10 +187,12 @@ export class NavigationPages<T> implements PageSource<T> {
 		const landed =
 			(await this.load(true)) === true &&
 			(this.offset >= depth || this.state.remaining <= 0 || (await this.walkToDepth(depth)) === true);
-		// Recovery completes at the depth it owed, or when the results end:
-		// either way the error clears with it.
-		this.owedDepth = null;
-		if (landed && this.state.error !== null) this.publish({ error: null });
+		// Recovery completes at the depth it owed, or when the results end;
+		// a failure keeps what it owes for the next attempt to reach for.
+		if (landed) {
+			this.owedDepth = null;
+			if (this.state.error !== null) this.publish({ error: null });
+		}
 		return landed;
 	}
 	/** Walk the remaining pages to the depth a recovery owes. */

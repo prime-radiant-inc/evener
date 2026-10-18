@@ -99,11 +99,19 @@ export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?:
 		);
 	}, [client, read, journal, isCurrent]);
 	const armReconcileRetry = useCallback(() => {
+		const settled = actions?.getSnapshot();
 		if (retryTimer.current !== null) return;
+		// A settled clean state asks nothing more; the effect retires the
+		// count through clearReconcileRetry.
+		if (settled && !settled.uncertain && !settled.pending) return;
 		retryCount.current += 1;
 		retryTimer.current = setTimeout(() => {
 			retryTimer.current = null;
-			if (isCurrent()) void actions?.reconcile();
+			// Re-arm from the attempt's own settled outcome: a failure that
+			// never entered pending (a journal read that still throws)
+			// publishes uncertain-not-pending and must ask again, and success
+			// retires through the effect like any landing.
+			if (isCurrent()) void actions?.reconcile().finally(armReconcileRetry);
 		}, reconnectDelay(retryCount.current));
 	}, [actions, isCurrent]);
 	const page = useSyncExternalStore(pages?.subscribe ?? noSubscription, pages?.getSnapshot ?? noSnapshot);
