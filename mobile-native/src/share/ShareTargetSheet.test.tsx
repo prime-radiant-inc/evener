@@ -9,14 +9,7 @@ import { DraftRepository } from "../draftRepository";
 import { DraftDocument } from "../draftDocument";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.testkit";
 import { answerFleetRead, type FleetShape, fleetSession } from "../session/fleetTestUtils";
-import {
-	alertRequests,
-	render,
-	renderedText,
-	settleMicrotasks,
-	unmountMountedTrees,
-	until,
-} from "../renderNative.testkit";
+import { alertRequests, render, settleMicrotasks, unmountMountedTrees, until } from "../renderNative.testkit";
 import { ShareTargetSheet } from "./ShareTargetSheet";
 import type { SharedPayload } from "./sharePayload";
 
