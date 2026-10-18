@@ -1453,6 +1453,9 @@ export function ConversationScreen({
 		openedFor.current = null;
 		openingLandedNow.current = false;
 		setOpeningLanded(false);
+		// Each session's opening gets its own caps: a round a previous session
+		// consumed must not shorten the next one's.
+		setOpeningCapRound(0);
 	}, [route.params.hubId, route.params.ref, follow.dispatch]);
 	// A layout effect, so a cell's layout or the cap can never read the rows of
 	// the render before (a passive effect leaves a window after the commit),

@@ -1589,6 +1589,44 @@ describe("opening a session", () => {
 		}
 	});
 
+	// A session whose saved row stays unmeasured consumes its first cap (the
+	// extra round this change adds); the session the screen switches to next
+	// must get its own extra round, not the leftovers of the one before.
+	it("gives a session the screen switches to its own extra cap round", async () => {
+		// The first session's saved row never measures: it burns its first cap
+		// and reveals at its second.
+		savePosition("ref-cap-first");
+		const { tree, route } = await mount(twoTurns("ref-cap-first"));
+		const next = "ref-cap-second";
+		savePosition(next);
+		otherThreads.set(next, twoTurns(next));
+		vi.useFakeTimers();
+		try {
+			layOutViewport(tree);
+			await advanceFakeTimers(1000);
+			// The first cap consumed: the list stays hidden on the extra round.
+			expect(opacity(tree)).toBe(0);
+			await advanceFakeTimers(1000);
+			expect(opacity(tree)).toBe(1);
+			const moved = { ...route, params: { ...route.params, ref: next } };
+			navigationState.state = { index: 0, routes: [moved] };
+			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
+			await advanceFakeTimers(0);
+			// The second session's saved row is loaded but unmeasured too: it
+			// gets a fresh first cap, hidden through it.
+			await advanceFakeTimers(999);
+			expect(opacity(tree)).toBe(0);
+			await advanceFakeTimers(1);
+			// Revealed at its own second cap — never at the first, which the
+			// previous session had already consumed.
+			expect(opacity(tree)).toBe(0);
+			await advanceFakeTimers(1000);
+			expect(opacity(tree)).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	// Jesse, 2026-09-29: a saved spot that hasn't loaded within the cap opens
 	// at the live end instead, and the spot is dropped; never the top and then
 	// a jump, and never a blank wait.
