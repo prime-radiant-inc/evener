@@ -132,7 +132,10 @@ status, so failed image loads keep paced retries.
 the file itself, with its type from its extension and its own name in
 `Content-Disposition`. It shares the containment rules above (the path must
 resolve inside the session's folder, and the open goes through that folder's
-root) and refuses a non-regular file. It serves local sessions only; a
+root) and refuses a non-regular file. The body is served as content, so `HEAD`
+and `Range` work and an interrupted transfer resumes. Its type table is the
+whole answer: an extension it does not list is `application/octet-stream`, never
+a type borrowed from the host's mime tables. It serves local sessions only; a
 host-qualified id answers 501 rather than reading locally. Proxying a whole file
 to the owning host is not implemented: `evener/session/document` answers only the
 first 512 KiB, so a session on another host cannot be shared yet. Native saves
