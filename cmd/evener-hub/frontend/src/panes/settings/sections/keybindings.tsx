@@ -9,12 +9,13 @@
 // keybindingDisplay.ts - the same module the cheatsheet overlay reads -
 // never a hand-maintained copy (the survey's stale-HELP_ROWS lesson).
 //
-// Editing requires a hub with synced-override support whose override state
+// Saving requires a hub with synced-override support whose override state
 // is CURRENT: hubSupport === "supported" plus the store's `loaded` flag (set
 // only by a confirmed apply in the current ready generation, cleared on
 // rewire/disconnect), no in-flight refresh, and no hub error. Anything less
-// gets the read-only listing with a truthful status line - a PATCH composed
-// in the stale window would carry the previous hub's revision and payload.
+// gets a truthful status line and no writes - a PATCH composed in the stale
+// window would carry the previous hub's revision and payload. Existing
+// captures survive same-client recovery, but never a client replacement.
 //
 // The overrides model owns an action's WHOLE chord set, so the editor edits
 // each action's base chord only; cheatsheet.toggle's conditional "?" entry
@@ -39,7 +40,8 @@ import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useRef, use
 import { useStore } from "zustand";
 import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { isIMECompositionKeydown } from "../../../keybindings/dispatcher";
-import { keybindingsStore, useKeybindingsStore } from "../../../stores/keybindings";
+import { connectionStore } from "../../../stores/connection";
+import { type KeybindingsStoreState, keybindingsStore, useKeybindingsStore } from "../../../stores/keybindings";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { Button, Chip, InlineNotice, Input, KeyHint, Switch } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -97,6 +99,10 @@ function errorMessage(error: unknown): string {
   return storeErrorText(error);
 }
 
+function canWriteOverrides(state: KeybindingsStoreState): boolean {
+  return state.hubSupport === "supported" && state.hubError === null && !state.hubLoading && state.loaded;
+}
+
 /** The full replacement rule set a single-action edit produces: the store's
  * patch semantics are whole-payload (an action the payload drops gets its
  * defaults restored), so every edit re-sends the current overrides with this
@@ -148,6 +154,7 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
   const [held, setHeld] = useState<string[]>([]);
   const [captured, setCaptured] = useState<Chord | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const writable = useKeybindingsStore(canWriteOverrides);
   const boxRef = useRef<HTMLDivElement>(null);
   // A save is a hub round trip; keypresses that land while it is in flight
   // are ignored rather than queued into a second patch.
@@ -204,13 +211,16 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
       return;
     }
     if (event.key === "Enter" && modifiers.length === 0) {
-      if (captured === null) return;
+      // Retaining a proposal is not write authority. A failed/uncertain save
+      // must first reconcile through a canonical read, never an automatic
+      // second mutation. Check live state, not the last render's snapshot.
+      if (captured === null || !canWriteOverrides(keybindingsStore.getState())) return;
       savingRef.current = true;
       const chord = captured;
       void onSave(chord).then((saveError) => {
         savingRef.current = false;
-        // On success the parent unmounted this box; only a failure needs
-        // the state write.
+        // A confirmed save closes the box; a fenced result leaves it alone.
+        // Only a failure needs the state write.
         if (saveError !== null) setError(saveError);
       });
       return;
@@ -254,7 +264,7 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
         role="textbox"
         aria-readonly="true"
         tabIndex={0}
-        aria-label={`Press the new shortcut for ${title}. Enter saves, Escape cancels.`}
+        aria-label={`Press the new shortcut for ${title}. ${writable ? "Enter saves" : "Saving is unavailable"}, Escape cancels.`}
         data-state={captured !== null ? "captured" : held.length > 0 ? "holding" : "idle"}
         onKeyDown={handleKeyDown}
         onKeyUp={handleKeyUp}
@@ -269,7 +279,11 @@ function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
         ) : (
           <span className={CLASS.capturePrompt}>Press new shortcut…</span>
         )}
-        <span className={CLASS.captureHint}>Enter to save · Esc to cancel</span>
+        <span className={CLASS.captureHint}>
+          {writable
+            ? "Enter to save · Esc to cancel"
+            : "Shortcut retained. Saving waits for hub recovery · Esc to cancel"}
+        </span>
       </div>
       {error !== null && <InlineNotice tone="danger">{error}</InlineNotice>}
     </div>
@@ -338,19 +352,28 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
     }
   }, [capturing]);
 
-  // A capture must not outlive editability: a disconnect, support loss, or
-  // hub replacement mid-capture would strand an interactive box in a
-  // read-only section (the store side already rejects the save). Cancel
-  // like a click-away: bump the generation so an in-flight save's
-  // continuation no-ops, and do NOT refocus - the controls focus would
-  // return to are going away with editability.
+  // Capability loss invalidates an in-flight save's continuation, NOT its
+  // proposal. The store can synthesize a result when an old generation's
+  // response arrives; that is not confirmation this capture was saved.
+  // Subscribe synchronously so a batched disconnect/reconnect cannot hide
+  // the loss. A different client is a different registration: discard its
+  // capture instead of transferring intent to the replacement hub.
   useEffect(() => {
-    if (!editable && capturing) {
+    const unsubscribeCapability = keybindingsStore.subscribe((state, previous) => {
+      if (canWriteOverrides(previous) && !canWriteOverrides(state)) captureGenerationRef.current += 1;
+    });
+    const unsubscribeConnection = connectionStore.subscribe((state, previous) => {
+      if (state.client === previous.client) return;
       captureGenerationRef.current += 1;
       refocusOnCloseRef.current = false;
       setCapturing(false);
-    }
-  }, [editable, capturing]);
+      setError(null);
+    });
+    return () => {
+      unsubscribeCapability();
+      unsubscribeConnection();
+    };
+  }, []);
 
   const binding = displayBindingFor(bindings, actionId);
   const customized = isActionCustomized(keybindingsRegistry.parseKeybinding, bindings, actionId, characterKeyTriggers);
@@ -507,7 +530,7 @@ export function KeybindingsSection() {
   const warnings = useKeybindingsStore((s) => s.warnings);
   const bindings = useStore(keybindingsRegistry, (s) => s.bindings);
   const characterKeyTriggers = usePrefsStore((s) => s.characterKeyTriggers);
-  const editable = hubSupport === "supported" && hubError === null && !hubLoading && loaded;
+  const editable = useKeybindingsStore(canWriteOverrides);
 
   let status: ReadOnlyStatus | undefined;
   if (hubSupport === "unknown") {
@@ -574,14 +597,16 @@ export function KeybindingsSection() {
             // Disabled while hubLoading so a double-click cannot double-fire
             // the refresh.
             hubSupport === "supported" ? (
-              <Button
-                variant="quiet"
-                size="xs"
-                disabled={hubLoading}
-                onClick={() => void keybindingsStore.getState().refreshOverrides()}
-              >
-                Retry
-              </Button>
+              <span data-keybinding-navigation>
+                <Button
+                  variant="quiet"
+                  size="xs"
+                  disabled={hubLoading}
+                  onClick={() => void keybindingsStore.getState().refreshOverrides()}
+                >
+                  Retry
+                </Button>
+              </span>
             ) : undefined
           }
         >

@@ -13,6 +13,11 @@ export interface DisplayChoices {
 	/** "Show model on Board rows" (spec 7.2, 12): a row's last line ends with
 	 * its model's display name. */
 	showModel: boolean;
+	/** "Open at unread replies" (Jesse, 2026-10-18): when a reply finished
+	 * since you last reached the end, a session opens at that reply's start
+	 * instead of the live end. Off always opens at the latest. A session
+	 * never reopens at a spot saved up the history either way. */
+	openAtUnreadReplies: boolean;
 }
 
 /** The appearances in the order Display offers them. */
@@ -21,7 +26,12 @@ export const APPEARANCE_CHOICES: readonly AppearanceChoice[] = ["system", "light
 /** Each appearance as Display names it. */
 export const APPEARANCE_LABELS: Record<AppearanceChoice, string> = { system: "System", light: "Light", dark: "Dark" };
 
-export const DEFAULT_DISPLAY: DisplayChoices = { appearance: "system", readingFont: "serif", showModel: false };
+export const DEFAULT_DISPLAY: DisplayChoices = {
+	appearance: "system",
+	readingFont: "serif",
+	showModel: false,
+	openAtUnreadReplies: true,
+};
 export const DISPLAY_KEY = "evener.native.display";
 
 export type DisplayStorage = Pick<SyncStringStorage, "getItemSync" | "setItemSync">;
@@ -48,6 +58,10 @@ function read(storage: DisplayStorage): DisplayChoices {
 				? (record.readingFont as ReadingFont)
 				: DEFAULT_DISPLAY.readingFont,
 		showModel: typeof record.showModel === "boolean" ? record.showModel : DEFAULT_DISPLAY.showModel,
+		openAtUnreadReplies:
+			typeof record.openAtUnreadReplies === "boolean"
+				? record.openAtUnreadReplies
+				: DEFAULT_DISPLAY.openAtUnreadReplies,
 	};
 }
 

@@ -42,6 +42,11 @@ export interface ConversationMutationPendingPort {
 	read(): Promise<Pick<MutationPersistenceSnapshot<MutationAttachmentRef>, "outbox" | "optimistic">>;
 	subscribe(listener: () => void): () => void;
 	isOwnMutationRecord(record: { originClientId?: string }): boolean;
+	// Retires the durable records a live frame proves the daemon has moved past
+	// (notificationMutationIdentities: a recorded item, or a queue transition).
+	// A host that cannot settle from live frames omits this, and the store
+	// falls back to the authoritative-read settlement its host already owns.
+	settleIdentities?(clientMutationIds: readonly string[]): Promise<void>;
 }
 
 // The runtime surface the production pending-row seam adapts: the scoped
@@ -52,6 +57,7 @@ export interface ConversationMutationPendingPort {
 export interface ConversationMutationPendingRuntime {
 	read(targetRef: string): Promise<MutationPersistenceSnapshot<MutationAttachmentRef>>;
 	subscribeStorage(listener: (targetRefs: readonly string[]) => void): () => void;
+	settleIdentities?(clientMutationIds: readonly string[]): Promise<void>;
 }
 
 // Binds one conversation's durable outbox/optimistic records as the store's
@@ -81,5 +87,8 @@ export function createConversationMutationPendingPort(
 			}),
 		// Client-owned: the durable outbox holds only this client's records.
 		isOwnMutationRecord: () => true,
+		...(runtime.settleIdentities === undefined
+			? {}
+			: { settleIdentities: (clientMutationIds: readonly string[]) => runtime.settleIdentities!(clientMutationIds) }),
 	};
 }

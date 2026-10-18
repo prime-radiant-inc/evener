@@ -95,6 +95,11 @@ test("the filter input has an accessible name", () => {
 });
 
 test.each([
+  ["Desktop notifications", "notifications", "preferences"],
+  ["Phone density", "theme", "preferences"],
+  ["mobile layout", "transcript", "preferences"],
+  ["desktop layout", "transcript", "preferences"],
+  ["quiet", "notifications", "preferences"],
   ["font", "theme", "preferences"],
   ["width", "theme", "preferences"],
   [" ENTER ", "keybindings", "preferences"],

@@ -1880,6 +1880,65 @@ describe("ConversationStore", () => {
 			expect(store.getState().pendingMutations ?? null).toBeNull();
 		});
 
+		it("settles the ids a live frame proves delivered and clears them at once", async () => {
+			const port = fakePort({ optimistic: [optimistic({ clientMutationId: "cmid-3" })] });
+			const settled: string[][] = [];
+			const configured = {
+				...port,
+				settleIdentities: async (ids: readonly string[]) => {
+					settled.push([...ids]);
+					port.publish({ optimistic: [] });
+				},
+			};
+			const store = await openStore(makeConversation({}, true));
+			store.getState().bindPendingMutations(configured);
+			await yieldMicrotask();
+			expect(store.getState().pendingMutations?.map((row) => row.id)).toEqual(["cmid-3"]);
+
+			store.getState().applyNotification({
+				method: "history/updated",
+				params: {
+					threadId: "thread-1",
+					ref: "ref-1",
+					bootGeneration: "1",
+					epoch: 1,
+					snapshot: { incarnation: "inc-1", length: 2 },
+					items: [{ type: "user", id: "item-1", turnId: "turn-1", clientMutationId: "cmid-3" }],
+				},
+			} as AnyNotification);
+
+			await yieldMicrotask();
+			expect(settled).toEqual([["cmid-3"]]);
+			expect(store.getState().pendingMutations).toEqual([]);
+		});
+
+		it("settles nothing for a frame about another thread", async () => {
+			const port = fakePort({ optimistic: [optimistic({ clientMutationId: "cmid-3" })] });
+			const settled: string[][] = [];
+			const store = await openStore(makeConversation({}, true));
+			store.getState().bindPendingMutations({
+				...port,
+				settleIdentities: async (ids: readonly string[]) => void settled.push([...ids]),
+			});
+			await yieldMicrotask();
+
+			store.getState().applyNotification({
+				method: "history/updated",
+				params: {
+					threadId: "thread-other",
+					ref: "ref-other",
+					bootGeneration: "1",
+					epoch: 1,
+					snapshot: { incarnation: "inc-1", length: 2 },
+					items: [{ type: "user", id: "item-1", turnId: "turn-1", clientMutationId: "cmid-3" }],
+				},
+			} as AnyNotification);
+
+			await yieldMicrotask();
+			expect(settled).toEqual([]);
+			expect(store.getState().pendingMutations?.map((row) => row.id)).toEqual(["cmid-3"]);
+		});
+
 		it("projects an optimistic record", async () => {
 			const port = fakePort({
 				optimistic: [optimistic({ clientMutationId: "cmid-3" })],

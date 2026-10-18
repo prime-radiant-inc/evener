@@ -507,6 +507,63 @@ describe("a tool step", () => {
 		const labelled = tree.root.findAll((node) => String(node.props.accessibilityLabel ?? "").endsWith("exit 3"));
 		expect(labelled.length).toBeGreaterThan(0);
 	});
+
+	// At Intent a failed call is a row of its own, where it used to sit in a
+	// run. Opening it must still show the step's evidence - the first 40 lines
+	// and the full-log viewer - never the whole raw output at once (RoboRev on
+	// PR #4740).
+	it("opens a standalone failed step to its evidence, not its whole raw output", () => {
+		const output = Array.from({ length: 60 }, (_, index) => `line ${index + 1}`).join("\n");
+		const failedStep: TimelineRow = {
+			kind: "activity",
+			id: "step-failed",
+			label: "shell",
+			family: "tool",
+			state: "failed",
+			detail: {
+				arguments: '{"command":"go test ./..."}',
+				summary: "Ran go test ./...",
+				output,
+				error: "exit status 1",
+			},
+		};
+		const tree = render(
+			<TimelineItem
+				item={failedStep}
+				hubId="hub"
+				sessionRef="step-failed"
+				activityPresentation={{ mode: "critical", summary: "Ran go test ./..." }}
+			/>,
+		);
+		const toggle = pressable(tree, "Expand Ran go test ./...");
+		expect(toggle).toBeDefined();
+		act(() => toggle?.props.onPress());
+		// The preview holds the opening lines; the last one waits behind the
+		// full-log control, so a long output cannot flood the transcript.
+		const text = renderedText(tree);
+		expect(text).toContain("line 1");
+		expect(text).not.toContain("line 60");
+		expect(text).toContain("Show all 60 lines");
+	});
+
+	// An unknown, forward-compatible item type is a neutral activity row that
+	// never disappears (projectedRows). Opening it must still show the body the
+	// projection gave it (RoboRev on PR #4740).
+	it("opens an unknown activity row to its own body", () => {
+		const unknownRow: TimelineRow = {
+			kind: "activity",
+			id: "unknown-1",
+			label: "Activity",
+			family: "unknown",
+			state: "completed",
+			detail: { output: "a future item's body" },
+		};
+		const tree = render(<TimelineItem item={unknownRow} hubId="hub" sessionRef="unknown-row" />);
+		const toggle = pressable(tree, "Expand Activity");
+		expect(toggle).toBeDefined();
+		act(() => toggle?.props.onPress());
+		expect(renderedText(tree)).toContain("a future item's body");
+	});
 });
 
 describe("a run in the transcript", () => {

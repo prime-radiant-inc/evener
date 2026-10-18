@@ -17,7 +17,7 @@ import { documentReferences } from "../reader/documentReferences.js";
 import { canWriteHumanNote, notesBarPreview } from "../session/sessionNotes.js";
 import { contextChips, sessionStateLine } from "../session/sessionState.js";
 import { subagentLine } from "../session/subagentLine.js";
-import { runSummary, runSummaryText, sessionRows } from "../session/transcriptRows.js";
+import { isStep, sessionRows } from "../session/transcriptRows.js";
 import { createDemoFleet, demoSessionId, fleetSessionRef, fleetSessions } from "./demoFleet.js";
 import { createDemoSessions, humanNoteSteerText } from "./demoSessions.js";
 import { DEMO_MODEL_LIST } from "./demoSetup.js";
@@ -44,7 +44,7 @@ function open(slug: string, level: ContentLevel = "intent", from: Thread[] = ses
 	const presentation = projectNativeTranscript(conversation, config, {
 		justTheConversation: display.justTheConversation,
 	});
-	const rows = sessionRows(groupTimeline(presentation.items), model.turns);
+	const rows = sessionRows(groupTimeline(presentation.items), model.turns, { config });
 	return { thread, model, conversation, rows };
 }
 
@@ -128,7 +128,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		expect(threadOf("s-pr2138").id).toBe(demoSessionId("s-pr2138"));
 	});
 
-	it("frame 7: a working session at Intent, with its chips, notes, runs and a failed subagent", () => {
+	it("frame 7: a working session at Intent, with its chips, notes, action lines and a failed subagent", () => {
 		const { model, rows } = open("s-pr2138");
 		expect(model.name).toBe("Get PR 2138 Test Clean");
 		expect(sessionStateLine(model, NOW).text).toMatch(/^Working · \d+[smh]/);
@@ -158,9 +158,12 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 		]);
 		expect(rows.some((row) => row.kind === "user")).toBe(true);
 		expect(rows.some((row) => row.kind === "assistant")).toBe(true);
-		const runs = runsOf(rows);
-		expect(runs.length).toBeGreaterThanOrEqual(2);
-		for (const run of runs) expect(runSummaryText(runSummary(run.steps))).toMatch(/^\d+ steps? · \d+[smh]/);
+		// Intent draws one line per action (Jesse, 2026-10-18): no run folds
+		// them away, and each line carries the action's own words.
+		expect(runsOf(rows)).toEqual([]);
+		const actions = rows.filter((row): row is Activity => isStep(row));
+		expect(actions.length).toBeGreaterThanOrEqual(2);
+		for (const action of actions) expect(action.detail.description ?? action.detail.summary ?? "").not.toBe("");
 		const lines = subagentsOf(rows).map((row) => subagentLine(row, model.delegates, NOW));
 		// Each delegate names its subagent's transcript by the ref the Board's
 		// child row carries (demoFleet.ts).

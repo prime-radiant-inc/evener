@@ -18,6 +18,7 @@ it("starts at the system appearance and the serif, with no model on Board rows",
 		appearance: "system",
 		readingFont: "serif",
 		showModel: false,
+		openAtUnreadReplies: true,
 	});
 });
 
@@ -28,6 +29,7 @@ it("keeps a choice across launches", () => {
 		appearance: "dark",
 		readingFont: "serif",
 		showModel: false,
+		openAtUnreadReplies: true,
 	});
 });
 
@@ -37,6 +39,12 @@ it("keeps Show model on Board rows across launches", () => {
 	expect(new DisplayPreferences(storage).getSnapshot()).toMatchObject({ showModel: true });
 });
 
+it("keeps Open at unread replies across launches", () => {
+	const storage = memory();
+	new DisplayPreferences(storage).set({ openAtUnreadReplies: false });
+	expect(new DisplayPreferences(storage).getSnapshot()).toMatchObject({ openAtUnreadReplies: false });
+});
+
 it("reads an unknown or broken stored value as the default, one field at a time", () => {
 	expect(
 		new DisplayPreferences(memory('{"appearance":"sepia","readingFont":"sans","showModel":"yes"}')).getSnapshot(),
@@ -44,6 +52,7 @@ it("reads an unknown or broken stored value as the default, one field at a time"
 		appearance: "system",
 		readingFont: "sans",
 		showModel: false,
+		openAtUnreadReplies: true,
 	});
 	expect(new DisplayPreferences(memory("{not json")).getSnapshot()).toEqual(DEFAULT_DISPLAY);
 });

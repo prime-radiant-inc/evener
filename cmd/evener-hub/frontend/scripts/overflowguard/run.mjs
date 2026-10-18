@@ -205,7 +205,10 @@ async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
       }
     }
     const focus = detail ? await measureTrustedFocus(send) : null;
-    const finalMeasurement = JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
+    const finalMeasurement =
+      url.includes("settings=1") && width < 900
+        ? await measureSettingsSelect(send)
+        : JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
     let settingsLayouts = null;
     if (url.includes("settings=1")) {
       const initialLayout = realizedLayout.mobile ? "mobile" : "desktop";
@@ -226,7 +229,10 @@ async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
         { layout: initialLayout, measurement: finalMeasurement },
         {
           layout: initialLayout === "mobile" ? "desktop" : "mobile",
-          measurement: JSON.parse(await evaluate(send, "JSON.stringify(window.measure())")),
+          measurement:
+            width < 900
+              ? await measureSettingsSelect(send)
+              : JSON.parse(await evaluate(send, "JSON.stringify(window.measure())")),
         },
       ];
     }
@@ -243,6 +249,53 @@ async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
     await clearViewportOverride(send);
     page.close();
   }
+}
+
+// Supplement the fixture's segmented-control measurements without replacing
+// its card, editor, preview or scroll-container visibility/geometry checks.
+async function measureSettingsSelect(send) {
+  return JSON.parse(
+    await evaluate(
+      send,
+      `JSON.stringify((() => {
+    const measurement = window.measure();
+    const statusReason = document.querySelector('[role="status"][data-reason]')?.dataset.reason ?? null;
+    for (const editor of measurement.editors) {
+      const owner = document.querySelector('[data-testid="' + editor.ownerTestId + '"]');
+      const root = owner?.querySelector('section[aria-label="Transcript detail editor"]');
+      const labels = [...(root?.querySelectorAll('label') ?? [])].filter(label =>
+        label.textContent.trim() === 'Transcript detail');
+      const selects = labels.map(label => document.getElementById(label.htmlFor))
+        .filter(control => control instanceof HTMLSelectElement && root.contains(control));
+      const select = selects[0];
+      editor.nativeSelect = { count: selects.length, statusReason };
+      if (!select) continue;
+      const rect = select.getBoundingClientRect();
+      const rootRect = root.getBoundingClientRect();
+      const rootStyle = getComputedStyle(root);
+      const row = labels[0].parentElement;
+      const rowRect = row.getBoundingClientRect();
+      const style = getComputedStyle(row);
+      const labelRect = labels[0].getBoundingClientRect();
+      Object.assign(editor.nativeSelect, {
+        left: rect.left, right: rect.right, width: rect.width, height: rect.height,
+        rowLeft: rowRect.left, rowRight: rowRect.right, rowWidth: rowRect.width,
+        editorLeft: rootRect.left + parseFloat(rootStyle.borderLeftWidth) + parseFloat(rootStyle.paddingLeft),
+        editorRight: rootRect.right - parseFloat(rootStyle.borderRightWidth) - parseFloat(rootStyle.paddingRight),
+        contentLeft: rowRect.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft),
+        contentRight: rowRect.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight),
+        clientWidth: select.clientWidth, scrollWidth: select.scrollWidth,
+        labeled: [...select.labels].includes(labels[0]) && labelRect.width > 0 && labelRect.height > 0,
+        disabled: select.matches(':disabled'), value: select.value,
+        options: [...select.options].map(option => ({
+          value: option.value, selected: option.selected, disabled: option.disabled,
+        })),
+      });
+    }
+    return measurement;
+  })())`,
+    ),
+  );
 }
 
 async function measureComposerSend(cdpEndpoint, url, width) {
@@ -1031,6 +1084,53 @@ function columnMisaligned(found, left, right, turnLeft, turnRight) {
   );
 }
 
+function assertSettingsSelect(editor, width) {
+  const failures = [];
+  const select = editor.nativeSelect;
+  const owner = editor.ownerTestId;
+  if (select?.count !== 1) return [`${owner} has ${select?.count ?? "unknown"} labeled native Selects, expected 1`];
+  if (!select.labeled) failures.push(`${owner} Select has no visible associated label`);
+  const expectedValues = ["chat", "intent", "tools", "activity", "full", "custom"];
+  if (JSON.stringify(select.options.map((option) => option.value)) !== JSON.stringify(expectedValues)) {
+    failures.push(`${owner} Select option values are ${JSON.stringify(select.options)}`);
+  }
+  if (select.options.filter((option) => option.selected).length !== 1 || !expectedValues.includes(select.value)) {
+    failures.push(`${owner} Select has no unique valid selection: ${JSON.stringify(select)}`);
+  }
+  if (select.options.some((option) => option.disabled)) failures.push(`${owner} Select disables a detail choice`);
+  if (editor.segments.length !== 0) failures.push(`${owner} narrow Select also renders radio segments`);
+  if (
+    !nearlyEqual(select.width, select.right - select.left) ||
+    !nearlyEqual(select.left, select.contentLeft) ||
+    !nearlyEqual(select.right, select.contentRight) ||
+    !nearlyEqual(select.rowWidth, select.rowRight - select.rowLeft) ||
+    !nearlyEqual(select.rowLeft, select.editorLeft) ||
+    !nearlyEqual(select.rowRight, select.editorRight)
+  ) {
+    failures.push(
+      `${owner} Select must fill its FormRow content, and the row must fill the editor: ${JSON.stringify(select)}`,
+    );
+  }
+  if (select.width < 44 - GEOMETRY_TOLERANCE || select.height < 44 - GEOMETRY_TOLERANCE) {
+    failures.push(`${owner} Select is below the 44px tap floor: ${select.width}x${select.height}px`);
+  }
+  if (select.scrollWidth > select.clientWidth + GEOMETRY_TOLERANCE) {
+    failures.push(`${owner} Select scrolls horizontally: ${select.scrollWidth}px in ${select.clientWidth}px`);
+  }
+  if (width === 320 || width === 390) {
+    const expectedWidth = width === 320 ? 256 : 326;
+    if (!nearlyEqual(select.rowWidth, expectedWidth)) {
+      failures.push(`${owner} Select row is ${select.rowWidth}px, expected ${expectedWidth}px at ${width}px`);
+    }
+  }
+  // This regular FakeClient fixture does not advertise transcript support.
+  // Assert the disabled reason, rather than faking an enabled hub write.
+  if (!select.disabled || select.statusReason !== "unsupported") {
+    failures.push(`${owner} Select must be disabled for the unsupported fixture hub: ${JSON.stringify(select)}`);
+  }
+  return failures;
+}
+
 function assertEditors(result, width, surface) {
   const failures = [];
   const editors = result.editors;
@@ -1065,6 +1165,10 @@ function assertEditors(result, width, surface) {
       failures.push(
         `${surface} editor ${editor.ownerTestId} reports layout ${editor.layout}, expected ${expectedLayouts.get(editor.ownerTestId)}`,
       );
+    }
+    if (surface === "settings" && width < 900) {
+      failures.push(...assertSettingsSelect(editor, width));
+      continue;
     }
     const track = editor.track;
     if (!track || !nearlyEqual(track.width, track.right - track.left)) {
@@ -1139,24 +1243,6 @@ function assertEditors(result, width, surface) {
         failures.push(
           `${surface} editor ${editor.ownerTestId} segment ${JSON.stringify(segment.label)} is below 44px: ${segment.height}px`,
         );
-      }
-    }
-  }
-  if (surface === "settings" && (width === 320 || width === 390)) {
-    const expectedTrack = width === 320 ? 256 : 326;
-    const expectedSegment = width === 320 ? 40 : 51.667;
-    for (const editor of editors) {
-      if (!nearlyEqual(editor.track?.width ?? Number.NaN, expectedTrack)) {
-        failures.push(
-          `${editor.ownerTestId} track is ${editor.track?.width ?? "unknown"}px, expected ${expectedTrack}px at ${width}px`,
-        );
-      }
-      for (const segment of editor.segments ?? []) {
-        if (!nearlyEqual(segment.width, expectedSegment)) {
-          failures.push(
-            `${editor.ownerTestId} ${segment.label} segment is ${segment.width}px, expected ${expectedSegment}px at ${width}px`,
-          );
-        }
       }
     }
   }

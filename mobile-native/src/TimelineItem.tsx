@@ -27,11 +27,13 @@ import { NotificationCards } from "./session/NotificationCards";
 import { ApprovalHistory } from "./session/ApprovalHistory";
 import { QuestionHistory } from "./session/QuestionHistory";
 import { RunRow } from "./session/RunRow";
+import { StepEvidence } from "./session/StepEvidence";
 import { SubagentRow } from "./session/SubagentRow";
 import { SystemEvent } from "./session/SystemEvent";
 import { subagentLine } from "./session/subagentLine";
 import { ThoughtRow } from "./session/ThoughtRow";
 import { askRowQuestions, stepWords, timeMarkerText } from "./session/transcriptRows";
+import { useStepEvidence } from "./session/useStepEvidence";
 import { subagentOutcome } from "./subagents/subagentModel";
 import { TranscriptImages } from "./TranscriptImages";
 import { isCriticalNotice, noticeLabel, type TimelineRow } from "./timeline";
@@ -49,6 +51,10 @@ const exitRowStyle = { flexDirection: "row", alignItems: "center", gap: 6 } as c
 // large text scale) overflows the viewport and pushes the mark offscreen. Same
 // constraint RunRow puts on its own step text.
 const exitTextStyle = { flex: 1, minWidth: 0 } as const;
+
+// The evidence source for a row that is not a tool step: hooks are called for
+// every row, so a non-step needs a stable source with nothing to show.
+const NO_STEP = { label: "", summaryOnly: true, detail: {} } as const;
 
 export function TimelineItem({
 	item,
@@ -120,6 +126,14 @@ export function TimelineItem({
 		if (heldOpen) setDisclosureOpenAll(disclosureIds, true);
 	}, [heldOpen, disclosureKey]);
 	const colors = useColors();
+	// A tool step's evidence, for the rows that show one: the same renderer a
+	// run uses, so an expanded failed call keeps its 40-line preview, its ANSI
+	// handling and its full-log viewer here too.
+	// Every activity but a thought shows this evidence: a tool step, and an
+	// unknown forward-compatible item, whose body the projection put in its
+	// detail. A thought has its own row.
+	const step = item.kind === "activity" && item.family !== "reasoning" ? item : NO_STEP;
+	const evidence = useStepEvidence(step);
 	// A thought the projector didn't show reads as one quiet line, with no
 	// error rule, unless the thought itself failed.
 	const quietThought = item.kind === "failure" && item.thought === true && item.title !== "Thought failed";
@@ -344,25 +358,7 @@ export function TimelineItem({
 					)}
 					{expanded ? (
 						<>
-							{item.detail.arguments ? (
-								<>
-									<Copy muted>Input</Copy>
-									<Copy>{item.detail.arguments}</Copy>
-								</>
-							) : null}
-							{item.detail.output ? (
-								<>
-									<Copy muted>Output</Copy>
-									<Copy>{item.detail.output}</Copy>
-								</>
-							) : null}
-							{item.detail.error ? (
-								<>
-									<Copy muted>Error</Copy>
-									<Copy>{item.detail.error}</Copy>
-								</>
-							) : null}
-							{item.detail.exitCode !== undefined ? <Copy muted>Exit code: {item.detail.exitCode}</Copy> : null}
+							<StepEvidence step={item} evidence={evidence} hubId={hubId} />
 							{showDuration && item.detail.durationMs !== undefined ? (
 								<Copy muted>Duration: {item.detail.durationMs} ms</Copy>
 							) : null}

@@ -6,20 +6,10 @@
 // to carry inline - sit below the meta table, Remove behind its
 // ConfirmDialog. A wide right Sheet on desktop, a bottom Sheet on mobile.
 //
-// The entry is read from the store by name so cross-client changes land
-// live; the draft reseeds when a different marketplace opens or this
-// sheet's own save lands, never on an unrelated refresh. The sheet closes
-// itself when its entry vanishes - except across its own rename, where the
-// page re-selects the new name (onRenamed).
-//
-// Two consequences of that reseeding policy, both accepted. The draft is
-// seeded in an effect, so the first commit after opening paints the title and
-// a disabled Save with no body yet. And because a same-name store update
-// deliberately does not reseed, another client's edit to the marketplace
-// being edited here leaves this draft describing the OLD source: Save lights
-// up untouched, and pressing it writes this form back over that edit. The
-// alternative - reseeding on every store update - silently discards whatever
-// the user is halfway through typing, which is worse.
+// The draft compares against its pinned baseline, not the live entry.
+// Untouched forms follow canonical changes. Edited forms retain their input
+// and require an explicit choice when the canonical source changes.
+// An authoritative removal closes the sheet, except during its own rename.
 
 import type { AppwireClientLike, MarketplaceEntry } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
@@ -73,8 +63,8 @@ export interface MarketplaceSheetProps {
   /** Written only by a rename, which moves the entry's expansion to its new
    * name - the set is keyed by name. */
   setExpandedMarketplaces: Dispatch<SetStateAction<Set<string>>>;
-  /** Applied removals survive this sheet's load-error unmount until the owning
-   * connection returns an authoritative list without the marketplace. */
+  /** Applied removals survive sheet dismissal and failed reconciliation until
+   * the owning connection publishes a fresh authoritative list. */
   appliedRemovalNames: ReadonlySet<string>;
   /** The client identity that owned this render's mutation. */
   connectionClient: AppwireClientLike | null;
@@ -99,6 +89,8 @@ export function MarketplaceSheet({
   const store = useExtensionsHostStore();
   const directory = useHostDirectoryActions();
   const marketplaces = useExtensionsHostState((s) => s.marketplaces);
+  const readError = useExtensionsHostState((s) => s.marketplacesError);
+  const reading = useExtensionsHostState((s) => s.marketplacesLoading);
   const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
   const isMobile = useIsMobile();
   const toasts = useToasts();
@@ -107,6 +99,7 @@ export function MarketplaceSheet({
   const entry = name === null || marketplaces === null ? undefined : marketplaces.find((m) => m.name === name);
 
   const [draft, setDraft] = useState<MarketplaceDraft | null>(null);
+  const [baseline, setBaseline] = useState<MarketplaceEntry | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [pendingRemove, setPendingRemove] = useState(false);
   // Set for the span of a rename request: the old name vanishes from the
@@ -133,23 +126,47 @@ export function MarketplaceSheet({
   }, [expandedMarketplaces]);
 
   function seed(current: MarketplaceEntry): void {
+    setBaseline(current);
     setDraft(marketplaceDraftFor(current));
     setFormError(null);
   }
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reseed only when a different marketplace opens; a refresh of the same one must not clobber in-progress edits
+  // biome-ignore lint/correctness/useExhaustiveDependencies: identity changes reset the editor, same-name refreshes reconcile separately below
   useEffect(() => {
     // A Remove confirmation is about the marketplace it was opened for - it
     // names that one and its Confirm removes it - so it goes with the draft
     // rather than retargeting itself at whatever the page selects next.
     setPendingRemove(false);
     if (entry === undefined) {
+      setBaseline(null);
       setDraft(null);
       setFormError(null);
       return;
     }
     seed(entry);
-  }, [entry?.name]);
+  }, [entry?.name, store, connectionClient]);
+
+  // The re-fetch warning tracks the source the form SHOWS, not the request: it
+  // belongs on screen from the moment a kind is picked, which is before that
+  // kind's field has a value and so before the model reports a source change
+  // at all. A source nobody touched promises nothing, even when its field sits
+  // empty because the entry had no URL to seed it with.
+  const sourceTouched = baseline !== null && draft !== null && marketplaceSourceTouched(baseline, draft);
+  // Empty/incomplete input is still a draft, even when it cannot produce a
+  // valid edit request. It must not be silently reseeded by a refresh.
+  const dirty = baseline !== null && draft !== null && (draft.name.trim() !== baseline.name.trim() || sourceTouched);
+  const canonicalChanged =
+    baseline !== null &&
+    entry !== undefined &&
+    (["kind", "url", "repo", "path", "ref", "sha"] as const).some((key) => baseline.source[key] !== entry.source[key]);
+  const conflict = dirty && canonicalChanged;
+
+  useEffect(() => {
+    if (!dirty && entry !== undefined && baseline !== entry) {
+      setBaseline(entry);
+      setDraft(marketplaceDraftFor(entry));
+    }
+  }, [entry, baseline, dirty]);
 
   // The rename is over once the page has re-selected under the new name, so
   // this effect exists precisely to fire on a changed `name` - which the
@@ -163,18 +180,18 @@ export function MarketplaceSheet({
     pendingRename.current = null;
   }, [name]);
   useEffect(() => {
-    if (name !== null && marketplaces !== null && entry === undefined && pendingRename.current === null) onClose();
-  }, [name, marketplaces, entry, onClose]);
+    if (
+      name !== null &&
+      marketplaces !== null &&
+      readError === null &&
+      entry === undefined &&
+      pendingRename.current === null
+    )
+      onClose();
+  }, [name, marketplaces, entry, readError, onClose]);
 
   const open = name !== null && entry !== undefined;
-  const params = entry !== undefined && draft !== null ? marketplaceEditParams(entry, draft) : null;
-  const dirty = params !== null;
-  // The re-fetch warning tracks the source the form SHOWS, not the request: it
-  // belongs on screen from the moment a kind is picked, which is before that
-  // kind's field has a value and so before the model reports a source change
-  // at all. A source nobody touched promises nothing, even when its field sits
-  // empty because the entry had no URL to seed it with.
-  const sourceTouched = entry !== undefined && draft !== null && marketplaceSourceTouched(entry, draft);
+  const params = baseline !== null && draft !== null ? marketplaceEditParams(baseline, draft) : null;
   // A half-picked source is the one thing that blocks an otherwise valid save:
   // it would go out as a rename alone while the picker on screen says the
   // source moved too.
@@ -184,9 +201,9 @@ export function MarketplaceSheet({
   // changing that name refreshes a marketplace that no longer answers to it.
   // The stores serialize every write behind this host's one hub write gate,
   // so any write in flight is what disables this sheet.
-  const busy = hubWriteBusy;
+  const busy = hubWriteBusy || readError !== null;
   const removeDisabled = busy || (entry !== undefined && appliedRemovalNames.has(entry.name));
-  const canSave = dirty && !busy && !(sourceTouched && incomplete);
+  const canSave = params !== null && !conflict && !busy && !reading && !(sourceTouched && incomplete);
 
   function update(patch: Partial<MarketplaceDraft>): void {
     setDraft((current) => (current === null ? current : { ...current, ...patch }));
@@ -406,6 +423,39 @@ export function MarketplaceSheet({
                 </InlineNotice>
               )}
               {formError !== null && <InlineNotice tone="danger">{formError}</InlineNotice>}
+              {readError !== null && (
+                <InlineNotice
+                  tone="danger"
+                  action={
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={reading}
+                      onClick={() => void store.getState().fetchMarketplaces()}
+                    >
+                      Retry marketplaces
+                    </Button>
+                  }
+                >
+                  Could not refresh marketplaces. Your edits are retained. Refresh the list before saving.
+                </InlineNotice>
+              )}
+              {conflict && (
+                <InlineNotice
+                  action={
+                    <div className={CLASS.sheetActions}>
+                      <Button type="button" variant="quiet" disabled={busy} onClick={() => seed(entry)}>
+                        Reload latest
+                      </Button>
+                      <Button type="button" variant="quiet" disabled={busy} onClick={() => setBaseline(entry)}>
+                        Keep my edits
+                      </Button>
+                    </div>
+                  }
+                >
+                  This source changed elsewhere. Reload its latest values or keep your edits, then Save to apply them.
+                </InlineNotice>
+              )}
             </form>
             <div className={CLASS.metaList}>
               <PropertyList
