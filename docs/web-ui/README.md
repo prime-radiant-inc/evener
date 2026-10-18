@@ -69,6 +69,9 @@ inspection failures do not prevent editing local overrides.
 Conversation display edits one device layout at a time, initially the current
 device class. Both shared layouts remain available through the layout selector.
 Use the shared default clears only the selected layout's browser-local override.
+Scope and the local-override action appear before the editor. Editing a shared
+default keeps both browser-local layout choices. **Use the shared default** clears
+only the selected layout's browser-local override, without writing shared defaults.
 The preview stays visible; Technical details contains revisions and inventories.
 
 On phones, settings opens as a full-width list. Drilling into a page and using
