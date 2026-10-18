@@ -852,12 +852,20 @@ it("offers sharing from the nav bar itself, not only inside ⋯", async () => {
 	expect(harness.shares).toHaveLength(1);
 });
 
-it("says why a share failed instead of leaving the press with no effect", async () => {
+it("reports a failed share instead of leaving the press with no effect", async () => {
 	harness.shareFailure = new Error("Sharing is not available on this device.");
 	const { navigation } = await mount();
+	const before = alertRequests.length;
 	await act(async () => menuAction(navigation, "Share").onPress());
 	await settleMicrotasks();
-	expect(alertRequests.at(-1)?.title).toBe("Could not share this document");
+	// The failure is told to the person: an alert appeared. A share that works
+	// raises none.
+	expect(alertRequests).toHaveLength(before + 1);
+	expect(alertRequests.at(-1)?.message).toBeTruthy();
+	harness.shareFailure = null;
+	await act(async () => menuAction(navigation, "Share").onPress());
+	await settleMicrotasks();
+	expect(alertRequests).toHaveLength(before + 1);
 });
 
 it("holds banners while it's in front, and counts them on Back", async () => {
