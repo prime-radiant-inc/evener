@@ -155,7 +155,7 @@ test("the dialog still renders the guided flow and hands the connected name to i
   await user.click(await screen.findByRole("button", { name: "Anthropic" }));
   await user.type(screen.getByLabelText("API key"), "sk-guided");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await user.click(await screen.findByRole("button", { name: "Choose model" }));
 
   expect(onConnected).toHaveBeenCalledWith("anthropic");
 });

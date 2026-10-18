@@ -41,6 +41,34 @@ Design documentation for the web hub (`cmd/evener-hub`).
   observer auto-open). Point-in-time; the multi-pane one is still named as
   source of truth by its implementation plan.
 
+## New session and first-run provider setup
+
+The New session form keeps its working-directory and task drafts while provider
+setup and model selection open, fail, retry and close. When the selected local
+host has no usable provider access, the prerequisite appears before the task
+composer and opens the existing Connect provider dialog. Remote targets name the
+missing remote setup but do not expose the controller's credential editor.
+
+**Save and check** persists resolved host access and requests only that
+connection's model list. A failed check keeps a successfully saved credential and
+offers retry; unsupported listing has an explicit unverified continuation. A
+successful check hands the connection's actual instance name to **Choose model**,
+which scopes the first view to that instance. Failed or empty model reads offer a
+cache-bypassing retry. Local launches may reopen connection settings; remote
+launches cannot write controller credentials.
+
+Provider connection and model choice never start a session. A person explicitly
+chooses the session model and selects **Start**. Start may also create a blank
+session, whose task is written later. The Effective access summary beside Start
+comes from launch resolution; an explicit Advanced sandbox override wins over
+the Access mode choice. Its Change action opens this form's Advanced controls and
+focuses the setting that owns the displayed value. Task prose does not grant or
+restrict tool permissions.
+
+The [first-task guide](../getting-started.md) walks through this path. The
+[provider guide](../connecting-a-provider.md) covers authentication alternatives,
+model-list limits and recovery.
+
 ## Settings
 
 Settings groups controls by task:

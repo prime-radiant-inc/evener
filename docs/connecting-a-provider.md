@@ -2,7 +2,10 @@
 
 Connect one provider on the host that will run your session. You need an installed, running hub and either a hosted account with suitable access or a reachable local model server. No existing API key is required for the [Ollama path](ollama.md).
 
-The [first-task walkthrough](getting-started.md#connect-a-provider-before-starting-work) uses Settings → Providers & credentials. The guided dialog below manages the same host's connections and credentials. If you already completed that step, use your existing connection; you do not need to add it again.
+The [first-task walkthrough](getting-started.md#connect-a-provider-in-new-session)
+uses this dialog without leaving New session. Settings → Providers & credentials
+manages the same host connections and credentials. If access is already
+configured, choose that connection rather than adding it again.
 
 ## Start your first session
 
@@ -20,14 +23,23 @@ The [first-task walkthrough](getting-started.md#connect-a-provider-before-starti
    [OpenRouter](https://openrouter.ai/settings/keys).
 4. Select **Save and check**. Evener saves access on the Evener host, reloads the
    resolved connection, and requests the provider's **model list only**. It does
-   not send your prompt or prove generation access, quota, or model capability.
-5. After a successful check, select **Continue**. The model chooser opens with
+   not send your prompt or make a generation request. A returned list does not
+   prove generation access, quota, billing status, or a model's tool capability.
+5. After a successful check, select **Choose model**. The model chooser opens with
    models returned for that connection's actual instance name. Choose a model;
    **Show all models** returns to the full catalogue. If no models are listed,
    check the provider's model access and endpoint rather than guessing a model ID.
-6. Review your working directory, prompt, and model, then press **Start**.
+6. Review your working directory, task, and explicit model. Review **Effective
+   access** near Start and use **Change** if the resolved permission is not what
+   you intended. Instructions in the task do not restrict tools; the access
+   setting does. Then press **Start**.
    Connecting and choosing a model do not start a session or change the global
    provider default.
+
+The task and working-directory drafts stay in New session while the provider
+dialog and model chooser open, fail, retry, and close. Check them again before
+Start. A successful credential save survives a later model-list failure; retry
+the check without pasting the key again. Cancel does not start a session.
 
 **Subscriptions are not API keys.** Claude, ChatGPT, and Gemini subscriptions
 do not automatically include separately billed API access. OpenAI API keys and
