@@ -1318,3 +1318,50 @@ test("pre-instanceId record tables migrate in place and their existing rows read
 	expect(after.intentSequence).toBe(2);
 	expect(rawRow("mutation_outbox", after.clientMutationId)).toMatchObject({ instance_id: "instance-new" });
 });
+
+// The stuck-sending heal's storage rule: an accepted start or queue record
+// whose turn left a bounded read's window is retired on a complete
+// authoritative read, while a record accepted after that read began - and any
+// record the daemon's pending projection never names (a note, a clear) - stays.
+test("pruneUnlistedAccepted retires only old accepted turn records of the target", async () => {
+	let now = 1000;
+	storage = new MutationOutboxSQLite(port, {
+		createMutationId: (() => {
+			let next = 0;
+			return () => `mutation-${++next}`;
+		})(),
+		now: () => now,
+	});
+	const send = await storage.enqueueIntent({
+		...intent("left the window"),
+		method: "turn/start",
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "left the window" }] },
+	});
+	await storage.settleReceipt(send.clientMutationId, "pending");
+	now = 2000;
+	const recent = await storage.enqueueIntent({
+		...intent("accepted during the read"),
+		method: "turn/start",
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "accepted during the read" }] },
+	});
+	await storage.settleReceipt(recent.clientMutationId, "pending");
+	// An accepted note can retain a display copy (the web keeps one so a retry
+	// lookup sees the save as pending), and the daemon's pending projection
+	// never names a note: absence must not retire it.
+	const note = await storage.enqueueIntent({
+		...noteIntent("a note is never in the pending projection"),
+		optimisticDisplay: { input: [{ type: "text", text: "a note is never in the pending projection" }] },
+	});
+	await storage.settleReceipt(note.clientMutationId, "pending");
+
+	await expect(storage.pruneUnlistedAccepted(TARGET, 1500)).resolves.toEqual([send.clientMutationId]);
+	expect(rawRow("mutation_optimistic", send.clientMutationId)).toBeUndefined();
+	expect(rawRow("mutation_optimistic", recent.clientMutationId)).toBeDefined();
+	expect(rawRow("mutation_optimistic", note.clientMutationId)).toBeDefined();
+});
+
+test("pruneUnlistedAccepted leaves a submitting row alone", async () => {
+	const queued = await storage.enqueueIntent(intent("still owed to the daemon"));
+	await expect(storage.pruneUnlistedAccepted(TARGET, 9999)).resolves.toEqual([]);
+	expect(rawRow("mutation_outbox", queued.clientMutationId)).toBeDefined();
+});

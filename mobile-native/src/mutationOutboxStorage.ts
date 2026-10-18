@@ -713,6 +713,32 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 		});
 	}
 
+	// Retires accepted records the daemon's complete mutation projection no
+	// longer lists. An accepted record is already applied (its receipt said so)
+	// and is kept only until a read shows it reflected; the daemon drops a
+	// start or queue from that projection the moment its turn is incorporated,
+	// so once the transcript item leaves a bounded read's window nothing would
+	// ever name the id again and the composer would show it as a send still on
+	// its way, with no action to take. Absence from a mutation-authoritative
+	// projection is the proof, exactly as it is for a parked outbox row;
+	// `createdBefore` keeps a record accepted after the read began out of it.
+	async pruneUnlistedAccepted(targetRef: string, createdBefore: number): Promise<string[]> {
+		return this.transaction("mutation_optimistic_prune_unlisted", () => {
+			const removed = this.db.getAllSync<{ client_mutation_id: string; intent_sequence: number }>(
+				`DELETE FROM ${TABLES.optimistic}
+				 WHERE target_ref = ? AND state = 'accepted' AND created_at <= ?
+				   AND method IN ('turn/start', 'turn/queue', 'turn/steer',
+				                  'turn/drainAsSteer', 'turn/promoteQueuedAsSteer')
+				 RETURNING client_mutation_id, intent_sequence`,
+				targetRef,
+				createdBefore,
+			);
+			return removed
+				.sort((left, right) => left.intent_sequence - right.intent_sequence)
+				.map((row) => row.client_mutation_id);
+		});
+	}
+
 	protected list<T extends MutationRecord<A>>(table: string, targetRef?: string): T[] {
 		// One statement template, scoped or not, so the query string lives in one
 		// place instead of two near-identical copies.

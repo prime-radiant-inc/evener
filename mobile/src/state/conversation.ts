@@ -51,7 +51,11 @@ import type {
 	MutationPersistenceSnapshot,
 	PendingTurnEntry,
 } from "@evener/appwire-client/state/mutation";
-import { ownPendingSend, reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
+import {
+	notificationMutationIdentities,
+	ownPendingSend,
+	reconcilePendingEntries,
+} from "@evener/appwire-client/state/mutation";
 import { create } from "zustand";
 import type {
 	ActivityMember,
@@ -1508,6 +1512,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// every durable read re-runs it, and so does every conversation write.
 	let pendingPort: ConversationMutationPendingPort | null = null;
 	let pendingUnsubscribe: (() => void) | null = null;
+	// The bound seam's read, for the live-frame settlement below: the settlement
+	// writes storage, and the projection must follow without waiting for the
+	// subscription's own notification.
+	let pendingRead: (() => void) | null = null;
 	let pendingGeneration = 0;
 	// Advanced only by forgetPendingProvenance (close/reset). A read's provenance
 	// write is fenced on THIS, not on pendingGeneration: a read in flight across a
@@ -1587,6 +1595,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		++pendingGeneration;
 		pendingUnsubscribe?.();
 		pendingUnsubscribe = null;
+		pendingRead = null;
 		pendingPort = null;
 		pendingSnapshot = null;
 	}
@@ -2767,6 +2776,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				};
 
 				pendingUnsubscribe = port.subscribe(read);
+				pendingRead = read;
 				read();
 				return () => {
 					if (generation !== pendingGeneration) return;
@@ -3075,6 +3085,24 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// when it carries one, else by threadId; a frame naming neither is
 				// not about this thread. Silently drop everything else.
 				if (!notificationTargetsThread(n, state.conversation)) return;
+				// A frame that names a mutation the daemon has moved past is positive
+				// proof that send landed, so its durable record retires now rather
+				// than waiting for an authoritative read wide enough to still list
+				// it. Reflection in the model alone cannot clear it: the daemon drops
+				// a start from its pending projection the moment the turn is
+				// incorporated, so a bounded read stops naming the id while the
+				// phone's accepted record lives on and renders as a send in flight
+				// with nothing to act on.
+				const settledIds = notificationMutationIdentities(n);
+				const settle = pendingPort?.settleIdentities;
+				if (settledIds.length > 0 && settle !== undefined) {
+					void settle(settledIds)
+						.then(() => pendingRead?.())
+						.catch(() => {
+							// A failed settlement proves nothing and changes nothing: the
+							// record stays for the next frame or authoritative read.
+						});
+				}
 				// A status frame the hub relays names pageBefore for its thread; one
 				// straight from a daemon names none and leaves the last answer.
 				if (n.method === "thread/status/changed" && n.params.threadId === state.conversation.threadId)
