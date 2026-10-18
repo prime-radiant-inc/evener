@@ -21,6 +21,28 @@ test('owned identifiers do not rewrite unrelated values with the same prefix', (
  assert.ok(normalizeTranscript(record).includes(record.stdout));
 });
 
+test('owned path normalization preserves unrelated prefix and suffix tokens', () => {
+ const output = '/backup/owned/work /backup/owned/work/file /owned/work-other /owned/work.other';
+ const record = { argv: ['echo'], cwdLabel: 'workspace', stdout: output, stderr: output, exitCode: 1, owned: { paths: ['/owned/work'] } };
+ const text = normalizeTranscript(record);
+ assert.ok(text.includes(`stdout:\n${output}\nstderr:\n${output}\nexit: 1`));
+});
+
+test('executable normalization requires an exact argv element or output path token', () => {
+ const output = '/backup/owned/bin/evener /owned/bin/evener-helper /owned/bin/evener/file /owned/bin/evener.other';
+ const record = { argv: ['/owned/bin/evener-helper', '/backup/owned/bin/evener', 'echo /owned/bin/evener'], cwdLabel: 'workspace', stdout: output, stderr: output, exitCode: 1, owned: { executable: '/owned/bin/evener' } };
+ const text = normalizeTranscript(record);
+ assert.ok(text.includes("$ /owned/bin/evener-helper /backup/owned/bin/evener 'echo /owned/bin/evener'\n"));
+ assert.ok(text.includes(`stdout:\n${output}\nstderr:\n${output}\nexit: 1`));
+});
+
+test('normalization replaces exact owned paths and their descendants', () => {
+ const record = { argv: ['/owned/bin/evener', '/owned/work/file'], cwdLabel: '/owned/work', stdout: '/owned/work /owned/work/file "/owned/work/nested/file"', stderr: '/owned/bin/evener "/owned/bin/evener"', exitCode: 0, owned: { paths: ['/owned/work'], executable: '/owned/bin/evener' } };
+ const text = normalizeTranscript(record);
+ assert.ok(text.includes('$ evener <workspace>/file\ncwd: <workspace>\n'));
+ assert.ok(text.includes('stdout:\n<workspace> <workspace>/file "<workspace>/nested/file"\nstderr:\nevener "evener"\nexit: 0'));
+});
+
 test('tokens and URLs are redacted before HTML rendering', () => {
  const r = { argv: ['echo'], cwdLabel: 'workspace', stdout: 'https://host/auth/private?token=secret Bearer abc123 sk-12345678901234567890', stderr: '', exitCode: 0 };
  const html = transcriptHTML(r);

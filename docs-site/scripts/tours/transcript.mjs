@@ -3,12 +3,18 @@ import { chromium } from '@playwright/test';
 
 function literal(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
+function replacePathTokens(text, path, replacement, descendants = false) {
+ const boundary = descendants ? `[\\s/"']` : `[\\s"']`;
+ return text.replace(new RegExp(`(^|[\\s"'])${literal(path)}(?=$|${boundary})`, 'g'), (_, prefix) => prefix + replacement);
+}
+
 export function normalizeTranscript(record) {
  const records = Array.isArray(record) ? record : [record];
  return 'Rendered command transcript\nStreams are recorded separately, not interleaved.\n\n' + records.map((r) => {
-  let text = `$ ${r.argv.map((arg) => /^[A-Za-z0-9_./=:-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\"'\"'")}'`).join(' ')}\ncwd: ${r.cwdLabel}\nstdout:\n${r.stdout}\nstderr:\n${r.stderr}\nexit: ${r.exitCode}\n`;
-  if (r.owned?.executable) text = text.replaceAll(r.owned.executable, 'evener');
-  for (const path of r.owned?.paths ?? []) text = text.replace(new RegExp(`${literal(path)}(?=$|[\\s/\"'])`, 'g'), '<workspace>');
+  const argv = r.argv.map((arg) => arg === r.owned?.executable ? 'evener' : arg);
+  const output = (text) => r.owned?.executable ? replacePathTokens(text, r.owned.executable, 'evener') : text;
+  let text = `$ ${argv.map((arg) => /^[A-Za-z0-9_./=:-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\"'\"'")}'`).join(' ')}\ncwd: ${r.cwdLabel}\nstdout:\n${output(r.stdout)}\nstderr:\n${output(r.stderr)}\nexit: ${r.exitCode}\n`;
+  for (const path of r.owned?.paths ?? []) text = replacePathTokens(text, path, '<workspace>', true);
   for (const port of r.owned?.ports ?? []) text = text.replace(new RegExp(`port=${literal(port)}(?![0-9])`, 'g'), 'port=<port>');
   for (const id of r.owned?.ids ?? []) text = text.replace(new RegExp(`id=${literal(id)}(?![\\w-])`, 'g'), 'id=<id>');
   return text.replace(/https?:\/\/[^\s<>]+/g, '[URL REDACTED]')
