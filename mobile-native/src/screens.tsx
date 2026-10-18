@@ -2528,6 +2528,7 @@ export function ConversationScreen({
 	// An error row's Retry re-sends the input that opened the failed turn
 	// through Send's own path (ruling 26): your words and images again, never a
 	// sentence invented for you, and whatever you were typing stays alone.
+	const toastShow = useToast().show;
 	const retryFailedTurn = useCallback(async () => {
 		const kind = liveSendKind();
 		if (!service || kind === null) return;
@@ -2536,16 +2537,28 @@ export function ConversationScreen({
 		const origin = latest ? originatingInput(live.conversation.turns, latest.id) : undefined;
 		if (origin?.kind !== "retry") return;
 		setActionError(null);
+		// Images whose bytes did not survive (a reloaded turn's sha-routed
+		// sources) stay behind: the request goes out with the text it can
+		// re-send, and the person is told what to re-attach, as on the web.
+		const dropped = origin.input.sourceImageCount - (origin.input.attachments?.length ?? 0);
 		try {
 			await document.submitText(
 				origin.input.text,
 				async (text, images) => deliver(service, kind, text, images),
 				origin.input.attachments,
 			);
+			if (dropped > 0)
+				toastShow({
+					text:
+						dropped === 1
+							? "Retried without an attached image. Re-attach it to ask about it again."
+							: `Retried without ${dropped} attached images. Re-attach them to ask about them again.`,
+					kind: "retry:dropped-images",
+				});
 		} catch {
 			// As with Send, a refusal leaves the unconfirmed ghost to say so.
 		}
-	}, [liveSendKind, service, document, deliver, store]);
+	}, [liveSendKind, service, document, deliver, store, toastShow]);
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
 			if (errorAction === "resume") void controls?.resume();

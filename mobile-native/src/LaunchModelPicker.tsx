@@ -94,7 +94,9 @@ export function LaunchModelPicker({
 							}}
 						>
 							<SymbolView name="exclamationmark.triangle.fill" tintColor={colors.secondary} size={13 * scale} />
-							<Copy muted>{item.text}</Copy>
+							<View style={{ flex: 1, minWidth: 0 }}>
+								<Copy muted>{item.text}</Copy>
+							</View>
 						</View>
 					);
 				const selected = value === item.option.qualified;
@@ -119,7 +121,9 @@ export function LaunchModelPicker({
 							{selected ? (
 								<SymbolView name="checkmark" tintColor={colors.accent} size={14 * scale} weight="semibold" />
 							) : null}
-							<Copy>{item.option.label}</Copy>
+							<View style={{ flex: 1, minWidth: 0 }}>
+								<Copy>{item.option.label}</Copy>
+							</View>
 						</View>
 						{item.meta ? <Copy muted>{item.meta}</Copy> : null}
 					</Pressable>

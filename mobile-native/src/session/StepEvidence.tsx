@@ -92,13 +92,15 @@ function Checklist({ tasks }: { tasks: readonly ChecklistTask[] }) {
 					<View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
 						{/* The composed label below already reads the state in words. */}
 						<TaskStatusMark status={task.status} size={15 * scale} style={{ marginTop: 2 * scale }} />
-						<Text
-							allowFontScaling={allowFontScaling}
-							accessibilityLabel={`${TASK_STATUS_LABEL[task.status]}: ${task.description}`}
-							style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
-						>
-							{task.description}
-						</Text>
+						<View style={{ flex: 1, minWidth: 0 }}>
+							<Text
+								allowFontScaling={allowFontScaling}
+								accessibilityLabel={`${TASK_STATUS_LABEL[task.status]}: ${task.description}`}
+								style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
+							>
+								{task.description}
+							</Text>
+						</View>
 					</View>
 					{task.note ? (
 						<Text

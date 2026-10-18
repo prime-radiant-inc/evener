@@ -199,6 +199,24 @@ export class DraftDocument {
 		const outbound = reissued ?? images;
 		if (!loaded || submitting || error || record.unconfirmed !== null || (!text.trim() && outbound.length === 0))
 			return;
+		// A re-issued input (a Retry) carries its images as wire attachments:
+		// register them as pending image data so the uncertain record keeps
+		// both the references and the bytes, and recovery restores the whole
+		// input instead of text with orphaned markers.
+		const reissuedRecords: DraftImage[] = [];
+		if (reissued) {
+			for (const attachment of reissued) {
+				const data: DraftImageData = {
+					id: `${attachment.marker}:reissue:${attachment.data.length}`,
+					marker: attachment.marker,
+					mediaType: attachment.mediaType,
+					...(attachment.name === undefined ? {} : { name: attachment.name }),
+					data: attachment.data,
+				};
+				this.unsavedImages.set(data.id, data);
+				reissuedRecords.push(data);
+			}
+		}
 		// Persist before invoking any transport operation. A crash after this point
 		// can only establish uncertainty, never that it is safe to replay the input.
 		const inputImages = reissued ?? this.repository().imageInputs(this.destination, images);
@@ -207,7 +225,7 @@ export class DraftDocument {
 				draft: preserveDraft ? record.draft : "",
 				unconfirmed: text,
 				...(preserveDraft && record.images?.length ? { images: record.images } : {}),
-				...(images.length ? { unconfirmedImages: images } : {}),
+				...(outbound.length ? { unconfirmedImages: [...reissuedRecords, ...images] } : {}),
 			},
 			false,
 		);

@@ -2514,6 +2514,41 @@ it("re-sends the failed turn's images with its text on Retry", async () => {
 	]);
 });
 
+it("says when a Retry went out without images it could not re-send", async () => {
+	const served = thread("ref-retry-dropped", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			items: [
+				{
+					id: "u-1",
+					turnId: "turn_1",
+					type: "userMessage",
+					status: "completed",
+					// A reloaded turn: the image's src is a sha reference the
+					// phone cannot turn back into bytes, so the retry can send
+					// the text but must drop the image — and say so.
+					text: "(attached image 1: plot.png) my original question",
+					images: [{ src: "sha:abc123", name: "plot.png" }],
+				},
+			],
+		},
+	];
+	const { tree, hub } = await mount(served);
+	await press(tree, "Retry");
+	expect(hub.mutations()).toEqual(["turn/start"]);
+	const start = hub.requests.find((request) => request.method === "turn/start");
+	// The text goes out alone; the toast says an image stayed behind.
+	expect(start?.params.input).toEqual([{ type: "text", text: "(attached image 1: plot.png) my original question" }]);
+	const toastText = tree.root
+		.findAll((node) => String(node.type) === "Text")
+		.find((node) => typeof node.props.children === "string" && node.props.children.includes("attached image"));
+	expect(toastText).toBeDefined();
+});
+
 it("offers no Retry when the failed turn's own input cannot be re-sent", async () => {
 	const served = thread("ref-retry-none", "idle");
 	(served as unknown as { turns: unknown[] }).turns = [

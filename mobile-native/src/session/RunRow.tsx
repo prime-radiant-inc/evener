@@ -154,8 +154,15 @@ export function RunRow({
 		<View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
 			{live ? null : <FoldChevron folded={!open} />}
 			<Text
+				style={{
+					flex: 1,
+					minWidth: 0,
+					fontSize: 14 * scale,
+					lineHeight: 19 * scale,
+					color: palette.inkMid,
+					fontVariant: ["tabular-nums"],
+				}}
 				allowFontScaling={allowFontScaling}
-				style={{ fontSize: 14 * scale, lineHeight: 19 * scale, color: palette.inkMid, fontVariant: ["tabular-nums"] }}
 			>
 				{`${runHeadText(summary)} · `}
 				{summary.parts.map((part, index) => (

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
+import { reconnectDelay } from "./hubConnection";
 import { NavigationActions } from "./navigationActions";
 import { NavigationPages } from "./navigationPages";
 import { followPinCatalog, refreshPinNavigation } from "./pinNavigation";
@@ -44,6 +45,27 @@ export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?:
 		owner: typeof binding;
 		value: Awaited<ReturnType<typeof refreshPinNavigation>>;
 	} | null>(null);
+	// A failed reconciliation strands the pin screens on a manual Check again
+	// while the app sits idle; the hook re-runs reconcile() itself on the same
+	// capped backoff the rest of the app's failed reads use, and retires once
+	// a read lands. Only the full reconciliation read clears the action's
+	// uncertainty and publishes the readback, so the catalog pages' own retry
+	// cannot stand in for it.
+	const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	const retryCount = useRef(0);
+	const clearReconcileRetry = useCallback(() => {
+		if (retryTimer.current !== null) {
+			clearTimeout(retryTimer.current);
+			retryTimer.current = null;
+		}
+		retryCount.current = 0;
+	}, []);
+	useEffect(
+		() => () => {
+			if (retryTimer.current !== null) clearTimeout(retryTimer.current);
+		},
+		[],
+	);
 	const read = useMemo(() => {
 		if (!client || !pages) return null;
 		return async (checkpoint?: Parameters<typeof refreshPinNavigation>[2]["checkpoint"], confirmReceipt = false) => {
@@ -70,8 +92,23 @@ export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?:
 			journal,
 		);
 	}, [client, read, journal, isCurrent]);
+	const armReconcileRetry = useCallback(() => {
+		if (retryTimer.current !== null) return;
+		retryCount.current += 1;
+		retryTimer.current = setTimeout(() => {
+			retryTimer.current = null;
+			if (isCurrent()) void actions?.reconcile();
+		}, reconnectDelay(retryCount.current));
+	}, [actions, isCurrent]);
 	const page = useSyncExternalStore(pages?.subscribe ?? noSubscription, pages?.getSnapshot ?? noSnapshot);
 	const action = useSyncExternalStore(actions?.subscribe ?? noSubscription, actions?.getSnapshot ?? noSnapshot);
+	// The reconciliation's own outcome arms or retires its retry: success clears
+	// it, a failure re-arms it while the screen can still act.
+	useEffect(() => {
+		if (!actions) return;
+		if (action?.uncertain && !action.pending && ready && focused) armReconcileRetry();
+		else if (!action?.uncertain) clearReconcileRetry();
+	}, [actions, action?.uncertain, action?.pending, ready, focused, armReconcileRetry, clearReconcileRetry]);
 	// A mutation's own confirmation re-reads everything, so catalog changes
 	// wait for it; the follower drains on each action state change.
 	useEffect(() => {

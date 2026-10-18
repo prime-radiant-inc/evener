@@ -140,7 +140,9 @@ export function TaskList({
 					<View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
 						{/* The composed label above already reads the state in words. */}
 						<TaskStatusMark status={task.status} size={16} style={{ marginTop: 2 }} />
-						<Copy>{task.description}</Copy>
+						<View style={{ flex: 1, minWidth: 0 }}>
+							<Copy>{task.description}</Copy>
+						</View>
 					</View>
 					{!open && latest && (task.status === "open" || task.status === "in_progress") ? (
 						<Copy muted>{latest}</Copy>

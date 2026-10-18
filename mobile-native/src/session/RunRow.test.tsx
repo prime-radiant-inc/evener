@@ -91,6 +91,21 @@ describe("a run folded into one line", () => {
 		expect(texts(tree.root).some((node) => textOf(node) === "Read the session loop")).toBe(false);
 	});
 
+	it("gives its summary the space left beside the fold chevron, so a long line wraps there", () => {
+		const tree = render(<RunRow run={run} live={false} expanded={false} onToggle={() => {}} {...where} />);
+		// The line beside the chevron needs the same constraint the exit mark's
+		// line has (RunRow's own summary line): React Native defaults a row
+		// child's flexShrink to 0, so without flex the summary pushes the
+		// chevron offscreen instead of wrapping.
+		// The fold line's own Text is the one whose content is the summary:
+		// anchor on it, not on a symbol (the row's step evidence carries its
+		// own chevron.right).
+		const text = texts(tree.root).find((node) => node.props.children?.toString().includes("4 steps"));
+		// The Text carries the wrap constraint itself (flex 1, minWidth 0), the
+		// same contract the exit mark's line holds in RunRow's summary line.
+		expect(text?.props.style).toMatchObject({ flex: 1, minWidth: 0 });
+	});
+
 	// A part is keyed by its kind of step, never by its words: when "ran go
 	// test" becomes "ran 3 commands" as the run grows, React updates that part
 	// where it is instead of tearing it down and mounting a new one.
