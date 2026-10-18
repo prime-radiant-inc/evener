@@ -155,6 +155,20 @@ func TestDocDownload_MissingFileIs404(t *testing.T) {
 	}
 }
 
+// A remote read costs a round trip, so the raw representation's GET-only rule
+// answers a HEAD before the owning host is asked.
+func TestDocFile_RemoteRawHeadIsRefusedWithoutAskingTheHost(t *testing.T) {
+	web, _, _ := docServeTestServer(t)
+	u := "/doc/file?format=raw&session=studio:02wMz5Txv1C3Hut0M8GCeB&path=notes.md"
+	req := httptest.NewRequest(http.MethodHead, u, nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+}
+
 // The two representations do not leak into each other: a raw read of the same
 // file still stops at the cap and still reports the truncation.
 func TestDocFile_RawStillCapsAfterDownloadWasAdded(t *testing.T) {

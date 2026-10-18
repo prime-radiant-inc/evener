@@ -11,6 +11,7 @@ const harness = vi.hoisted(() => ({
 	downloads: [] as { url: string; destination: { uri: string }; headers: Record<string, string> }[],
 	shared: [] as string[],
 	release: [] as (() => void)[],
+	sheet: [] as (() => void)[],
 }));
 
 vi.mock("expo-file-system", () => ({
@@ -47,6 +48,8 @@ vi.mock("expo-sharing", () => ({
 	isAvailableAsync: async () => true,
 	shareAsync: async (url: string) => {
 		harness.shared.push(url);
+		// Held open, like a real sheet: a test decides when it closes.
+		await new Promise<void>((resolve) => harness.sheet.push(resolve));
 	},
 }));
 
@@ -61,6 +64,7 @@ beforeEach(() => {
 	harness.downloads = [];
 	harness.shared = [];
 	harness.release = [];
+	harness.sheet = [];
 	vi.resetModules();
 });
 afterEach(() => vi.useRealTimers());
@@ -71,6 +75,8 @@ describe("shareSessionDocument", () => {
 		const sharing = shareSessionDocument(target("docs/onboarding.mp4"));
 		await settle();
 		harness.release.shift()?.();
+		await settle();
+		harness.sheet.shift()?.();
 		await sharing;
 		expect(harness.downloads[0]?.url).toBe(
 			"https://hub.test/doc/file?format=download&session=local%3Aabc&path=docs%2Fonboarding.mp4",
@@ -84,10 +90,14 @@ describe("shareSessionDocument", () => {
 		const first = shareSessionDocument(target("public/report.pdf"));
 		await settle();
 		harness.release.shift()?.();
+		await settle();
+		harness.sheet.shift()?.();
 		await first;
 		const second = shareSessionDocument(target("private/report.pdf"));
 		await settle();
 		harness.release.shift()?.();
+		await settle();
+		harness.sheet.shift()?.();
 		await second;
 		const [a, b] = harness.downloads.map((download) => download.destination.uri);
 		expect(a).not.toBe(b);
@@ -101,10 +111,21 @@ describe("shareSessionDocument", () => {
 		// Only the first download has started: the second waits its turn.
 		expect(harness.downloads).toHaveLength(1);
 		harness.release.shift()?.();
+		await settle();
+		// The first file is downloaded and its sheet is open. The second share
+		// still waits: a second sheet cannot be presented over the first, and a
+		// second download would replace the file the sheet is offering.
+		expect(harness.shared).toHaveLength(1);
+		expect(harness.downloads).toHaveLength(1);
+		// Closing the sheet lets the first share finish, and only then does the
+		// second download start.
+		harness.sheet.shift()?.();
 		await first;
 		await settle();
 		expect(harness.downloads).toHaveLength(2);
 		harness.release.shift()?.();
+		await settle();
+		harness.sheet.shift()?.();
 		await second;
 		expect(harness.shared).toHaveLength(2);
 	});

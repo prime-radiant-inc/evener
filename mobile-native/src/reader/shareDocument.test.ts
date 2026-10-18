@@ -69,4 +69,12 @@ describe("shareFileBaseName", () => {
 		expect(name.length).toBeLessThanOrEqual(200);
 		expect(name.endsWith(".mp4")).toBe(true);
 	});
+
+	it("keeps an unusually long extension inside the limit too", () => {
+		// The extension is not exempt from the bound: a 250-character one would
+		// otherwise push the name past the limit on its own.
+		const longExtension = `a.${"b".repeat(250)}`;
+		const name = shareFileBaseName("local:abc", `docs/${longExtension}`);
+		expect(name.length).toBeLessThanOrEqual(180);
+	});
 });

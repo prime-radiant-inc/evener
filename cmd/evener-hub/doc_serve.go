@@ -131,6 +131,12 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "remote session not supported", http.StatusNotImplemented)
 			return
 		}
+		// A remote read costs a round trip, so the raw representation's own
+		// method rule applies before the host is asked.
+		if r.Method != http.MethodGet {
+			http.Error(w, "GET required", http.StatusMethodNotAllowed)
+			return
+		}
 		s.serveRemoteSessionDocument(w, r, ref, rel)
 		return
 	}

@@ -45,9 +45,9 @@ const MAX_SHARE_NAME = 180;
  * a share target would stumble on are replaced, and the file keeps its own
  * extension so the receiving app still recognizes the type.
  *
- * A valid source path can be longer than one file name may be, so the folders
- * are shortened to fit rather than dropped: the basename and extension stay
- * whole, and a short hash of the full path keeps two deep paths apart even
+ * A valid source path can be longer than one file name may be, so the name is
+ * cut to fit. The extension is kept whole when it fits and shortened when it
+ * does not, and a short hash of the full path keeps two long paths apart even
  * after their prefixes are cut. */
 export function shareFileBaseName(sessionRef: string, path: string): string {
 	const session = sessionRef.replace(/[^\w.\-]+/g, "_");
@@ -62,15 +62,23 @@ export function shareFileBaseName(sessionRef: string, path: string): string {
 	const whole = [session, folder, name].filter((part) => part !== "").join("-");
 	if (whole.length <= MAX_SHARE_NAME) return whole;
 
-	// The extension belongs to the file the receiving app must recognize.
+	// The extension tells the receiving app what the file is, so it survives
+	// unless it alone would leave no room for a name at all.
+	const hash = `-${pathHash(path)}`;
 	const dot = name.lastIndexOf(".");
-	const extension = dot > 0 ? name.slice(dot) : "";
-	const stem = dot > 0 ? name.slice(0, dot) : name;
-	const suffix = `-${pathHash(path)}${extension}`;
+	const rawExtension = dot > 0 ? name.slice(dot) : "";
+	const rawStem = dot > 0 ? name.slice(0, dot) : name;
+	const extensionRoom = MAX_SHARE_NAME - hash.length - MIN_SHARE_STEM;
+	const extension = rawExtension.slice(0, Math.max(extensionRoom, 1));
+	const suffix = `${hash}${extension}`;
 	const room = Math.max(MAX_SHARE_NAME - suffix.length, 0);
-	const head = [session, folder, stem].filter((part) => part !== "").join("-");
+	const head = [session, folder, rawStem].filter((part) => part !== "").join("-");
 	return `${head.slice(0, room)}${suffix}`;
 }
+
+/** How much of the readable name survives beside the hash and extension, so a
+ * shortened name is still recognizably the document. */
+const MIN_SHARE_STEM = 24;
 
 /** A short stable digest of a path, for keeping two shortened names apart.
  * FNV-1a, in hex: small, dependency-free, and the collision risk is irrelevant
