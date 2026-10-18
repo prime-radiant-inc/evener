@@ -71,10 +71,12 @@ beforeEach(() => {
 
 function hub() {
 	const searches: string[] = [];
+	const searcher = vi.fn();
 	const listeners = new Set<(event: AnyNotification) => void>();
 	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (method: string, params: unknown) => {
 			if (method === "evener/search") {
+				searcher(method, params);
 				const query = (params as { query: string }).query.toLowerCase();
 				searches.push(query);
 				const results: SearchResponse = {
@@ -101,7 +103,7 @@ function hub() {
 			return () => listeners.delete(listener);
 		},
 	} as Omit<ConversationClientLike, "state" | "onReady" | "onStateChange">);
-	return { client, searches };
+	return { client, searches, searcher };
 }
 
 function connect(client: unknown, state = "ready") {
@@ -225,12 +227,26 @@ it("searches with the Board's backend and offers a past result", async () => {
 	).toBe("What I shared");
 });
 
-it("says the hub is needed when the connection is not ready", async () => {
+it("offers no sessions and searches nothing while the hub is not ready", async () => {
+	const { searcher } = hub();
 	connect(null, "reconnecting");
 	const navigation = { replace: vi.fn(), goBack: vi.fn() };
 	const tree = render(sheet(navigation));
 	await settleMicrotasks();
-	expect(renderedText(tree)).toContain("Connect to a hub");
+	// No live rows: none of the fleet's titles is a row.
+	const row = (title: string) =>
+		tree.root.findAll(
+			(node) =>
+				node.props.accessibilityRole === "button" &&
+				typeof node.props.accessibilityLabel === "string" &&
+				(node.props.accessibilityLabel as string).startsWith(`${title},`),
+		);
+	expect(row("Build the picker")).toEqual([]);
+	// Typing starts no search: there is no client to ask.
+	const field = tree.root.find((node) => node.props.accessibilityLabel === "Search sessions");
+	act(() => field.props.onChangeText("report"));
+	await settleMicrotasks();
+	expect(searcher).not.toHaveBeenCalled();
 });
 
 it("keeps the share when the draft write does not land", async () => {
