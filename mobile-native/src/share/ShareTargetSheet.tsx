@@ -3,8 +3,8 @@
 // found with the Board's own search. Choosing a session writes the shared text
 // into its saved draft, so the composer holds it when the session opens; only
 // after that write lands is the share dropped from the app group.
-import { useEffect, useState, useSyncExternalStore } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Alert, Pressable, ScrollView, Text, View } from "react-native";
 import type { SearchResult } from "@evener/appwire-client";
 import { countSearchMatches } from "@evener/appwire-client";
 import { useConnection } from "../ConnectionProvider";
@@ -15,6 +15,9 @@ import { type SearchScope, createSearchController, sessionResults } from "../boa
 import { liveBands, liveRows, usualPlace } from "../board/attention";
 import { BandHeader, BoardRow, Hairline } from "../board/BoardRow";
 import { ResultRow } from "../board/SearchResults";
+import { useBoardReadRetry } from "../board/useBoardReadRetry";
+import { HeaderButton } from "../sheet/HeaderButton";
+import { destructiveButton } from "../haptics";
 import { SearchField } from "../sheet/SearchField";
 import { SymbolView } from "expo-symbols";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -23,8 +26,12 @@ import { type SharedPayload } from "./sharePayload";
 
 export interface ShareTargetSheetProps {
 	navigation: {
-		navigate(name: string, params?: object): void;
+		/** Replaces this sheet with the destination: a pushed screen would
+		 * leave the consumed share underneath it, one Back from placing the
+		 * same text again. */
+		replace(name: string, params?: object): void;
 		goBack(): void;
+		setOptions?(options: object): void;
 	};
 	route: { params: { item: SharedPayload } };
 	/** The app's one draft registry, so the sheet writes the same document the
@@ -38,6 +45,9 @@ export interface ShareTargetSheetProps {
 	/** The sheet went away, chosen or not: the intake may offer the next share.
 	 * This is the swipe-down path too, which no callback of its own reports. */
 	onClosed?(): void;
+	/** The share was explicitly discarded: its file goes and it is never
+	 * offered again. */
+	onDiscarded?(item: SharedPayload): void;
 }
 
 export function ShareTargetSheet({
@@ -47,6 +57,7 @@ export function ShareTargetSheet({
 	onPlaced,
 	onHandedOff,
 	onClosed,
+	onDiscarded,
 }: ShareTargetSheetProps) {
 	const { item } = route.params;
 	const { activeProfile, client, state, fatal } = useConnection();
@@ -56,7 +67,11 @@ export function ShareTargetSheet({
 	const connected = isReady(state) && activeProfile !== null;
 	const hubId = activeProfile?.id ?? "";
 	// A sheet dismissed by a swipe unmounts with nothing else to say so.
-	useEffect(() => () => onClosed?.(), [onClosed]);
+	// The callback is read at unmount, so a parent's new inline callback on
+	// every navigation render cannot release the intake while this sheet is up.
+	const closed = useRef(onClosed);
+	closed.current = onClosed;
+	useEffect(() => () => closed.current?.(), []);
 
 	// The live sessions, read exactly as the Board reads them.
 	const [board] = useState(() => createBoardController());
@@ -65,6 +80,9 @@ export function ShareTargetSheet({
 		board.setClient(connected ? client : null);
 	}, [board, connected, client]);
 	const boardSnapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
+	// The Board's own retry for a failed read, so an idle fleet that failed
+	// once does not leave this list empty until something invalidates it.
+	useBoardReadRetry(board, connected ? client : null, boardSnapshot);
 
 	const [search] = useState(createSearchController);
 	useEffect(() => () => search.dispose(), [search]);
@@ -76,6 +94,8 @@ export function ShareTargetSheet({
 
 	const bands = liveBands(boardSnapshot.live.rows, boardSnapshot.needsYou.rows, () => true);
 	const rows = liveRows(bands);
+	// Idle is the only quiet band; the rest are signal rows.
+	const quiet = new Set(bands.idle.map((item) => item.row.ref));
 	const usual = usualPlace(boardSnapshot.live.rows);
 
 	// A place that took the text: drop the share, then show the destination.
@@ -91,23 +111,62 @@ export function ShareTargetSheet({
 			return;
 		}
 		placed();
-		navigation.navigate("Conversation", { hubId, ref, title });
+		navigation.replace("Conversation", { hubId, ref, title });
 	}
 
 	function startNew() {
 		onHandedOff?.(item);
-		navigation.navigate("NewSession", { hubId, hubName: activeProfile?.name ?? "", share: item });
+		navigation.replace("NewSession", { hubId, hubName: activeProfile?.name ?? "", share: item });
 	}
 
 	function openResult(result: SearchResult) {
 		openSession(result.ref, result.title);
 	}
 
+	/** Cancel drops the share, and only after asking: a swipe-down without a
+	 * choice keeps it pending for the next wake. */
+	function cancel() {
+		Alert.alert("Discard this share?", "The text will not be added to any session.", [
+			{ text: "Keep share", style: "cancel" },
+			destructiveButton("Discard share", () => {
+				onDiscarded?.(item);
+				navigation.goBack();
+			}),
+		]);
+	}
+
+	/** The list's end asks for the next page when Live has one and nothing is
+	 * already out. The same guards the Board pages with. */
+	function reachedEnd({
+		nativeEvent,
+	}: {
+		nativeEvent: {
+			contentOffset: { y: number };
+			contentSize: { height: number };
+			layoutMeasurement: { height: number };
+		};
+	}) {
+		const { contentOffset, contentSize, layoutMeasurement } = nativeEvent;
+		if (contentOffset.y + layoutMeasurement.height < contentSize.height - 240) return;
+		const page = boardSnapshot.live;
+		if (searchSnapshot.query || !page.loaded || page.remaining === 0 || page.loading || page.stale || page.error)
+			return;
+		void board.loadMoreLive();
+	}
+
+	useLayoutEffect(() => {
+		navigation.setOptions?.({
+			headerLeft: () => <HeaderButton label="Cancel" onPress={cancel} />,
+		});
+	});
+
 	return (
 		<ScrollView
 			style={{ flex: 1, backgroundColor: palette.canvas }}
 			contentContainerStyle={{ paddingBottom: 24 }}
 			keyboardShouldPersistTaps="handled"
+			onScroll={reachedEnd}
+			scrollEventThrottle={64}
 		>
 			<Text
 				allowFontScaling={allowFontScaling}
@@ -168,6 +227,15 @@ export function ShareTargetSheet({
 					Connect to a hub to choose a session. The share waits until you do.
 				</Text>
 			) : null}
+			{boardSnapshot.error && !searchSnapshot.query ? (
+				<Text
+					testID="share-read-error"
+					allowFontScaling={allowFontScaling}
+					style={{ marginHorizontal: 16, marginVertical: 12, fontSize: 15 * scale, color: palette.inkMid }}
+				>
+					Couldn't read this hub's sessions. Trying again shortly.
+				</Text>
+			) : null}
 			{searchSnapshot.query ? (
 				<SearchHits
 					scope={scope}
@@ -183,7 +251,7 @@ export function ShareTargetSheet({
 						<BoardRow
 							key={item.row.ref}
 							item={item}
-							variant={bands.idle.some((idle) => idle.row.ref === item.row.ref) ? "quiet" : "signal"}
+							variant={quiet.has(item.row.ref) ? "quiet" : "signal"}
 							moving={false}
 							connected
 							usual={usual}

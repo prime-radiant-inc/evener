@@ -23,20 +23,20 @@ afterEach(() => {
 	rmSync(directory, { recursive: true, force: true });
 });
 
-const destination = { hubId: "studio", sessionRef: "local:coord" };
+const destinationKey = { hubId: "studio", sessionRef: "local:coord" };
 
 it("appends the shared text to the saved draft and keeps the old draft", () => {
-	const document = new DraftDocument(() => repository, destination);
+	const document = new DraftDocument(() => repository, destinationKey);
 	document.edit("What I was already writing");
 	expect(placeSharedText(document, "What I shared")).toBe(true);
 	expect(document.getSnapshot().record.draft).toBe("What I was already writing\n\nWhat I shared");
 	// Durable: a fresh document reads the same draft back.
-	const reopened = new DraftDocument(() => repository, destination);
+	const reopened = new DraftDocument(() => repository, destinationKey);
 	expect(reopened.getSnapshot().record.draft).toBe("What I was already writing\n\nWhat I shared");
 });
 
 it("places the text alone when the draft was empty", () => {
-	const document = new DraftDocument(() => repository, destination);
+	const document = new DraftDocument(() => repository, destinationKey);
 	expect(placeSharedText(document, "What I shared")).toBe(true);
 	expect(document.getSnapshot().record.draft).toBe("What I shared");
 });
@@ -52,7 +52,36 @@ it("reports a placement that did not land when the draft cannot load", () => {
 			},
 			imageInputs: () => [],
 		}),
-		destination,
+		destinationKey,
 	);
 	expect(placeSharedText(document, "What I shared")).toBe(false);
+});
+
+it("retries a failed save with the same merge, appending the share once", () => {
+	let failWrites = true;
+	const { database: db, port } = openSqliteSyncDouble();
+	try {
+		const repository = new DraftRepository(port);
+		const flaky = {
+			read: (destination: typeof destinationKey) => repository.read(destination),
+			write: (destination: typeof destinationKey, record: Parameters<DraftRepository["write"]>[1]) => {
+				if (failWrites) throw new Error("disk full");
+				repository.write(destination, record);
+			},
+			imageInputs: repository.imageInputs.bind(repository),
+		};
+		const document = new DraftDocument(() => flaky, destinationKey);
+		document.edit("What I was writing");
+		// The first edit itself could not save; clear its error so this test is
+		// about the share's retry.
+		failWrites = false;
+		document.retry();
+		failWrites = true;
+		expect(placeSharedText(document, "What I shared")).toBe(false);
+		failWrites = false;
+		expect(placeSharedText(document, "What I shared")).toBe(true);
+		expect(document.getSnapshot().record.draft).toBe("What I was writing\n\nWhat I shared");
+	} finally {
+		db.close();
+	}
 });

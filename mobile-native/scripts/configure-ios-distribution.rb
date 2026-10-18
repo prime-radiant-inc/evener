@@ -28,12 +28,15 @@ end
 abort "Evener target not found" unless sign(project, "Evener", team_id: team_id, profile_name: profile_name)
 
 profiles = { bundle_identifier => profile_name }
-# The share extension ships inside the app and is signed as its own bundle.
+# The share extension ships inside the app and is signed as its own bundle, so
+# it needs its own profile: signing it with the app's profile fails export.
 # Prebuild generates it from targets/share; a project without it (an older
 # prebuild, or a simulator-only run) simply has nothing to sign here.
 share_bundle_identifier = "#{bundle_identifier}.ShareExtension"
-if sign(project, "EvenerShareExtension", team_id: team_id, profile_name: share_profile_name || profile_name)
-  profiles[share_bundle_identifier] = share_profile_name || profile_name
+if project.targets.any? { |candidate| candidate.name == "EvenerShareExtension" }
+  abort "IOS_SHARE_PROVISIONING_PROFILE_NAME is required: the app contains EvenerShareExtension, whose bundle id needs its own profile." unless share_profile_name
+  sign(project, "EvenerShareExtension", team_id: team_id, profile_name: share_profile_name)
+  profiles[share_bundle_identifier] = share_profile_name
 end
 project.save
 

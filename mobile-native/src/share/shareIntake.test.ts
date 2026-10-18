@@ -15,19 +15,22 @@ it("offers the oldest pending share once", async () => {
 	expect(offered.map((entry) => entry.id)).toEqual(["older"]);
 });
 
-it("offers the next share once the sheet releases", async () => {
+it("leaves a dismissed share pending and offers it on the next wake", async () => {
 	const offered: SharedPayload[] = [];
 	const intake = createShareIntake({
 		port: sharePort([share("one", HOUR), share("two", 2 * HOUR)]),
 		onShare: (entry) => offered.push(entry),
 	});
 	await intake.offer();
-	await intake.release();
-	expect(offered.map((entry) => entry.id)).toEqual(["one", "two"]);
-	expect(intake.busy).toBe(true);
+	intake.release();
+	expect(intake.busy).toBe(false);
+	// A dismissal does not reopen the sheet by itself.
+	expect(offered.map((entry) => entry.id)).toEqual(["one"]);
+	await intake.offer();
+	expect(offered.map((entry) => entry.id)).toEqual(["one", "one"]);
 });
 
-it("never offers a share again after it was forgotten", async () => {
+it("offers the next share once the placed one is forgotten", async () => {
 	const offered: SharedPayload[] = [];
 	const intake = createShareIntake({
 		port: sharePort([share("one", HOUR), share("two", 2 * HOUR)]),
@@ -35,10 +38,13 @@ it("never offers a share again after it was forgotten", async () => {
 	});
 	await intake.offer();
 	intake.forget("one");
-	await intake.release();
+	await intake.offer();
 	expect(offered.map((entry) => entry.id)).toEqual(["one", "two"]);
-	await intake.release();
-	expect(offered.map((entry) => entry.id)).toEqual(["one", "two"]);
+	intake.release();
+	await intake.offer();
+	// Two is still pending (only the sheet closed), so it comes back; one was
+	// placed and never does.
+	expect(offered.map((entry) => entry.id)).toEqual(["one", "two", "two"]);
 });
 
 it("offers nothing when the directory cannot be read", async () => {

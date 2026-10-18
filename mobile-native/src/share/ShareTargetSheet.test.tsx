@@ -9,7 +9,14 @@ import { DraftRepository } from "../draftRepository";
 import { DraftDocument } from "../draftDocument";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.testkit";
 import { answerFleetRead, type FleetShape, fleetSession } from "../session/fleetTestUtils";
-import { render, renderedText, settleMicrotasks, unmountMountedTrees, until } from "../renderNative.testkit";
+import {
+	alertRequests,
+	render,
+	renderedText,
+	settleMicrotasks,
+	unmountMountedTrees,
+	until,
+} from "../renderNative.testkit";
 import { ShareTargetSheet } from "./ShareTargetSheet";
 import type { SharedPayload } from "./sharePayload";
 
@@ -109,7 +116,7 @@ function connect(client: unknown, state = "ready") {
 const share: SharedPayload = { id: "share-1", text: "What I shared", createdAt: at(0) };
 
 function sheet(
-	navigation: { navigate: ReturnType<typeof vi.fn>; goBack: ReturnType<typeof vi.fn> },
+	navigation: { replace: ReturnType<typeof vi.fn>; goBack: ReturnType<typeof vi.fn> },
 	onPlaced = vi.fn(),
 ) {
 	return (
@@ -141,7 +148,7 @@ const rowTitled = (tree: ReactTestRenderer, title: string) =>
 it("lists live sessions in attention order", async () => {
 	const { client } = hub();
 	connect(client);
-	const navigation = { navigate: vi.fn(), goBack: vi.fn() };
+	const navigation = { replace: vi.fn(), goBack: vi.fn() };
 	const tree = render(sheet(navigation));
 	await settleMicrotasks();
 	const rendered = labels(tree);
@@ -153,14 +160,14 @@ it("lists live sessions in attention order", async () => {
 it("opens the chosen session with the shared text in its draft", async () => {
 	const { client } = hub();
 	connect(client);
-	const navigation = { navigate: vi.fn(), goBack: vi.fn() };
+	const navigation = { replace: vi.fn(), goBack: vi.fn() };
 	const onPlaced = vi.fn();
 	const tree = render(sheet(navigation, onPlaced));
 	await settleMicrotasks();
 	const row = rowTitled(tree, "Build the picker");
 	act(() => row.props.onPress());
 	await settleMicrotasks();
-	expect(navigation.navigate).toHaveBeenCalledWith("Conversation", {
+	expect(navigation.replace).toHaveBeenCalledWith("Conversation", {
 		hubId: "hub-1",
 		ref: "local:work",
 		title: "Build the picker",
@@ -175,7 +182,7 @@ it("appends to a session's existing draft instead of replacing it", async () => 
 	connect(client);
 	const existing = new DraftDocument(() => repository, { hubId: "hub-1", sessionRef: "local:work" });
 	existing.edit("What I was writing");
-	const navigation = { navigate: vi.fn(), goBack: vi.fn() };
+	const navigation = { replace: vi.fn(), goBack: vi.fn() };
 	const tree = render(sheet(navigation));
 	await settleMicrotasks();
 	const row = rowTitled(tree, "Build the picker");
@@ -189,11 +196,11 @@ it("appends to a session's existing draft instead of replacing it", async () => 
 it("starts a new session with the share when New session is chosen", async () => {
 	const { client } = hub();
 	connect(client);
-	const navigation = { navigate: vi.fn(), goBack: vi.fn() };
+	const navigation = { replace: vi.fn(), goBack: vi.fn() };
 	const tree = render(sheet(navigation));
 	await settleMicrotasks();
 	act(() => tree.root.find((node) => node.props.testID === "share-new-session").props.onPress());
-	expect(navigation.navigate).toHaveBeenCalledWith("NewSession", {
+	expect(navigation.replace).toHaveBeenCalledWith("NewSession", {
 		hubId: "hub-1",
 		hubName: "Work hub",
 		share,
@@ -203,7 +210,7 @@ it("starts a new session with the share when New session is chosen", async () =>
 it("searches with the Board's backend and offers a past result", async () => {
 	const { client, searches } = hub();
 	connect(client);
-	const navigation = { navigate: vi.fn(), goBack: vi.fn() };
+	const navigation = { replace: vi.fn(), goBack: vi.fn() };
 	const tree = render(sheet(navigation));
 	await settleMicrotasks();
 	const field = tree.root.find((node) => node.props.accessibilityLabel === "Search sessions");
@@ -220,7 +227,7 @@ it("searches with the Board's backend and offers a past result", async () => {
 
 it("says the hub is needed when the connection is not ready", async () => {
 	connect(null, "reconnecting");
-	const navigation = { navigate: vi.fn(), goBack: vi.fn() };
+	const navigation = { replace: vi.fn(), goBack: vi.fn() };
 	const tree = render(sheet(navigation));
 	await settleMicrotasks();
 	expect(renderedText(tree)).toContain("Connect to a hub");
@@ -237,7 +244,7 @@ it("keeps the share when the draft write does not land", async () => {
 		},
 		getAllSync: () => [],
 	});
-	const navigation = { navigate: vi.fn(), goBack: vi.fn() };
+	const navigation = { replace: vi.fn(), goBack: vi.fn() };
 	const onPlaced = vi.fn();
 	const tree = render(
 		<ShareTargetSheet
@@ -252,14 +259,14 @@ it("keeps the share when the draft write does not land", async () => {
 	act(() => row.props.onPress());
 	await settleMicrotasks();
 	expect(onPlaced).not.toHaveBeenCalled();
-	expect(navigation.navigate).not.toHaveBeenCalled();
+	expect(navigation.replace).not.toHaveBeenCalled();
 	expect(tree.root.findAll((node) => node.props.testID === "share-error").length).toBeGreaterThan(0);
 });
 
 it("releases the intake when the sheet closes without choosing", async () => {
 	const { client } = hub();
 	connect(client);
-	const navigation = { navigate: vi.fn(), goBack: vi.fn() };
+	const navigation = { replace: vi.fn(), goBack: vi.fn() };
 	const onClosed = vi.fn();
 	const tree = render(
 		<ShareTargetSheet
@@ -273,4 +280,28 @@ it("releases the intake when the sheet closes without choosing", async () => {
 	await settleMicrotasks();
 	act(() => tree.unmount());
 	expect(onClosed).toHaveBeenCalledTimes(1);
+});
+
+it("discards the share only when the confirmation says so", async () => {
+	const { client } = hub();
+	connect(client);
+	const navigation = { replace: vi.fn(), goBack: vi.fn(), setOptions: vi.fn() };
+	const onDiscarded = vi.fn();
+	render(
+		<ShareTargetSheet
+			navigation={navigation as never}
+			route={{ key: "ShareTarget", name: "ShareTarget", params: { item: share } } as never}
+			drafts={new DraftLibrary(() => repository)}
+			onPlaced={vi.fn()}
+			onDiscarded={onDiscarded}
+		/>,
+	);
+	await settleMicrotasks();
+	const cancel = navigation.setOptions.mock.calls.at(-1)?.[0]?.headerLeft as () => { props: { onPress(): void } };
+	act(() => cancel().props.onPress());
+	const request = alertRequests.at(-1);
+	expect(request?.buttons?.map((button) => button.text)).toEqual(["Keep share", "Discard share"]);
+	act(() => request?.buttons?.[1]?.onPress?.());
+	expect(onDiscarded).toHaveBeenCalledWith(share);
+	expect(navigation.goBack).toHaveBeenCalled();
 });

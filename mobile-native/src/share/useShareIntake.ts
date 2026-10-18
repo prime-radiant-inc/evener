@@ -49,6 +49,9 @@ export function useShareIntake({ onShare, port, ready = false }: ShareIntakeOpti
 		const stateSubscription = AppState.addEventListener("change", (state) => {
 			if (state === "active") void intake.offer();
 		});
+		// A cold launch after a failed open: no URL, no foreground change, and
+		// possibly no hub yet. The scan still finds the share.
+		void intake.offer();
 		return () => {
 			active = false;
 			urlSubscription.remove();

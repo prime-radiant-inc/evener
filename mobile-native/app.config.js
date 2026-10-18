@@ -8,19 +8,9 @@
 // Metro bundling, loads it without a team id.
 const teamId = process.env.APPLE_TEAM_ID ?? "";
 
-// Prebuilding iOS needs the team id: the share extension's target is signed
-// with it. Fail loudly rather than generating an extension no one can sign.
-// Every other use of this config (typecheck, Metro, Android prebuild) loads
-// without one.
-const prebuildingIOS =
-	process.argv.some((argument) => argument === "prebuild") &&
-	process.argv.some((argument) => argument === "ios",
-);
-if (!teamId && prebuildingIOS) {
-	throw new Error(
-		"APPLE_TEAM_ID is not set. The iOS share extension is generated at prebuild time and needs the Apple team id; export APPLE_TEAM_ID before running `npx expo prebuild --platform ios`.",
-	);
-}
+// Prebuilding iOS needs the team id: ./plugins/with-ios-preconditions refuses
+// an iOS prebuild without one. Every other use of this config (typecheck,
+// Metro, Android prebuild) loads without it.
 
 const APP_GROUP = "group.com.primeradiant.evener.native";
 
@@ -64,6 +54,7 @@ const config = {
 			favicon: "./assets/favicon.png",
 		},
 		plugins: [
+			"./plugins/with-ios-preconditions",
 			"./plugins/with-shared-sources",
 			"expo-secure-store",
 			[

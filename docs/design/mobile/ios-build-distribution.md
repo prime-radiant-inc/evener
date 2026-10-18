@@ -13,8 +13,9 @@ make test-native test-api-package
 `app.config.js` needs `APPLE_TEAM_ID` for an iOS prebuild: the share
 extension target is generated from `mobile-native/targets/share` by
 `@bacons/apple-targets`, and the plugin requires a team id. Every other use of
-the config (typecheck, Metro, Android) loads without one, and an iOS prebuild
-without it fails with a message naming the variable.
+the config (typecheck, Metro, Android) loads without one. The
+`./plugins/with-ios-preconditions` config plugin refuses the prebuild when the
+variable is missing, whatever the CLI arguments look like.
 
 From `mobile-native`, generate an iOS project and install the committed pod resolution:
 
@@ -27,7 +28,13 @@ bundle _2.7.2_ install
 bundle _2.7.2_ exec pod install --deployment --project-directory=ios
 ```
 
-The generated workspace is `mobile-native/ios/Evener.xcworkspace`, with scheme `Evener`, and it contains two targets: `Evener` and `EvenerShareExtension` (bundle id `com.primeradiant.evener.native.ShareExtension`). Both carry the App Group `group.com.primeradiant.evener.native`; the group must be enabled for both App IDs in the developer portal, and the extension needs its own distribution profile (`IOS_SHARE_PROVISIONING_PROFILE_NAME`). `scripts/configure-ios-distribution.rb` signs both targets, listing both profiles in the export options. Generated iOS projects, installed dependencies, archives and exported bundles remain ignored. The app configuration and distribution helper restrict the product to iPhone device family 1. Use normal simulator signing for installed simulator tests: disabling code signing strips the application entitlement SecureStore needs and prevents saving credentials. No paid provisioning profile is required for the simulator. Keep the committed CocoaPods lock stable; a failed deployment install requires diagnosis rather than silently regenerating it.
+The generated workspace is `mobile-native/ios/Evener.xcworkspace`, with scheme `Evener`, and it contains two targets: `Evener` and `EvenerShareExtension` (bundle id `com.primeradiant.evener.native.ShareExtension`). Both carry the App Group `group.com.primeradiant.evener.native`; the group must be enabled for both App IDs in the developer portal, and the extension needs its own distribution profile (`IOS_SHARE_PROVISIONING_PROFILE_NAME`). `scripts/configure-ios-distribution.rb` signs both targets, listing both profiles in the export options, and refuses to sign the extension with the app's profile. Generated iOS projects, installed dependencies, archives and exported bundles remain ignored. The app configuration and distribution helper restrict the product to iPhone device family 1. Use normal simulator signing for installed simulator tests: disabling code signing strips the application entitlement SecureStore needs and prevents saving credentials. No paid provisioning profile is required for the simulator. Keep the committed CocoaPods lock stable; a failed deployment install requires diagnosis rather than silently regenerating it.
+
+The TestFlight workflow needs the matching credentials:
+`IOS_SHARE_DISTRIBUTION_PROVISIONING_PROFILE_BASE64` (secret) and
+`IOS_SHARE_DISTRIBUTION_PROVISIONING_PROFILE_NAME` (variable). The archive sets
+`CURRENT_PROJECT_VERSION` for every target and fails when the embedded
+extension's build number differs from the app's.
 
 ### Regenerating the pod lock
 

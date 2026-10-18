@@ -127,6 +127,21 @@ def test_configure_helper(tmpdir)
   assert(debug_before == debug_after, "helper changed app Debug")
   unrelated_after = after.targets.find { |target| target.name == "Unrelated" }.build_configurations.map { |config| [config.name, config.build_settings] }
   assert(unrelated_before == unrelated_after, "helper changed an unrelated target")
+
+  # An extension's bundle id cannot be signed with the app's profile.
+  without_extension_profile = {
+    "APPLE_TEAM_ID" => "TEAM123",
+    "IOS_PROVISIONING_PROFILE_NAME" => profile_name,
+    "IOS_BUNDLE_IDENTIFIER" => "com.primeradiant.evener.native",
+  }
+  expected_failure = system(
+    without_extension_profile,
+    RbConfig.ruby,
+    helper,
+    project_path,
+    File.join(tmpdir, "build", "RefusedExportOptions.plist"),
+  )
+  assert(!expected_failure, "helper signed the extension with the app's profile")
 end
 
 def test_readiness_waiter

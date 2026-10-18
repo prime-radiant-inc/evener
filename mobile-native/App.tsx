@@ -212,6 +212,10 @@ function Navigation() {
 										void completeShare(sharePort, item.id).catch(() => {});
 										intake.forget(item.id);
 									}}
+									onDiscarded={(item) => {
+										void completeShare(sharePort, item.id).catch(() => {});
+										intake.forget(item.id);
+									}}
 									onClosed={() => intake.release()}
 								/>
 							)}

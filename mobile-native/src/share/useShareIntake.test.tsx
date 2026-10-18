@@ -47,6 +47,13 @@ beforeEach(() => {
 	harness.initialURL = null;
 });
 
+it("offers a share on a cold launch with no URL and no hub", async () => {
+	const offered: SharedPayload[] = [];
+	renderHook(() => useShareIntake({ port: sharePort([share("one", HOUR)]), onShare: (entry) => offered.push(entry) }));
+	await settle();
+	expect(offered.map((entry) => entry.id)).toEqual(["one"]);
+});
+
 it("offers a share when the extension's URL opens the app", async () => {
 	const offered: SharedPayload[] = [];
 	const subject = sharePort([share("one", HOUR)]);
@@ -56,11 +63,19 @@ it("offers a share when the extension's URL opens the app", async () => {
 	expect(offered.map((entry) => entry.id)).toEqual(["one"]);
 });
 
-it("offers a share when the app comes forward", async () => {
+it("offers a share that arrived while the app was in front when it comes forward", async () => {
 	const offered: SharedPayload[] = [];
-	renderHook(() => useShareIntake({ port: sharePort([share("one", HOUR)]), onShare: (entry) => offered.push(entry) }));
+	let later = sharePort([]);
+	const subject = {
+		list: () => later.list(),
+		read: (name: string) => later.read(name),
+		remove: (name: string) => later.remove(name),
+	};
+	renderHook(() => useShareIntake({ port: subject, onShare: (entry) => offered.push(entry) }));
 	await settle();
 	expect(offered).toEqual([]);
+	// The extension writes the share while Evener is in the background.
+	later = sharePort([share("one", HOUR)]);
 	await act(async () => {
 		for (const listener of harness.appState) listener("active");
 	});
@@ -68,12 +83,12 @@ it("offers a share when the app comes forward", async () => {
 	expect(offered.map((entry) => entry.id)).toEqual(["one"]);
 });
 
-it("ignores a URL that is not a share", async () => {
+it("ignores a URL that is not a share, and still finds a pending share on launch", async () => {
 	const offered: SharedPayload[] = [];
 	harness.initialURL = "evener-native://elsewhere";
 	renderHook(() => useShareIntake({ port: sharePort([share("one", HOUR)]), onShare: (entry) => offered.push(entry) }));
 	await settle();
-	expect(offered).toEqual([]);
+	expect(offered.map((entry) => entry.id)).toEqual(["one"]);
 });
 
 it("does not offer the same share twice while its sheet is up", async () => {
@@ -102,7 +117,7 @@ it("stops listening when the app unmounts", async () => {
 	expect(offered).toEqual([]);
 });
 
-it("offers a share once when the hub connection turns ready", async () => {
+it("offers a pending share once, whatever the hub does", async () => {
 	const offered: SharedPayload[] = [];
 	const connection = { ready: false };
 	const tree = renderHook(() =>
@@ -113,7 +128,7 @@ it("offers a share once when the hub connection turns ready", async () => {
 		}),
 	);
 	await settle();
-	expect(offered).toEqual([]);
+	expect(offered.map((entry) => entry.id)).toEqual(["one"]);
 	connection.ready = true;
 	tree.rerender();
 	await settle();

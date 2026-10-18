@@ -62,22 +62,27 @@ function NewSessionSheetBody({ route }: NativeStackScreenProps<Routes, "NewSessi
 
 	// The form is placed once, as it opens with its draft loaded.
 	const storageLoaded = useStore(store, (form) => form.storageLoaded);
+	const storageError = useStore(store, (form) => form.storageError);
 	const opened = useRef(false);
 	const stopOpening = useRef(() => {});
 	useEffect(() => {
 		if (opened.current || !storageLoaded) return;
 		opened.current = true;
 		// A share's text rides through the one opening path, so it keeps the
-		// remembered host, project and model; its file goes only once the
-		// prompt is saved.
+		// remembered host, project and model.
 		if (share) {
-			const seed = seedSharedPrompt(store, memory, share);
-			stopOpening.current = seed.stop;
-			if (seed.saved) void completeShare(appGroupSharePort(), share.id);
+			stopOpening.current = seedSharedPrompt(store, memory, share).stop;
 			return;
 		}
 		stopOpening.current = openForm(store, memory.lastSetup());
 	}, [store, memory, storageLoaded, share]);
+	// The share's file goes once its text is durably saved: at the seed, or
+	// later through the form's Retry saving after a failed write. A share that
+	// never saved stays pending and is offered again.
+	useEffect(() => {
+		if (!share || !storageLoaded || storageError) return;
+		void completeShare(appGroupSharePort(), share.id).catch(() => {});
+	}, [share, storageLoaded, storageError]);
 	useEffect(() => () => stopOpening.current(), []);
 
 	const bindTo = ready && client ? client : null;
