@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { StaleListingRefusal } from "@evener/appwire-client/state/credentials";
 import { authCalls, boundary as kit, type RecordedCall, signInClient } from "./providerSignInTestUtils";
 
 const device = {
@@ -235,6 +236,37 @@ it("does not re-poll on its own while the connection stays unusable", async () =
 	// The same connection token arriving again is no transition to ready.
 	await vi.advanceTimersByTimeAsync(30_000);
 	expect(calls.filter((call) => call.method.endsWith("/poll"))).toHaveLength(1);
+	flow.dispose();
+});
+
+it("treats a stale-listing refusal as a retry, not a failed check", async () => {
+	vi.useFakeTimers();
+	const { flow, io, calls, store } = boundary();
+	await flow.start();
+	io.request = async () => {
+		throw new Error("request timed out");
+	};
+	await vi.advanceTimersByTimeAsync(2000);
+	expect(flow.getSnapshot().error).toBeTruthy();
+	// Reconnect: the immediate re-poll races the credential listing refresh,
+	// and the store refuses it while the old connection's rows are still
+	// showing. That refusal asks for a re-read and a retry.
+	flow.setConnection(null);
+	store.connectionChanged(null, "closed");
+	const refusal = new StaleListingRefusal();
+	io.request = async () => {
+		throw refusal;
+	};
+	const back = signInClient(io, calls);
+	store.connectionChanged(back, "ready");
+	flow.setConnection(back);
+	await vi.advanceTimersByTimeAsync(0);
+	// A refusal is not a verdict on the sign-in: no failure latched, and
+	// the device cadence keeps asking once the listing can answer.
+	expect(flow.getSnapshot().error).toBeNull();
+	await vi.advanceTimersByTimeAsync(2000);
+	const polls = calls.filter((call) => call.method.endsWith("/poll")).length;
+	expect(polls).toBeGreaterThanOrEqual(3);
 	flow.dispose();
 });
 

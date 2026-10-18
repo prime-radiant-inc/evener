@@ -381,17 +381,26 @@ export class NavigationPages<T> implements PageSource<T> {
 			this.version = decoded.version;
 			if (decoded.version.revision >= this.mutationFloor) this.mutationFloor = 0;
 			this.rereads.settle();
-			this.clearRetry(true);
+			// Recovery completes when the read reaches the depth it owes or
+			// the results end — only then does the failure count retire, so a
+			// later page that keeps failing grows the backoff instead of
+			// resetting it on every intermediate page that lands.
+			const owed = this.owedDepth;
+			const exhausted = Number(data.remaining) === 0;
+			if (owed === null || this.offset >= owed || exhausted) {
+				this.owedDepth = null;
+				this.clearRetry(true);
+			} else this.clearRetry(false);
+			// The error says the page still owes its recovery: it holds until
+			// the depth is restored or the results end, whichever completes it.
+			const incomplete = this.owedDepth !== null && this.offset < this.owedDepth;
 			this.publish({
 				loaded: true,
 				rows: [...unique.values()],
 				remaining: Number(data.remaining),
 				loading: false,
 				stale: false,
-				// A re-read that has not yet reached the depth it owes (a
-				// partial refresh left rows behind) keeps saying so: recovery
-				// ends when the depth is restored, not when a page lands.
-				error: this.owedDepth !== null && this.offset < this.owedDepth ? this.state.error : null,
+				error: incomplete ? this.state.error : null,
 			});
 			return true;
 		} catch (cause) {

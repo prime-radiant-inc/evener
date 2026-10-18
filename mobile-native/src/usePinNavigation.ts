@@ -109,31 +109,21 @@ export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?:
 	const page = useSyncExternalStore(pages?.subscribe ?? noSubscription, pages?.getSnapshot ?? noSnapshot);
 	const action = useSyncExternalStore(actions?.subscribe ?? noSubscription, actions?.getSnapshot ?? noSnapshot);
 	// The reconciliation's own outcome arms or retires its retry: success clears
-	// it, a failure re-arms it while the screen can still act — and a change of
-	// binding (a new screen identity) drops the old binding's timer, so the new
-	// one arms its own rather than waiting on a timer whose closure went stale.
+	// it, a failure re-arms it while the screen can still act. The failure
+	// count belongs to the owner: it survives pending transitions and re-focuses
+	// (consecutive failures keep growing the backoff) and resets only when the
+	// actions or the binding change — a new screen starts its curve fresh.
+	const retryOwner = useRef(actions);
+	if (retryOwner.current !== actions) {
+		retryOwner.current = actions;
+		cancelReconcileTimer();
+		retryCount.current = 0;
+	}
 	useEffect(() => {
 		if (!actions) return;
 		if (action?.uncertain && !action.pending && ready && focused) armReconcileRetry();
 		else if (!action?.uncertain) clearReconcileRetry();
-		// A pending transition only cancels the timer (the count keeps growing
-		// the backoff); a change of actions or binding drops the count too, so
-		// a new screen starts its retry fresh.
-		return () => {
-			cancelReconcileTimer();
-			retryCount.current = 0;
-		};
-	}, [
-		actions,
-		binding,
-		action?.uncertain,
-		action?.pending,
-		ready,
-		focused,
-		armReconcileRetry,
-		clearReconcileRetry,
-		cancelReconcileTimer,
-	]);
+	}, [actions, action?.uncertain, action?.pending, ready, focused, armReconcileRetry, clearReconcileRetry]);
 	// A mutation's own confirmation re-reads everything, so catalog changes
 	// wait for it; the follower drains on each action state change.
 	useEffect(() => {

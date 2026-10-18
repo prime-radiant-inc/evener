@@ -269,6 +269,30 @@ describe("a failed read's own retry", () => {
 		expect(pages.getSnapshot().error).toBeNull();
 	});
 
+	it("completes recovery when the results end below the depth it owed", async () => {
+		const { requests, pages, requested } = boundary();
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 0, 1, 2));
+		await more;
+		// The catalog shrank: the refresh answers with a single page and
+		// nothing remaining, though the reader had reached a depth of four.
+		const refresh = pages.refresh();
+		requests[2].resolve(response(["a2"], 0, 2));
+		await refresh;
+		// The old rows are gone from the hub: results exhausted, recovery is
+		// complete, and no error stays latched for depth that cannot exist.
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a2"]);
+		expect(pages.getSnapshot().error).toBeNull();
+		// No retry arms for depth the list no longer has.
+		const reads = requests.length;
+		await vi.advanceTimersByTimeAsync(reconnectDelay(2) * 2);
+		expect(requests).toHaveLength(reads);
+		await Promise.resolve(requested);
+	});
+
 	it("cancel abandons the pending retry, and none runs while paused", async () => {
 		const { requests, pages } = boundary();
 		const first = pages.refresh();

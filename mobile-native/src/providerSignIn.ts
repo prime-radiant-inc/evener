@@ -1,5 +1,6 @@
 import type { AuthDeviceStartResponse, AuthLoginStartResponse, AuthStatusResponse } from "@evener/appwire-client";
 import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
+import { isStaleListingRefusal } from "@evener/appwire-client/state/credentials";
 
 /** What went wrong in a sign-in, or what it couldn't confirm. */
 export type SignInProblem =
@@ -258,8 +259,18 @@ export class ProviderSignIn {
 					...reporting("notConfirmed"),
 				});
 			}
-		} catch {
+		} catch (cause) {
 			if (this.current(generation)) {
+				// A refused poll (the credential listing is still the old
+				// connection's, so the store would not act on it) asks for a
+				// retry, not a verdict: the device cadence asks again once the
+				// listing can answer, and no failure latches.
+				if (isStaleListingRefusal(cause)) {
+					this.pendingOperation = null;
+					this.publish({ busy: false });
+					this.schedule();
+					return;
+				}
 				this.uncertain = true;
 				this.publish({
 					busy: false,
