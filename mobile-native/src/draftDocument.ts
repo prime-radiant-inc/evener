@@ -34,6 +34,10 @@ export class DraftDocument {
 	private listeners = new Set<() => void>();
 	private forgotten = false;
 	private unsavedImages = new Map<string, DraftImageData>();
+	/** Fresh identities for re-issued attachments: one counter per document,
+	 * never derived from the bytes, so two retries can never collide in
+	 * storage even with the same marker and byte length. */
+	private reissueCount = 0;
 
 	imagePreviews(images: DraftImage[] = this.snapshot.record.images ?? []): InputAttachment[] {
 		return images.map((image) => {
@@ -207,7 +211,7 @@ export class DraftDocument {
 		if (reissued) {
 			for (const attachment of reissued) {
 				const data: DraftImageData = {
-					id: `${attachment.marker}:reissue:${attachment.data.length}`,
+					id: `reissue-${++this.reissueCount}`,
 					marker: attachment.marker,
 					mediaType: attachment.mediaType,
 					...(attachment.name === undefined ? {} : { name: attachment.name }),

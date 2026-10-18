@@ -103,12 +103,15 @@ export function usePinNavigation(hubId: string, sessionRef?: string, sectionId?:
 	const page = useSyncExternalStore(pages?.subscribe ?? noSubscription, pages?.getSnapshot ?? noSnapshot);
 	const action = useSyncExternalStore(actions?.subscribe ?? noSubscription, actions?.getSnapshot ?? noSnapshot);
 	// The reconciliation's own outcome arms or retires its retry: success clears
-	// it, a failure re-arms it while the screen can still act.
+	// it, a failure re-arms it while the screen can still act — and a change of
+	// binding (a new screen identity) drops the old binding's timer, so the new
+	// one arms its own rather than waiting on a timer whose closure went stale.
 	useEffect(() => {
 		if (!actions) return;
 		if (action?.uncertain && !action.pending && ready && focused) armReconcileRetry();
 		else if (!action?.uncertain) clearReconcileRetry();
-	}, [actions, action?.uncertain, action?.pending, ready, focused, armReconcileRetry, clearReconcileRetry]);
+		return clearReconcileRetry;
+	}, [actions, binding, action?.uncertain, action?.pending, ready, focused, armReconcileRetry, clearReconcileRetry]);
 	// A mutation's own confirmation re-reads everything, so catalog changes
 	// wait for it; the follower drains on each action state change.
 	useEffect(() => {

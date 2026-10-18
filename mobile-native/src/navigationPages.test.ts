@@ -234,6 +234,41 @@ describe("a failed read's own retry", () => {
 		expect(pages.getSnapshot().rows).toMatchObject([{ key: "b" }]);
 	});
 
+	it("a retry restores the depth the reader had reached, not just the first page", async () => {
+		const { requests, pages, requested } = boundary();
+		// Two pages loaded: the reader reached a depth of four rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 0, 1, 2));
+		await more;
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a", "b", "c", "d"]);
+		// A refresh replaces page one and fails on page two: the rows fall
+		// back to one page while the retry still owes the second.
+		const refresh = pages.refresh();
+		requests[2].resolve(response(["a2", "b2"], 2));
+		await refresh;
+		const deeper = pages.more();
+		requests[3].reject(new Error("request timed out"));
+		await Promise.allSettled([deeper]);
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a2", "b2"]);
+		// The retry re-reads to the depth the reader had (two pages) before it
+		// clears the error: a first-page landing alone must not end recovery.
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1));
+		expect(requests).toHaveLength(5);
+		requests[4].resolve(response(["a3", "b3"], 2));
+		await settled(pages);
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The depth loop continues on the same landing, and only a full
+		// restore clears the error.
+		await requested(6);
+		requests[5].resolve(response(["c3", "d3"], 0, 1, 2));
+		await settled(pages);
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a3", "b3", "c3", "d3"]);
+		expect(pages.getSnapshot().error).toBeNull();
+	});
+
 	it("cancel abandons the pending retry, and none runs while paused", async () => {
 		const { requests, pages } = boundary();
 		const first = pages.refresh();

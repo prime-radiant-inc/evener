@@ -32,7 +32,9 @@ export function LaunchResourceRow({
 				>
 					<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
 						<FoldChevron folded={!expanded} />
-						<Copy>{title}</Copy>
+						<View style={{ flex: 1, minWidth: 0 }}>
+							<Copy>{title}</Copy>
+						</View>
 					</View>
 					<Copy muted numberOfLines={1}>
 						{hint}

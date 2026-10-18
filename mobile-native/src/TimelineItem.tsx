@@ -317,14 +317,16 @@ export function TimelineItem({
 			const stepLine = (
 				<View style={{ flexDirection: "row", alignItems: "center" }}>
 					<FoldChevron folded={!expanded} />
-					<Button
-						text
-						quiet
-						label={`${stepName} · ${exitOnly ? `exit ${item.detail.exitCode}` : item.state}`}
-						accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${stepName}${exitOnly ? `, exit ${item.detail.exitCode}` : ""}`}
-						expanded={expanded}
-						onPress={toggle}
-					/>
+					<View style={{ flex: 1, minWidth: 0 }}>
+						<Button
+							text
+							quiet
+							label={`${stepName} · ${exitOnly ? `exit ${item.detail.exitCode}` : item.state}`}
+							accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${stepName}${exitOnly ? `, exit ${item.detail.exitCode}` : ""}`}
+							expanded={expanded}
+							onPress={toggle}
+						/>
+					</View>
 				</View>
 			);
 			content = (

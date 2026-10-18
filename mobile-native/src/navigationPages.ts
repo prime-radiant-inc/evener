@@ -90,6 +90,10 @@ export class NavigationPages<T> implements PageSource<T> {
 	 * abandons it and resume() re-arms what the page still owes. */
 	private retryTimer: ReturnType<typeof setTimeout> | null = null;
 	private retryCount = 0;
+	/** The row depth a failed re-read still owes: the reader had reached it,
+	 * so a retry re-reads to THIS depth, not to whatever survived the last
+	 * partial refresh. Cleared when the re-read finally reaches it. */
+	private owedDepth: number | null = null;
 	/** Whether a failed read re-arms on its own. Off by default: a consumer
 	 * whose reads another owner already retries (the Board's own rebind,
 	 * useBoardReadRetry) must not double-fire it. */
@@ -159,9 +163,12 @@ export class NavigationPages<T> implements PageSource<T> {
 	/** Re-read from the first page down to the depth the user had scrolled
 	 * to, so the list keeps its length and their place in it. */
 	private async rereadLoadedDepth() {
-		const depth = this.offset;
+		// A partial refresh can leave fewer rows loaded than the reader had
+		// reached; the owed depth remembers it until the re-read catches up.
+		const depth = Math.max(this.offset, this.owedDepth ?? 0);
 		if ((await this.load(true)) !== true) return;
 		while (this.offset < depth && this.state.remaining > 0) if ((await this.load(false)) !== true) return;
+		this.owedDepth = null;
 	}
 	private invalidate(p: NavigationInvalidatedPayload) {
 		if (this.notifiedGeneration !== p.generationId) {
@@ -239,7 +246,12 @@ export class NavigationPages<T> implements PageSource<T> {
 		const request = ++this.request,
 			uncertain = this.uncertain,
 			epoch = this.notificationEpoch;
-		this.publish({ loading: true, error: null });
+		this.publish({
+			loading: true,
+			// A re-read that still owes depth keeps its error: recovery is not
+			// done until the depth it owes is restored.
+			error: this.owedDepth !== null && this.offset < this.owedDepth ? this.state.error : null,
+		});
 		this.clearRetry(false);
 		try {
 			const offset = reset ? 0 : this.offset,
@@ -370,11 +382,18 @@ export class NavigationPages<T> implements PageSource<T> {
 				remaining: Number(data.remaining),
 				loading: false,
 				stale: false,
-				error: null,
+				// A re-read that has not yet reached the depth it owes (a
+				// partial refresh left rows behind) keeps saying so: recovery
+				// ends when the depth is restored, not when a page lands.
+				error: this.owedDepth !== null && this.offset < this.owedDepth ? this.state.error : null,
 			});
 			return true;
 		} catch (cause) {
 			if (request !== this.request) return;
+			// A paging read that fails owed its next page: remember the depth
+			// it was reaching for, so the retry's re-read restores the reader's
+			// full depth instead of ending at whatever survived.
+			if (!reset) this.owedDepth = Math.max(this.owedDepth ?? 0, this.offset + this.limit);
 			this.publish({
 				loading: false,
 				error: cause instanceof Error ? cause.message : "Could not load this page. Try again.",
