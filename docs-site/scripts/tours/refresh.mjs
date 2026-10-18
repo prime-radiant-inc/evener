@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, mkdir, writeFile, copyFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, mkdir, writeFile, copyFile, stat, realpath } from 'node:fs/promises';
 import { tmpdir, homedir, platform } from 'node:os';
 import { join, resolve, relative, isAbsolute, dirname, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -85,6 +85,9 @@ async function collectTours(out,required,signal) {
   await writeFile(join(out,'manifest.json'),JSON.stringify({version:1,sourceRevision,sourceTreeDigest:digest,toolVersions,coverage:required,complete:false,deferredSurfaces:['native'],rows},null,2)+'\n');
  } finally {await rm(privateRoot,{recursive:true,force:true});}
 }
+export async function createCheckRoot(parent=tmpdir()) {
+ return realpath(await mkdtemp(join(parent,'evener-tour-check-')));
+}
 async function main(args) {
  const command=args.shift();const opts={};
  if(!['refresh','check','validate'].includes(command))throw Error('Use refresh|check|validate --surfaces cli,web [--scenario receipt|daily|configuration|extensions] --out /ABS/NEW-CANDIDATE');
@@ -99,7 +102,7 @@ async function main(args) {
  const controller=new AbortController(); const interrupt=()=>controller.abort();process.once('SIGINT',interrupt);process.once('SIGTERM',interrupt);
  let owned;
  try {
-  if(!opts['--out']){owned=await mkdtemp(join(tmpdir(),'evener-tour-check-'));opts['--out']=join(owned,'candidate');}
+  if(!opts['--out']){owned=await createCheckRoot();opts['--out']=join(owned,'candidate');}
   const m=await generateCandidate({out:opts['--out'],required,signal:controller.signal,collect:out=>collectTours(out,required,controller.signal)});
   console.log(`Validated ${m.rows.length} rows, complete=${m.complete}, native deferred, not publication approval`);
  } finally {process.removeListener('SIGINT',interrupt);process.removeListener('SIGTERM',interrupt);if(owned)await rm(owned,{recursive:true,force:true});}

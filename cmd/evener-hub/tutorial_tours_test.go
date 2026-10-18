@@ -31,11 +31,17 @@ func TestTutorialCheckpointRejectsFailedEvidence(t *testing.T) {
 }
 
 func TestTutorialChildEnvironment(t *testing.T) {
+	t.Setenv("EVENER_OFFLINE", "0")
 	for _, key := range []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "EVENER_PROVIDERS_CONFIG", "EVENER_CREDENTIALS_CONFIG", "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL", "AWS_SHARED_CREDENTIALS_FILE", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
 		t.Setenv(key, "canary")
 	}
 	root := t.TempDir()
 	env := tutorialChildEnvironment(root)
+	child := exec.Command("sh", "-c", `test "$EVENER_OFFLINE" = 1`)
+	child.Env = env
+	if err := child.Run(); err != nil {
+		t.Fatalf("tutorial child must disable registry refresh despite ambient override: %v", err)
+	}
 	seen := map[string]bool{}
 	for _, entry := range env {
 		key, value, _ := strings.Cut(entry, "=")
@@ -154,7 +160,7 @@ func checkpoint(t *testing.T, id string, evidence []tourEvidence, capture func()
 	t.Logf("checkpoint %s passed", id)
 }
 func tutorialChildEnvironment(root string) []string {
-	return []string{"PATH=" + os.Getenv("PATH"), "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "HOME=" + root,
+	return []string{"PATH=" + os.Getenv("PATH"), "LANG=C.UTF-8", "LC_ALL=C.UTF-8", "HOME=" + root, "EVENER_OFFLINE=1",
 		"XDG_CONFIG_HOME=" + filepath.Join(root, "config"), "XDG_STATE_HOME=" + filepath.Join(root, "state"),
 		"XDG_CACHE_HOME=" + filepath.Join(root, "cache"), "XDG_DATA_HOME=" + filepath.Join(root, "data"),
 		"TMPDIR=" + root, "PYTHONDONTWRITEBYTECODE=1"}

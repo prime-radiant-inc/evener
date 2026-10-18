@@ -1,5 +1,5 @@
 // Test support only, deliberately independent of the production PNG encoder.
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -45,8 +45,8 @@ export function independentPNG(width, height) {
   return Buffer.from(bytes);
 }
 
-export async function candidateFixture(t, required) {
-  const base = await mkdtemp(join(tmpdir(), 'tour-artifacts-test-'));
+export async function candidateFixture(t, required, parent=tmpdir()) {
+  const base = await realpath(await mkdtemp(join(parent, 'tour-artifacts-test-')));
   t.after(() => rm(base, { recursive: true, force: true }));
   const repo = join(base, 'repo');
   await mkdir(join(repo, 'docs/assets/tutorials'), { recursive: true });

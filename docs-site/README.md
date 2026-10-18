@@ -9,6 +9,7 @@ Use Node 22 or newer. Run from the repository root:
 
 ```sh
 npm --prefix docs-site ci
+(cd docs-site && npx playwright install chromium)
 npm --prefix docs-site run check
 npm --prefix docs-site run build
 npm --prefix docs-site run preview -- --host 127.0.0.1 --port 4173
@@ -22,11 +23,12 @@ For browser checks after building:
 
 ```sh
 cd docs-site
-npx playwright install chromium
 npx playwright test
 ```
 
-If Chrome is already installed, use `DOCS_BROWSER_CHANNEL=chrome npx playwright test` instead of downloading Chromium.
+The check and build commands also run tests that launch Chromium, so install it
+before either command. `DOCS_BROWSER_CHANNEL=chrome npx playwright test` selects
+an installed Chrome for the browser suite only; it does not replace that prerequisite.
 
 The browser suite starts and stops its own preview server. It checks mobile
 width, navigation, keyboard focus, local search and the AppWire table.

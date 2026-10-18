@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, writeFile, readFile, rm, symlink, readdir, stat } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, rm, symlink, readdir, stat, mkdtemp, realpath, cp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join, dirname, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -10,6 +11,27 @@ import { generateCandidate } from './refresh.mjs';
 import * as refresh from './refresh.mjs';
 
 const hash = b => createHash('sha256').update(b).digest('hex');
+test('internally-created check and fixture roots canonicalize a symlinked temp parent',async t=>{
+ const base=await realpath(await mkdtemp(join(tmpdir(),'tour-symlink-test-')));
+ t.after(()=>rm(base,{recursive:true,force:true}));
+ const parent=join(base,'alias');await symlink(base,parent,'dir');
+ await t.test('check root',async()=>{
+  const owned=await refresh.createCheckRoot(parent);
+  assert.equal(owned,await realpath(owned));
+  const f=await candidateFixture(t,required);
+  const result=await generateCandidate({out:join(owned,'candidate'),sourceRoot:f.repo,required,collect:out=>cp(f.root,out,{recursive:true})});
+  assert.equal(result.rows.length,required.length);
+ });
+ await t.test('fixture root',async()=>{
+  const f=await candidateFixture(t,required,parent);
+  assert.equal(f.base,await realpath(f.base));
+  await artifacts.validateCandidate(f.root,required,{sourceRoot:f.repo});
+ });
+ const f=await candidateFixture(t,required);
+ let collected=false;
+ await assert.rejects(generateCandidate({out:join(parent,'explicit'),sourceRoot:f.repo,required,collect:()=>{collected=true;throw Error('collection sentinel');}}));
+ assert.equal(collected,false);
+});
 test('failure summary emits only allowlisted structure, never diagnostic text',()=>{
  const classify=artifacts.classifyTourFailure;
  assert.equal(typeof classify,'function');
