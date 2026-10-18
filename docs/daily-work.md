@@ -2,7 +2,7 @@
 
 A useful Evener session ends with a result you can inspect, not just a convincing answer. Give the agent a bounded task, intervene when the direction changes, and review the files and checks before accepting its work.
 
-This guide assumes you have completed [provider setup](getting-started.md#connect-a-provider-before-starting-work) and can open your hub in a browser. All interface paths below are relative to that hub, normally `http://127.0.0.1:9180`.
+This guide assumes you have completed [provider setup](getting-started.md#connect-a-provider-in-new-session) and can open your hub in a browser. All interface paths below are relative to that hub, normally `http://127.0.0.1:9180`.
 
 ## Start with a task you can check
 

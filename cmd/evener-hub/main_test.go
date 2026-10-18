@@ -192,7 +192,7 @@ func TestRunMainPrintsStartupBannersToTheGivenStderr(t *testing.T) {
 		t.Fatalf("stderr has no parseable listening address:\n%s", output)
 	}
 	var urls []*url.URL
-	for _, field := range strings.Fields(output) {
+	for field := range strings.FieldsSeq(output) {
 		u, err := url.Parse(field)
 		if err == nil && u.Scheme == "http" {
 			urls = append(urls, u)

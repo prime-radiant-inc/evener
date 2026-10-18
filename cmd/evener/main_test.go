@@ -109,7 +109,7 @@ func TestMainBareInteractiveStartup(t *testing.T) {
 			t.Fatalf("stdout = %q, stderr = %q; want guidance on stderr only", got.stdout, got.stderr)
 		}
 		printedCommands := make(map[string]bool)
-		for _, line := range strings.Split(got.stderr, "\n") {
+		for line := range strings.SplitSeq(got.stderr, "\n") {
 			if fields := strings.Fields(line); len(fields) >= 2 {
 				printedCommands[fields[0]] = true
 			}

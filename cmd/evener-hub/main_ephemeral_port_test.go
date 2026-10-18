@@ -123,7 +123,7 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 	}
 
 	var browserURL, privateURL *url.URL
-	for _, field := range strings.Fields(captured) {
+	for field := range strings.FieldsSeq(captured) {
 		u, err := url.Parse(field)
 		if err != nil || u.Scheme != "http" {
 			continue

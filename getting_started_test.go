@@ -40,7 +40,7 @@ func TestGettingStartedExercisePreservesExistingWork(t *testing.T) {
 	}
 	files := []string{"README.md", "receipt.py", "check.py"}
 	for _, name := range files {
-		data, err := os.ReadFile(filepath.Join("docs/examples/first-task", name))
+		data, err := os.ReadFile(filepath.Join("docs", "examples", "first-task", name))
 		if err != nil {
 			t.Fatal(err)
 		}
