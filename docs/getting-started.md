@@ -141,6 +141,40 @@ Do not commit. Report what changed and the actual check result.
 
 Start the session. The conversation shows the agent's messages and tool calls. Watch for the initial failure, the edit to `receipt.py`, and the rerun. If the agent proposes unrelated work, correct it in the composer. [Daily work](daily-work.md) explains Send, Steer, and Stop.
 
+### Use the CLI instead
+
+Run this from the disposable `evener-first-task` directory. Replace
+`provider/model` with your configured model. The CLI does not need the hub.
+This example explicitly turns the sandbox **off**: the disposable fixture
+limits what you intend to edit, not what the process can access. Use only the
+credentials the task needs, and review local instructions and extensions first.
+
+```sh
+evener --model provider/model --timeout 2m --max-rounds 8 --sandbox off "$(cat <<'PROMPT'
+Fix total_cents in receipt.py so each item's price is multiplied by its
+quantity. Work only in this directory. Read README.md and check.py first.
+Run python3 check.py to reproduce the bug, then make the smallest repair
+in receipt.py and rerun the check. Do not change check.py or README.md.
+Do not commit. Report what changed and the actual check result.
+PROMPT
+)"
+```
+
+The final answer goes to stdout; progress and errors go to stderr. An exit of
+0 means the invocation finished without an error, not that the repair is
+correct. Run the independent checks below. If setup fails, fix the reported
+provider or Python prerequisite before retrying. If the task reaches its time
+or round limit, inspect the diff and checker result before continuing.
+
+Maintainer verification: the receipt CLI tour uses the real binary, tools and
+Python checker with a loopback scripted HTTP provider, `fake/fake-test-model`.
+It verifies the initial failure, the edit and the unchanged checker independently.
+It does not test live-provider authentication or model quality. Its images are
+labeled **Rendered command transcript** and retain stdout and stderr separately;
+they do not claim cross-stream timing. Run the partial check with
+`node docs-site/scripts/tours/refresh.mjs check --surfaces cli --scenario receipt`
+from the source checkout. This command publishes nothing.
+
 ## Check the result yourself
 
 When the agent reports completion, run these commands in your tutorial terminal:

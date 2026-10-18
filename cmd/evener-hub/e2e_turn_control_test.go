@@ -627,8 +627,22 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 // -build-source / -deploy-binary this way).
 func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evenerBin string, extraHubArgs ...string) hubStack {
 	t.Helper()
+	return startHubStackWithOptions(t, providersTOML, model, evenerBin, hubStackOptions{}, extraHubArgs...)
+}
+
+type hubStackOptions struct{ ChildEnv []string }
+
+func startHubStackWithOptions(t *testing.T, providersTOML, model, evenerBin string, opts hubStackOptions, extraHubArgs ...string) hubStack {
+	t.Helper()
 
 	home := t.TempDir()
+	if opts.ChildEnv != nil {
+		for _, entry := range opts.ChildEnv {
+			if value, ok := strings.CutPrefix(entry, "HOME="); ok {
+				home = value
+			}
+		}
+	}
 	binDir := filepath.Dir(evenerBin)
 
 	// XDG_CONFIG_HOME/XDG_STATE_HOME point into the stack's own isolated
@@ -654,6 +668,12 @@ func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evene
 	}
 
 	workDir := t.TempDir()
+	if opts.ChildEnv != nil {
+		workDir = filepath.Join(home, "workspace")
+		if err := os.Mkdir(workDir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	readable := filepath.Join(workDir, "NOTES.md")
 	if err := os.WriteFile(readable, []byte("notes for the fake tool round\n"), 0o600); err != nil {
 		t.Fatalf("write workspace file: %v", err)
@@ -666,7 +686,11 @@ func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evene
 	hubArgs := []string{"hub", "--addr", "127.0.0.1:0", "--evener", evenerBin}
 	hubArgs = append(hubArgs, extraHubArgs...)
 	hub := exec.Command(evenerBin, hubArgs...)
-	hub.Env = append(os.Environ(),
+	baseEnv := opts.ChildEnv
+	if baseEnv == nil {
+		baseEnv = os.Environ()
+	}
+	hub.Env = append(append([]string{}, baseEnv...),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+configDir,
 		"XDG_STATE_HOME="+stateDir,
