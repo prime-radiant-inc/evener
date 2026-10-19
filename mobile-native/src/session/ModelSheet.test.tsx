@@ -377,7 +377,7 @@ describe.each([
 				viewport.scrolls.length = 0;
 				await act(async () => {
 					choice.props.onPress();
-					if (attempt < 2) response.reject(new WireError({ code: -32603, message: "rejection-sentinel" }));
+					if (attempt < 2) response.reject(new WireError("rejection-sentinel", -32603));
 					else response.resolve({});
 					await settled;
 				});

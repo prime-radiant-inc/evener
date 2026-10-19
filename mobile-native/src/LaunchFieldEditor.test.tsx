@@ -84,7 +84,7 @@ it.each(["text", "modelPicker"] as const)("keeps %s effective values selectable 
 
 it.each([1, 3.1])("reveals every parse refusal and keeps the draft at text scale %s", async (fontScale) => {
 	viewport.fontScale = fontScale;
-	const edited = { ...option("integer", "maxTurns"), description: longDescription };
+	const edited = { ...option("integer", "maxRounds"), description: longDescription };
 	const apply = vi.fn();
 	const close = vi.fn();
 	const scrollTo = vi.fn();
@@ -92,7 +92,7 @@ it.each([1, 3.1])("reveals every parse refusal and keeps the draft at text scale
 		<LaunchFieldEditor
 			option={edited}
 			value={{}}
-			effective={{ maxTurns: 80 }}
+			effective={{ maxRounds: 80 }}
 			client={null}
 			close={close}
 			apply={apply}
