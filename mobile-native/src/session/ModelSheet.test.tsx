@@ -276,8 +276,8 @@ describe("effort", () => {
 		expect(segments.map((node) => node.props.accessibilityState.checked)).toEqual([false, false, true]);
 		const high = segments[2];
 		if (!high) throw new Error("no High");
-		expect([high.props.style].flat()[0]).toMatchObject({ backgroundColor: palette.accentBg });
-		expect(high.findByType("Text" as never).props.style).toMatchObject({ color: palette.accentInk });
+		expect([high.props.style].flat()[0]).toMatchObject({ backgroundColor: palette.surface });
+		expect(high.findByType("Text" as never).props.style).toMatchObject({ color: palette.inkHi });
 		expect(texts(tree)).toEqual(expect.arrayContaining(["Effort", "Applies from the next turn"]));
 		// The segments sit in the header, which the list follows.
 		const order = tree.root.findAll(

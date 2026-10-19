@@ -8,7 +8,8 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { markFor } from "../board/StateMark";
 import { PulseMeter } from "../board/PulseMeter";
 import { meterTone } from "../board/pulse";
-import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useHeaderTextScale } from "../headerText";
+import { allowFontScaling, useColors } from "../ui";
 import type { SessionStateLine } from "./sessionState";
 import { titleSwipeDirection } from "./titleSwipe";
 
@@ -114,10 +115,11 @@ export function SessionTitle({
 	connected?: boolean;
 }) {
 	const { palette } = useColors();
-	const scale = useTextScale();
+	const scale = useHeaderTextScale();
 	const { width } = useWindowDimensions();
 	const span = navBarButtonSpan(backCount, scale);
 	const mark = markFor(line.state, false);
+	const liveAction = line.live && onJumpToLive;
 	// The gesture is built once and reaches the latest onSwipe through the
 	// ref, so a re-render never hands the detector a new gesture mid-pan.
 	const onSwipeRef = useRef(onSwipe);
@@ -146,56 +148,60 @@ export function SessionTitle({
 	);
 	return (
 		<GestureDetector gesture={pan}>
-			<Pressable
-				accessibilityRole="button"
-				accessibilityLabel={`${title}, ${line.text}, session info`}
-				onPress={onPress}
-				accessibilityActions={[
-					...(neighbors.previous ? [{ name: "previous", label: "Previous session" }] : []),
-					...(neighbors.next ? [{ name: "next", label: "Next session" }] : []),
-				]}
-				onAccessibilityAction={(event) => {
-					if (event.nativeEvent.actionName === "previous") onSwipe(-1);
-					if (event.nativeEvent.actionName === "next") onSwipe(1);
-				}}
-				style={({ pressed }) => ({
-					minHeight: 44,
-					// Floored at zero, so an extreme count at an accessibility
-					// size never asks for a negative width.
-					maxWidth: Math.max(0, width - 2 * span),
-					alignItems: "center",
-					justifyContent: "center",
-					opacity: pressed ? 0.6 : 1,
-				})}
-			>
-				<Text
-					allowFontScaling={allowFontScaling}
-					numberOfLines={1}
-					ellipsizeMode="tail"
-					style={{ color: palette.inkHi, fontSize: 15 * scale, fontWeight: "600" }}
+			<View style={{ maxWidth: Math.max(0, width - 2 * span), flexDirection: "row", alignItems: "center", gap: 4 }}>
+				<Pressable
+					accessibilityRole="button"
+					accessibilityLabel={`${title}, ${line.text}, session info`}
+					accessibilityShowsLargeContentViewer
+					accessibilityLargeContentTitle={`${title}, ${line.text}`}
+					onPress={onPress}
+					accessibilityActions={[
+						...(neighbors.previous ? [{ name: "previous", label: "Previous session" }] : []),
+						...(neighbors.next ? [{ name: "next", label: "Next session" }] : []),
+					]}
+					onAccessibilityAction={(event) => {
+						if (event.nativeEvent.actionName === "previous") onSwipe(-1);
+						if (event.nativeEvent.actionName === "next") onSwipe(1);
+					}}
+					style={({ pressed }) => ({
+						minHeight: 44,
+						minWidth: 0,
+						flexShrink: 1,
+						alignItems: "center",
+						justifyContent: "center",
+						opacity: pressed ? 0.6 : 1,
+					})}
 				>
-					{title}
-				</Text>
-				<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-					<LeadingMark line={line} mark={mark} perMinute={perMinute} connected={connected} scale={scale} />
-					{/* The live line is the tray's, lifted here: a press on it jumps
-					 * to the live end, as the tray's line did. */}
-					{line.live && onJumpToLive ? (
-						<Pressable
-							accessibilityRole="button"
-							accessibilityLabel={line.text}
-							accessibilityHint="Shows the latest"
-							onPress={onJumpToLive}
-							style={{ flexShrink: 1 }}
-						>
-							<StateLine line={line} scale={scale} />
-						</Pressable>
-					) : (
+					<Text
+						allowFontScaling={allowFontScaling}
+						numberOfLines={1}
+						ellipsizeMode="tail"
+						style={{ color: palette.inkHi, fontSize: 15 * scale, fontWeight: "600" }}
+					>
+						{title}
+					</Text>
+					<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+						{!liveAction ? (
+							<LeadingMark line={line} mark={mark} perMinute={perMinute} connected={connected} scale={scale} />
+						) : null}
 						<StateLine line={line} scale={scale} />
-					)}
-					<SymbolView name="chevron.right" tintColor={palette.inkLow} size={9 * scale} />
-				</View>
-			</Pressable>
+						<SymbolView name="chevron.right" tintColor={palette.inkLow} size={9 * scale} />
+					</View>
+				</Pressable>
+				{liveAction ? (
+					<Pressable
+						accessibilityRole="button"
+						accessibilityLabel={line.text}
+						accessibilityHint="Shows the latest"
+						accessibilityShowsLargeContentViewer
+						accessibilityLargeContentTitle={line.text}
+						onPress={onJumpToLive}
+						style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }}
+					>
+						<LeadingMark line={line} mark={mark} perMinute={perMinute} connected={connected} scale={scale} />
+					</Pressable>
+				) : null}
+			</View>
 		</GestureDetector>
 	);
 }

@@ -23,7 +23,7 @@ const ALIVE_INK = "#12763B";
 const DANGER_INK = "#C51D23";
 const DIFF_ADD = "#E9F4EE";
 const DIFF_DEL = "#F5EAF0";
-const INK_LOW = "#6D6D64";
+const INK_LOW = "#62626D";
 
 function step(label: string, detail: RunStep["detail"], over: Partial<RunStep> = {}): RunStep {
 	return { kind: "activity", id: `${label}-1`, label, family: "tool", state: "completed", detail, ...over };

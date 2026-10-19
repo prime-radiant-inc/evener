@@ -22,8 +22,8 @@ type Run = Extract<TimelineRow, { kind: "run" }>;
 const where = { hubId: "hub-1", sessionRef: "ref-1" };
 
 const DANGER_INK = "#C51D23";
-const INK_LOW = "#6D6D64";
-const ATTENTION_INK = "#AD5209";
+const INK_LOW = "#62626D";
+const ATTENTION_INK = "#9C4908";
 
 // A step as projectedRows builds it: its words read from the whole step.
 function step(id: string, label: string, args: Record<string, unknown>, over: Partial<RunStep> = {}): RunStep {

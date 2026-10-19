@@ -1,6 +1,6 @@
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import { DisplayProvider } from "../display/displayContext";
 import { DisplayPreferences } from "../display/displayPreferences";
@@ -13,8 +13,13 @@ import { FreshDot } from "../reader/FreshDot";
 import { PulseMeter } from "./PulseMeter";
 import { StateMark } from "./StateMark";
 
+const viewport = vi.hoisted(() => ({ fontScale: 1 }));
+beforeEach(() => {
+	viewport.fontScale = 1;
+});
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
@@ -112,14 +117,14 @@ describe("a Board row (spec 7.2)", () => {
 		expect(tree.root.findAll((node) => node.props.style && styleOf(node).fontVariant !== undefined)).toEqual([]);
 	});
 
-	it("gives a Needs you title two lines and a Working title one, both tail-truncated", () => {
+	it("gives signal titles two lines before tail truncation", () => {
 		const needsYou = textWith(mount(), "Fix Endless Provider Retry Loop")[0];
 		expect(needsYou.props).toMatchObject({ numberOfLines: 2, ellipsizeMode: "tail" });
 		const working = textWith(
 			mount({ item: item("working", { state: "active" }), moving: true }),
 			"Fix Endless Provider Retry Loop",
 		)[0];
-		expect(working.props).toMatchObject({ numberOfLines: 1, ellipsizeMode: "tail" });
+		expect(working.props).toMatchObject({ numberOfLines: 2, ellipsizeMode: "tail" });
 	});
 
 	it("lets a Needs you why line run to two lines and a Working one to one", () => {
@@ -164,8 +169,8 @@ describe("a Board row (spec 7.2)", () => {
 
 		const host = mount({ item: item("failed", { host_id: "studio" }) });
 		const label = textWith(host, "Studio Mac")[0];
-		expect(label.props.numberOfLines).toBe(1);
-		expect(styleOf(label)).toMatchObject({ fontSize: 13, lineHeight: 18, color: palette.inkLow, flexShrink: 0 });
+		expect(label.props.numberOfLines).toBeUndefined();
+		expect(styleOf(label)).toMatchObject({ fontSize: 13, lineHeight: 18, color: palette.inkLow, flexShrink: 1 });
 		expect(symbols(host)).toContain("server.rack");
 		expect(symbols(host)).not.toContain("folder");
 		const glyph = host.root.findAll((node) => node.props.name === "server.rack")[0];
@@ -179,12 +184,12 @@ describe("a Board row (spec 7.2)", () => {
 			}),
 		});
 		const line = textWith(tree, "Task 4 of 7 · Fix the settle/drain race")[0];
-		expect(line.props).toMatchObject({ numberOfLines: 1, ellipsizeMode: "tail" });
+		expect(line.props.numberOfLines).toBeUndefined();
 		expect(styleOf(line)).toMatchObject({ fontSize: 13, lineHeight: 18, color: palette.inkLow, flexShrink: 1 });
 		expect(symbols(tree)).toContain("checklist");
 	});
 
-	it("never shrinks project or host, so a long task title is what gives way under pressure", () => {
+	it("wraps metadata within the row rather than clipping project and host behind a task", () => {
 		const tree = mount({
 			item: item("failed", {
 				project: "magic-kingdom",
@@ -192,9 +197,12 @@ describe("a Board row (spec 7.2)", () => {
 				tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
 			}),
 		});
-		expect(styleOf(textWith(tree, "magic-kingdom")[0])).toMatchObject({ flexShrink: 0 });
-		expect(styleOf(textWith(tree, "Studio Mac")[0])).toMatchObject({ flexShrink: 0 });
+		expect(styleOf(textWith(tree, "magic-kingdom")[0])).toMatchObject({ flexShrink: 1 });
+		expect(styleOf(textWith(tree, "Studio Mac")[0])).toMatchObject({ flexShrink: 1 });
 		expect(styleOf(textWith(tree, "Task 4 of 7 · Fix the settle/drain race")[0])).toMatchObject({ flexShrink: 1 });
+		const metadata = tree.root.findByProps({ testID: "row-metadata" });
+		expect(styleOf(metadata).flexWrap).toBe("wrap");
+		expect(styleOf(metadata).overflow).not.toBe("hidden");
 	});
 
 	it("shows no task progress once the list is finished or when there is none", () => {
@@ -225,8 +233,37 @@ describe("a Board row (spec 7.2)", () => {
 		const model = textWith(tree, "GLM 5.3 Vision")[0];
 		expect(styleOf(model)).toMatchObject({ fontSize: 13, color: palette.inkLow });
 		// Last on the line: after the host.
-		const lastLine = tree.root.findAll((node) => node.type === ("Text" as never) && node.props.numberOfLines === 1);
+		const lastLine = tree.root.findAll((node) => node.type === ("Text" as never));
 		expect(lastLine.map((node) => node.props.children).slice(-2)).toEqual(["Studio Mac", "GLM 5.3 Vision"]);
+	});
+
+	it("gives a large-text title its own line while preserving draft, running count, metadata and navigation", () => {
+		viewport.fontScale = 2;
+		const prefs = new DisplayPreferences(memoryStorage());
+		prefs.set({ showModel: true });
+		const data = row({
+			title: "A long session title with every auxiliary fact present",
+			project: "project-data-long",
+			host_id: "host-data-long",
+			model_name: "model-data-long",
+			state: "active",
+			subagents: { running: 12, failed: 0, done: 0 },
+		});
+		const onOpen = vi.fn();
+		const tree = mount({ item: { row: data, state: "working", unseen: true }, hasDraft: true, onOpen }, prefs);
+		const title = textWith(tree, data.title)[0];
+		expect(title.props.numberOfLines).toBeUndefined();
+		expect(styleOf(title.parent as ReactTestInstance).flexDirection).toBe("column");
+		expect(title.parent?.findAllByProps({ testID: "subagent-chip" })).toHaveLength(0);
+		expect(tree.root.findAllByProps({ testID: "subagent-chip" })).toHaveLength(1);
+		expect(tree.root.findAllByType(FreshDot)).toHaveLength(1);
+		for (const fact of [data.project, data.host_id, data.model_name]) {
+			const label = textWith(tree, fact as string)[0];
+			expect(label.props.numberOfLines).toBeUndefined();
+			expect(styleOf(label).flexShrink).toBe(1);
+		}
+		act(() => pressable(tree).props.onPress());
+		expect(onOpen).toHaveBeenCalledWith(data);
 	});
 
 	it("moves a working row in Live with the pulse meter, and shows a still dot elsewhere", () => {

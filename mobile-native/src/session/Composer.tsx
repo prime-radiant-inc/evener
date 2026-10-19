@@ -78,10 +78,11 @@ export function Composer({
 	useHoldAlerts(focused && value.trim() !== "", "quiet");
 	// A composer that leaves the screen while focused reports no blur.
 	useEffect(() => () => focus?.set(false), [focus]);
-	// Typed line breaks count before layout has measured anything; the
-	// measured height catches long lines that wrap. The half line of slack
-	// keeps rounding in the measurement from offering the editor at six.
-	const overflows = value.split("\n").length > MAX_LINES || contentHeight > (MAX_LINES + 0.5) * lineHeight;
+	// The viewport cap can hide text before six lines at large text sizes.
+	// Explicit line breaks count before measurement; one point absorbs native
+	// layout rounding without hiding the expansion action for a scrolled line.
+	const maxHeight = Math.max(44, Math.min(MAX_LINES * lineHeight, windowHeight / 3));
+	const overflows = value.split("\n").length * lineHeight > maxHeight || contentHeight > maxHeight + 1;
 	// An empty field you aren't in rests one line tall, so the composer stays
 	// small until you reach for it: focusing it, or any character at all
 	// (whitespace included, which the field visibly holds), keeps it open.
@@ -137,12 +138,12 @@ export function Composer({
 					color: palette.inkHi,
 					fontSize: 17 * scale,
 					lineHeight,
-					minHeight: resting ? lineHeight : 44,
+					minHeight: 44,
 					// At the largest text sizes six lines would crowd out the
 					// transcript, so the field also stops at a third of the window.
-					maxHeight: Math.min(MAX_LINES * lineHeight, windowHeight / 3),
+					maxHeight,
 					paddingHorizontal: 4,
-					paddingVertical: 0,
+					paddingVertical: resting ? 10 : 0,
 					paddingRight: overflows ? 44 : 4,
 					textAlignVertical: "top",
 				}}
