@@ -15,6 +15,8 @@ const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 	memory: null as unknown,
 	scheme: "light" as "light" | "dark",
+	menus: [] as { items: { label: string; run: () => void }[]; preview: string }[],
+	shares: [] as string[],
 }));
 
 vi.mock("react-native", async () => ({
@@ -25,6 +27,16 @@ vi.mock("react-native", async () => ({
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory }));
+vi.mock("../longPressMenu", () => ({
+	showMenu: (items: { label: string; run: () => void }[], preview: string) => harness.menus.push({ items, preview }),
+	menuPreview: (text: string) => text,
+	menuAccessibility: () => ({}),
+}));
+vi.mock("./useShareDocument", () => ({
+	useShareDocument: (_hubId: string, _sessionRef: string) => async (path: string) => {
+		harness.shares.push(path);
+	},
+}));
 vi.mock("expo-secure-store", () => ({
 	getItemAsync: vi.fn(async (key: string) =>
 		key === "evener.hub.studio"
@@ -54,6 +66,8 @@ let answers: (() => Response)[];
 
 beforeEach(() => {
 	harness.scheme = "light";
+	harness.menus = [];
+	harness.shares = [];
 	forgetDocumentSummaries("studio");
 	harness.connection = { profiles: [{ id: "studio", name: "Studio", origin: "https://hub.test" }], state: "ready" };
 	answers = [];
@@ -300,4 +314,18 @@ describe("since you last read it", () => {
 		// Kind, title, name, length and age: nothing about a change.
 		expect(spoken(tree)).toHaveLength(5);
 	});
+});
+
+// Sharing from the chip: a touch-and-hold offers the same system sheet the
+// Reader does, since a chip is where a video or PDF the agent wrote first
+// appears.
+it("offers Share on a touch-and-hold, which shares that document", async () => {
+	const tree = chip();
+	await settle();
+	act(() => button(tree).props.onLongPress());
+	expect(harness.menus).toHaveLength(1);
+	const share = harness.menus[0]?.items.find((item) => item.label === "Share");
+	expect(share).toBeDefined();
+	act(() => share?.run());
+	expect(harness.shares).toEqual([PATH]);
 });

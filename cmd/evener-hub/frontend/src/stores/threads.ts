@@ -7794,7 +7794,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const generation = ++modelsListGeneration;
     const request = (async () => {
       const client = await requireReadyClient();
-      return client.request("model/list", {});
+      return client.request("model/list", refresh ? { refresh: true } : {});
     })();
     // Supersede the shared in-flight slot with the newest request either way.
     // A refresh must not leave an older non-refresh request there: a

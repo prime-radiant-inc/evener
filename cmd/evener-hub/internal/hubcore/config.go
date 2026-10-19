@@ -276,7 +276,7 @@ type WebConfig struct {
 	// ("" = unscoped). nil → the configured spawner is asked directly, which
 	// spawns `evener launch-check --models` on every call. The hub wires its
 	// cached loader so a model picker open does not re-run that live listing.
-	LaunchModels func(ctx context.Context, workingDir string) (appwire.ModelListResponse, error)
+	LaunchModels func(ctx context.Context, workingDir string, refresh bool) (appwire.ModelListResponse, error)
 	MkdirAll     func(path string, perm os.FileMode) error // nil → os.MkdirAll
 
 	// MobileInterfaceAddrs supplies the Hub interfaces for automatic pairing.

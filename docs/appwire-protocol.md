@@ -2610,6 +2610,7 @@ Underlying Go kind: `string` (no struct fields).
 |-------|---------|-----------|----------|
 | `harness` | string | yes |  |
 | `cwd` | string | yes |  |
+| `refresh` | bool | yes |  |
 
 
 ### `ModelListResponse`

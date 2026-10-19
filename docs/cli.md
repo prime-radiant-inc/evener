@@ -26,7 +26,7 @@ printf '%s\n' 'Explain the public API without modifying files.' |
   evener --model provider/model --timeout 2m --max-rounds 8 --sandbox read-only --sandbox-net off
 ```
 
-An empty prompt without a resume or listing option prints usage and exits 1. `--list-sessions` does not read stdin. Do not leave a pipe open: stdin is read before the run timeout starts.
+Bare `evener` in an interactive terminal lists the top-level commands and points to `evener hub` for the browser interface, then exits 1. It does not start the hub, open a browser, or launch a terminal UI. An empty scripted prompt without a resume or listing option prints usage and exits 1. `--list-sessions` does not read stdin. Do not leave a pipe open: stdin is read before the run timeout starts.
 
 ### Output and exits
 

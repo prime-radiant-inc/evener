@@ -42,6 +42,23 @@ export function accessModeForSandbox(sandbox: string): AccessModeOption | undefi
   return ACCESS_MODE_OPTIONS.find((option) => option.value === value);
 }
 
+/** A concise consequence for the four sandbox values the access selector owns.
+ * Unknown values deliberately have no invented meaning. */
+export function accessModeDescription(sandbox: string): string | undefined {
+  switch (sandbox.trim()) {
+    case "off":
+      return "The session can read and change files and run commands without sandbox restrictions.";
+    case "read-only":
+      return "The session can inspect files and run read-only commands, but cannot change the workspace.";
+    case "workspace-write":
+      return "The session can read files and change files inside the workspace.";
+    case "restricted":
+      return "The session runs with the most restrictive filesystem and command access.";
+    default:
+      return undefined;
+  }
+}
+
 // The empty option's label for the access-mode control: names the sandbox a
 // session started now would inherit, in the control's own friendly wording -
 // "Workspace write (default)". Plain "(default)" until a resolve lands with

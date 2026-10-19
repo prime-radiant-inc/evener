@@ -9,7 +9,7 @@ provider charges. Start with a command handler that makes no model call.
 ## Add and verify a startup hook
 
 You need Evener with a configured provider and `bash` on the session host. Get
-an Evener checkout with the [example clone command](getting-started.md#prepare-the-example),
+an Evener checkout with the [example clone command](getting-started.md#optional-disposable-exercise),
 then run from the resulting `evener-docs` directory. No Evener build is needed.
 The complete [`hello-plugin` fixture](examples/extensions/hello-plugin/hooks/hooks.json)
 runs a startup hook. The session makes a real provider call and may incur charges;

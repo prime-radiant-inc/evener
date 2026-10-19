@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -54,6 +55,105 @@ func TestMainRejectsEnabledPluginsWithResumeBeforeRun(t *testing.T) {
 		t.Fatal("run called after an enabled-plugin/resume conflict")
 	}
 	requireOnlyStderr(t, &stdout, &stderr)
+}
+
+func TestMainBareInteractiveStartup(t *testing.T) {
+	commandTokens := []string{
+		"openai", "serve", "launch-check", "upgrade", "install", "plugin",
+		"hub", "doctor", "migrate", "models", "providers",
+	}
+
+	type result struct {
+		stdout, stderr string
+		exits          []int
+		dispatchCalls  int
+		runCalls       int
+	}
+	run := func(t *testing.T, args []string, stdin string, mode os.FileMode, dispatchHandled bool) result {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		got := result{}
+		deps := defaultMainDeps()
+		deps.args = args
+		deps.stdin = strings.NewReader(stdin)
+		deps.stdout = &stdout
+		deps.stderr = &stderr
+		deps.stdinMode = func() (os.FileMode, error) { return mode, nil }
+		deps.exit = func(code int) { got.exits = append(got.exits, code) }
+		deps.dispatch = func([]string, io.Reader, io.Writer, io.Writer) (bool, string, error) {
+			got.dispatchCalls++
+			return dispatchHandled, "evener test", nil
+		}
+		deps.notify = func(ctx context.Context, _ ...os.Signal) (context.Context, context.CancelFunc) {
+			return ctx, func() {}
+		}
+		deps.run = func(context.Context, runConfig) error {
+			got.runCalls++
+			return nil
+		}
+		mainWithDeps(deps)
+		got.stdout = stdout.String()
+		got.stderr = stderr.String()
+		return got
+	}
+
+	t.Run("bare character device gets concise startup guidance", func(t *testing.T) {
+		got := run(t, nil, "", os.ModeCharDevice, false)
+		if got.runCalls != 0 || got.dispatchCalls != 1 {
+			t.Fatalf("run calls = %d, dispatch calls = %d; want no agent run and one side-effect-free dispatch check", got.runCalls, got.dispatchCalls)
+		}
+		if !reflect.DeepEqual(got.exits, []int{1}) {
+			t.Fatalf("exit codes = %v, want [1]", got.exits)
+		}
+		if got.stdout != "" || got.stderr == "" {
+			t.Fatalf("stdout = %q, stderr = %q; want guidance on stderr only", got.stdout, got.stderr)
+		}
+		printedCommands := make(map[string]bool)
+		for line := range strings.SplitSeq(got.stderr, "\n") {
+			if fields := strings.Fields(line); len(fields) >= 2 {
+				printedCommands[fields[0]] = true
+			}
+		}
+		for _, token := range commandTokens {
+			if !printedCommands[token] {
+				t.Errorf("startup guidance is missing command token %q", token)
+			}
+		}
+		if strings.Contains(got.stderr, "--model") || strings.Contains(got.stderr, "--timeout") {
+			t.Fatalf("bare interactive guidance contains full run flags: %q", got.stderr)
+		}
+	})
+
+	for _, tc := range []struct {
+		name            string
+		args            []string
+		stdin           string
+		mode            os.FileMode
+		dispatchHandled bool
+		wantExit        []int
+		wantRun         int
+		wantFullUsage   bool
+	}{
+		{name: "piped prompt", stdin: "do work", wantRun: 1},
+		{name: "empty pipe", wantExit: []int{1}, wantFullUsage: true},
+		{name: "explicit flags", args: []string{"--model", "openai/test"}, wantExit: []int{1}, wantFullUsage: true},
+		{name: "help", args: []string{"--help"}, mode: os.ModeCharDevice, wantFullUsage: true},
+		{name: "resume", args: []string{"--resume", "session-id"}, mode: os.ModeCharDevice, wantRun: 1},
+		{name: "subcommand", args: []string{"hub"}, mode: os.ModeCharDevice, dispatchHandled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := run(t, tc.args, tc.stdin, tc.mode, tc.dispatchHandled)
+			if !reflect.DeepEqual(got.exits, tc.wantExit) {
+				t.Fatalf("exit codes = %v, want %v", got.exits, tc.wantExit)
+			}
+			if got.runCalls != tc.wantRun {
+				t.Fatalf("run calls = %d, want %d", got.runCalls, tc.wantRun)
+			}
+			if tc.wantFullUsage && (!strings.Contains(got.stderr, "--model") || !strings.Contains(got.stderr, "--timeout")) {
+				t.Fatalf("stderr does not contain full run usage flag tokens: %q", got.stderr)
+			}
+		})
+	}
 }
 
 // liveRegistryClient builds the client the live CLI tests dispatch through:
