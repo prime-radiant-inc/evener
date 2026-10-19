@@ -1,29 +1,213 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-28T22:25:22-07:00",
+  "generatedAt": "2026-10-19T01:13:24.268Z",
   "title": "Design System: Evener Native",
   "extensions": {
     "colorMeta": {
-      "light-background": { "role": "neutral", "displayName": "Paper background", "canonical": "#FAF9F6" },
-      "dark-background": { "role": "neutral", "displayName": "Night background", "canonical": "#191918" },
-      "light-accent": { "role": "primary", "displayName": "Accent", "canonical": "#0064C2" },
-      "dark-accent": { "role": "primary", "displayName": "Night accent", "canonical": "#459EFF" },
-      "light-canvas": { "role": "neutral", "displayName": "Sheet canvas", "canonical": "#F1F0EB" },
-      "dark-canvas": { "role": "neutral", "displayName": "Night sheet canvas", "canonical": "#1D1D1B" },
-      "light-attention-ink": { "role": "semantic", "displayName": "Attention ink", "canonical": "#AD5209" }
+      "light-background": {
+        "role": "neutral",
+        "displayName": "Neutral page",
+        "canonical": "#FFFFFF",
+        "tonalRamp": [
+          "oklch(15.00% 0.0000 89.88)",
+          "oklch(26.43% 0.0000 89.88)",
+          "oklch(37.86% 0.0000 89.88)",
+          "oklch(49.29% 0.0000 89.88)",
+          "oklch(60.71% 0.0000 89.88)",
+          "oklch(72.14% 0.0000 89.88)",
+          "oklch(83.57% 0.0000 89.88)",
+          "oklch(95.00% 0.0000 89.88)"
+        ]
+      },
+      "dark-background": {
+        "role": "neutral",
+        "displayName": "Night page",
+        "canonical": "#111113",
+        "tonalRamp": [
+          "oklch(15.00% 0.0041 285.98)",
+          "oklch(26.43% 0.0041 285.98)",
+          "oklch(37.86% 0.0041 285.98)",
+          "oklch(49.29% 0.0041 285.98)",
+          "oklch(60.71% 0.0041 285.98)",
+          "oklch(72.14% 0.0041 285.98)",
+          "oklch(83.57% 0.0041 285.98)",
+          "oklch(95.00% 0.0041 285.98)"
+        ]
+      },
+      "light-accent": {
+        "role": "primary",
+        "displayName": "Accent ink",
+        "canonical": "#0064C2",
+        "tonalRamp": [
+          "oklch(15.00% 0.1666 254.76)",
+          "oklch(26.43% 0.1666 254.76)",
+          "oklch(37.86% 0.1666 254.76)",
+          "oklch(49.29% 0.1666 254.76)",
+          "oklch(60.71% 0.1666 254.76)",
+          "oklch(72.14% 0.1666 254.76)",
+          "oklch(83.57% 0.1666 254.76)",
+          "oklch(95.00% 0.1666 254.76)"
+        ]
+      },
+      "dark-accent": {
+        "role": "primary",
+        "displayName": "Night accent ink",
+        "canonical": "#459EFF",
+        "tonalRamp": [
+          "oklch(15.00% 0.1663 253.03)",
+          "oklch(26.43% 0.1663 253.03)",
+          "oklch(37.86% 0.1663 253.03)",
+          "oklch(49.29% 0.1663 253.03)",
+          "oklch(60.71% 0.1663 253.03)",
+          "oklch(72.14% 0.1663 253.03)",
+          "oklch(83.57% 0.1663 253.03)",
+          "oklch(95.00% 0.1663 253.03)"
+        ]
+      },
+      "light-canvas": {
+        "role": "neutral",
+        "displayName": "Grouped canvas",
+        "canonical": "#F2F2F7",
+        "tonalRamp": [
+          "oklch(15.00% 0.0066 286.27)",
+          "oklch(26.43% 0.0066 286.27)",
+          "oklch(37.86% 0.0066 286.27)",
+          "oklch(49.29% 0.0066 286.27)",
+          "oklch(60.71% 0.0066 286.27)",
+          "oklch(72.14% 0.0066 286.27)",
+          "oklch(83.57% 0.0066 286.27)",
+          "oklch(95.00% 0.0066 286.27)"
+        ]
+      },
+      "dark-canvas": {
+        "role": "neutral",
+        "displayName": "Night grouped canvas",
+        "canonical": "#08080A",
+        "tonalRamp": [
+          "oklch(15.00% 0.0047 285.76)",
+          "oklch(26.43% 0.0047 285.76)",
+          "oklch(37.86% 0.0047 285.76)",
+          "oklch(49.29% 0.0047 285.76)",
+          "oklch(60.71% 0.0047 285.76)",
+          "oklch(72.14% 0.0047 285.76)",
+          "oklch(83.57% 0.0047 285.76)",
+          "oklch(95.00% 0.0047 285.76)"
+        ]
+      },
+      "light-attention-ink": {
+        "role": "semantic",
+        "displayName": "Attention ink",
+        "canonical": "#9C4908",
+        "tonalRamp": [
+          "oklch(15.00% 0.1292 50.05)",
+          "oklch(26.43% 0.1292 50.05)",
+          "oklch(37.86% 0.1292 50.05)",
+          "oklch(49.29% 0.1292 50.05)",
+          "oklch(60.71% 0.1292 50.05)",
+          "oklch(72.14% 0.1292 50.05)",
+          "oklch(83.57% 0.1292 50.05)",
+          "oklch(95.00% 0.1292 50.05)"
+        ]
+      },
+      "light-raised": {
+        "role": "neutral",
+        "displayName": "Raised surface",
+        "canonical": "#FFFFFF",
+        "tonalRamp": [
+          "oklch(15.00% 0.0000 89.88)",
+          "oklch(26.43% 0.0000 89.88)",
+          "oklch(37.86% 0.0000 89.88)",
+          "oklch(49.29% 0.0000 89.88)",
+          "oklch(60.71% 0.0000 89.88)",
+          "oklch(72.14% 0.0000 89.88)",
+          "oklch(83.57% 0.0000 89.88)",
+          "oklch(95.00% 0.0000 89.88)"
+        ]
+      },
+      "dark-raised": {
+        "role": "neutral",
+        "displayName": "Night raised surface",
+        "canonical": "#1C1C1E",
+        "tonalRamp": [
+          "oklch(15.00% 0.0038 286.09)",
+          "oklch(26.43% 0.0038 286.09)",
+          "oklch(37.86% 0.0038 286.09)",
+          "oklch(49.29% 0.0038 286.09)",
+          "oklch(60.71% 0.0038 286.09)",
+          "oklch(72.14% 0.0038 286.09)",
+          "oklch(83.57% 0.0038 286.09)",
+          "oklch(95.00% 0.0038 286.09)"
+        ]
+      },
+      "light-surface": {
+        "role": "neutral",
+        "displayName": "Input well",
+        "canonical": "#EDEDF2",
+        "tonalRamp": [
+          "oklch(15.00% 0.0067 286.27)",
+          "oklch(26.43% 0.0067 286.27)",
+          "oklch(37.86% 0.0067 286.27)",
+          "oklch(49.29% 0.0067 286.27)",
+          "oklch(60.71% 0.0067 286.27)",
+          "oklch(72.14% 0.0067 286.27)",
+          "oklch(83.57% 0.0067 286.27)",
+          "oklch(95.00% 0.0067 286.27)"
+        ]
+      },
+      "dark-surface": {
+        "role": "neutral",
+        "displayName": "Night input well",
+        "canonical": "#252528",
+        "tonalRamp": [
+          "oklch(15.00% 0.0055 286.02)",
+          "oklch(26.43% 0.0055 286.02)",
+          "oklch(37.86% 0.0055 286.02)",
+          "oklch(49.29% 0.0055 286.02)",
+          "oklch(60.71% 0.0055 286.02)",
+          "oklch(72.14% 0.0055 286.02)",
+          "oklch(83.57% 0.0055 286.02)",
+          "oklch(95.00% 0.0055 286.02)"
+        ]
+      }
     },
     "typographyMeta": {
-      "board-title": { "displayName": "Board title", "purpose": "A row's title, in Live and every section." },
-      "why-line": { "displayName": "Why line", "purpose": "The state word and reason, or the working activity." },
-      "band-header": { "displayName": "Band header", "purpose": "NEEDS YOU and WORKING section labels." },
-      "group-label": { "displayName": "Group label", "purpose": "A sheet's section label: WHERE, AGENT, FLEET, SETUP, THIS PHONE, MORE, ABOUT." },
-      "sheet-row": { "displayName": "Sheet row", "purpose": "A grouped row's label and value in New session and the Hub." },
-      "sheet-footer": { "displayName": "Sheet footer", "purpose": "A group's footer, a row's second line, and the calm connection line." }
+      "board-title": {
+        "displayName": "Board title",
+        "purpose": "A row's title, in Live and every section."
+      },
+      "why-line": {
+        "displayName": "Why line",
+        "purpose": "The state word and reason, or the working activity."
+      },
+      "band-header": {
+        "displayName": "Band header",
+        "purpose": "Authored Board section headings in sentence case, 15/20 semibold with no added tracking."
+      },
+      "group-label": {
+        "displayName": "Group label",
+        "purpose": "Sentence-case sheet and administration section headings, 15/20 semibold; machine names remain verbatim."
+      },
+      "sheet-row": {
+        "displayName": "Sheet row",
+        "purpose": "A grouped row’s wrapping 17/22 label; trailing values use the separate 15/20 role."
+      },
+      "sheet-footer": {
+        "displayName": "Sheet footer",
+        "purpose": "A group's footer, a row's second line, and the calm connection line."
+      },
+      "sheet-value": {
+        "displayName": "Sheet value",
+        "purpose": "A grouped row’s 15/20 secondary value, wrapping below its label when necessary."
+      }
     },
     "breakpoints": [],
     "shadows": [],
     "motion": [
-      { "name": "native-state", "value": "platform native transition", "purpose": "Use native navigation and keyboard transitions; avoid animated token streaming or viewport movement." }
+      {
+        "name": "native-state",
+        "value": "platform native transition",
+        "purpose": "Use native navigation and keyboard transitions; avoid animated token streaming or viewport movement."
+      }
     ]
   },
   "components": [
@@ -31,85 +215,145 @@
       "name": "Board row",
       "kind": "custom",
       "refersTo": "board-row",
-      "description": "Illustrative documentation preview translated from a Needs You row (signal variant) on the Board.",
-      "html": "<div class=\"ds-board-row\"><span class=\"ds-mark ds-mark--failed\" aria-hidden=\"true\">&#10005;</span><div class=\"ds-board-row-body\"><div class=\"ds-board-row-title-line\"><span class=\"ds-board-row-title\">Fix Endless Provider Retry Loop</span><span class=\"ds-board-row-age\">2m</span></div><p class=\"ds-why-line\"><strong class=\"ds-why-word\">Failed</strong> · open the session to see what went wrong</p></div></div>",
-      "css": ".ds-board-row{display:flex;align-items:flex-start;column-gap:10px;padding:11px 16px 12px;min-height:64px;background:#FAF9F6}.ds-mark{width:28px;flex:none;text-align:center;font:700 16px system-ui;line-height:22px;color:#E3474C}.ds-board-row-body{flex:1;min-width:0}.ds-board-row-title-line{display:flex;align-items:baseline;column-gap:8px}.ds-board-row-title{flex:1;font:600 17px/22px system-ui;color:#252521}.ds-board-row-age{font:400 13px system-ui;color:#6D6D64;font-variant-numeric:tabular-nums}.ds-why-line{margin:2px 0 0;font:400 15px/20px system-ui;color:#252521}.ds-why-word{color:#C51D23}"
+      "description": "Illustrative light-theme Board signal row. Native titles and why lines lose their line caps above a 1.2 text scale; age moves below the title, and supporting facts wrap. The browser translation does not emulate Dynamic Type or SF Symbols exactly.",
+      "html": "<div class=\"ds-board-row\"><span class=\"ds-mark ds-mark--failed\" aria-hidden=\"true\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M7 2h10l5 5v10l-5 5H7l-5-5V7z\"/><path d=\"m8 8 8 8M16 8l-8 8\"/></svg></span><div class=\"ds-board-row-body\"><div class=\"ds-board-row-title-line\"><span class=\"ds-board-row-title\">Fix the provider retry loop</span><span class=\"ds-board-row-age\">2m</span></div><p class=\"ds-why-line\"><strong class=\"ds-why-word\">Failed</strong> · open the session to see what went wrong</p></div></div>",
+      "css": ".ds-board-row{display:flex;align-items:flex-start;column-gap:10px;padding:12px 16px;min-height:64px;background:#FFFFFF}.ds-mark{width:28px;flex:none;text-align:center;font:700 16px system-ui;line-height:22px;color:#E3474C}.ds-board-row-body{flex:1;min-width:0}.ds-board-row-title-line{display:flex;align-items:flex-start;column-gap:8px}.ds-board-row-title{flex:1;font:600 17px/22px system-ui;color:#1C1C1E}.ds-board-row-age{font:400 13px system-ui;color:#62626D;font-variant-numeric:tabular-nums}.ds-why-line{margin:2px 0 0;font:400 15px/20px system-ui;color:#1C1C1E}.ds-why-word{color:#C51D23}.ds-board-row:hover{background:#E5E5EA}"
     },
     {
       "name": "Band header",
       "kind": "custom",
       "refersTo": "band-header",
-      "description": "Illustrative documentation preview translated from a Board band header.",
-      "html": "<div class=\"ds-band-header\">NEEDS YOU · 4</div>",
-      "css": ".ds-band-header{margin:22px 0 6px;padding:0 16px;font:600 13px system-ui;letter-spacing:.4px;color:#5F5F57}"
+      "description": "Illustrative browser translation, not a native capture, of a Board band header.",
+      "html": "<div class=\"ds-band-header\">Needs you · 4</div>",
+      "css": ".ds-band-header{margin:22px 0 6px;padding:0 16px;font:600 15px/20px system-ui;color:#1C1C1E}"
     },
     {
       "name": "Chip",
-      "kind": "custom",
+      "kind": "chip",
       "refersTo": "chip",
-      "description": "Illustrative documentation preview translated from the Board's Live section chip, with its Needs You badge.",
-      "html": "<div class=\"ds-chip\"><span class=\"ds-chip-name\">Live</span><span class=\"ds-chip-count\">20</span><span class=\"ds-chip-badge\">4</span></div>",
-      "css": ".ds-chip{display:inline-flex;align-items:center;column-gap:6px;min-height:32px;padding:0 12px;border-radius:16px;border:.5px solid #DDDCD4;background:#FCFBF8}.ds-chip-name{font:600 14px system-ui;color:#252521}.ds-chip-count{font:500 14px system-ui;color:#6D6D64;font-variant-numeric:tabular-nums}.ds-chip-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#F59E0B;color:#252521;font:700 11px system-ui;font-variant-numeric:tabular-nums}"
-    },
-    {
-      "name": "Status tray",
-      "kind": "custom",
-      "refersTo": "status-tray",
-      "description": "Illustrative documentation preview translated from the Session's status tray while the agent works: the pulse meter, the current step, and Stop.",
-      "html": "<div class=\"ds-tray\"><span class=\"ds-tray-meter\" aria-hidden=\"true\"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span><span class=\"ds-tray-line\">Running go test ./cmd/evener-hub/… · 5m</span><span class=\"ds-tray-stop\" role=\"button\" aria-label=\"Stop\"></span></div>",
-      "css": ".ds-tray{display:flex;align-items:center;column-gap:8px;min-height:36px;padding:0 4px 0 16px;background:#FAF9F6}.ds-tray-meter{display:inline-flex;align-items:flex-end;column-gap:1px;width:22px;height:15px}.ds-tray-meter i{flex:1;height:1px;background:#189A4D}.ds-tray-meter i:last-child{height:6px}.ds-tray-line{flex:1;font:400 15px/20px system-ui;color:#5F5F57;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ds-tray-stop{width:44px;height:44px;display:inline-flex;align-items:center;justify-content:center}.ds-tray-stop::after{content:\"\";width:13px;height:13px;border-radius:2px;background:#252521}"
+      "description": "Illustrative browser translation, not a native capture, of the Board's Live section chip, with its Needs You badge. The native parent reserves the extra vertical room for a 44pt touch target around its 32pt drawn capsule.",
+      "html": "<button class=\"ds-chip\"><span class=\"ds-chip-name\">Live</span><span class=\"ds-chip-count\">20</span><span class=\"ds-chip-badge\">4</span></button>",
+      "css": ".ds-chip{display:inline-flex;align-items:center;column-gap:6px;min-height:32px;padding:0 12px;border-radius:16px;border:.5px solid #D8D8DF;background:#FFFFFF}.ds-chip-name{font:600 14px system-ui;color:#1C1C1E}.ds-chip-count{font:500 14px system-ui;color:#62626D;font-variant-numeric:tabular-nums}.ds-chip-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#F59E0B;color:#1C1C1E;font:700 11px system-ui;font-variant-numeric:tabular-nums}.ds-chip:hover,.ds-chip:active{background:#E5E5EA}.ds-chip:focus-visible{outline:2px solid #0064C2;outline-offset:2px}"
     },
     {
       "name": "Ghost bubble",
       "kind": "custom",
       "refersTo": "ghost-bubble",
-      "description": "Illustrative documentation preview translated from a queued message's ghost above the Session's composer, with its caption and Steer now.",
-      "html": "<div class=\"ds-ghost\"><div class=\"ds-ghost-bubble\">When CI is green, post a summary on the PR.</div><div class=\"ds-ghost-caption\">Queued · sends when this turn ends</div><div class=\"ds-ghost-action\">Steer now</div></div>",
-      "css": ".ds-ghost{display:flex;flex-direction:column;align-items:flex-end;row-gap:4px;padding:8px 16px;background:#FCFBF8}.ds-ghost-bubble{max-width:85%;padding:10px 14px;border:1px dashed #B7B6AC;border-radius:18px;font:400 17px/25px 'Source Serif 4',Georgia,serif;color:#5F5F57}.ds-ghost-caption{font:400 13px/18px system-ui;color:#6D6D64}.ds-ghost-action{padding:8px 0;font:400 15px system-ui;color:#0064C2}"
+      "description": "Illustrative browser translation, not a native capture, of a queued message's ghost above the Session's composer, with its caption and Steer now.",
+      "html": "<div class=\"ds-ghost\"><div class=\"ds-ghost-bubble\">When CI is green, post a summary on the PR.</div><div class=\"ds-ghost-caption\">Queued · sends when this turn ends</div><button class=\"ds-ghost-action\">Steer now</button></div>",
+      "css": ".ds-ghost{display:flex;flex-direction:column;align-items:flex-end;row-gap:4px;padding:8px 16px;background:#FFFFFF}.ds-ghost-bubble{max-width:85%;padding:10px 14px;border:1px dashed #B8B8C1;border-radius:18px;font:400 17px/25px 'Source Serif 4',Georgia,serif;color:#55555E}.ds-ghost-caption{font:400 13px/18px system-ui;color:#62626D}.ds-ghost-action{padding:8px 0;font:400 15px system-ui;color:#0064C2}.ds-ghost-action{border:0;background:transparent;min-height:44px}.ds-ghost-action:hover,.ds-ghost-action:active{opacity:.6}.ds-ghost-action:focus-visible{outline:2px solid #0064C2;outline-offset:2px}"
     },
     {
       "name": "Ask dock",
-      "kind": "custom",
+      "kind": "card",
       "refersTo": "ask-dock",
-      "description": "Illustrative documentation preview translated from the Session's question dock: the question, its recommended option first, Other answer, and the primary button.",
-      "html": "<div class=\"ds-dock\"><div class=\"ds-dock-count\">Question 1 of 2</div><p class=\"ds-dock-question\">Keep or drop the implied options?</p><div class=\"ds-dock-option\"><span class=\"ds-dock-radio ds-dock-radio--on\" aria-hidden=\"true\"></span><span>Drop them<span class=\"ds-dock-rec\"> · Recommended</span></span></div><div class=\"ds-dock-option\"><span class=\"ds-dock-radio\" aria-hidden=\"true\"></span><span>Keep them and add the flags</span></div><div class=\"ds-dock-actions\"><span class=\"ds-dock-other\">Other answer…</span><span class=\"ds-dock-primary\">Next question</span></div></div>",
-      "css": ".ds-dock{margin:0 16px 8px;padding:14px 16px;border:1px solid #E9C598;border-radius:12px;background:#FCFBF8}.ds-dock-count{font:400 13px system-ui;color:#5F5F57}.ds-dock-question{margin:8px 0;font:600 17px/24px 'Source Serif 4',Georgia,serif;color:#252521}.ds-dock-option{display:flex;align-items:center;column-gap:12px;min-height:44px;font:400 17px system-ui;color:#252521}.ds-dock-radio{width:18px;height:18px;border-radius:9px;border:1.5px solid #5F5F57}.ds-dock-radio--on{border-color:#0064C2;background:#0064C2;box-shadow:inset 0 0 0 3px #FCFBF8}.ds-dock-rec{font-size:13px;color:#5F5F57}.ds-dock-actions{display:flex;justify-content:space-between;margin-top:8px;font:400 17px system-ui}.ds-dock-other{color:#0064C2}.ds-dock-primary{font-weight:600;color:#0064C2}"
+      "description": "Illustrative browser translation, not a native capture, of the Session's question dock: the question, its recommended option first, Other answer, and the primary button.",
+      "html": "<div class=\"ds-dock\"><div class=\"ds-dock-count\">Question 1 of 2</div><p class=\"ds-dock-question\">Keep or drop the implied options?</p><div class=\"ds-dock-option\"><span class=\"ds-dock-radio ds-dock-radio--on\" aria-hidden=\"true\"></span><span>Drop them<span class=\"ds-dock-rec\"> · Recommended</span></span></div><div class=\"ds-dock-option\"><span class=\"ds-dock-radio\" aria-hidden=\"true\"></span><span>Keep them and add the flags</span></div><div class=\"ds-dock-actions\"><button class=\"ds-dock-other\">Other answer…</button><button class=\"ds-dock-primary\">Next question</button></div></div>",
+      "css": ".ds-dock{margin:0 16px 8px;padding:4px 16px 8px;border:1px solid #E6C3A0;border-radius:12px;background:#FFFFFF}.ds-dock-count{font:400 13px system-ui;color:#55555E}.ds-dock-question{margin:8px 0;font:600 17px/24px 'Source Serif 4',Georgia,serif;color:#1C1C1E}.ds-dock-option{display:flex;align-items:center;column-gap:12px;min-height:44px;font:400 17px system-ui;color:#1C1C1E}.ds-dock-radio{width:18px;height:18px;border-radius:9px;border:1.5px solid #55555E}.ds-dock-radio--on{border-color:#0064C2;background:#0064C2;box-shadow:inset 0 0 0 3px #FFFFFF}.ds-dock-rec{font-size:13px;color:#55555E}.ds-dock-actions{display:flex;justify-content:space-between;margin-top:8px;font:400 17px system-ui}.ds-dock-other{color:#0064C2}.ds-dock-primary{font-weight:600;color:#0064C2}.ds-dock-other,.ds-dock-primary{border:0;background:transparent;min-height:44px;font:400 17px system-ui}.ds-dock-primary{font-weight:600}.ds-dock-other:hover,.ds-dock-primary:hover,.ds-dock-other:active,.ds-dock-primary:active{opacity:.6}.ds-dock-other:focus-visible,.ds-dock-primary:focus-visible{outline:2px solid #0064C2;outline-offset:2px}"
     },
     {
       "name": "Sheet group",
       "kind": "custom",
       "refersTo": "sheet-group",
-      "description": "Illustrative documentation preview translated from New session's WHERE group: bare ink-mid glyphs, values in ink-mid, chevrons in ink-low, an amber Offline tag, hairlines between rows only, and the Start gate's danger footer.",
-      "html": "<div class=\"ds-sheet\"><div class=\"ds-group-label\">Where</div><div class=\"ds-group\"><div class=\"ds-row\"><span class=\"ds-glyph\" aria-hidden=\"true\">&#9638;</span><span class=\"ds-row-label\">Host</span><span class=\"ds-row-value\">paradise-park</span><span class=\"ds-tag ds-tag--amber\">Offline</span><span class=\"ds-chevron\" aria-hidden=\"true\">&#8250;</span></div><div class=\"ds-hairline\"></div><div class=\"ds-row\"><span class=\"ds-glyph\" aria-hidden=\"true\">&#9633;</span><span class=\"ds-row-label\">Project</span><span class=\"ds-row-value\">evener</span><span class=\"ds-chevron\" aria-hidden=\"true\">&#8250;</span></div><div class=\"ds-hairline\"></div><div class=\"ds-row\"><span class=\"ds-glyph\" aria-hidden=\"true\">&#5833;</span><span class=\"ds-row-label\">Branch</span><span class=\"ds-row-value\">main</span></div></div><p class=\"ds-footer ds-footer--danger\">paradise-park is offline. Connect it or choose another host.</p></div>",
-      "css": ".ds-sheet{padding:8px 0 16px;background:#F1F0EB}.ds-group-label{padding:20px 32px 6px;font:600 12px/16px system-ui;letter-spacing:.72px;text-transform:uppercase;color:#5F5F57}.ds-group{margin:0 16px;border-radius:12px;overflow:hidden;background:#FCFBF8}.ds-row{display:flex;align-items:center;column-gap:12px;min-height:44px;padding:11px 16px;box-sizing:border-box}.ds-glyph{width:22px;text-align:center;color:#5F5F57;font-size:15px}.ds-row-label{flex:1;font:400 17px/22px system-ui;color:#252521}.ds-row-value{font:400 17px system-ui;color:#5F5F57;font-variant-numeric:tabular-nums}.ds-tag{padding:2px 5px;border-radius:4px;font:600 11px/13px system-ui}.ds-tag--amber{color:#AD5209;background:#FCEEDC}.ds-chevron{color:#6D6D64;font-size:17px}.ds-hairline{height:.5px;margin-left:16px;background:#DDDCD4}.ds-footer{margin:0;padding:6px 32px 8px;font:400 13px/18px system-ui;color:#6D6D64}.ds-footer--danger{color:#C51D23}"
+      "description": "Illustrative light-theme New session group with wrapping labels and values, sentence-case headings and bare SVG approximations of native SF Symbols. Internal hairlines align to text when both adjacent rows carry symbols; no outer border.",
+      "html": "<div class=\"ds-sheet\"><div class=\"ds-group-label\">Where</div><div class=\"ds-group\"><div class=\"ds-row\"><span class=\"ds-glyph\"><svg width=\"17\" height=\"17\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"3\" y=\"3\" width=\"18\" height=\"7\" rx=\"2\"/><rect x=\"3\" y=\"14\" width=\"18\" height=\"7\" rx=\"2\"/><path d=\"M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6\"/></svg></span><div class=\"ds-row-body\"><span class=\"ds-row-label\">Host</span><span class=\"ds-row-value\">paradise-park<span class=\"ds-tag ds-tag--amber\">Offline</span></span></div><span class=\"ds-chevron\"><svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m9 5 7 7-7 7\"/></svg></span></div><div class=\"ds-hairline\"></div><div class=\"ds-row\"><span class=\"ds-glyph\"><svg width=\"17\" height=\"17\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 7V4h7l2 3h9v13H3z\"/></svg></span><div class=\"ds-row-body\"><span class=\"ds-row-label\">Project</span><span class=\"ds-row-value\">evener</span></div><span class=\"ds-chevron\"><svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m9 5 7 7-7 7\"/></svg></span></div><div class=\"ds-hairline\"></div><div class=\"ds-row\"><span class=\"ds-glyph\"><svg width=\"17\" height=\"17\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"6\" cy=\"4\" r=\"2\"/><circle cx=\"6\" cy=\"20\" r=\"2\"/><circle cx=\"18\" cy=\"4\" r=\"2\"/><path d=\"M6 6v12M18 6v3c0 4-12 2-12 7\"/></svg></span><div class=\"ds-row-body\"><span class=\"ds-row-label\">Branch</span><span class=\"ds-row-value\">main</span></div></div></div><p class=\"ds-footer ds-footer--danger\">paradise-park is offline. Connect it or choose another host.</p></div>",
+      "css": ".ds-sheet{padding:8px 0 16px;background:#F2F2F7}.ds-group-label{padding:20px 32px 6px;font:600 15px/20px system-ui;color:#55555E}.ds-group{margin:0 16px;border-radius:12px;overflow:hidden;background:#FFFFFF}.ds-row{display:flex;align-items:center;column-gap:12px;min-height:44px;padding:12px 16px}.ds-row-body{flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:center;column-gap:12px;row-gap:4px}.ds-glyph{width:22px;flex:none;text-align:center;color:#55555E}.ds-row-label{flex-grow:1;font:400 17px/22px system-ui;color:#1C1C1E}.ds-row-value{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;font:400 15px/20px system-ui;color:#55555E;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.ds-tag{padding:1px 6px;border-radius:6px;font:600 11px/16px system-ui}.ds-tag--amber{color:#9C4908;background:#FFF1E2}.ds-chevron{color:#62626D}.ds-hairline{height:.5px;margin-left:50px;background:#D8D8DF}.ds-footer{margin:0;padding:6px 32px 8px;font:400 13px/18px system-ui;color:#55555E}.ds-footer--danger{color:#C51D23}"
     },
     {
       "name": "Segmented control",
       "kind": "custom",
       "refersTo": "segmented",
-      "description": "Illustrative documentation preview translated from New session's Effort control: the chosen segment is accent-bg with accent ink, never an ink fill.",
-      "html": "<div class=\"ds-seg\" role=\"radiogroup\" aria-label=\"Effort\"><span>Low</span><span>Med</span><span class=\"ds-seg--on\">High</span><span>XHigh</span><span>Max</span></div>",
-      "css": ".ds-seg{display:flex;column-gap:2px;margin:0 16px;padding:2px;border-radius:22px;background:#F4F3EE}.ds-seg span{flex:1;min-height:40px;display:flex;align-items:center;justify-content:center;border-radius:20px;font:400 15px system-ui;color:#252521}.ds-seg .ds-seg--on{background:#DDEBFC;color:#0064C2;font-weight:600}"
+      "description": "Illustrative stacked light-theme Effort choices, not a native capture. Native Segmented stacks when text scale exceeds 1.2 or measured width per option is below 88pt; otherwise it uses a horizontal row. Every segment is at least 44pt. Selection is raised in light and pressed in dark, with primary ink and a leading check only when stacked. Browser hover/focus styles are preview affordances, not native tokens.",
+      "html": "<div class=\"ds-seg\" role=\"radiogroup\" aria-label=\"Effort\"><button class=\"ds-seg-option\" role=\"radio\" aria-checked=\"false\"><span class=\"ds-seg-check\"></span><span>Low</span></button><button class=\"ds-seg-option\" role=\"radio\" aria-checked=\"false\"><span class=\"ds-seg-check\"></span><span>Med</span></button><button class=\"ds-seg-option ds-seg--on\" role=\"radio\" aria-checked=\"true\"><span class=\"ds-seg-check\"><svg width=\"17\" height=\"17\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m5 12 4 4L19 6\"/></svg></span><span>High</span></button><button class=\"ds-seg-option\" role=\"radio\" aria-checked=\"false\"><span class=\"ds-seg-check\"></span><span>XHigh</span></button><button class=\"ds-seg-option\" role=\"radio\" aria-checked=\"false\"><span class=\"ds-seg-check\"></span><span>Max</span></button></div>",
+      "css": ".ds-seg{display:flex;flex-direction:column;gap:2px;margin:0 16px;padding:2px;border-radius:12px;background:#EDEDF2}.ds-seg-option{display:flex;align-items:center;gap:12px;min-height:44px;padding:8px 12px;border:0;border-radius:10px;background:transparent;font:400 15px/20px system-ui;color:#1C1C1E;text-align:left}.ds-seg-check{width:22px;flex:none;text-align:center;color:#0064C2}.ds-seg--on{background:#FFFFFF;font-weight:600}.ds-seg-option:hover{background:#E5E5EA}.ds-seg-option:focus-visible{outline:2px solid #0064C2;outline-offset:-2px}.ds-seg-option:active{opacity:.65}"
     },
     {
       "name": "Sheet status line",
       "kind": "custom",
       "refersTo": "sheet-status",
-      "description": "Illustrative documentation preview translated from the calm connection line at the top of a sheet page while the connection is away. It offers no button.",
+      "description": "Illustrative browser translation, not a native capture, of the calm connection line at the top of a sheet page while the connection is away. It offers no button.",
       "html": "<p class=\"ds-sheet-status\">Reconnecting…</p>",
-      "css": ".ds-sheet-status{margin:0;padding:6px 16px;text-align:center;font:400 13px/18px system-ui;color:#5F5F57;background:#F1F0EB}"
+      "css": ".ds-sheet-status{margin:0;padding:6px 16px;text-align:center;font:400 13px/18px system-ui;color:#55555E;background:#F2F2F7}"
+    },
+    {
+      "name": "Search field",
+      "kind": "input",
+      "refersTo": "search-field",
+      "description": "Illustrative sheet search and clear targets, each at least 44pt, with an inset 10pt-radius well. The browser preview is static and is not native keyboard or Dynamic Type verification.",
+      "html": "<div class=\"ds-search\"><span class=\"ds-search-icon\"><svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"10\" cy=\"10\" r=\"6\"/><path d=\"m15 15 6 6\"/></svg></span><input aria-label=\"Search models\" value=\"evener\" readonly><button class=\"ds-search-clear\" aria-label=\"Clear filter\"><svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"m8 8 8 8M16 8l-8 8\"/></svg></button></div>",
+      "css": ".ds-search{position:relative;display:flex;align-items:center;gap:6px;min-height:44px;padding-left:10px;color:#62626D}.ds-search::before{content:\"\";position:absolute;inset:4px 0;border-radius:10px;background:#EDEDF2;pointer-events:none}.ds-search-icon,.ds-search input,.ds-search-clear{position:relative}.ds-search input{flex:1;min-width:0;min-height:44px;padding:0;border:0;background:transparent;font:400 17px system-ui;color:#1C1C1E}.ds-search-clear{display:flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;padding:0;border:0;background:transparent;color:#62626D}.ds-search input:focus-visible,.ds-search-clear:focus-visible{outline:2px solid #0064C2;outline-offset:-2px}.ds-search-clear:hover,.ds-search-clear:active{opacity:.6}"
+    },
+    {
+      "name": "Primary button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Illustrative shared full-width primary Button: 50pt minimum drawn height, 25pt radius, accent fill and on-fill text. Browser focus is a preview affordance; native labels follow Dynamic Type.",
+      "html": "<button class=\"ds-button-primary\">Continue</button>",
+      "css": ".ds-button-primary{width:100%;min-height:50px;padding:6px 20px;border:0;border-radius:25px;background:#0070E0;color:#FFFFFF;font:600 17px/22px system-ui}.ds-button-primary:hover,.ds-button-primary:active{opacity:.65}.ds-button-primary:focus-visible{outline:2px solid #0064C2;outline-offset:3px}.ds-button-primary:disabled{opacity:.4}"
     }
   ],
   "narrative": {
     "northStar": "Attention is the product",
-    "overview": "This records the shipped Board, the native iPhone app's home. It replaces the project-first Sessions browser: every live session is ordered by who needs you, then the user's own organization follows. The Board uses native navigation, SF Pro typography, semantic light and dark surfaces, and touch sized controls.\n\nThe Board is one native scrolling list: Live's bands, then pinned categories, Projects and Archived as plain section rows that open their own screens until a later PR brings them inline.\n\nA row opens the Session, one conversation with its agent, recorded in DESIGN.md's \"The Session\". The colors, type and shapes serve both.\n\nThe Board's hub button opens the Hub, and its New session button opens New session: two full-height sheets, each holding its own stack, built from one grouped list. They are recorded in DESIGN.md's \"The Sheets: New session and the Hub\".",
-    "keyCharacteristics": ["Every live session in one list, ordered by who needs you, then working, then idle.", "Calm: a control appears only when it can act, and nothing moves unless its data moved.", "Native actions, an automatic connection, and per-device state for what you've seen and which sections you folded."],
-    "rules": [
-      { "name": "The Quiet Idle Rule", "body": "Omit idle status noise from session rows; reserve state text for working, questions, warnings, and failures.", "section": "colors" },
-      { "name": "The Flat Board Rule", "body": "Use background, surface, spacing, and sparse hairlines to convey structure; do not add decorative elevation to ordinary rows.", "section": "elevation" },
-      { "name": "The Grouped List Rule", "body": "In the sheets, rows sit on the raised surface in 12-unit groups inset 16 over the sheet canvas, with bare ink-mid glyphs, hairlines between rows only, amber only where a human is needed, and a gray tag for version drift.", "section": "components" }
+    "overview": "This records the native iPhone implementation, not visual or release acceptance. The Board is home: every live session is ordered by who needs you, then the user’s own organization follows. The settled direction is a quiet native instrument: neutral light/dark surfaces, SF interface text, familiar native navigation and touch-sized controls. The current visual direction is `docs/superpowers/specs/2026-10-19-native-apple-design.md`; the interaction foundation remains `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`.\n\nThe Board is one native scrolling list: Live’s bands, then pinned categories and inline expandable Projects, Test runs and Archived sections when present. Category and project disclosures reveal their rows in place; they are not placeholder links to separate screens.\n\nA row opens the Session, one conversation with its agent, recorded in \"The Session\" below. The Board's hub button opens the Hub, and its New session button opens New session: two sheets recorded in \"The Sheets: New session and the Hub\" at the end. The colors, type and shapes that follow serve all three.",
+    "keyCharacteristics": [
+      "Every live session in one list, ordered by who needs you, then working, then idle.",
+      "Calm: unavailable actions keep each surface’s established disabled-or-hidden behavior, and nothing moves unless its data moved.",
+      "Native actions, an automatic connection, and per-device state for what you've seen and which sections you folded."
     ],
-    "dos": ["Do order every live session by who needs you, then working, then idle.", "Do keep a Board control mounted and disabled, rather than hiding it, while it can't act. The Session hides a control that needs the hub while the hub is away.", "Do use human readable state words, and copy that says exactly what happened.", "Do persist each section's collapsed state per device.", "Session: Do show the tray only while the agent works, and keep Stop there, never in the composer.", "Session: Do keep one meter per view: the tray's. The title's state mark stays still.", "Session: Do keep a queued message where it will land, as a ghost, with what it waits for spelled out beneath it.", "Session: Do let reads retry on their own, and let the skeleton stand in without a spinner, shimmer or sentence about connecting.", "Sheets: Do push pickers and details inside the sheet, so Back returns to the form or the Hub's home.", "Sheets: Do keep a sheet's last data and its controls in place while the connection is away, disabled where they need the hub.", "Sheets: Do say \"Hub default\", or leave a value blank, rather than guess one the hub hasn't given."],
-    "donts": ["Don't show a Reconnect or a Refresh control anywhere on the Board, or offer pull-to-refresh: a control appears only when it can act.", "Don't move or animate a row unless its underlying data moved.", "Don't give a hue more than its one job: only the state word takes a hue, and the reason stays in ink.", "Don't wrap every ordinary row in a rounded card or add decorative shadows.", "Session: Don't show connection controls in the composer, or any Reconnect or Refresh control: a control appears only when it can act, and one that needs the hub hides while the hub is away.", "Session: Don't move what the reader is reading: new content is announced by “↓ 3 new”, and the chips slide away with a transform, never by changing the list's layout.", "Session: Don't show the live step or the live thought in the transcript; the tray says what's happening now.", "Session: Don't offer a redirect on an approval, or the composer while one waits.", "Sheets: Don't offer Reconnect, Refresh or pull-to-refresh; the calm line says what the app is doing.", "Sheets: Don't color a row's glyph or draw it on a tile.", "Sheets: Don't discard a draft without asking; only Cancel discards, and swiping the sheet down keeps it."]
+    "rules": [
+      {
+        "name": "The Quiet Idle Rule",
+        "body": "Omit idle status noise from session rows; reserve state text for working, questions, warnings, and failures.",
+        "section": "colors"
+      },
+      {
+        "name": "The Sentence-case Section Rule",
+        "body": "Use the shared untracked 15/20 section role for authored section headings; preserve user and machine names as typed.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat Board Rule",
+        "body": "Use background, surface, spacing, and sparse hairlines to convey structure; do not add decorative elevation to ordinary rows.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Grouped List Rule",
+        "body": "In sheets and administration, use inset raised groups over the neutral canvas, wrapping labels and values, bare semantic SF Symbols and internal hairlines. Keep checks leading and save actions outside the scrolling fields when the form already owns a pinned Save strip.",
+        "section": "components"
+      },
+      {
+        "name": "The Retained Value Rule",
+        "body": "Disabling editing must not fade retained values. `Row`, `SwitchRow` and `TextFieldRow` keep content opaque and use secondary ink for disabled labels or input, while native disabled/editable semantics prevent changes. Button-only disabled opacity remains unchanged.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "Do order every live session by who needs you, then working, then idle.",
+      "Do keep a Board control mounted and disabled, rather than hiding it, while it can't act. The Session hides a control that needs the hub while the hub is away (see the Session's rules below).",
+      "Do use human readable state words, and copy that says exactly what happened.",
+      "Do persist each section's collapsed state per device.",
+      "Do show the live status line only while the agent works, in the nav bar title; Stop takes the composer's slot with an empty field, and Send with text.",
+      "Do keep one meter per view: the live status line's.",
+      "Do keep a queued message where it will land, as a ghost, with what it waits for spelled out beneath it.",
+      "Do let reads retry on their own, and let the skeleton stand in without a spinner, shimmer or sentence about connecting.",
+      "Do push pickers and details inside the sheet, so Back returns to the form or the Hub's home.",
+      "Do keep amber for what needs a human (an offline host, a sign-in that expired, a Start held by its host) and gray for version drift.",
+      "Do name the hub's own machine after the hub, and say \"Hub default\" rather than guessing a value the hub hasn't given.",
+      "Do keep a sheet's last data and its controls in place while the connection is away, disabled where they need the hub."
+    ],
+    "donts": [
+      "Don't show a Reconnect or a Refresh control anywhere on the Board, or offer pull-to-refresh: a control appears only when it can act.",
+      "Don't move or animate a row unless its underlying data moved.",
+      "Don't give a hue more than its one job: amber means a human is needed, green means working, red means failed, blue means tappable, selected or unread. Only the state word takes a hue; the reason stays in ink.",
+      "Don't wrap every ordinary row in a rounded card or add decorative shadows.",
+      "Don't show connection controls in the composer, or any Reconnect or Refresh control: a control appears only when it can act, and one that needs the hub hides while the hub is away.",
+      "Don't move what the reader is reading: new content is announced by \"↓ 3 new\", and the chips slide away with a transform, never by changing the list's layout.",
+      "Don't show the live step or the live thought in the transcript; the live status line says what's happening now.",
+      "Don't offer a redirect on an approval, or the composer while one waits.",
+      "Don't offer Reconnect, Refresh or pull-to-refresh; the calm line says what the app is doing.",
+      "Don't add decorative colored glyph tiles. Ordinary row symbols use ink-mid; selection checks and semantic status marks keep their meaningful colors.",
+      "Don't let one host's answers land in another host's form, or show a place's plugins after the form has left it.",
+      "Don't discard a draft without asking; only Cancel discards, and swiping the sheet down keeps it."
+    ]
   }
 }
