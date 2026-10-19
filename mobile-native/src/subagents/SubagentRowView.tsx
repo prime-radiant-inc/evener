@@ -1,4 +1,4 @@
-// One row of the Subagents list (spec 9): its state mark, title and time in
+// One row of the Agents list (spec 9): its state mark, title and time in
 // that state, the why line, and a last line of who started it, its model, its
 // branch and its tokens.
 import { SymbolView } from "expo-symbols";

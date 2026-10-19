@@ -1,27 +1,35 @@
 # Subagent runtime contracts
 
-Status: Evergreen reference for the shipped subagent runtime. This documents what
-evener **does today** across the cross-cutting runtime concerns that subagents,
-plugins, hooks, helpers, and lineage share. It is the current-reality counterpart
-to the point-in-time design specs `06`–`10` in
-[`subagent-management/`](subagent-management/). The shipped stable-delegate
-authority is
-[`11-delegate-resource-model.md`](subagent-management/11-delegate-resource-model.md);
-where this doc disagrees with it on delegate lifecycle, model 11 wins.
+Use this page to understand what survives a delegate run, how reports reach the
+parent, and which runtime policies apply to child sessions. For tool parameters,
+start with [Job control](job-control.md); for remote clients, use
+[Integrations](integrations.md). These contracts track main.
 
-Scope boundaries with the other evergreen docs:
+## Read a delegate result correctly
 
-- The **job-control tools** (`shell`, `delegate`, `delegate_send`, `job_watch`,
-  `job_status`, `job_list`, `job_stop`) — their parameters, return shapes,
-  delegation allowance, and the
-  per-context tool-availability matrix — are owned by [`job-control.md`](job-control.md).
-  This doc covers the runtime *policy* those tools sit inside and does not restate them.
-- The job-control runtime **mechanics** (the watch outbox, drive-down, single-hop
-  forwarding, the deadlock-avoiding lock discipline) are owned by
-  [`architecture.md`](architecture.md).
+A delegate is a durable conversation identified by `dlg_...`, not a shell job.
+It can run, report, become idle and run again when its owner sends new input.
+Its internal generation is not another public handle. Keep the stable delegate
+ID for control and the session transcript reference for evidence.
 
-Citations are `path` + symbol rather than line numbers, so they survive edits — grep
-the symbol in the cited file.
+Completion of one generation does not prove that the requested work is correct.
+Read the terminal message, structured output and cited artifacts, then perform
+the task's acceptance check. A detailed terminal message can differ from its
+structured summary; do not discard either. Failed, cancelled or exhausted runs
+are not successful reports. The report-preservation section below defines the
+accepted capture and recovery behavior.
+
+An idle delegate is still available for follow-up. A stop request instead
+cancels its subtree. Do not infer cancellation from a disconnected client or
+confuse a metadata-only status read with consumption of a result packet.
+
+This reference covers shipped runtime policy for delegates, plugins, hooks,
+helpers, and lineage. See [job control](job-control.md) for tool parameters,
+results, allowance, and availability; [architecture](architecture.md) for runtime
+mechanics; and the [stable delegate model](subagent-management/11-delegate-resource-model.md)
+for the lifecycle contract. Earlier [design specs](subagent-management/) are
+historical proposals, not current behavior. Source citations use paths and
+symbols so readers can locate the implementation after line numbers change.
 
 Stable attention drives revalidate transcript-owned pending IDs after claiming
 the retained child for a start (`Session.driveStableDelegateAttention`). A delayed
@@ -30,6 +38,29 @@ finished. A start already accepted into the transcript retains its exact
 reservation and generation across a failed delegate-journal commit; retry does
 not create a second marker or generation. Parents continue to drive the child's
 attention, and fresh owner work remains admissible after the attention settles.
+
+## Delegate report preservation
+
+A successfully reported generation's terminal packet `message` is the accepted
+terminal `communicate.message`, with communicate's existing trimming and
+`output.message` fallback. Its structured result remains separate, including a
+different summary, data, artifacts, or a custom-schema value. Both come from the
+same accepted capture under the session lock
+(`delegateTerminalRunInputs.captureCommunicateReport`, `agent/subagents.go`).
+Competing terminal calls cannot replace that capture. Failed, cancelled,
+exhausted, and unreported runs retain their diagnostic result semantics, and
+root-session return values and `CommunicateOutput` keep their structured-output
+semantics.
+
+Settlement persists an immutable terminal packet. Owner notifications and
+synchronous results consume that packet, and journal recovery reuses it across
+both prepared-before-settlement and settled-but-undelivered windows. Recovery
+does not ask the child to report again or allocate a new generation or delivery
+identity (`delegateTreeController.Reconcile`, `agent/delegate_tree_restore.go`,
+and `deliverDelegatePacket`, `agent/delegate_delivery.go`). Existing receipts,
+storage limits, and preview bounds still apply. This contract neither changes
+notification timing nor reconstructs detailed reports absent from historical
+packets.
 
 ## Effective capability policy
 
@@ -53,12 +84,10 @@ not by parallel policy checks:
   session can already call; the spawn path rejects a grant of a root-only or
   not-currently-callable tool (`agent/subagents.go`, e.g. `"cannot grant tool %q via
   grant_tools…"`, `"cannot grant tool %q: it is not currently callable…"`).
-- **Root-only delegation tools are allowance-gated.** `delegate` and `job_watch` are
-  stripped from a child whose `delegation_allowance` is 0 and granted to one with a
-  positive allowance — gated by allowance, **not** by a fixed depth. The authoritative
-  contract is in [`job-control.md`](job-control.md) ("Delegation allowance",
-  "V1 tool availability"); the strip happens in `agent/session_init.go`
-  (`rootOnlySubagentTools`).
+- **Delegation is allowance-gated.** A child with `delegation_allowance: 0`
+  cannot call `delegate`; it retains `job_watch`, subject to tool policy and
+  watch-source permissions. A positive allowance permits delegation, subject to
+  tool policy, regardless of depth. See [delegation allowance](job-control.md#delegation-allowance-recursive-delegation).
 - **Close/cancel denies new child work.** The stable delegate-tree controller
   admits starts and sends against one fenced lifecycle aggregate. Once a session
   or subtree is closing/stopping, new child/model/shell admission cannot commit
@@ -93,15 +122,18 @@ What validation actually runs when evener loads a plugin (`agent/plugin/plugin.g
 `agent/plugin/agents.go`):
 
 - **Plugin name** is required and must be kebab-case (`validatePluginName` / `kebabCaseRe`).
-- **`.codex-plugin` wins over `.claude-plugin`.** When both `<dir>/.codex-plugin/plugin.json`
-  and `<dir>/.claude-plugin/plugin.json` exist, `Load` uses `.codex-plugin` and ignores
-  `.claude-plugin` for that root.
-- **Duplicate plugin names are rejected** across loaded plugins (`LoadAll`,
-  `"duplicate plugin name %q…"`).
-- **Agent `name`/`description`** are required non-empty strings (`getString`). **`tools`**
-  accepts the scalar `all` or a list of strings; it rejects scalar `*`, list `all`, list
-  `*`, and non-string entries. Claude tool names are mapped to evener canonical names at
-  load (`toolname.ClaudeToEvener`). `model`/`color` default to `inherit`/`blue`.
+- **Claude manifest first.** `Load` reads `.claude-plugin/plugin.json` and falls
+  back to `.codex-plugin/plugin.json` only when the first is absent, not malformed.
+  See the [plugin package format](plugins.md#package-format-reference).
+- **Duplicate plugin names use the first valid manifest.** Session loading uses
+  `LoadAllFailSoft`: later manifests with the same name are skipped with a warning,
+  even if an unrelated component of the first plugin fails to load. The separate
+  `LoadAll` API rejects duplicates; it is not the session-loading policy.
+- **Agent `name`/`description`** are required non-empty strings (`getString`).
+  **`tools`** accepts string lists, comma-separated strings, single tool names,
+  or scalar `all`; see [role metadata and validation](plugins.md#add-a-delegate-role)
+  for accepted and rejected forms. Claude tool names are mapped to evener canonical
+  names at load (`toolname.ClaudeToEvener`). `model`/`color` default to `inherit`/`blue`.
 - **Agent `model` is a provider-local preference.** Evener selects the first usable
   source in this order: an available plugin model, the delegate call's explicit
   `model`, then the parent model. Plugin metadata never switches providers.
@@ -150,7 +182,7 @@ reserved. (`agent/plugin/hooks.go`, `agent/internal/hooks/`.)
   exec-form (`args`); `${CLAUDE_PLUGIN_ROOT}`/`${PLUGIN_ROOT}` expand in command/prompt/
   args; the runner sets `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR`, and
   `CLAUDE_EFFORT` (only when configured). It does not set `CLAUDE_CODE_REMOTE`
-  (intentionally — evener has no remote/serve mode) or `CLAUDE_PLUGIN_DATA`. `prompt`
+  or `CLAUDE_PLUGIN_DATA`. `prompt`
   is evener-native sugar that runs an LLM call with
   `$TOOL_INPUT/$TOOL_RESULT/$USER_PROMPT/$MESSAGE/$TOOL_NAME` substitution.
 - **`PreToolUse` runs before registry schema validation**, can rewrite the tool input
@@ -164,8 +196,10 @@ reserved. (`agent/plugin/hooks.go`, `agent/internal/hooks/`.)
   ignored.
 - **Output routing:** `additionalContext` goes to the model (wrapped as a system
   reminder); `systemMessage` goes to the user only — distinct channels (`routeOutput`).
-- `/status` labels each hook event by tier (`claude-compatible-subset` vs
-  `reserved-placeholder`, `plugin.EventTier`).
+- **Verification:** inspect startup warnings for load errors and use the
+  [startup-hook example's explicit warning](hooks.md#add-and-verify-a-startup-hook)
+  to confirm execution. Browser `/status` opens Overview's About tab, not a hook
+  tier/count display.
 
 Known gaps (stated so you don't over-trust the compat surface): **`UserPromptSubmit` and
 `PreCompact` do not enforce the exit-2 block** even though Claude's contract blocks; and
@@ -185,29 +219,32 @@ and the `http`/`mcp_tool`/`agent` handlers are parsed-but-inert. See
   [`job-control.md`](job-control.md).
 - **Warnings are first-class and surfaced, never silent.** `WarningData`
   (`agent/events/payloads.go`), carried on the `EventWarning` event, flows on the session
-  event stream that TUI/Hub/SDK consume; emitting paths include plugin hook-config
+  event stream that clients consume; emitting paths include plugin hook-config
   warnings (built in `agent/session_init.go`, emitted via `emitDiagnosticWarning`) and
   delegate task-seed failures (`agent/subagents.go`). A warning with no display surface
   is treated as a bug.
 - **Policy denials name the action and the boundary**, not just "not allowed" — e.g. the
-  `grant_tools` rejections above, `"agent_type %q is top-level only: it requires root-only
-  tools"`, and the delegation-allowance / ownership errors in the stable delegate
-  controller.
+  `grant_tools` rejections above and the delegation-allowance and ownership
+  errors in the stable delegate controller. A role's tool policy and the child's
+  allowance govern which delegation tools it can receive.
 - **Compatibility gaps are reported, not half-accepted.** Recognized-but-unsupported and
   unknown hook events are recorded (`Instance.UnsupportedHooks`/`UnknownHooks`) and turned
   into load-time warnings; reserved handler fields are captured for diagnostics rather
   than treated as working.
 
-Secret handling: the agent runtime has **no dedicated redaction layer** for diagnostics
-or event payloads. Secrets are kept out **by construction** — warning and hook-lifecycle
-events copy only names, IDs, and counts, never hook commands, env, argv, stdout/stderr,
-or MCP env maps. (The only redaction in the codebase is CLI-level: env-secret and
-launch-check scrubbing in `cmd/`.) There
-is **no shared redaction helper** and validation is fail-on-first (no grouped
-`[]ValidationIssue`); both are proposed in
-`subagent-management/10-runtime-contracts.md` Contract 3. The residual risk to know: a
-`command`/`prompt` hook's own stdout is delivered as context unscrubbed — that is
-hook-author behavior, not a evener leak, but nothing redacts it.
+**Do not assume warnings are secret-safe.** Hook lifecycle event payloads contain
+metadata, not hook commands, environment values, or stdout/stderr. Free-form
+warnings have a different contract: a failed `SessionStart` warning includes the
+first non-empty line of stderr, or stdout when stderr is empty, truncated to 160
+characters plus an ellipsis if longer (`agent/internal/hooks/hooks.go`,
+`sessionStartFailureWarning`).
+Hooks can also supply `systemMessage` warnings or model context. These messages
+have no dedicated secret-redaction layer. Keep secrets out of hook output and
+inspect warnings and transcripts before sharing them. See
+[hook output routing](hooks.md#what-your-hook-returns).
+
+A shared redaction helper and grouped validation issues remain proposals in
+`subagent-management/10-runtime-contracts.md` Contract 3.
 
 ## Lightweight helper isolation
 
@@ -241,9 +278,12 @@ tool-freeness simply by never populating `Tools`.
 
 Fork and subagent are **distinct relations** sharing lineage fields, kept explicit:
 
-- **Fork copies history; a subagent starts fresh.** `ForkSession` (`agent/fork.go`)
-  replays the parent's first `divergenceTurn-1` entries into the child transcript; a
-  spawned subagent gets a new empty session with only a lineage pointer.
+- **Fork copies history; delegates start fresh by default.** `ForkSession`
+  (`agent/fork.go`) replays the parent's first `divergenceTurn-1` entries into the
+  child transcript. A delegate starts with a fresh conversation unless the caller
+  sets `fork_context: true`, which copies the parent's recorded conversation,
+  excluding the unfinished tool round. The delegate keeps its own role and
+  permissions. See [forked context](job-control.md#delegate).
 - **A fork may defer the diverging input.** `ForkSessionAtUserTurn` (`agent/fork.go`)
   writes only the prefix (no replacement user turn) and returns the original message
   text, so the web UI's fork-from-message flow can stage it in the composer for

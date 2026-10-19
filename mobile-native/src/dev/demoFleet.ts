@@ -195,7 +195,7 @@ interface RawSession {
 	subs?: { run: number; fail: number; done: number }; // generic subagent counts (data.js genericSubs)
 	children?: RawSubagent[]; // explicitly named subagents (data.js's `subagents` map)
 	model?: string; // data.js's session model, for a coordinator's subagent tree
-	jobs?: DemoShellJob[]; // its own finished shell jobs, in its Activity list
+	jobs?: DemoShellJob[]; // its own finished shell jobs, in its Jobs list
 }
 
 // data.js's swarm for s-pr2138: two named failures plus 31 running, 3 waiting
@@ -1233,7 +1233,7 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		answerWatchesList: activity.watches,
 		answerJobsOutput: (params) => {
 			// Read back as the phone reads the tree, so the job answered is the
-			// one the Activity list shows, and only for the session that owns
+			// one the Jobs list shows, and only for the session that owns
 			// it, as a hub answers.
 			for (const raw of sessionsList) {
 				const tree = parseActivityTree(demoActivityTree(coordinatorOf(raw), startupMs).data);

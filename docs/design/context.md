@@ -137,6 +137,14 @@ before the nudge fires. The automatic checkpoint and summary layers remain the
 guarantee. The latch resets on any compaction (force or automatic) so the nudge can
 fire again after the next compaction cycle.
 
+The nudge also lists the session's loaded skills, so the agent knows what a
+compaction would drop. It lists canonical names only: descriptions are large, the
+nudge arrives when headroom is already scarce, and the selection it asks for names
+skills by canonical name. Automatic note elicitation carries names and
+descriptions, because there the model chooses reloads by content. A session
+without `compact_context` gets the same list worded for awareness, without a
+structured selection it cannot submit.
+
 ### Forced-note elicitation (on by default)
 
 The warn nudge only steers the agent — it can decline, or jump past the seam before

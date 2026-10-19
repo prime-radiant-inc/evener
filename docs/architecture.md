@@ -34,41 +34,37 @@ that a module name is an enforced architectural boundary.
 ## Application commands and process boundaries
 
 The installed application is the `evener` binary. Its entry point imports the hub,
-TUI, doctor, and migration command packages and dispatches subcommands. The hub,
-TUI, and session daemons run as separate processes and communicate over AppWire;
+doctor, and migration command packages and dispatches subcommands. The hub
+and session daemons run as separate processes and communicate over AppWire;
 sharing an executable does not merge their runtime state.
 
 | Command | `cmd/` | Role | Talks to | via |
 | --- | --- | --- | --- | --- |
 | `evener` | `cmd/evener` | **engine** — runs an `agent.Session` | agent, llm | direct |
 | `evener hub` | `cmd/evener-hub` | **supervisor** — spawns `evener` subprocesses, serves clients | evener (spawn), agent (schema) | **AppWire** + schema |
-| `evener tui` | `cmd/evener-tui` | **client** — terminal dashboard | evener hub | **AppWire** (WebSocket) |
 
-The TUI's control and event connection to the hub is **AppWire**, not HTTP. It
+The browser's control and event connection to the hub is **AppWire**, not HTTP. It
 dials the hub's `/rpc` WebSocket, initializes an `appwire.Client`, and installs an
-ordered-frame observer (`dialHubRPC`, `cmd/evener-tui/internal/hubstart`). The hub
-is the AppWire **server** for the TUI and the browser, an AppWire **client** to
+ordered-frame observer. The hub
+is the AppWire **server** for the browser, an AppWire **client** to
 each `evener serve` daemon it spawns, and — on a multi-host controller — an
 AppWire **relay** that carries frames to a remote host's hub over `ssh <dest>
 evener hub attach --stdio` (`appwire.StreamTransport`). Navigation and session
 activity reads use AppWire. The [hub HTTP router](../cmd/evener-hub/web.go) serves
 the application, documents, assets, authentication, health and subscription
 diagnostics; it has no parallel navigation read endpoint. The TypeScript clients
-use the shared AppWire client package; the TUI's best-effort environment health
-probe (`checkHubEnvironment`) uses HTTP.
+use the shared AppWire client package.
 
 ```
-browser ─┐
-         ├─ AppWire /rpc (WS) ──▶ evener hub ──┬─ AppWire (WS) ──▶ evener serve daemon
-evener   │                                     └─ HTTP /api/health ─▶ health probe
-  tui ───┘
+browser ─── AppWire /rpc (WS) ──▶ evener hub ──┬─ AppWire (WS) ──▶ evener serve daemon
+                                                └─ HTTP /api/health ─▶ health probe
 
 remote host:  evener hub ── ssh ──▶ evener hub attach --stdio ── AppWire (stdio) ──▶ remote hub
 ```
 
 The two shared **contracts** are ordinary top-level packages in the app module:
 `appwire/` (the JSON-RPC wire protocol over WebSocket or stdio, hop by hop between
-browser/`evener tui`, hub, and `evener serve` daemon) and `hubapi/` (hub health and
+browser, hub, and `evener serve` daemon) and `hubapi/` (hub health and
 projection types, including navigation types carried by AppWire).
 Command-specific private code lives under `cmd/<command>/internal/`.
 `evener doctor` and `evener migrate` provide inspection and migration commands.

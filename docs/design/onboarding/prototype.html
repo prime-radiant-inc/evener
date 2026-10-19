@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<title>Evener · First session workflow prototype</title>
+<style>
+:root{color-scheme:dark;--page:#191918;--pane:#232320;--field:#292926;--edge:#51514A;--rule:#34342F;--ink:#F2F1EB;--muted:#B0AFA6;--accent:#459EFF;--error:#F17478;--sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--serif:"Source Serif 4 Variable",Georgia,serif;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+[data-theme=light]{color-scheme:light;--page:#F4F3EE;--pane:#FAFAF7;--field:#FFFFFF;--edge:#92928A;--rule:#D8D8D0;--ink:#20201D;--muted:#595950;--accent:#0068CE;--error:#B82832}
+*{box-sizing:border-box}body{margin:0;background:var(--page);color:var(--ink);font:15px/1.6 var(--sans);scrollbar-color:var(--edge) var(--page)}::selection{background:var(--accent);color:var(--page)}button,input,textarea,select{font:inherit;color:inherit}button,select,summary{cursor:pointer}button,input,textarea,select{border:1px solid var(--edge);border-radius:4px;background:var(--field);padding:10px 14px;min-height:44px}button:hover{background:var(--rule)}button:disabled{opacity:.55;cursor:not-allowed}button.primary{background:var(--ink);color:var(--page);border-color:var(--ink);font-weight:600}button.primary:hover{opacity:.85}button.quiet{background:transparent}input,textarea,select{width:100%;caret-color:var(--accent)}textarea{resize:vertical;min-height:130px}input[readonly]{color:var(--muted)}:focus-visible{outline:2px solid var(--accent);outline-offset:3px}h1,h2,h3{font-family:var(--serif);line-height:1.2;font-weight:500;margin:0 0 16px;text-wrap:balance}h1{font-size:38px}h2{font-size:29px}h3{font-size:22px}p{margin:0 0 16px;max-width:70ch}small,.muted{color:var(--muted)}small{font-size:13px}code,pre,.machine{font-family:var(--mono);font-size:13px;overflow-wrap:anywhere}pre{white-space:pre-wrap;margin:0;line-height:1.8}header{padding:16px 32px;border-bottom:1px solid var(--rule);display:flex;align-items:center;justify-content:space-between;gap:20px}.brand{font-family:var(--serif);font-size:24px}.prototype-note{margin:0;font-size:13px}.review{padding:16px 32px;border-bottom:1px solid var(--rule);display:flex;align-items:center;gap:16px}.review label{white-space:nowrap;color:var(--muted);font-size:13px}.review select{max-width:340px}.review button{margin-left:auto}main{max-width:1060px;padding:48px 32px 64px;margin:auto}.intro{margin-bottom:32px}.terminal-grid{display:grid;grid-template-columns:1fr 1fr;gap:32px}.terminal{padding:24px;background:var(--pane);border:1px solid var(--edge);border-radius:4px}.terminal h2{font:600 14px var(--sans);margin-bottom:24px}.terminal .muted{display:block;margin-top:24px}.actions{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:24px}.session{max-width:740px;margin:auto}.field{margin:24px 0}.field label{display:block;font-weight:500;margin-bottom:8px}.prerequisite{padding:24px 0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);margin:32px 0}.prerequisite h2{font-size:25px}.facts{display:flex;gap:16px;align-items:center;justify-content:space-between;padding:16px 0;border-bottom:1px solid var(--rule)}.facts p{margin:0}.facts button{flex-shrink:0}.notice{padding:16px;background:var(--pane);border:1px solid var(--edge);margin:16px 0}.error{color:var(--error)}details{border-top:1px solid var(--rule);padding-top:16px;margin-top:24px}summary{min-height:44px;padding:8px 0}details p{color:var(--muted);font-size:14px;margin-top:12px}.design-notes{max-width:996px;margin:0 auto 32px;padding:0 32px}.design-notes ul{padding-left:20px;color:var(--muted);font-size:14px}dialog{width:min(560px,calc(100% - 32px));max-height:calc(100dvh - 32px);overflow:auto;background:var(--pane);color:var(--ink);border:1px solid var(--edge);border-radius:4px;padding:32px;box-shadow:0 8px 28px #00000057}dialog::backdrop{background:#00000080}.provider-list{list-style:none;padding:0;margin:24px 0 0}.provider-list li{border-top:1px solid var(--rule)}.provider-list button{display:flex;flex-direction:column;text-align:left;width:100%;padding:14px 8px;border:0;border-radius:0;background:transparent}.provider-list button:hover{background:var(--field)}.provider-list strong{font-weight:500}.provider-list span{font-size:13px;color:var(--muted)}.dialog-foot{border-top:1px solid var(--rule);margin-top:24px;padding-top:16px}.dialog-foot p{font-size:13px;color:var(--muted);margin:0 0 12px}.dialog-note{font-size:12px;color:var(--muted);margin-bottom:20px}.response{font-family:var(--serif);font-size:21px;line-height:1.6;margin:32px 0}.submitted{border-top:1px solid var(--rule);border-bottom:1px solid var(--rule);padding:20px 0;margin:24px 0}.submitted p{white-space:pre-wrap}.check-control{display:flex;gap:12px;align-items:center;margin-top:16px}.check-control input{width:20px;min-height:20px;height:20px}.check-control label{font-size:13px;color:var(--muted)}
+@media(max-width:600px){header{padding:16px;align-items:flex-start;flex-wrap:wrap;gap:8px}header .prototype-note{flex-basis:100%;order:3}.review{padding:12px 16px;flex-wrap:wrap;gap:8px}.review label{flex-basis:100%}.review select{flex:1;min-width:0}.review button{margin:0}main{padding:32px 16px 40px}h1{font-size:32px}.terminal-grid{grid-template-columns:1fr;gap:16px}.terminal{padding:20px}.facts{align-items:flex-start;flex-wrap:wrap}dialog{padding:24px 20px}.design-notes{padding:0 16px}.actions button{flex-grow:1}}
+</style>
+</head>
+<body>
+<header><span class="brand">Evener</span><p class="prototype-note">Workflow prototype, no credentials saved or requests sent</p><button id="theme" class="quiet" aria-pressed="false">Light theme</button></header>
+<nav class="review" aria-label="Prototype screens"><label for="scene">Review a screen</label><select id="scene"><option value="terminal">1 · Terminal handoff</option><option value="new">2 · New session</option><option value="providers">3 · Provider discovery</option><option value="key">4 · API key &amp; check</option><option value="failure">Check failed</option><option value="models">5 · Provider model choices</option><option value="ready">6 · Ready to start</option><option value="waiting">7 · Waiting for first reply</option><option value="response">8 · Illustrative first reply</option><option value="configured">Already configured</option></select><button id="reset" class="quiet">Reset demo</button></nav>
+<main id="main"></main>
+<details class="design-notes"><summary>Design notes &amp; prototype limits</summary><ul><li>Keep the developer’s directory and task in place. Saved provider configuration enables model choice independently of verification. Failure and unsupported checks stay visible without forcing setup again.</li><li>Use the existing connection-dialog pattern. Describe the access method before asking someone to select a provider.</li><li>The API check only lists models. It does not prove generation access, available quota, billing health, or a successful first reply.</li><li>Saved access below is simulated in memory only. Cancel after saving does not undo the simulated save. Reload resets everything; draft persistence and durable start reconciliation remain separate gaps.</li><li>Only the API-key journey is interactive end to end. Sign-in and local/custom setup are explanatory previews. The models, metadata, directory, check results, and reply are fixtures, not live data. Model choices remain scoped to the selected provider instance. Catalogue loading, empty, and error states are separate from auth checks.</li><li>No automatic server or browser startup is assumed. The terminal output is proposed wording, not implemented behavior. No product code is changed. The existing Welcome.tsx redirect is preserved: only focused / with no session and confirmed missing provider redirects to /new, preserving query and hash. Configured users retain welcome.</li><li>Blank launch creates an idle empty-session preview, not a waiting reply. Access resolves independently, explicit advanced sandbox overrides win, and unknown inherited values remain visible.</li><li>Native HTML controls are used only in this throwaway document. Production must use Evener widgets. Font stacks use local fallbacks, with no downloads.</li></ul></details>
+<dialog id="connection" aria-labelledby="dialog-title"></dialog>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const providers = {
+  OpenAI: ['API key', 'https://api.openai.com/v1', 'ChatGPT subscriptions do not include API billing. API usage is billed separately.'],
+  'OpenAI Codex': ['ChatGPT/Codex sign-in · subject to eligibility', '', 'Sign-in access depends on your account and eligibility.'],
+  Anthropic: ['API key', 'https://api.anthropic.com', 'Claude subscriptions do not include API billing. API usage is billed separately.'],
+  Gemini: ['API key', 'https://generativelanguage.googleapis.com', 'API billing and limits are separate from your chat subscription.'],
+  OpenRouter: ['API key', 'https://openrouter.ai/api/v1', 'API billing uses your OpenRouter credits.']
+};
+// All state is demonstration state in memory. No transport or persistence exists.
+const modes = {'off':'Full access','read-only':'Read-only','workspace-write':'Workspace write','restricted':'Restricted'};
+const fixtures = [
+ {id:'example-coding',name:'Example coding model',meta:'tools · 128K'},
+ {id:'example-vision',name:'Example vision model',meta:'tools · vision · 64K'},
+ {id:'example-text',name:'Example text model',meta:''}
+];
+const initial = () => ({screen:'terminal',provider:'OpenAI',connections:{},model:null,demo:false,checkOutcome:'success',catalog:'loading',catalogOutcome:'ready',mode:'',inherited:'off',override:'',resolution:'ready',dir:'~/code/example-project',task:'Explain how this project is organized and where I should start reading. Do not change any files.'});
+let state=initial(), returnFocus='[data-action="providers"]';
+const escapeHTML=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const button=(label,action,primary=false)=>`<button class="${primary?'primary':'quiet'}" data-action="${action}">${label}</button>`;
+const instance=()=>state.provider.toLowerCase().replaceAll(' ','-')+'-demo';
+const connection=()=>state.connections[instance()];
+const saved=()=>!!connection();
+const effective=()=>state.override||state.mode||state.inherited;
+const canStart=()=>saved()&&state.model?.instance===instance();
+function accessSummary(){
+ if(state.resolution==='pending')return 'Resolving effective access…';
+ if(state.resolution==='error')return 'Could not resolve effective access';
+ const value=effective();
+ const consequences={
+  off:'can edit files and run commands',
+  'read-only':'persistent writes denied; temporary space writable; broader reads except denied paths',
+  'workspace-write':'writes to worktree, temporary space, and contained caches; broader reads except denied paths',
+  restricted:'file reads/writes within worktree and temporary space; commands can also read system roots'
+ };
+ return (modes[value]||`Inherited access: ${escapeHTML(value||'(unspecified)')}`)+(consequences[value]?`, ${consequences[value]}`:'')+(state.override?' · advanced override':!state.mode?' · inherited':'');
+}
+function checkSummary(){return ({success:'Model-list check succeeded. Generation and quota are not verified.',failed:'Check failed. Saved configuration is retained; access is unverified.',unsupported:'Check unsupported. Saved configuration is retained; access is unverified.',unverified:'Saved configuration; access is unverified.'})[connection()?.check]||'';}
+function configuredStatus(){
+ if(connection()?.check==='success')return `<p class="muted">${escapeHTML(instance())} · configured ${button('Connection settings','review')}</p>`;
+ return `<div class="notice" role="status"><strong>${escapeHTML(instance())} · configured</strong><p>${checkSummary()}</p>${button('Connection settings','review')}</div>`;
+}
+function closeDialog(preferred){
+ $('connection').close();render();
+ const target=document.querySelector(preferred||returnFocus)||$('task')||$('main').querySelector('h1');target?.focus();
+}
+function go(screen){state.screen=screen;render();$('main').querySelector('h1')?.focus();}
+function selectMarkup(id,label,values,current){return `<div class="field"><label for="${id}">${label}</label><select id="${id}">${Object.entries(values).map(([v,l])=>`<option value="${v}" ${v===current?'selected':''}>${l}</option>`).join('')}</select></div>`;}
+function render(){
+ const main=$('main');
+ if(state.screen==='terminal')main.innerHTML=`<div class="intro"><h1 tabindex="-1">From terminal to first session</h1><p class="muted">Bare evener shows commands. Run evener hub to start the interactive web UI; open the private link yourself.</p></div><div class="terminal-grid"><section class="terminal"><h2>Running the binary</h2><pre>$ evener
+
+Usage: evener &lt;command&gt; [flags]
+       evener --model &lt;provider/model&gt; [flags] &lt;prompt&gt;
+
+Commands:
+  openai       Manage OpenAI OAuth login
+  serve        Run the HTTP/RPC server
+  launch-check Validate a provider/model launch
+  upgrade      Upgrade installed binaries
+  install      Install on a remote host over SSH
+  plugin       Manage marketplaces and plugins
+  hub          Start the interactive web UI
+  doctor       Inspect sessions/jobs/watches
+  migrate      Migrate user data
+  models       Inspect the provider registry
+  providers    Inspect and author instances
+
+Run evener &lt;command&gt; --help for details.</pre><small class="muted">Proposed concise help · all current top-level commands from cmd/evener/main.go</small></section><section class="terminal"><h2>Starting the hub</h2><pre>$ evener hub
+
+Open the private browser link:
+  [private hub URL]
+
+Keep this terminal running while you use Evener.</pre><small class="muted">Placeholder only. No automatic server or browser startup from bare evener.</small></section></div><div class="actions">${button('Continue to web preview','welcome',true)}</div>`;
+ else if(state.screen==='welcome')main.innerHTML=`<section class="session"><h1 tabindex="-1">No session open</h1><p>Welcome to Evener.</p>${button('New session','web',true)}<details><summary>Existing welcome routing</summary><p>Only a focused welcome at / with no session and a confirmed missing provider redirects to /new, preserving query and hash. Configured, loading, or error states do not redirect.</p></details></section>`;
+ else if(state.screen==='empty')main.innerHTML=`<section class="session"><h1 tabindex="-1">Empty session</h1><p role="status">Idle · simulated session, no message sent</p><p class="muted">You started without a task. Nothing is working and no first reply is expected. Enter a message to begin.</p><div class="field"><label for="task">Your first message</label><textarea id="task">${escapeHTML(state.task)}</textarea></div>${button('Send simulated message','send',true)}<div class="actions">${button('Back to launch preview','web')}</div></section>`;
+ else if(['waiting','response'].includes(state.screen))main.innerHTML=`<section class="session"><h1 tabindex="-1">Your first session</h1><p class="muted">${escapeHTML(instance())} · ${escapeHTML(state.model?.name||fixtures[0].name)} · fixture</p><p class="machine">${escapeHTML(state.dir)}</p><div class="submitted"><small>You · simulated submission</small><p>${escapeHTML(state.task)}</p></div>${state.screen==='waiting'?`<p role="status">Working · waiting for the first reply (simulated)</p><p>No request was sent.</p>${button('Show illustrative reply','reply',true)}`:`<small>Evener · illustrative reply, not generated</small><div class="response"><p>I’ll trace the entry point and the main modules, then explain how they fit together. I won’t change any files.</p></div><p class="muted">No files were inspected or commands executed.</p>`}<div class="actions">${button('Back to task','web')}</div></section>`;
+ else main.innerHTML=`<section class="session"><h1 tabindex="-1">New session</h1><p class="muted">Choose a project and give Evener a task.</p><div class="field"><label for="directory">Working directory</label><input id="directory" class="machine" value="${escapeHTML(state.dir)}" autocomplete="off"><small>Example path · no directory is opened.</small></div>${!saved()?`<section class="prerequisite"><h2>Connect a provider to start</h2><p>Connect one now; add others later.</p>${button('Connect provider','providers',true)}</section>`:`${configuredStatus()}<div class="facts"><div><small>Model · ${escapeHTML(instance())}</small><p>${state.model?escapeHTML(state.model.name)+' · fixture':'Choose a model from this provider instance'}</p></div>${button(state.model?'Change model':'Choose model','models',!state.model)}</div><div class="facts"><div><p>${accessSummary()}</p><small>Network access is configured separately. Your prompt is not a permission boundary.</small></div>${button('Change','access')}</div>${state.resolution!=='ready'?`<div class="notice" role="status"><p>Effective access is unresolved. Review it before starting.</p>${button('Retry access resolution','resolve')}</div>`:''}`}<div class="field"><label for="task">What would you like to do?</label><textarea id="task">${escapeHTML(state.task)}</textarea><small id="blank-hint">${state.task.trim()?'Start sends this task in the simulation.':'No task: Start creates an idle, empty session. No message will be sent.'}</small></div><div class="actions"><button class="${canStart()?'primary':'quiet'}" data-action="start" ${canStart()?'':'disabled'}>Start</button><small>Nothing starts automatically.</small></div></section>`;
+ main.querySelector('#directory')?.addEventListener('input',e=>state.dir=e.target.value);
+ main.querySelector('#task')?.addEventListener('input',e=>{state.task=e.target.value;if($('blank-hint'))$('blank-hint').textContent=state.task.trim()?'Start sends this task in the simulation.':'No task: Start creates an idle, empty session. No message will be sent.';});
+}
+function openDialog(step){
+ const dialog=$('connection');
+ if(!dialog.open){const el=document.activeElement;returnFocus=el?.dataset.action?`[data-action="${el.dataset.action}"]`:el?.id?`#${el.id}`:'#task';}
+ let content='';
+ if(step==='providers')content=`<h2 id="dialog-title">Connect a provider</h2><p>Choose how you already have access.</p><ul class="provider-list">${Object.entries(providers).map(([name,info])=>`<li><button data-provider="${name}"><strong>${name}</strong><span>${info[0]}</span></button></li>`).join('')}</ul><details><summary>Local or custom endpoint</summary><p>Authentication depends on the endpoint.</p>${button('Inspect custom setup','custom')}</details><details><summary>Show all providers / search · explanatory preview</summary><p>The full provider catalogue would offer search by provider name or ID. This preview does not load or search that catalogue.</p><label for="provider-search-preview">Search providers · not active in this preview</label><input id="provider-search-preview" type="search" readonly placeholder="Provider name or ID" aria-describedby="provider-search-note"><small id="provider-search-note">Read-only illustration; the provider choices above remain the interactive demo.</small></details><details><summary>Manage existing connections · explanatory preview</summary><p>This would open connection settings to inspect, edit, test, or remove saved connections. No management navigation or changes are implemented here.</p></details>`;
+ else if(step==='key'){
+ const info=providers[state.provider];
+ content=`<h2 id="dialog-title">Connect ${state.provider}</h2><p>${info[2]}</p><p class="machine">Instance: ${instance()}</p><div class="field"><label for="destination">Destination</label><input readonly id="destination" class="machine" value="${info[1]}"></div><div class="field"><label for="demo-key">API key · demonstration only</label><input readonly id="demo-key" value="${state.demo||saved()?'•••••••••••• · demo only':'No real keys accepted'}" autocomplete="off">${button('Insert masked demo key','demo')}</div><p class="muted">The check requests a model list only. Generation, quota, and billing are not verified.</p>${saved()?`<div class="notice" role="status"><strong>Connection saved · simulation only</strong><p>${checkSummary()}</p><div class="actions">${button(connection().check==='success'?'Choose model':'Continue unverified to model choice','models',true)}${button('Retry check','retry')}${button('Edit access','edit')}</div></div>`:''}${selectMarkup('check-outcome','Review control: next check result',{success:'Model-list check succeeds',failed:'Model-list check fails',unsupported:'Check unsupported'},state.checkOutcome)}<div class="actions"><button class="${saved()?'quiet':'primary'}" data-action="save" ${state.demo||saved()?'':'disabled'}>Save and check</button>${button('Back to providers','providers')}</div>`;
+ } else if(step==='models'){
+ let body=state.catalog==='loading'?`<p role="status">Loading models for ${instance()}… (simulated)</p>${button('Complete simulated catalogue load','catalog-complete',true)}`:state.catalog==='empty'?`<p role="status">No models returned for ${instance()}.</p>`:state.catalog==='failed'?`<p role="alert" class="error">${instance()} — model catalogue unavailable (simulated timeout).</p>`:`<ul class="provider-list">${fixtures.map((m,i)=>`<li><button data-model="${i}"><strong>${m.name}</strong>${m.meta?`<span>${m.meta}</span>`:''}</button></li>`).join('')}</ul>`;
+ content=`<h2 id="dialog-title">Choose a model</h2><p>Provider instance: <strong>${instance()}</strong></p><p class="muted">${checkSummary()} Catalogue loading is a separate step.</p><p class="muted">All names and capabilities below are fixtures. No prices or recommendations. Missing metadata is omitted.</p>${body}${selectMarkup('catalog-outcome','Review control: next catalogue result',{ready:'Multiple fixture models',empty:'Empty catalogue',failed:'Catalogue request fails'},state.catalogOutcome)}<div class="actions">${button('Retry catalogue','catalog-retry')}${button('Connection settings','review')}</div><details><summary>Show all models · explanatory preview</summary><p>This would expand the model chooser to other configured provider instances. This preview stays scoped to ${instance()}; it does not load or select another connection’s models.</p></details>`;
+ } else if(step==='access')content=`<h2 id="dialog-title">Session access</h2><p role="status">Effective: ${accessSummary()}</p><p class="muted">Network access is configured separately from these file and command boundaries.</p>${selectMarkup('access-mode','Access mode',{'':`Inherit (${modes[state.inherited]||state.inherited||'unspecified'})`,...modes},state.mode)}${selectMarkup('override','Advanced sandbox override',{'':'No explicit override',off:'Full access (off)','read-only':'Read-only','workspace-write':'Workspace write',restricted:'Restricted'},state.override)}<p class="muted">An explicit advanced sandbox value wins over the access-mode choice. Unknown inherited values are preserved, never renamed Full access.</p>${selectMarkup('resolution','Review control: configuration resolution',{ready:'Resolved',pending:'Pending',error:'Failed'},state.resolution)}${button('Retry resolution','resolve-dialog')}<div class="actions">${button('Keep access choices','access-done',true)}</div>`;
+ else if(step==='signin')content=`<h2 id="dialog-title">Sign in to OpenAI Codex</h2><p>ChatGPT/Codex sign-in is subject to eligibility. No sign-in or redirect starts in this prototype.</p>${button('Back to providers','providers')}`;
+ else content=`<h2 id="dialog-title">Local or custom endpoint</h2><p>Review endpoint, protocol, and authentication in connection settings. This route is explanatory only; no endpoint is contacted.</p>${button('Back to providers','providers')}`;
+ dialog.innerHTML=`<p class="dialog-note">Workflow prototype, no credentials saved or requests sent</p>${content}<div class="dialog-foot">${saved()?'<p>Closing keeps this connection saved in this simulation, even if its check failed or is unsupported. Nothing is saved on disk.</p>':''}${button(saved()?'Close, keep connection':'Cancel','close')}</div>`;
+ for(const [id,key] of [['check-outcome','checkOutcome'],['catalog-outcome','catalogOutcome'],['access-mode','mode'],['override','override'],['resolution','resolution']])dialog.querySelector('#'+id)?.addEventListener('change',e=>{state[key]=e.target.value;if(step==='access'){openDialog('access');$(id)?.focus();}});
+ if(!dialog.open)dialog.showModal();
+ dialog.querySelector('h2').tabIndex=-1;dialog.querySelector('h2').focus();
+}
+function act(action){
+ if(action==='close')return closeDialog();
+ if(action==='welcome')return go(saved()?'welcome':'new'); // Fresh missing-provider welcome redirects, as Welcome.tsx does.
+ if(action==='web')return go('new');
+ if(action==='providers')return openDialog('providers');
+ if(action==='review')return openDialog(state.provider==='OpenAI Codex'?'signin':'key');
+ if(action==='models'){state.catalog='loading';return openDialog('models');}
+ if(action==='catalog-complete'){state.catalog=state.catalogOutcome;return openDialog('models');}
+ if(action==='catalog-retry'){state.catalog='loading';return openDialog('models');}
+ if(['access','custom'].includes(action))return openDialog(action);
+ if(action==='demo'){state.demo=true;return openDialog('key');}
+ if(action==='edit'){state.demo=true;openDialog('key');$('demo-key').focus();return;}
+ if(action==='save'||action==='retry'){if(!state.demo&&!saved())return;state.connections[instance()]={check:state.checkOutcome};render();return openDialog('key');}
+ if(action==='access-done')return closeDialog('[data-action="access"]');
+ if(action==='resolve'||action==='resolve-dialog'){state.resolution='ready';if(action==='resolve-dialog')return openDialog('access');render();document.querySelector('[data-action="access"]')?.focus();return;}
+ if(action==='start'&&canStart())return go(state.task.trim()?'waiting':'empty');
+ if(action==='send'){if(state.task.trim())go('waiting');else $('task').focus();return;}
+ if(action==='reply')return go('response');
+}
+document.addEventListener('click',e=>{
+ const target=e.target.closest('button');if(!target)return;
+ if(target.dataset.action)act(target.dataset.action);
+ if(target.dataset.provider){if(state.provider!==target.dataset.provider){state.model=null;state.demo=false;}state.provider=target.dataset.provider;openDialog(state.provider==='OpenAI Codex'?'signin':'key');}
+ if(target.dataset.model!==undefined){state.model={...fixtures[Number(target.dataset.model)],instance:instance()};closeDialog('#task');}
+});
+$('connection').addEventListener('cancel',e=>{e.preventDefault();closeDialog();});
+$('theme').addEventListener('click',()=>{const light=document.documentElement.dataset.theme!=='light';document.documentElement.dataset.theme=light?'light':'dark';$('theme').textContent=light?'Dark theme':'Light theme';$('theme').setAttribute('aria-pressed',String(light));});
+const scenes={terminal:'1 · Terminal handoff',new:'2 · New session',providers:'3 · Provider discovery',key:'4 · API key & check',failure:'Saved, check failed',unsupported:'Saved, check unsupported',models:'5 · Model catalogue loading','catalog-empty':'Model catalogue empty','catalog-failed':'Model catalogue failed',ready:'6 · Ready to start',blank:'Blank task launch',empty:'Empty session',waiting:'7 · Waiting for reply',response:'8 · Illustrative reply',configured:'Configured welcome',override:'Advanced access override',pending:'Access resolution pending','access-error':'Access resolution failed',unknown:'Unknown inherited access'};
+$('scene').innerHTML=Object.entries(scenes).map(([v,l])=>`<option value="${v}">${l}</option>`).join('');
+$('reset').addEventListener('click',()=>{if($('connection').open)$('connection').close();state=initial();$('scene').value='terminal';go('terminal');});
+$('scene').addEventListener('change',e=>{
+ const scene=e.target.value,draft={dir:state.dir,task:state.task};if($('connection').open)$('connection').close();state=Object.assign(initial(),draft);
+ state.screen=scene==='terminal'?'terminal':['waiting','response','empty'].includes(scene)?scene:scene==='configured'?'welcome':'new';
+ if(!['terminal','new','providers','key'].includes(scene)){state.connections[instance()]={check:scene==='failure'?'failed':scene==='unsupported'?'unsupported':'success'};state.demo=true;}
+ if(['ready','blank','empty','waiting','response','configured','override','pending','access-error','unknown'].includes(scene))state.model={...fixtures[0],instance:instance()};
+ if(['blank','empty'].includes(scene))state.task='';
+ if(scene==='override'){state.mode='off';state.override='read-only';}
+ if(scene==='pending')state.resolution='pending';if(scene==='access-error')state.resolution='error';if(scene==='unknown')state.inherited='organization-policy-fixture';
+ state.catalog=scene==='catalog-empty'?'empty':scene==='catalog-failed'?'failed':'loading';render();
+ if(['providers','key','failure','unsupported','models','catalog-empty','catalog-failed'].includes(scene))openDialog(['failure','unsupported'].includes(scene)?'key':scene.startsWith('catalog-')?'models':scene);
+});
+render();
+</script>
+</body>
+</html>

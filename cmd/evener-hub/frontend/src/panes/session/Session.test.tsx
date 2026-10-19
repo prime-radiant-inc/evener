@@ -3399,6 +3399,7 @@ test("a reconnect recovers the degraded pane without any resync notification", a
 // notice - a restartRequired daemon above, and a session with uncertain messages
 // (which the Resume action reconciles).
 test("a merely-resumable local session shows no standalone Resume notice", async () => {
+  vi.useFakeTimers(FAKE_CLOCK_ONLY);
   const fake = connectFakeClient();
   const ref = "local:resume-only-notice";
   fake.on("thread/read", () =>
@@ -3423,11 +3424,20 @@ test("a merely-resumable local session shows no standalone Resume notice", async
   );
   const { rerender } = render(tree());
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  // Exercise the refresh after startup discovery has settled too, so it owns
+  // its publication rather than being superseded by the all-targets read.
+  await flushPendingTurnsProjectionForTests();
   // The resume-only predicate now fails closed until the ref's durable outbox
   // has loaded (hasQueuedNonSend / hasBlockedUnknown). Session reads that at
   // render, so load the outbox and re-render - the pane's own liveness tick
   // does the same within a tick - before asserting the notice is dropped.
-  await refreshPendingTurnsProjection(ref);
+  await act(async () => {
+    const refresh = refreshPendingTurnsProjection(ref);
+    // A busy suite can cross the liveness tick during this durable read.
+    // Drive that boundary explicitly rather than relying on host speed.
+    await vi.advanceTimersByTimeAsync(3_000);
+    await refresh;
+  });
   // Readiness now follows the fence's own ownership check: the runtime's
   // startup discovery scan starts an all-targets read that out-ranks this
   // specific one, so settle the outstanding projection work and let the latest

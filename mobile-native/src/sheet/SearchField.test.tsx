@@ -34,4 +34,14 @@ describe("a search field", () => {
 		pressable(filled, "Clear filter")?.props.onPress();
 		expect(onClear).toHaveBeenCalledWith("");
 	});
+
+	it("gives the input and clear action separate 44-point targets inside their parent", () => {
+		const tree = render(<SearchField label="Search models" value="haiku" onChangeText={() => {}} />);
+		const input = tree.root.findByType("TextInput" as never);
+		const clear = tree.root.findByProps({ accessibilityRole: "button" });
+		expect(input.props.style.minHeight).toBeGreaterThanOrEqual(44);
+		expect(clear.props.style.minHeight).toBeGreaterThanOrEqual(44);
+		expect(clear.props.style.minWidth).toBeGreaterThanOrEqual(44);
+		expect(clear.parent?.props.style.minHeight).toBeGreaterThanOrEqual(44);
+	});
 });

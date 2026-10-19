@@ -110,8 +110,8 @@ compiled — user-visible string changes and signature changes drift the
 tagged tests, and build+test alone never notices. A controller or
 implementer gating a commit that touches `agent` runs it; it is cheap
 (type-checking only, no fuzz execution). Before those
-floors existed it did not: renaming a test that
-`cmd/evener-tui/root_factories_fuzz_test.go` replays by function value left
+floors existed it did not: renaming a test that a tagged fuzz file
+replays by function value left
 that build broken while `make lint` returned 0, and a `[]string` that
 became a `[]summarizationRoute` stranded a `//go:build eval` caller for
 six weeks.

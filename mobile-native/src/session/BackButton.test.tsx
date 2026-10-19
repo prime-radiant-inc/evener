@@ -3,8 +3,10 @@ import { paletteFor } from "../design/tokens";
 import { render, renderedText, textOf } from "../renderNative.testkit";
 import { BackButton } from "./BackButton";
 
+const viewport = vi.hoisted(() => ({ fontScale: 1 }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
@@ -15,6 +17,17 @@ function button(tree: ReturnType<typeof render>) {
 }
 
 describe("Back with who else needs you (spec 13.2)", () => {
+	it("caps text to the fixed navigation bar and supplies the large content viewer", () => {
+		viewport.fontScale = 3;
+		try {
+			const tree = render(<BackButton count={123} onPress={() => {}} />);
+			const count = tree.root.findByType("Text" as never);
+			expect(count.props.style.fontSize).toBeLessThanOrEqual(23);
+			expect(button(tree).props.accessibilityShowsLargeContentViewer).toBe(true);
+		} finally {
+			viewport.fontScale = 1;
+		}
+	});
 	it("carries the count of the others that need you, in amber", () => {
 		const tree = render(<BackButton count={4} onPress={() => {}} />);
 		expect(button(tree).props.accessibilityLabel).toContain("4");

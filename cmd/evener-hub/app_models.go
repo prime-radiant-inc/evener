@@ -94,11 +94,11 @@ func hubModelListInner(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 	if hasEvenerLaunchModelLister(cfg) {
 		load := cfg.LaunchModels
 		if load == nil {
-			load = func(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
+			load = func(ctx context.Context, workingDir string, _ bool) (appwire.ModelListResponse, error) {
 				return evenerLaunchModelList(ctx, cfg, workingDir)
 			}
 		}
-		resp, err := load(ctx, params.CWD)
+		resp, err := load(ctx, params.CWD, params.Refresh)
 		if err != nil {
 			return appwire.ModelListResponse{}, err
 		}
@@ -133,8 +133,9 @@ func sourceForModelHarness(sources *appsource.Registry, harness string) (appsour
 // re-apply bumps the holder generation and retires the entry. A cold key blocks
 // (the launch check is the only way to answer it); a stale entry is served
 // immediately and refreshed behind the request, so a picker open only pays the
-// live listing once per key rather than on every open.
-func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
+// live listing once per key rather than on every open. Explicit refresh waits
+// for a live load even for a fresh cached empty/diagnostic response.
+func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string, refresh bool) (appwire.ModelListResponse, error) {
 	gen, ok := liveModelsGeneration(s)
 	if !ok {
 		// No holder generation to gate on (a bare test/embedder server): a
@@ -147,7 +148,7 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (a
 	s.launchModels.mu.Lock()
 	entry := s.launchModels.entries[workingDir]
 	s.launchModels.mu.Unlock()
-	if entry == nil {
+	if entry == nil || refresh {
 		// A shared load runs on the server lifetime, not this request's context:
 		// singleflight hands the leader's result to every waiter, so a leader
 		// whose client disconnected must not fail the readers that joined it.
@@ -156,7 +157,7 @@ func (s *WebServer) fetchLaunchModels(ctx context.Context, workingDir string) (a
 		}
 		loadCtx, cancel := launchModelsFetchContext(s.lifetime)
 		defer cancel()
-		return s.loadLaunchModels(loadCtx, workingDir, gen)
+		return s.loadLaunchModels(loadCtx, workingDir, gen, refresh)
 	}
 	// The launch list shares the live list's TTL: both track the same provider
 	// inventory, and a picker open past it refreshes the list.
@@ -221,7 +222,7 @@ func (s *WebServer) endLaunchModelsRefresh(workingDir string) {
 // loadLaunchModels runs the launch check for one working dir and caches the
 // answer, collapsing concurrent callers onto one child. A failed load caches
 // nothing, so the next request retries instead of serving an empty list.
-func (s *WebServer) loadLaunchModels(ctx context.Context, workingDir string, gen uint64) (appwire.ModelListResponse, error) {
+func (s *WebServer) loadLaunchModels(ctx context.Context, workingDir string, gen uint64, refresh bool) (appwire.ModelListResponse, error) {
 	v, err, _ := s.launchModels.loading.Do(workingDir, func() (any, error) {
 		// Re-check the cache inside the flight: a caller that read the cache
 		// before a concurrent flight published its entry reaches this group only
@@ -231,7 +232,7 @@ func (s *WebServer) loadLaunchModels(ctx context.Context, workingDir string, gen
 		s.launchModels.mu.Lock()
 		entry := s.launchModels.entries[workingDir]
 		s.launchModels.mu.Unlock()
-		if entry != nil && entry.gen == gen && time.Since(entry.filledAt) < liveModelsTTL {
+		if !refresh && entry != nil && entry.gen == gen && time.Since(entry.filledAt) < liveModelsTTL {
 			return entry.resp, nil
 		}
 		resp, err := evenerLaunchModelList(ctx, s.cfg, workingDir)
@@ -309,7 +310,7 @@ func (s *WebServer) refreshLaunchModels(workingDir string, gen uint64, served ap
 	defer s.endLaunchModelsRefresh(workingDir)
 	ctx, cancel := launchModelsFetchContext(s.lifetime)
 	defer cancel()
-	fresh, err := s.loadLaunchModels(ctx, workingDir, gen)
+	fresh, err := s.loadLaunchModels(ctx, workingDir, gen, false)
 	if err != nil || reflect.DeepEqual(served, fresh) {
 		return
 	}
@@ -328,7 +329,7 @@ func (s *WebServer) warmLaunchModels(ctx context.Context) {
 	if !hasEvenerLaunchModelLister(s.cfg) || s.cfg.LaunchModels == nil {
 		return
 	}
-	_, _ = s.cfg.LaunchModels(ctx, "")
+	_, _ = s.cfg.LaunchModels(ctx, "", false)
 }
 
 // startLaunchModelsPrefetch warms the unscoped launch model list once at

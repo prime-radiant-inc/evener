@@ -452,6 +452,11 @@ describe("projectedRow — item entries", () => {
 		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "failed" });
 	});
 
+	it("does not mark an exit-only tool activity failed - the exit shows as an inline mark", () => {
+		const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "shell", exitCode: 1 })));
+		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "completed" });
+	});
+
 	it("maps a daemon steering item to an informational notice labelled by its kind", () => {
 		const row = projectedRow(
 			itemEntry(
@@ -941,6 +946,32 @@ describe("projectedRow — intent entries", () => {
 			intentEntry(item({ type: "commandExecution", toolName: "read_file", description: "  Read a.ts  " })),
 		);
 		expect(row).toMatchObject({ kind: "activity", detail: { description: "Read a.ts" } });
+	});
+
+	it("keeps an exit-only intent's activity completed and summary-only, not failed", () => {
+		const row = projectedRow(intentEntry(item({ type: "commandExecution", toolName: "shell", exitCode: 1 })));
+		expect(row).toMatchObject({ kind: "activity", family: "tool", state: "completed", summaryOnly: true });
+	});
+
+	// The summary-only ruling drops the source's output and duration, but an
+	// exit-only call keeps its exit code so the compact row (and the run it folds
+	// into) can still show the small x. Web shows it at intent level; the phone
+	// must not silently lose it (Jesse, 2026-10-16).
+	it("keeps an exit-only intent's exit code in its summary-only detail", () => {
+		const row = projectedRow(intentEntry(item({ type: "commandExecution", toolName: "shell", exitCode: 7 })));
+		expect(row?.kind === "activity" && row.detail.exitCode).toBe(7);
+	});
+
+	// The exit resolves through the SHARED toolExitCode: on an old daemon that
+	// never set the typed field, the shell tool's own output footer still gives
+	// the mark its code - the same call web draws the x on (Jesse, 2026-10-16).
+	it("resolves a footer-only exit the same way as the typed field", () => {
+		const typed = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "shell", exitCode: 3 })));
+		const footer = projectedRow(
+			itemEntry(item({ type: "commandExecution", toolName: "shell", output: "boom\n[exit 3]" })),
+		);
+		expect(typed?.kind === "activity" && typed.detail.exitCode).toBe(3);
+		expect(footer?.kind === "activity" && footer.detail.exitCode).toBe(3);
 	});
 
 	// The operator's ruling (Sep-25): a summarized tool-action row carries
@@ -2265,7 +2296,8 @@ describe("a streamed reply's key once history records its round", () => {
 
 	it("keeps every key unique when a round records two replies around a delegate_send", () => {
 		// The round's first reply takes the stream's key; the second keeps its
-		// own, and the delegate_send between them starts a run of its own.
+		// own, and the delegate_send between them starts a run of its own, keyed
+		// by its call id (stable across recording).
 		const streamed = keys(streaming()).at(-1);
 		const after = keys(
 			hydrateThread(
@@ -2289,8 +2321,68 @@ describe("a streamed reply's key once history records its round", () => {
 		);
 		expect(new Set(after).size).toBe(after.length);
 		expect(after).toContain(streamed);
-		expect(after.indexOf(streamed ?? "")).toBeLessThan(after.indexOf("t1:1:1"));
+		expect(after.indexOf(streamed ?? "")).toBeLessThan(after.indexOf("step:call-1"));
 		expect(after).toContain("t1:1:2");
+	});
+
+	// Keeping the key through the recording change is stepKey's job; this pins
+	// it end to end. The live and recorded turns differ, as they do for a
+	// daemon-minted turn.
+	it("keeps a running tool's key when history records its call", () => {
+		const tool = {
+			key: "tool:call:call-7",
+			kind: "tool",
+			turnId: "t_abc",
+			roundId: "r1",
+			callId: "call-7",
+			item: {
+				id: "tool:call:call-7",
+				type: "commandExecution",
+				turnId: "t_abc",
+				roundId: "r1",
+				callId: "call-7",
+				toolName: "shell",
+				status: "completed",
+				output: "ok",
+			},
+		};
+		const live = hydrateThread(
+			{
+				thread: wireThread([wireTurn("t_abc", [ask], { status: "inProgress" })]),
+				bootGeneration: "boot-1",
+				epoch: 1,
+				snapshot: { incarnation: "inc-1", length: 1 },
+				overlay: [tool],
+			} as unknown as ThreadReadResponse,
+			"ref-1",
+			0,
+		);
+		const liveKeys = keys(live);
+		const after = keys(
+			hydrateThread(
+				{
+					thread: wireThread([
+						wireTurn("turn_1", [
+							ask,
+							recorded("item_tool_1_0", "commandExecution", 0, {
+								turnId: "turn_1",
+								toolName: "shell",
+								callId: "call-7",
+								completedAtEntry: 2,
+								output: "ok",
+							}),
+						]),
+					]),
+				},
+				"ref-1",
+				0,
+			),
+		);
+		// The tool row is the only row that is not your message, so its key is
+		// the one that is not "u1" on either side.
+		const toolKey = (list: string[]) => list.filter((key) => key !== "u1");
+		expect(toolKey(after)).toEqual(toolKey(liveKeys));
+		expect(toolKey(liveKeys)).toHaveLength(1);
 	});
 
 	// The web renders an automatic memory refresh as a "Refreshed my memory"

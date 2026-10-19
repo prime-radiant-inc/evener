@@ -1,7 +1,8 @@
+import { fonts, space } from "./design/tokens";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ScrollView, View } from "react-native";
+import { Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { type ConnectionState, createHubOverviewStore } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -9,9 +10,9 @@ import { isReady, whenReady } from "./connectionDisplay";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
 import { FirstLoad, SheetStatus } from "./sheet/SheetStatus";
 import type { HubRoutes } from "./hub/hubSheetContext";
-import { Copy, ErrorMessage, styles, useColors } from "./ui";
+import { allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Spinner } from "./sheet/Spinner";
-import { Button } from "./sheet/Grouped";
+import { Button, Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
 
 type Props = NativeStackScreenProps<HubRoutes, "HubSettings">;
 // A mounted screen re-keyed to another hub is a fresh screen: the
@@ -49,22 +50,45 @@ function HubSettingsScreenBody({ route }: Props) {
 	);
 }
 
-function Detail({ label, value }: { label: string; value: string | number | undefined }) {
+const detailRowStyle = {
+	minHeight: 44,
+	paddingHorizontal: space.rowInset,
+	paddingVertical: space.rowPadding,
+	gap: 2,
+};
+
+function Detail({
+	label,
+	value,
+	machineValue = false,
+}: {
+	label: string;
+	value: string | number | undefined;
+	machineValue?: boolean;
+}) {
+	const text = value === undefined || value === "" ? "Unavailable" : String(value);
 	return (
-		<View style={{ gap: 2, paddingVertical: 5 }}>
-			<Copy muted>{label}</Copy>
-			<Copy>{value === undefined || value === "" ? "Unavailable" : String(value)}</Copy>
+		<View accessible accessibilityLabel={`${label}, ${text}`} style={detailRowStyle}>
+			<Copy>{label}</Copy>
+			<Copy muted>
+				{machineValue ? (
+					<Text allowFontScaling={allowFontScaling} style={{ fontFamily: fonts.mono }}>
+						{text}
+					</Text>
+				) : (
+					text
+				)}
+			</Copy>
 		</View>
 	);
 }
 function Section({ title, children }: { title: string; children: ReactNode }) {
 	const [open, setOpen] = useState(false);
-	const colors = useColors();
 	return (
-		<View style={{ borderTopWidth: 0.5, borderColor: colors.border }}>
+		<Group>
 			<Button text label={title} expanded={open} onPress={() => setOpen(!open)} />
-			{open && <View style={{ paddingBottom: 14, gap: 8 }}>{children}</View>}
-		</View>
+			{open && children}
+		</Group>
 	);
 }
 // The hub overview store keeps the failed request's friendly text in `error`,
@@ -171,28 +195,35 @@ function HubSettings({
 	const data = state.data;
 	const hub = data?.hub;
 	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
-			<ScrollView contentContainerStyle={{ padding: 20, gap: 12 }}>
-				<Copy>{hubName}</Copy>
-				{state.loading && !data && <Spinner label="Loading hub information" />}
-				<ErrorMessage
-					message={state.error === null ? null : HUB_OVERVIEW_REFRESH_FAILED}
-					testID="hub-overview-failed"
-				/>
-				{state.error && (
-					<Button
-						text
-						label="Retry hub information"
-						disabled={state.loading || !ready}
-						onPress={whenReady(canUseConnection, () => {
-							void state.refresh();
-						})}
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
+			<GroupedPage>
+				<Group label={hubName} selectableLabel>
+					<Row
+						selectable
+						label="Evener"
+						value={hub?.version || "Version unavailable"}
+						sub={hub?.listenAddr || "Listen address unavailable"}
 					/>
-				)}
+				</Group>
+				<View style={{ paddingHorizontal: space.labelInset }}>
+					{state.loading && !data && <Spinner label="Loading hub information" />}
+					<ErrorMessage
+						message={state.error === null ? null : HUB_OVERVIEW_REFRESH_FAILED}
+						testID="hub-overview-failed"
+					/>
+					{state.error && (
+						<Button
+							text
+							label="Retry hub information"
+							disabled={state.loading || !ready}
+							onPress={whenReady(canUseConnection, () => {
+								void state.refresh();
+							})}
+						/>
+					)}
+				</View>
 				{data && (
 					<>
-						<Copy muted>{hub?.version ? `Evener ${hub.version}` : "Version unavailable"}</Copy>
-						<Copy muted>{hub?.listenAddr || "Listen address unavailable"}</Copy>
 						<Section title="Runtime and storage">
 							<Detail label="Version" value={hub?.version} />
 							<Detail label="Commit" value={hub?.commit} />
@@ -201,7 +232,6 @@ function HubSettings({
 							<Detail label="Bearer token age" value={hub?.bearerTokenAge} />
 							<Detail label="Run directory" value={hub?.runDir} />
 							<Detail label="State directory" value={data.storage?.stateDir} />
-							<Copy muted>These locations are on the hub.</Copy>
 							{hub?.pastIndex && (
 								<>
 									<Detail label="Past session index" value={hub.pastIndex.path} />
@@ -211,45 +241,54 @@ function HubSettings({
 								</>
 							)}
 						</Section>
+						<GroupFooter>These locations are on the hub.</GroupFooter>
 						<Section title="Agents">
 							{data.agents === undefined ? (
-								<Copy muted>Agent information unavailable.</Copy>
+								<Row label="Agent information unavailable" />
 							) : data.agents.length === 0 ? (
-								<Copy muted>No agents discovered.</Copy>
+								<Row label="No agents discovered" />
 							) : (
 								data.agents.map((agent) => (
-									<View key={agent.name} style={{ gap: 3 }}>
-										<Copy>{agent.name}</Copy>
-										<Copy muted>{agent.editPath || "Built-in"}</Copy>
-									</View>
+									<Detail
+										key={agent.name}
+										label={agent.name}
+										value={agent.editPath || "Built-in"}
+										machineValue={!!agent.editPath}
+									/>
 								))
 							)}
 						</Section>
 						<Section title="Discovered MCP servers">
 							{data.mcpDiscovered === undefined ? (
-								<Copy muted>MCP discovery unavailable.</Copy>
+								<Row label="MCP discovery unavailable" />
 							) : (
 								<>
 									{/* The hub composes these diagnostics and sends them as data, not
 									    as a rejection, so they are shown as the hub wrote them. */}
-									<ErrorMessage message={data.mcpDiscovered.error || null} />
+									<View style={{ paddingHorizontal: space.rowInset }}>
+										<ErrorMessage message={data.mcpDiscovered.error || null} />
+									</View>
 									{data.mcpDiscovered.servers?.map((server) => (
-										<View key={server.name} style={{ gap: 3 }}>
-											<Copy>{server.name}</Copy>
+										<View key={server.name}>
+											<View accessible accessibilityLabel={server.name} style={detailRowStyle}>
+												<Copy>{server.name}</Copy>
+											</View>
 											<Detail label="Transport" value={server.transport} />
 											<Detail label="Status" value={server.status} />
-											<ErrorMessage message={server.error || null} />
+											<View style={{ paddingHorizontal: space.rowInset }}>
+												<ErrorMessage message={server.error || null} />
+											</View>
 										</View>
 									))}
 									{!data.mcpDiscovered.error && data.mcpDiscovered.servers?.length === 0 && (
-										<Copy muted>No MCP servers discovered.</Copy>
+										<Row label="No MCP servers discovered" />
 									)}
 								</>
 							)}
 						</Section>
 					</>
 				)}
-			</ScrollView>
+			</GroupedPage>
 		</SafeAreaView>
 	);
 }

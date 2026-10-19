@@ -6,7 +6,7 @@ const stack = {
 	routes: [
 		{ name: "Sessions" },
 		{ name: "Conversation", params: { hubId: "hub-1", ref: "local:coord", title: "Coordinator" } },
-		{ name: "Subagents", params: { hubId: "hub-1", ref: "local:coord", threadId: "coord", title: "Coordinator" } },
+		{ name: "Activity", params: { hubId: "hub-1", ref: "local:coord", threadId: "coord", title: "Coordinator" } },
 		{ name: "Subagent", params: { hubId: "hub-1", ref: "local:fix", title: "Fix race" } },
 	],
 };

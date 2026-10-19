@@ -4,6 +4,7 @@
 // it floats on the raised surface, and VoiceOver hears it once.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AccessibilityInfo, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { FLOATING_SHADOW } from "./design/underBar";
 import { allowFontScaling, styles, useColors } from "./ui";
 
 export interface ToastAction {
@@ -76,10 +77,7 @@ export function Toast({ toast, dismiss }: Pick<ToastController, "toast" | "dismi
 				borderColor: palette.edgeStrong,
 				backgroundColor: palette.surface,
 				// A floating element's shadow (spec 16.3), not a hue.
-				shadowColor: "#000000",
-				shadowOpacity: 0.12,
-				shadowRadius: 12,
-				shadowOffset: { width: 0, height: 4 },
+				...FLOATING_SHADOW,
 			}}
 		>
 			<Text

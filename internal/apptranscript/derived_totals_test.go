@@ -85,6 +85,7 @@ func TestDerivedTotalsFromFileMatchesIndividualScans(t *testing.T) {
 		}}},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("after failure"), Usage: llm.Usage{InputTokens: 200, OutputTokens: 20, TotalTokens: 220}},
 		{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			// A nonzero exit alone is NOT a failure (Jesse, 2026-10-16).
 			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c2", Name: "shell", ToolState: marshalDerivedTotalsToolState(t, map[string]any{"exit_code": 1})}},
 		}}},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("clean"), Usage: llm.Usage{InputTokens: 50, OutputTokens: 5, TotalTokens: 55}},
@@ -99,8 +100,8 @@ func TestDerivedTotalsFromFileMatchesIndividualScans(t *testing.T) {
 	if usage == nil || *usage != *wantUsage {
 		t.Fatalf("combined usage = %+v, want %+v", usage, wantUsage)
 	}
-	if failures != 2 {
-		t.Fatalf("combined failures = %d, want 2 (IsError + nonzero exit)", failures)
+	if failures != 1 {
+		t.Fatalf("combined failures = %d, want 1 (the errored result, not the shell exit)", failures)
 	}
 
 	// The individual scans over the same file must agree with the combined one.
@@ -109,8 +110,8 @@ func TestDerivedTotalsFromFileMatchesIndividualScans(t *testing.T) {
 		t.Fatalf("individual usage = %+v, want %+v", individualUsage, wantUsage)
 	}
 	individualFailures := requireFailedToolCalls(t, NewTurnCache(), path, 0)
-	if individualFailures != 2 {
-		t.Fatalf("individual failures = %d, want 2", individualFailures)
+	if individualFailures != 1 {
+		t.Fatalf("individual failures = %d, want 1", individualFailures)
 	}
 }
 

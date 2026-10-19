@@ -6,7 +6,10 @@ import { useEffect, useMemo, useRef } from "react";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { markFor } from "../board/StateMark";
-import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { PulseMeter } from "../board/PulseMeter";
+import { meterTone } from "../board/pulse";
+import { useHeaderTextScale } from "../headerText";
+import { allowFontScaling, useColors } from "../ui";
 import type { SessionStateLine } from "./sessionState";
 import { titleSwipeDirection } from "./titleSwipe";
 
@@ -36,6 +39,50 @@ export function navBarButtonSpan(count: number, scale: number): number {
 	);
 }
 
+/** The state line's leading glyph (spec 8.1, 16.4): the live meter while the
+ * agent works, every other state's still mark, or nothing. `markFor(state,
+ * false)` narrows the meter out - the title's mark never animates. */
+function LeadingMark({
+	line,
+	mark,
+	perMinute,
+	connected,
+	scale,
+}: {
+	line: SessionStateLine;
+	mark: ReturnType<typeof markFor>;
+	perMinute?: readonly number[];
+	connected: boolean;
+	scale: number;
+}) {
+	const { palette } = useColors();
+	if (line.live) return <PulseMeter perMinute={perMinute} tone={meterTone(connected, line.live.attention)} />;
+	if (!mark || mark === "meter") return null;
+	return <SymbolView name={mark.name} tintColor={palette[mark.tint]} size={12 * scale} />;
+}
+
+/** The state line's words in 13pt tabular figures, amber while the agent may
+ * be stuck. A long one truncates inside the title's width. */
+function StateLine({ line, scale }: { line: SessionStateLine; scale: number }) {
+	const { palette } = useColors();
+	return (
+		<Text
+			allowFontScaling={allowFontScaling}
+			numberOfLines={1}
+			ellipsizeMode="tail"
+			style={{
+				color: line.live?.attention ? palette.attentionInk : palette.inkMid,
+				fontSize: 13 * scale,
+				lineHeight: 18 * scale,
+				fontVariant: ["tabular-nums"],
+				flexShrink: 1,
+			}}
+		>
+			{line.text}
+		</Text>
+	);
+}
+
 export function SessionTitle({
 	title,
 	line,
@@ -43,6 +90,9 @@ export function SessionTitle({
 	onSwipe,
 	neighbors,
 	backCount = 0,
+	perMinute,
+	onJumpToLive,
+	connected = true,
 }: {
 	title: string;
 	line: SessionStateLine;
@@ -55,12 +105,21 @@ export function SessionTitle({
 	/** How many other sessions need you: the Back pill's count, whose digits
 	 * widen the span the title must clear (#3063). */
 	backCount?: number;
+	/** The live meter's per-minute counts, while the state line carries a live
+	 * line (spec 16.4). */
+	perMinute?: readonly number[];
+	/** A press on the live state line jumps to the live end. Absent where there
+	 * is no live line to jump from. */
+	onJumpToLive?(): void;
+	/** The hub is reachable: a disconnected session's meter goes gray. */
+	connected?: boolean;
 }) {
 	const { palette } = useColors();
-	const scale = useTextScale();
+	const scale = useHeaderTextScale();
 	const { width } = useWindowDimensions();
 	const span = navBarButtonSpan(backCount, scale);
 	const mark = markFor(line.state, false);
+	const liveAction = line.live && onJumpToLive;
 	// The gesture is built once and reaches the latest onSwipe through the
 	// ref, so a re-render never hands the detector a new gesture mid-pan.
 	const onSwipeRef = useRef(onSwipe);
@@ -89,59 +148,60 @@ export function SessionTitle({
 	);
 	return (
 		<GestureDetector gesture={pan}>
-			<Pressable
-				accessibilityRole="button"
-				accessibilityLabel={`${title}, ${line.text}, session info`}
-				onPress={onPress}
-				accessibilityActions={[
-					...(neighbors.previous ? [{ name: "previous", label: "Previous session" }] : []),
-					...(neighbors.next ? [{ name: "next", label: "Next session" }] : []),
-				]}
-				onAccessibilityAction={(event) => {
-					if (event.nativeEvent.actionName === "previous") onSwipe(-1);
-					if (event.nativeEvent.actionName === "next") onSwipe(1);
-				}}
-				style={({ pressed }) => ({
-					minHeight: 44,
-					// Floored at zero, so an extreme count at an accessibility
-					// size never asks for a negative width.
-					maxWidth: Math.max(0, width - 2 * span),
-					alignItems: "center",
-					justifyContent: "center",
-					opacity: pressed ? 0.6 : 1,
-				})}
-			>
-				<Text
-					allowFontScaling={allowFontScaling}
-					numberOfLines={1}
-					ellipsizeMode="tail"
-					style={{ color: palette.inkHi, fontSize: 15 * scale, fontWeight: "600" }}
+			<View style={{ maxWidth: Math.max(0, width - 2 * span), flexDirection: "row", alignItems: "center", gap: 4 }}>
+				<Pressable
+					accessibilityRole="button"
+					accessibilityLabel={`${title}, ${line.text}, session info`}
+					accessibilityShowsLargeContentViewer
+					accessibilityLargeContentTitle={`${title}, ${line.text}`}
+					onPress={onPress}
+					accessibilityActions={[
+						...(neighbors.previous ? [{ name: "previous", label: "Previous session" }] : []),
+						...(neighbors.next ? [{ name: "next", label: "Next session" }] : []),
+					]}
+					onAccessibilityAction={(event) => {
+						if (event.nativeEvent.actionName === "previous") onSwipe(-1);
+						if (event.nativeEvent.actionName === "next") onSwipe(1);
+					}}
+					style={({ pressed }) => ({
+						minHeight: 44,
+						minWidth: 0,
+						flexShrink: 1,
+						alignItems: "center",
+						justifyContent: "center",
+						opacity: pressed ? 0.6 : 1,
+					})}
 				>
-					{title}
-				</Text>
-				<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-					{/* Never "meter": the title's mark is still (spec 8.1); the check
-					 * only narrows the type. */}
-					{mark && mark !== "meter" ? (
-						<SymbolView name={mark.name} tintColor={palette[mark.tint]} size={12 * scale} />
-					) : null}
 					<Text
 						allowFontScaling={allowFontScaling}
 						numberOfLines={1}
-						style={{
-							color: palette.inkMid,
-							fontSize: 13 * scale,
-							lineHeight: 18 * scale,
-							fontVariant: ["tabular-nums"],
-							// A long state line truncates inside the title's width too.
-							flexShrink: 1,
-						}}
+						ellipsizeMode="tail"
+						style={{ color: palette.inkHi, fontSize: 15 * scale, fontWeight: "600" }}
 					>
-						{line.text}
+						{title}
 					</Text>
-					<SymbolView name="chevron.right" tintColor={palette.inkLow} size={9 * scale} />
-				</View>
-			</Pressable>
+					<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+						{!liveAction ? (
+							<LeadingMark line={line} mark={mark} perMinute={perMinute} connected={connected} scale={scale} />
+						) : null}
+						<StateLine line={line} scale={scale} />
+						<SymbolView name="chevron.right" tintColor={palette.inkLow} size={9 * scale} />
+					</View>
+				</Pressable>
+				{liveAction ? (
+					<Pressable
+						accessibilityRole="button"
+						accessibilityLabel={line.text}
+						accessibilityHint="Shows the latest"
+						accessibilityShowsLargeContentViewer
+						accessibilityLargeContentTitle={line.text}
+						onPress={onJumpToLive}
+						style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }}
+					>
+						<LeadingMark line={line} mark={mark} perMinute={perMinute} connected={connected} scale={scale} />
+					</Pressable>
+				) : null}
+			</View>
 		</GestureDetector>
 	);
 }

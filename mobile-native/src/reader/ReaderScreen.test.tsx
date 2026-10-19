@@ -44,6 +44,8 @@ const harness = vi.hoisted(() => ({
 	appState: [] as ((state: string) => void)[],
 	focused: true,
 	markdowns: [] as string[],
+	shares: [] as { origin: string; token: string; sessionRef: string; path: string; namePath?: string }[],
+	shareFailure: null as Error | null,
 }));
 // What the Reader holds, whether and as what kind, and the count Back shows.
 const alerts = vi.hoisted(() => ({ holds: [] as [boolean, string][], held: 0 }));
@@ -132,6 +134,12 @@ vi.mock("../alerts/alertsContext", () => ({
 }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 vi.mock("./nativeDocumentMemory", () => ({ documentMemory: () => harness.memory }));
+vi.mock("./shareDocumentNative", () => ({
+	shareSessionDocument: async (target: import("./shareDocument").DocumentShareTarget) => {
+		harness.shares.push(target);
+		if (harness.shareFailure) throw harness.shareFailure;
+	},
+}));
 
 const PLAN = "# Settle the race\n\nThe goal is a clean run.\n\n## Steps\n\n- Reproduce it.\n- Fix it.\n";
 const OLDER = "# Settle the race\n\nThe goal is green.\n\n## Steps\n\n- Reproduce it.\n- Patch it.\n";
@@ -181,6 +189,8 @@ beforeEach(() => {
 	sheetNavigation.prevented = [];
 	sheetNavigation.onPrevent = null;
 	harness.clipboard = [];
+	harness.shares = [];
+	harness.shareFailure = null;
 	harness.appState = [];
 	served = { [PATH]: { body: PLAN } };
 	fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
@@ -781,7 +791,9 @@ it("shows an image through the hub with the bearer header", async () => {
 
 it("opens its outline, whose host lists the headings and jumps to one", async () => {
 	const { navigation } = await mount();
-	const button = headerItems(navigation).find((item) => item.type === "button");
+	const button = headerItems(navigation).find(
+		(item) => item.type === "button" && item.accessibilityLabel === "Outline",
+	);
 	if (button?.type !== "button") throw new Error("no outline button");
 	expect(button.icon).toEqual({ type: "sfSymbol", name: "list.bullet.indent" });
 	button.onPress();
@@ -800,7 +812,9 @@ it("opens its outline, whose host lists the headings and jumps to one", async ()
 it("has no outline button with fewer than two headings", async () => {
 	served["notes.md"] = { body: "# Notes\n\nOne line.\n" };
 	const { navigation } = await mount("notes.md");
-	expect(headerItems(navigation).some((item) => item.type === "button")).toBe(false);
+	expect(headerItems(navigation).some((item) => item.type === "button" && item.accessibilityLabel === "Outline")).toBe(
+		false,
+	);
 });
 
 it("goes back to its session and copies its path from ⋯", async () => {
@@ -811,6 +825,47 @@ it("goes back to its session and copies its path from ⋯", async () => {
 	expect(harness.clipboard.at(-1)).toBe(PLAN);
 	menuAction(navigation, "Open session").onPress();
 	expect(navigation.pop).toHaveBeenCalledWith(1);
+});
+
+it("shares the document through its hub from the Document actions menu", async () => {
+	const { navigation } = await mount();
+	await act(async () => menuAction(navigation, "Share").onPress());
+	await settleMicrotasks();
+	expect(harness.shares).toEqual([
+		{
+			origin: "https://hub.test",
+			token: "secret",
+			sessionRef: "local:fix",
+			path: `/work/a/${PATH}`,
+			namePath: PATH,
+		},
+	]);
+});
+
+it("offers sharing from the nav bar itself, not only inside ⋯", async () => {
+	const { navigation } = await mount();
+	const button = headerItems(navigation).find((item) => item.type === "button" && item.accessibilityLabel === "Share");
+	if (button?.type !== "button") throw new Error("no share button");
+	expect(button.icon).toEqual({ type: "sfSymbol", name: "square.and.arrow.up" });
+	await act(async () => button.onPress?.());
+	await settleMicrotasks();
+	expect(harness.shares).toHaveLength(1);
+});
+
+it("reports a failed share instead of leaving the press with no effect", async () => {
+	harness.shareFailure = new Error("Sharing is not available on this device.");
+	const { navigation } = await mount();
+	const before = alertRequests.length;
+	await act(async () => menuAction(navigation, "Share").onPress());
+	await settleMicrotasks();
+	// The failure is told to the person: an alert appeared. A share that works
+	// raises none.
+	expect(alertRequests).toHaveLength(before + 1);
+	expect(alertRequests.at(-1)?.message).toBeTruthy();
+	harness.shareFailure = null;
+	await act(async () => menuAction(navigation, "Share").onPress());
+	await settleMicrotasks();
+	expect(alertRequests).toHaveLength(before + 1);
 });
 
 it("holds banners while it's in front, and counts them on Back", async () => {

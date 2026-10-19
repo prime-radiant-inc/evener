@@ -88,11 +88,11 @@ export function PinnedSectionScreen({ route, navigation }: NativeStackScreenProp
 					}}
 				/>
 			) : null}
-			{pin.confirmed && !section ? <Copy>This section no longer exists. Its sessions are kept.</Copy> : null}
+			{pin.confirmed && !section ? <Copy>This category no longer exists. Its sessions are kept.</Copy> : null}
 			<Button
 				text
 				quiet
-				label="Manage section"
+				label="Manage category"
 				onPress={() =>
 					navigation.navigate("PinSectionEditor", {
 						hubId,
@@ -120,8 +120,8 @@ export function PinnedSectionScreen({ route, navigation }: NativeStackScreenProp
 					detail={(row) => (row.ask_pending || row.state === "awaiting" ? "Needs you" : row.state)}
 					empty={
 						pin.confirmed && !section
-							? "The section was removed; its sessions are kept."
-							: "No sessions in this pinned section."
+							? "The category was removed; its sessions are kept."
+							: "No sessions in this pinned category."
 					}
 					open={(row) =>
 						navigation.navigate("Conversation", {

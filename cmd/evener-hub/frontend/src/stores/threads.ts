@@ -60,6 +60,7 @@ import {
   threadModelFromCache,
   WireError,
 } from "@evener/appwire-client";
+import { notificationMutationIdentities } from "@evener/appwire-client/state/mutation";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
@@ -68,7 +69,7 @@ import { backgroundTranscriptOptions } from "./backgroundTranscriptOptions";
 import { connectedClientPort, connectionStore } from "./connection";
 import { entryWriteAdmissionFor } from "./entryWriteAdmission";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
-import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
+import { MutationDispatcher } from "./mutationDispatcher";
 import {
   type MutationAttachment,
   type MutationCommit,
@@ -4792,32 +4793,6 @@ function notificationThreadId(n: AnyNotification): string | undefined {
   return typeof params.threadId === "string" ? params.threadId : undefined;
 }
 
-function notificationMutationIdentities(n: AnyNotification): string[] {
-  if (n.method === "thread/queueChanged") {
-    // consumedClientMutationIds names entries THIS push's own transition (a
-    // drain) just took out of the queue (issue #1704): the daemon knows
-    // exactly which ids it consumed, so those settle by the same positive-
-    // evidence rule as the remaining, still-queued ids below. Validated the
-    // same way the receipt path validates it: anything not an array of
-    // non-empty strings settles nothing, never guessed at by spreading it.
-    return [
-      ...(n.params.queue.clientMutationIds ?? []),
-      ...validConsumedClientMutationIds(n.params.consumedClientMutationIds),
-    ];
-  }
-  // history/updated is the read-model replacement for evener/steering/injected,
-  // item/started, item/completed, turn/started and turn/completed alike: it
-  // carries the recorded form of every item a change affected (a steering
-  // item included), so one pass over its items covers what all five used to
-  // carry across their own separate shapes.
-  if (n.method === "history/updated") {
-    return (n.params.items ?? [])
-      .map((item) => item.clientMutationId)
-      .filter((clientMutationId): clientMutationId is string => Boolean(clientMutationId));
-  }
-  return [];
-}
-
 function applyHydrationResponseCut(pending: PendingThreadHydration, ref: string, model: ThreadModel): void {
   // AppWire orders the matching response at the authoritative snapshot cut.
   // Every notification already buffered is at or before that cut and is
@@ -7819,7 +7794,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const generation = ++modelsListGeneration;
     const request = (async () => {
       const client = await requireReadyClient();
-      return client.request("model/list", {});
+      return client.request("model/list", refresh ? { refresh: true } : {});
     })();
     // Supersede the shared in-flight slot with the newest request either way.
     // A refresh must not leave an older non-refresh request there: a

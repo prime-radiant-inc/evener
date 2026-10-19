@@ -1,4 +1,4 @@
-import type { ThreadCapabilities, TurnModel } from "@evener/appwire-client";
+import { makeTranscriptDisplayConfig, type ThreadCapabilities, type TurnModel } from "@evener/appwire-client";
 import type { PendingTurnEntry } from "@evener/appwire-client/state/mutation";
 import { describe, expect, it } from "vitest";
 import { type MobileTimelineItem, projectedRow } from "../projectedRows";
@@ -82,6 +82,25 @@ describe("runs of steps (spec 8.2)", () => {
 			"t",
 			"run:1",
 		]);
+	});
+
+	// Intent shows one line per action, never a folded run: the web draws each
+	// tool's intent at that level, and the phone agrees. A failed action is a
+	// line of its own too, so its failure never hides behind a run's count
+	// (Jesse, 2026-10-18).
+	it("leaves each action on its own intent line at Intent, failed ones included", () => {
+		const actions = [
+			step("a", "read_file", { summaryOnly: true, detail: { description: "Read the runner" } }),
+			step("b", "shell", { summaryOnly: true, detail: { description: "Run the tests" } }),
+			step("c", "shell", { state: "failed", detail: { error: "exit status 1" } }),
+		];
+		const intent = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" });
+		expect(sessionRows(actions, [turn("turn_1")], { config: intent }).map((row) => row.id)).toEqual(["a", "b", "c"]);
+		// Where tool calls show, the same actions still fold into one run.
+		const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+		const folded = sessionRows(actions, [turn("turn_1")], { config: tools });
+		expect(folded).toHaveLength(1);
+		expect(folded[0]).toMatchObject({ kind: "run" });
 	});
 
 	it("leaves a question still waiting to the dock (spec 8.2)", () => {

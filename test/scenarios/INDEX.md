@@ -5,10 +5,8 @@ the area they exercise.
 
 ## CLI surface
 
-- `cli-help.md` — `--help` prints proper usage across evener tui +
-  evener subcommands (kata `hsmm`).
-- `cli-sibling-binary.md` — evener tui finds evener hub next to itself
-  via `os.Executable` + `EvalSymlinks` (kata `a4w6`).
+- `cli-help.md` — `--help` prints proper usage across the evener
+  subcommands (kata `hsmm`).
 
 ## Authentication
 
@@ -45,10 +43,6 @@ the area they exercise.
   card, kata `v0hg`).
 ## Session workspace
 
-- `tui-workspace-navigation.md` — evener tui dashboard + session
-  keyboard navigation via tmux send-keys / capture-pane: arrow
-  movement, project collapse/expand, command palette, browse vs
-  compose mode, double-Ctrl+C exit (kata `57be`).
 - `state-stuck-processing-display.md` — deterministic scripted-provider
   checks prove recoverable failed turns return the owning daemon to `idle`;
   an optional live check confirms Hub projections follow that owning state.
@@ -62,10 +56,6 @@ the area they exercise.
   shutdown title-bar actions hit the daemon end-to-end (kata
   `gx92`; surfaced kata `k7t8` — interrupt is unwired in
   production).
-- `tui-steer-live-turn.md` — active turns put the composer in
-  queue mode; Ctrl+S is the explicit force-steer path that injects
-  a `STEERING` transcript entry before the turn ends. Live-tested
-  against `anthropic/claude-haiku-4-5-20251001` (kata `mn4z`).
 - `web-steer-live-turn.md` — web-hub counterpart: both the
   input-area `steer` button and the `/steer` ⌘K palette command
   inject a STEERING transcript entry mid-turn, the conversation
@@ -73,22 +63,11 @@ the area they exercise.
   session continues to idle (kata `a08v`; surfaced kata `gsv2` —
   palette closes silently if the turn ends between opening and
   submit, masking the no-active-turn error).
-- `tui-queue-then-completes.md` — typing during a processing turn
-  queues the message; the current turn finishes and the queued
-  message processes as the next user turn (kata `111a/0bq1` TUI).
-- `tui-queue-then-drain-as-steer.md` — Ctrl+S drains all queued
-  messages as a single STEERING joined by `\n\n`; the agent
-  receives them mid-turn (kata `111a/0bq1` TUI).
 - `web-queue-then-completes.md` — web counterpart of the
   queue-then-completes scenario.
 - `web-queue-then-drain-as-steer.md` — web counterpart: Shift+Enter
   (or the `send as steer` button) drains the pending queue as a
   steer event.
-- `tui-interrupt-live-turn.md` — evener tui `/interrupt` palette
-  command fires against a real mid-turn session via
-  `tmux send-keys`; verifies state transitions to `closed` and
-  transcript preserves partial output (kata `9sck`; surfaced kata
-  `4yvd` — palette gates on stale capabilities mid-turn).
 - `web-steer-no-active-turn-guard.md` — verifies the Composer's browser
   guard: Shift+Enter in IDLE sends no RPC, preserves the text, and shows a
   visible `no active turn` toast. AppWire v3's idle carrier acceptance is a
@@ -96,11 +75,6 @@ the area they exercise.
 - `web-steer-success-reconciles.md` — happy path: pending pulse
   appears on click, replaced by authoritative STEERING divider when
   the daemon's evener/steering/injected notification arrives.
-- `tui-steer-in-idle-fails-fast.md` — TUI's distinct Ctrl+S/optimistic pending
-  rejection path; it does not pin the web Composer's browser guard or the
-  AppWire v3 idle carrier contract.
-- `tui-steer-success-reconciles.md` — TUI counterpart of the success
-  reconcile; spinner prefix replaced by authoritative steering.
 - `lazy-transcript-loading.md` — a large transcript cold-loads only the
   latest window (`thread/read{turnLimit}`) and pages older turns in as
   the reader nears the top, prepended above the live content without
@@ -113,8 +87,8 @@ the area they exercise.
   the live instance while preserving the stable session ref and keeping the
   pane usable for a new turn (issue `#139`).
 - `status-vocabulary-roundtrip.md` — the attainable needs-you and
-  question-waiting states read the same across the web rail, the TUI
-  dashboard row, and the TUI session header; a deterministic gate pins
+  question-waiting states read the same across the web rail and the
+  session title HoverCard; a deterministic gate pins
   the whole `hubapi.StateWord` vocabulary (Track A §1-2).
 
 ## Compaction (the `compact` tool)
@@ -131,15 +105,11 @@ the area they exercise.
 - `web-model-switch-mid-session.md` — two web clients converge on a
   live `thread/model/set` switch without reload; mid-turn and
   queued-input switches stay rejected with no state change.
-- `tui-model-switch.md` — evener tui `/model` switches live, header
-  and dashboard row update from `thread/model/changed`, and the
-  switch marker (`Switched model: <old> → <new>`) survives a fresh
-  attach.
 - `model-switch-resume.md` — switch → kill the daemon → resume runs
   the next turn on the switched model (N3 persistence).
-- `tui-effort-command.md` — evener tui `/effort` and the web `⌘K`
-  "Set reasoning effort" command both show only the current model's
-  levels; both surfaces render current model + effort on a cold
+- `web-reasoning-effort-control.md` — the web effort control and the
+  `⌘K` "Set reasoning effort" command both show only the current model's
+  levels; both render current model + effort on a cold
   attach.
 - `model-switch-providers-live.md` — live cross-provider switch
   ladder against the `evener serve` daemon's own HTTP surface (marker
@@ -153,9 +123,9 @@ the area they exercise.
 
 ## Model picker (Track B)
 
-Coverage for the model picker across all three surfaces it renders on —
-web spawn (`/new`), web settings (`/settings/launch-evener`), and the
-TUI's `n` new-session picker — over the embedded LiteLLM catalog and
+Coverage for the model picker across both surfaces it renders on —
+web spawn (`/new`) and web settings (`/settings/launch-evener`) — over the
+embedded LiteLLM catalog and
 the Past index's Recent list.
 
 - `model-picker-fresh-install-no-recent.md` — with an empty Past index
@@ -187,9 +157,6 @@ the Past index's Recent list.
   capability gate), status pill `goal <status> · <N> turns`, the
   compact continuation marker rendered as a "Goal" systemMessage (B6,
   not the full prompt), and the terminal report.
-- `tui-goal-set-and-complete.md` — TUI counterpart: `/goal <objective>`,
-  the `goal <status> <iter>` header chip, `/goal status`, the B6
-  continuation marker, and completion.
 
 ## Shared notes
 
@@ -219,9 +186,6 @@ reply is the user's next ordinary message.
 - `ask-web-answer.md` — a posted question ends the turn into `awaiting`; the web card
   renders the model's real options, an answer + note composes and reaches the model as the
   next user message.
-- `ask-tui-answer.md` — TUI cold-attach: chip + card visible, the overlay never auto-opens,
-  `Esc` defers without discarding, and typed prose in the composer answers just as well as
-  submitting through the overlay.
 - `ask-cross-session-notify.md` — from a *different* session's viewport, an awaiting
   session surfaces in the sidebar's NeedsYou tier + count badge and fires the OS
   notification channel.
@@ -258,14 +222,6 @@ assistant references the image content.
   `input.files = dt.files`) on the hidden `[data-file-picker]`
   fires the change event; the helper ingests and re-encodes.
   Verified live 2026-05-18.
-- `tui-paste-image-from-clipboard.md` — Xvfb + xclip seeds the
-  clipboard, TUI Ctrl+V runs the multi-source clipboard read
-  (`clipboard_system.go`) and pushes a `evener-clipboard-*.png` chip
-  onto pendingAttachments. Verified live 2026-05-18.
-- `tui-paste-image-path.md` — `tmux load-buffer` +
-  `tmux paste-buffer -p` delivers a bracketed-paste containing an
-  on-disk PNG path; `handleBracketedPaste` attaches instead of
-  inserting text. Verified live 2026-05-18.
 
 ## Inline output images
 
@@ -516,9 +472,9 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
 
 Coverage for the consistency-sweep Track C additions: LLM pricing
 (`llm/pricing.go`), session/turn cost display (`~$` in the status row,
-details panel, and the always-visible per-turn `.turn-meta` badge), the TUI
-details-drawer gap-fill, and the Display settings section (Enter-to-send,
-Show-cost). `ended-session-metrics-tui-and-web.md` was verified fully live
+details panel, and the always-visible per-turn `.turn-meta` badge), the
+ended-session details gap-fill, and the Display settings section (Enter-to-send,
+Show-cost). `ended-session-metrics.md` was verified fully live
 against a real isolated hub + a real `openai/gpt-5.5` turn; the other four
 cards' browser-only assertions were substituted with real server-rendered
 HTML fragments (curl), direct CSS/JS source inspection, and the jstest suite
@@ -533,8 +489,8 @@ should replace it with.
 - `turn-meta-badge-always-visible.md` — the per-turn duration/tokens/cost
   badge (`.turn-meta`) is always-visible in the rendered transcript, NOT
   hover/focus-reveal (plan correction, commit `09ead1c4`).
-- `ended-session-metrics-tui-and-web.md` — an ended session's work
-  time/tokens/cost surface via both the TUI `/details` drawer and the web
+- `ended-session-metrics.md` — an ended session's work
+  time/tokens/cost surface via the web
   details panel (the WS2 gap-fill).
 - `enter-to-send-toggle-composer.md` — the Enter-to-send Settings toggle
   live-swaps Enter/Shift+Enter between newline-insertion and send/steer.
@@ -636,10 +592,6 @@ model to do the right thing, so they are also where model tiers separate.
 - `k7t8` — workspace interrupt button is non-functional
   (`cancelFunc` never wired in `cmd/evener/serve.go`); covered by
   `workspace-title-bar-actions.md`.
-- `4yvd` — evener tui palette gates `/interrupt` on stale
-  capabilities cached at session-open; needs a `/status` refresh
-  to unlock mid-turn (workaround documented in
-  `tui-interrupt-live-turn.md`).
 - `gsv2` — web `/steer` palette closes silently when the turn
   ends between opening and submit; the `no active turn` toast
   fires but the dialog still closes, so the user thinks the steer

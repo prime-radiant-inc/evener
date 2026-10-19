@@ -1,7 +1,8 @@
+import { space } from "./design/tokens";
 import { useFocusEffect, usePreventRemove } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Pressable, ScrollView, TextInput, View } from "react-native";
+import { View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
 	inactivePromptDependent,
@@ -19,7 +20,9 @@ import type { HubRoutes } from "./hub/hubSheetContext";
 import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Spinner } from "./sheet/Spinner";
 import { confirmDiscard } from "./sheet/confirmDiscard";
-import { Button } from "./sheet/Grouped";
+import { Button, Group, GroupedPage, GroupFooter, Row, useErrorInView } from "./sheet/Grouped";
+import { HeaderButton } from "./sheet/HeaderButton";
+import { SearchField } from "./sheet/SearchField";
 
 type Props = NativeStackScreenProps<HubRoutes, "LaunchSettings">;
 export function LaunchSettingsScreen({ route, navigation }: Props) {
@@ -54,6 +57,10 @@ function LaunchDefaults({
 	// The Hub's one way in is "Launch defaults": the hub's global layer, always.
 	const model = useMemo(() => new LaunchSettings(null, "/", "global"), []);
 	const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
+	const problem =
+		state.error || (state.dirty && state.changedElsewhere ? LAUNCH_CHANGED_ELSEWHERE : null) || state.resolveError;
+	const errorReport = useMemo(() => (problem ? { message: problem } : null), [problem]);
+	const scrollRef = useErrorInView(errorReport);
 	const [selected, setSelected] = useState<LaunchOption | null>(null);
 	const [query, setQuery] = useState("");
 	const [notice, setNotice] = useState<string | null>(null);
@@ -92,28 +99,35 @@ function LaunchDefaults({
 			!inactivePromptDependent(option.wireField, state.draft ?? {}) &&
 			`${option.label} ${option.group} ${option.description ?? ""}`.toLowerCase().includes(query.toLowerCase()),
 	);
+	const groups = new Map<string, LaunchOption[]>();
+	for (const option of options) {
+		const group = groups.get(option.group) ?? [];
+		group.push(option);
+		groups.set(option.group, group);
+	}
 	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
-			<ScrollView
-				keyboardShouldPersistTaps="handled"
-				keyboardDismissMode="on-drag"
-				contentContainerStyle={{ padding: 20, gap: 10 }}
-			>
-				<Copy>{hubName}</Copy>
-				{!client && <Copy>Disconnected. Your unsaved changes are kept here.</Copy>}
-				<Copy muted>Defaults for new Evener sessions. Project and per-launch settings can override these values.</Copy>
-				<View style={[styles.row, { flexWrap: "wrap" }]}>
-					<Button
-						text
-						label="Save defaults"
-						disabled={!client || !state.dirty || state.loading || state.saving || state.changedElsewhere}
-						onPress={() => {
-							setNotice(null);
-							void model.save().then((saved) => {
-								if (saved && alive.current) setNotice("Launch defaults saved.");
-							});
-						}}
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
+			<View style={{ alignItems: "flex-end", paddingHorizontal: space.margin }}>
+				<HeaderButton
+					strong
+					label="Save defaults"
+					disabled={!client || !state.dirty || state.loading || state.saving || state.changedElsewhere}
+					onPress={() => {
+						setNotice(null);
+						void model.save().then((saved) => {
+							if (saved && alive.current) setNotice("Launch defaults saved.");
+						});
+					}}
+				/>
+			</View>
+			<GroupedPage scrollRef={scrollRef}>
+				<View style={{ paddingHorizontal: space.labelInset }}>
+					<ErrorMessage message={state.error} testID="launch-problem:settings" />
+					<ErrorMessage
+						message={state.dirty && state.changedElsewhere ? LAUNCH_CHANGED_ELSEWHERE : null}
+						testID="launch-problem:changed-elsewhere"
 					/>
+					<ErrorMessage message={state.resolveError} testID="launch-problem:resolve" />
 					{state.dirty && state.changedElsewhere ? (
 						<Button
 							text
@@ -128,65 +142,48 @@ function LaunchDefaults({
 						/>
 					) : null}
 				</View>
-				{state.loading && <Spinner label="Loading launch defaults" />}
-				{state.saving && <Spinner label="Saving launch defaults" />}
-				<ErrorMessage message={state.error} testID="launch-problem:settings" />
-				<ErrorMessage
-					message={state.dirty && state.changedElsewhere ? LAUNCH_CHANGED_ELSEWHERE : null}
-					testID="launch-problem:changed-elsewhere"
-				/>
-				<ErrorMessage message={state.resolveError} testID="launch-problem:resolve" />
-				{notice && <Copy>{notice}</Copy>}
-				{state.resolved?.diagnostics?.map((d) => (
-					<Copy muted key={JSON.stringify(d)}>
-						{d.field ? `${d.field}: ${d.message}` : d.message}
-					</Copy>
+				<Group label={hubName} selectableLabel>
+					<Row
+						label="Launch defaults"
+						sub="Defaults for new Evener sessions. Project and per-launch settings can override these values."
+					/>
+				</Group>
+				{!client && <GroupFooter>Disconnected. Your unsaved changes are kept here.</GroupFooter>}
+				<View style={{ paddingHorizontal: space.labelInset }}>
+					{state.loading && <Spinner label="Loading launch defaults" />}
+					{state.saving && <Spinner label="Saving launch defaults" />}
+					{notice && <Copy>{notice}</Copy>}
+					{state.resolved?.diagnostics?.map((d) => (
+						<Copy muted key={JSON.stringify(d)}>
+							{d.field ? `${d.field}: ${d.message}` : d.message}
+						</Copy>
+					))}
+				</View>
+				<View style={{ marginHorizontal: space.margin }}>
+					<SearchField label="Search launch settings" value={query} onChangeText={setQuery} />
+				</View>
+				{Array.from(groups, ([group, options]) => (
+					<Group key={group} label={group}>
+						{options.map((option) => {
+							const displayValue =
+								scalarValue(state.draft, option.wireField) ||
+								`Inherited · ${scalarValue(state.resolved?.effective ?? null, option.wireField) || "Default"}`;
+							return (
+								<Row
+									selectable
+									key={option.wireField}
+									label={option.label}
+									sub={displayValue}
+									chevron
+									accessibilityLabel={`Edit ${option.label}, ${displayValue}`}
+									disabled={state.loading || state.saving}
+									onPress={() => setSelected(option)}
+								/>
+							);
+						})}
+					</Group>
 				))}
-				<TextInput
-					accessibilityLabel="Search launch settings"
-					value={query}
-					onChangeText={setQuery}
-					placeholder="Find a setting"
-					placeholderTextColor={colors.secondary}
-					style={[styles.input, { color: colors.text, borderColor: colors.border }]}
-				/>
-				{options.map((option, index) => {
-					const displayValue =
-						scalarValue(state.draft, option.wireField) ||
-						`Inherited · ${scalarValue(state.resolved?.effective ?? null, option.wireField) || "Default"}`;
-					return (
-						<View key={option.wireField}>
-							{(index === 0 || options[index - 1]?.group !== option.group) && (
-								<View style={{ paddingTop: 14, paddingBottom: 4 }}>
-									<Copy muted>{option.group}</Copy>
-								</View>
-							)}
-							<Pressable
-								accessibilityRole="button"
-								accessibilityLabel={`Edit ${option.label}`}
-								accessibilityValue={{ text: displayValue }}
-								accessibilityHint="Opens the setting editor"
-								accessibilityState={{
-									disabled: state.loading || state.saving,
-								}}
-								disabled={state.loading || state.saving}
-								onPress={() => setSelected(option)}
-								style={{
-									minHeight: 48,
-									paddingVertical: 7,
-									borderBottomWidth: 0.5,
-									borderColor: colors.border,
-								}}
-							>
-								<Copy>{option.label}</Copy>
-								<Copy muted numberOfLines={2}>
-									{displayValue}
-								</Copy>
-							</Pressable>
-						</View>
-					);
-				})}
-			</ScrollView>
+			</GroupedPage>
 			{selected && (
 				<LaunchFieldEditor
 					key={selected.wireField}

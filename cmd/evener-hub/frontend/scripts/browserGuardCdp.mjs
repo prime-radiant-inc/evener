@@ -291,6 +291,11 @@ async function listPageTabs(endpoint) {
   return targets.filter((entry) => entry.type === "page");
 }
 
+/** Connect to browser-level commands such as disposable context ownership. */
+export async function connectBrowser(endpoint) {
+  return openTabChannel({ webSocketDebuggerUrl: endpoint.url });
+}
+
 /**
  * Connect to the browser's one page tab, the startup tab a guard that opens no
  * tabs of its own drives. More than one listed tab is refused rather than
@@ -1070,8 +1075,27 @@ export async function waitForFonts(send) {
   }
 }
 
+// Preserve the pre-override window across repeated resizes of the same target.
+// Weak keys keep closed page channels from becoming retained browser state.
+const originalViewportWindows = new WeakMap();
+
 /** Pin exact browser metrics for a case that must not inherit Chrome's ambient window size. */
 export async function applyViewport(send, viewport) {
+  // Metrics alone leave the native window at its startup size. On macOS,
+  // switching tabs restores that smaller native input surface: a wheel outside
+  // it still reaches the DOM as trusted, but its default action never scrolls.
+  // Size the content, not the outer window (which includes platform chrome).
+  const window = await withTimeout(send("Browser.getWindowForTarget"), 30000, "Browser.getWindowForTarget");
+  if (!originalViewportWindows.has(send)) originalViewportWindows.set(send, window.result);
+  await withTimeout(
+    send("Browser.setContentsSize", {
+      windowId: window.result.windowId,
+      width: viewport.width,
+      height: viewport.height,
+    }),
+    30000,
+    "Browser.setContentsSize",
+  );
   await withTimeout(
     send("Emulation.setDeviceMetricsOverride", {
       width: viewport.width,
@@ -1099,6 +1123,17 @@ export async function applyViewport(send, viewport) {
 
 /** Metrics overrides persist per target; clear between cases sharing one page. */
 export async function clearViewportOverride(send) {
+  const original = originalViewportWindows.get(send);
+  if (original) {
+    await withTimeout(
+      send("Browser.setWindowBounds", {
+        windowId: original.windowId,
+        bounds: { width: original.bounds.width, height: original.bounds.height },
+      }),
+      30000,
+      "Browser.setWindowBounds",
+    ).then(() => originalViewportWindows.delete(send)).catch(() => {});
+  }
   await withTimeout(send("Emulation.clearDeviceMetricsOverride"), 30000, "Emulation.clearDeviceMetricsOverride").catch(
     () => {},
   );

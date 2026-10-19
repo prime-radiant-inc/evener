@@ -54,8 +54,7 @@ export const READ_ITEM_LIMIT = 40;
 // to this call site, only its 1-based entry index; the hub's item-key parser
 // (transcriptindex.ParseItemKey) recovers the divergence position from the
 // key's ordinal alone and never reads this component, so a fixed placeholder
-// is sufficient until that plumbing lands (cmd/evener-tui/hub_commands.go's
-// forkEntryKeyTurnID takes the same shortcut for the same reason).
+// is sufficient until that plumbing lands.
 const FORK_ENTRY_SOURCE_ITEM_KEY_TURN_ID = "mobile-fork-entry";
 
 // forkEntrySourceItemKey spells transcriptindex.ItemKey's format:

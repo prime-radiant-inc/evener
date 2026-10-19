@@ -1,4 +1,4 @@
-.PHONY: tools tools-golangci tools-gitleaks hooks generate clean refresh-model-catalog help
+.PHONY: tools tools-golangci tools-gitleaks hooks generate clean docs-check refresh-model-catalog help
 
 # tools installs the CI-pinned lint/scanner versions from .tool-versions, so
 # a local `make lint` runs exactly what CI runs.
@@ -70,6 +70,38 @@ generate:
 ## Remove the built binaries from the repo root.
 clean:
 	rm -f evener evener-dev llmcall evener-linux-amd64
+
+# docs-check builds and validates the public documentation site: the
+# publication manifest, local links and fragments, published assets, committed
+# tutorial evidence, and the VitePress build itself. `npm test` covers the
+# publisher's fixtures; `check` validates the real corpus before staging. The
+# install is refused through a symlinked node_modules for the same reason the
+# frontend preflights are: npm ci deletes the existing tree before installing.
+## Build and validate the public documentation site.
+## proves: Every page in docs-site/publication.json parses with one H1, its
+##   local links and fragments resolve, published assets exist, committed
+##   tutorial evidence matches its manifest, and VitePress renders the site.
+##   Local links across the repository's non-archived Markdown resolve too.
+## trigger: Local pre-merge via make merge-approval-gate; CI's Documentation
+##   workflow runs the same check plus tutorial tours and browser checks.
+## requires: Node 22 and the docs-site install; docs-site/node_modules must not
+##   be a symlink to another worktree's install. A real install newer than the
+##   lockfile is reused instead of reinstalled.
+## fails-when: The publisher's tests fail, a manifest entry or link is invalid,
+##   a published asset or tutorial file is missing, or the build fails. Evidence
+##   captured at an older revision warns rather than fails.
+docs-check:
+	@set -eu; \
+	if [ -L docs-site/node_modules ]; then \
+		echo "docs-check: docs-site/node_modules is a symlink; refusing to npm ci through it." >&2; \
+		exit 1; \
+	fi; \
+	if [ docs-site/node_modules -nt docs-site/package-lock.json ]; then \
+		:; \
+	else \
+		npm --prefix docs-site ci --silent; \
+	fi; \
+	npm --prefix docs-site run build
 
 ## Print every make target, grouped by family, with its one-line summary.
 help:

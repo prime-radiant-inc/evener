@@ -1,0 +1,13 @@
+Rendered command transcript
+Streams are recorded separately, not interleaved.
+
+$ python3 check.py
+cwd: receipt-workspace
+stdout:
+FAIL: quantity: expected 750, got 250
+FAIL: mixed: expected 490, got 205
+FAIL: zero quantity: expected 100, got 1049
+
+stderr:
+
+exit: 1

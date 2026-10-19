@@ -1,5 +1,6 @@
 import type { AuthDeviceStartResponse, AuthLoginStartResponse, AuthStatusResponse } from "@evener/appwire-client";
 import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
+import { isStaleListingRefusal } from "@evener/appwire-client/state/credentials";
 
 /** What went wrong in a sign-in, or what it couldn't confirm. */
 export type SignInProblem =
@@ -119,6 +120,7 @@ export class ProviderSignIn {
 		if (this.disposed || this.connection === connection) return;
 		this.clearTimer();
 		this.generation += 1;
+		const wasNull = this.connection === null;
 		this.connection = connection;
 		const interruptedWrite =
 			this.state.busy &&
@@ -126,11 +128,23 @@ export class ProviderSignIn {
 		const interruptedPoll = this.pendingOperation === "devicePoll" && this.state.phase === "device";
 		this.pendingOperation = null;
 		this.uncertain ||= interruptedPoll;
+		// A connection arriving after a failed poll answers the question the
+		// failure left open: the flow asks once on its own, rather than waiting
+		// for the person to press Check again. Device flows expire in 15
+		// minutes, so one automatic re-poll cannot loop.
+		const failedPollWaiting =
+			connection !== null && wasNull && this.state.phase === "device" && this.state.problem === "checkFailed";
 		this.publish({
 			busy: false,
 			...(this.state.phase === "starting" ? { phase: "error" as const } : {}),
 			...(interruptedWrite || interruptedPoll ? reporting("connectionChanged") : {}),
+			...(failedPollWaiting ? reporting(null) : {}),
 		});
+		if (failedPollWaiting) {
+			this.uncertain = false;
+			void this.poll();
+			return;
+		}
 		this.schedule();
 	}
 	setActive(active: boolean) {
@@ -245,8 +259,18 @@ export class ProviderSignIn {
 					...reporting("notConfirmed"),
 				});
 			}
-		} catch {
+		} catch (cause) {
 			if (this.current(generation)) {
+				// A refused poll (the credential listing is still the old
+				// connection's, so the store would not act on it) asks for a
+				// retry, not a verdict: the device cadence asks again once the
+				// listing can answer, and no failure latches.
+				if (isStaleListingRefusal(cause)) {
+					this.pendingOperation = null;
+					this.publish({ busy: false });
+					this.schedule();
+					return;
+				}
 				this.uncertain = true;
 				this.publish({
 					busy: false,

@@ -19,7 +19,8 @@
 
 import type { LaunchConfigLayer } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
-import { useId, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import { connectionStore } from "../../../stores/connection";
 import { extensionsStoreForHost, useExtensionsStoreForHost } from "../../../stores/extensions";
 import { LOCAL_HOST } from "../../../stores/hostRouting";
 import {
@@ -183,6 +184,20 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
   const loading = useExtensionsStoreForHost(host, (s) => s.launchLayerLoading);
   const error = useExtensionsStoreForHost(host, (s) => s.launchLayerError);
   const toasts = useToasts();
+  const lifetime = useRef({ host, wireField });
+  useLayoutEffect(() => {
+    const invalidate = () => {
+      lifetime.current = { host, wireField };
+    };
+    invalidate();
+    const unsubscribe = connectionStore.subscribe((current, previous) => {
+      if (current.client !== previous.client || current.state !== previous.state) invalidate();
+    });
+    return () => {
+      invalidate();
+      unsubscribe();
+    };
+  }, [host, wireField]);
 
   // useConnectedEffect (not a bare useEffect): a direct deep link to
   // /settings/plugins-dirs or /settings/skills-dirs can mount this section
@@ -192,7 +207,11 @@ export function DirListSetting({ wireField, label, copy, host = LOCAL_HOST }: Di
   useHostScopedLoad(host, () => store.getState().fetchLaunchLayer(), [store]);
 
   async function handleAdd(path: string): Promise<CollectionAddResult> {
+    const attempt = lifetime.current;
     const validated = await store.getState().validatePath(path, "dir");
+    // Validation is only authority to write while its editor and connection
+    // still own the attempt. A write already issued keeps its normal outcome.
+    if (attempt !== lifetime.current) return { ok: false, error: "Settings changed. Add the directory again." };
     if (!validated.valid) return { ok: false, error: validated.error || "path does not exist" };
     const current = store.getState().launchLayer ?? ({} as LaunchConfigLayer);
     const canonical = validated.path || path;

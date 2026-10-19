@@ -1,15 +1,17 @@
 // The model sheet's list (spec 8.5): "Recent", then each provider's models,
 // each row with its name, its context and price, the registry's notes, and a
-// check on the current model. It is the sheet's one scroll view, so what
-// stays in reach (search, Effort) lives in the sheet's header instead.
+// check on the current model. It is the sheet's one scroll view; growing
+// controls and notices belong here, while search stays in the sheet header.
 import type { ModelDescriptor, ModelListResponse } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, type Ref, useState } from "react";
 import { Pressable, SectionList, Text, View } from "react-native";
+import { scaledType, uiType } from "./design/tokens";
 import { type ModelPickerEntry, type ModelSection, modelSections } from "./modelPickerEntries";
 import { allowFontScaling, useColors, useTextScale } from "./ui";
 
 export function ModelPicker({
+	ref,
 	catalog,
 	loading,
 	query,
@@ -20,6 +22,7 @@ export function ModelPicker({
 	header,
 	capabilities = false,
 }: {
+	ref?: Ref<SectionList<ModelPickerEntry, ModelSection>>;
 	catalog: ModelListResponse | null;
 	loading: boolean;
 	query: string;
@@ -36,6 +39,7 @@ export function ModelPicker({
 	const sections: ModelSection[] = catalog ? modelSections(catalog, query, visionOnly) : [];
 	return (
 		<SectionList
+			ref={ref}
 			sections={sections}
 			keyboardShouldPersistTaps="handled"
 			keyboardDismissMode="on-drag"
@@ -86,7 +90,7 @@ export function ChoiceRow({
 	disabled: boolean;
 	onPress(): void;
 	children?: ReactNode;
-	/** Glyphs between the text and the check. */
+	/** Capability glyphs after the text. */
 	trailing?: ReactNode;
 }) {
 	const { palette } = useColors();
@@ -109,18 +113,20 @@ export function ChoiceRow({
 				backgroundColor: pressed ? palette.pressed : "transparent",
 			})}
 		>
+			<View testID="choice-mark" style={{ width: 24, alignItems: "center" }}>
+				{selected ? <SymbolView name="checkmark" tintColor={palette.accentInk} size={17} /> : null}
+			</View>
 			<View style={{ flex: 1, gap: 2 }}>
 				<Text
 					testID="model-title"
 					allowFontScaling={allowFontScaling}
-					style={{ color: palette.inkHi, fontSize: 17 * scale, lineHeight: 22 * scale }}
+					style={{ color: palette.inkHi, ...scaledType(uiType.listRow, scale) }}
 				>
 					{title}
 				</Text>
 				{children}
 			</View>
 			{trailing}
-			{selected ? <SymbolView name="checkmark" tintColor={palette.accentInk} size={17 * scale} /> : null}
 		</Pressable>
 	);
 }
@@ -185,8 +191,7 @@ function Caption({ children, warning = false }: { children: string; warning?: bo
 			allowFontScaling={allowFontScaling}
 			style={{
 				color: warning ? palette.attentionInk : palette.inkMid,
-				fontSize: 13 * scale,
-				lineHeight: 18 * scale,
+				...scaledType(uiType.footnote, scale),
 				fontVariant: ["tabular-nums"],
 			}}
 		>
@@ -208,11 +213,7 @@ function SectionTitle({ title }: { title: string }) {
 				paddingTop: 16,
 				paddingBottom: 4,
 				color: palette.inkMid,
-				fontSize: 12 * scale,
-				lineHeight: 16 * scale,
-				fontWeight: "600",
-				letterSpacing: 12 * 0.06,
-				textTransform: "uppercase",
+				...scaledType(uiType.sectionLabel, scale),
 			}}
 		>
 			{title}

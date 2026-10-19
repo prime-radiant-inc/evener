@@ -1,18 +1,9 @@
 package apptranscript
 
 import (
-	"encoding/json"
-
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
-
-// ShellToolNames are the tool names whose result carries a process exit code
-// that the transcript reads as failure. It is the transcript package's list,
-// re-exported here for this package's own consumers — one list, so the reader
-// that counts a finished transcript and the daemon that counts a running one
-// can never disagree about what a shell call is.
-var ShellToolNames = transcript.ShellToolNames
 
 // FailedToolCallsFromFile counts how many of a session's tool calls failed,
 // over the WHOLE transcript. A compaction fold copy is not counted: it
@@ -33,10 +24,10 @@ var ShellToolNames = transcript.ShellToolNames
 //
 //   - a tool result carrying an error (ToolResultData.IsError — the wire's
 //     ThreadItem.Error, and the "failed" status SettledToolStatus stamps);
-//   - a SHELL call that ran and exited nonzero. That is a clean tool result
-//     (IsError false) whose command failed, and the renderer marks it anyway.
-//     On the session measured in kata hw2n, counting only IsError would report
-//     1 against 6 visible glyphs.
+//
+// A SHELL call that ran and exited nonzero is NOT one of them (Jesse,
+// 2026-10-16): the renderer shows it as a small inline mark, never a failure
+// glyph, so the count must not include it either.
 //
 // communicate results are excluded: ProjectTurn drops them, so they render no
 // row and wear no glyph. A result whose own record omits its name is resolved
@@ -93,7 +84,7 @@ func failedToolResult(result *failedToolCallResult, toolNames map[string]string)
 	if name == "" {
 		name = toolNames[result.ToolCallID]
 	}
-	return transcript.FailedToolResult(name, result.IsError, result.ToolState)
+	return transcript.FailedToolResult(name, result.IsError)
 }
 
 // failureCounter tallies the failing tool results across a transcript's
@@ -162,8 +153,7 @@ type toolScanPart struct {
 }
 
 type failedToolCallResult struct {
-	ToolCallID string          `json:"tool_call_id"`
-	Name       string          `json:"name"`
-	IsError    bool            `json:"is_error"`
-	ToolState  json.RawMessage `json:"tool_state"`
+	ToolCallID string `json:"tool_call_id"`
+	Name       string `json:"name"`
+	IsError    bool   `json:"is_error"`
 }

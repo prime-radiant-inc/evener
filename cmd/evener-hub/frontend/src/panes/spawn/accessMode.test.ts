@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   ACCESS_MODE_OPTIONS,
   accessModeDefaultLabel,
+  accessModeDescription,
   accessModeForSandbox,
   mergeAccessModeSandbox,
   sandboxForAccessMode,
@@ -17,6 +18,22 @@ describe("ACCESS_MODE_OPTIONS", () => {
     for (const option of ACCESS_MODE_OPTIONS) {
       expect(option.label.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("accessModeDescription", () => {
+  test("describes exactly the four known sandbox machine values", () => {
+    expect(["off", "read-only", "workspace-write", "restricted"].map(accessModeDescription)).toEqual([
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+    ]);
+  });
+
+  test("does not invent a consequence for inherited or custom values", () => {
+    expect(accessModeDescription("")).toBeUndefined();
+    expect(accessModeDescription("custom-sandbox")).toBeUndefined();
   });
 });
 

@@ -1,12 +1,30 @@
 # Sandboxing
 
-Status: Evergreen guide to the `--sandbox` flag and what each mode enforces.
+Choose a sandbox before starting work. The default is **off**, so an ordinary session can use your account's filesystem and command access. This page explains enforced boundaries and their limits, not a promise that every allowed action is safe.
 
-## Summary
+## Start a confined task
+
+Prerequisites: a configured provider, a working directory, and a usable OS sandbox backend. Replace `provider/model` with an available model from your configured provider. Run these shell examples from the project directory; choose only one for the task you intend:
+
+```sh
+evener --model provider/model --sandbox read-only --sandbox-net off "Review the README without changing project files"
+```
+
+```sh
+evener --model provider/model --sandbox workspace-write --sandbox-net off "Fix the failing unit test and run its checks"
+```
+
+These are real agent requests and can incur provider charges. The second permits project writes. In the browser, choose the corresponding Sandbox and Sandbox network egress launch settings before Start. Check the startup report for the actual backend, mode, and network policy. If an explicit sandbox cannot be enforced, fix the backend or choose another host rather than silently rerunning with sandbox off.
+
+Network off applies to tools, not the model-provider connection. A test that downloads dependencies may fail in this mode; prepare dependencies first or deliberately choose a new network-enabled session. The policy is fixed for the session and cannot be relaxed by a tool call.
+
+Use [Configuration](configuration.md) to save launch defaults, [Daily work](daily-work.md) to review changes, and [Security](security.md) for privacy and storage limits.
+
+## How confinement works
 
 `--sandbox <mode>` confines a session's file access, spawned processes, and
 (optionally) network egress to a policy chosen once at session start. It is
-**off by default**: an unsandboxed session behaves exactly as it always has. A
+**off by default**: an unsandboxed session keeps ordinary user access. A
 sandboxed session's boundary is enforced by two cooperating layers — an
 in-process, race-safe layer for the file tools (`read_file`, `write_file`,
 `edit_file`, `apply_patch`, `glob`, `grep`, `list_dir`) and a kernel layer
@@ -27,6 +45,8 @@ resolve against that working directory, and an omitted `cwd` defaults to it.
 Operating-system permissions and user instructions still apply. Explicit
 sandbox policies retain their boundaries, and allocated session scratch keeps
 its separate access contract.
+
+### Implicit delegate safety floor
 
 There is one deliberate delegate safety floor: a delegate whose structured tool
 scope contains no workspace-mutation tool (`write_file`, `edit_file`,
@@ -95,7 +115,7 @@ indirection even when the session's workspace sandbox is off.
 
 A root session's read-only role can write its authorized memory without
 workspace writes. A delegate only reads and searches memory, whatever its role;
-see [memory](product/memory.md). Memory permissions do not grant shell or
+see [memory](memory.md). Memory permissions do not grant shell or
 network access. Fresh and restored delegates retain their parent's effective
 memory tool/scope ceilings. Memory
 tool names do not count as workspace-mutation tools for the delegate safety
@@ -105,7 +125,7 @@ floor described above.
 I/O for that session, persistently through resume and compaction. It is not a
 general filesystem ban: an unrestricted shell or file tool keeps whatever
 access it already had. Stored files and earlier conversation remain. See
-[memory ownership and lifetime](product/memory.md).
+[memory](memory.md) for what memory is and what it is not.
 
 ## Flags
 
@@ -117,7 +137,7 @@ access it already had. Stored files and earlier conversation remain. See
 Both flags are available on `evener` and `evener serve`. `--sandbox-net` is meaningful
 only when a non-off `--sandbox` mode is set; with `--sandbox off` it is ignored.
 
-When a session starts sandboxed, evener prints one line to stderr stating exactly
+When a session starts sandboxed, Evener prints one line to stderr stating exactly
 what is enforced on this host — the backend, the mode, the network decision, that
 credential/secret paths are masked, and how the language caches are served — for
 example:
@@ -169,9 +189,12 @@ degrades only the git line.
 
 All sandboxed modes share a common floor: a per-session writable temp directory
 (exported as `TMPDIR`), the secrets + pseudo-filesystem denylist (masked in both
-layers), git config/hook protection, a fresh PID namespace with its own `/proc`, a
-minimal `/dev`, the environment floor, and no inherited evener file descriptors or
-sockets beyond stdio.
+layers), git config/hook protection, the environment floor, and no inherited
+Evener file descriptors or sockets beyond stdio.
+
+Linux bubblewrap also creates a fresh PID namespace with its own `/proc` and a
+minimal `/dev`. macOS uses Seatbelt policies through `sandbox-exec`; it does not
+create Linux PID or mount namespaces.
 
 On Linux, bubblewrap gives spawned processes a private `/tmp`, so "anywhere" in
 the table below means anywhere except the rest of the host `/tmp`. The private
@@ -194,8 +217,7 @@ unsandboxed root's `TMPDIR` is not in the tree.
 | `workspace-write` | anywhere minus the denylist | worktree + temp + contained caches | anywhere minus the denylist | worktree + temp + caches + git metadata (not config/hooks) |
 | `restricted` | worktree + Evener content (read-only) | worktree + temp | worktree + system read roots + developer toolchain + global git config files + hook/MCP paths + Evener content + temp | worktree + temp + git metadata (not config/hooks) |
 
-- **`off`** is exactly today's behavior — a strict superset of every sandboxed
-  mode, with no new code path engaged.
+- **`off`** applies no sandbox confinement.
 - **`read-only`** cannot commit or write project files; only the session temp is
   writable, for scratch. Use it for review, exploration, and analysis.
 - **`workspace-write`** grants writes to the worktree, the session temp, and
@@ -277,66 +299,38 @@ unsandboxed root's `TMPDIR` is not in the tree.
   `<common>/rr-cache`. That is the intended behaviour: the mode runs the
   developer's git, not a blanked-out one.
 
-  **A global `core.excludesFile` or `core.attributesFile` gets no read grant of its
-  own in `restricted`** (accepted limitation, 2026-10-13; recorded in
-  [friction.md's T06](product/friction.md#t06-global-git-excludes-files-in-restricted-mode)
-  and [#4234](https://github.com/prime-radiant-inc/evener/issues/4234)). The grant
-  above is the config FILES, never the files they name, so such a file is readable
-  inside the sandbox only where it already sits under a root the mode grants — the
-  project worktree, `/etc`, `/opt`, `/nix/store` and the other system read roots — and
-  not elsewhere, typically under `$HOME`. Where it is not readable, the effect depends
-  on the host: macOS/Seatbelt reports
+  **Global Git excludes and attributes files need their own readable location.**
+  `restricted` grants access to global Git configuration files, not automatically
+  to files named by `core.excludesFile` or `core.attributesFile`. Those files must
+  already lie under a readable root, such as the worktree or a system read root.
+  If they do not, macOS/Seatbelt reports an access warning on commands that read
+  them; Linux/bubblewrap hides the ungranted path, so Git silently omits the rules.
 
-      warning: unable to access '<path>': Operation not permitted
+  The project's `.gitignore`, `.gitattributes`, and `.git/info/exclude` are
+  unaffected. Move needed rules into the repository, or use `--sandbox off` only
+  if you accept removing sandbox confinement. This is a known limitation, not a
+  configuration mistake; see
+  [design discussion](https://github.com/prime-radiant-inc/evener/issues/4234).
 
-  on every command that reads the file, while Linux/bubblewrap hides an ungranted
-  path, so git applies no excludes or attributes file at all and says nothing. This
-  is deliberate, not overlooked. Granting one file the config names means granting a
-  pathname a spawned process resolves by its literal name at every spawn, and six
-  review rounds on that route each closed one way of re-pointing a granted name at
-  another file — a symlink, a `..` the kernel resolves after one, a writable alias, a
-  letter case, a directory in place of the file — while exposing another, with the
-  last one specific to a backend whose code cannot be verified where CI runs. The
-  project's own `.gitignore`, `.gitattributes` and `.git/info/exclude` are unaffected;
-  they live in the worktree. A session that needs global rules elsewhere on the host
-  can run with `--sandbox off`, or the rules can move into the repository.
+  **macOS Git uses the readable developer toolchain directly.** The environment
+  floor inserts the active developer directory's `usr/bin` before the first
+  system directory on `PATH` (`/usr/bin`, `/bin`, `/usr/sbin`, or `/sbin`), or
+  appends it if none is present. This bypasses the `xcrun` shim without overriding
+  a developer's preferred Git earlier on `PATH`.
 
-  **git under a sandbox is silent and fast on macOS** (ruled 2026-08-07). It was
-  neither: every `git` call emitted two `xcrun_db` cache-write denials to stderr
-  and cost seconds. The cause was the shim, not the sandbox. `/usr/bin/git`
-  memoizes its tool lookup in `xcrun_db` under the per-user temp directory that
-  `confstr(_CS_DARWIN_USER_TEMP_DIR)` reports — a path that honours no
-  environment variable (not `TMPDIR`) and sits in the shared, multi-tenant
-  `/var/folders` tree no mode makes writable. With the memo unwritable the shim
-  re-ran `xcodebuild -sdk macosx -find git` on *every* invocation.
-
-  The fix names the answer instead of paying for it: the environment floor puts
-  the active developer directory's `usr/bin` — where the binary the shim would
-  have found actually lives — on a spawned process's `PATH`, immediately ahead of
-  the first system directory it finds there (`/usr/bin`, `/bin`, `/usr/sbin`,
-  `/sbin`), or at the end when `PATH` names none of them. Measured as an
-  interleaved A/B in a live `restricted` sandbox:
-  8.61s mean via the shim (5.27-12.75s on a loaded host, two stderr lines every
-  time) against 164ms mean via the toolchain (127-225ms, stderr pristine).
-
-  It **adds no grant**. The directory is inside the read-only toolchain grant
-  above, and the floor names it only after it passes the same shared-tree guard,
-  is not masked, and is really readable under the mode's own spawned grants — an
-  unreadable `PATH` entry would turn a noisy `git` into a missing one. The
-  insertion point is deliberate too: ahead of the *system* directories rather
-  than at the front, so it shadows the shim and nothing else. A developer who put
-  their own `git` ahead of `/usr/bin` still gets it.
-
-  `DEVELOPER_DIR` was tried first and **does not work**: the shim reports it,
-  keys its cache on it, and then still runs `xcodebuild -find`. Granting the
-  per-user temp directory would have silenced the write, and was refused — that
-  widens the sandbox to buy quiet.
+  This adds no read or write grant. Evener inserts the directory only after it
+  passes the shared-tree guard, is not masked, and is readable under the mode's
+  existing spawned-process grants. It does not grant access to the per-user
+  `xcrun` cache directory.
 
 ## The fail-closed floor
 
-A mode is either fully enforced or the session refuses to start. There is no
-"best effort" and no override flag: evener will not run a session that claims a
-sandbox mode it cannot actually enforce.
+An explicitly requested sandbox mode is either fully enforced or refused.
+There is no override flag that silently weakens that request. The
+[implicit delegate safety floor](#implicit-delegate-safety-floor) is different:
+when no OS backend is usable but file-tool confinement is available, it can
+run with confined file tools and an unconfined shell. Both parent and delegate
+receive a warning. The table below describes requested modes, not that fallback.
 
 | Host capability | Modes that run | Otherwise |
 |---|---|---|
@@ -344,7 +338,7 @@ sandbox mode it cannot actually enforce.
 | macOS with `/usr/bin/sandbox-exec` (present on every stock install) | all modes, `--sandbox-net` on or off | — |
 | Linux without a usable bubblewrap, Windows, macOS without `sandbox-exec`, any other OS | `off` only | any non-off mode refuses to start |
 
-On Linux, "bubblewrap usable" means more than the binary being present: evener runs a
+On Linux, "bubblewrap usable" means more than the binary being present: Evener runs a
 real unprivileged-user-namespace probe at startup, so a host that ships `bwrap` but
 blocks unprivileged user namespaces (for example Ubuntu 24.04 with
 `apparmor_restrict_unprivileged_userns=1`) reports *not capable* and refuses a
@@ -376,8 +370,19 @@ file tool nor a spawned process can read them:
   (`/run/docker.sock`, `/var/run/docker.sock`, `/run/podman/podman.sock`,
   `/run/containerd/containerd.sock`, `/run/dbus/system_bus_socket`).
 
+**The default state root is not on this denylist.** In `read-only` and
+`workspace-write`, file tools can read outside the worktree except where masked.
+That can include OAuth records in
+`${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth/`, the hub's `auth-token`, and
+secrets in `run/`. These modes do not guarantee that Evener's own state secrets
+are hidden from the session. File mode `0600` does not block processes running
+as the file's owner. `--sandbox-net off` does not block file-tool reads or
+prevent their contents entering model context. `restricted` excludes these
+paths only when they are outside its granted read roots. Relocated state roots
+must be checked against the effective policy too.
+
 Masking `/proc` is load-bearing: without it a `read_file("/proc/<evener-pid>/environ")`
-would leak evener's own environment, including the provider API key. Masking the
+would leak Evener's own environment, including the provider API key. Masking the
 daemon sockets turns a `connect()` into `ECONNREFUSED`, so a session cannot drive a
 container daemon straight to host root even with `--sandbox-net off` (a read-only
 bind of `/` does not block a Unix-socket `connect()`, and `--unshare-net` does not
@@ -422,15 +427,10 @@ the shell. With
 `EVENER_NO_USER_SKILLS=1`, which loads no user skills, the skills directory stays
 masked. The locations follow `$XDG_CONFIG_HOME` the way Evener does.
 
-The denylist is **user-extensible in both directions** and never model-changeable
-mid-session:
-
-- **Add** paths to mask (absolute, `~/`-relative, or bare-relative to `$HOME`).
-- **Remove** paths from the *credential* set to un-mask them.
-
-The pseudo-filesystem floor (`/proc`, `/sys`, …) is **not removable** — a stray or
-malicious removal can never re-open `/proc`. Only the credential set and your own
-additions are removable.
+The shipped CLI and settings expose no denylist add/remove controls. Internal
+sandbox policy supports additions and credential-path removals, but those fields
+are not a user configuration surface. The pseudo-filesystem floor (`/proc`,
+`/sys`, …) remains non-removable even through that internal policy.
 
 ## Git config and hooks are read-only
 
@@ -464,7 +464,7 @@ But every git **config and hook** surface is read-only:
 
 Denying a surface that does not exist yet is what stops it being *planted*, and on
 bubblewrap that denial is a mount, which materializes the name on the real
-filesystem and leaves it there after the session. So evener pre-creates an absent
+filesystem and leaves it there after the session. So Evener pre-creates an absent
 `commondir` holding `.` before pinning it: an empty `commondir` is fatal to git
 forever after, and `.` is both the only content git accepts and exactly what a git
 dir without the file already means (it is its own common dir). No other protected
@@ -472,15 +472,19 @@ surface is pre-created — none has content that could be more correct than the 
 file or directory the mount leaves, and an empty `config`, `config.worktree`,
 `gitdir`, or `hooks` carries no directive.
 
-Because every config file git reads is read-only **and** `$HOME` config files are
-unwritable, a `core.hooksPath` redirect cannot persist and no hook can be planted to
-run later, unsandboxed. The visible cost is that `git config --local ...` fails
-inside a sandboxed session — that write is exactly the persistence vector, so its
-denial is by design, not a bug.
+Protected Git configuration and default hook directories cannot be modified by
+the sandboxed session, so `git config --local ...` fails. This does not protect
+every custom hook location: an existing `core.hooksPath` pointing into a writable
+root, such as a repository's `.githooks`, remains writable. Changes there can run
+as hooks in a later unsandboxed Git invocation.
 
-## Caches are contained, never poisoned
+## Cache isolation and writable-root exceptions
 
-Invariant: a sandboxed session can never poison a cache that a later build consumes.
+Evener isolates caches with overlays or session-private redirects, subject to
+writable-root exceptions. Under the overlay strategy, npm and Cargo caches
+already covered by a persistent write grant remain writable. Their changes can
+affect later builds. Go caches receive stricter handling: locations that share
+persistent write roots are redirected into session scratch, as detailed below.
 
 - `workspace-write` serves the language cache roots (`~/.cache` alongside a set
   `$XDG_CACHE_HOME`, `~/.npm` and `~/.cargo` alongside a set `$npm_config_cache`
@@ -548,12 +552,12 @@ Invariant: a sandboxed session can never poison a cache that a later build consu
   gets the scratch alone, as does `restricted`, which cannot read it.
 - `restricted` always uses the session-private redirect.
 
-The overlay is a performance optimization (warm vs cold reads); the no-poisoning
-floor holds either way.
+Overlays preserve warm cache reads; session-private redirects start cold. The
+persistent writable-root exceptions above still apply to the overlay strategy.
 
 ## The environment floor
 
-On top of evener's existing scrub of `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*`/
+On top of Evener's existing scrub of `*KEY*`/`*SECRET*`/`*TOKEN*`/`*PASSWORD*`/
 `*CREDENTIAL*` variables, a sandboxed session raises an additional floor on every
 spawned process:
 
@@ -579,11 +583,11 @@ env` value — the Go toolchain does not read it from the process environment
 modified"), so setting it in the floor would have been a no-op. The only ways
 to actually silence the line are a per-session `HOME` redirect or granting a
 new writable root for Go's config directory; both were rejected as broader
-than the problem warrants. Ruled 2026-08-06: accept and document the noise
-rather than ship an env var that does nothing.
+than the problem warrants. Evener leaves the warning visible rather than set an
+ineffective environment variable.
 
 ssh-agent and gpg-agent Unix sockets are not bind-mounted into the sandbox, and
-spawned commands inherit no evener file descriptors beyond stdio — not evener's live
+spawned commands inherit no Evener file descriptors beyond stdio — not Evener's live
 LLM-API connection, not a credential fd.
 
 ## Network
@@ -594,17 +598,14 @@ tools that default to deny.)
 
 `--sandbox-net off` governs the **tool plane**:
 
-- **Model-authored** spawned processes (the shell, `rg`, hook commands) get
-  `--unshare-net` — no network interfaces at all, so no TCP, UDP, DNS, **or
-  loopback**. Loopback is the sharp edge: `net=off` may break tests that start or
-  connect to a local network server, which is why the `delegate` tool's
-  `sandbox_net` description says so up front. MCP server subprocesses are the one
-  exception: see "Hooks and MCP under a sandbox" below — they are trusted
-  infrastructure, not model-directed egress, and net=off does not sever them
-  (ruled by Jesse 2026-08-07, kata 83pm).
+- **Model-authored** spawned processes (the shell, `rg`, hook commands) lose
+  network access, including loopback. Linux uses bubblewrap's `--unshare-net`;
+  macOS uses Seatbelt network restrictions. This can break tests that start or
+  connect to a local server. MCP server subprocesses retain network access;
+  see [Hooks and MCP under a sandbox](#hooks-and-mcp-under-a-sandbox).
 - Evener-process tool egress — `web_fetch` and `web_search` — is disabled with a
   legible error. These are model-directed egress and stay refused under net=off
-  regardless of the kata 83pm MCP carve-out.
+  regardless of the MCP network exception.
 - Provider-native web egress (server-side web search or fetch the provider runs for
   the model) is disabled, and the provider-capability registry **fails closed** for
   unknown capabilities, so `net=off` can't be silently false through a path you
@@ -625,8 +626,8 @@ path, and a truncated command, never the file contents or a full secret path.
 In a non-interactive session a denial is final. In an interactive root session with a
 UI client attached (subscribed to the thread), a `read_file`, `write_file`, or
 `edit_file` denial for being outside the sandbox's roots can be escalated to a
-human-gated approval card — "Allow" / "Deny" in the web UI, `ctrl+y` / `ctrl+g` in the
-TUI hub — that blocks the tool-exec goroutine until answered
+human-gated approval card — "Allow" / "Deny" in the web UI or the native app —
+that blocks the tool call until answered
 (`evener/sandbox/escalation/requested` → `evener/sandbox/escalation/resolve`, see
 [docs/appwire-protocol.md](appwire-protocol.md)). Shell/kernel denials, `apply_patch`,
 the browse tools, and a masked/git-protected/symlinked/escape denial all stay final,
@@ -635,12 +636,18 @@ observe an approval: the escalation and its resolution never enter session histo
 
 ## Subagents and worktrees
 
-A sandboxed session's delegates and subagents inherit the policy automatically,
-re-rooted to their own worktree with fresh git-metadata resolution — a delegate in
-lane A cannot read lane B. Because inheritance is automatic, the flag only goes live
-on a build where subagent/worktree scoping already holds, so the first `delegate`
-never punches a hole in the boundary you opted into. Resumed delegates re-resolve
-their persisted policy the same way the root session does. See
+A sandboxed session's delegates and subagents inherit its policy floor. Worktree
+roots move to each delegate's own worktree, and git-metadata grants are resolved
+again. This separates workspace writes; it does not make sibling worktrees private.
+
+`read-only` and `workspace-write` allow reads anywhere except masked paths,
+including sibling worktrees. `restricted` bounds reads to the delegate's worktree
+and its other granted roots; spawned processes have additional read grants for
+system files, git metadata, and configured infrastructure. See [Modes](#modes)
+for those grants and the separate file-tool and process boundaries.
+
+Delegates cannot relax their parent's policy floor. Resumed delegates re-resolve
+their persisted policy against the current host. See
 [docs/developing-evener/worktrees.md](developing-evener/worktrees.md) for the worktree model itself.
 
 ## Hooks and MCP under a sandbox
@@ -655,18 +662,19 @@ took the session's first steering input with it.
 - **Hook commands** (SessionStart, PreToolUse, PostToolUse, …) run under the session
   sandbox, same as any model-authored spawned process, with their configured paths
   granted — including staying network-severed under `net=off`.
-- **stdio MCP servers** are spawned under the session sandbox, with the directories
-  holding their programs and script files granted. Unlike a model-authored spawn,
-  their subprocess keeps network access even under `net=off` — they are still
-  kernel-confined on every other axis (filesystem, exec floor, fd hygiene), just not
-  network-unshared.
+- **stdio MCP servers** are spawned under the session sandbox. Trusted
+  configuration layers can add read/exec roots for their programs and scripts;
+  project configuration cannot. Unlike model-authored spawns, all configured MCP
+  server subprocesses retain network access under `net=off`, including servers
+  from project configuration. Filesystem confinement, the exec floor, and file
+  descriptor hygiene still apply.
 - **Remote (HTTP/SSE) MCP servers** are no longer refused under `net=off` — they
   connect the same as under `net=on`.
 
-> Ruled by Jesse 2026-08-07 (kata 83pm): MCP servers are trusted infrastructure —
-> launched only from config layers the model cannot write (the per-project layer is
-> already excluded below) — so `net=off` does not sever them. Model-directed egress
-> (`web_fetch`/`web_search`) and model-spawned processes remain net-less.
+The network exception includes project-configured MCP servers. Excluding project
+configuration from filesystem grants does not exclude those servers from discovery
+or connection. Model-directed egress (`web_fetch`/`web_search`) and model-spawned
+processes remain network-blocked under `net=off`.
 
 The grant is tightly bounded:
 
@@ -683,8 +691,9 @@ The grant is tightly bounded:
   `sandbox=restricted`, read whatever you named), breaking the rule that the policy
   is fixed for the life of the session. A project-declared MCP server still connects
   normally; it just cannot hand itself filesystem roots.
-- **Read and exec only.** The write surface is unchanged; a hook's own directory
-  stays unwritable in every mode.
+- **Adds read and exec access, not write access.** Existing write permissions
+  remain: a hook directory already under a writable root, such as the worktree
+  in `workspace-write`, stays writable.
 - **Spawned layer only.** This grant gives the file tools no browse access to a hook
   or MCP path.
 - **The denylist still wins.** A hook or MCP path at or under a masked path is not
@@ -697,8 +706,10 @@ The grant is tightly bounded:
   when it is fewer than two path components deep. So `/`, `/Users`, `/home`,
   `/private`, `/var`, `/Volumes` and `/tmp` can never be granted. Paths are
   symlink-resolved *and* stripped of their `/System/Volumes/Data` firmlink alias
-  before this check, so neither spelling of a path can slip past it. Note that the
-  denylist alone cannot do this job: it drops roots at or *beneath* a masked path,
+  before this check. A candidate that is the same directory as an entry directly
+  under `/` is also refused, even when a symlink gives it a deeper canonical path,
+  such as `/var` → `/private/var`. Note that the denylist alone cannot do this job:
+  it drops roots at or *beneath* a masked path,
   and these are *above* them.
 
 An MCP `command` or argument contributes only when it is a **regular file**, and it
@@ -739,8 +750,8 @@ The macOS backend is Seatbelt (`/usr/bin/sandbox-exec`), driven from the same po
 model as bubblewrap so all modes are expressible; caches are always served
 session-private (there is no overlay on macOS), and the `sandbox-exec` path is
 hard-coded as a PATH-injection defense. A host without `/usr/bin/sandbox-exec`
-refuses any sandboxed mode — the same fail-closed floor as a Linux host without a
-usable bubblewrap.
+refuses an explicitly requested sandbox mode — the same
+[fail-closed floor](#the-fail-closed-floor) as a Linux host without usable bubblewrap.
 
 Seatbelt policies canonicalize every granted and denied root through symlink and
 firmlink resolution (`/tmp` → `/private/tmp` is pinned by test). Seatbelt judges the
@@ -757,6 +768,6 @@ suite runs the generated profiles under the real `sandbox-exec` when
 
 - [docs/developing-evener/worktrees.md](developing-evener/worktrees.md) — the worktree model that backs delegate
   isolation.
-- [docs/developing-evener/environment.md](developing-evener/environment.md) — the environment variables evener reads.
+- [Environment variables](environment-variables.md) — the environment variables Evener reads.
 - [docs/subagent-runtime-contracts.md](subagent-runtime-contracts.md) — the runtime
   contracts subagents, plugins, and hooks operate under.

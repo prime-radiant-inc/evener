@@ -37,6 +37,7 @@ function cloneLitterError(data: unknown): WireError {
 
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
+  fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -56,6 +57,298 @@ beforeEach(() => {
   resetExtensionsStoreForTests();
   resetToastStoreForTests();
 });
+
+test("cached inventory keeps install disabled throughout a delayed retry", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: "formatter" }] }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  await screen.findByRole("button", { name: "Install" });
+  fake.on("evener/plugin/list", () => {
+    throw new Error("read failed");
+  });
+  await act(async () => {
+    await extensionsStore.getState().fetchPlugins();
+  });
+  expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(true);
+  const release = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/list");
+  await user.click(screen.getByRole("button", { name: "Retry plugins" }));
+  expect(extensionsStore.getState()).toMatchObject({ plugins: [LINTER], pluginsLoading: true, pluginsError: null });
+  expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Install" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(fake.calls.filter((c) => c.method === "evener/plugin/install")).toHaveLength(0);
+  await act(async () => release({ plugins: [LINTER] }));
+  expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("an install confirmation reconciles a target installed during inventory recovery", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: "formatter" }] }));
+  const installed = { ...LINTER, plugin: "formatter", enabled: false, autoUpgrade: true };
+  fake.on("evener/plugin/install", () => ({ plugins: [LINTER, { ...installed, enabled: true, autoUpgrade: false }] }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  await user.click(screen.getByRole("radio", { name: "Browse" }));
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  await user.click(await screen.findByRole("button", { name: "Install" }));
+  const release = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/list");
+  await act(async () => {
+    void extensionsStore.getState().fetchPlugins();
+  });
+  expect(
+    (
+      within(screen.getByRole("dialog", { name: "Install plugin" })).getByRole("button", {
+        name: "Install",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  await act(async () => release({ plugins: [LINTER, installed] }));
+  const confirmation = screen.queryByRole("dialog", { name: "Install plugin" });
+  if (confirmation) await user.click(within(confirmation).getByRole("button", { name: "Install" }));
+  expect(fake.calls.filter((c) => c.method === "evener/plugin/install")).toHaveLength(0);
+  expect(extensionsStore.getState().plugins).toEqual([LINTER, installed]);
+  expect(screen.queryByRole("dialog", { name: "Install plugin" })).toBeNull();
+});
+
+test("cached installed details remain inspectable through failed reads and delayed recovery without mutations", async () => {
+  const fake = connectSeededClient();
+  fake.on("evener/plugin/list", () => ({ plugins: [{ ...LINTER, updateAvailable: true }] }));
+  fake.on("evener/plugin/enable", () => ({ plugins: [{ ...LINTER, enabled: true, autoUpgrade: true }] }));
+  fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: LINTER.plugin }] }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await screen.findByRole("button", { name: /linter/ });
+  fake.on("evener/plugin/list", () => {
+    throw new Error("read failed");
+  });
+  await act(async () => {
+    await extensionsStore.getState().fetchPlugins();
+  });
+  await user.click(screen.getByRole("button", { name: /linter/ }));
+  const details = screen.getByRole("dialog", { name: LINTER.plugin });
+  expect(within(details).getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-disabled")).toBe(
+    "true",
+  );
+  await user.click(within(details).getByRole("switch", { name: "Enabled by default" }));
+  await user.click(within(details).getByRole("switch", { name: "Auto-upgrade" }));
+  expect(within(details).getByRole("button", { name: "Upgrade" }).getAttribute("aria-disabled")).toBe("true");
+  await user.click(within(details).getByRole("button", { name: "Upgrade" }));
+  expect((within(details).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(within(details).getByRole("button", { name: "Close" }));
+  const release = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/list");
+  await user.click(screen.getByRole("button", { name: "Retry plugins" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+  await user.click(screen.getByRole("button", { name: /linter/ }));
+  const recovering = screen.getByRole("dialog", { name: LINTER.plugin });
+  expect(within(recovering).getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-disabled")).toBe(
+    "true",
+  );
+  await act(async () => release({ plugins: [{ ...LINTER, enabled: false, autoUpgrade: true }] }));
+  expect(within(recovering).getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe(
+    "false",
+  );
+  expect(within(recovering).getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-disabled")).not.toBe(
+    "true",
+  );
+  expect(
+    fake.calls.filter((c) => /evener\/plugin\/(install|enable|disable|setAutoUpgrade|remove|upgrade)$/.test(c.method)),
+  ).toHaveLength(0);
+  await user.click(within(recovering).getByRole("switch", { name: "Enabled by default" }));
+  expect(fake.calls.filter((c) => c.method === "evener/plugin/enable").map((c) => c.params)).toEqual([
+    { plugin: LINTER.plugin, marketplace: LINTER.marketplace },
+  ]);
+  expect(within(recovering).getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-checked")).toBe(
+    "true",
+  );
+});
+
+test("first plugin journey navigates through Sources and explicitly browses the added catalog without installing", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [] }));
+  fake.on("evener/plugin/list", () => ({ plugins: [] }));
+  fake.on("evener/marketplace/add", () => ({ marketplaces: [ACME] }));
+  fake.on("evener/marketplace/browse", () => ({
+    name: ACME.name,
+    plugins: [{ name: "formatter", description: "Fixture formatter" }],
+  }));
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await user.click(await screen.findByRole("button", { name: "Browse plugins" }));
+  expect(screen.getByRole("radio", { name: "Browse" }).getAttribute("aria-checked")).toBe("true");
+  await user.click(screen.getByRole("button", { name: "Manage sources" }));
+  expect(screen.getByRole("radio", { name: "Sources (0)" }).getAttribute("aria-checked")).toBe("true");
+  await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
+  await user.type(screen.getByLabelText("Git URL"), "https://example.com/acme.git");
+  expect(fake.calls.filter((c) => c.method === "evener/marketplace/add")).toHaveLength(0);
+  await user.click(
+    within(screen.getByLabelText("Git URL").closest("form") as HTMLFormElement).getByRole("button", { name: "Add" }),
+  );
+  expect(fake.calls.filter((c) => c.method === "evener/marketplace/add").map((c) => c.params)).toEqual([
+    { name: "", source: { kind: "url", url: "https://example.com/acme.git" } },
+  ]);
+  expect(screen.getByRole("radio", { name: "Sources (1)" }).getAttribute("aria-checked")).toBe("true");
+  expect(fake.calls.filter((c) => c.method === "evener/marketplace/browse")).toHaveLength(0);
+  await user.click(screen.getByRole("button", { name: "Browse plugins" }));
+  expect(screen.getByRole("radio", { name: "Browse" }).getAttribute("aria-checked")).toBe("true");
+  await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+  expect(await screen.findByRole("list", { name: `${ACME.name} plugins` })).toBeTruthy();
+  expect(fake.calls.filter((c) => /evener\/plugin\/(install|enable|disable)$/.test(c.method))).toHaveLength(0);
+});
+
+test.each(["plugin", "marketplace"] as const)(
+  "a failed %s read leaves the other segment usable and retries only that read",
+  async (failed) => {
+    const fake = connectSeededClient();
+    fake.on(`evener/${failed}/list`, () => {
+      throw new Error("temporary failure");
+    });
+    fake.on("evener/marketplace/browse", () => ({ name: ACME.name, plugins: [{ name: "formatter" }] }));
+    const user = userEvent.setup();
+    render(<MarketplacesPluginsSection />);
+    await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
+    if (failed === "marketplace") {
+      await user.click(screen.getByRole("button", { name: /linter/ }));
+      expect(screen.getByRole("dialog", { name: "linter" })).toBeTruthy();
+      await user.click(screen.getByRole("button", { name: "Close" }));
+    } else {
+      await user.click(screen.getByRole("radio", { name: "Browse" }));
+      await user.click(screen.getByText(/acme-plugins/, { selector: "summary" }));
+      expect(await screen.findByRole("list", { name: `${ACME.name} plugins` })).toBeTruthy();
+      expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(true);
+    }
+    const before = fake.calls.filter((c) => c.method.endsWith("/list")).map((c) => c.method);
+    if (failed === "plugin") fake.on("evener/plugin/list", () => ({ plugins: [LINTER] }));
+    else fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+    await user.click(
+      screen.getByRole("button", { name: failed === "plugin" ? "Retry plugins" : "Retry marketplaces" }),
+    );
+    await waitFor(() => expect(statusReasons()).toEqual([]));
+    expect(fake.calls.filter((c) => c.method.endsWith("/list")).map((c) => c.method)).toEqual([
+      ...before,
+      `evener/${failed}/list`,
+    ]);
+  },
+);
+
+test.each(["add", "edit"] as const)("retains an %s source draft through a failed read and recovery", async (kind) => {
+  const fake = connectSeededClient();
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+  if (kind === "add") await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
+  else await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+  const label = kind === "add" ? "Git URL" : "owner/repo";
+  await user.clear(screen.getByLabelText(label));
+  await user.type(screen.getByLabelText(label), "draft/value");
+  fake.on("evener/marketplace/list", () => {
+    throw new Error("temporary failure");
+  });
+  await act(async () => {
+    await extensionsStore.getState().fetchMarketplaces();
+  });
+  expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe("draft/value");
+  await user.type(screen.getByLabelText(label), "2");
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [ACME] }));
+  await act(async () => {
+    await extensionsStore.getState().fetchMarketplaces();
+  });
+  expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe("draft/value2");
+  expect(fake.calls.filter((c) => /evener\/marketplace\/(add|edit)$/.test(c.method))).toHaveLength(0);
+});
+
+test("an untouched source follows canonical changes without arming Save", async () => {
+  const fake = connectSeededClient();
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+  await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+  fake.on("evener/marketplace/list", () => ({
+    marketplaces: [{ ...ACME, source: { kind: "github", repo: "canonical/repo" } }],
+  }));
+  await act(async () => {
+    await extensionsStore.getState().fetchMarketplaces();
+  });
+  expect((screen.getByLabelText("owner/repo") as HTMLInputElement).value).toBe("canonical/repo");
+  expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(fake.calls.filter((c) => c.method === "evener/marketplace/edit")).toHaveLength(0);
+});
+
+test("an incomplete source draft survives metadata refresh and same-client reconnect", async () => {
+  const fake = connectSeededClient();
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+  await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+  await user.clear(screen.getByLabelText("owner/repo"));
+  fake.on("evener/marketplace/list", () => ({ marketplaces: [{ ...ACME, lastUpdated: 2 }] }));
+  await act(async () => {
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+  });
+  expect((screen.getByLabelText("owner/repo") as HTMLInputElement).value).toBe("");
+  expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.queryByRole("button", { name: "Reload latest" })).toBeNull();
+  expect(fake.calls.filter((c) => c.method === "evener/marketplace/edit")).toHaveLength(0);
+});
+
+test("a source pin change requires a conflict choice even when the visible repository is unchanged", async () => {
+  const fake = connectSeededClient();
+  const user = userEvent.setup();
+  render(<MarketplacesPluginsSection />);
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+  await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+  await user.type(screen.getByLabelText("Name"), "-draft");
+  fake.on("evener/marketplace/list", () => ({
+    marketplaces: [{ ...ACME, source: { ...ACME.source, ref: "release" } }],
+  }));
+  await act(async () => {
+    await extensionsStore.getState().fetchMarketplaces();
+  });
+  expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Reload latest" }));
+  expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(ACME.name);
+  expect(fake.calls.filter((c) => c.method === "evener/marketplace/edit")).toHaveLength(0);
+});
+
+test.each(["Reload latest", "Keep my edits"])(
+  "an edited source requires explicit conflict resolution via %s",
+  async (choice) => {
+    const fake = connectSeededClient();
+    fake.on("evener/marketplace/edit", () => ({
+      marketplaces: [{ ...ACME, source: { kind: "github", repo: "draft/repo" } }],
+    }));
+    const user = userEvent.setup();
+    render(<MarketplacesPluginsSection />);
+    await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
+    await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+    await user.clear(screen.getByLabelText("owner/repo"));
+    await user.type(screen.getByLabelText("owner/repo"), "draft/repo");
+    fake.on("evener/marketplace/list", () => ({
+      marketplaces: [{ ...ACME, source: { kind: "github", repo: "canonical/repo" } }],
+    }));
+    await act(async () => {
+      await extensionsStore.getState().fetchMarketplaces();
+    });
+    expect((screen.getByLabelText("owner/repo") as HTMLInputElement).value).toBe("draft/repo");
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole("button", { name: choice }));
+    expect(fake.calls.filter((c) => c.method === "evener/marketplace/edit")).toHaveLength(0);
+    if (choice === "Reload latest") {
+      expect((screen.getByLabelText("owner/repo") as HTMLInputElement).value).toBe("canonical/repo");
+      expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+    } else {
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(fake.calls.filter((c) => c.method === "evener/marketplace/edit").map((c) => c.params)).toEqual([
+        { name: ACME.name, source: { kind: "github", repo: "draft/repo" } },
+      ]);
+    }
+  },
+);
 
 afterEach(() => {
   cleanup();
@@ -111,7 +404,7 @@ test("a view whose plugin list failed to load asks the hub for no updates", asyn
   expect(fake.calls.some((c) => c.method === "evener/plugin/checkUpdates")).toBe(false);
 });
 
-test("shows one failed-to-load message replacing everything when the marketplace list fails to load", async () => {
+test("keeps navigation available with one failure notice when the marketplace list fails to load", async () => {
   const fake = connectFakeClient();
   fake.on("evener/marketplace/list", () => {
     throw new Error("network down");
@@ -123,7 +416,7 @@ test("shows one failed-to-load message replacing everything when the marketplace
   expect(alertReasons()).toEqual([]);
   // friendlyErrorMessage keeps a raw JS error's message off the screen.
   expect(screen.getByRole("status").textContent).not.toContain("network down");
-  expect(screen.queryByRole("radiogroup", { name: "View" })).toBeNull();
+  expect(screen.getByRole("radiogroup", { name: "View" })).toBeTruthy();
 });
 
 test("shows one failed-to-load message when the plugin list fails to load", async () => {
@@ -168,7 +461,7 @@ test("the segment control carries the list counts and defaults to Installed", as
   const installed = await screen.findByRole("radio", { name: "Installed (1)" });
   expect(installed.getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("radio", { name: "Browse" }).getAttribute("aria-checked")).toBe("false");
-  expect(screen.getByRole("radio", { name: "Marketplaces (1)" }).getAttribute("aria-checked")).toBe("false");
+  expect(screen.getByRole("radio", { name: "Sources (1)" }).getAttribute("aria-checked")).toBe("false");
 });
 
 test("the Installed segment is the default view; other segments' lists are hidden", async () => {
@@ -192,7 +485,7 @@ test("switching to the Marketplaces segment shows the marketplace list and hides
   const user = userEvent.setup();
   connectSeededClient();
   render(<MarketplacesPluginsSection />);
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   expect(screen.getByRole("list", { name: "Marketplaces" })).toBeTruthy();
   expect(screen.queryByRole("list", { name: "Installed plugins" })).toBeNull();
 });
@@ -221,7 +514,7 @@ test("switching segments while the marketplace sheet is open closes it", async (
   connectSeededClient();
   render(<MarketplacesPluginsSection />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy();
   await user.click(screen.getByRole("radio", { name: "Browse" }));
@@ -242,7 +535,7 @@ test("keeps an applied removal guard across failed reconciliation and sheet remo
   });
   render(<MarketplacesPluginsSection />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -274,7 +567,7 @@ test("a later accepted notification publication clears a same-name applied remov
   });
   render(<MarketplacesPluginsSection />);
   const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -282,7 +575,7 @@ test("a later accepted notification publication clears a same-name applied remov
   );
 
   await waitFor(() => expect(statusReasons()).toEqual(["unavailable"]));
-  fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
+  act(() => fake.emitNotification({ method: "evener/marketplace/updated", params: {} }));
   await waitFor(() => expect(listCalls).toBe(3), { timeout: 1000 });
   await waitFor(() => expect(screen.getByRole("dialog", { name: "acme-plugins" })).toBeTruthy());
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
@@ -306,7 +599,7 @@ test("a delayed applied outcome after authoritative absence cannot leave a remov
   );
   render(<MarketplacesPluginsSection />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -328,7 +621,7 @@ test("a delayed applied outcome after authoritative absence cannot leave a remov
   await act(async () => {
     await extensionsStore.getState().fetchMarketplaces();
   });
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
 });
@@ -347,7 +640,7 @@ test("clears an applied removal guard when the connection client changes", async
   });
   render(<MarketplacesPluginsSection />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -377,7 +670,7 @@ test("a fenced outcome from the replaced client cannot leave a removal guard", a
   );
   render(<MarketplacesPluginsSection />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -416,7 +709,7 @@ test("a rename carries the Browse expansion to the new name", async () => {
   await waitFor(() => expect(screen.getByText("formatter")).toBeTruthy());
 
   // Rename it through its sheet, which re-browses the new name.
-  await user.click(screen.getByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(screen.getByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.type(screen.getByLabelText("Name"), "2");
   await user.click(screen.getByRole("button", { name: "Save" }));
@@ -460,6 +753,7 @@ test("clears an applied removal guard when the selected host changes (same conne
   let betaListCalls = 0;
   fake.on("evener/host/request", (params) => {
     const forwarded = params as { host: string; method: string };
+    if (forwarded.method === "evener/launch/getLayer") return { pluginDirs: [] } as never;
     if (forwarded.method === "evener/marketplace/list") {
       if (forwarded.host === "beta") {
         betaListCalls += 1;
@@ -475,7 +769,7 @@ test("clears an applied removal guard when the selected host changes (same conne
 
   const view = render(<MarketplacesPluginsSection host="beta" />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -511,7 +805,7 @@ function marketplaceListCalls(fake: FakeClient): number {
 // The sheet is read from the store, so this works on a first mount and a remount.
 async function openMarketplaceSheetAndConfirmRemoval(): Promise<void> {
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await user.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await user.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await user.click(
@@ -584,7 +878,7 @@ test("a late applied outcome after the whole page unmounts leaves no guard on th
 
   render(<MarketplacesPluginsSection />);
   const remounted = userEvent.setup();
-  await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await remounted.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   // The remount's own read is held too, so the store still lists acme at the
   // same publication version the late outcome marked at: a guard that leaked
   // across the remount would disable Remove here.
@@ -617,7 +911,7 @@ test("an outcome from the replaced client cannot mark or block the remounted pag
 
   render(<MarketplacesPluginsSection />);
   const remounted = userEvent.setup();
-  await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await remounted.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await screen.findByRole("button", { name: /acme-plugins/ });
   const secondListCallsBefore = marketplaceListCalls(second);
 
@@ -661,7 +955,7 @@ test("a late applied outcome against an already-reconciled list is not marked, d
 
   render(<MarketplacesPluginsSection />);
   const remounted = userEvent.setup();
-  await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (0)" }));
+  await remounted.click(await screen.findByRole("radio", { name: "Sources (0)" }));
   expect(cloneCleanupWarnings()).toHaveLength(1);
   // The store is seeded directly at the outcome's own version - below the
   // remount's held read - so a guard the outcome should not have written would
@@ -698,7 +992,7 @@ test("an ordinary removal failure stays retryable across a whole-page remount", 
   // Re-opened by hand rather than through the helper: the point is to inspect
   // Remove before the retry.
   const remounted = userEvent.setup();
-  await remounted.click(await screen.findByRole("radio", { name: "Marketplaces (1)" }));
+  await remounted.click(await screen.findByRole("radio", { name: "Sources (1)" }));
   await remounted.click(await screen.findByRole("button", { name: /acme-plugins/ }));
   expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
   await remounted.click(screen.getByRole("button", { name: "Remove" }));

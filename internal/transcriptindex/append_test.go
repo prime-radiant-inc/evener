@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -519,6 +521,16 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 			// sidecar built before that must rebuild.
 			rewriteMetaField(t, dir, "projection", `"transcript-read-model-v6"`)
 		}},
+		{"projection before the nonzero-exit rule changed", func(t *testing.T, dir string) {
+			// A settled tool result's nonzero exit stopped counting as a failure
+			// (Jesse, 2026-10-16), so a v7 sidecar's per-turn FailedToolCalls
+			// carries counts from the OLD rule. The JSON field shapes did not
+			// change, so only the projection name can tell the two apart - a
+			// v7 sidecar that were accepted as current would serve the stale
+			// count. The suffix is the current schemaID (the shape really is
+			// unchanged), so this pins exactly the name change, nothing else.
+			rewriteMetaField(t, dir, "projection", strconv.Quote("transcript-read-model-v7"+":"+schemaID))
+		}},
 		{"other schema identity", func(t *testing.T, dir string) {
 			// A sidecar built by a binary whose schema.Turn/llm.Message shape
 			// differs must not be adopted: window.go's readEntry re-decodes
@@ -554,6 +566,71 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 			}
 			assertAllWindows(t, reopened, path)
 		})
+	}
+}
+
+// TestOldFailureRuleSidecarIsNeverServed pins the reason projectionID was
+// bumped: a sidecar built under the previous projection records per-turn
+// FailedToolCalls counts from the OLD rule (a settled tool result's nonzero
+// exit counted as a failure). The JSON field shapes did not change, so only the
+// projection name can tell the two apart. A handle opening over such a sidecar
+// must rebuild rather than serve its stale count, and the rebuilt figure must
+// agree with the current scan.
+func TestOldFailureRuleSidecarIsNeverServed(t *testing.T) {
+	// One shell call that ran and exited nonzero, clean otherwise: the row shows
+	// the small exit mark, not a failure, so the current rule counts 0.
+	fx := fixture{
+		name:   "old-rule-count",
+		header: transcript.Header{SessionID: "old-rule", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(user("run it")),
+			entryLine(assistant(call("c1", "shell", `{"cmd":"false"}`))),
+			entryLine(results(llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+				ToolCallID: "c1", Name: "shell", Content: "boom", ToolState: json.RawMessage(`{"exit_code":1}`),
+			}})),
+		},
+	}
+	path := writeFixture(t, fx)
+	dir := t.TempDir()
+
+	// A build under the CURRENT projection, then relabel it as the previous one
+	// and plant the count the old rule would have recorded. This is exactly the
+	// bytes shift: same layout (the field shapes are unchanged), a stale count,
+	// and the old projection name.
+	x := openIndex(t, path, dir)
+	for slot := uint64(0); slot < x.turns.n; slot++ {
+		buf, err := x.turns.read(slot, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := decodeTurn(buf)
+		record.FailedToolCalls = 1 // what the old rule counted
+		if err := x.turns.write(slot, encodeTurnInto(make([]byte, turnRecordSize), record)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := x.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rewriteMetaField(t, dir, "projection", strconv.Quote("transcript-read-model-v7"+":"+schemaID))
+
+	reopened := openIndex(t, path, dir)
+	if reopened.rebuilds != 1 {
+		t.Fatalf("builds = %d, want the old-rule sidecar rebuilt, not served", reopened.rebuilds)
+	}
+	_, failures, err := reopened.DerivedTotals(0)
+	if err != nil {
+		t.Fatalf("DerivedTotals: %v", err)
+	}
+	_, scanned, err := apptranscript.NewTurnCache().DerivedTotalsFromFile(path, testMaxLineBytes, 0)
+	if err != nil {
+		t.Fatalf("DerivedTotalsFromFile: %v", err)
+	}
+	if failures != scanned {
+		t.Fatalf("failures after rebuild = %d, want the scan's %d", failures, scanned)
+	}
+	if failures != 0 {
+		t.Fatalf("failures = %d, want 0: a nonzero exit alone is not a failure", failures)
 	}
 }
 

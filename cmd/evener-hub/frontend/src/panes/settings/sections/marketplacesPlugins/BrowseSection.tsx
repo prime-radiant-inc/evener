@@ -48,12 +48,16 @@ function pluginMatchesFilter(plugin: MarketplaceCatalogPlugin, query: string): b
 export interface BrowseSectionProps {
   expandedMarketplaces: Set<string>;
   setExpandedMarketplaces: Dispatch<SetStateAction<Set<string>>>;
+  onSources?: () => void;
 }
 
-export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }: BrowseSectionProps) {
+export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces, onSources }: BrowseSectionProps) {
   const store = useExtensionsHostStore();
   const marketplaces = useExtensionsHostState((s) => s.marketplaces) ?? [];
   const plugins = useExtensionsHostState((s) => s.plugins) ?? [];
+  const pluginsUnavailable = useExtensionsHostState(
+    (s) => s.plugins === null || s.pluginsError !== null || s.pluginsLoading,
+  );
   const browseCatalogs = useExtensionsHostState((s) => s.browseCatalogs);
   const hubWriteBusy = useExtensionsHostState((s) => s.hubWriteBusy);
   const toasts = useToasts();
@@ -153,7 +157,11 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
 
   async function handleConfirmInstall() {
     const target = pendingInstall;
-    if (target === null) return;
+    if (target === null || pluginsUnavailable) return;
+    if (isInstalled(target.plugin, target.marketplace)) {
+      setPendingInstall(null);
+      return;
+    }
     try {
       await store.getState().installPlugin(target.plugin, target.marketplace);
       toasts.push("success", `Installed ${target.plugin}`);
@@ -193,7 +201,8 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
             <EmptyState
               size="compact"
               reason="empty"
-              title="No marketplaces registered. Add one from the Marketplaces tab."
+              title="No marketplaces registered."
+              action={onSources && <Button onClick={onSources}>Manage sources</Button>}
             />
           </li>
         ) : trimmedQuery !== "" && filterLoading ? (
@@ -213,7 +222,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
               cache={browseCatalogs.get(m.name)}
               query={trimmedQuery}
               isInstalled={isInstalled}
-              installDisabled={hubWriteBusy}
+              installDisabled={hubWriteBusy || pluginsUnavailable}
               onToggle={() => toggleExpanded(m.name)}
               onInstall={(plugin, marketplace) => setPendingInstall({ plugin, marketplace })}
             />
@@ -225,13 +234,13 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
         title="Install plugin"
         confirmLabel="Install"
         destructive={false}
-        busy={hubWriteBusy}
+        busy={hubWriteBusy || pluginsUnavailable}
         onConfirm={() => void handleConfirmInstall()}
         onCancel={() => setPendingInstall(null)}
       >
         {pendingInstall !== null && (
           <>
-            <p>{`Install "${pendingInstall.plugin}" from ${pendingInstall.marketplace}? It will run in every new session once installed.`}</p>
+            <p>{`Install "${pendingInstall.plugin}" from ${pendingInstall.marketplace}? This makes it available on this host. New sessions use their launch's plugin selection; existing sessions keep theirs.`}</p>
             {(() => {
               const source = findMarketplace(pendingInstall.marketplace)?.source;
               return source && <p className={CLASS.rowMeta}>{`Source: ${marketplaceSourceLabel(source)}`}</p>;

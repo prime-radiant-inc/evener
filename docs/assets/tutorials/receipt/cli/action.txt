@@ -1,0 +1,20 @@
+Rendered command transcript
+Streams are recorded separately, not interleaved.
+
+$ git diff -- receipt.py
+cwd: receipt-workspace
+stdout:
+diff --git a/receipt.py b/receipt.py
+index c1694dc..965759f 100644
+--- a/receipt.py
++++ b/receipt.py
+@@ -3,4 +3,4 @@
+ 
+ def total_cents(items):
+     """Sum (price_cents, quantity) pairs of nonnegative integers."""
+-    return sum(price_cents for price_cents, quantity in items)
++    return sum(price_cents * quantity for price_cents, quantity in items)
+
+stderr:
+
+exit: 0

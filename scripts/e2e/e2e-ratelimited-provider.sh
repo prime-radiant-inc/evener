@@ -4,7 +4,7 @@
 # that answers /v1/models normally and 429s every completion request.
 #
 # WHY: verifying that evener surfaces a provider rate-limit — the retry
-# backoff, the "may be stalled" liveness line, a TUI notification — needs a
+# backoff, the "may be stalled" liveness line, a UI notification — needs a
 # provider that is ACTUALLY throttling, for as long as the check takes. A
 # real provider won't reliably do that on demand. This harness existed only
 # in Claude session scratchpads and was rebuilt from scratch twice (kata
@@ -14,13 +14,12 @@
 # throwaway run directory, starts fake429 and a HOME-isolated evener hub (kata
 # av1j — a second hub needs its own $HOME or it collides with, or silently
 # adopts, your real one) each on a kernel-assigned port (kata 68fm — never a
-# hardcoded one), points the hub's providers.toml at fake429, and prints the
-# evener tui command to attach. It does NOT drive evener tui itself — that needs
-# a terminal (tmux) and is the caller's next step.
+# hardcoded one), and points the hub's providers.toml at fake429. It does not
+# drive a client itself — attach a browser or send AppWire/REST calls as the
+# caller's next step.
 #
 # USAGE:
-#   scripts/e2e/e2e-ratelimited-provider.sh                  # start; print the
-#                                                         # evener tui command
+#   scripts/e2e/e2e-ratelimited-provider.sh                  # start the stack
 #   scripts/e2e/e2e-ratelimited-provider.sh --retry-after 3  # tune the 429
 #                                                         # Retry-After (default 8)
 #   scripts/e2e/e2e-ratelimited-provider.sh --stop RUN_DIR   # kill fake429 + hub
@@ -29,7 +28,7 @@
 #
 # OUTPUT: fake429 and the hub keep running in the background after this
 # script exits (like scripts/ops/agent-chrome.sh) — that is the point, so a
-# follow-up evener tui or REST call has something to attach to. Nothing here
+# follow-up browser or REST call has something to attach to. Nothing here
 # needs, reads, or sets a real provider credential.
 set -euo pipefail
 
@@ -136,10 +135,7 @@ cat >&2 <<EOF
 Ready. Every completion call through this hub will 429 after ${retry_after}s
 Retry-After; /v1/models still resolves so launch-check succeeds.
 
-  Attach a TUI:
-    "$run/evener" tui --hub-addr "$hub_addr" --auth-token "$token" --no-auto-start-hub
-
-  Or drive the REST shim directly (see docs/developing-evener/agentic-testing.md):
+  Drive the REST shim directly (see docs/developing-evener/agentic-testing.md):
     curl -H "Authorization: Bearer $token" "$hub_addr/api/..."
 
   When done:

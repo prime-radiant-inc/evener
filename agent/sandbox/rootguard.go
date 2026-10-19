@@ -24,6 +24,13 @@ type RootGuard struct {
 	// construction. Permit compares a candidate against these with os.SameFile,
 	// which is what makes the check independent of how a path is SPELLED.
 	sharedTree []os.FileInfo
+	// topLevel is the identity of every entry directly under "/", stat'd once at
+	// construction. A candidate that is the SAME FILE as one of them is a
+	// top-level directory however it is spelled — the case the textual depth
+	// floor misses after canonicalization (macOS /var -> /private/var is two
+	// components). Identity, not the basename, so a top-level symlink whose
+	// canonical basename differs from its link name is still caught.
+	topLevel []os.FileInfo
 }
 
 // NewRootGuard builds a guard over the given shared anchors. Empty and
@@ -46,6 +53,16 @@ func NewRootGuard(anchors ...string) RootGuard {
 			}
 			if dir == filepath.Dir(dir) {
 				break
+			}
+		}
+	}
+	// Stat every entry directly under "/" once. os.ReadDir returns each name as
+	// spelled at the root, and os.Stat follows a top-level symlink to its target,
+	// so a canonical candidate that IS one of these files matches by identity.
+	if entries, err := os.ReadDir(string(filepath.Separator)); err == nil {
+		for _, e := range entries {
+			if fi, serr := os.Stat(filepath.Join(string(filepath.Separator), e.Name())); serr == nil {
+				g.topLevel = append(g.topLevel, fi)
 			}
 		}
 	}
@@ -99,6 +116,18 @@ func (g RootGuard) Permit(root string) string {
 		}
 	}
 	if fi, err := os.Stat(root); err == nil {
+		// The depth floor above judges the CANONICAL spelling, but macOS's own
+		// top-level system directories are symlinks (/var -> /private/var), so a
+		// configured "/var" arrives here as "/private/var" — two components, and
+		// the floor lets it through. Refuse any candidate that is the same file as
+		// a directory directly under "/": os.SameFile keeps this exact, so
+		// "/private/var" matches the top-level "/var" while a real "/some/dir/var"
+		// does not.
+		for _, top := range g.topLevel {
+			if os.SameFile(fi, top) {
+				return "" // a top-level directory reached through a symlink
+			}
+		}
 		for _, anchor := range g.sharedTree {
 			if os.SameFile(fi, anchor) { // the same directory, differently spelled
 				return ""

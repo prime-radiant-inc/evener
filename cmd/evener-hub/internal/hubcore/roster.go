@@ -346,11 +346,11 @@ type Roster struct {
 	fingerprint uint64
 
 	// onStatusChange, when set via SetOnStatusChange, is fired once per
-	// session id by Refresh whenever that session's Status differs from the
-	// prior snapshot (a session present in both snapshots with a changed
-	// Status). It exists so a status transition can drive a targeted
-	// past-index re-read (PastIndex.RefreshOne) instead of waiting for the
-	// next full rebuild.
+	// session id by Refresh whenever that session's Status changes or its
+	// LastTurnEndedAt advances. A whole turn can run between idle probes;
+	// its completion must also drive the targeted past-index re-read
+	// (PastIndex.RefreshOne) before navigation publishes, rather than waiting
+	// for the next full rebuild.
 	onStatusChange func(sessionID string)
 	// onSessionGone, when set via SetOnSessionGone, is fired by Refresh for a
 	// session that left the listing for good: its daemon's process is gone
@@ -458,8 +458,8 @@ func NewRosterWithEntries(entries ...LiveEntry) *Roster {
 func (r *Roster) SetOnChange(fn func()) { r.onChange = fn }
 
 // SetOnStatusChange registers a callback fired once per session id, by
-// Refresh, whenever that session's Status transitions between two
-// consecutive snapshots. Nil disables the hook.
+// Refresh, whenever that session's Status changes or LastTurnEndedAt advances
+// between two consecutive snapshots. Nil disables the hook.
 func (r *Roster) SetOnStatusChange(fn func(sessionID string)) { r.onStatusChange = fn }
 
 // SetOnSessionGone registers a callback fired by Refresh, once, for each
@@ -1010,7 +1010,7 @@ func (r *Roster) publishListingLocked(bySess map[string]LiveEntry, byPID map[int
 		onChange:       r.onChange,
 	}
 	for id, cur := range bySess {
-		if prev, had := prevBySess[id]; had && prev.Status != cur.Status {
+		if prev, had := prevBySess[id]; had && (prev.Status != cur.Status || cur.LastTurnEndedAt.After(prev.LastTurnEndedAt)) {
 			publication.statusChanges = append(publication.statusChanges, id)
 		}
 	}

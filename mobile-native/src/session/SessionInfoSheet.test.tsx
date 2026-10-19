@@ -40,6 +40,8 @@ vi.mock("@react-navigation/native", () => ({
 	},
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+const clipboard = vi.hoisted(() => ({ setStringAsync: vi.fn(async () => true) }));
+vi.mock("expo-clipboard", () => clipboard);
 
 const palette = paletteFor("light");
 const HUB = "hub-1";
@@ -230,15 +232,30 @@ describe("what the sheet shows (spec 8.6)", () => {
 		expect(hostRow.findByProps({ name: "circle.fill" }).props.tintColor).toBe(palette.alive);
 	});
 
-	it("labels its sections 12pt semibold uppercase in ink-mid", () => {
+	it("shows the session id as a copyable row, in Menlo", async () => {
+		provide(conversation());
+		const tree = sheet();
+		// The id is its ref, which /copy-id copies and this row now shows.
+		const id = textNode(tree, REF);
+		expect(styleOf(id)).toMatchObject({ fontFamily: "Menlo" });
+		clipboard.setStringAsync.mockClear();
+		const row = tree.root.find(
+			(node) => node.props.accessibilityLabel === `Session id, ${REF}` && typeof node.props.onPress === "function",
+		);
+		await act(async () => row.props.onPress());
+		expect(clipboard.setStringAsync).toHaveBeenCalledWith(REF);
+	});
+
+	it("uses readable sentence-case section headings in ink-mid", () => {
 		provide(conversation());
 		const tree = sheet();
 		expect(styleOf(textNode(tree, "Where"))).toMatchObject({
-			fontSize: 12,
+			fontSize: 15,
+			lineHeight: 20,
 			fontWeight: "600",
-			textTransform: "uppercase",
 			color: palette.inkMid,
 		});
+		expect(styleOf(textNode(tree, "Where")).textTransform).toBeUndefined();
 	});
 
 	it("draws its groups as the shared grouped list, inset with hairlines between rows", () => {

@@ -493,7 +493,7 @@ describe("last mobile location", () => {
 		const disk = storage();
 		const repository = new LocationRepository(disk);
 		const params = { hubId: "studio", ref: "local:coord", threadId: "coord", title: "Coordinator" };
-		const location = locationForRoute({ name: "Subagents", params }, "studio");
+		const location = locationForRoute({ name: "Activity", params: { ...params, kind: "agents" } }, "studio");
 		expect(location).toEqual({ hubId: "studio", conversation: { ref: "local:coord", title: "Coordinator" } });
 		repository.save(location);
 		const saved = new LocationRepository(disk).read(["studio"]);

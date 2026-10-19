@@ -257,9 +257,6 @@ The selection semantics live in `src/shell/rail/liveSessionCycle.ts`
 - Both chords suppress in editable targets: Alt+Shift+ArrowLeft/Right are
   native word-selection chords in text fields.
 - Desktop only, same as pane cycling.
-- The TUI binds the same chords in session view
-  (`cmd/evener-tui/hub_livecycle.go`), cycling live sessions in dashboard
-  order through the ordinary session-entry read.
 - Tree-keyboard note: the desktop rail's Tree widget leaves the arrow keys
   alone when Alt is held (Alt alone or Alt+Shift — the live-session chord)
   plus Alt-held Home/End, so these and every other global Alt chord still

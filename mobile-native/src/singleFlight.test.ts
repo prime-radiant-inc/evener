@@ -66,3 +66,26 @@ it("abandons a run that never settles and starts the next request", async () => 
 	await tick();
 	expect(flight.running).toBe(false);
 });
+
+it("resolves settled waiters when settle() drops a satisfied request", async () => {
+	// The owner is busy with its own request (idle() false), so a queued
+	// request cannot start; the owner then satisfies that work itself
+	// (settle). The queue empties without any run finishing — a waiter must
+	// hear the flight went idle rather than hang forever.
+	let ownerBusy = false;
+	let release!: (value: unknown) => void;
+	const flight = singleFlight(
+		() => new Promise((done) => (release = done)),
+		() => !ownerBusy,
+	);
+	flight.request();
+	ownerBusy = true;
+	// The run finishes while the owner stays busy, so the trailing request
+	// stays queued behind the owner's work.
+	const settled = flight.settled();
+	release(undefined);
+	await tick();
+	flight.settle();
+	ownerBusy = false;
+	await expect(settled).resolves.toBeUndefined();
+});

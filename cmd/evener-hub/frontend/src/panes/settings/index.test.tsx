@@ -58,9 +58,9 @@ test('registers "settings" as a singleton pane', () => {
   expect(descriptor.singleton).toBe(true);
 });
 
-test("the title reflects the focused section, defaulting to General when none is given", () => {
+test("the title reflects the focused section, defaulting to Appearance when none is given", () => {
   const descriptor = paneFor("settings");
-  expect(descriptor.title({}, {})).toBe(settingsSectionLabel("general"));
+  expect(descriptor.title({}, {})).toBe(settingsSectionLabel("theme"));
   expect(descriptor.title({ section: "hub" }, {})).toBe(settingsSectionLabel("hub"));
   expect(descriptor.title({ section: "credentials" }, {})).toBe(settingsSectionLabel("credentials"));
 });

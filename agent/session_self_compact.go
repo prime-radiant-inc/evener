@@ -127,17 +127,20 @@ func (s *Session) claimPinnedNoteLocked(gen uint64) {
 
 // selfCompactNudge is the low-headroom warning. The pressure is real either
 // way; only the remedy is tool-dependent, so a session without compact_context
-// gets the same warning worded as something it can actually do. loaded lists
-// the session's successfully loaded skills: the compact-tool remedy asks which
-// to reload via reload_skills; the no-tool remedy lists them for awareness and
-// never requests a structured selection the model cannot submit.
-func selfCompactNudge(canCompact bool, loaded []schema.SkillInventorySummary) string {
+// gets the same warning worded as something it can actually do. loadedNames
+// lists the session's successfully loaded skills: the compact-tool remedy asks
+// which to reload via reload_skills; the no-tool remedy lists them for
+// awareness and never requests a structured selection the model cannot submit.
+// Names only: the descriptions belong to the elicitation prompt, where the
+// model must choose reloads by content, and would eat the headroom this
+// warning exists to reclaim.
+func selfCompactNudge(canCompact bool, loadedNames []string) string {
 	list := ""
-	if len(loaded) > 0 {
+	if len(loadedNames) > 0 {
 		var b strings.Builder
 		b.WriteString(" Skills loaded in this session:\n")
-		for _, sk := range loaded {
-			fmt.Fprintf(&b, "- %s — %s\n", sk.Name, sk.Description)
+		for _, name := range loadedNames {
+			fmt.Fprintf(&b, "- %s\n", name)
 		}
 		list = b.String()
 	}
@@ -193,7 +196,7 @@ func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	s.mu.Lock()
 	s.nudgedSinceCompact = true
 	s.mu.Unlock()
-	if err := s.SteerKind(selfCompactNudge(s.canInstructTool("compact_context"), skillInventorySummaries(s.advertisedSkillInventory())), events.SteeringKindCompactNudge); err != nil {
+	if err := s.SteerKind(selfCompactNudge(s.canInstructTool("compact_context"), skillInventoryNames(s.advertisedSkillInventory())), events.SteeringKindCompactNudge); err != nil {
 		s.mu.Lock()
 		s.nudgedSinceCompact = false
 		s.mu.Unlock()

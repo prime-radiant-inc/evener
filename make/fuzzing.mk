@@ -119,7 +119,7 @@ fuzz:
 # `make fuzz` golden check; run this ONLY after an INTENDED decoder change, then
 # commit the diff. See docs/developing-evener/fuzzing.md ("Choosing an oracle").
 # The third line is the same idea one layer up: the hub's recorded credential-
-# wire answers, which the TUI and the React pane decode instead of hand-building
+# wire answers, which the React pane decodes instead of hand-building
 # InstanceEntry/AuthStatusResponse values of their own. The fourth records the
 # daemon's delegate and job notification frames as steering items, which the
 # AppWire package and the phone parse instead of hand-building frames; the

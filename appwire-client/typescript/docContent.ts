@@ -1,4 +1,4 @@
-// Doc-pane data layer (wave 8). Two data paths for the native React doc pane:
+// Doc-pane data layer (wave 8). Three data paths for the native React doc pane:
 //
 //   docImageURL - a pure href builder for /doc/image, which already serves
 //   raw image bytes (floor §1.5), so an <img src> can use it directly. The
@@ -13,6 +13,10 @@
 //   markdown / escaped <pre>). It is NOT the legacy /doc/file HTML page. The
 //   request itself comes from the DocPort the host supplies, so this module
 //   names no browser global, no origin and no credentials policy of its own.
+//
+//   docDownloadURL - /doc/file?format=download, the same route's whole-file
+//   representation, for a native client that saves it or hands it to another
+//   app.
 
 export * from "./documentReadDemand";
 export * from "./fileReferences";
@@ -103,12 +107,20 @@ function docBase(origin: string): string {
   return origin.replace(/\/+$/, "");
 }
 
+// docSessionURL builds one session document href: the route, then the session
+// and cwd-relative path as escaped query values, matching the Go handlers' own
+// url.QueryEscape. `leading` is any route-specific query value that comes
+// before them, already spelled with its own "&".
+function docSessionURL(origin: string, route: string, session: string, path: string, leading = ""): string {
+  return `${docBase(origin)}/doc/${route}?${leading}session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`;
+}
+
 // docFileRawURL builds the /doc/file?format=raw href for a session-scoped,
 // cwd-relative path, hung off the host's base origin (empty for same-origin).
 // Both query values are escaped, matching the Go handler's url.QueryEscape of
 // session and path.
 export function docFileRawURL(origin: string, session: string, path: string): string {
-  return `${docBase(origin)}/doc/file?format=raw&session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`;
+  return docSessionURL(origin, "file", session, path, "format=raw&");
 }
 
 // readDocFile fetches raw file content for the native doc pane. The response
@@ -165,11 +177,19 @@ function etagRevision(etag: string | null): string | undefined {
 // values are escaped, matching the Go handler's own url.QueryEscape of
 // sessionID and rel.
 export function docImageURL(origin: string, session: string, path: string): string {
-  return `${docBase(origin)}/doc/image?session=${encodeURIComponent(session)}&path=${encodeURIComponent(path)}`;
+  return docSessionURL(origin, "image", session, path);
 }
 
 export function docImageReadURL(origin: string, session: string, readTarget: string, generation: string): string {
   return `${docImageURL(origin, session, readTarget)}&read=${encodeURIComponent(generation)}`;
+}
+
+// docDownloadURL builds the /doc/file?format=download href for a session-scoped,
+// cwd-relative path: the whole-file read a native client saves or hands to
+// another app. Unlike the raw representation there is no pane cap, so the
+// response body is the file itself.
+export function docDownloadURL(origin: string, session: string, path: string): string {
+  return docSessionURL(origin, "file", session, path, "format=download&");
 }
 
 // filenameOf returns the last segment of a slash path: a document's name when

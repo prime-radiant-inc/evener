@@ -15,8 +15,8 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-// TestServeGoal_TUIPathEndToEnd is the proof that /goal works through the REAL
-// daemon glue — the exact path the TUI drives — end to end:
+// TestServeGoal_DaemonPathEndToEnd is the proof that /goal works through the REAL
+// daemon glue — the daemon path a client drives — end to end:
 //
 //	appwire goal/set  →  Server.goalFunc  →  Session.SetGoal
 //	                  →  kick (SetKickFunc)  →  Server.SubmitContinuation
@@ -27,7 +27,7 @@ import (
 // and the InputCh→ProcessInputKind loop) is exercised by the unit tests, which
 // stub the goalFunc or drive the Session directly. This test starts the real
 // `serve` daemon with a scripted provider at the LLM boundary, connects an
-// appwire client over the websocket RPC exactly like the TUI's hubstart does,
+// appwire client over the websocket RPC, the way appwire clients do,
 // and sets a goal whose
 // second step is gated on an external file that only appears AFTER the first
 // goal turn has ended and a continuation has begun. That makes a second turn —
@@ -36,9 +36,9 @@ import (
 // for b.txt does not exist until the continuation loop has already run once.
 //
 // It then asserts the real on-disk outcome (a.txt and b.txt with the gated
-// content) plus a completed goal whose Iterations>=1 — the projection the TUI
+// content) plus a completed goal whose Iterations>=1 — the projection a client
 // reads to render /goal status.
-func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
+func TestServeGoal_DaemonPathEndToEnd(t *testing.T) {
 	workDir := t.TempDir()
 	stateDir := t.TempDir()
 	runDir := t.TempDir()
@@ -87,8 +87,7 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 
 	entry := waitForServeTestRendezvous(t, runDir)
 
-	// Connect an appwire client to the daemon over the websocket RPC, the same
-	// way cmd/evener-tui/internal/hubstart dials the hub: DialWebSocket → NewClient
+	// Connect an appwire client to the daemon over the websocket RPC: DialWebSocket → NewClient
 	// → Start → Initialize.
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
@@ -125,7 +124,7 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 		"b.txt exist with the correct contents."
 
 	// Release the gate exactly when the daemon's continuation loop has run: poll
-	// the same EvenerThread.Goal projection the TUI reads, and the moment Iterations
+	// the same EvenerThread.Goal projection a client reads, and the moment Iterations
 	// crosses 1 (a continuation turn happened, fed via SubmitContinuation →
 	// inputCh → ProcessInputKind), write gate.txt so the continuation can finish
 	// step 2. This ties b.txt's existence to a real cross-turn continuation.
@@ -168,7 +167,7 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 	}
 
 	// Poll the thread read for the goal reaching a terminal status. This is the
-	// same EvenerThread.Goal projection the TUI reads to render /goal status.
+	// same EvenerThread.Goal projection a client reads to render /goal status.
 	goalState := waitForTerminalGoal(ctx, t, client, ref, 130*time.Second)
 	gateCancel()
 
@@ -223,7 +222,7 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 		t.Fatalf("transcript %s not written: %v", transcriptPath, err)
 	}
 
-	t.Logf("TUI PATH PROOF: GoalSet.Started=%v; EvenerThread.Goal{Status:%q Iterations:%d}; a.txt=%q b.txt=%q",
+	t.Logf("GOAL PATH PROOF: GoalSet.Started=%v; EvenerThread.Goal{Status:%q Iterations:%d}; a.txt=%q b.txt=%q",
 		resp.Started, goalState.Status, goalState.Iterations, string(aData), string(bData))
 
 	// Shut the daemon down and assert a clean exit.
@@ -249,7 +248,7 @@ func TestServeGoal_TUIPathEndToEnd(t *testing.T) {
 // waitForTerminalGoal polls thread/read until EvenerThread.Goal reaches a terminal
 // status (anything other than "active") or the deadline elapses. It returns the
 // terminal GoalState. The read targets the session by its ("local", sessionID)
-// ref, the same projection the TUI consumes.
+// ref, the same projection a client consumes.
 func waitForTerminalGoal(ctx context.Context, t *testing.T, client *appwire.Client, ref string, timeout time.Duration) appwire.GoalState {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

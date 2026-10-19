@@ -758,7 +758,14 @@ func writeListDirBadName(t *testing.T, root string) {
 	badName := "bad" + string([]byte{0xff})
 	bad := filepath.Join(root, badName)
 	if err := os.Mkdir(bad, 0o755); err != nil {
-		t.Fatal(err)
+		// The kernel itself refuses the name where the filesystem requires
+		// UTF-8: macOS APFS rejects every invalid-UTF-8 filename with EILSEQ
+		// ("illegal byte sequence"), at os.Mkdir and raw mkdir(2) alike. The
+		// fixture cannot exist there, so the walk under test never runs; the
+		// scenario is a Linux-host one (CI runs there). Skip rather than fail on
+		// a host limitation — glob_budget_test.go skips the same way when the
+		// platform will not create the name a fixture needs.
+		t.Skipf("the filesystem refuses a non-UTF-8 name, so the fixture cannot exist: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(bad, "leaf.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)

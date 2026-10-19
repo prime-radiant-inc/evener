@@ -8,7 +8,6 @@ import { render, settle } from "../renderNative.testkit";
 import { openSqliteSyncDouble } from "../sqliteSync.testkit";
 import type { Routes } from "../screens";
 import { LaunchMemory } from "./launchMemory";
-import type { SessionSeed } from "./launchSetup";
 import type { NewSessionContextValue } from "./newSessionContext";
 import { forgetCreationForHub } from "./creations";
 import { NewSessionSheet } from "./NewSessionSheet";
@@ -81,9 +80,12 @@ vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+// The sheet's share handoff reads the app group; this suite's sheet carries no
+// share, and the module cannot load under vitest.
+vi.mock("expo-file-system", () => ({ Paths: { appleSharedContainers: {} } }));
 
-async function mount(like?: SessionSeed) {
-	const route = { key: "NewSession", name: "NewSession", params: { hubId: "hub-1", hubName: "magic-kingdom", like } };
+async function mount() {
+	const route = { key: "NewSession", name: "NewSession", params: { hubId: "hub-1", hubName: "magic-kingdom" } };
 	const goBack = vi.fn();
 	const props = {
 		navigation: { goBack } as unknown as NativeStackScreenProps<Routes, "NewSession">["navigation"],
@@ -99,6 +101,14 @@ async function mount(like?: SessionSeed) {
 		await settle();
 	};
 	return { tree, context, rerender, goBack };
+}
+
+function submitHeldStart(store: NewSessionContextValue["store"]) {
+	let outcome!: ReturnType<ReturnType<typeof store.getState>["submit"]>;
+	act(() => {
+		outcome = store.getState().submit();
+	});
+	return outcome;
 }
 
 beforeEach(() => {
@@ -149,23 +159,6 @@ it("reads the form's model list again when the hub announces a refreshed one", a
 	expect(reads()).toBe(before + 1);
 });
 
-it("opens like a session when New session like this opened it", async () => {
-	const draft: CreationDraft = {
-		source: "local",
-		cwd: "/home/jesse/git/docs",
-		prompt: "",
-		harness: "",
-		model: null,
-		reasoning: "",
-		launchOverrides: {},
-		images: [],
-		unconfirmed: false,
-	};
-	harness.drafts.write("hub-1", draft);
-	const sheet = await mount({ host: "paradise-park", cwd: "/Users/jesse/git/evener" });
-	expect(sheet.context().store.getState()).toMatchObject({ source: "paradise-park", cwd: "/Users/jesse/git/evener" });
-});
-
 it("asks the hub nothing until the connection is ready, then loads projects and models", async () => {
 	harness.connection = { state: "reconnecting", ready: false };
 	const sheet = await mount();
@@ -194,7 +187,7 @@ it("finishes a start the sheet was swiped away from, so the session it made is k
 	harness.drafts.write("hub-1", draft);
 	const sheet = await mount();
 	const store = sheet.context().store;
-	const outcome = store.getState().submit();
+	const outcome = submitHeldStart(store);
 	await settle();
 	expect(harness.heldStart).not.toBeNull();
 	// The person swipes the sheet down while the hub is still starting it.
@@ -227,7 +220,7 @@ const created = {
 it("never lets a reopened sheet's edits be lost to the start it was swiped away from (#3104)", async () => {
 	harness.drafts.write("hub-1", evenerDraft);
 	const first = await mount();
-	const outcome = first.context().store.getState().submit();
+	const outcome = submitHeldStart(first.context().store);
 	await settle();
 	expect(harness.heldStart).not.toBeNull();
 	act(() => first.tree.unmount());
@@ -249,7 +242,7 @@ it("never lets a reopened sheet's edits be lost to the start it was swiped away 
 it("shows a reopened sheet the start still on its way, and never starts it twice (#3104)", async () => {
 	harness.drafts.write("hub-1", evenerDraft);
 	const first = await mount();
-	const outcome = first.context().store.getState().submit();
+	const outcome = submitHeldStart(first.context().store);
 	await settle();
 	act(() => first.tree.unmount());
 	const reopened = await mount();

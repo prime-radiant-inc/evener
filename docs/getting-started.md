@@ -1,191 +1,355 @@
-# Getting Started with Evener
+# Get started
 
-Evener is a coding agent. Its default interactive surface is the browser:
-the `evener hub` orchestrator serves a web UI where you start sessions,
-watch the agent work, and steer it with follow-up messages. The `evener tui`
-terminal dashboard and a non-interactive command line serve other workflows,
-but the hub is the everyday way to use Evener.
+Finish your first Evener task in a project you already know. You will install
+Evener, connect a model provider without leaving the New session form, choose a
+model explicitly, review the session's effective permissions, and check the
+result yourself. A [disposable Python exercise](#optional-disposable-exercise)
+is available if you do not yet have a suitable project.
 
-This guide walks a new user from install to a working session. It points to
-reference docs for details that change; follow the links where you need
-depth.
+Evener runs the agent on your computer or another configured host. The browser is its control surface. A **hub** serves that interface and connects it to sessions; a **session** holds one conversation and its work.
 
-## Install
+A **model provider** supplies the AI model that reads your request and proposes actions. Evener carries out those actions through **tools**, such as file readers and shell commands. A model with tool-call support can request those tools, rather than only return text.
 
-Install the latest release on Linux x64 or macOS Apple silicon:
+## Before you begin
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh | sh
+You need:
+
+- Linux x64 or macOS on Apple silicon for the prebuilt installer below.
+- A terminal with `sh`, `curl`, `tar`, `install`, and either `sha256sum` or `shasum`.
+- Git for the first-task review loop. Python 3 is needed only for the optional
+  disposable exercise.
+- A browser and network access to GitHub and your chosen model provider.
+- An API key from a supported provider, or another supported authentication method. Hosted model use may incur charges.
+
+If you want to run the model locally, configure [Ollama](ollama.md) instead of the hosted-provider step below. Complete its setup and choose a model that supports tool calls before starting the session. A local server does not need a hosted-provider key, but it does need a downloaded model and enough machine resources to run it.
+
+Evener can edit files and run commands. Start with a project and task you can
+review. A disposable directory is **not a security sandbox**. Read
+[sandboxing](sandboxing.md) before working with untrusted code.
+
+## Install Evener
+
+These docs track **main**. Install the latest successful snapshot build for the closest match; it may still trail the newest source commit. Start in a new directory so the download cannot overwrite an earlier installer. Run this in your terminal:
+
+```sh
+mkdir evener-install-review && cd evener-install-review
 ```
 
-The installer downloads the matching GitHub release archive, verifies its
-SHA-256 checksum, and installs five commands — `evener`, `evener hub`,
-`evener tui`, `evener doctor`, and `evener migrate` — under
-`~/.local/share/evener/bin`, symlinked into `~/.local/bin`. Add
-`~/.local/bin` to your `PATH` if your shell does not already find the
-commands there.
+If that directory already exists, choose another unused name before continuing. Then download and inspect the installer:
 
-Four environment variables adjust the install:
-
-- `EVENER_INSTALL_VERSION=v1.2.3` installs a specific tagged release;
-  `EVENER_INSTALL_VERSION=snapshot` installs the latest successful build from
-  `main`.
-- `PREFIX=/usr/local` changes the install root (use `sudo` for system-owned
-  paths); `BINDIR` and `EVENER_SHARE_BINDIR` override the two install
-  directories individually.
-
-Pass installer variables to `sh`, not to `curl`, in a pipeline:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh \
-  | EVENER_INSTALL_VERSION=snapshot sh
-curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh \
-  | sudo env PREFIX=/usr/local sh
+```sh
+curl -fsSL https://raw.githubusercontent.com/prime-radiant-inc/evener/main/install.sh -o evener-install.sh
+less evener-install.sh
+EVENER_INSTALL_VERSION=snapshot sh evener-install.sh
 ```
 
-To install Evener on another Linux or macOS host from an existing Evener
-installation, use SSH:
+Inspect the downloaded script before running it: it installs executable code. The installer verifies the archive's SHA-256 checksum, installs the `evener` executable under `~/.local/share/evener/bin`, and links it into `~/.local/bin` by default. Commands such as `evener hub` are subcommands of that executable.
 
-```bash
-evener install user@host
-evener install --version snapshot user@host
-```
+Check that your shell can find Evener:
 
-This sends the reviewed installer over a non-interactive SSH connection. The
-remote host must have `sh`, `curl`, `tar`, `install`, and either `sha256sum` or
-`shasum`, plus outbound HTTPS access to the Evener GitHub release. SSH keys
-should be configured in advance; the command uses `BatchMode=yes` and will not
-prompt for a password. `--prefix`, `--bin-dir`, and `--share-bin-dir` are
-forwarded to the remote installer.
-
-From a source checkout, `make install` builds and installs the same layout;
-`sudo make install-system` uses `/usr/local`. Runtime and config directories
-appear on first run, not at install time.
-
-Verify the install:
-
-```bash
+```sh
+export PATH="$HOME/.local/bin:$PATH"
 evener --version
 ```
 
-## Start the hub
+Add that `PATH` entry to your shell's startup file if needed. The version command should print a version rather than `command not found`. If the installer rejects your platform, use the [source-build guide](developing-evener/README.md); changing the archive name cannot make a binary compatible.
 
-Run the hub in a terminal you can leave open:
+### Release alternative
 
-```bash
+To choose the latest tagged release instead, run the same reviewed installer without the snapshot setting:
+
+```sh
+EVENER_INSTALL_VERSION=latest sh evener-install.sh
+```
+
+Release behavior can lag these guides. `EVENER_INSTALL_VERSION` also accepts an existing release tag. Do not treat an example version number as an available release. See the [CLI reference](cli.md) for upgrades and remote installation.
+
+## Open the browser interface
+
+Start the hub in a terminal you can leave open:
+
+```sh
 evener hub
 ```
 
-The hub binds to loopback and listens on `127.0.0.1:9180` by default; a lock
-file keeps it to one instance per hub state root. Keep the hub running —
-sessions you start from the browser live behind it. To bind another address,
-run under a supervisor, or deploy on a remote host, see the
-[hub runbook](evener-hub.md) and
-[docs/evener-hub-remote-operations.md](evener-hub-remote-operations.md).
+By default it listens on `127.0.0.1:9180`, reachable only from the same computer. Open the authorization URL printed at startup. It has this shape, with a real token in place of the placeholder:
 
-The hub guards the web UI with a token. At startup it prints an authorization
-URL:
-
-```
-[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth/<token>
+```text
+http://127.0.0.1:9180/auth/<token>
 ```
 
-Open that URL. It sets a long-lived cookie, and later visits to
-`http://127.0.0.1:9180` need no token. The token also lives at
-`${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth-token` for scripted clients,
-which pass it as `Authorization: Bearer`.
+The URL signs this browser in. Treat it as a credential: do not paste it into a conversation, screenshot, or bug report. After signing in, use `http://127.0.0.1:9180` normally.
 
-## Add provider credentials
+Leave the hub running. Closing a browser tab is not a stop command for the agent. If the port is occupied or the page will not open, use [troubleshooting](troubleshooting.md) rather than launching more hub instances. For another bind address or a supervised service, use the [hub runbook](evener-hub.md).
 
-Hosted LLM providers generally need a credential. Local/auth-none providers
-such as Ollama can run without one. For providers that need credentials, the
-web UI is the easiest place to add one: open
-`http://127.0.0.1:9180/credentials` and paste an API key. The page writes
-`${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml` with owner-only
-permissions. If `EVENER_PROVIDERS_CONFIG` points to a custom `providers.toml`,
-Evener stores `credentials.toml` beside it, unless `EVENER_CREDENTIALS_CONFIG`
-names a different path.
+## Prepare a first task in your project
 
-Two alternatives cover other workflows. Environment variables such as
-`OPENAI_API_KEY` and `ANTHROPIC_API_KEY` work as a fallback when the
-credentials file has no entry for that instance. You can also sign in to
-OpenAI's ChatGPT/Codex subscription with OAuth from the credentials page —
-that authenticates the separate `openai-codex` instance, not `openai`, and
-`openai-codex` is preferred over `openai` when both are available. For the
-full resolution order and provider-specific behavior, see
-[docs/llm-provider-config-and-launch.md](llm-provider-config-and-launch.md).
+Choose a project you understand and a small, reversible task. Good first tasks
+have a clean Git working tree, a narrow expected diff, and a check you already
+trust. A documentation correction, a focused test repair, or a small bug with a
+reproduction is better than deployment, credential changes, migrations, or
+destructive work.
 
-## Your first session
+In the project's terminal, record the starting point:
 
-Start a session from the browser. Open `http://127.0.0.1:9180/new`, type a
-prompt, pick a model and a working directory, and click Start. The agent
-begins working in that directory: reading files, running commands, and
-editing code while the transcript streams live.
-
-Steer the session as it runs. Send follow-up messages in the conversation,
-or interrupt when it heads the wrong way. The sidebar's Live section sorts
-running sessions by which one needs you first, excluding archived running
-sessions, so several sessions can run in parallel without losing track of any
-of them.
-
-## Everyday workflow
-
-A few concepts carry most of the interactive workflow:
-
-- **Transparent resume.** Click any closed session, type, and send. The
-  session continues from where it left off with the same identity.
-- **Fork from here.** Every message you sent carries a fork button. Click it
-  to branch the session at that point; the original message lands in the
-  composer for you to edit, and the original line stays as a sibling fork in
-  the sidebar.
-- **Aside.** The *Aside: fork to side thread* palette command forks the
-  current session into a side thread, so a tangential question does not
-  derail the main line of work.
-- **Search.** Press ⌘K (Ctrl+K on Linux) to search across live and past
-  sessions.
-- **Settings.** The settings page controls theme and notifications and shows
-  provider and MCP configuration.
-
-## Keep Evener current
-
-Upgrade the installed binaries with:
-
-```bash
-evener upgrade
+```sh
+git status --short
+pwd
 ```
 
-The command updates `evener`, `evener hub`, `evener tui`, and `evener doctor`,
-following the binary's install channel: release builds upgrade to the latest
-release, snapshot builds to the latest `main` build. Pass `release`, `snapshot`,
-or a tag such as `v1.2.3` to switch tracks. It does not update `evener migrate`;
-rerun the installer, or run `make install` (or `sudo make install-system`), to
-refresh that command. The web UI's `/upgrade` command and the TUI call through
-the same mechanism.
+Run the task's check before Evener changes anything. Keep its command and output;
+you will run the same check afterward. If the tree is not clean, either account
+for every existing change or choose another project. Evener does not decide
+which pre-existing changes are safe to overwrite.
 
-Running sessions keep the binary they started with. End a session, upgrade,
-and resume it to pick up the new build.
+<a id="connect-a-provider-before-starting-work"></a>
 
-## Other ways to drive Evener
+## Connect a provider in New session
 
-- **`evener tui`** is a terminal dashboard backed by the same hub: browse
-  sessions, read transcripts, and send actions without a browser. See the
-  [TUI section of the README](../README.md#evener-tui-terminal-user-interface).
-- **`evener --model <provider/model> "<prompt>"`** runs one non-interactive
-  session from the shell, suitable for scripts and CI. See
-  [Non-interactive CLI](../README.md#non-interactive-cli).
-- **`llmcall`** makes a single raw LLM call with no agent loop. See the
-  [llmcall section of the README](../README.md#llmcall-one-shot-llm-client).
-- **`evener doctor`** inspects sessions, jobs, and watches when something
-  misbehaves. Run `evener doctor --help`.
+Open **New session** at `/new`. The working directory, task draft, provider, and
+model all belong to this launch form:
 
-## Next steps
+1. Choose the project directory reported by `pwd` and write your bounded task.
+   Your directory and task remain in the form while provider setup opens and
+   closes.
+2. If the form says a provider is required, select **Connect provider**. Choose
+   the provider you intend to use. An ordinary chat subscription is not
+   necessarily an API account.
+3. For an API connection, paste the actual key into the masked field and select
+   **Save and check**. For a supported ChatGPT/Codex subscription, choose the
+   separate **OpenAI Codex** sign-in route instead; it is not the `openai` API-key
+   connection.
+4. A successful check means Evener saved the resolved access and fetched that
+   provider connection's model list. It does **not** send your task, make a
+   generation request, or prove quota, billing, model capability, or generation
+   access. Fix an inline failure and retry; a failed list check does not erase a
+   key that was saved successfully.
+5. Select **Choose model**, then explicitly choose the model for this session.
+   If listing fails, use **Retry models**. If the provider cannot support a list
+   check, **Continue without verification** is an unverified route, not a pass.
 
-- [docs/llm-providers.md](llm-providers.md) — supported providers and models,
-  including local models through [Ollama](ollama.md).
-- [docs/sandboxing.md](sandboxing.md) — confine a session's file, process,
-  and network access.
-- [docs/skills.md](skills.md) — extend Evener with skills.
-- [docs/evener-hub.md](evener-hub.md) — production-style hub setup, launch
-  configuration layering, and smoke checks.
-- [docs/developing-evener/README.md](developing-evener/README.md) — building
-  and testing Evener itself.
+The default credential file is `~/.config/evener/credentials.toml` (under
+`XDG_CONFIG_HOME` when set). Evener writes it with owner-only permissions. Do not
+put keys in your project, task, screenshot, or bug report. Custom paths,
+environment fallbacks, and provider-specific rules are covered in
+[configuration](configuration.md) and [Connecting a provider](connecting-a-provider.md).
+
+## Review the task and permissions, then Start
+
+Before selecting **Start**, confirm the directory, task, and chosen model are
+still the ones you intended. Review **Effective access** near Start. It reports
+the resolved launch setting, including an Advanced sandbox override when one is
+set. Use **Change** to reach the control that owns that value.
+
+Task instructions and permissions are different controls. A sentence such as
+“work only in this directory” tells the model what you want; it does not restrict
+the tools. **Full access** has no sandbox restriction. **Read-only** prevents
+workspace changes. **Workspace write** permits changes inside the workspace.
+**Restricted** applies the tightest filesystem and command access. Use the least
+access the task needs, and treat the displayed Effective access value as the
+launch result rather than inferring access from the task's wording.
+
+Use a task shaped like this, replacing every placeholder with facts from your
+project:
+
+```text
+Fix <one specific problem>. First run <trusted check> to reproduce it.
+You may change <named files or area>. Do not change <protected files or area>.
+Make the smallest repair, rerun <trusted check>, and report the changed files
+and the actual result. Do not commit or deploy.
+```
+
+Those file instructions bound the requested work; the access setting bounds the
+tools. Select **Start** only after both are right. Connecting a provider and
+choosing a model do not create a session. Leaving the task blank is also
+supported: Start creates an empty session where you can write the task later.
+
+The conversation shows the agent's messages and tool calls. If it proposes
+unrelated work, correct it in the composer. [Daily work](daily-work.md) explains
+Send, Steer, and Stop.
+
+## Check the result yourself
+
+When the agent reports completion:
+
+1. Run the same check you recorded before the session.
+2. Read `git diff` and `git status --short`.
+3. Confirm protected files did not change and every remaining change belongs to
+   the task.
+
+The agent's report is evidence to inspect, not the final verdict. Do not accept a
+passing check obtained by weakening that check. If a check fails, send its exact
+output back to the same session and ask for a focused repair.
+
+You have now completed the basic loop: state a bounded task, choose its actual
+permissions, observe the work, and verify it independently.
+
+<a id="prepare-the-example"></a>
+
+## Optional disposable exercise
+
+Use this exercise if you do not have a suitable project. It copies a small
+`total_cents` bug and an independent checker into a disposable Git repository:
+
+Choose a parent directory where neither `evener-docs` nor `evener-first-task`
+exists. Run this whole block together. The checks and `&&` chain stop setup if
+either path already exists or any setup command fails; do not continue by
+running the copy commands separately.
+
+```sh
+[ ! -e evener-docs ] && [ ! -L evener-docs ] &&
+[ ! -e evener-first-task ] && [ ! -L evener-first-task ] &&
+mkdir evener-docs evener-first-task &&
+git clone --depth 1 https://github.com/prime-radiant-inc/evener.git evener-docs &&
+cp evener-docs/docs/examples/first-task/README.md evener-first-task/ &&
+cp evener-docs/docs/examples/first-task/receipt.py evener-first-task/ &&
+cp evener-docs/docs/examples/first-task/check.py evener-first-task/ &&
+cd evener-first-task &&
+git init &&
+git add README.md receipt.py check.py &&
+git -c user.name='Tutorial' -c user.email='tutorial@example.invalid' commit -m 'Add first-task fixture' &&
+pwd &&
+python3 check.py
+```
+
+The `git -c` options set a throwaway author identity for this commit only; they
+do not change your global Git settings.
+
+The check should exit 1 because `receipt.py` ignores quantities:
+
+```text
+FAIL: quantity: expected 750, got 250
+FAIL: mixed: expected 490, got 205
+FAIL: zero quantity: expected 100, got 1049
+```
+
+<a id="ask-evener-to-repair-it"></a>
+
+The checker uses only Python's standard library and makes no model request.
+Read `check.py`: its expected answers are fixed examples, not values calculated
+by the function under test. Complete the provider setup above if you have not
+already connected a provider. In **New session**, open **Working directory**,
+enter the printed absolute path in **Path**, press Enter, and choose **Use this
+folder**. Choose your model, review **Effective access**, select **Workspace
+write**, and give this task:
+
+```text
+Fix total_cents in receipt.py so each item's price is multiplied by its
+quantity. Read README.md and check.py first. Run python3 check.py to reproduce
+the bug, then make the smallest repair in receipt.py and rerun the check. Do not
+change check.py or README.md. Do not commit. Report the diff and check result.
+```
+
+Select **Start**. Watch for the baseline failure, the edit to `receipt.py`, and
+the rerun. The CLI below is an alternative, not a second repair to run at the
+same time.
+
+### Use the CLI instead
+
+Run this from the disposable `evener-first-task` directory. Replace
+`provider/model` with your configured model. The CLI does not need the hub.
+This example explicitly turns the sandbox **off**: the disposable fixture
+limits what you intend to edit, not what the process can access. Use only the
+credentials the task needs, and review local instructions and extensions first.
+
+```sh
+evener --model provider/model --timeout 2m --max-rounds 8 --sandbox off "$(cat <<'PROMPT'
+Fix total_cents in receipt.py so each item's price is multiplied by its
+quantity. Work only in this directory. Read README.md and check.py first.
+Run python3 check.py to reproduce the bug, then make the smallest repair
+in receipt.py and rerun the check. Do not change check.py or README.md.
+Do not commit. Report what changed and the actual check result.
+PROMPT
+)"
+```
+
+The final answer goes to stdout; progress and errors go to stderr. An exit of
+0 means the invocation finished without an error, not that the repair is
+correct. Run the independent checks below. If setup fails, fix the reported
+provider or Python prerequisite before retrying. If the task reaches its time
+or round limit, inspect the diff and checker result before continuing.
+
+Maintainer verification: the receipt CLI and web tours use the real binary, tools and
+Python checker with a loopback scripted HTTP provider, `fake/fake-test-model`.
+They verify the initial failure, the edit and the unchanged checker independently.
+They do not test host installation, live-provider authentication, or model quality.
+Native verification is deferred. The [tour manifest and review process](developing-evener/tutorial-tours.md#review-and-publication)
+record capture revision, source digest, and representation; historical captures
+do not imply a new run on every main revision. CLI images are
+labeled **Rendered command transcript** and retain stdout and stderr separately;
+they do not claim cross-stream timing. Web captures come from the built browser
+client after real UI actions, not a mock conversation. Black rectangles hide the
+temporary workspace path labels without changing the live page's text.
+Run the partial check with
+`node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --scenario receipt`
+from the source checkout. This command publishes nothing.
+
+### Check the exercise result
+
+After the agent finishes, run:
+
+```sh
+python3 check.py
+git diff -- receipt.py
+git diff --exit-code -- README.md check.py
+git status --short
+```
+
+Success is `PASS: 4 receipt cases`, a focused `receipt.py` diff, no protected-file
+diff, and only changes you understand. The checker covers four fixed examples,
+not every possible input. A disposable directory still is not a security sandbox.
+
+Python may have created an untracked `__pycache__/` directory. If a protected
+file changed, inspect its diff before restoring it from your tutorial commit.
+When finished, stop remaining tutorial work and inspect running jobs before
+removing `evener-first-task`. Keep the diff and checker output if needed. Do not
+remove provider configuration or other projects as part of this cleanup.
+
+<a id="move-to-your-own-project"></a>
+
+Continue with [daily work](daily-work.md) for steering and review,
+[concepts](concepts.md) for session lifetimes, or [the CLI](cli.md) for
+noninteractive tasks. The [native app guide](native-app.md) explains how an
+iPhone connects to the same hub.
+
+## Captured walkthrough
+
+These historical checkpoints show the disposable exercise, not the current
+provider-connection flow. They use a scripted fake provider, not live-provider authentication.
+CLI images render recorded command output; web images are browser screenshots.
+Owned temporary paths are masked. Native verification is deferred. See the
+[capture provenance and review process](developing-evener/tutorial-tours.md#review-and-publication).
+
+### CLI transcript checkpoints
+
+**Entry.** The baseline checker fails before the repair.
+
+![Receipt CLI entry checkpoint](assets/tutorials/receipt/cli/entry.png)
+
+[Read the entry command transcript](assets/tutorials/receipt/cli/entry.txt).
+
+**Action.** The diff multiplies each price by its quantity.
+
+![Receipt CLI action checkpoint](assets/tutorials/receipt/cli/action.png)
+
+[Read the action command transcript](assets/tutorials/receipt/cli/action.txt).
+
+**Verified.** The transcript ends with `PASS: 4 receipt cases` and exit code 0.
+
+![Receipt CLI verified checkpoint](assets/tutorials/receipt/cli/verified.png)
+
+[Read the verified command transcript](assets/tutorials/receipt/cli/verified.txt).
+
+### Web checkpoints
+
+**Entry.** The workspace and model are selected, ready for the repair request.
+
+![Receipt web entry checkpoint](assets/tutorials/receipt/web/entry.png)
+
+**Action.** The tool rows show a failed checker run followed by an edit to `receipt.py`.
+
+![Receipt web action checkpoint](assets/tutorials/receipt/web/action.png)
+
+**Verified.** The final response reports the quantity repair and a checker exit code of zero.
+
+![Receipt web verified checkpoint](assets/tutorials/receipt/web/verified.png)

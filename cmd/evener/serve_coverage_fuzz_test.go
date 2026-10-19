@@ -60,7 +60,7 @@ func FuzzServeSeedCoverage(f *testing.F) {
 			{"cheap blank", TestApplyFastCheapModel_BlankUsesPrimaryModel},
 			{"noninteractive", TestRunServeNonInteractiveFlagReachesTheSession},
 			{"shutdown waits", TestRunServeShutdownWaitsForInFlightInput},
-			{"goal", TestServeGoal_TUIPathEndToEnd},
+			{"goal", TestServeGoal_DaemonPathEndToEnd},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, tc.fn)

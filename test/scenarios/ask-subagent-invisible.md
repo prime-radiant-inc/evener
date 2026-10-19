@@ -62,8 +62,7 @@ delegation-only tools for a coordinator.
    window with the original task text, which itself contains both marker strings
    (`ASK_USER_UNAVAILABLE` and `ASK_USER_SUCCEEDED`), so a text-based check against the
    parent's outline can't distinguish "the delegate reported X" from "the prompt instructed
-   the delegate to report X" (same pattern as `tui-paste-image-from-clipboard.md`'s
-   transcript cross-check):
+   the delegate to report X" (the same transcript cross-check the web image cards use):
    ```bash
    DFILE=$(find ~/.local/state/evener/projects -name "$DELEGATE_SID.transcript.jsonl")
    python3 - <<EOF

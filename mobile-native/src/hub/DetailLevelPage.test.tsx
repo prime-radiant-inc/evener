@@ -468,7 +468,7 @@ it("waits quietly while the hub's setting is still loading", () => {
 
 it("saves nothing when the level already chosen is chosen again", async () => {
 	const { fake, press } = mount(transcript());
-	await press("Intent, Plus one folded line for each run of steps");
+	await press("Intent, Plus one line for each action, saying what it set out to do");
 	expect(fake.calls).toEqual([]);
 });
 

@@ -17,11 +17,13 @@ import { NotesBar } from "./NotesBar";
 import { type HeaderHiding, nextHeaderHiding, SessionHeader, useHeaderHiding } from "./SessionHeader";
 import { contextChips, type ChipKind, type ContextChip } from "./sessionState";
 
+const viewport = vi.hoisted(() => ({ fontScale: 1 }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
-// The connection status (BoardToolbar's, spec 14) reads the provider.
+// The connection status (spec 14) reads the provider.
 vi.mock("../ConnectionProvider", () => ({
 	useConnection: () => ({ state: "ready", fatal: false, downSince: null, lastLiveAt: null }),
 }));
@@ -32,6 +34,7 @@ afterEach(() => {
 	unmountMountedTrees();
 	keyboard.reset();
 	vi.restoreAllMocks();
+	viewport.fontScale = 1;
 });
 
 const subagents = contextChips(
@@ -148,14 +151,14 @@ describe("the connection bar (spec 8.1, 14)", () => {
 describe("the chips row (spec 8.1)", () => {
 	it("renders the authoritative Subagents total with a quiet label and symbol", () => {
 		const tree = render(header({ chips: [subagents, tasks, goal, queue] }));
-		expect(renderedText(tree)).toBe("Subagents 5 Tasks 2/5 Goal Queue 2");
+		expect(renderedText(tree)).toBe("Agents 5 Tasks 2/5 Goal Queue 2");
 		expect(tree.root.findAllByType("SymbolView" as never).map((node) => node.props.name)).toEqual([
 			"person.2",
 			"checklist",
 			"target",
 			"tray",
 		]);
-		expect(textNode(tree, "Subagents 5").props.style).toMatchObject({ color: palette.inkHi });
+		expect(textNode(tree, "Agents 5").props.style).toMatchObject({ color: palette.inkHi });
 		expect(textNode(tree, "Tasks 2/5").props.style).toMatchObject({
 			fontSize: 15,
 			lineHeight: 20,
@@ -185,7 +188,7 @@ describe("the chips row (spec 8.1)", () => {
 	it("draws each chip as a 32pt capsule with a 44pt hit area, inset fill and an edge border", () => {
 		const [chip] = chipButtons(render(header({ chips: [tasks] })));
 		expect(chip?.props.style({ pressed: false })).toMatchObject({
-			height: 32,
+			minHeight: 32,
 			borderRadius: 16,
 			borderWidth: 1,
 			borderColor: palette.edge,
@@ -193,6 +196,19 @@ describe("the chips row (spec 8.1)", () => {
 		});
 		expect(chip?.props.hitSlop).toEqual({ top: 6, bottom: 6 });
 		expect(chip?.findByType("SymbolView" as never).props).toMatchObject({ size: 13, tintColor: palette.inkMid });
+	});
+
+	it("lets large chip labels grow past their minimum height without clipping", () => {
+		viewport.fontScale = 3;
+		const onChip = vi.fn();
+		const tree = render(header({ chips: [tasks], onChip }));
+		const chip = chipButtons(tree)[0];
+		const style = chip.props.style({ pressed: false });
+		expect(style.height).toBeUndefined();
+		expect(style.minHeight).toBeGreaterThanOrEqual(32);
+		expect(chip.findByType("Text" as never).props.style.lineHeight).toBe(60);
+		act(() => chip.props.onPress());
+		expect(onChip).toHaveBeenCalledWith("tasks");
 	});
 
 	it("draws a blocked goal in attention ink over the attention fill", () => {
@@ -208,7 +224,7 @@ describe("the chips row (spec 8.1)", () => {
 		const tree = render(header({ chips: [subagents, tasks, goal, queue], onChip }));
 		const chips = chipButtons(tree);
 		expect(chips.map((chip) => chip.props.accessibilityLabel)).toEqual([
-			"Subagents, 5",
+			"Agents, 5",
 			"Tasks, 2 of 5 settled",
 			"Goal",
 			"2 queued messages",
@@ -249,7 +265,7 @@ describe("the chips row (spec 8.1)", () => {
 		const tree = render(header({ chips, onChip: (kind) => opened.push(kind) }));
 		// No count to show: the chip names itself alone.
 		expect(renderedText(tree)).not.toMatch(/\d/);
-		expect(chipButtons(tree).map((chip) => chip.props.accessibilityLabel)).toEqual(["Subagents, count unknown"]);
+		expect(chipButtons(tree).map((chip) => chip.props.accessibilityLabel)).toEqual(["Agents, count unknown"]);
 		act(() => chipButtons(tree)[0]?.props.onPress());
 		expect(opened).toEqual(["subagents"]);
 		act(() => tree.update(header({ chips: contextChips(source, false, { count: 0, fresh: false }, unknown) })));

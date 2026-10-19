@@ -1873,7 +1873,19 @@ try {
   await key("Escape", 27);
   await wait('document.querySelector("[data-testid=activity-peek]") === null', "independent ancestor peek relinquishes direct collection demand");
   // The selected leaf's own sidebar demand resumes for the recovery legs.
-  await driver.click(`${inspectorFooter} button[aria-label^="Agents,"]`);
+  const recoveryAgentsBox = await wait(`(() => {
+    const button = document.querySelector(${q(`${inspectorFooter} button[aria-label^="Agents,"]`)});
+    if (!button) return null;
+    const r = button.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+    if (!button.contains(document.elementFromPoint(x, y))) return null;
+    window.__cascadeRecoveryPress = false;
+    document.addEventListener('mousedown', event => { window.__cascadeRecoveryPress = event.isTrusted && button.contains(event.target); }, { once:true, capture:true });
+    return { x, y };
+  })()`, "selected-leaf Agents control is visible and hit-testable");
+  // This footer is already visible. Driver.click's centering scroll moves
+  // Dockview's overflow viewport and puts its scrollbar over the native hit.
+  await driver.clickAt(recoveryAgentsBox.x, recoveryAgentsBox.y);
+  assert.equal(await read('window.__cascadeRecoveryPress'), true, "native recovery press reaches the selected-leaf Agents control");
   await wait(sidebarEntranceSettled, "selected-leaf sidebar entrance settled before the recovery reconnect");
   const closedAfter = await reconnect();
   await waitFrames(() => sent(closedAfter).some(f => f.method === "evener/thread/delegates/list" && f.params.ref === fixture.refs[6] && answered(f)), "selected-leaf sidebar resumes its actual direct collection");

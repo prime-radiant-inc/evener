@@ -102,11 +102,7 @@ export function PinnedSection({ section, folded, onToggle, onMenu, changing, onL
 					{/* No gap between the name and its count, so they read as one
 					    label; the pin keeps its distance with its own margin. */}
 					<SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} style={{ marginRight: 6 }} />
-					<Text
-						allowFontScaling={allowFontScaling}
-						numberOfLines={1}
-						style={{ ...headerText, flexShrink: 1, textTransform: "uppercase" }}
-					>
+					<Text allowFontScaling={allowFontScaling} numberOfLines={1} style={{ ...headerText, flexShrink: 1 }}>
 						{section.name}
 					</Text>
 					<Text allowFontScaling={allowFontScaling} style={{ ...headerText, fontVariant: ["tabular-nums"] }}>

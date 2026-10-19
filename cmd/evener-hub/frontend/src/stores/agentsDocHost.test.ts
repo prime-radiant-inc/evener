@@ -124,20 +124,23 @@ test("resetAgentsDocHostInstancesForTests drops a per-host instance so it is reb
 // file: a host re-registered under the same name must not be handed the
 // previous registration's document (whose file is a different machine's), and a
 // read still in flight from that registration must have nowhere to land.
-test("a host re-registered under the same name gets a fresh document store", async () => {
-  const fake = connectFakeClient();
-  fake.on("evener/host/request", () => DOC as never);
-  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "old.example:22" })] } });
-  const first = agentsDocStoreForHost("beta");
-  await first.getState().fetch();
-  expect(first.getState().doc).toEqual(DOC);
+test.each([{ address: "new.example:22" }, { address: "old.example:22", incarnationId: "replacement" }])(
+  "a host re-registered under the same name gets a fresh document store (%j)",
+  async (replacement) => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/request", () => DOC as never);
+    hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "old.example:22" })] } });
+    const first = agentsDocStoreForHost("beta");
+    await first.getState().fetch();
+    expect(first.getState().doc).toEqual(DOC);
 
-  hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", address: "new.example:22" })] } });
+    hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", ...replacement })] } });
 
-  const second = agentsDocStoreForHost("beta");
-  expect(second).not.toBe(first);
-  expect(second.getState().doc).toBeNull();
-});
+    const second = agentsDocStoreForHost("beta");
+    expect(second).not.toBe(first);
+    expect(second.getState().doc).toBeNull();
+  },
+);
 
 // The deep-link case: the registry's first answer identifies the store it was
 // already resolved into rather than replacing it (which would drop a read that
@@ -155,7 +158,12 @@ test("an attach report on an unchanged registration keeps the document store", (
   hostsStore.setState({ load: { phase: "ready", hosts: [registered] } });
   const store = agentsDocStoreForHost("beta");
 
-  hostsStore.setState({ load: { phase: "ready", hosts: [{ ...registered, attached: true, hubVersion: "9" }] } });
+  hostsStore.setState({
+    load: {
+      phase: "ready",
+      hosts: [{ ...registered, generation: registered.generation + 1, attached: true, hubVersion: "9" }],
+    },
+  });
 
   expect(agentsDocStoreForHost("beta")).toBe(store);
 });
