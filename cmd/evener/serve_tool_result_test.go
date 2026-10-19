@@ -191,14 +191,18 @@ func runServeForegroundShellPersistenceCaseWithCheckpoint(t *testing.T, mode for
 
 	// The fixture shell publishes its own PID and its deterministic long-lived
 	// child's PID before it waits, so the seam and the outer regression can
-	// identify the exact processes a failing run must not outlive. The background
-	// child shares the shell's process group, so the product's group-directed
-	// cancellation reaps both. The PID files are private to the working directory.
+	// identify the exact processes a failing run must not outlive. The shell owns
+	// and reaps the child itself on both the gate-release (normal) path and the
+	// TERM path, so descendant reaping never depends on host init or a subreaper.
+	// The PID files are private to the working directory.
 	shellPIDPath := filepath.Join(workDir, foregroundShellPIDFilename)
 	shellChildPIDPath := filepath.Join(workDir, foregroundShellChildPIDFilename)
 	gatePath := filepath.Join(workDir, "shell-release")
 	shellCommand := fmt.Sprintf(
-		"sleep 600 & printf '%%s' \"$!\" > %s; printf '%%s' $$ > %s; while [ ! -f %s ]; do sleep 0.01; done; printf shell-complete",
+		"sleep 600 & child=$!; printf '%%s' \"$child\" > %s; printf '%%s' $$ > %s; "+
+			"trap 'kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 0' TERM; "+
+			"while [ ! -f %s ]; do sleep 0.01; done; "+
+			"kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; printf shell-complete",
 		strconv.Quote(shellChildPIDPath), strconv.Quote(shellPIDPath), strconv.Quote(gatePath))
 	secondRequest := make(chan struct{})
 	secondResponseRelease := make(chan struct{})
