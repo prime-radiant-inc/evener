@@ -17,8 +17,10 @@ import { NotesBar } from "./NotesBar";
 import { type HeaderHiding, nextHeaderHiding, SessionHeader, useHeaderHiding } from "./SessionHeader";
 import { contextChips, type ChipKind, type ContextChip } from "./sessionState";
 
+const viewport = vi.hoisted(() => ({ fontScale: 1 }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 // The connection status (spec 14) reads the provider.
@@ -32,6 +34,7 @@ afterEach(() => {
 	unmountMountedTrees();
 	keyboard.reset();
 	vi.restoreAllMocks();
+	viewport.fontScale = 1;
 });
 
 const subagents = contextChips(
@@ -185,7 +188,7 @@ describe("the chips row (spec 8.1)", () => {
 	it("draws each chip as a 32pt capsule with a 44pt hit area, inset fill and an edge border", () => {
 		const [chip] = chipButtons(render(header({ chips: [tasks] })));
 		expect(chip?.props.style({ pressed: false })).toMatchObject({
-			height: 32,
+			minHeight: 32,
 			borderRadius: 16,
 			borderWidth: 1,
 			borderColor: palette.edge,
@@ -193,6 +196,19 @@ describe("the chips row (spec 8.1)", () => {
 		});
 		expect(chip?.props.hitSlop).toEqual({ top: 6, bottom: 6 });
 		expect(chip?.findByType("SymbolView" as never).props).toMatchObject({ size: 13, tintColor: palette.inkMid });
+	});
+
+	it("lets large chip labels grow past their minimum height without clipping", () => {
+		viewport.fontScale = 3;
+		const onChip = vi.fn();
+		const tree = render(header({ chips: [tasks], onChip }));
+		const chip = chipButtons(tree)[0];
+		const style = chip.props.style({ pressed: false });
+		expect(style.height).toBeUndefined();
+		expect(style.minHeight).toBeGreaterThanOrEqual(32);
+		expect(chip.findByType("Text" as never).props.style.lineHeight).toBe(60);
+		act(() => chip.props.onPress());
+		expect(onChip).toHaveBeenCalledWith("tasks");
 	});
 
 	it("draws a blocked goal in attention ink over the attention fill", () => {

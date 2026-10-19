@@ -157,6 +157,12 @@
       "group": "Operate and troubleshoot"
     },
     {
+      "source": "docs/daemon-idle-retirement.md",
+      "path": "daemon-idle-retirement.md",
+      "title": "Daemon idle retirement",
+      "group": "Operate and troubleshoot"
+    },
+    {
       "source": "docs/device-pairing.md",
       "path": "device-pairing.md",
       "title": "Device pairing reference",
@@ -172,6 +178,12 @@
       "source": "docs/job-control.md",
       "path": "job-control.md",
       "title": "Job control",
+      "group": "Operate and troubleshoot"
+    },
+    {
+      "source": "UPGRADING.md",
+      "path": "upgrading.md",
+      "title": "Upgrading",
       "group": "Operate and troubleshoot"
     }
   ],

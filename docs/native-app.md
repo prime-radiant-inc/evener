@@ -70,6 +70,30 @@ Backgrounding the app is not a stop request to the agent. On returning, let it r
 
 For a code change, use the phone to inspect progress and ask questions, then review the actual diff and run the acceptance checks on the project host. A readable transcript is not proof that the change has been merged or deployed.
 
+## Share text into a session
+
+The app appears in the iOS share sheet for text and web links, so you can send a
+note or a page to Evener without switching apps first. Sharing writes nothing to
+a session on its own; it opens Evener with a **Share to Evener** sheet, and you
+choose the destination.
+
+- **New session** opens New session with the shared text already in the prompt.
+  The host, project, model, and effort this phone remembers still apply.
+- **Live** lists the active hub's sessions in attention order. **Search
+  sessions** queries the same grouped results the Board shows, including past
+  sessions.
+
+Choosing a destination writes the text into that session's saved draft; it does
+not send a message. Review and edit the draft in the composer, then send it
+yourself. An existing draft is appended to rather than replaced. If the share
+cannot be placed, the sheet says why and keeps the share; dismissing the sheet
+without choosing leaves the share available on the next launch or foreground.
+
+The share sheet uses the app's active hub and has no hub switcher. If no hub is
+ready, it says the session list is waiting for one; add or select the hub first,
+then share again. Only text and URLs are supported: images, files, and videos
+are not share targets in this version.
+
 ## Update and recover
 
 Update the app through the channel that supplied it. For a source build, rebuild and reinstall from the desired source revision using the locked build procedure. Internal TestFlight tooling requires distribution credentials and an available build; its presence in the repository is not a public update service.

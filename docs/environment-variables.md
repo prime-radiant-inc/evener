@@ -53,7 +53,7 @@ build-llmcall` builds `./llmcall`; run that path or install it separately on you
 | `EVENER_CREDENTIALS_CONFIG` | no | Path to credentials.toml; unset means the sibling of providers.toml. |
 | `EVENER_REASONING_EFFORT` | no | Default reasoning effort: minimal&#124;low&#124;medium&#124;high&#124;xhigh&#124;max&#124;none. |
 | `EVENER_SESSION_ORIGIN` | no | Marks a session's launch origin (e.g. "test" for agentic-testing runs). |
-| `EVENER_STATE_DIR` | no | Overrides the per-invocation project/session state directory (evener run --state-dir, hub-spawned daemons, evener-doctor); does not override the Evener state root (see XDG_STATE_HOME). |
+| `EVENER_STATE_DIR` | no | Overrides the per-invocation project/session state directory (one-shot `evener --state-dir`, hub-spawned daemons, `evener doctor`); does not override the Evener state root (see XDG_STATE_HOME). |
 | `LLM_MODEL` | no | Model for llmcall when --model is unset; checked before EVENER_MODEL. |
 | `LLM_PROVIDER` | no | Provider for llmcall when --provider is unset; checked before EVENER_PROVIDER. |
 | `OPENAI_API_KEY` | yes | OpenAI API key. |

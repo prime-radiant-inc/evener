@@ -341,7 +341,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.resumeWith = fs.String("resume-with", "", "start a new prompt using a previous session's `id` as context")
 	flags.resumeLast = fs.Bool("resume-last", false, "resume the most recent session")
 	flags.listSessions = fs.Bool("list-sessions", false, "list saved sessions and exit")
-	flags.maxRounds = fs.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
+	flags.maxRounds = fs.Int("max-rounds", -1, "max tool rounds per input (-1=default: unlimited, 0=unlimited)")
 	flags.maxSubagentDepth = fs.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 2)")
 	flags.maxConcurrentDelegates = fs.Int("max-concurrent-delegates", -1, "max concurrently running delegate turns per session tree (default: 50)")
 	flags.maxRetainedTerminal = fs.Int("max-retained-terminal", -1, "max retained terminal delegate records per session (default: 2048)")

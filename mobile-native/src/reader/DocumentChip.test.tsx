@@ -326,6 +326,8 @@ it("offers Share on a touch-and-hold, which shares that document", async () => {
 	expect(harness.menus).toHaveLength(1);
 	const share = harness.menus[0]?.items.find((item) => item.label === "Share");
 	expect(share).toBeDefined();
-	act(() => share?.run());
+	await act(async () => {
+		await share?.run();
+	});
 	expect(harness.shares).toEqual([PATH]);
 });

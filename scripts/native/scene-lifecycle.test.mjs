@@ -13,14 +13,14 @@ const app = JSON.parse(execFileSync(process.execPath, ['-e', 'process.stdout.wri
 const props = app.plugins.find(p => Array.isArray(p) && p[0] === 'expo-build-properties')[1];
 const template = execFileSync('tar', ['-xOf', `${root}node_modules/expo/template.tgz`, 'package/ios/HelloWorld/AppDelegate.swift'], { encoding: 'utf8' });
 
-async function generate() {
+async function generate(input = { plist: {}, swift: template }) {
  const config = withBuildProperties({ ...app, _internal: { projectRoot: root } }, props);
  const apply = async (name, modResults) => {
   const mod = config.mods?.ios?.[name];
   if (!mod) return modResults;
   return (await mod({ ...config, modResults, modRequest: { projectRoot: root, platform: 'ios', modName: name } })).modResults;
  };
- return { plist: await apply('infoPlist', {}), swift: (await apply('appDelegate', { language: 'swift', contents: template })).contents };
+ return { plist: await apply('infoPlist', structuredClone(input.plist)), swift: (await apply('appDelegate', { language: 'swift', contents: input.swift })).contents };
 }
 
 test('prebuild delegates window startup to the Expo scene lifecycle', async () => {
@@ -38,4 +38,25 @@ test('prebuild delegates window startup to the Expo scene lifecycle', async () =
  assert.equal((swift.match(/factory\.startReactNative\s*\(/g) ?? []).length, 0);
  assert.equal((swift.match(/reactNativeFactory\s*=\s*factory/g) ?? []).length, 1);
  assert.equal((swift.match(/RCTLinkingManager\.application\s*\(/g) ?? []).length, 2);
+});
+
+test('scene prebuild preserves application identity, linking and unrelated plist values', async () => {
+ const existing = {
+  CFBundleIdentifier: 'com.primeradiant.evener.native',
+  CFBundleURLTypes: [{ CFBundleURLSchemes: ['evener-native'] }],
+  NSAppTransportSecurity: { NSAllowsArbitraryLoads: true },
+ };
+ const { plist } = await generate({ plist: existing, swift: template });
+ for (const [key, value] of Object.entries(existing)) {
+  assert.deepEqual(plist[key], value);
+ }
+ assert.ok(plist.UIApplicationSceneManifest);
+});
+
+test('repeated scene prebuild leaves generated startup and other plugin content unchanged', async () => {
+ const sentinel = '\n// external_plugin_sentinel\n';
+ const once = await generate({ plist: {}, swift: template + sentinel });
+ assert.notEqual(once.swift, template + sentinel);
+ assert.ok(once.swift.endsWith(sentinel));
+ assert.deepEqual(await generate(once), once);
 });

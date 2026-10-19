@@ -73,7 +73,7 @@ reference: |
   EOF
 ```
 
-A task that should be answerable by asking someone adds a `person:` block. The CLI harness then runs `evener run --ask-responder`, pointed at `evener-fluency respond`. It plays the person from the brief, answering each question the agent asks with `ask_user`:
+A task that should be answerable by asking someone adds a `person:` block. The CLI harness then runs `evener --ask-responder`, pointed at `evener-fluency respond`. It plays the person from the brief, answering each question the agent asks with `ask_user`:
 
 ```yaml
 person:

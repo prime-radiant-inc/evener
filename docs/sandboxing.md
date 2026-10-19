@@ -115,7 +115,7 @@ indirection even when the session's workspace sandbox is off.
 
 A root session's read-only role can write its authorized memory without
 workspace writes. A delegate only reads and searches memory, whatever its role;
-see [memory](product/memory.md). Memory permissions do not grant shell or
+see [memory](memory.md). Memory permissions do not grant shell or
 network access. Fresh and restored delegates retain their parent's effective
 memory tool/scope ceilings. Memory
 tool names do not count as workspace-mutation tools for the delegate safety
@@ -125,7 +125,7 @@ floor described above.
 I/O for that session, persistently through resume and compaction. It is not a
 general filesystem ban: an unrestricted shell or file tool keeps whatever
 access it already had. Stored files and earlier conversation remain. See
-[memory ownership and lifetime](product/memory.md).
+[memory](memory.md) for what memory is and what it is not.
 
 ## Flags
 
@@ -308,9 +308,9 @@ unsandboxed root's `TMPDIR` is not in the tree.
 
   The project's `.gitignore`, `.gitattributes`, and `.git/info/exclude` are
   unaffected. Move needed rules into the repository, or use `--sandbox off` only
-  if you accept removing sandbox confinement. See the
-  [recorded limitation](product/friction.md#t06-global-git-excludes-files-in-restricted-mode)
-  and [design discussion](https://github.com/prime-radiant-inc/evener/issues/4234).
+  if you accept removing sandbox confinement. This is a known limitation, not a
+  configuration mistake; see
+  [design discussion](https://github.com/prime-radiant-inc/evener/issues/4234).
 
   **macOS Git uses the readable developer toolchain directly.** The environment
   floor inserts the active developer directory's `usr/bin` before the first

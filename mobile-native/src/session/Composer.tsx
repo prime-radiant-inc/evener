@@ -71,6 +71,7 @@ export function Composer({
 	const scale = Platform.OS === "ios" ? fontScale : 1;
 	const lineHeight = 24 * scale;
 	const [contentHeight, setContentHeight] = useState(0);
+	const [fieldHeight, setFieldHeight] = useState(0);
 	const [expanded, setExpanded] = useState(false);
 	// Banners wait while you type (spec 13.3): the field focused with text in
 	// it. Sending empties it, and that lets them go.
@@ -78,16 +79,22 @@ export function Composer({
 	useHoldAlerts(focused && value.trim() !== "", "quiet");
 	// A composer that leaves the screen while focused reports no blur.
 	useEffect(() => () => focus?.set(false), [focus]);
-	// Typed line breaks count before layout has measured anything; the
-	// measured height catches long lines that wrap. The half line of slack
-	// keeps rounding in the measurement from offering the editor at six.
-	const overflows = value.split("\n").length > MAX_LINES || contentHeight > (MAX_LINES + 0.5) * lineHeight;
 	// An empty field you aren't in rests one line tall, so the composer stays
 	// small until you reach for it: focusing it, or any character at all
 	// (whitespace included, which the field visibly holds), keeps it open.
 	// Whether the draft may rest at all is the screen's call (`mayRest`: an
 	// attached image or a read-only field keeps it open); focus is the composer's.
 	const resting = mayRest && !focused;
+	const paddingVertical = resting ? 10 : 0;
+	const minHeight = Math.max(44, lineHeight + paddingVertical * 2);
+	// The viewport cap can hide text before six lines at large text sizes.
+	// Explicit line breaks count before measurement; one point absorbs native
+	// layout rounding without hiding the expansion action for a scrolled line.
+	const maxHeight = Math.max(minHeight, Math.min(MAX_LINES * lineHeight, windowHeight / 3));
+	// At the cap, iOS can stop emitting content-size changes. Offer expansion
+	// from the measured frame as well, before more text scrolls inside it.
+	const overflows =
+		value.split("\n").length * lineHeight > maxHeight || contentHeight > maxHeight + 1 || fieldHeight >= maxHeight - 1;
 	function openAddMenu() {
 		const choices = [
 			{ text: "Photo library", onPress: onPhotoLibrary },
@@ -103,7 +110,7 @@ export function Composer({
 	}
 	const add = (
 		<SymbolButton label="Add" disabled={!editable} onPress={openAddMenu}>
-			<SymbolView name="plus" tintColor={palette.accentInk} size={20 * scale} />
+			<SymbolView name="plus" tintColor={palette.accentInk} size={20} />
 		</SymbolButton>
 	);
 	const slot = stop ? (
@@ -116,7 +123,9 @@ export function Composer({
 			<TextInput
 				ref={inputRef}
 				accessibilityLabel="Message"
-				allowFontScaling={allowFontScaling}
+				// Native scaling updates the font and its measurement together. A
+				// later JS font-size change can measure an existing draft's old font.
+				allowFontScaling
 				multiline
 				scrollEnabled
 				value={value}
@@ -130,19 +139,22 @@ export function Composer({
 					focus?.set(false);
 				}}
 				onContentSizeChange={(event) => setContentHeight(event.nativeEvent.contentSize.height)}
+				onLayout={(event) => setFieldHeight(event.nativeEvent.layout.height)}
 				editable={editable}
 				placeholder={placeholder}
 				placeholderTextColor={palette.inkMid}
 				style={{
 					color: palette.inkHi,
-					fontSize: 17 * scale,
-					lineHeight,
-					minHeight: resting ? lineHeight : 44,
+					fontSize: 17,
+					lineHeight: 24,
+					minHeight,
+					// Native intrinsic layout owns growth and shrinkage. Fixing height
+					// to its last measurement prevents iOS from emitting the next one.
 					// At the largest text sizes six lines would crowd out the
 					// transcript, so the field also stops at a third of the window.
-					maxHeight: Math.min(MAX_LINES * lineHeight, windowHeight / 3),
+					maxHeight,
 					paddingHorizontal: 4,
-					paddingVertical: 0,
+					paddingVertical,
 					paddingRight: overflows ? 44 : 4,
 					textAlignVertical: "top",
 				}}
@@ -158,7 +170,7 @@ export function Composer({
 					}}
 					style={{ position: "absolute", top: -8, right: -8 }}
 				>
-					<SymbolView name="arrow.up.left.and.arrow.down.right" tintColor={palette.inkMid} size={15 * scale} />
+					<SymbolView name="arrow.up.left.and.arrow.down.right" tintColor={palette.inkMid} size={15} />
 				</SymbolButton>
 			) : null}
 		</>

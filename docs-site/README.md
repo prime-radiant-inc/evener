@@ -117,9 +117,16 @@ main pushes and manual dispatch. It explicitly installs Chromium and runs the
 diagram, search and navigation browser checks before uploading. Only a main-branch push or main-branch manual
 run can deploy. The deploy job alone receives Pages and OIDC write permissions.
 Enable GitHub Pages with GitHub Actions separately; adding this workflow does not
-enable Pages. The published address `https://prime-radiant-inc.github.io/evener/`
-redirects to `https://primeradiant.com/evener/` through the organization's inherited
-domain. This repository configures no separate CNAME or release-version switcher.
+enable Pages. The site is served at `https://primeradiant.com/evener/`: GitHub
+Pages publishes under the organization's inherited domain, and
+`https://prime-radiant-inc.github.io/evener/` redirects there. This repository
+configures no separate CNAME or release-version switcher.
+
+Generated absolute links (Markdown exports, `llms.txt`, absolute asset URLs)
+name `https://primeradiant.com`, matching the host a reader lands on. Changing
+the organization domain means changing `origin` in `scripts/prepare.mjs` with
+it; the link checks only compare generated URLs against that constant, so a
+stale value fails nothing by itself.
 
 The site tracks `main`. Released binaries can lag the guide. Installation chapter
 owners must explain snapshot versus release installation beside those commands.

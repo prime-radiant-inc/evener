@@ -44,9 +44,13 @@ This documentation follows **main**, not a fixed release. Use a snapshot, the la
 - [Security](security.md): review trust boundaries, credentials, and backups.
 - [Troubleshooting](troubleshooting.md): start with the symptom you see.
 - [Hub runbook](evener-hub.md): run the service and understand its configuration.
+- [Daemon idle retirement](daemon-idle-retirement.md): why an idle session's process stops, and how it comes back.
 - [Remote operations](evener-hub-remote-operations.md): work across hosts.
 - [Job control](job-control.md): exact delegate, shell-job, and watch contracts.
+- [Upgrading](../UPGRADING.md): breaking changes and migration notes between builds.
 
 ## Develop Evener
 
-The [contributor guide](developing-evener/README.md) covers building and testing the product. The [subsystem map](product/subsystems.md) points to source owners; it is an implementation reference, not an additional setup guide.
+These references live in the repository rather than on this site.
+
+[Developing Evener](developing-evener/README.md) covers building and testing the product. The [subsystem map](product/subsystems.md) points to source owners; it is an implementation reference, not an additional setup guide.

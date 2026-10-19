@@ -246,15 +246,16 @@ describe("what the sheet shows (spec 8.6)", () => {
 		expect(clipboard.setStringAsync).toHaveBeenCalledWith(REF);
 	});
 
-	it("labels its sections 12pt semibold uppercase in ink-mid", () => {
+	it("uses readable sentence-case section headings in ink-mid", () => {
 		provide(conversation());
 		const tree = sheet();
 		expect(styleOf(textNode(tree, "Where"))).toMatchObject({
-			fontSize: 12,
+			fontSize: 15,
+			lineHeight: 20,
 			fontWeight: "600",
-			textTransform: "uppercase",
 			color: palette.inkMid,
 		});
+		expect(styleOf(textNode(tree, "Where")).textTransform).toBeUndefined();
 	});
 
 	it("draws its groups as the shared grouped list, inset with hairlines between rows", () => {

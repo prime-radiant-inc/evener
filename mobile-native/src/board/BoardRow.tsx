@@ -11,7 +11,7 @@ import {
 	Text,
 	View,
 } from "react-native";
-import type { Palette } from "../design/tokens";
+import { type Palette, scaledType, uiType } from "../design/tokens";
 import { useDisplayChoices } from "../display/displayContext";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import {
@@ -75,13 +75,10 @@ export function Hairline({ inset = TITLE_INSET }: { inset?: number }) {
 	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
 }
 
-/** The type of the Board's section headers (spec 7.1): 13pt semibold,
- * inkMid, 0.4 letter-spacing. */
+/** Board sections share the sentence-case hierarchy of grouped sheets. */
 export const bandHeaderText = (palette: Palette, scale: number) => ({
-	fontSize: 13 * scale,
-	fontWeight: "600" as const,
-	letterSpacing: 0.4,
-	color: palette.inkMid,
+	...scaledType(uiType.sectionLabel, scale),
+	color: palette.inkHi,
 });
 
 /** A fold's chevron at a header's trailing edge: right while folded, turned
@@ -152,6 +149,7 @@ export function BoardRow({
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { row, state } = item;
+	const largeText = scale > 1.2;
 	const signal = variant === "signal";
 	const needsYou = signal && bandOf(state) === "needsYou";
 	const why = signal ? whyLine(item, activity, msSinceRead ?? 0) : null;
@@ -186,6 +184,8 @@ export function BoardRow({
 		.filter(Boolean)
 		.join(", ");
 	const lineOne = 22 * scale;
+	let paddingVertical = largeText ? 8 : 0;
+	if (signal) paddingVertical = 12;
 	return (
 		<Pressable
 			testID={`board-row:${state}`}
@@ -202,8 +202,7 @@ export function BoardRow({
 				alignItems: signal ? "flex-start" : "center",
 				columnGap: 10,
 				paddingHorizontal: 16,
-				paddingTop: signal ? 11 : 0,
-				paddingBottom: signal ? 12 : 0,
+				paddingVertical,
 				minHeight: signal ? 64 : 48,
 				backgroundColor: pressed ? palette.pressed : palette.page,
 				opacity: dimmed ? 0.5 : 1,
@@ -220,13 +219,15 @@ export function BoardRow({
 				/>
 			</View>
 			<View style={{ flex: 1, minWidth: 0 }}>
-				<View style={{ flexDirection: "row", alignItems: "flex-start", columnGap: 8 }}>
+				<View
+					style={{ flexDirection: largeText ? "column" : "row", alignItems: "flex-start", columnGap: 8, rowGap: 4 }}
+				>
 					<Text
 						allowFontScaling={allowFontScaling}
-						numberOfLines={needsYou ? 2 : 1}
+						numberOfLines={largeText ? undefined : signal ? 2 : 1}
 						ellipsizeMode="tail"
 						style={{
-							flex: 1,
+							flex: largeText ? undefined : 1,
 							fontSize: 17 * scale,
 							lineHeight: lineOne,
 							fontWeight: "600",
@@ -235,24 +236,8 @@ export function BoardRow({
 					>
 						{row.title}
 					</Text>
-					{hasDraft || age || tally || item.unseen ? (
-						<View style={{ height: lineOne, flexDirection: "row", alignItems: "center", columnGap: 6 }}>
-							<SubagentChip session={row} />
-							{hasDraft ? (
-								<View style={{ backgroundColor: palette.accentBg, borderRadius: 4, paddingHorizontal: 4 }}>
-									<Text
-										allowFontScaling={allowFontScaling}
-										style={{
-											fontSize: 11 * scale,
-											lineHeight: 13 * scale,
-											fontWeight: "600",
-											color: palette.accentInk,
-										}}
-									>
-										Draft
-									</Text>
-								</View>
-							) : null}
+					{age || item.unseen ? (
+						<View style={{ minHeight: lineOne, flexDirection: "row", alignItems: "center", columnGap: 6 }}>
 							{age ? (
 								<Text
 									allowFontScaling={allowFontScaling}
@@ -266,13 +251,43 @@ export function BoardRow({
 					) : null}
 				</View>
 				{waiting ? (
-					<WhyText testID="row-waiting" why={{ text: waiting }} numberOfLines={1} marginTop={2} />
+					<WhyText
+						testID="row-waiting"
+						why={{ text: waiting }}
+						numberOfLines={largeText ? undefined : 1}
+						marginTop={2}
+					/>
 				) : why ? (
-					<WhyText why={why} numberOfLines={needsYou ? 2 : 1} marginTop={2} />
+					<WhyText why={why} numberOfLines={largeText ? undefined : needsYou ? 2 : 1} marginTop={2} />
+				) : null}
+				{hasDraft || tally ? (
+					<View style={{ marginTop: 4, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+						<SubagentChip session={row} />
+						{hasDraft ? (
+							<View style={{ backgroundColor: palette.accentBg, borderRadius: 4, paddingHorizontal: 4 }}>
+								<Text
+									allowFontScaling={allowFontScaling}
+									style={{ fontSize: 11 * scale, lineHeight: 13 * scale, fontWeight: "600", color: palette.accentInk }}
+								>
+									Draft
+								</Text>
+							</View>
+						) : null}
+					</View>
 				) : null}
 				{last ? (
-					<View style={{ marginTop: 4, flexDirection: "row", alignItems: "center", columnGap: 6, overflow: "hidden" }}>
-						{last.task ? <Fact glyph="checklist" text={last.task} scale={scale} shrink /> : null}
+					<View
+						testID="row-metadata"
+						style={{
+							marginTop: 4,
+							flexDirection: "row",
+							flexWrap: "wrap",
+							alignItems: "center",
+							columnGap: 10,
+							rowGap: 4,
+						}}
+					>
+						{last.task ? <Fact glyph="checklist" text={last.task} scale={scale} /> : null}
 						{last.project ? <Fact glyph="folder" text={last.project} scale={scale} /> : null}
 						{last.host ? <Fact glyph="server.rack" text={last.host} scale={scale} /> : null}
 						{last.model ? <Fact text={last.model} scale={scale} /> : null}
@@ -413,10 +428,8 @@ export function WhyText({
 	);
 }
 
-/** A glyph and a fact on the last line, which never wraps. A `shrink` fact
- * gives up width when the line runs out of room, tail-truncating its text;
- * the others keep theirs. Only the task line shrinks: its title comes after
- * the "Task 4 of 7 · " prefix, so the title truncates first (spec 7.2). */
+/** A supporting fact wraps within its row. Compact menu previews can request
+ * a single tail-truncated line with `shrink`. */
 export function Fact({
 	glyph,
 	text,
@@ -430,15 +443,14 @@ export function Fact({
 	shrink?: boolean;
 }) {
 	const { palette } = useColors();
-	const flexShrink = shrink ? 1 : 0;
 	return (
-		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 3, flexShrink }}>
+		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 4, flexShrink: 1, maxWidth: "100%" }}>
 			{glyph ? <SymbolView name={glyph} size={13 * scale} tintColor={palette.inkLow} /> : null}
 			<Text
 				allowFontScaling={allowFontScaling}
-				numberOfLines={1}
+				numberOfLines={shrink ? 1 : undefined}
 				ellipsizeMode="tail"
-				style={{ flexShrink, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+				style={{ flexShrink: 1, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
 			>
 				{text}
 			</Text>

@@ -36,6 +36,33 @@ The TestFlight workflow needs the matching credentials:
 `CURRENT_PROJECT_VERSION` for every target and fails when the embedded
 extension's build number differs from the app's.
 
+### iOS scene startup
+
+[`app.config.js`](../../../mobile-native/app.config.js) enables
+`expo-build-properties`' `ios.enableSceneSupport`. Expo 57.0.23 or newer within
+SDK 57 supplies the scene lifecycle required by iOS 27. Prebuild registers one
+`EXExpoAppSceneDelegate` and makes the generated Swift AppDelegate an
+`ExpoReactNativeFactoryProvider`. Do not patch the ignored iOS project or add a
+second window owner.
+
+AppDelegate initializes the Expo/React factory. Expo's scene delegate owns window
+startup and forwards scene links and lifecycle events through Expo's subscribers.
+Cold scene URLs and browsing activities become React launch options; warm delivery
+uses the existing React and Expo link handlers. UIKit's application notifications
+remain the source for React Native AppState.
+
+The bundle identifier, URL scheme, SQLite and SecureStore ownership are unchanged.
+The JavaScript connection owner still closes transport in the background and
+recovers on foreground entry. Scene adoption does not enable multiple windows or
+configure associated domains. Test universal-link association and provider sign-in
+against their actual services separately from custom-scheme launch checks.
+
+Run `node --test scripts/native/scene-lifecycle.test.mjs` from the repository root
+for generated configuration and repeatability checks against the installed Expo
+template. `make test-native` includes this check. Native compilation, actual
+launch, link delivery and background recovery require a simulator or device build;
+a successful `simctl launch` request alone does not prove the process stayed alive.
+
 ### Regenerating the pod lock
 
 Adding, removing or upgrading a native dependency in `mobile-native/package.json` changes the pods the Podfile asks for, and `pod install --deployment` then refuses the committed `mobile-native/Podfile.lock` (`make check-podfile-lock` names the pods that differ). Regenerate the lock from `mobile-native`, starting from the committed one so that no other pod moves:

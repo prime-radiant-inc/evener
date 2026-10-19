@@ -9,9 +9,11 @@ import { Composer, ModelChip } from "./Composer";
 import { ComposerFocus } from "./composerFocus";
 
 const actionSheet = vi.hoisted(() => ({ show: vi.fn() }));
+const viewport = vi.hoisted(() => ({ height: 844, fontScale: 1 }));
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ width: 390, scale: 3, ...viewport }),
 	ActionSheetIOS: { showActionSheetWithOptions: actionSheet.show },
 	// The real Modal renders its children only while visible.
 	Modal: (props: { visible?: boolean; children?: ReactNode }) =>
@@ -27,7 +29,11 @@ vi.mock("../alerts/alertsContext", () => ({
 
 const light = palettes.light;
 
-beforeEach(() => actionSheet.show.mockReset());
+beforeEach(() => {
+	actionSheet.show.mockReset();
+	viewport.height = 844;
+	viewport.fontScale = 1;
+});
 
 function composer(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
 	const props = {
@@ -87,20 +93,92 @@ describe("Composer", () => {
 		expect(props.onChangeText).toHaveBeenCalledWith("hello");
 	});
 
-	it("rests a single line tall while empty and unfocused, and a full field otherwise", () => {
+	it("keeps a full-height focus target while resting and when the field opens", () => {
 		const height = (tree: ReactTestRenderer) => fields(tree)[0]?.props.style.minHeight;
-		// Empty and unfocused: one line, so the composer is short.
 		const { props, tree } = composer();
-		expect(height(tree)).toBe(24);
-		// Touching the field opens it to the full tap target.
+		const initialField = fields(tree)[0];
+		expect(height(tree)).toBe(44);
 		act(() => fields(tree)[0]?.props.onFocus());
 		expect(height(tree)).toBe(44);
+		expect(fields(tree)[0]).toBe(initialField);
 		act(() => fields(tree)[0]?.props.onBlur());
-		expect(height(tree)).toBe(24);
+		expect(height(tree)).toBe(44);
 		// The screen says the draft may not rest (text, whitespace, or an image):
 		// a full field, focused or not.
 		act(() => tree.update(<Composer {...props} value="half a thought" mayRest={false} />));
 		expect(height(tree)).toBe(44);
+	});
+	it("fits a scaled line before measurement, including the resting field's padding", () => {
+		viewport.fontScale = 3;
+		const { tree } = composer();
+		const style = () => fields(tree)[0]?.props.style;
+		expect(style().minHeight).toBeGreaterThanOrEqual(92);
+		act(() => fields(tree)[0]?.props.onFocus());
+		expect(style().minHeight).toBeGreaterThanOrEqual(72);
+	});
+	it("keeps native font scaling in charge of measuring an existing draft", () => {
+		const { props, tree } = composer({ value: "retained-draft", mayRest: false });
+		const field = fields(tree)[0];
+		act(() => field?.props.onFocus());
+		for (const fontScale of [1, 3, 1]) {
+			viewport.fontScale = fontScale;
+			act(() => tree.update(<Composer {...props} />));
+			expect(fields(tree)[0]).toBe(field);
+			expect(field?.props.value).toBe(props.value);
+			expect(field?.props.allowFontScaling).toBe(true);
+			expect(field?.props.style).toMatchObject({ fontSize: 17, lineHeight: 24 });
+		}
+	});
+	it("leaves native text measurement free to grow and shrink a focused draft", () => {
+		const { props, tree } = composer();
+		const field = fields(tree)[0];
+		act(() => field?.props.onFocus());
+		for (const value of ["draft words ".repeat(60), ""]) {
+			act(() => tree.update(<Composer {...props} value={value} mayRest={value.length === 0} />));
+			expect(fields(tree)[0]).toBe(field);
+			expect(field?.props.style.height).toBeUndefined();
+			expect(field?.props.style).toMatchObject({ minHeight: 44, maxHeight: 144 });
+		}
+	});
+	it("uses content measurements for expansion without fixing the input height", () => {
+		viewport.fontScale = 3;
+		viewport.height = 600;
+		const { tree } = composer({ value: "draft-data", mayRest: false });
+		const measure = (height: number) =>
+			act(() => fields(tree)[0]?.props.onContentSizeChange({ nativeEvent: { contentSize: { width: 300, height } } }));
+		measure(144);
+		expect(fields(tree)[0]?.props.style.height).toBeUndefined();
+		expect(fields(tree)[0]?.props.style).toMatchObject({ minHeight: 72, maxHeight: 200 });
+		measure(288);
+		expect(fields(tree)[0]?.props.style.height).toBeUndefined();
+		expect(fields(tree)[0]?.props.style.maxHeight).toBe(200);
+		expect(pressable(tree, "Expand editor")).toBeDefined();
+		measure(72);
+		expect(fields(tree)[0]?.props.style.height).toBeUndefined();
+		expect(fields(tree)[0]?.props.style.minHeight).toBe(72);
+		expect(pressable(tree, "Expand editor")).toBeUndefined();
+	});
+	it("offers expansion at the native layout cap, then removes it when a cleared draft shrinks", () => {
+		const { props, tree } = composer({ value: "draft words ".repeat(80), mayRest: false });
+		const layout = (height: number) =>
+			act(() => fields(tree)[0]?.props.onLayout?.({ nativeEvent: { layout: { width: 352, height } } }));
+		// iOS can stop reporting content size once its frame reaches the cap.
+		layout(144);
+		expect(pressable(tree, "Expand editor")).toBeDefined();
+		act(() => tree.update(<Composer {...props} value="" mayRest />));
+		layout(44);
+		expect(pressable(tree, "Expand editor")).toBeUndefined();
+	});
+	it("keeps composer symbols inside their targets at the largest text size", () => {
+		viewport.fontScale = 3.2;
+		const { tree } = composer({ value: "1\n2\n3\n4\n5\n6\n7", mayRest: false });
+		for (const label of ["Add", "Expand editor"]) {
+			const button = pressable(tree, label);
+			const bounds = button?.props.style({ pressed: false });
+			const size = button?.findByType("SymbolView" as never).props.size;
+			expect(size).toBeLessThan(bounds.width);
+			expect(size).toBeLessThan(bounds.height);
+		}
 	});
 	// The screen decides whether the draft may rest (an attached image or a
 	// read-only field says no); whenever it says no the composer stays open.
@@ -117,7 +195,7 @@ describe("Composer", () => {
 	// rests, so the composer always holds that target (Jesse's ruling).
 	it("keeps a 44pt Send target under a resting field", () => {
 		const { tree } = composer();
-		expect(fields(tree)[0]?.props.style.minHeight).toBe(24);
+		expect(fields(tree)[0]?.props.style.minHeight).toBe(44);
 		const send = pressable(tree, "Queue message");
 		expect(send?.props.style({ pressed: false })).toMatchObject({ width: 44, height: 44 });
 	});
@@ -283,6 +361,26 @@ describe("Composer", () => {
 				nativeEvent: { contentSize: { width: 300, height: 7 * 24 } },
 			}),
 		);
+		expect(pressable(tree, "Expand editor")).toBeDefined();
+	});
+
+	it("offers the editor when the window cap hides text before six lines", () => {
+		viewport.height = 330;
+		const { tree } = composer({ value: "paragraph-data", mayRest: false });
+		const field = fields(tree)[0];
+		expect(field?.props.style.maxHeight).toBe(110);
+		act(() => field?.props.onContentSizeChange({ nativeEvent: { contentSize: { width: 300, height: 144 } } }));
+		const expand = pressable(tree, "Expand editor");
+		expect(expand).toBeDefined();
+		act(() => expand?.props.onPress());
+		expect(fields(tree)).toHaveLength(2);
+		expect(fields(tree)[1]?.props.value).toBe("paragraph-data");
+	});
+
+	it("offers the editor for explicit lines above the viewport cap before measurement", () => {
+		viewport.fontScale = 2;
+		viewport.height = 600;
+		const { tree } = composer({ value: "1\n2\n3\n4\n5", mayRest: false });
 		expect(pressable(tree, "Expand editor")).toBeDefined();
 	});
 

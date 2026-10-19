@@ -51,10 +51,10 @@ function userMessageTextProps() {
 
 it("fills your message bubble with the accent tint in both themes", () => {
 	mode.scheme = "light";
-	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#DDEBFC" });
+	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#DFEEFF" });
 
 	mode.scheme = "dark";
-	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#2A343D" });
+	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#232D3B" });
 });
 
 it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keeping the text and label", () => {
@@ -64,20 +64,20 @@ it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keepin
 		fontFamily: "SourceSerif4-Regular",
 		fontSize: 17,
 		lineHeight: 25,
-		color: "#252521",
+		color: "#1C1C1E",
 	});
 	expect(light.children).toBe("Ship it");
 	expect(light.accessibilityLabel).toBe("You: Ship it");
 
 	mode.scheme = "dark";
 	const dark = userMessageTextProps();
-	expect(dark.style).toMatchObject({ color: "#E0DED6" });
+	expect(dark.style).toMatchObject({ color: "#E3E3E8" });
 });
 
-const INK_LOW = "#6D6D64";
-const INK_MID = "#5F5F57";
-const EDGE_STRONG = "#B7B6AC";
-const ATTENTION_INK = "#AD5209";
+const INK_LOW = "#62626D";
+const INK_MID = "#55555E";
+const EDGE_STRONG = "#B8B8C1";
+const ATTENTION_INK = "#9C4908";
 
 beforeEach(() => {
 	mode.scheme = "light";
@@ -368,7 +368,7 @@ describe("a saved note (spec 8.2, 8.8)", () => {
 			fontFamily: "SourceSerif4-Regular",
 			fontSize: 17,
 			lineHeight: 25,
-			color: "#252521",
+			color: "#1C1C1E",
 		});
 		const [rule] = tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2);
 		expect(rule.props.style).toMatchObject({ borderLeftColor: EDGE_STRONG });
@@ -753,7 +753,7 @@ describe("a settled thought", () => {
 describe("a subagent", () => {
 	const ALIVE = "#189A4D";
 	const DANGER = "#E3474C";
-	const EDGE_STRONG = "#B7B6AC";
+	const EDGE_STRONG = "#B8B8C1";
 	const row = (state: "running" | "failed" | "completed"): TimelineRow => ({
 		kind: "activity",
 		id: "item-1",

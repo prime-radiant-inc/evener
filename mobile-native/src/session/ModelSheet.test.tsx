@@ -2,10 +2,12 @@
 // way ConversationScreen provides one. The host's controls are a
 // SessionControls-shaped fake whose calls are recorded; only native edges are
 // mocked.
-import type { ModelListResponse, ThreadCapabilities } from "@evener/appwire-client";
+import { type ModelListResponse, type Thread, type ThreadCapabilities, WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { createConversationService } from "../../../mobile/src/services/conversation";
 import { paletteFor } from "../design/tokens";
 import type { MobileConversation } from "../projectedRows";
 import {
@@ -19,14 +21,30 @@ import {
 } from "../renderNative.testkit";
 import { markers } from "../markerTestUtils";
 import type { Routes } from "../screens";
-import type { SessionControls } from "../sessionControls";
+import { SessionControls } from "../sessionControls";
 import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
 import { type ModelHost, ModelSheet, modelHosts } from "./ModelSheet";
 
 const navigation = vi.hoisted(() => ({ goBack: vi.fn(), navigate: vi.fn(), dispatch: vi.fn() }));
+const viewport = vi.hoisted(() => ({ fontScale: 1, scrolls: [] as { y: number; animated: boolean }[] }));
 
-vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
+vi.mock("react-native", async () => {
+	const native = (await import("../renderNative.testkit")).nativeModuleMock();
+	const { useImperativeHandle } = await import("react");
+	return {
+		...native,
+		useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
+		SectionList: (props: Parameters<typeof native.SectionList>[0] & { ref?: unknown }) => {
+			useImperativeHandle(props.ref as never, () => ({
+				getScrollResponder: () => ({
+					scrollTo: (options: { y: number; animated: boolean }) => viewport.scrolls.push(options),
+				}),
+			}));
+			return native.SectionList(props);
+		},
+	};
+});
 vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => navigation,
 	usePreventRemove: () => {},
@@ -157,6 +175,8 @@ function listed(tree: ReactTestRenderer): string[] {
 beforeEach(() => {
 	navigation.goBack.mockReset();
 	navigation.navigate.mockReset();
+	viewport.fontScale = 1;
+	viewport.scrolls.length = 0;
 });
 
 afterEach(() => {
@@ -266,24 +286,152 @@ describe("choosing a model (spec 8.5)", () => {
 	});
 });
 
+describe.each([
+	{ action: "model", setting: "model", label: "Claude Haiku 5", method: "thread/model/set", closes: true },
+	{
+		action: "vision model",
+		setting: "vision",
+		label: "Claude Sonnet 5",
+		method: "thread/vision-model/set",
+		closes: true,
+	},
+	{ action: "vision off", setting: "vision", label: "Off", method: "thread/vision-model/set", closes: true },
+	{ action: "effort", setting: "model", label: "Low", method: "thread/reasoning-effort/set", closes: false },
+] as const)("rejected $action changes", ({ setting, label, method, closes }) => {
+	it.each([1, 2, 3.1])(
+		"reveals each refusal after scrolling and permits recovery at text scale %s",
+		async (fontScale) => {
+			viewport.fontScale = fontScale;
+			const session = conversation({ reasoningEffortLevels: ["minimal", "low", "medium", "high", "xhigh"] });
+			const thread: Thread = {
+				id: "thread",
+				sessionId: "session",
+				preview: "",
+				ephemeral: false,
+				modelProvider: "anthropic",
+				createdAt: 1,
+				updatedAt: 1,
+				status: { type: "idle" },
+				cwd: "/test",
+				cliVersion: "test",
+				source: "local",
+				turns: [],
+				evener: {
+					ref: REF,
+					instanceId: "instance",
+					queue: { revision: 0 },
+					capabilities: {
+						send: true,
+						steer: false,
+						interrupt: false,
+						compact: true,
+						clear: false,
+						forkFromTurn: false,
+						shutdown: true,
+						changeModel: true,
+						changeVisionModel: true,
+						sharedNotes: false,
+						queue: false,
+						goal: false,
+						rename: true,
+					},
+				},
+			};
+			const client = new FakeClient("ready");
+			client.on("thread/read", () => ({ thread }));
+			client.on("thread/unsubscribe", () => ({}));
+			let response = Promise.withResolvers<Record<string, never>>();
+			client.on(method, () => response.promise);
+			const service = createConversationService(client);
+			await service.open(REF);
+			const controls = new SessionControls(
+				service,
+				async () => {},
+				() => {},
+				() => true,
+				() => session,
+				() => true,
+				CATALOG,
+			);
+			onTestFinished(() => {
+				controls.dispose();
+				service.close();
+			});
+			const { host } = provide(session, {}, { controls });
+			const tree = sheet(setting);
+			expect(viewport.scrolls).toEqual([]);
+
+			for (const attempt of [0, 1, 2]) {
+				response = Promise.withResolvers<Record<string, never>>();
+				const settled = new Promise<void>((resolve) => {
+					const unsubscribe = controls.subscribe(() => {
+						if (controls.getSnapshot().pending !== null) return;
+						unsubscribe();
+						resolve();
+					});
+				});
+				const choice = pressable(tree, label);
+				if (!choice) throw new Error("Missing model action");
+				// The native edge records reveal requests from a list the user has
+				// scrolled away from its header. It does not simulate UIKit geometry.
+				viewport.scrolls.length = 0;
+				await act(async () => {
+					choice.props.onPress();
+					if (attempt < 2) response.reject(new WireError("rejection-sentinel", -32603));
+					else response.resolve({});
+					await settled;
+				});
+				expect(client.calls.filter((call) => call.method === method)).toHaveLength(attempt + 1);
+				if (attempt < 2) {
+					expect(controls.getSnapshot().error).not.toBeNull();
+					expect(viewport.scrolls).toEqual([{ y: 0, animated: true }]);
+					const list = tree.root.find((node) => String(node.type) === "SectionList");
+					const headerContent = list.findAll(
+						(node) => node.props.accessibilityRole === "alert" || node.props.accessibilityRole === "radiogroup",
+					);
+					expect(headerContent[0]?.props.accessibilityRole).toBe("alert");
+					expect(navigation.goBack).not.toHaveBeenCalled();
+					expect(host.toast).not.toHaveBeenCalled();
+					expect(pressable(tree, label)?.props.disabled).toBe(false);
+				} else {
+					expect(controls.getSnapshot().error).toBeNull();
+					expect(viewport.scrolls).toEqual([]);
+					expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(0);
+					expect(navigation.goBack).toHaveBeenCalledTimes(closes ? 1 : 0);
+				}
+			}
+		},
+	);
+});
+
 describe("effort", () => {
-	it("pins a segment for each level the model supports under the title, before the list", () => {
+	it("shows the current choice among the model's supported effort levels", () => {
 		provide(conversation());
 		const tree = sheet();
 		const segments = tree.root.findAll((node) => node.props.accessibilityRole === "radio");
-		expect(segments.map((node) => node.props.accessibilityLabel)).toEqual(["Low", "Medium", "High"]);
+		expect(segments).toHaveLength(3);
 		// The shared Segmented marks its choice with `checked`, as a radio does.
 		expect(segments.map((node) => node.props.accessibilityState.checked)).toEqual([false, false, true]);
 		const high = segments[2];
 		if (!high) throw new Error("no High");
-		expect([high.props.style].flat()[0]).toMatchObject({ backgroundColor: palette.accentBg });
-		expect(high.findByType("Text" as never).props.style).toMatchObject({ color: palette.accentInk });
-		expect(texts(tree)).toEqual(expect.arrayContaining(["Effort", "Applies from the next turn"]));
-		// The segments sit in the header, which the list follows.
-		const order = tree.root.findAll(
-			(node) => node.props.accessibilityRole === "radio" || String(node.type) === "SectionList",
-		);
-		expect(String(order.at(-1)?.type)).toBe("SectionList");
+		expect([high.props.style].flat()[0]).toMatchObject({ backgroundColor: palette.surface });
+		expect(high.findByType("Text" as never).props.style).toMatchObject({ color: palette.inkHi });
+	});
+
+	it.each([1, 2, 3.1])("scrolls stacked effort and errors with the models at text scale %s", (fontScale) => {
+		viewport.fontScale = fontScale;
+		const levels = ["minimal", "low", "medium", "high", "xhigh"];
+		provide(conversation({ reasoningEffortLevels: levels }), { modelError: "catalog-error-sentinel" });
+		const tree = sheet();
+		const list = tree.root.find((node) => String(node.type) === "SectionList");
+		const choices = list.findAll((node) => node.props.accessibilityRole === "radio");
+		expect(choices).toHaveLength(levels.length);
+		expect(list.findByProps({ accessibilityRole: "radiogroup" }).props.style.flexDirection).toBe("column");
+		expect(list.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(1);
+		expect(list.findAll((node) => node.props.testID === "model-title").length).toBeGreaterThan(0);
+		// Search stays available while the growing header scrolls away.
+		expect(tree.root.findAll((node) => String(node.type) === "TextInput")).toHaveLength(1);
+		expect(list.findAll((node) => String(node.type) === "TextInput")).toHaveLength(0);
 	});
 
 	it("sets the effort", () => {

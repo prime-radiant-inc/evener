@@ -4861,13 +4861,13 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		it("offers VoiceOver the sessions on either side, and only those there are", async () => {
 			const actions = () =>
 				headerTitle()
-					.root.find((node) => node.props.accessibilityRole === "button")
-					.props.accessibilityActions.map((action: { label: string }) => action.label);
+					.root.find((node) => node.props.accessibilityRole === "button" && node.props.accessibilityActions)
+					.props.accessibilityActions.map((action: { name: string }) => action.name);
 			await mount(thread("ref-title", "active"));
-			expect(actions()).toEqual(["Previous session", "Next session"]);
+			expect(actions()).toEqual(["previous", "next"]);
 			fleet.live = [failing, asking, working];
 			await mount(thread("ref-title", "active"));
-			expect(actions()).toEqual(["Previous session"]);
+			expect(actions()).toEqual(["previous"]);
 		});
 
 		it("goes nowhere on a pan the system cancelled", async () => {

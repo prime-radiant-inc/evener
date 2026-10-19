@@ -133,6 +133,26 @@ root for discovery and subsequent reads. `sessions`, `turnids`, `audit`, and
 that command's flags. Transcripts and API logs can contain secrets and private
 task content; review them before sharing.
 
+### Doctor subcommands
+
+| Subcommand | Reads |
+| --- | --- |
+| `locate` | Resolves a selector to its transcript, API log, meta, jobs, and mutation files. |
+| `transcript` | Renders logical turns; `--count TOOL` counts structural calls, `--health` prints per-session metrics. |
+| `apilog` | Provider attempts: tokens, latency, empties, errors, cache spikes; `--summary` and `--health` condense it, `--validate` scans integrity. |
+| `jobs` | Every job the session ran, with status, reason, exit code, output bytes, and timings. |
+| `mutations` | The client-mutation journal and durable input queue. |
+| `watches` | Distinct deliveries, provenance, and breaker telemetry; `--self-loops` narrows to runaway fuses. |
+| `tree` | Parent, delegate, and observer relationships across buckets; `--observers` and `--depth N` adjust the view. |
+| `reconstruct` | Stages a lost transcript from an archive and surviving metadata without changing live state. |
+| `sessions` | Enumerates sessions by last activity, for batch study. |
+| `turnids` | Sweeps every session for reserved turn IDs minted inside the transcript's entry-index namespace. |
+| `audit` | Runs a named runbook's checks over `--sessions` or `--since`, emitting deduplicated findings. |
+| `plugins` | Plugin-store health: registry and disk drift, marketplace health, component validity, auto-upgrade sanity. |
+
+User-facing recovery steps for the common cases are in
+[Troubleshooting](troubleshooting.md#inspect-a-saved-session).
+
 ## One-shot options
 
 The following reference follows `newRunFlagSet` in [`cmd/evener/main.go`](../cmd/evener/main.go). An omitted string option is resolved by its subsystem; there is no universal configuration precedence. See [Configuration](configuration.md) for persisted settings.
@@ -141,8 +161,7 @@ The following reference follows `newRunFlagSet` in [`cmd/evener/main.go`](../cmd
 not necessarily the value the session uses. For a new one-shot session:
 
 - `--max-rounds`: omitted `-1` resolves to **unlimited**, as does explicit `0`.
-  A positive value sets a cap. The CLI help's older “default: 200” text is stale;
-  the [conversion](../cmdutil/cmdutil.go) and
+  A positive value sets a cap. The [conversion](../cmdutil/cmdutil.go) and
   [session defaults](../agent/session_config.go) define the current behavior.
 - `--max-subagent-depth`: omitted `-1` leaves the session default of **2**.
 - `--max-concurrent-delegates`: omitted `-1` leaves the session default of **50**.

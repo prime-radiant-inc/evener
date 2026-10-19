@@ -1,9 +1,6 @@
-// The redesign's design tokens: the web's palette
-// (cmd/evener-hub/frontend/src/styles/tokens.css) as the redesign spec lists
-// it (docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md,
-// section 16), so the phone and the web speak one color language. Four hues
-// carry meaning (amber: a human is needed; green: working; red: failed;
-// blue: tappable, selected or unread); everything else is ink on paper.
+// Native neutral surfaces, with the same semantic hues as the web:
+// amber needs a human, green is working, red failed, and blue is actionable
+// or unread. Platform surfaces differ; the meanings do not.
 
 export type Scheme = "light" | "dark";
 
@@ -128,19 +125,19 @@ function withTints(core: Core): Palette {
 export const palettes: Record<Scheme, Palette> = {
 	light: withTints({
 		scheme: "light",
-		page: "#FAF9F6",
-		canvas: "#F1F0EB",
-		surface: "#FCFBF8",
-		inset: "#F4F3EE",
-		pressed: "#F0EFE9",
-		edge: "#DDDCD4",
-		edgeStrong: "#B7B6AC",
-		inkHi: "#252521",
-		inkMid: "#5F5F57",
-		inkLow: "#6D6D64",
-		prose: "#252521",
+		page: "#FFFFFF",
+		canvas: "#F2F2F7",
+		surface: "#FFFFFF",
+		inset: "#EDEDF2",
+		pressed: "#E5E5EA",
+		edge: "#D8D8DF",
+		edgeStrong: "#B8B8C1",
+		inkHi: "#1C1C1E",
+		inkMid: "#55555E",
+		inkLow: "#62626D",
+		prose: "#1C1C1E",
 		attention: "#F59E0B",
-		attentionInk: "#AD5209",
+		attentionInk: "#9C4908",
 		alive: "#189A4D",
 		aliveInk: "#12763B",
 		danger: "#E3474C",
@@ -154,17 +151,17 @@ export const palettes: Record<Scheme, Palette> = {
 	}),
 	dark: withTints({
 		scheme: "dark",
-		page: "#191918",
-		canvas: "#1D1D1B",
-		surface: "#232320",
-		inset: "#20201E",
-		pressed: "#2B2B28",
-		edge: "#34342F",
-		edgeStrong: "#51514A",
-		inkHi: "#F2F1EB",
-		inkMid: "#B0AFA6",
-		inkLow: "#99998F",
-		prose: "#E0DED6",
+		page: "#111113",
+		canvas: "#08080A",
+		surface: "#1C1C1E",
+		inset: "#252528",
+		pressed: "#303034",
+		edge: "#38383D",
+		edgeStrong: "#56565F",
+		inkHi: "#F5F5F7",
+		inkMid: "#B8B8C1",
+		inkLow: "#A5A5B0",
+		prose: "#E3E3E8",
 		attention: "#F68F3C",
 		attentionInk: "#F68F3C",
 		alive: "#3DBB72",
@@ -213,9 +210,8 @@ export const typeRoles = {
 	machine: { fontFamily: fonts.mono, fontSize: 13, lineHeight: 18 },
 } as const;
 
-/** Interface roles from spec 16.2 that the grouped lists use, in points
- * before Dynamic Type; scaledType applies the text scale. A grouped row's
- * label is 17/22 regular, the prototype's `.gl`. */
+/** Interface roles in points before Dynamic Type; scaledType applies the
+ * text scale. System fonts keep interface text distinct from reading text. */
 export const uiType = {
 	listRow: { fontSize: 17, lineHeight: 22 },
 	/** The why line: Subheadline. */
@@ -227,13 +223,11 @@ export const uiType = {
 	 * on the 20pt line of its Live summary (styles.css:285, .live-sum). A
 	 * sheet's reconnecting line is Footnote. */
 	statusLine: { fontSize: 14, lineHeight: 20 },
-	/** One or two words, uppercase, +0.06em (12 × 0.06 = 0.72). */
+	/** Sentence-case section headings, legible without tracked capitals. */
 	sectionLabel: {
-		fontSize: 12,
-		lineHeight: 16,
+		fontSize: 15,
+		lineHeight: 20,
 		fontWeight: "600",
-		letterSpacing: 0.72,
-		textTransform: "uppercase",
 	},
 } as const;
 

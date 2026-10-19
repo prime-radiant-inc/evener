@@ -1,5 +1,5 @@
-// The grouped list the Hub and New session sheets are built from (spec 12 and
-// 16): uppercase section labels, inset groups of rows on the surface color over
+// The grouped list the Hub and New session sheets are built from:
+// sentence-case section labels, inset groups of rows on the surface color over
 // the canvas, and ink-mid footers. A row carries a bare SF Symbol in ink-mid
 // (never a colored tile), a label with an optional second line, a trailing
 // value, and a chevron when it opens a page.
@@ -16,7 +16,17 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { AccessibilityInfo, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import {
+	AccessibilityInfo,
+	Platform,
+	Pressable,
+	ScrollView,
+	Switch,
+	Text,
+	TextInput,
+	View,
+	useWindowDimensions,
+} from "react-native";
 import { fonts, type Palette, scaledType, space, uiType } from "../design/tokens";
 import { haptic } from "../haptics";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -44,17 +54,25 @@ export function GroupedPage({ children, scrollRef }: { children: ReactNode; scro
 	);
 }
 
-/** A section label: SF Pro semibold 12, uppercase, +0.06em (spec 16.2). A
- * machine label (a marketplace, a provider profile) is Menlo as typed and never
- * uppercased (spec 11). A group takes its label as Group's `label`; this
+/** A sentence-case section heading. A machine label (a marketplace or
+ * provider profile) is Menlo as typed. A group takes its label as Group's `label`; this
  * heads anything else, such as a segmented control or a footer. */
-export function GroupLabel({ children, machine = false }: { children: string; machine?: boolean }) {
+export function GroupLabel({
+	children,
+	machine = false,
+	selectable = false,
+}: {
+	children: string;
+	machine?: boolean;
+	selectable?: boolean;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { fontSize, lineHeight, ...sectionCase } = scaledType(uiType.sectionLabel, scale);
 	return (
 		<Text
 			accessibilityRole="header"
+			selectable={selectable}
 			allowFontScaling={allowFontScaling}
 			style={[
 				{
@@ -92,6 +110,7 @@ export function Group({
 	children,
 	label,
 	machineLabel = false,
+	selectableLabel = false,
 	section,
 }: {
 	children: ReactNode;
@@ -100,6 +119,8 @@ export function Group({
 	section?: string;
 	/** The label is a marketplace or similar machine name (see GroupLabel). */
 	machineLabel?: boolean;
+	/** A user-authored identity that can be selected and copied. */
+	selectableLabel?: boolean;
 }) {
 	const { palette } = useColors();
 	const rows = Children.toArray(children);
@@ -134,7 +155,9 @@ export function Group({
 	if (!label) return group;
 	return (
 		<>
-			<GroupLabel machine={machineLabel}>{label}</GroupLabel>
+			<GroupLabel machine={machineLabel} selectable={selectableLabel}>
+				{label}
+			</GroupLabel>
 			{group}
 		</>
 	);
@@ -182,6 +205,8 @@ export interface RowProps {
 	accessibilityLabel?: string;
 	/** Names the state the row reports, so a test can read it without its words. */
 	testID?: string;
+	/** Preserve native selection for displayed settings and identifiers. */
+	selectable?: boolean;
 	/** A control of its own at the row's end, such as a mini button
 	 * ("Install"): outside what a press on the row opens, so each is its own
 	 * target and its own VoiceOver element. */
@@ -207,6 +232,7 @@ function RowText({
 	machineLabel = false,
 	machineSub = false,
 	labelColor,
+	selectable = false,
 	children,
 }: {
 	label: string;
@@ -216,6 +242,7 @@ function RowText({
 	machineSub?: boolean;
 	/** A row's action or destructive ink overrides the default inkHi. */
 	labelColor?: string;
+	selectable?: boolean;
 	/** A row's value, drawn on the label's wrapping line. */
 	children?: ReactNode;
 }) {
@@ -235,6 +262,7 @@ function RowText({
 			>
 				<Text
 					testID="row-label"
+					selectable={selectable}
 					allowFontScaling={allowFontScaling}
 					style={{
 						flexGrow: 1,
@@ -251,6 +279,7 @@ function RowText({
 			{sub ? (
 				<Text
 					testID="row-sub"
+					selectable={selectable}
 					allowFontScaling={allowFontScaling}
 					style={[
 						{
@@ -286,10 +315,18 @@ export function Row({
 	onPress,
 	accessibilityLabel,
 	testID,
+	selectable = false,
 	accessory,
 }: RowProps) {
 	const { palette } = useColors();
-	const labelColor = tone === "accent" ? palette.accentInk : tone === "danger" ? palette.dangerInk : palette.inkHi;
+	let labelColor = palette.inkHi;
+	if (disabled) {
+		labelColor = palette.inkMid;
+	} else if (tone === "accent") {
+		labelColor = palette.accentInk;
+	} else if (tone === "danger") {
+		labelColor = palette.dangerInk;
+	}
 	const plainValue = typeof value === "string" || typeof value === "number" ? String(value) : undefined;
 	const reading = accessibilityLabel ?? [label, sub, plainValue].filter(Boolean).join(", ");
 	const body = (
@@ -307,10 +344,11 @@ export function Row({
 					machineLabel={machineLabel}
 					machineSub={machineSub}
 					labelColor={labelColor}
+					selectable={selectable}
 				>
 					{rendersSomething(value) ? (
 						<View testID="row-value" style={{ flexShrink: 1 }}>
-							{plainValue !== undefined ? <RowValue text={plainValue} /> : value}
+							{plainValue !== undefined ? <RowValue text={plainValue} selectable={selectable} /> : value}
 						</View>
 					) : null}
 				</RowText>
@@ -325,7 +363,6 @@ export function Row({
 		minHeight: 44,
 		paddingHorizontal: space.rowInset,
 		paddingVertical: space.rowPadding,
-		opacity: disabled ? 0.4 : 1,
 	} as const;
 	const state = checked === undefined ? { disabled } : { disabled, selected: checked };
 	// With a control at its end, the row's own part takes the rest of the
@@ -400,7 +437,12 @@ export function SwitchRow({
 	const { palette } = useColors();
 	const text = (
 		<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-			<RowText label={label} sub={sub} subTone={subTone} />
+			<RowText
+				label={label}
+				sub={sub}
+				subTone={subTone}
+				labelColor={disabled && !onPress ? palette.inkMid : undefined}
+			/>
 		</View>
 	);
 	return (
@@ -412,7 +454,6 @@ export function SwitchRow({
 				minHeight: 44,
 				paddingHorizontal: space.rowInset,
 				paddingVertical: 8,
-				opacity: disabled && !onPress ? 0.4 : 1,
 			}}
 		>
 			{icon ? <Glyph name={icon} color={palette.inkMid} /> : null}
@@ -503,7 +544,7 @@ export function TextFieldRow({
 			ref={ref}
 			allowFontScaling={allowFontScaling}
 			style={{
-				color: palette.inkHi,
+				color: disabled ? palette.inkMid : palette.inkHi,
 				// React Native draws a TextInput's placeholder in the input's
 				// own font, so a machine field shows hint words in the UI font
 				// while empty and its value in Menlo once there is one (spec
@@ -514,7 +555,6 @@ export function TextFieldRow({
 				paddingHorizontal: space.rowInset,
 				paddingVertical: space.rowPadding,
 				textAlignVertical: multiline ? "top" : "center",
-				opacity: disabled ? 0.4 : 1,
 			}}
 		/>
 	);
@@ -736,6 +776,7 @@ export function GroupFooter({
 	tone = "normal",
 	machine = false,
 	live = false,
+	selectable = false,
 	testID,
 }: {
 	children: string;
@@ -744,6 +785,8 @@ export function GroupFooter({
 	live?: boolean;
 	/** Text the machine wrote, such as an error the hub reported: Menlo. */
 	machine?: boolean;
+	/** Preserve selection when the diagnostic includes user-supplied values. */
+	selectable?: boolean;
 	/** Names what the footer reports, so a test can tell one report from another. */
 	testID?: string;
 }) {
@@ -753,6 +796,7 @@ export function GroupFooter({
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
+			selectable={selectable}
 			accessibilityLiveRegion={live ? "polite" : undefined}
 			testID={testID}
 			style={[
@@ -771,9 +815,9 @@ export function GroupFooter({
 	);
 }
 
-/** A segmented control (spec 16.1: the chosen segment is accent-bg with accent
- * ink, never an ink fill; 16.6: a selection tick on a change). A tap on the
- * chosen segment does nothing. */
+/** Compact choices become checked rows when their actual width or text size
+ * needs more room. Labels may wrap in either layout; selection never shrinks
+ * the person's preferred type. A tap on the chosen segment does nothing. */
 export function Segmented<T extends string>({
 	label,
 	options,
@@ -789,18 +833,23 @@ export function Segmented<T extends string>({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const { width: windowWidth } = useWindowDimensions();
+	const [measuredWidth, setMeasuredWidth] = useState<number | null>(null);
+	const width = measuredWidth ?? windowWidth - space.margin * 2;
+	const stacked = scale > 1.2 || width / options.length < 88;
+	const selectedSurface = palette.scheme === "dark" ? palette.pressed : palette.surface;
 	return (
 		<View
 			accessibilityRole="radiogroup"
 			accessibilityLabel={label}
+			onLayout={(event) => setMeasuredWidth(event.nativeEvent.layout.width)}
 			style={{
-				flexDirection: "row",
+				flexDirection: stacked ? "column" : "row",
 				gap: 2,
 				marginHorizontal: space.margin,
 				padding: 2,
-				borderRadius: 22,
+				borderRadius: 12,
 				backgroundColor: palette.inset,
-				opacity: disabled ? 0.4 : 1,
 			}}
 		>
 			{options.map((option) => {
@@ -813,27 +862,34 @@ export function Segmented<T extends string>({
 						accessibilityState={{ checked: chosen, disabled }}
 						disabled={disabled}
 						onPress={() => {
-							if (!chosen) {
+							if (!disabled && !chosen) {
 								haptic("selection");
 								onChange(option.value);
 							}
 						}}
 						style={{
-							flex: 1,
-							// Spec 16.6: a segment is an action target.
+							flex: stacked ? undefined : 1,
+							flexDirection: "row",
 							minHeight: 44,
 							alignItems: "center",
-							justifyContent: "center",
-							borderRadius: 20,
-							backgroundColor: chosen ? palette.accentBg : "transparent",
+							justifyContent: stacked ? "flex-start" : "center",
+							gap: space.rowGap,
+							paddingHorizontal: 12,
+							paddingVertical: 8,
+							borderRadius: 10,
+							backgroundColor: chosen ? selectedSurface : "transparent",
 						}}
 					>
+						{stacked ? (
+							<Glyph name={chosen ? "checkmark" : undefined} color={disabled ? palette.inkMid : palette.accentInk} />
+						) : null}
 						<Text
 							allowFontScaling={allowFontScaling}
-							numberOfLines={1}
 							style={{
-								color: chosen ? palette.accentInk : palette.inkHi,
-								fontSize: uiType.subheadline.fontSize * scale,
+								flexShrink: 1,
+								textAlign: stacked ? "left" : "center",
+								color: disabled ? palette.inkMid : palette.inkHi,
+								...scaledType(uiType.subheadline, scale),
 								fontWeight: chosen ? "600" : "400",
 							}}
 						>
@@ -886,11 +942,13 @@ export function RowValue({
 	text,
 	tag,
 	tone = "normal",
+	selectable = false,
 }: {
 	text?: string;
 	tag?: { text: string; tone: keyof typeof TAG_TONES } | null;
 	/** "attention" for a value that may need a human, such as Offline. */
 	tone?: "normal" | "attention";
+	selectable?: boolean;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -899,6 +957,7 @@ export function RowValue({
 			{text ? (
 				<Text
 					allowFontScaling={allowFontScaling}
+					selectable={selectable}
 					style={{
 						flexShrink: 1,
 						color: tone === "attention" ? palette.attentionInk : palette.inkMid,

@@ -1,5 +1,6 @@
 import { AccessibilityInfo, Platform, Pressable, type TextInput, View } from "react-native";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { textContrast } from "../design/contrast.testkit";
 import { fonts, palettes } from "../design/tokens";
 import { playedHaptics, render, renderedText } from "../renderNative.testkit";
 import { createRef } from "react";
@@ -21,8 +22,15 @@ import {
 	useFormError,
 } from "./Grouped";
 
+const viewport = vi.hoisted(() => ({ fontScale: 1, scheme: "light" as "light" | "dark" }));
+beforeEach(() => {
+	viewport.fontScale = 1;
+	viewport.scheme = "light";
+});
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
+	useColorScheme: () => viewport.scheme,
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
@@ -36,6 +44,29 @@ const isSurface = (node: { type: unknown; props: { style?: unknown } }) =>
 const surfaces = (tree: ReturnType<typeof render>) => tree.root.findAll(isSurface);
 
 describe("a row", () => {
+	it.each([true, false])("keeps native text selection opt-in: %s", (selectable) => {
+		let opened = false;
+		const tree = render(
+			<Row
+				label="fixture-label"
+				sub="fixture-detail"
+				value="fixture-value"
+				selectable={selectable}
+				onPress={() => {
+					opened = true;
+				}}
+			/>,
+		);
+		expect(texts(tree)).toHaveLength(3);
+		for (const text of texts(tree)) {
+			expect(!!text.props.selectable).toBe(selectable);
+			expect(text.props.numberOfLines).toBeUndefined();
+		}
+		act(() => tree.root.findByProps({ accessibilityRole: "button" }).props.onPress());
+		expect(opened).toBe(true);
+		act(() => tree.unmount());
+	});
+
 	it("reads as its label, detail and value, and opens on a tap", () => {
 		const onPress = vi.fn();
 		const tree = render(
@@ -64,6 +95,23 @@ describe("a row", () => {
 		const button = tree.root.findByProps({ accessibilityRole: "button" });
 		expect(button.props.disabled).toBe(true);
 		expect(button.props.accessibilityState).toEqual({ disabled: true });
+	});
+
+	it.each(["light", "dark"] as const)("keeps disabled content readable in %s", (scheme) => {
+		viewport.scheme = scheme;
+		const tree = render(
+			<Group>
+				<Row label="Fixture" sub="retained-detail" value="retained-value" disabled onPress={() => {}} />
+				<SwitchRow label="Fixture switch" sub="retained-switch-detail" value disabled onChange={() => {}} />
+				<TextFieldRow label="Fixture field" value="retained-input" disabled onChangeText={() => {}} />
+			</Group>,
+		);
+		const content = [...texts(tree), ...tree.root.findAllByType("TextInput" as never)];
+		expect(content).toHaveLength(6);
+		for (const node of content) expect(textContrast(node, palettes[scheme].surface)).toBeGreaterThanOrEqual(4.5);
+		expect(tree.root.findByProps({ accessibilityRole: "button" }).props.disabled).toBe(true);
+		expect(tree.root.findByType("Switch" as never).props.disabled).toBe(true);
+		expect(tree.root.findByType("TextInput" as never).props.editable).toBe(false);
 	});
 
 	it("draws a picker's check only on the chosen row", () => {
@@ -100,6 +148,23 @@ describe("a row", () => {
 });
 
 describe("a group", () => {
+	it.each([true, false])("keeps identity and diagnostic text selection opt-in: %s", (selectable) => {
+		const tree = render(
+			<>
+				<Group label="fixture-hub" selectableLabel={selectable}>
+					<View />
+				</Group>
+				<GroupFooter selectable={selectable}>fixture-rule</GroupFooter>
+			</>,
+		);
+		expect(texts(tree)).toHaveLength(2);
+		for (const text of texts(tree)) {
+			expect(!!text.props.selectable).toBe(selectable);
+			expect(text.props.numberOfLines).toBeUndefined();
+		}
+		act(() => tree.unmount());
+	});
+
 	it("draws hairlines between its rows, not around them", () => {
 		const tree = render(
 			<Group>
@@ -128,7 +193,7 @@ describe("a group", () => {
 		);
 		const header = tree.root.findByProps({ accessibilityRole: "header" });
 		expect(header.props.children).toBe("Fleet");
-		expect(merged(header.props.style)).toMatchObject({ textTransform: "uppercase" });
+		expect(merged(header.props.style).textTransform).toBeUndefined();
 		expect(merged(surfaces(tree)[0]?.props.style).marginTop).toBe(0);
 	});
 
@@ -206,13 +271,13 @@ describe("a switch row", () => {
 		expect(drawn(sw)).toEqual(drawn(row));
 	});
 
-	it("dims while disabled, and gives iOS the off track's color", () => {
+	it("keeps its disabled label readable and gives iOS the off track's color", () => {
 		const tree = render(<SwitchRow label="Network" value={false} disabled onChange={() => {}} />);
 		const toggle = tree.root.findByType("Switch" as never);
 		expect(toggle.props.disabled).toBe(true);
 		// iOS draws the off track from ios_backgroundColor, not trackColor.false.
 		expect(toggle.props.ios_backgroundColor).toBe(light.edgeStrong);
-		expect(tree.root.findAllByType("View" as never)[0]?.props.style.opacity).toBe(0.4);
+		expect(textContrast(tree.root.findByProps({ testID: "row-label" }), light.surface)).toBeGreaterThanOrEqual(4.5);
 	});
 
 	it("opens a detail from its text while its switch flips on its own, and says a problem in danger ink", () => {
@@ -239,7 +304,7 @@ describe("a switch row", () => {
 		expect(toggle.props.accessibilityLabel).toBe("cracked on by default");
 		expect(toggle.props.disabled).toBe(true);
 		// The detail still opens while the switch waits, so the row doesn't dim.
-		expect(tree.root.findAllByType("View" as never)[0]?.props.style.opacity).toBe(1);
+		expect(textContrast(tree.root.findByProps({ testID: "row-label" }), light.surface)).toBeGreaterThanOrEqual(4.5);
 		const broken = texts(tree).find((node) => node.props.children === "Broken");
 		expect(merged(broken?.props.style).color).toBe(light.dangerInk);
 	});
@@ -252,12 +317,12 @@ describe("a segmented control", () => {
 		{ value: "dark", label: "Dark" },
 	] as const;
 
-	it("marks the chosen segment in the accent tint and reports a new choice", () => {
+	it("marks the chosen segment on a raised surface and reports a new choice", () => {
 		const onChange = vi.fn();
 		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={onChange} />);
 		const radios = tree.root.findAllByProps({ accessibilityRole: "radio" });
 		expect(radios.map((radio) => radio.props.accessibilityState.checked)).toEqual([false, true, false]);
-		expect(radios[1]?.props.style.backgroundColor).toBe(light.accentBg);
+		expect(radios[1]?.props.style.backgroundColor).toBe(light.surface);
 		radios[2]?.props.onPress();
 		expect(onChange).toHaveBeenCalledWith("dark");
 	});
@@ -284,6 +349,48 @@ describe("a segmented control", () => {
 		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={() => {}} />);
 		for (const radio of tree.root.findAllByProps({ accessibilityRole: "radio" })) {
 			expect(merged(radio.props.style).minHeight).toBe(44);
+		}
+	});
+
+	it("stacks full-size choices at accessibility text sizes and still selects their values", () => {
+		viewport.fontScale = 2;
+		const onChange = vi.fn();
+		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={onChange} />);
+		const group = tree.root.findByProps({ accessibilityRole: "radiogroup" });
+		expect(merged(group.props.style).flexDirection).toBe("column");
+		for (const label of texts(tree)) {
+			expect(label.props.numberOfLines).toBeUndefined();
+			expect(merged(label.props.style).fontSize).toBeGreaterThanOrEqual(30);
+		}
+		const radios = tree.root.findAllByProps({ accessibilityRole: "radio" });
+		radios[0]?.props.onPress();
+		expect(onChange).toHaveBeenCalledWith("system");
+		expect(radios.map((radio) => radio.props.accessibilityState.checked)).toEqual([false, true, false]);
+	});
+
+	it("adapts to its measured width inside a narrow sheet", () => {
+		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={() => {}} />);
+		const group = tree.root.findByProps({ accessibilityRole: "radiogroup" });
+		expect(merged(group.props.style).flexDirection).toBe("row");
+		act(() => group.props.onLayout({ nativeEvent: { layout: { width: 220 } } }));
+		expect(merged(group.props.style).flexDirection).toBe("column");
+		act(() => group.props.onLayout({ nativeEvent: { layout: { width: 358 } } }));
+		expect(merged(group.props.style).flexDirection).toBe("row");
+	});
+
+	it("keeps disabled choices readable and inert in either layout", () => {
+		for (const scale of [1, 2]) {
+			viewport.fontScale = scale;
+			const onChange = vi.fn();
+			const tree = render(
+				<Segmented label="Appearance" options={options} value="light" disabled onChange={onChange} />,
+			);
+			expect(merged(tree.root.findByProps({ accessibilityRole: "radiogroup" }).props.style).opacity ?? 1).toBe(1);
+			for (const radio of tree.root.findAllByProps({ accessibilityRole: "radio" })) {
+				expect(radio.props.disabled).toBe(true);
+				radio.props.onPress();
+			}
+			expect(onChange).not.toHaveBeenCalled();
 		}
 	});
 });
@@ -354,9 +461,11 @@ describe("a form's error", () => {
 });
 
 describe("labels, footers and tags", () => {
-	it("uppercases a section label and keeps a machine label as typed in Menlo", () => {
+	it("keeps headings as authored and distinguishes a machine label with Menlo", () => {
 		const section = merged(texts(render(<GroupLabel>Where</GroupLabel>))[0]?.props.style);
-		expect(section).toMatchObject({ textTransform: "uppercase", fontWeight: "600", letterSpacing: 0.72 });
+		expect(section).toMatchObject({ fontSize: 15, lineHeight: 20, fontWeight: "600" });
+		expect(section.textTransform).toBeUndefined();
+		expect(section.letterSpacing).toBeUndefined();
 		const machine = merged(texts(render(<GroupLabel machine>superpowers-marketplace</GroupLabel>))[0]?.props.style);
 		expect(machine.fontFamily).toBe("Menlo");
 		expect(machine.textTransform).toBeUndefined();

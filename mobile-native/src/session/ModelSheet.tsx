@@ -1,14 +1,15 @@
 // The model sheet (spec 8.5): the session's model and its effort, or, opened
 // from the Session sheet, its vision model (ruling 17). A formSheet route
-// that opens at medium, as pickers do (sheetRoutes.ts). The search field and
-// Effort sit in its header, so both stay in reach at half height: a
-// formSheet has no pinned footer (ruling 37). The session screen provides
-// the session and its controls through modelHosts.
+// that opens at medium, as pickers do (sheetRoutes.ts). Search stays pinned;
+// effort choices and errors scroll with the models so large text cannot
+// consume the list's viewport. The session screen provides the session and
+// its controls through modelHosts.
 import { type ModelDescriptor, sessionEffortLevels } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useEffect, useState } from "react";
-import { Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { type SectionList, Text, View } from "react-native";
 import { ChoiceRow, ModelPicker } from "../ModelPicker";
+import type { ModelPickerEntry, ModelSection } from "../modelPickerEntries";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
 import { type SessionControls, useControlsState } from "../sessionControls";
@@ -62,6 +63,7 @@ function ModelSheetBody({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const list = useRef<SectionList<ModelPickerEntry, ModelSection>>(null);
 	const { session, controls, ready } = host;
 	const state = useControlsState(controls);
 	// The screen loads the catalog when it opens; a sheet opened before that
@@ -76,9 +78,17 @@ function ModelSheetBody({
 	const current = vision ? session.visionModel : session.modelProvider;
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
 	const error = state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
+	const revealError = () => {
+		// Each refusal reveals the first header row, even when it repeats the
+		// previous message after the user has scrolled away to try again.
+		if (controls?.getSnapshot().error) list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
+	};
 	const closeOn = (change: Promise<boolean>, then?: () => void) =>
 		void change.then((changed) => {
-			if (!changed) return;
+			if (!changed) {
+				revealError();
+				return;
+			}
 			finish();
 			then?.();
 		});
@@ -94,17 +104,8 @@ function ModelSheetBody({
 				host.toast({ text: "Model changed. Applies from the next turn." }),
 			);
 	};
-	const pinned = (
+	const settings = (
 		<View style={{ paddingHorizontal: 16, paddingBottom: 8, gap: 8 }}>
-			<SearchField label="Search models" value={query} onChangeText={setQuery} />
-			{levels.length > 0 ? (
-				<Effort
-					levels={levels}
-					current={session.reasoningEffort ?? ""}
-					disabled={busy}
-					choose={(level) => void controls?.setReasoningEffort(level)}
-				/>
-			) : null}
 			{error ? (
 				<Text
 					accessibilityRole="alert"
@@ -114,11 +115,28 @@ function ModelSheetBody({
 					{error}
 				</Text>
 			) : null}
+			{levels.length > 0 ? (
+				<Effort
+					levels={levels}
+					current={session.reasoningEffort ?? ""}
+					disabled={busy}
+					choose={(level) => void controls?.setReasoningEffort(level).then(revealError)}
+				/>
+			) : null}
 		</View>
 	);
 	return (
-		<Sheet title={vision ? "Vision model" : "Model"} done={{ onPress: () => finish() }} accessory={pinned}>
+		<Sheet
+			title={vision ? "Vision model" : "Model"}
+			done={{ onPress: () => finish() }}
+			accessory={
+				<View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
+					<SearchField label="Search models" value={query} onChangeText={setQuery} />
+				</View>
+			}
+		>
 			<ModelPicker
+				ref={list}
 				catalog={state?.catalog ?? null}
 				loading={state?.loadingModels ?? true}
 				query={query}
@@ -127,22 +145,25 @@ function ModelSheetBody({
 				disabled={busy || !canChange}
 				choose={choose}
 				header={
-					vision ? (
-						<>
-							<ChoiceRow
-								title="Session model"
-								selected={session.visionModel === ""}
-								disabled={busy || !canChange}
-								onPress={() => controls && closeOn(controls.setVisionModel(""))}
-							/>
-							<ChoiceRow
-								title="Off"
-								selected={session.visionModel === "off"}
-								disabled={busy || !canChange}
-								onPress={() => controls && closeOn(controls.setVisionModel("off"))}
-							/>
-						</>
-					) : null
+					<>
+						{levels.length > 0 || error ? settings : null}
+						{vision ? (
+							<>
+								<ChoiceRow
+									title="Session model"
+									selected={session.visionModel === ""}
+									disabled={busy || !canChange}
+									onPress={() => controls && closeOn(controls.setVisionModel(""))}
+								/>
+								<ChoiceRow
+									title="Off"
+									selected={session.visionModel === "off"}
+									disabled={busy || !canChange}
+									onPress={() => controls && closeOn(controls.setVisionModel("off"))}
+								/>
+							</>
+						) : null}
+					</>
 				}
 			/>
 		</Sheet>

@@ -144,8 +144,8 @@ type Navigation = Props["navigation"];
 
 const MINUTE = 60_000;
 const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
-	needsYou: "NEEDS YOU",
-	working: "WORKING",
+	needsYou: "Needs you",
+	working: "Working",
 };
 /** A row that reads a section's next page: a tier's sessions or the catalog's projects. */
 type MoreItem = Extract<ProjectTreeItem, { kind: "more" | "moreProjects" }>;
@@ -697,10 +697,11 @@ function Board({
 		setOrganizeBy(next);
 	};
 	const testRuns = manifest?.catalogs.test_runs.count ?? 0;
+	const projectTitle = projectGrouping === "host-project" ? "Hosts" : "Projects";
 	const projectHeaders: Record<ProjectSection, { title: string; label: string; shown: boolean }> = {
 		projects: {
-			title: projectGrouping === "host-project" ? "HOSTS" : "PROJECTS",
-			label: projectGrouping === "host-project" ? "Hosts" : "Projects",
+			title: projectTitle,
+			label: projectTitle,
 			shown: projectsShown,
 		},
 		"test-runs": {
@@ -709,7 +710,7 @@ function Board({
 			shown: testRuns > 0,
 		},
 		archived: {
-			title: `ARCHIVED · ${archived}`,
+			title: `Archived · ${archived}`,
 			label: sectionLabel("Archived", archived, "project"),
 			shown: archived > 0,
 		},
@@ -1047,7 +1048,18 @@ function Board({
 		else if (item.kind === "tree") content = treeItem(item.section, item.tree);
 		else return null;
 		return (
-			<Animated.View key={item.key} layout={rowMove} onLayout={onLayout}>
+			<Animated.View
+				key={item.key}
+				testID={
+					item.kind === "band"
+						? `board-band:${item.band}:${item.count}`
+						: item.kind === "idleFold"
+							? `board-band:idle:${item.count}`
+							: undefined
+				}
+				layout={rowMove}
+				onLayout={onLayout}
+			>
 				{content}
 			</Animated.View>
 		);

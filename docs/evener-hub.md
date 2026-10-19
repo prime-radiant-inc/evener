@@ -129,6 +129,62 @@ win over the hub-wide value. The `evener/launch/resolve` preview reports the
 same floor (provenance `hub`), so what the Launch settings show matches what a
 spawned session actually runs with.
 
+### Daemon idle retirement
+
+The hub retires an idle session daemon after one hour by default, so a session
+you stopped using does not keep a process, a listener, and its runtime tree
+alive. Retirement is not a delete: the saved session stays resumable, and the
+next message to it starts a replacement that restores the same identity. Your
+transcript, jobs, and memory are unaffected.
+
+```toml
+# hub.toml
+# One hour is the default; omit the field to keep it.
+daemon_idle_timeout = "1h"
+# To disable automatic retirement instead, set this one field to "0s".
+```
+
+Only *proven* inactivity counts: an active turn, accepted input, a running shell
+job, an outstanding delegate, a pending question, or an active goal resets the
+full interval. A directly launched `evener serve` is resident by default and
+takes the same value through `--daemon-idle-timeout`. A `hub.toml` change applies
+to daemons spawned or resumed afterward, never to one already running. An
+omitted field and an explicit `0s` are different: only `0s` disables retirement.
+
+If a session appears to stop on its own after an idle period, this is the
+expected behavior rather than a failure; sending a message resumes it. See
+[daemon idle retirement](daemon-idle-retirement.md) for the inactivity rules and
+for how a retired, unavailable, and incompatible daemon differ.
+
+### Other operator knobs
+
+These `hub.toml` fields are set less often. Defaults are the values used when the
+field is absent.
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `daemon_idle_timeout` | `"1h"` | Idle retirement interval; `"0s"` disables it. See above. |
+| `plugin_auto_upgrade` | `true` | Master switch for the background plugin upgrade daemon. A plugin still opts in individually. |
+| `plugin_auto_upgrade_interval` | `"12h"` | How often marketplaces refresh and opted-in plugins are re-checked. |
+| `host_probe_timeout` | `"10s"` | Deadline for one remote-host health probe; also bounds how long a hung remote holds a deploy gate. |
+| `host_min_free_space_bytes` | 512 MiB | Free space each state root needs before the hub reports itself healthy. |
+| `host_tombstone_retention` | `"168h"` | How long a removed host's tombstone is retained before pruning. |
+| `status_poll_interval` | `"2s"` | How often the hub polls session state. |
+| `mobile_base_url` | unset | Default hub address offered to paired phones; otherwise the browser's own origin is used. |
+
+Write every duration as a TOML string, such as `"30s"` or `"1h"`. A bare integer
+is read by TOML as a nanosecond count, so `spawn_timeout = 30` arms 30ns rather
+than 30 seconds. Some duration fields refuse that form outright
+(`daemon_idle_timeout`, `host_probe_timeout`, and the host receipt and operation
+TTLs). Negative handling then differs by field: a negative
+`daemon_idle_timeout` is rejected, some fields fall back to their default, and
+others keep the negative value. The loader does not validate every duration
+field the same way, so assume a typo can take effect and check the resolved
+value rather than trusting a silent load.
+
+Host receipt and operation retention rows are documented beside the host
+registry in the [subsystem map](product/subsystems.md) rather than here.
+
 ## Launch configuration
 
 [Configuration](configuration.md) owns launch-file locations, trust, precedence, merging, and reload. Use Settings → Agent setup → Session defaults for user defaults, project settings for local overrides and repository review, and New session for one launch. Select the host before editing host-scoped settings.

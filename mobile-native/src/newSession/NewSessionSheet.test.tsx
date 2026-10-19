@@ -103,6 +103,14 @@ async function mount() {
 	return { tree, context, rerender, goBack };
 }
 
+function submitHeldStart(store: NewSessionContextValue["store"]) {
+	let outcome!: ReturnType<ReturnType<typeof store.getState>["submit"]>;
+	act(() => {
+		outcome = store.getState().submit();
+	});
+	return outcome;
+}
+
 beforeEach(() => {
 	forgetCreationForHub("hub-1");
 	harness.connection = { state: "ready", ready: true };
@@ -179,7 +187,7 @@ it("finishes a start the sheet was swiped away from, so the session it made is k
 	harness.drafts.write("hub-1", draft);
 	const sheet = await mount();
 	const store = sheet.context().store;
-	const outcome = store.getState().submit();
+	const outcome = submitHeldStart(store);
 	await settle();
 	expect(harness.heldStart).not.toBeNull();
 	// The person swipes the sheet down while the hub is still starting it.
@@ -212,7 +220,7 @@ const created = {
 it("never lets a reopened sheet's edits be lost to the start it was swiped away from (#3104)", async () => {
 	harness.drafts.write("hub-1", evenerDraft);
 	const first = await mount();
-	const outcome = first.context().store.getState().submit();
+	const outcome = submitHeldStart(first.context().store);
 	await settle();
 	expect(harness.heldStart).not.toBeNull();
 	act(() => first.tree.unmount());
@@ -234,7 +242,7 @@ it("never lets a reopened sheet's edits be lost to the start it was swiped away 
 it("shows a reopened sheet the start still on its way, and never starts it twice (#3104)", async () => {
 	harness.drafts.write("hub-1", evenerDraft);
 	const first = await mount();
-	const outcome = first.context().store.getState().submit();
+	const outcome = submitHeldStart(first.context().store);
 	await settle();
 	act(() => first.tree.unmount());
 	const reopened = await mount();

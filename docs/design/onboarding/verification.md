@@ -21,8 +21,10 @@ not supersede the failed full web gate or the outstanding review/CI conditions.
 
 ## Recorded actual flow
 
-[Open the local MP4](file:///Users/jesse/.local/state/evener/artifacts/onboarding-first-run-2026-10-18/onboarding.mp4).
-This is a retained local artifact, not a public hosting URL. Recorded production
+The recording is a retained local artifact, not a public hosting URL. It lives
+outside the repository under the run's artifact directory, named
+`onboarding-first-run-2026-10-18/onboarding.mp4`; reproduce or re-record it with
+the commands below rather than expecting a committed file. Recorded production
 head: `271bc85260470d6d4af6d1740a0ca3edf6725494`, after `make web-preflight` and
 `make build-web`. Format: H.264 MP4, 1440×1072, 20fps, 44.45 seconds, 834,544 bytes,
 silent. The top 72px labels the scripted local provider and fixture-generated reply.

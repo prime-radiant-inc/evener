@@ -184,6 +184,10 @@ do not establish installed-device rendering or touch behavior.
 - Backgrounding closes the socket; returning reconnects and reloads the open
   conversation. Pending text with uncertain delivery is shown separately for
   manual recovery, never automatically resent.
+- iOS uses one UIKit scene. Expo owns window startup, scene link delivery and
+  lifecycle forwarding. UIKit's application notifications drive React Native
+  AppState and the existing connection recovery. See the
+  [native startup contract](../docs/design/mobile/ios-build-distribution.md#ios-scene-startup).
 - Conversation and creation drafts persist in SQLite, scoped by hub and session
   as applicable, including images and uncertain-delivery state. Saved navigation
   and reader-position restoration are implemented. Current-artifact restoration

@@ -44,9 +44,39 @@ Keep those references current when changing the behavior they describe.
 - **[issue-triage.md](issue-triage.md)** — how open GitHub issues are
   categorized, labeled, and ranked: the label vocabulary, the eval-only
   test, and the triage procedure.
+- **[tutorial-tours.md](tutorial-tours.md)** — how the CLI and web tutorial
+  screenshots are executed, validated, and refreshed, and what they do not
+  prove.
+- **[../../docs-site/README.md](../../docs-site/README.md)** — the publisher for the
+  public guide: the publication manifest, link and export rules, and the
+  GitHub Pages workflow. Edit chapters in `docs/`, never in `.generated/`.
 - **[conventions/](conventions/)** — naming conventions for serialized
   identifiers, working in the `go.work` multi-module workspace, and running
   a fleet of agents against this repo without them stepping on each other.
+
+## Documentation
+
+The public guide is built from canonical Markdown in `docs/`. Only pages listed
+in `docs-site/publication.json` are published; everything else stays in the
+repository. The site tracks `main`.
+
+Run the documentation gate from the repository root:
+
+```sh
+make docs-check
+```
+
+That installs and validates the `docs-site` toolchain, checks the publication
+manifest, links, fragments, assets, and committed tutorial evidence, then builds
+the site. It is part of `make merge-approval-gate`. CI runs the same build plus
+the tutorial tours and the Chromium browser checks in
+`.github/workflows/docs.yml`.
+
+To preview the site, see [docs-site/README.md](../../docs-site/README.md). For a
+single page's rules: one H1, ordinary Markdown and GFM tables, no raw HTML
+components, and local links that resolve from the canonical source path. A link
+to an unpublished file resolves to GitHub on `main` rather than failing, so a
+page can cite an implementation file without making it public.
 
 ## Git hooks
 
@@ -78,6 +108,12 @@ The tests for both scripts are in `hooks_test.go` (part of `make test`); `EVENER
 ## Targets
 
 <!-- BEGIN GENERATED: make targets. Edit make/repo.mk, then run `make generate`. -->
+| Command | Summary | What it proves | Trigger | Requires | Fails when |
+| --- | --- | --- | --- | --- | --- |
+| `make docs-check` | Build and validate the public documentation site. | Every page in docs-site/publication.json parses with one H1, its local links and fragments resolve, published assets exist, committed tutorial evidence matches its manifest, and VitePress renders the site. Local links across the repository's non-archived Markdown resolve too. | Local pre-merge via make merge-approval-gate; CI's Documentation workflow runs the same check plus tutorial tours and browser checks. | Node 22 and the docs-site install; docs-site/node_modules must not be a symlink to another worktree's install. A real install newer than the lockfile is reused instead of reinstalled. | The publisher's tests fail, a manifest entry or link is invalid, a published asset or tutorial file is missing, or the build fails. Evidence captured at an older revision warns rather than fails. |
+
+### Other targets
+
 | Command | Summary |
 | --- | --- |
 | `make tools` | Install the CI-pinned golangci-lint and gitleaks versions from .tool-versions, so a local make lint runs exactly what CI runs. |

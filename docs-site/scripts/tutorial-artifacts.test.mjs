@@ -23,11 +23,13 @@ test('publication accepts historical provenance but current candidates reject so
  const f=await fixture(t);
  f.git('-c','user.name=Test','-c','user.email=test@example.invalid','commit','--allow-empty','-qm','later unrelated commit');
  await assert.rejects(artifacts.validateCandidate(f.root,required,{sourceRoot:f.repo}),/Stale source/);
- const m=await checkTutorialAssets({root:f.repo,assetRoot:f.root,publication:f.publication});
+ const {manifest:m,current}=await checkTutorialAssets({root:f.repo,assetRoot:f.root,publication:f.publication});
  assert.equal(m.sourceRevision,f.manifest.sourceRevision); assert.equal(m.sourceTreeDigest,f.manifest.sourceTreeDigest); assert.equal(m.rows.length,24);
+ assert.equal(typeof current,'boolean','provenance is reported to the caller, not warned');
  await writeFile(join(f.repo,'go.mod'),'module later\n');
  await assert.rejects(artifacts.validateCandidate(f.root,required,{sourceRoot:f.repo}),/Stale source/);
- await checkTutorialAssets({root:f.repo,assetRoot:f.root,publication:f.publication});
+ const later=await checkTutorialAssets({root:f.repo,assetRoot:f.root,publication:f.publication});
+ assert.equal(later.current,false,'a capture from an older tree reports stale without failing');
 });
 const mutations={
  'missing row':f=>f.manifest.rows.pop(),

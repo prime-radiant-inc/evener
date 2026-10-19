@@ -75,7 +75,7 @@ it("sets agent prose in Source Serif 4 at 17/26 and headings in the system font"
 		fontFamily: "SourceSerif4-Regular",
 		fontSize: 17,
 		lineHeight: 26,
-		color: "#252521",
+		color: "#1C1C1E",
 	});
 	expect(s.list).toMatchObject({ fontFamily: "SourceSerif4-Regular", markerFontWeight: "normal" });
 	expect(s.blockquote).toMatchObject({ fontFamily: "SourceSerif4-Regular" });
@@ -89,17 +89,17 @@ it("sets agent prose in Source Serif 4 at 17/26 and headings in the system font"
 
 it("uses the dimmer prose ink in dark mode", () => {
 	mode.scheme = "dark";
-	expect(markdownStyle("Hello").paragraph).toMatchObject({ color: "#E0DED6" });
+	expect(markdownStyle("Hello").paragraph).toMatchObject({ color: "#E3E3E8" });
 });
 
 it("keeps tables in the system font and ink-hi, unlike the serif prose", () => {
 	mode.scheme = "light";
 	const light = markdownStyle("| a |\n|---|\n| 1 |").table;
 	expect(light.fontFamily).toBeUndefined();
-	expect(light.color).toBe("#252521");
+	expect(light.color).toBe("#1C1C1E");
 
 	mode.scheme = "dark";
-	expect(markdownStyle("| a |\n|---|\n| 1 |").table.color).toBe("#F2F1EB");
+	expect(markdownStyle("| a |\n|---|\n| 1 |").table.color).toBe("#F5F5F7");
 });
 
 it("stays selectable with its Copy response item by default, for the task and subagent sheets", () => {
