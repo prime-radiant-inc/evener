@@ -138,3 +138,32 @@ test("refuses to read a source file that resolves outside the repository", async
   // outside the repository and is skipped rather than parsed.
   await checkDocLinks({ root });
 });
+
+test("checks a guide listed as an explicit file, not only its directory", async (t) => {
+  const root = await fixture(t, {
+    "tools/prompt-eval/README.md": "# Prompt eval\n\n[gone](missing.md)\n",
+  });
+  await assert.rejects(checkDocLinks({ root }), /tools\/prompt-eval\/README\.md: missing target/);
+});
+
+test("ignores a link inside an HTML comment", async (t) => {
+  const root = await fixture(t, {
+    "docs/page.md": '# Page\n\n<!-- <a href="missing.md">missing</a> -->\n',
+  });
+  await checkDocLinks({ root });
+});
+
+test("decodes an HTML entity in an attribute", async (t) => {
+  const root = await fixture(t, {
+    "docs/page.md": '# Page\n\n<a href="existing&#46;md">ok</a>\n',
+    "docs/existing.md": "# Existing\n",
+  });
+  await checkDocLinks({ root });
+});
+
+test("rejects a single-quoted and an unquoted HTML link", async (t) => {
+  const root = await fixture(t, {
+    "docs/page.md": "# Page\n\n<a href='missing.md'>x</a>\n<img src=missing.png>\n",
+  });
+  await assert.rejects(checkDocLinks({ root }), /missing target missing\.md/);
+});

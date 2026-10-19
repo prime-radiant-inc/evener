@@ -3,6 +3,7 @@ import { readFile, readdir, realpath, stat } from "node:fs/promises";
 import { dirname, join, posix, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { visit } from "unist-util-visit";
+import { load } from "cheerio";
 import { validateCandidate, fullMatrix, repositoryRoot, provenanceMatches } from "./tours/artifacts.mjs";
 
 // Dated design records and research are kept for provenance, not maintained as
@@ -41,7 +42,7 @@ const LIVING_IN_ARCHIVE = new Set([
 // because they are references readers follow, even when a directory around them
 // holds fixtures or generated samples.
 const DOC_ROOTS = ["README.md", "AGENTS.md", "ABOUT.md", "UPGRADING.md"];
-const DOC_DIRS = [
+const DOC_TREES = [
   "docs/",
   "cmd/",
   "mobile-native/",
@@ -51,6 +52,13 @@ const DOC_DIRS = [
   "appwire-client/typescript/",
   "execsupport/",
   "llm/",
+];
+
+// Individual guides whose surrounding directory holds fixtures or experiment
+// data. They are listed as files so a walk can never quietly skip them.
+const DOC_FILES = [
+  "fuzz/README.md",
+  "tools/tool-fluency/README.md",
   "tools/prompt-eval/README.md",
   "tools/prompt-eval/memory-lab/README.md",
 ];
@@ -61,12 +69,13 @@ const SKIP = new Set([".git", "node_modules", ".generated", ".vitepress"]);
 
 function maintained(file) {
   if (file.split("/").some((part) => SKIP.has(part))) return false;
+  if (DOC_FILES.includes(file)) return true;
   if (file.startsWith("docs/") && file.endsWith("/README.md")) {
     // An archive's own README is a current index even when the dated records
     // around it are not.
     return true;
   }
-  if (!DOC_ROOTS.some((name) => file === name) && !DOC_DIRS.some((prefix) => file.startsWith(prefix)))
+  if (!DOC_ROOTS.some((name) => file === name) && !DOC_TREES.some((prefix) => file.startsWith(prefix)))
     return false;
   if (LIVING_IN_ARCHIVE.has(file)) return true;
   if (!file.startsWith("docs/")) return true;
@@ -86,6 +95,11 @@ async function markdownFiles(root) {
   for (const name of DOC_ROOTS) {
     if ((await inside(name)) && (await stat(join(root, name)).catch(() => null))?.isFile()) found.add(name);
   }
+  // Explicit files are added directly; feeding a file path to walk() would
+  // readdir() it and silently drop it.
+  for (const name of DOC_FILES) {
+    if ((await inside(name)) && (await stat(join(root, name)).catch(() => null))?.isFile()) found.add(name);
+  }
   async function walk(dir) {
     if (!(await inside(dir))) return;
     let entries;
@@ -102,7 +116,7 @@ async function markdownFiles(root) {
       else if (entry.name.endsWith(".md") && (await inside(path))) found.add(path);
     }
   }
-  for (const dir of DOC_DIRS) await walk(dir.replace(/\/$/, ""));
+  for (const dir of DOC_TREES) await walk(dir.replace(/\/$/, ""));
   return [...found].filter(maintained).sort();
 }
 
@@ -113,10 +127,13 @@ function localLinks(tree) {
   const links = [];
   visit(tree, (node) => {
     if (node.type === "link" || node.type === "image" || node.type === "definition") links.push(node.url);
-    // Raw HTML links are not Markdown and the publisher refuses their component
-    // forms; a repository page that uses one is checked too rather than skipped.
+    // Raw HTML links are not Markdown, and the publisher refuses some component
+    // forms. A repository page that uses one is still checked. An HTML parser
+    // (not a regex) handles quoting styles, entity decoding, and comments.
     if (node.type === "html") {
-      for (const match of node.value.matchAll(/<(?:a|img)\b[^>]*?\b(?:href|src)="([^"]+)"/gi)) links.push(match[1]);
+      const $ = load(node.value, {}, false);
+      $("a[href]").each((_, element) => links.push($(element).attr("href")));
+      $("img[src]").each((_, element) => links.push($(element).attr("src")));
     }
   });
   return links.filter((url) => url && !/^(https?:|mailto:|tel:|file:)/i.test(url) && !url.startsWith("//"));
