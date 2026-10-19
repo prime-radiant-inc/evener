@@ -565,9 +565,7 @@ The context-pressure nudge lists the loaded skill names either way: with
 `compact_context` available it asks for the selection through `reload_skills`;
 without the tool it lists the skills for awareness and keeps its existing
 note advice, never requesting a structured response the model cannot submit.
-It omits descriptions, because the nudge arrives when headroom is scarce and
-the selection only needs canonical names; automatic note elicitation still
-carries names and descriptions, since there the model chooses by content.
+It omits descriptions; automatic note elicitation still carries them.
 
 ### Reload delivery after compaction
 
