@@ -681,15 +681,29 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     // tracked write or the encode is pending; the handoff stays queued as
     // owner-unavailable and retries once persistence catches up.
     if (recoveryId !== null && (pendingRecoveryWrite?.id === recoveryId || operations.hasPending)) return null;
-    const row = await r.load(k);
-    if (!row) return null;
+    // The row and a selected recovery record are captured in ONE committed
+    // transaction: reading the record in a second transaction would let a peer
+    // recovery edit commit between the reads, pairing its newer record content
+    // with the row's stale token, and no later persistence can validate that
+    // token - the refused write strands the pending recovery and blocks every
+    // later preparation.
+    let row: StoredComposerDraft;
+    let record: MutationRecoveryRecord | null = null;
+    if (recoveryId !== null) {
+      const pair = await r.readRecoveryPair(k, recoveryId);
+      if (!pair) return null;
+      row = pair.row;
+      record = pair.record;
+    } else {
+      const loaded = await r.load(k);
+      if (!loaded) return null;
+      row = loaded;
+    }
     // The capture must still be alive and exactly unchanged after the read,
     // before any token or local publication.
     if (disposed || localGeneration !== generation || !sameBacking(runtimeBacking, backing)) return null;
     if (recoveryId !== null) {
-      const record = await outbox?.getRecovery(recoveryId);
       if (!record) return null;
-      if (disposed || localGeneration !== generation || !sameBacking(runtimeBacking, backing)) return null;
       if (pendingRecoveryWrite?.id === recoveryId || operations.hasPending) return null;
       const value = recoveryValue(record);
       publishValue(value, { restores: true });

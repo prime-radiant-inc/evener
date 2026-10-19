@@ -91,6 +91,12 @@ export interface BrowserDraftRepository {
   clearSubmitted(key: BrowserDraftKey, submitted: SubmittedDraft): Promise<DraftSettlement>;
   appendAnnotation(input: AppendAnnotationInput): Promise<AppendAnnotationResult>;
   readAppendBacking(preparation: ComposerPreparation): Promise<CommittedAppendBacking | null>;
+  // The row and its selected recovery record as ONE committed capture: reading
+  // the record in a second transaction would let a peer recovery edit commit
+  // between the reads, pairing its newer record content with the row's stale
+  // token, which no later persistence can validate. Null when either half is
+  // gone. The row keeps load's lazy re-token contract.
+  readRecoveryPair(key: BrowserDraftKey, recoveryId: string): Promise<RecoveryPairCapture | null>;
   // "committed": this transfer imported what it could and recorded its markers
   // (or had nothing to inspect). "pending": the durable transfer write itself
   // faulted; the caller retries. "unavailable": the legacy scan faulted - this
@@ -205,6 +211,11 @@ export type AppendAnnotationResult =
 export interface CommittedAppendBacking {
   token: DraftSessionToken;
   value: SkillEditorValue;
+}
+
+export interface RecoveryPairCapture {
+  row: StoredComposerDraft;
+  record: MutationRecoveryRecord;
 }
 
 export function browserDraftKey(sessionRef: string, origin = location.origin): BrowserDraftKey {
@@ -379,23 +390,52 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     return () => this.#listeners.delete(listener);
   }
 
+  // The row with load's lazy re-token contract: a row whose namespace rotated
+  // incarnations adopts the current incarnation, preserving the session
+  // revision and the complete ordinary value, and records the re-token in
+  // `changed` for the caller to publish.
+  async #readRowWithRetoken(
+    transaction: IDBTransaction,
+    key: BrowserDraftKey,
+    changed: BrowserDraftKey[],
+  ): Promise<StoredComposerDraft | null> {
+    const row = await readSessionRow(transaction, key);
+    if (!row) return null;
+    const namespace = await readNamespaceRow(transaction, key.namespace);
+    const incarnation = namespace?.incarnation;
+    if (incarnation === undefined || row.token.namespaceIncarnation === incarnation) return publicSessionRow(row);
+    const refreshed: SessionRow = { ...row, token: { ...row.token, namespaceIncarnation: incarnation } };
+    await requestResult(putSessionRow(transaction, refreshed));
+    changed.push(key);
+    return publicSessionRow(refreshed);
+  }
+
   async load(key: BrowserDraftKey): Promise<StoredComposerDraft | null> {
     const changed: BrowserDraftKey[] = [];
-    const draft = await this.#write(DRAFT_STORES, undefined, async (transaction) => {
-      const row = await readSessionRow(transaction, key);
-      if (!row) return null;
-      const namespace = await readNamespaceRow(transaction, key.namespace);
-      const incarnation = namespace?.incarnation;
-      if (incarnation === undefined || row.token.namespaceIncarnation === incarnation) return publicSessionRow(row);
-      // Lazy re-token: adopt the current incarnation while preserving the session
-      // revision and the complete ordinary value.
-      const refreshed: SessionRow = { ...row, token: { ...row.token, namespaceIncarnation: incarnation } };
-      await requestResult(putSessionRow(transaction, refreshed));
-      changed.push(key);
-      return publicSessionRow(refreshed);
-    });
+    const draft = await this.#write(DRAFT_STORES, undefined, async (transaction) =>
+      this.#readRowWithRetoken(transaction, key, changed),
+    );
     this.#publish(changed);
     return draft;
+  }
+
+  async readRecoveryPair(key: BrowserDraftKey, recoveryId: string): Promise<RecoveryPairCapture | null> {
+    const changed: BrowserDraftKey[] = [];
+    const capture = await this.#write(
+      [COMPOSER_DRAFTS_STORE, ANNOTATION_NAMESPACES_STORE, MUTATION_RECOVERY_STORE],
+      undefined,
+      async (transaction) => {
+        const row = await this.#readRowWithRetoken(transaction, key, changed);
+        if (!row) return null;
+        const record = await requestResult<MutationRecoveryRecord | undefined>(
+          transaction.objectStore(MUTATION_RECOVERY_STORE).get(recoveryId),
+        );
+        if (!record) return null;
+        return { row, record };
+      },
+    );
+    this.#publish(changed);
+    return capture;
   }
 
   async seedDraft(key: BrowserDraftKey, value: SkillEditorValue): Promise<DraftCommit> {

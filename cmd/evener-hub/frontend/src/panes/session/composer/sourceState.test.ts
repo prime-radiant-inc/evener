@@ -1621,6 +1621,69 @@ test("prepareAnnotation returns null when the selected recovery record is absent
   expect(await source.prepareAnnotation()).toBeNull();
 });
 
+test("a peer recovery edit landing between the preparation's two reads cannot strand the handoff", async () => {
+  const fixture = sourceFixture("source-state-prepare-torn-pair");
+  setMutationStorageForTests(fixture.outbox);
+  await fixture.repository.seedDraft(fixture.key, { text: "base", skillNames: [] });
+  const originalInput = [{ type: "text" as const, text: "recovery original", mentions: [] }];
+  const original = await fixture.outbox.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: originalInput },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: originalInput },
+    composerText: "recovery original",
+    composerMentions: [],
+  });
+  await fixture.outbox.transferToRecovery(original.clientMutationId, "rejected");
+  const source = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  await source.ready();
+  source.setActiveRecoveryId(original.clientMutationId);
+
+  // A peer tab's recovery edit commits between the preparation's row read and
+  // its recovery-record read: the wrapper hands back the pre-peer row, then
+  // lands the peer's committed record-plus-row write before the record read
+  // can run.
+  let peerLanded = false;
+  const realLoad = fixture.repository.load.bind(fixture.repository);
+  const loadSpy = vi.spyOn(fixture.repository, "load").mockImplementation(async (key) => {
+    const row = await realLoad(key);
+    if (!peerLanded) {
+      peerLanded = true;
+      const peerInput = [{ type: "text" as const, text: "peer edited recovery", mentions: [] }];
+      await fixture.outbox.updateRecoveryInput(original.clientMutationId, peerInput, [], "peer edited recovery", []);
+    }
+    return row;
+  });
+  const preparation = await source.prepareAnnotation();
+  loadSpy.mockRestore();
+  if (!preparation) throw new Error("expected a recovery preparation");
+  expect(preparation.backing).toEqual({ kind: "recovery", recoveryId: original.clientMutationId });
+
+  // The capture must be born consistent: a preparation that published the
+  // record's CURRENT content must carry the row's CURRENT token. The torn
+  // capture pairs the peer's newer record with the pre-peer token, which no
+  // later persistence can validate.
+  const durableRow = await fixture.repository.load(fixture.key);
+  const durableRecord = await fixture.outbox.getRecovery(original.clientMutationId);
+  if (!durableRow || !durableRecord) throw new Error("expected the durable row and record");
+  const publishedText = source.getSnapshot().text;
+  if (publishedText === durableRecord.composerText) {
+    expect(source.getDraftToken()).toEqual(durableRow.token);
+    expect(preparation.token).toEqual(durableRow.token);
+  }
+
+  // The stranded symptom: the mounted persistence under a born-torn token is
+  // refused and the stranded pending recovery write blocks every later
+  // preparation of this recovery.
+  const write = source.queueRecoveryPersistence(original.clientMutationId, publishedText, [], [], [], []);
+  await write;
+  await source.whenSettled();
+  expect(await source.prepareAnnotation()).not.toBeNull();
+});
+
 test("acknowledgeAnnotation publishes an already-committed value without another durable edit", async () => {
   const fixture = sourceFixture("source-state-ack-commit");
   await fixture.repository.seedDraft(fixture.key, { text: "base", skillNames: ["same"] });
@@ -2276,11 +2339,13 @@ test("a backing replacement between an accepted resend and its settlement stays 
 // suite never held: `prepareAnnotation` captures generation/backing BEFORE its
 // durable read and the selected recovery id AFTER it, and `settleDraft` checks
 // its original guard only before awaiting its final read. The seam is a
-// transparent hold on the NEXT real repository read: the read runs to
+// transparent hold on the NEXT real repository read - `load`, or the recovery
+// preparation's single-transaction `readRecoveryPair` capture: the read runs to
 // completion and its exact result is frozen, then the caller is held until
 // release() - the read is never substituted.
 function holdNextRead(repository: BrowserDraftRepository) {
-  const real = repository.load.bind(repository);
+  const realLoad = repository.load.bind(repository);
+  const realPair = repository.readRecoveryPair.bind(repository);
   let releaseGate: () => void = () => undefined;
   let reachedGate: () => void = () => undefined;
   const gate = new Promise<void>((resolve) => {
@@ -2290,13 +2355,20 @@ function holdNextRead(repository: BrowserDraftRepository) {
     reachedGate = resolve;
   });
   let armed = true;
-  const spy = vi.spyOn(repository, "load").mockImplementation(async (key) => {
-    const result = await real(key);
-    if (armed) {
-      armed = false;
-      reachedGate();
-      await gate;
-    }
+  const park = async () => {
+    if (!armed) return;
+    armed = false;
+    reachedGate();
+    await gate;
+  };
+  const loadSpy = vi.spyOn(repository, "load").mockImplementation(async (key) => {
+    const result = await realLoad(key);
+    await park();
+    return result;
+  });
+  const pairSpy = vi.spyOn(repository, "readRecoveryPair").mockImplementation(async (key, recoveryId) => {
+    const result = await realPair(key, recoveryId);
+    await park();
     return result;
   });
   let restored = false;
@@ -2306,7 +2378,8 @@ function holdNextRead(repository: BrowserDraftRepository) {
       releaseGate();
       if (!restored) {
         restored = true;
-        spy.mockRestore();
+        loadSpy.mockRestore();
+        pairSpy.mockRestore();
       }
     },
   };
