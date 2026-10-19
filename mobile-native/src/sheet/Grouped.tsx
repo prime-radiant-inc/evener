@@ -1,5 +1,5 @@
-// The grouped list the Hub and New session sheets are built from (spec 12 and
-// 16): uppercase section labels, inset groups of rows on the surface color over
+// The grouped list the Hub and New session sheets are built from:
+// sentence-case section labels, inset groups of rows on the surface color over
 // the canvas, and ink-mid footers. A row carries a bare SF Symbol in ink-mid
 // (never a colored tile), a label with an optional second line, a trailing
 // value, and a chevron when it opens a page.
@@ -16,7 +16,17 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { AccessibilityInfo, Platform, Pressable, ScrollView, Switch, Text, TextInput, View } from "react-native";
+import {
+	AccessibilityInfo,
+	Platform,
+	Pressable,
+	ScrollView,
+	Switch,
+	Text,
+	TextInput,
+	View,
+	useWindowDimensions,
+} from "react-native";
 import { fonts, type Palette, scaledType, space, uiType } from "../design/tokens";
 import { haptic } from "../haptics";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
@@ -44,9 +54,8 @@ export function GroupedPage({ children, scrollRef }: { children: ReactNode; scro
 	);
 }
 
-/** A section label: SF Pro semibold 12, uppercase, +0.06em (spec 16.2). A
- * machine label (a marketplace, a provider profile) is Menlo as typed and never
- * uppercased (spec 11). A group takes its label as Group's `label`; this
+/** A sentence-case section heading. A machine label (a marketplace or
+ * provider profile) is Menlo as typed. A group takes its label as Group's `label`; this
  * heads anything else, such as a segmented control or a footer. */
 export function GroupLabel({ children, machine = false }: { children: string; machine?: boolean }) {
 	const { palette } = useColors();
@@ -771,9 +780,9 @@ export function GroupFooter({
 	);
 }
 
-/** A segmented control (spec 16.1: the chosen segment is accent-bg with accent
- * ink, never an ink fill; 16.6: a selection tick on a change). A tap on the
- * chosen segment does nothing. */
+/** Compact choices become checked rows when their actual width or text size
+ * needs more room. Labels may wrap in either layout; selection never shrinks
+ * the person's preferred type. A tap on the chosen segment does nothing. */
 export function Segmented<T extends string>({
 	label,
 	options,
@@ -789,18 +798,23 @@ export function Segmented<T extends string>({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const { width: windowWidth } = useWindowDimensions();
+	const [measuredWidth, setMeasuredWidth] = useState<number | null>(null);
+	const width = measuredWidth ?? windowWidth - space.margin * 2;
+	const stacked = scale > 1.2 || width / options.length < 88;
+	const selectedSurface = palette.scheme === "dark" ? palette.pressed : palette.surface;
 	return (
 		<View
 			accessibilityRole="radiogroup"
 			accessibilityLabel={label}
+			onLayout={(event) => setMeasuredWidth(event.nativeEvent.layout.width)}
 			style={{
-				flexDirection: "row",
+				flexDirection: stacked ? "column" : "row",
 				gap: 2,
 				marginHorizontal: space.margin,
 				padding: 2,
-				borderRadius: 22,
+				borderRadius: 12,
 				backgroundColor: palette.inset,
-				opacity: disabled ? 0.4 : 1,
 			}}
 		>
 			{options.map((option) => {
@@ -813,27 +827,34 @@ export function Segmented<T extends string>({
 						accessibilityState={{ checked: chosen, disabled }}
 						disabled={disabled}
 						onPress={() => {
-							if (!chosen) {
+							if (!disabled && !chosen) {
 								haptic("selection");
 								onChange(option.value);
 							}
 						}}
 						style={{
-							flex: 1,
-							// Spec 16.6: a segment is an action target.
+							flex: stacked ? undefined : 1,
+							flexDirection: "row",
 							minHeight: 44,
 							alignItems: "center",
-							justifyContent: "center",
-							borderRadius: 20,
-							backgroundColor: chosen ? palette.accentBg : "transparent",
+							justifyContent: stacked ? "flex-start" : "center",
+							gap: space.rowGap,
+							paddingHorizontal: 12,
+							paddingVertical: 8,
+							borderRadius: 10,
+							backgroundColor: chosen ? selectedSurface : "transparent",
 						}}
 					>
+						{stacked ? (
+							<Glyph name={chosen ? "checkmark" : undefined} color={disabled ? palette.inkMid : palette.accentInk} />
+						) : null}
 						<Text
 							allowFontScaling={allowFontScaling}
-							numberOfLines={1}
 							style={{
-								color: chosen ? palette.accentInk : palette.inkHi,
-								fontSize: uiType.subheadline.fontSize * scale,
+								flexShrink: 1,
+								textAlign: stacked ? "left" : "center",
+								color: disabled ? palette.inkMid : palette.inkHi,
+								...scaledType(uiType.subheadline, scale),
 								fontWeight: chosen ? "600" : "400",
 							}}
 						>

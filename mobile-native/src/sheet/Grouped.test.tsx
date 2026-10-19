@@ -1,5 +1,5 @@
 import { AccessibilityInfo, Platform, Pressable, type TextInput, View } from "react-native";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fonts, palettes } from "../design/tokens";
 import { playedHaptics, render, renderedText } from "../renderNative.testkit";
 import { createRef } from "react";
@@ -21,8 +21,13 @@ import {
 	useFormError,
 } from "./Grouped";
 
+const viewport = vi.hoisted(() => ({ fontScale: 1 }));
+beforeEach(() => {
+	viewport.fontScale = 1;
+});
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
@@ -128,7 +133,7 @@ describe("a group", () => {
 		);
 		const header = tree.root.findByProps({ accessibilityRole: "header" });
 		expect(header.props.children).toBe("Fleet");
-		expect(merged(header.props.style)).toMatchObject({ textTransform: "uppercase" });
+		expect(merged(header.props.style).textTransform).toBeUndefined();
 		expect(merged(surfaces(tree)[0]?.props.style).marginTop).toBe(0);
 	});
 
@@ -252,12 +257,12 @@ describe("a segmented control", () => {
 		{ value: "dark", label: "Dark" },
 	] as const;
 
-	it("marks the chosen segment in the accent tint and reports a new choice", () => {
+	it("marks the chosen segment on a raised surface and reports a new choice", () => {
 		const onChange = vi.fn();
 		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={onChange} />);
 		const radios = tree.root.findAllByProps({ accessibilityRole: "radio" });
 		expect(radios.map((radio) => radio.props.accessibilityState.checked)).toEqual([false, true, false]);
-		expect(radios[1]?.props.style.backgroundColor).toBe(light.accentBg);
+		expect(radios[1]?.props.style.backgroundColor).toBe(light.surface);
 		radios[2]?.props.onPress();
 		expect(onChange).toHaveBeenCalledWith("dark");
 	});
@@ -284,6 +289,48 @@ describe("a segmented control", () => {
 		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={() => {}} />);
 		for (const radio of tree.root.findAllByProps({ accessibilityRole: "radio" })) {
 			expect(merged(radio.props.style).minHeight).toBe(44);
+		}
+	});
+
+	it("stacks full-size choices at accessibility text sizes and still selects their values", () => {
+		viewport.fontScale = 2;
+		const onChange = vi.fn();
+		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={onChange} />);
+		const group = tree.root.findByProps({ accessibilityRole: "radiogroup" });
+		expect(merged(group.props.style).flexDirection).toBe("column");
+		for (const label of texts(tree)) {
+			expect(label.props.numberOfLines).toBeUndefined();
+			expect(merged(label.props.style).fontSize).toBeGreaterThanOrEqual(30);
+		}
+		const radios = tree.root.findAllByProps({ accessibilityRole: "radio" });
+		radios[0]?.props.onPress();
+		expect(onChange).toHaveBeenCalledWith("system");
+		expect(radios.map((radio) => radio.props.accessibilityState.checked)).toEqual([false, true, false]);
+	});
+
+	it("adapts to its measured width inside a narrow sheet", () => {
+		const tree = render(<Segmented label="Appearance" options={options} value="light" onChange={() => {}} />);
+		const group = tree.root.findByProps({ accessibilityRole: "radiogroup" });
+		expect(merged(group.props.style).flexDirection).toBe("row");
+		act(() => group.props.onLayout({ nativeEvent: { layout: { width: 220 } } }));
+		expect(merged(group.props.style).flexDirection).toBe("column");
+		act(() => group.props.onLayout({ nativeEvent: { layout: { width: 358 } } }));
+		expect(merged(group.props.style).flexDirection).toBe("row");
+	});
+
+	it("keeps disabled choices readable and inert in either layout", () => {
+		for (const scale of [1, 2]) {
+			viewport.fontScale = scale;
+			const onChange = vi.fn();
+			const tree = render(
+				<Segmented label="Appearance" options={options} value="light" disabled onChange={onChange} />,
+			);
+			expect(merged(tree.root.findByProps({ accessibilityRole: "radiogroup" }).props.style).opacity ?? 1).toBe(1);
+			for (const radio of tree.root.findAllByProps({ accessibilityRole: "radio" })) {
+				expect(radio.props.disabled).toBe(true);
+				radio.props.onPress();
+			}
+			expect(onChange).not.toHaveBeenCalled();
 		}
 	});
 });
@@ -354,9 +401,11 @@ describe("a form's error", () => {
 });
 
 describe("labels, footers and tags", () => {
-	it("uppercases a section label and keeps a machine label as typed in Menlo", () => {
+	it("keeps headings as authored and distinguishes a machine label with Menlo", () => {
 		const section = merged(texts(render(<GroupLabel>Where</GroupLabel>))[0]?.props.style);
-		expect(section).toMatchObject({ textTransform: "uppercase", fontWeight: "600", letterSpacing: 0.72 });
+		expect(section).toMatchObject({ fontSize: 15, lineHeight: 20, fontWeight: "600" });
+		expect(section.textTransform).toBeUndefined();
+		expect(section.letterSpacing).toBeUndefined();
 		const machine = merged(texts(render(<GroupLabel machine>superpowers-marketplace</GroupLabel>))[0]?.props.style);
 		expect(machine.fontFamily).toBe("Menlo");
 		expect(machine.textTransform).toBeUndefined();

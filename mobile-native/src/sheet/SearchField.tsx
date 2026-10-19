@@ -22,15 +22,26 @@ export function SearchField({
 	return (
 		<View
 			style={{
-				minHeight: 36,
+				minHeight: 44,
 				flexDirection: "row",
 				alignItems: "center",
 				gap: 6,
-				paddingHorizontal: 10,
-				borderRadius: 10,
-				backgroundColor: palette.inset,
+				paddingLeft: 10,
+				paddingRight: value ? 0 : 10,
 			}}
 		>
+			<View
+				pointerEvents="none"
+				style={{
+					position: "absolute",
+					left: 0,
+					right: 0,
+					top: 4,
+					bottom: 4,
+					borderRadius: 10,
+					backgroundColor: palette.inset,
+				}}
+			/>
 			<SymbolView name="magnifyingglass" size={15} tintColor={palette.inkLow} />
 			<TextInput
 				accessibilityLabel={label}
@@ -41,14 +52,20 @@ export function SearchField({
 				autoCapitalize="none"
 				autoCorrect={false}
 				allowFontScaling={allowFontScaling}
-				style={{ flex: 1, color: palette.inkHi, fontSize: uiType.listRow.fontSize * scale, paddingVertical: 8 }}
+				style={{
+					flex: 1,
+					minHeight: 44,
+					color: palette.inkHi,
+					fontSize: uiType.listRow.fontSize * scale,
+					paddingVertical: 8,
+				}}
 			/>
 			{value ? (
 				<Pressable
 					accessibilityRole="button"
 					accessibilityLabel="Clear filter"
 					onPress={() => onChangeText("")}
-					hitSlop={10}
+					style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }}
 				>
 					<SymbolView name="xmark.circle.fill" size={15} tintColor={palette.inkLow} />
 				</Pressable>
