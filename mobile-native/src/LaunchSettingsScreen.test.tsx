@@ -82,20 +82,26 @@ function launchHub() {
 	};
 }
 
-async function mount(hub: FakeClient, params: Record<string, unknown> = { hubId: "hub-1" }) {
+async function mount(hub: FakeClient, params: Record<string, unknown> = { hubId: "hub-1" }, scrollTo = vi.fn()) {
 	harness.connection = {
 		activeProfile: { id: "hub-1", name: "Work hub" },
 		client: hub as unknown as ConversationClientLike,
 		state: "ready",
 	};
-	const tree = render(<LaunchSettingsScreen {...props} route={{ params } as unknown as typeof props.route} />);
+	const tree = render(<LaunchSettingsScreen {...props} route={{ params } as unknown as typeof props.route} />, {
+		createNodeMock: (element) => (element.type === "ScrollView" ? { scrollTo } : null),
+	});
 	await act(async () => {});
 	return tree;
 }
 
 async function editModel(tree: ReturnType<typeof render>, value: string) {
 	await act(async () => {
-		tree.root.findByProps({ accessibilityLabel: "Edit Model" }).props.onPress();
+		tree.root
+			.find(
+				(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel?.startsWith("Edit Model,"),
+			)
+			.props.onPress();
 	});
 	await act(async () => {
 		tree.root
@@ -120,6 +126,43 @@ beforeEach(() => {
 it("lets a drag of the page put the keyboard away", async () => {
 	const tree = await mount(launchHub().hub);
 	expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+});
+
+it("keeps Save outside the scrolling settings and saves the edited global layer", async () => {
+	const launch = launchHub();
+	const save = vi.fn(() => ({ effective: { model: "model-sentinel" }, layers: {}, provenance: {} }));
+	launch.hub.on("evener/launch/setLayer", save);
+	const tree = await mount(launch.hub);
+	const action = () => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Save defaults" });
+	expect(action().props.disabled).toBe(true);
+	await editModel(tree, "model-sentinel");
+	expect(action().props.disabled).toBe(false);
+	for (let parent = action().parent; parent; parent = parent.parent) {
+		expect(String(parent.type)).not.toBe("ScrollView");
+	}
+	await act(async () => action().props.onPress());
+	expect(save).toHaveBeenCalledOnce();
+	expect(launch.hub.calls.find((call) => call.method === "evener/launch/setLayer")?.params).toMatchObject({
+		layer: "global",
+		cwd: "/",
+		config: { model: "model-sentinel" },
+	});
+});
+
+it("brings a refused pinned save into view and retains the edited value", async () => {
+	const launch = launchHub();
+	launch.hub.on("evener/launch/setLayer", () => {
+		throw new Error("save rejected");
+	});
+	const scrollTo = vi.fn();
+	const tree = await mount(launch.hub, { hubId: "hub-1" }, scrollTo);
+	await editModel(tree, "proposal-sentinel");
+	await act(async () =>
+		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Save defaults" }).props.onPress(),
+	);
+	expect(problems(tree)).toContain("settings");
+	expect(scrollTo).toHaveBeenCalledWith({ y: 0, animated: true });
+	expect(tree.root.findByProps({ label: "Model", chevron: true }).props.sub).toBe("proposal-sentinel");
 });
 
 it("offers no Reload, loaded or not", async () => {
@@ -149,7 +192,11 @@ it("says a change made elsewhere while editing, and lets you discard your edit t
 	expect(discardAction()).toHaveLength(0);
 	// Edit the model through its field sheet, as a person would.
 	await act(async () => {
-		tree.root.findByProps({ accessibilityLabel: "Edit Model" }).props.onPress();
+		tree.root
+			.find(
+				(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel?.startsWith("Edit Model,"),
+			)
+			.props.onPress();
 	});
 	await act(async () => {
 		tree.root
@@ -193,9 +240,7 @@ it("keeps an unsaved edit when the page comes back into view after a failed read
 		harness.focus?.();
 	});
 	expect(launch.reads()).toBe(reads);
-	expect(tree.root.findByProps({ accessibilityLabel: "Edit Model" }).props.accessibilityValue).toEqual({
-		text: "claude-5",
-	});
+	expect(tree.root.findByProps({ label: "Model", chevron: true }).props.sub).toBe("claude-5");
 });
 
 it("offers Discard changes only while an edit sits over a change made elsewhere, and shows an error beside it", async () => {
