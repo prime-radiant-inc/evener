@@ -140,7 +140,7 @@ describe("the demo sessions behind Appendix A's Session frames", () => {
 				createDemoFleet({ now: NOW }).answerActivityRead({ ref: model.ref, scope: "subtree" }).delegates,
 			).map(({ label, accessibilityLabel }) => ({ label, accessibilityLabel })),
 		).toEqual([
-			{ label: "Subagents 55", accessibilityLabel: "Subagents, 55" },
+			{ label: "Agents 55", accessibilityLabel: "Agents, 55" },
 			{ label: "Tasks 4/7", accessibilityLabel: "Tasks, 4 of 7 settled" },
 			{ label: "Goal", accessibilityLabel: "Goal" },
 			{ label: "Queue 1", accessibilityLabel: "1 queued message" },

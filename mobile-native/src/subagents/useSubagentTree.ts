@@ -17,7 +17,7 @@ export function useSubagentTree(
 }
 
 /** A coordinator's shared tree for a screen that shows it live, as the
- * Activity list and a shell job's detail do: held like useSubagentTree's,
+ * Agents and Jobs lists and a shell job's detail do: held like useSubagentTree's,
  * and followed each time the screen comes into focus, so its tree
  * notifications keep coming (ruling 9). A new client (a reconnect, or a hub
  * switch that never leaves ready) has no subscription, so the screen in

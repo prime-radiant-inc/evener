@@ -208,6 +208,7 @@ import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
+import type { ActivityKind } from "./subagents/activityList";
 import { liveClientFor } from "./liveClient";
 import { type SubagentRow, timeInState } from "./subagents/subagentModel";
 import { useHeldSubagentTree } from "./subagents/useHeldSubagentTree";
@@ -315,13 +316,13 @@ export type Routes = {
 	};
 	CommentsSheet: ReviewSheetParams;
 	ReviewSheet: ReviewSheetParams;
-	/** A coordinator's subagents (spec 9). */
-	Subagents: { hubId: string; ref: string; threadId: string; title: string };
+	/** A coordinator's subagents or shell jobs (spec 9). */
+	Activity: { hubId: string; ref: string; threadId: string; title: string; kind: ActivityKind };
 	/** Ask a subagent's coordinator to stop it (spec 9, ruling 10). */
 	StopSubagentSheet: { hubId: string; coordinator: Coordinator; ref: string };
 	/** A subagent's own session, over its coordinator's (ruling 30). */
 	Subagent: { hubId: string; ref: string; title: string; coordinator: Coordinator };
-	/** A shell job's detail, over its coordinator's Activity list. */
+	/** A shell job's detail, over its coordinator's Jobs list. */
 	ShellJob: { hubId: string; jobId: string; ownerRef: string; title: string; coordinator: Coordinator };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
 	FilesSheet: { hubId: string; ref: string; title: string; cwd: string; documents: SessionDocument[] };
@@ -360,8 +361,9 @@ export function useFocusAfterModal(
 
 /** The sheet or screen each context chip and ⋯ menu item opens. */
 const SESSION_DESTINATIONS = {
-	subagents: "subagents",
-	activity: "subagents",
+	subagents: "agents",
+	agents: "agents",
+	jobs: "jobs",
 	tasks: "tasks",
 	notes: "notes",
 	goal: "session",
@@ -958,17 +960,19 @@ export function ConversationScreen({
 				});
 				return;
 			}
-			// The Subagents list (spec 9), in place of the Activity sheet. A
-			// subagent's screen opens its coordinator's, which lists every depth.
+			// The Agents and Jobs lists (spec 9), in place of the Activity
+			// sheet. A subagent's screen opens its coordinator's, which lists
+			// every depth.
 			navigation.navigate(
-				"Subagents",
+				"Activity",
 				subagentOf
-					? { hubId: route.params.hubId, ...subagentOf }
+					? { hubId: route.params.hubId, ...subagentOf, kind: destination }
 					: {
 							hubId: route.params.hubId,
 							ref: route.params.ref,
 							threadId: current.threadId,
 							title: route.params.title,
+							kind: destination,
 						},
 			);
 		},
@@ -1207,7 +1211,8 @@ export function ConversationScreen({
 			case "files":
 				openFiles();
 				return;
-			case "activity":
+			case "agents":
+			case "jobs":
 			case "tasks":
 			case "notes":
 			case "info":

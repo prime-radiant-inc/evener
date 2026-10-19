@@ -536,7 +536,7 @@ function Subagent({
 	// its line turns Quiet the moment a silent subagent crosses into it.
 	const now = useNowPastQuiet(useMinuteClock(), (at) => [subagentLine(row, delegates, at).quietForMs]);
 	const line = subagentLine(row, delegates, now);
-	// A finished subagent's outcome, as the Subagents list gives it, once the
+	// A finished subagent's outcome, as the Agents list gives it, once the
 	// tree shows it done; until then the line says what the roster knows.
 	const finished = line.state === "done" ? line.delegateId : undefined;
 	const outcome = useMemo(

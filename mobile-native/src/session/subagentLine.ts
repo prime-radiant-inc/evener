@@ -1,6 +1,6 @@
 // What a subagent's row in the transcript says (spec 8.2, "Subagent"): its
 // title, its state and how long it has been in it ("failed · 6m"), and the
-// latest activity beneath, which reads the same as in the Subagents list.
+// latest activity beneath, which reads the same as in the Agents list.
 // Pure: the row re-renders with the transcript, so no clock of its own.
 import { delegateEndingText, delegateTiming, type EvenerDelegateInfo } from "@evener/appwire-client";
 import { endedInStop, runningSubagentCount, subagentState } from "../subagents/subagentModel";
@@ -27,8 +27,8 @@ export interface SubagentLine {
 	quietForMs?: number;
 }
 
-// The Subagents list's own rule (subagentState), so this row, the list, the
-// Subagents chip and the tray always agree; a subagent a stop ended says
+// The Agents list's own rule (subagentState), so this row, the list, the
+// Agents chip and the tray always agree; a subagent a stop ended says
 // stopped, as its list row does.
 function stateOf(delegate: EvenerDelegateInfo): SubagentLine["state"] {
 	return endedInStop(delegate) ? "stopped" : subagentState(delegate);

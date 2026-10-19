@@ -7,7 +7,7 @@ import { Group, Row } from "./sheet/Grouped";
 import { Copy, styles, useColors } from "./ui";
 import { sessionMenu, type SessionMenuAction, type SessionMenuInput } from "./session/sessionMenu";
 
-export type SessionDestination = "find" | "session" | "tasks" | "notes" | "subagents" | "pin" | "delete";
+export type SessionDestination = "find" | "session" | "tasks" | "notes" | "agents" | "jobs" | "pin" | "delete";
 
 export interface SessionMenuProps {
 	title: string;

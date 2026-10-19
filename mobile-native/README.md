@@ -193,10 +193,13 @@ do not establish installed-device rendering or touch behavior.
   configuration/trust. These advertised operations are wired in source and await
   current-artifact workflow qualification. Full parity, upgrade/recovery and
   failure/lifecycle acceptance are unfinished; see the [acceptance ledger](../docs/design/mobile/acceptance.md).
-- Activity separates current work from independent Done delegate and Completed
-  background-job histories. All starts both histories closed; Done reveals every
-  terminal outcome, including failures, with neutral rows and truthful reasons.
-  Active descendants retain navigation and stop controls. Search narrows loaded
+- Agents and Jobs are separate lists, reached from the session menu; the top
+  bar's Agents chip opens the first. Agents lists only subagents, Jobs only
+  shell jobs, and each shows its own authoritative counts and strip. Each
+  separates current work from one quiet history — Done for Agents, Completed
+  for Jobs — which starts closed and reveals every terminal outcome, including
+  failures, with neutral rows and truthful reasons. Active descendants retain
+  navigation and stop controls. Search narrows loaded
   rows while chips keep authoritative counts, including unknown counts. The
   binding carries loaded membership into its replacement shared store after
   reconnect, so its existing paging owner restores later rows without a phone
@@ -207,7 +210,7 @@ do not establish installed-device rendering or touch behavior.
   keyboard and VoiceOver remain separate qualification.
 - Board, project/location and pinned session rows show only running delegates
   in their subagent chips. Settled failures have no visual or spoken count.
-  The session header keeps neutral Subagents access with the authoritative total,
+  The session header keeps neutral Agents access with the authoritative total,
   or “count unknown” when only a delegate roster is available. A session's own
   errors, current questions and approvals retain their attention and priority;
   offline and stale-input rules remain unchanged.

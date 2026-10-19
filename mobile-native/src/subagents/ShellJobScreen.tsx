@@ -2,7 +2,7 @@
 // coordinator's activity tree carries it (its command, how it's doing or how
 // it ended, its exit code when that isn't 0, who started it) over the tail of
 // its output, drawn as the step output viewer draws terminal text. The tree
-// is the Activity list's own, so the job stays live, and the tail is read
+// is the Jobs list's own, so the job stays live, and the tail is read
 // again when the tree shows the job changed and on a pace while a running
 // job's detail is in front. Like the list, it never offers Refresh, and it
 // offers no Stop.

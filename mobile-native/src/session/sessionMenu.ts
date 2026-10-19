@@ -17,7 +17,8 @@ export type SessionMenuAction =
 				| "find"
 				| "stop"
 				| "files"
-				| "activity"
+				| "agents"
+				| "jobs"
 				| "tasks"
 				| "notes"
 				| "info"
@@ -78,10 +79,15 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 		...(input.canStop ? [item("Stop", "stop", { destructive: true })] : []),
 		item("Find in session", "find"),
 		...(input.hasDocuments ? [item("Files", "files")] : []),
-		// Activity lists shell jobs as well as subagents, and a session's read
-		// can't say whether it has jobs, so like Tasks it needs only a
-		// connection.
-		...(input.connected ? [item("Activity", "activity"), item("Tasks", "tasks")] : []),
+		// Agents and Jobs each list one kind. A session's read can't say whether
+		// it has either, so like Tasks they need only a connection.
+		...(input.connected
+			? [
+					item("Agents", "agents", { description: "The subagents this session started" }),
+					item("Jobs", "jobs", { description: "The shell jobs this session and its subagents started" }),
+					item("Tasks", "tasks"),
+				]
+			: []),
 		...(input.sharedNotes ? [item("Notes & links", "notes")] : []),
 		item("Session info", "info"),
 		...(input.canAside

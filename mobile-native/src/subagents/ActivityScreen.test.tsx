@@ -1,10 +1,17 @@
 import { installActivityFixture } from "./sessionActivityTestUtils";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
-// The Activity list (spec 9): a coordinator's subagents and shell jobs, read
-// through typed activity reads, with live work and independent quiet histories,
-// the strip, the chips, search, and each row's why and last line.
+// The Agents and Jobs lists (spec 9): each reads one kind from the
+// coordinator's tree through typed activity reads, with live work above a
+// quiet history, the strip, the chips, search, and each row's why and last
+// line. Agents lists subagents; Jobs lists shell jobs.
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { WireError } from "@evener/appwire-client";
+import {
+	type JobActivityJob,
+	type SessionActivityAncestor,
+	type SessionActivityContext,
+	type SessionDelegate,
+	WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
 import { FlatList } from "react-native";
@@ -25,7 +32,8 @@ import { Toast } from "../Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 import { flattenSubagents } from "./subagentModel";
 import { forgetSubagentTrees } from "./subagentTree";
-import { SubagentsScreen } from "./SubagentsScreen";
+import { ActivityScreen } from "./ActivityScreen";
+import type { ActivityKind } from "./activityList";
 import { paletteFor } from "../design/tokens";
 import { stopOffer } from "./stopOffer";
 
@@ -159,13 +167,10 @@ async function treeUpdatedAndRead(hubClient: FakeClient) {
 	await settle();
 }
 
-async function mount(flush = true) {
-	const params = { hubId: "hub-1", ...COORDINATOR };
+async function mount(flush = true, kind: ActivityKind = "agents") {
+	const params = { hubId: "hub-1", ...COORDINATOR, kind };
 	const tree = render(
-		<SubagentsScreen
-			route={{ key: "subagents", name: "Subagents", params } as never}
-			navigation={navigation as never}
-		/>,
+		<ActivityScreen route={{ key: kind, name: "Activity", params } as never} navigation={navigation as never} />,
 	);
 	if (flush) await settle();
 	return tree;
@@ -189,7 +194,7 @@ const dotTint = (tree: ReactTestRenderer, id: string) =>
 
 it("titles itself with the count over the coordinator's title", async () => {
 	await mount();
-	expect(headerTitle()).toBe("Activity · 55 Get PR 2138 Test Clean");
+	expect(headerTitle()).toBe("Agents · 55 Get PR 2138 Test Clean");
 });
 
 it("folds every terminal delegate below live work with terminal-inclusive counts", async () => {
@@ -247,7 +252,7 @@ it("keeps a terminal parent's running child and stop identity reachable with his
 
 it("lets a drag of the list put the filter's keyboard away", async () => {
 	const tree = await mount();
-	expect(tree.root.findByProps({ accessibilityLabel: "Filter activity" })).toBeDefined();
+	expect(tree.root.findByProps({ accessibilityLabel: "Filter agents" })).toBeDefined();
 	expect(tree.root.findByType(FlatList).props.keyboardDismissMode).toBe("on-drag");
 });
 
@@ -257,7 +262,7 @@ it("lets a drag of the list put the filter's keyboard away", async () => {
 // instead of wrapping "Done" onto a row of its own (audit N10).
 it("keeps its filter chips on one row that scrolls sideways", async () => {
 	const tree = await mount();
-	const strip = tree.root.findByProps({ testID: "subagent-filters" });
+	const strip = tree.root.findByProps({ testID: "activity-filters" });
 	const row = strip.findByType("ScrollView" as never);
 	expect(row.props.horizontal).toBe(true);
 	for (const label of ["All, 55", "Running, 32", "Done, 23"])
@@ -287,9 +292,9 @@ it("filters to a chip's state, and offers no chip for a state with no subagents"
 	expect(pressable(other, "Running, 1")).toBeDefined();
 });
 
-// Shell jobs sit among the subagents (Jesse's ruling on shell jobs): each
-// in its state's section, counted by the title and the filter chips, while
-// the strip stays the subagents' own.
+// Jobs lists shell jobs alone (Jesse: split apart). Its rows sit in their
+// state's band, are counted by the title and the filter chips, and never show
+// a subagent.
 const shellJob = (id: string, description: string, over: Record<string, unknown> = {}) => ({
 	kind: "shell",
 	job: {
@@ -328,19 +333,22 @@ function treeWithJobs() {
 	};
 }
 
-it("keeps terminal shell jobs in their own fold with truthful output access and inclusive chip counts", async () => {
+it("lists shell jobs alone, with truthful output access and their own counts", async () => {
 	client = hub(() => treeWithJobs());
 	harness.connection = screenConnection(client, "ready");
-	const tree = await mount();
-	expect(headerTitle()).toBe("Activity · 3 Get PR 2138 Test Clean");
-	for (const label of ["All, 3", "Running, 2", "Done, 1"]) expect(pressable(tree, label)).toBeDefined();
-	expect(tree.root.find((node) => node.props.accessibilityLabel === "1 running, 0 done")).toBeDefined();
+	const tree = await mount(true, "jobs");
+	expect(headerTitle()).toBe("Jobs · 2 Get PR 2138 Test Clean");
+	for (const label of ["All, 2", "Running, 1", "Done, 1"]) expect(pressable(tree, label)).toBeDefined();
+	expect(tree.root.find((node) => node.props.accessibilityLabel === "1 running, 1 done")).toBeDefined();
+	// A subagent is the Agents list's row, never the Jobs list's; here its name
+	// only says which subagent ran the job.
+	expect(tree.root.findAll((node) => node.props.row?.kind === "subagent")).toHaveLength(0);
 	expect(text(tree)).not.toContain("npm run lint");
 	expect(pressable(tree, "Completed · 1")?.props.accessibilityState).toEqual({ expanded: false });
 	act(() => pressable(tree, "Completed · 1")?.props.onPress());
 	const shown = text(tree);
 	expect(shown.indexOf("Completed · 1")).toBeLessThan(shown.indexOf("npm run lint"));
-	expect(shown.indexOf("RUNNING · 2")).toBeLessThan(shown.indexOf("Serving the docs"));
+	expect(shown.indexOf("RUNNING · 1")).toBeLessThan(shown.indexOf("Serving the docs"));
 	const labels = tree.root.findAll((node) => String(node.props.accessibilityLabel).startsWith("Shell job,"));
 	expect(new Set(labels.map((node) => node.props.accessibilityLabel))).toEqual(
 		new Set([
@@ -375,7 +383,7 @@ it("says a job's subagent isn't listed until that subagent's page loads, then na
 				},
 	);
 	harness.connection = screenConnection(client, "ready");
-	const screen = await mount();
+	const screen = await mount(true, "jobs");
 	const jobLabel = () =>
 		screen.root.find((node) => String(node.props.accessibilityLabel).startsWith("Shell job, Serving the docs")).props
 			.accessibilityLabel;
@@ -389,14 +397,147 @@ it("says a job's subagent isn't listed until that subagent's page loads, then na
 	expect(jobLabel()).toBe("Shell job, Serving the docs, running, 3 minutes, under Later one");
 });
 
-// The Session's menu offers Activity whenever it's connected, so a session
-// with nothing to list says so plainly.
-it("says there is nothing yet when the session has no subagents or shell jobs", async () => {
+// The Session's menu offers Agents and Jobs whenever it's connected, so a
+// session with nothing to list says so plainly, each in its own words.
+it("says there is nothing yet when the session has no subagents", async () => {
 	client = hub(() => ({ revision: 1, root: session("local:coord", COORDINATOR.title, []) }));
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
 	expect(notices(tree)).toEqual(["empty"]);
-	expect(headerTitle()).toBe("Activity · 0 Get PR 2138 Test Clean");
+	expect(headerTitle()).toBe("Agents · 0 Get PR 2138 Test Clean");
+	expect(text(tree)).toContain("No subagents yet.");
+});
+
+it("says there is nothing yet when the session has no shell jobs", async () => {
+	client = hub(() => ({
+		revision: 1,
+		root: session("local:coord", COORDINATOR.title, [runningOne("solo", "Only one")]),
+	}));
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount(true, "jobs");
+	expect(notices(tree)).toEqual(["empty"]);
+	expect(headerTitle()).toBe("Jobs · 0 Get PR 2138 Test Clean");
+	expect(text(tree)).toContain("No shell jobs yet.");
+});
+
+// A disconnect clears the pages but keeps the last tree: an empty list stays
+// empty rather than falling back to loading rows.
+it("keeps saying there are none when the connection drops after an empty list", async () => {
+	client = hub(() => ({ revision: 1, root: session("local:coord", COORDINATOR.title, []) }));
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(notices(tree)).toEqual(["empty"]);
+	act(() => {
+		harness.connection = screenConnection(client, "reconnecting");
+		tree.update(
+			<ActivityScreen
+				route={{ key: "agents", name: "Activity", params: { hubId: "hub-1", ...COORDINATOR, kind: "agents" } } as never}
+				navigation={navigation as never}
+			/>,
+		);
+	});
+	await settle();
+	expect(notices(tree)).toEqual(["empty"]);
+	expect(tree.root.findAll((node) => node.props.testID === "subagent-skeleton")).toEqual([]);
+});
+
+/** Drops the connection and re-renders this screen at the same kind. */
+function disconnect(view: ReactTestRenderer, kind: "agents" | "jobs", connection: FakeClient): void {
+	act(() => {
+		harness.connection = screenConnection(connection, "reconnecting");
+		view.update(
+			<ActivityScreen
+				route={{ key: kind, name: "Activity", params: { hubId: "hub-1", ...COORDINATOR, kind } } as never}
+				navigation={navigation as never}
+			/>,
+		);
+	});
+}
+
+// A disconnect keeps each collection's own last answer: proven emptiness stays
+// empty, and a failure stays a failure, even though the kept tree can't tell
+// them apart.
+it("keeps a failed jobs read a failure through a disconnect while delegates loaded", async () => {
+	client = pagedHub({
+		counts: { delegates: { known: true, total: 1, active: 1, failed: 0, completed: 0 } },
+		delegates: () => [
+			{
+				runGeneration: 1,
+				projectionRevision: 1,
+				delegateId: "solo",
+				ownerRef: "local:coord",
+				rootRef: "local:coord",
+				childRef: "local:solo",
+				type: "delegate",
+				description: "Only one",
+				task: "Only one",
+				lifecycle: "running",
+				phase: "running",
+				status: "running",
+				terminal: false,
+				resumable: false,
+			},
+		],
+	});
+	client.on("evener/thread/jobs/list", () => Promise.reject(new Error("offline")) as never);
+	harness.connection = screenConnection(client, "ready");
+	const jobs = await mount(true, "jobs");
+	expect(notices(jobs)).toEqual(["failed"]);
+	disconnect(jobs, "jobs", client);
+	await settle();
+	expect(notices(jobs)).toEqual(["failed"]);
+});
+
+it("keeps an empty agents list empty through a disconnect while jobs failed", async () => {
+	client = pagedHub({ counts: { jobs: { known: false, total: 0, active: 0, failed: 0, completed: 0 } } });
+	client.on("evener/thread/jobs/list", () => Promise.reject(new Error("offline")) as never);
+	harness.connection = screenConnection(client, "ready");
+	const agents = await mount();
+	expect(notices(agents)).toEqual(["empty"]);
+	disconnect(agents, "agents", client);
+	await settle();
+	expect(notices(agents)).toEqual(["empty"]);
+	expect(agents.root.findAll((node) => node.props.testID === "subagent-skeleton")).toEqual([]);
+});
+
+// A gap in the other collection is not this list's: a disconnect must not
+// turn a healthy Agents list into one that reports missing activity.
+it("keeps the other collection's missing branch off a healthy list through a disconnect", async () => {
+	client = pagedHub({
+		counts: { delegates: { known: true, total: 1, active: 1, failed: 0, completed: 0 } },
+		delegates: () => [
+			{
+				runGeneration: 1,
+				projectionRevision: 1,
+				delegateId: "solo",
+				ownerRef: "local:coord",
+				rootRef: "local:coord",
+				childRef: "local:solo",
+				type: "delegate",
+				description: "Only one",
+				task: "Only one",
+				lifecycle: "running",
+				phase: "running",
+				status: "running",
+				terminal: false,
+				resumable: false,
+			},
+		],
+	});
+	client.on("evener/thread/jobs/list", ({ scope }) => ({
+		context: activityContext,
+		scope: scope ?? "session",
+		jobs: [],
+		page: { complete: false, issues: [{ ref: "local:unread-jobs", code: "unavailable" as const }] },
+	}));
+	harness.connection = screenConnection(client, "ready");
+	const agents = await mount();
+	expect(withTestID(agents, "activity-missing")).toEqual([]);
+	expect(text(agents)).toContain("Only one");
+	disconnect(agents, "agents", client);
+	await settle();
+	expect(withTestID(agents, "activity-missing")).toEqual([]);
+	expect(text(agents)).toContain("Only one");
 });
 
 // A shell job's detail is its own screen over the list, reading the job
@@ -404,7 +545,7 @@ it("says there is nothing yet when the session has no subagents or shell jobs", 
 it("opens a shell job's detail over the list", async () => {
 	client = hub(() => treeWithJobs());
 	harness.connection = screenConnection(client, "ready");
-	const tree = await mount();
+	const tree = await mount(true, "jobs");
 	act(() => pressable(tree, "Completed · 1")?.props.onPress());
 	act(() =>
 		pressable(tree, `Shell job, npm run lint, Command failed, 2 minutes, under ${COORDINATOR.title}`)?.props.onPress(),
@@ -424,29 +565,29 @@ it("opens the done fold in place", async () => {
 	expect(text(tree)).toContain("Finished task 0");
 });
 
-it("opens delegate and job histories independently, then Done reveals both", async () => {
+it("keeps delegate and job histories on their own screens", async () => {
 	client = hub(() => {
 		const whole = specTree();
 		return { ...whole, root: { ...whole.root, entries: [...whole.root.entries, ...treeWithJobs().root.entries] } };
 	});
 	harness.connection = screenConnection(client, "ready");
-	const tree = await mount();
-	for (const label of ["Done · 23", "Completed · 1"])
-		expect(pressable(tree, label)?.props.accessibilityState).toEqual({ expanded: false });
-	act(() => pressable(tree, "Completed · 1")?.props.onPress());
-	expect(text(tree)).toContain("npm run lint");
-	expect(text(tree)).not.toContain("Finished task 0");
-	act(() => pressable(tree, "Done · 23")?.props.onPress());
-	expect(text(tree)).toContain("Finished task 0");
-	act(() => pressable(tree, "Completed · 1")?.props.onPress());
-	expect(text(tree)).not.toContain("npm run lint");
-	expect(text(tree)).toContain("Finished task 0");
-	act(() => pressable(tree, "Done, 24")?.props.onPress());
-	expect(text(tree)).toContain("npm run lint");
-	expect(text(tree)).toContain("Finished task 0");
-	expect(text(tree)).not.toContain("Reproduce the race");
-	expect(pressable(tree, "Done · 23")).toBeUndefined();
-	expect(pressable(tree, "Completed · 1")).toBeUndefined();
+	const agents = await mount();
+	expect(pressable(agents, "Done · 23")?.props.accessibilityState).toEqual({ expanded: false });
+	expect(pressable(agents, "Completed · 1")).toBeUndefined();
+	expect(text(agents)).not.toContain("npm run lint");
+	act(() => pressable(agents, "Done · 23")?.props.onPress());
+	expect(text(agents)).toContain("Finished task 0");
+	expect(text(agents)).not.toContain("npm run lint");
+
+	act(() => forgetSubagentTrees("hub-1"));
+	const jobs = await mount(true, "jobs");
+	expect(pressable(jobs, "Completed · 1")?.props.accessibilityState).toEqual({ expanded: false });
+	expect(pressable(jobs, "Done · 23")).toBeUndefined();
+	expect(text(jobs)).not.toContain("Finished task 0");
+	act(() => pressable(jobs, "Completed · 1")?.props.onPress());
+	expect(text(jobs)).toContain("npm run lint");
+	expect(text(jobs)).not.toContain("Finished task 0");
+	expect(text(jobs)).not.toContain("Reproduce the race");
 });
 
 it("searches past eight subagents, filtering rows and section counts while the chips keep the whole", async () => {
@@ -595,8 +736,10 @@ it("follows the coordinator again when the connection comes back while it's in f
 	const again = () =>
 		act(() =>
 			tree.update(
-				<SubagentsScreen
-					route={{ key: "subagents", name: "Subagents", params: { hubId: "hub-1", ...COORDINATOR } } as never}
+				<ActivityScreen
+					route={
+						{ key: "agents", name: "Activity", params: { hubId: "hub-1", ...COORDINATOR, kind: "agents" } } as never
+					}
 					navigation={navigation as never}
 				/>,
 			),
@@ -620,8 +763,8 @@ it("follows the coordinator on a new client when the connection changes under it
 	harness.connection = screenConnection(next, "ready");
 	act(() =>
 		tree.update(
-			<SubagentsScreen
-				route={{ key: "subagents", name: "Subagents", params: { hubId: "hub-1", ...COORDINATOR } } as never}
+			<ActivityScreen
+				route={{ key: "agents", name: "Activity", params: { hubId: "hub-1", ...COORDINATOR, kind: "agents" } } as never}
 				navigation={navigation as never}
 			/>,
 		),
@@ -665,7 +808,7 @@ it("says the count is partial and whose subagents are missing when a later page 
 	});
 	harness.connection = screenConnection(client, "ready");
 	const tree = await mount();
-	expect(headerTitle()).toBe("Activity · … Get PR 2138 Test Clean");
+	expect(headerTitle()).toBe("Agents · … Get PR 2138 Test Clean");
 	expect(notices(tree)).toEqual([]);
 	expect(tree.root.findByType("FlatList" as never).props.onEndReached).toBeTypeOf("function");
 });
@@ -862,7 +1005,7 @@ it("keeps authoritative counts while visible end-of-list demand loads the next s
 	});
 	harness.connection = screenConnection(client, "ready");
 	const screen = await mount();
-	expect(headerTitle()).toBe("Activity · 501 Get PR 2138 Test Clean");
+	expect(headerTitle()).toBe("Agents · 501 Get PR 2138 Test Clean");
 	expect(client.calls.filter((call) => call.method === "evener/thread/delegates/list")).toHaveLength(1);
 	act(() => {
 		screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 });
@@ -876,6 +1019,170 @@ it("keeps authoritative counts while visible end-of-list demand loads the next s
 		{ ref: "local:coord", scope: "subtree" },
 		{ ref: "local:coord", scope: "subtree", cursor: "next" },
 	]);
-	expect(headerTitle()).toBe("Activity · 501 Get PR 2138 Test Clean");
+	expect(headerTitle()).toBe("Agents · 501 Get PR 2138 Test Clean");
 	expect(text(screen)).toContain("second task");
+});
+
+const activityContext: SessionActivityContext = {
+	ref: "local:coord",
+	sessionId: "coord",
+	rootRef: "local:coord",
+	ancestors: [] as SessionActivityAncestor[],
+	ancestryKnown: true,
+	epoch: "pages",
+	availability: "retained",
+};
+const noCounts = { known: true, total: 0, active: 0, failed: 0, completed: 0 };
+
+/** A hub whose two collections page on their own cursors. */
+function pagedHub(read: {
+	delegates?: (cursor: string | undefined) => SessionDelegate[];
+	jobs?: (cursor: string | undefined) => JobActivityJob[];
+	jobsNext?: string | undefined;
+	counts?: { delegates?: typeof noCounts; jobs?: typeof noCounts };
+}) {
+	const next = new FakeClient("ready");
+	next.on(
+		"thread/read",
+		() => ({ thread: { id: "coord", modelProvider: "anthropic/claude-opus", status: { type: "active" } } }) as never,
+	);
+	next.on("model/list", () => ({ data: [] }) as never);
+	next.on("evener/thread/activity/read", ({ scope }) => ({
+		context: activityContext,
+		scope: scope ?? "session",
+		delegates: read.counts?.delegates ?? noCounts,
+		jobs: read.counts?.jobs ?? noCounts,
+		watches: noCounts,
+	}));
+	next.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
+		context: activityContext,
+		scope: scope ?? "session",
+		delegates: read.delegates?.(cursor) ?? [],
+		page: { complete: true, issues: [] },
+	}));
+	next.on("evener/thread/jobs/list", ({ cursor, scope }) => ({
+		context: activityContext,
+		scope: scope ?? "session",
+		jobs: read.jobs?.(cursor) ?? [],
+		page: {
+			complete: cursor === read.jobsNext || !read.jobsNext,
+			issues: [],
+			...(cursor === undefined && read.jobsNext ? { nextCursor: read.jobsNext } : {}),
+		},
+	}));
+	return next;
+}
+
+// A running subagent's why line reads the command its child ran, which is a
+// shell job. The Agents list therefore advances jobs pages too, or that line
+// stays blank for a command on a later page.
+it("advances jobs pages on the Agents list, where a running subagent's command comes from", async () => {
+	client = pagedHub({
+		counts: {
+			delegates: { known: true, total: 1, active: 1, failed: 0, completed: 0 },
+			jobs: { known: true, total: 1, active: 1, failed: 0, completed: 0 },
+		},
+		delegates: () => [
+			{
+				runGeneration: 1,
+				projectionRevision: 1,
+				delegateId: "solo",
+				ownerRef: "local:coord",
+				rootRef: "local:coord",
+				childRef: "local:solo",
+				type: "delegate",
+				description: "Only one",
+				task: "Only one",
+				lifecycle: "running",
+				phase: "running",
+				status: "running",
+				terminal: false,
+				resumable: false,
+			},
+		],
+		jobs: (cursor) =>
+			cursor === "jobs-2"
+				? [
+						{
+							jobId: "j-cmd",
+							ownerSessionId: "solo",
+							ownerRef: "local:solo",
+							type: "shell",
+							status: "running",
+							terminal: false,
+							background: true,
+							hasOutput: true,
+							description: "go test ./...",
+							command: "go test ./...",
+							startedAt: ago(2 * MIN),
+							outputBytes: 0,
+						},
+					]
+				: [
+						{
+							jobId: "j-other",
+							ownerSessionId: "coord",
+							ownerRef: "local:coord",
+							type: "shell",
+							status: "running",
+							terminal: false,
+							background: true,
+							hasOutput: true,
+							description: "npm run docs",
+							command: "npm run docs",
+							startedAt: ago(3 * MIN),
+							outputBytes: 0,
+						},
+					],
+		jobsNext: "jobs-2",
+	});
+	harness.connection = screenConnection(client, "ready");
+	const screen = await mount();
+	expect(text(screen)).toContain("Only one");
+	act(() => screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 }));
+	await settle();
+	act(() => screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 }));
+	await settle();
+	expect(
+		client.calls
+			.filter((call) => call.method === "evener/thread/jobs/list")
+			.map((call) => (call.params as { cursor?: string }).cursor),
+	).toContain("jobs-2");
+	expect(text(screen)).toContain("Running go test ./...");
+});
+
+// The Agents list's emptiness is its own: shell jobs still loading say
+// nothing about whether the session has subagents.
+it("says there are no subagents while jobs pages remain", async () => {
+	client = pagedHub({
+		counts: { jobs: { known: true, total: 40, active: 0, failed: 0, completed: 40 } },
+		jobs: () => [shellJob("j-docs", "Serving the docs").job],
+		jobsNext: "jobs-2",
+	});
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(notices(tree)).toEqual(["empty"]);
+	expect(text(tree)).toContain("No subagents yet.");
+});
+
+// The same holds when the other collection fails outright: delegates read as
+// an empty success, so Agents says so rather than reporting a failure.
+it("says there are no subagents when the jobs read fails", async () => {
+	client = pagedHub({ counts: { jobs: { known: false, total: 0, active: 0, failed: 0, completed: 0 } } });
+	client.on("evener/thread/jobs/list", () => Promise.reject(new Error("offline")) as never);
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(notices(tree)).toEqual(["empty"]);
+	expect(text(tree)).toContain("No subagents yet.");
+});
+
+// And the mirror image: a failed delegates read leaves Jobs saying it has
+// none, not reporting the other collection's failure.
+it("says there are no shell jobs when the delegates read fails", async () => {
+	client = pagedHub({ counts: { delegates: { known: false, total: 0, active: 0, failed: 0, completed: 0 } } });
+	client.on("evener/thread/delegates/list", () => Promise.reject(new Error("offline")) as never);
+	harness.connection = screenConnection(client, "ready");
+	const jobs = await mount(true, "jobs");
+	expect(notices(jobs)).toEqual(["empty"]);
+	expect(text(jobs)).toContain("No shell jobs yet.");
 });
