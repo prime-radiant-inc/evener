@@ -1,5 +1,6 @@
 import { AccessibilityInfo, Platform, Pressable, type TextInput, View } from "react-native";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { textContrast } from "../design/contrast.testkit";
 import { fonts, palettes } from "../design/tokens";
 import { playedHaptics, render, renderedText } from "../renderNative.testkit";
 import { createRef } from "react";
@@ -21,13 +22,15 @@ import {
 	useFormError,
 } from "./Grouped";
 
-const viewport = vi.hoisted(() => ({ fontScale: 1 }));
+const viewport = vi.hoisted(() => ({ fontScale: 1, scheme: "light" as "light" | "dark" }));
 beforeEach(() => {
 	viewport.fontScale = 1;
+	viewport.scheme = "light";
 });
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
+	useColorScheme: () => viewport.scheme,
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
@@ -69,6 +72,23 @@ describe("a row", () => {
 		const button = tree.root.findByProps({ accessibilityRole: "button" });
 		expect(button.props.disabled).toBe(true);
 		expect(button.props.accessibilityState).toEqual({ disabled: true });
+	});
+
+	it.each(["light", "dark"] as const)("keeps disabled content readable in %s", (scheme) => {
+		viewport.scheme = scheme;
+		const tree = render(
+			<Group>
+				<Row label="Fixture" sub="retained-detail" value="retained-value" disabled onPress={() => {}} />
+				<SwitchRow label="Fixture switch" sub="retained-switch-detail" value disabled onChange={() => {}} />
+				<TextFieldRow label="Fixture field" value="retained-input" disabled onChangeText={() => {}} />
+			</Group>,
+		);
+		const content = [...texts(tree), ...tree.root.findAllByType("TextInput" as never)];
+		expect(content).toHaveLength(6);
+		for (const node of content) expect(textContrast(node, palettes[scheme].surface)).toBeGreaterThanOrEqual(4.5);
+		expect(tree.root.findByProps({ accessibilityRole: "button" }).props.disabled).toBe(true);
+		expect(tree.root.findByType("Switch" as never).props.disabled).toBe(true);
+		expect(tree.root.findByType("TextInput" as never).props.editable).toBe(false);
 	});
 
 	it("draws a picker's check only on the chosen row", () => {
@@ -211,13 +231,13 @@ describe("a switch row", () => {
 		expect(drawn(sw)).toEqual(drawn(row));
 	});
 
-	it("dims while disabled, and gives iOS the off track's color", () => {
+	it("keeps its disabled label readable and gives iOS the off track's color", () => {
 		const tree = render(<SwitchRow label="Network" value={false} disabled onChange={() => {}} />);
 		const toggle = tree.root.findByType("Switch" as never);
 		expect(toggle.props.disabled).toBe(true);
 		// iOS draws the off track from ios_backgroundColor, not trackColor.false.
 		expect(toggle.props.ios_backgroundColor).toBe(light.edgeStrong);
-		expect(tree.root.findAllByType("View" as never)[0]?.props.style.opacity).toBe(0.4);
+		expect(textContrast(tree.root.findByProps({ testID: "row-label" }), light.surface)).toBeGreaterThanOrEqual(4.5);
 	});
 
 	it("opens a detail from its text while its switch flips on its own, and says a problem in danger ink", () => {
@@ -244,7 +264,7 @@ describe("a switch row", () => {
 		expect(toggle.props.accessibilityLabel).toBe("cracked on by default");
 		expect(toggle.props.disabled).toBe(true);
 		// The detail still opens while the switch waits, so the row doesn't dim.
-		expect(tree.root.findAllByType("View" as never)[0]?.props.style.opacity).toBe(1);
+		expect(textContrast(tree.root.findByProps({ testID: "row-label" }), light.surface)).toBeGreaterThanOrEqual(4.5);
 		const broken = texts(tree).find((node) => node.props.children === "Broken");
 		expect(merged(broken?.props.style).color).toBe(light.dangerInk);
 	});

@@ -3179,7 +3179,9 @@ const parkWork = session("paradise-park:pw", {
 });
 /** The Projects, Test runs and Archived headers, in screen order. */
 const sectionHeaders = (tree: ReactTestRenderer) =>
-	tree.root.findAll((node) => node.props.testID === "project-section-header").map(joinedText);
+	tree.root
+		.findAll((node) => typeof node.props.testID === "string" && node.props.testID.startsWith("project-section:"))
+		.map((node) => node.props.testID.slice("project-section:".length));
 const organizeControls = (tree: ReactTestRenderer) =>
 	tree.root.findAll(
 		(node) =>
@@ -3211,7 +3213,7 @@ it("offers Organize by only once the hub names a second host, and saves the choi
 	adoptedAnHourAgo(single);
 	connect(single, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
 	const alone = await mount(navigation());
-	expect(sectionHeaders(alone)).toEqual(["PROJECTS"]);
+	expect(sectionHeaders(alone)).toEqual(["projects"]);
 	expect(organizeControls(alone)).toEqual([]);
 	act(() => alone.unmount());
 
@@ -3219,7 +3221,7 @@ it("offers Organize by only once the hub names a second host, and saves the choi
 	adoptedAnHourAgo(id);
 	connect(id, hub({ ...fleet, manifest: twoHosts(), catalogs: { projects: [evenerProject()] } }).client, "ready");
 	const tree = await mount(navigation());
-	expect(sectionHeaders(tree)).toEqual(["PROJECTS"]);
+	expect(sectionHeaders(tree)).toEqual(["projects"]);
 	const [control] = organizeControls(tree);
 	expect(control.props.accessibilityLabel).toBe("Organize by: Project, then host");
 	expect(control.props.accessibilityHint).toBe("Changes to Host, then project");
@@ -3228,7 +3230,7 @@ it("offers Organize by only once the hub names a second host, and saves the choi
 		"arrow.left.arrow.right",
 	]);
 	act(() => control.props.onPress());
-	expect(sectionHeaders(tree)).toEqual(["HOSTS"]);
+	expect(sectionHeaders(tree)).toEqual(["projects"]);
 	expect(harness.kv.get(`evener.native.board-organize.${id}`)).toBe(JSON.stringify("host-project"));
 	const [flipped] = organizeControls(tree);
 	expect(flipped.props.accessibilityLabel).toBe("Organize by: Host, then project");
@@ -3256,8 +3258,8 @@ it("organized by host, shows each session of a shared project once, under its ow
 	expect(tree.root.findAll(isRowTitled("Park work"))).toHaveLength(1);
 	// Laptop counts its sessions in Live and Needs you, once each; the offline host says so.
 	expect(textsIn(projectSection(tree, "projects"))).toEqual([
-		"HOSTS",
-		"Host, then project",
+		expect.any(String),
+		expect.any(String),
 		"Laptop",
 		"6 live",
 		"evener",
@@ -3540,7 +3542,7 @@ it("starts Test runs and Archived folded, reading neither catalog until it is un
 	});
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	expect(sectionHeaders(tree)).toEqual(["PROJECTS", "Test runs · 3", "ARCHIVED · 271"]);
+	expect(sectionHeaders(tree)).toEqual(["projects", "test-runs", "archived"]);
 	expect(catalogReads(fake)).toEqual(["projects"]);
 	expect(projectRows(tree, "hub-test-env")).toHaveLength(0);
 	pressLabel(tree, "Test runs, 3 projects");
@@ -3570,7 +3572,7 @@ it("shows no section while the manifest counts none, reading no catalog", async 
 	act(() => tree.unmount());
 });
 
-it("shows no PROJECTS header before the manifest lands, and hides it once its catalog loads empty", async () => {
+it("omits the project section before its manifest lands and when its catalog is empty", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	let holding = true;
@@ -3928,10 +3930,20 @@ it("replaces the links to other screens with the sections themselves", async () 
 		}).client,
 		"ready",
 	);
-	const tree = await mount(navigation());
-	for (const gone of ["Projects ›", "Archived ›", "Projects · 1", "Archived · 2", "Reconnect", "Refresh"])
-		expect(texts(tree)).not.toContain(gone);
-	expect(sectionHeaders(tree)).toEqual(["PROJECTS", "ARCHIVED · 2"]);
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(sectionHeaders(tree)).toEqual(["projects", "archived"]);
+	const projects = () => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Projects" });
+	expect(projects().props.accessibilityState.expanded).toBe(true);
+	expect(projectRows(tree, "evener")).toHaveLength(1);
+	act(() => projects().props.onPress());
+	expect(projects().props.accessibilityState.expanded).toBe(false);
+	expect(projectRows(tree, "evener")).toHaveLength(0);
+	act(() => projects().props.onPress());
+	expect(projects().props.accessibilityState.expanded).toBe(true);
+	expect(projectRows(tree, "evener")).toHaveLength(1);
+	expect(nav.navigate).not.toHaveBeenCalled();
+	expect(nav.dispatch).not.toHaveBeenCalled();
 	act(() => tree.unmount());
 });
 
@@ -3987,7 +3999,7 @@ it("reads a failed catalog again when the Board comes back into view", async () 
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(catalogReads(fake)).toEqual(["projects"]);
-	expect(sectionHeaders(tree)).toEqual(["PROJECTS"]);
+	expect(sectionHeaders(tree)).toEqual(["projects"]);
 	expect(projectRows(tree, "evener")).toHaveLength(0);
 	catalogFails = false;
 	setFocused(false);

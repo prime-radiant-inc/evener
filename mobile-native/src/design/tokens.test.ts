@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { contrast } from "./contrast.testkit";
 import { fonts, mix, paletteFor, palettes, scaledType, typeRoles, uiType } from "./tokens";
 
 describe("the native neutral palette", () => {
@@ -59,19 +60,6 @@ describe("the native neutral palette", () => {
 		});
 	});
 });
-
-function luminance(hex: string): number {
-	const channels = [1, 3, 5].map((index) => Number.parseInt(hex.slice(index, index + 2), 16) / 255);
-	const [r, g, b] = channels.map((channel) =>
-		channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4,
-	);
-	return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
-function contrast(foreground: string, background: string): number {
-	const values = [luminance(foreground), luminance(background)];
-	return (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05);
-}
 
 describe.each(Object.entries(palettes))("%s text contrast", (_scheme, palette) => {
 	it("keeps interface text and placeholders readable on every neutral surface", () => {

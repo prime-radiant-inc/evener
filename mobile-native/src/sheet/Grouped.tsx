@@ -298,7 +298,14 @@ export function Row({
 	accessory,
 }: RowProps) {
 	const { palette } = useColors();
-	const labelColor = tone === "accent" ? palette.accentInk : tone === "danger" ? palette.dangerInk : palette.inkHi;
+	let labelColor = palette.inkHi;
+	if (disabled) {
+		labelColor = palette.inkMid;
+	} else if (tone === "accent") {
+		labelColor = palette.accentInk;
+	} else if (tone === "danger") {
+		labelColor = palette.dangerInk;
+	}
 	const plainValue = typeof value === "string" || typeof value === "number" ? String(value) : undefined;
 	const reading = accessibilityLabel ?? [label, sub, plainValue].filter(Boolean).join(", ");
 	const body = (
@@ -334,7 +341,6 @@ export function Row({
 		minHeight: 44,
 		paddingHorizontal: space.rowInset,
 		paddingVertical: space.rowPadding,
-		opacity: disabled ? 0.4 : 1,
 	} as const;
 	const state = checked === undefined ? { disabled } : { disabled, selected: checked };
 	// With a control at its end, the row's own part takes the rest of the
@@ -409,7 +415,12 @@ export function SwitchRow({
 	const { palette } = useColors();
 	const text = (
 		<View style={{ flex: 1, gap: 2 }} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-			<RowText label={label} sub={sub} subTone={subTone} />
+			<RowText
+				label={label}
+				sub={sub}
+				subTone={subTone}
+				labelColor={disabled && !onPress ? palette.inkMid : undefined}
+			/>
 		</View>
 	);
 	return (
@@ -421,7 +432,6 @@ export function SwitchRow({
 				minHeight: 44,
 				paddingHorizontal: space.rowInset,
 				paddingVertical: 8,
-				opacity: disabled && !onPress ? 0.4 : 1,
 			}}
 		>
 			{icon ? <Glyph name={icon} color={palette.inkMid} /> : null}
@@ -512,7 +522,7 @@ export function TextFieldRow({
 			ref={ref}
 			allowFontScaling={allowFontScaling}
 			style={{
-				color: palette.inkHi,
+				color: disabled ? palette.inkMid : palette.inkHi,
 				// React Native draws a TextInput's placeholder in the input's
 				// own font, so a machine field shows hint words in the UI font
 				// while empty and its value in Menlo once there is one (spec
@@ -523,7 +533,6 @@ export function TextFieldRow({
 				paddingHorizontal: space.rowInset,
 				paddingVertical: space.rowPadding,
 				textAlignVertical: multiline ? "top" : "center",
-				opacity: disabled ? 0.4 : 1,
 			}}
 		/>
 	);

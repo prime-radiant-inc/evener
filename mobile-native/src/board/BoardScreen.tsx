@@ -699,7 +699,7 @@ function Board({
 	const testRuns = manifest?.catalogs.test_runs.count ?? 0;
 	const projectHeaders: Record<ProjectSection, { title: string; label: string; shown: boolean }> = {
 		projects: {
-			title: projectGrouping === "host-project" ? "HOSTS" : "PROJECTS",
+			title: projectGrouping === "host-project" ? "Hosts" : "Projects",
 			label: projectGrouping === "host-project" ? "Hosts" : "Projects",
 			shown: projectsShown,
 		},
@@ -709,7 +709,7 @@ function Board({
 			shown: testRuns > 0,
 		},
 		archived: {
-			title: `ARCHIVED · ${archived}`,
+			title: `Archived · ${archived}`,
 			label: sectionLabel("Archived", archived, "project"),
 			shown: archived > 0,
 		},

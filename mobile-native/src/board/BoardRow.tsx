@@ -184,6 +184,8 @@ export function BoardRow({
 		.filter(Boolean)
 		.join(", ");
 	const lineOne = 22 * scale;
+	let paddingVertical = largeText ? 8 : 0;
+	if (signal) paddingVertical = 12;
 	return (
 		<Pressable
 			testID={`board-row:${state}`}
@@ -200,8 +202,7 @@ export function BoardRow({
 				alignItems: signal ? "flex-start" : "center",
 				columnGap: 10,
 				paddingHorizontal: 16,
-				paddingTop: signal ? 12 : largeText ? 8 : 0,
-				paddingBottom: signal ? 12 : largeText ? 8 : 0,
+				paddingVertical,
 				minHeight: signal ? 64 : 48,
 				backgroundColor: pressed ? palette.pressed : palette.page,
 				opacity: dimmed ? 0.5 : 1,

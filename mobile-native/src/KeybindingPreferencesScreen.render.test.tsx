@@ -3,6 +3,8 @@ import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { AnyNotification, AppwireClient, InitializeResponse } from "@evener/appwire-client";
 import { KeybindingPreferencesScreen } from "./KeybindingPreferencesScreen";
+import { textContrast } from "./design/contrast.testkit";
+import { palettes } from "./design/tokens";
 import { markers } from "./markerTestUtils";
 import { NativePreferencesProvider } from "./NativePreferencesProvider";
 import { dropped, render, screenConnection } from "./renderNative.testkit";
@@ -24,6 +26,7 @@ const harness = vi.hoisted(() => {
 	};
 	return {
 		connection: {} as Record<string, unknown>,
+		scheme: "light" as "light" | "dark",
 		storage,
 		values,
 	};
@@ -32,6 +35,7 @@ const harness = vi.hoisted(() => {
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 	KeyboardAvoidingView: "KeyboardAvoidingView",
+	useColorScheme: () => harness.scheme,
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "screen-test-id" }));
@@ -114,6 +118,7 @@ function clientFixture() {
 beforeEach(() => {
 	harness.values.clear();
 	harness.storage.throwKey = null;
+	harness.scheme = "light";
 	harness.connection = {
 		activeProfile: hub,
 		client: null,
@@ -154,6 +159,44 @@ it("keeps draft Save outside the scrolling settings and disabled offline", async
 	});
 	expect(action().props.disabled).toBe(true);
 	expect(harness.values.has(draftKey(hub.id))).toBe(true);
+	act(() => tree.unmount());
+});
+
+it.each(["light", "dark"] as const)("retains readable shortcut values while offline in %s", async (scheme) => {
+	harness.scheme = scheme;
+	const connection = clientFixture();
+	harness.connection = screenConnection(connection.client, "ready");
+	const request = connection.nextRequest();
+	const tree = render(app());
+	await act(async () => {
+		await connection.connected;
+		await request;
+	});
+	const shortcutRows = () =>
+		tree.root
+			.findAllByProps({ accessibilityRole: "button" })
+			.filter((node) => node.findAllByProps({ testID: "row-sub" }).length > 0);
+	const summaries = () => shortcutRows().map((node) => node.findByProps({ testID: "row-sub" }).props.children);
+	const before = summaries();
+	expect(before.length).toBeGreaterThan(0);
+	for (const row of shortcutRows()) expect(row.props.disabled).toBe(false);
+	act(() => {
+		harness.connection = dropped(harness.connection);
+		tree.update(app());
+	});
+	expect(summaries()).toEqual(before);
+	for (const row of shortcutRows()) {
+		expect(row.props.disabled).toBe(true);
+		for (const node of row.findAllByType("Text" as never)) {
+			expect(textContrast(node, palettes[scheme].surface)).toBeGreaterThanOrEqual(4.5);
+		}
+	}
+	await act(async () => {
+		harness.connection = screenConnection(connection.client, "ready");
+		tree.update(app());
+	});
+	expect(summaries()).toEqual(before);
+	for (const row of shortcutRows()) expect(row.props.disabled).toBe(false);
 	act(() => tree.unmount());
 });
 
