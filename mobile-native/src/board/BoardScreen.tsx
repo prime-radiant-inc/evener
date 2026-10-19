@@ -144,8 +144,8 @@ type Navigation = Props["navigation"];
 
 const MINUTE = 60_000;
 const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
-	needsYou: "NEEDS YOU",
-	working: "WORKING",
+	needsYou: "Needs you",
+	working: "Working",
 };
 /** A row that reads a section's next page: a tier's sessions or the catalog's projects. */
 type MoreItem = Extract<ProjectTreeItem, { kind: "more" | "moreProjects" }>;
@@ -1047,7 +1047,18 @@ function Board({
 		else if (item.kind === "tree") content = treeItem(item.section, item.tree);
 		else return null;
 		return (
-			<Animated.View key={item.key} layout={rowMove} onLayout={onLayout}>
+			<Animated.View
+				key={item.key}
+				testID={
+					item.kind === "band"
+						? `board-band:${item.band}:${item.count}`
+						: item.kind === "idleFold"
+							? `board-band:idle:${item.count}`
+							: undefined
+				}
+				layout={rowMove}
+				onLayout={onLayout}
+			>
 				{content}
 			</Animated.View>
 		);

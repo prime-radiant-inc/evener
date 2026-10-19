@@ -634,7 +634,9 @@ const toastActions = (tree: ReactTestRenderer) =>
 	);
 /** The band headers and the Idle fold, in screen order. */
 function bandHeaders(tree: ReactTestRenderer): string[] {
-	return tree.root.findAll((node) => node.props.testID === "band-header").map(joinedText);
+	return tree.root
+		.findAll((node) => typeof node.props.testID === "string" && node.props.testID.startsWith("board-band:"))
+		.map((node) => node.props.testID.slice("board-band:".length));
 }
 /** Whether a node is the Board row with this title. */
 const isRowTitled = (title: string) => (node: ReactTestInstance) =>
@@ -741,7 +743,7 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 	connect(id, hub(fleet).client, "ready");
 	const tree = await mount(navigation());
 	// A session whose turn ended rests in Idle, seen or not (#4093).
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
+	expect(bandHeaders(tree)).toEqual(["needsYou:2", "working:1", "idle:3"]);
 	expect(renderedText(tree)).toContain("2 need you");
 	expect(texts(tree)).toEqual(expect.arrayContaining(["1 working", "3 idle"]));
 	expect(texts(tree)).not.toContain("1 finished");
@@ -870,11 +872,7 @@ it("scrolls to Needs you when a coalesced banner asks, once the Board has laid o
 	const { tree, scrollTo } = await mountWithInstances(navigation());
 	expect(scrollTo).not.toHaveBeenCalledWith(expect.objectContaining({ animated: true }));
 	const band = tree.root
-		.findAll(
-			(node) =>
-				typeof node.props.onLayout === "function" &&
-				node.findAll((child) => child.props.children === "NEEDS YOU · 2").length > 0,
-		)
+		.findAll((node) => typeof node.props.onLayout === "function" && node.props.testID === "board-band:needsYou:2")
 		.at(-1);
 	act(() => {
 		tree.root
@@ -957,7 +955,7 @@ it("keeps a live pinned session in Live as well as in its category", async () =>
 	const tree = await mount(navigation());
 	const copies = tree.root.findAll(isRowTitled("Build docs"));
 	expect(copies).toHaveLength(2);
-	expect(bandHeaders(tree)).toContain("WORKING · 1");
+	expect(bandHeaders(tree)).toContain("working:1");
 	act(() => tree.unmount());
 });
 
@@ -1653,7 +1651,7 @@ it("opens a session after marking it seen", async () => {
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:done", title: "Ship it" });
 	expect(seenMarkers(id).isSeen(shipIt)).toBe(true);
 	// Seen, the session stays in Idle and loses its blue dot.
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
+	expect(bandHeaders(tree)).toEqual(["needsYou:2", "working:1", "idle:3"]);
 	expect(dotted(tree, "Ship it")).toBe(false);
 	act(() => tree.unmount());
 });
@@ -1780,7 +1778,7 @@ it("takes the blue dot from the hub for a row that carries its turn end, whateve
 	expect(dotted(tree, "Ship it")).toBe(true);
 	// The categories classify the same way.
 	expect(dotted(tree, "Pinned unseen")).toBe(true);
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
+	expect(bandHeaders(tree)).toEqual(["needsYou:2", "working:1", "idle:3"]);
 	expect(fake.seen).toEqual([]);
 	act(() => tree.unmount());
 });
@@ -1802,7 +1800,7 @@ it("marks a hub row seen through its turn end when you open it, and clears its d
 	});
 	// The hub's rows still say unseen; the pending mark wins until they catch up.
 	expect(dotted(tree, "Hub unseen")).toBe(false);
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
+	expect(bandHeaders(tree)).toEqual(["needsYou:2", "working:1", "idle:3"]);
 	await settleMicrotasks();
 	expect(fake.seen).toEqual([[{ ref: "local:hub-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
 	// The device's own markers are not touched for a hub row.
@@ -1884,7 +1882,7 @@ it("reads nothing while connecting, and reads the Board once the connection is r
 		"pin_section",
 		"pin_section",
 	]);
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
+	expect(bandHeaders(tree)).toEqual(["needsYou:2", "working:1", "idle:3"]);
 	act(() => tree.unmount());
 });
 
@@ -1898,7 +1896,7 @@ it("keeps its rows when the connection drops and grays the meters", async () => 
 	connect(id, null, "reconnecting");
 	rerender(tree, nav);
 	expect(hasRow(tree, "Build docs")).toBe(true);
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
+	expect(bandHeaders(tree)).toEqual(["needsYou:2", "working:1", "idle:3"]);
 	act(() => {
 		vi.advanceTimersByTime(2000);
 	});
@@ -2051,7 +2049,7 @@ it("on a device's first run, reads every Live page before adopting, so no row fl
 	await settleMicrotasks();
 	expect(seenMarkers(id).adopted).toBe(true);
 	expect(seenMarkers(id).isSeen(newest)).toBe(true);
-	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 1", "Idle · 2"]);
+	expect(bandHeaders(tree)).toEqual(["needsYou:1", "idle:2"]);
 	expect(dotted(tree, "Older")).toBe(false);
 	expect(dotted(tree, "Newest")).toBe(false);
 	act(() => tree.unmount());
@@ -2361,7 +2359,7 @@ it("keeps a later-page parent's Working pulse and quiet failure history through 
 	shape.needsYou = [question];
 	await refresh(1);
 	expect(stateOf(tree, parent.title)).toBe("question");
-	expect(bandHeaders(tree)).toContain("NEEDS YOU · 1");
+	expect(bandHeaders(tree)).toContain("needsYou:1");
 	expect(rowTitled(tree, parent.title).findAllByType(PulseMeter)).toEqual([]);
 	expect(rowTitled(tree, parent.title).props.accessibilityLabel).toContain(whyReason(rowTitled(tree, parent.title)));
 	expect(textsIn(rowTitled(tree, parent.title))).toContain("1 running");
@@ -5109,15 +5107,18 @@ it("stops providing the menu's host when the Board goes away", async () => {
 // scrolls or glides, the app scrolls it, a row's swipe or the row menu is
 // open, and it applies every change at once when it settles.
 
-/** Live's band headers and rows in screen order: a header as its text, a
- * row as its title. */
+/** Live bands by identity/count and session rows by their fixture title. */
 function listOrder(tree: ReactTestRenderer): string[] {
 	return tree.root
 		.find((node) => node.props.testID === "live-block")
 		.findAll(
-			(node) => node.type === BoardRow || (node.type === ("Text" as never) && node.props.testID === "band-header"),
+			(node) =>
+				node.type === BoardRow ||
+				(typeof node.props.testID === "string" && node.props.testID.startsWith("board-band:")),
 		)
-		.map((node) => (node.type === BoardRow ? node.props.item.row.title : joinedText(node)));
+		.map((node) =>
+			node.type === BoardRow ? node.props.item.row.title : node.props.testID.slice("board-band:".length),
+		);
 }
 const boardRowTitled = (tree: ReactTestRenderer, title: string) =>
 	tree.root.findAll((node) => node.type === BoardRow && node.props.item.row.title === title)[0];
@@ -5128,12 +5129,12 @@ function listEvent(tree: ReactTestRenderer, handler: string, nativeEvent: Record
 const liftFinger = (tree: ReactTestRenderer) => listEvent(tree, "onTouchEnd", { touches: [] });
 /** The default fleet's Live with Idle unfolded (idleUnfolded). */
 const workingOrder = [
-	"NEEDS YOU · 2",
+	"needsYou:2",
 	"Fix retry loop",
 	"Pick a name",
-	"WORKING · 1",
+	"working:1",
 	"Build docs",
-	"Idle · 3",
+	"idle:3",
 	"Ship it",
 	"Old chore",
 	"Older chore",
@@ -5166,12 +5167,12 @@ async function mountAskingFleet(nav = navigation(), withInstances = false) {
 }
 /** Whether "Build docs" still sits in Working, where it was. */
 const heldInWorking = (tree: ReactTestRenderer) =>
-	expect(listOrder(tree)).toEqual(["NEEDS YOU · 3", ...workingOrder.slice(1)]);
+	expect(listOrder(tree)).toEqual(["needsYou:3", ...workingOrder.slice(1)]);
 /** Whether "Build docs" moved into Needs you, and Working is gone. */
 function movedToNeedsYou(tree: ReactTestRenderer) {
 	const order = listOrder(tree);
-	expect(order.indexOf("Build docs")).toBeLessThan(order.indexOf("Idle · 3"));
-	expect(order).not.toContain("WORKING · 1");
+	expect(order.indexOf("Build docs")).toBeLessThan(order.indexOf("idle:3"));
+	expect(order).not.toContain("working:1");
 }
 
 it("keeps a row in its place while a finger is on the list, then moves it into Needs you, washed, 100ms after the finger lifts", async () => {
