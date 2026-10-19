@@ -5,7 +5,13 @@ import { activityChangedNotification } from "@evener/appwire-client/testing/noti
 // quiet history, the strip, the chips, search, and each row's why and last
 // line. Agents lists subagents; Jobs lists shell jobs.
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { WireError } from "@evener/appwire-client";
+import {
+	type JobActivityJob,
+	type SessionActivityAncestor,
+	type SessionActivityContext,
+	type SessionDelegate,
+	WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
 import { FlatList } from "react-native";
@@ -895,4 +901,146 @@ it("keeps authoritative counts while visible end-of-list demand loads the next s
 	]);
 	expect(headerTitle()).toBe("Agents · 501 Get PR 2138 Test Clean");
 	expect(text(screen)).toContain("second task");
+});
+
+const activityContext: SessionActivityContext = {
+	ref: "local:coord",
+	sessionId: "coord",
+	rootRef: "local:coord",
+	ancestors: [] as SessionActivityAncestor[],
+	ancestryKnown: true,
+	epoch: "pages",
+	availability: "retained",
+};
+const noCounts = { known: true, total: 0, active: 0, failed: 0, completed: 0 };
+
+/** A hub whose two collections page on their own cursors. */
+function pagedHub(read: {
+	delegates?: (cursor: string | undefined) => SessionDelegate[];
+	jobs?: (cursor: string | undefined) => JobActivityJob[];
+	jobsNext?: string | undefined;
+	counts?: { delegates?: typeof noCounts; jobs?: typeof noCounts };
+}) {
+	const next = new FakeClient("ready");
+	next.on(
+		"thread/read",
+		() => ({ thread: { id: "coord", modelProvider: "anthropic/claude-opus", status: { type: "active" } } }) as never,
+	);
+	next.on("model/list", () => ({ data: [] }) as never);
+	next.on("evener/thread/activity/read", ({ scope }) => ({
+		context: activityContext,
+		scope: scope ?? "session",
+		delegates: read.counts?.delegates ?? noCounts,
+		jobs: read.counts?.jobs ?? noCounts,
+		watches: noCounts,
+	}));
+	next.on("evener/thread/delegates/list", ({ cursor, scope }) => ({
+		context: activityContext,
+		scope: scope ?? "session",
+		delegates: read.delegates?.(cursor) ?? [],
+		page: { complete: true, issues: [] },
+	}));
+	next.on("evener/thread/jobs/list", ({ cursor, scope }) => ({
+		context: activityContext,
+		scope: scope ?? "session",
+		jobs: read.jobs?.(cursor) ?? [],
+		page: {
+			complete: cursor === read.jobsNext || !read.jobsNext,
+			issues: [],
+			...(cursor === undefined && read.jobsNext ? { nextCursor: read.jobsNext } : {}),
+		},
+	}));
+	return next;
+}
+
+// A running subagent's why line reads the command its child ran, which is a
+// shell job. The Agents list therefore advances jobs pages too, or that line
+// stays blank for a command on a later page.
+it("advances jobs pages on the Agents list, where a running subagent's command comes from", async () => {
+	client = pagedHub({
+		counts: {
+			delegates: { known: true, total: 1, active: 1, failed: 0, completed: 0 },
+			jobs: { known: true, total: 1, active: 1, failed: 0, completed: 0 },
+		},
+		delegates: () => [
+			{
+				runGeneration: 1,
+				projectionRevision: 1,
+				delegateId: "solo",
+				ownerRef: "local:coord",
+				rootRef: "local:coord",
+				childRef: "local:solo",
+				type: "delegate",
+				description: "Only one",
+				task: "Only one",
+				lifecycle: "running",
+				phase: "running",
+				status: "running",
+				terminal: false,
+				resumable: false,
+			},
+		],
+		jobs: (cursor) =>
+			cursor === "jobs-2"
+				? [
+						{
+							jobId: "j-cmd",
+							ownerSessionId: "solo",
+							ownerRef: "local:solo",
+							type: "shell",
+							status: "running",
+							terminal: false,
+							background: true,
+							hasOutput: true,
+							description: "go test ./...",
+							command: "go test ./...",
+							startedAt: ago(2 * MIN),
+							outputBytes: 0,
+						},
+					]
+				: [
+						{
+							jobId: "j-other",
+							ownerSessionId: "coord",
+							ownerRef: "local:coord",
+							type: "shell",
+							status: "running",
+							terminal: false,
+							background: true,
+							hasOutput: true,
+							description: "npm run docs",
+							command: "npm run docs",
+							startedAt: ago(3 * MIN),
+							outputBytes: 0,
+						},
+					],
+		jobsNext: "jobs-2",
+	});
+	harness.connection = screenConnection(client, "ready");
+	const screen = await mount();
+	expect(text(screen)).toContain("Only one");
+	act(() => screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 }));
+	await settle();
+	act(() => screen.root.findByType("FlatList" as never).props.onEndReached({ distanceFromEnd: 0 }));
+	await settle();
+	expect(
+		client.calls
+			.filter((call) => call.method === "evener/thread/jobs/list")
+			.map((call) => (call.params as { cursor?: string }).cursor),
+	).toContain("jobs-2");
+	expect(text(screen)).toContain("Running go test ./...");
+});
+
+// The Agents list's emptiness is its own: shell jobs still loading say
+// nothing about whether the session has subagents.
+it("says there are no subagents while jobs pages remain", async () => {
+	client = pagedHub({
+		counts: { jobs: { known: true, total: 40, active: 0, failed: 0, completed: 40 } },
+		jobs: () => [shellJob("j-docs", "Serving the docs").job],
+		jobsNext: "jobs-2",
+	});
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(notices(tree)).toEqual(["empty"]);
+	expect(text(tree)).toContain("No subagents yet.");
 });

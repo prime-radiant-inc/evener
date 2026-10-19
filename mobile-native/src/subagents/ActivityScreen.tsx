@@ -117,6 +117,10 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	// The hub's own ref for the coordinator, once a tree carries it, names
 	// the coordinator's branch in what couldn't be listed.
 	const coordinatorRef = snapshot.tree?.root.ref ?? ref;
+	// What this list alone reads: a gap or a still-loading page in the other
+	// collection says nothing about whether this one is empty.
+	const page = snapshot.pages ? (kind === "agents" ? snapshot.pages.delegates : snapshot.pages.jobs) : null;
+	const missing = page ? page.issues.map((issue) => issue.ref) : snapshot.missing;
 	const items = useMemo(
 		() =>
 			activityListItems(rows, {
@@ -124,13 +128,13 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 				query,
 				doneOpen,
 				completedJobsOpen,
-				missing: snapshot.missing,
+				missing,
 				coordinator: { ref: coordinatorRef, title },
 				// The Agents list already is the subagent rows; Jobs needs them
 				// only to name a branch whose job couldn't be read.
 				...(kind === "jobs" ? { subagents } : {}),
 			}),
-		[rows, subagents, kind, filter, query, doneOpen, completedJobsOpen, snapshot.missing, coordinatorRef, title],
+		[rows, subagents, kind, filter, query, doneOpen, completedJobsOpen, missing, coordinatorRef, title],
 	);
 
 	// The stops you asked for, on their rows, and settled against each new
@@ -149,16 +153,16 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 		if (!focused || boundary?.tree !== tree || boundary.keys !== boundaryKeys) return;
 		// A closed fold can consume a page without changing the native list's
 		// height. Keep its observed edge demand, not a view-owned retry loop.
-		// Jobs advances the delegate pages too, since that is where a job's
-		// owner comes from.
+		// Both lists advance both collections: a job names its owner from the
+		// delegate rows, and a running subagent's why line reads the command its
+		// child ran, which is a shell job.
 		for (const [resource, page] of [
 			["jobs", jobPage],
 			["delegates", delegatePage],
 		] as const) {
-			if (kind === "agents" && resource === "jobs") continue;
 			if (page?.hasMore && !page.loading && !page.error && !page.permanent) void tree.loadMore(resource);
 		}
-	}, [focused, boundary, boundaryKeys, tree, kind, delegatePage, jobPage]);
+	}, [focused, boundary, boundaryKeys, tree, delegatePage, jobPage]);
 	const toast = useToast();
 	const showToast = toast.show;
 	useEffect(() => {
@@ -217,7 +221,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 		paddingTop: 16,
 	};
 	const notice: Notice | null = snapshot.tree
-		? rows.length === 0 && !snapshot.partial && snapshot.missing.length === 0
+		? rows.length === 0 && page?.complete === true && missing.length === 0
 			? "empty"
 			: null
 		: snapshot.failed
