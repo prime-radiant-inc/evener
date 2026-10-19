@@ -420,6 +420,27 @@ it("says there is nothing yet when the session has no shell jobs", async () => {
 	expect(text(tree)).toContain("No shell jobs yet.");
 });
 
+// A disconnect clears the pages but keeps the last tree: an empty list stays
+// empty rather than falling back to loading rows.
+it("keeps saying there are none when the connection drops after an empty list", async () => {
+	client = hub(() => ({ revision: 1, root: session("local:coord", COORDINATOR.title, []) }));
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(notices(tree)).toEqual(["empty"]);
+	act(() => {
+		harness.connection = screenConnection(client, "reconnecting");
+		tree.update(
+			<ActivityScreen
+				route={{ key: "agents", name: "Activity", params: { hubId: "hub-1", ...COORDINATOR, kind: "agents" } } as never}
+				navigation={navigation as never}
+			/>,
+		);
+	});
+	await settle();
+	expect(notices(tree)).toEqual(["empty"]);
+	expect(tree.root.findAll((node) => node.props.testID === "subagent-skeleton")).toEqual([]);
+});
+
 // A shell job's detail is its own screen over the list, reading the job
 // from the same tree.
 it("opens a shell job's detail over the list", async () => {

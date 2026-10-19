@@ -221,9 +221,13 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 		paddingTop: 16,
 	};
 	// The notice speaks for this screen's collection alone: the other one
-	// failing, or still loading, says nothing about this list.
+	// failing, or still loading, says nothing about this list. A disconnect
+	// clears the pages while the last tree is kept, and an empty list stays
+	// empty for it.
 	const notice: Notice | null = !page
-		? null
+		? snapshot.tree && rows.length === 0 && missing.length === 0
+			? "empty"
+			: null
 		: page.permanent
 			? "unsupported"
 			: page.error !== null && page.rows.length === 0 && !page.loading
@@ -323,7 +327,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 					{spec.notices[notice]}
 				</Text>
 			) : null}
-			{!notice && rows.length === 0 && (page === null || page.loading || page.pending) ? <Skeleton /> : null}
+			{!notice && snapshot.tree === null ? <Skeleton /> : null}
 		</View>
 	);
 
