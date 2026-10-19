@@ -91,6 +91,40 @@ the parser internally instead.
 
 Steering cannot retract a command that already ran. If the agent is about to take an unsafe action, use Stop, then inspect what actually happened. Do not send a second copy of a destructive request because the first copy has not appeared in the transcript yet.
 
+## Answer a question, or approve an action
+
+An agent can pause and ask you something rather than guessing. A question
+appears above the composer as **Answer the agent's questions.**, with up to four
+questions in one batch. Each question offers its options; choose one, choose
+several where the question allows it, or pick its free-text answer. Use **Next
+question** to move through a batch. The button becomes **Send answers** once
+every question in the batch has an answer, so a batch cannot be submitted past a
+question you never saw. When the batch holds one question, **Send answers** is
+available at once, and an unanswered question is sent as skipped.
+
+Answers travel the same durable path as a normal message. If the connection
+drops while you are answering, let the session recover before resending, and
+check whether the answer already arrived rather than assuming it did not.
+Scrolling the answer card out of view does not discard a partial answer, and
+returning restores it.
+
+An approval is different: it gates one specific action. Outside a sandbox,
+`read_file`, `write_file`, and `edit_file` denials can be escalated to a card
+with **Allow** and **Deny**, and the tool call waits until you answer. The model
+cannot trigger, approve, or later see that decision. Shell and kernel denials,
+patches, and browse calls stay final, as they do without a UI. See
+[sandbox escalation](sandboxing.md) for exactly which denials are eligible.
+
+A pending question and a pending approval both raise the sidebar's attention
+badge and appear in the session's own attention, so you can leave a session and
+find it again when it wants you.
+
+In a one-shot CLI run there is nobody to answer mid-run, so the agent is not
+offered the question tool at all and proceeds on its instructions instead.
+`--ask-responder` supplies a command that answers programmatically; see the
+[CLI reference](cli.md#one-shot-options). Do not build an unattended workflow
+that depends on an interactive answer path.
+
 ### Try the browser controls
 
 In a fresh workspace, start a session with `Read the workspace and wait for my next instruction. Reference: d4a10f26`. While a turn is active:
@@ -191,6 +225,28 @@ Commit only after review. Deploying, publishing, and merging are separate decisi
 Tell Evener durable preferences and project decisions that should affect later work. Ask it to correct obsolete notes when those decisions change. [Memory](memory.md) explains what persists and where; a transcript is the record of this session, while memory is selected knowledge for future sessions.
 
 For reusable procedures, use [extensions](extensions.md). For repeatable unattended runs, use [automation](automation.md) and the [CLI reference](cli.md). Those guides own the exact configuration and command contracts.
+
+## Set your own viewing preferences
+
+**Settings → Preferences** changes how the hub looks and behaves for you. These
+settings are not session configuration: they do not change what the agent may
+do, and a running session does not need to be restarted to pick them up.
+
+| Screen | What it controls |
+| --- | --- |
+| **Appearance** | Light, dark, or system theme; compact or comfortable density; transcript width and text size. Changes apply as you make them. |
+| **Conversation display** | Whether reasoning, tool calls, token and cost figures, and desktop or mobile layout detail appear in a transcript. |
+| **Input & shortcuts** | What Enter does in the composer, and the keyboard shortcut for each command. Shortcuts save to the hub and sync to every browser paired with it. |
+| **Notifications** | Title-bar count, browser-tab indicator, desktop notifications, and sound. Each is off until you enable it. Desktop notifications need the browser's permission; **Loud for** chooses whether only questions, reply requests, approvals, and errors are loud or everything needing you is. |
+
+Shortcut changes are saved by the hub, so a second browser shows the same
+bindings after it syncs. If the hub cannot accept a change, the shortcut screen
+reports it inline and keeps your previous binding. The notification toggles are
+stored in that browser, so they do not follow you to another machine or another
+browser.
+
+For what to open when a session asks you something, see
+[Answer a question, or approve an action](#answer-a-question-or-approve-an-action).
 
 ## Captured walkthrough
 

@@ -19,6 +19,7 @@ These guides track **main**. The first-run guide uses the latest successful snap
 | Connect a client | [Integrations](docs/integrations.md) |
 | Connect an iPhone | [Native app](docs/native-app.md) |
 | Diagnose a problem | [Troubleshooting](docs/troubleshooting.md) |
+| Upgrade an existing install | [Upgrading](UPGRADING.md) |
 
 The [documentation home](docs/index.md) brings these paths together. The [published guide](https://prime-radiant-inc.github.io/evener/) uses the same Markdown sources.
 

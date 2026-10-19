@@ -1,22 +1,24 @@
-// Command evener-doctor is the read-only forensic data plane of evener's doctoring
+// Package doctor is the read-only forensic data plane of evener's doctoring
 // system: a thin main over the agent/doctor package. It resolves a session
 // selector and inspects settled on-disk state — transcript, private API log,
 // meta, jobs.jsonl, and the client-mutation store —
 // with the same folds and types the evener runtime uses, so a schema change either
 // flows through automatically or fails to compile.
 //
+// It ships as the `evener doctor` subcommand.
+//
 // Usage:
 //
-//	evener-doctor locate     <selector>
-//	evener-doctor transcript <selector> [--count <tool>] [--health] [--format outline|markdown] [--range last:N|start:N|N-M] [--text-max N] [--full-text]
-//	evener-doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate] [--health]
-//	evener-doctor jobs       <selector> [--job <id>]
-//	evener-doctor mutations  <selector>
-//	evener-doctor watches    <selector> [--watch <id>] [--self-loops]
-//	evener-doctor tree       <selector> [--depth N] [--observers]
-//	evener-doctor turnids    (no selector — sweeps every session under the state root)
-//	evener-doctor sessions   [--since DUR] [--bucket B | --all] [--json]  (no selector — enumerates every session, or one --bucket's, under the state root)
-//	evener-doctor audit      --runbook NAME (--sessions <sel,...> | --since DUR) [--json]  (no selector — batch runbook driver over a session set)
+//	evener doctor locate     <selector>
+//	evener doctor transcript <selector> [--count <tool>] [--health] [--format outline|markdown] [--range last:N|start:N|N-M] [--text-max N] [--full-text]
+//	evener doctor apilog     <selector> [--empty] [--errors] [--cache-spikes [--threshold N]] [--summary] [--validate] [--health]
+//	evener doctor jobs       <selector> [--job <id>]
+//	evener doctor mutations  <selector>
+//	evener doctor watches    <selector> [--watch <id>] [--self-loops]
+//	evener doctor tree       <selector> [--depth N] [--observers]
+//	evener doctor turnids    (no selector — sweeps every session under the state root)
+//	evener doctor sessions   [--since DUR] [--bucket B | --all] [--json]  (no selector — enumerates every session, or one --bucket's, under the state root)
+//	evener doctor audit      --runbook NAME (--sessions <sel,...> | --since DUR) [--json]  (no selector — batch runbook driver over a session set)
 //
 // A selector is "", local:<id>, proj:<project-id>:<id>, or a bare <id> (searched across buckets). Common flags:
 // --state-dir <path> (overrides EVENER_STATE_DIR / XDG default) and --json.

@@ -773,9 +773,10 @@ Rules:
   saved declarative repeating timers. Callback closures remain process-local.
   A send generation that has already spoken can omit an individual restart-end
   notice; its pending deliveries still follow the durable-send recovery path.
-  Journal durability does not imply that an active watch is rearmed. See
-  [watch intent after restart](product/friction.md#r03-watch-intent-after-restart)
-  for the agreed recovery outcome that remains to be implemented.
+  Journal durability does not imply that an active watch is rearmed. An agreed
+  recovery outcome exists but is not implemented: a restart does not yet
+  re-establish an active watch, and the owner is told the watch ended rather
+  than left to assume it still runs.
 - Already-fired parent-watch frames are durable until delivered, replaced by a newer frame for the same durable key, evicted by watch cleanup, or dropped with a caller-visible diagnostic on hard/non-resumable failure. The durable key includes the `watch_id`, visible session, configured watch source/target, receiver identity, resolved watched identity, and watch generation.
 - `job_watch(operation="clear", watch_id=...)` is the model-facing unwatch operation; there is no separate unwatch tool.
 
@@ -1504,7 +1505,7 @@ ordered queue and receiver-transcript attention as the terminal packet.
   delegate's transcript. A turn that ends without a terminal `communicate`,
   including one whose model returns bare text, leaves the earlier report
   standing as the delegate's completed report.
-- The same holds for one-shot `evener run`: while it drains background work,
+- The same holds for a one-shot `evener` run: while it drains background work,
   its answer is the root's latest terminal `communicate`. A drain turn driven
   by a completion that reports again replaces the answer. A drain turn that
   ends in bare text or an empty response leaves the earlier answer standing
@@ -1565,7 +1566,7 @@ Rules:
 - The `end_turn=true` warning naming still-running jobs depends on whether the
   session outlives the turn. Where it does, the warning keeps promising each
   job reports separately on completion. Where the process exits with the turn
-  (one-shot `evener run`, and any session it delegates to), it says instead
+  (a one-shot `evener` run, and any session it delegates to), it says instead
   that a job which keeps running is killed at exit rather than reported on
   later, because promising a later report there is simply false.
 

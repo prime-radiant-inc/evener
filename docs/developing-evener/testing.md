@@ -392,7 +392,7 @@ ssh paradise-park 'chmod +x ~/.local/bin/evener && codesign --force --sign - ~/.
 # too" even though the forwarding is fine. On a macOS host its own home
 # directory is the natural choice.
 EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park \
-  EVENER_SSH_E2E_REMOTE_DIR=/Users/jesse \
+  EVENER_SSH_E2E_REMOTE_DIR="$HOME" \
   go test ./cmd/evener-hub/ -run TestHostAddAttachForwardedDiscoveryE2E -count=1 -v
 ~~~
 

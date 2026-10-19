@@ -23,7 +23,7 @@ reference also includes internal processes and test controls.
 | `EVENER_PROVIDERS_CONFIG` | Path to `providers.toml`. Unset means the default path; set and empty (`EVENER_PROVIDERS_CONFIG=`) means no user layer at all. |
 | `EVENER_REASONING_EFFORT` | Default reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `none`. |
 | `EVENER_SESSION_ORIGIN` | Marks a session's launch origin (e.g. `test`) so the hub groups agentic-test runs. |
-| `EVENER_STATE_DIR` | Overrides the per-invocation project/session state directory (`evener run --state-dir`, hub-spawned daemons, `evener doctor`); does not override the Evener state root (see `XDG_STATE_HOME`). |
+| `EVENER_STATE_DIR` | Overrides the per-invocation project/session state directory (one-shot `evener --state-dir`, hub-spawned daemons, `evener doctor`); does not override the Evener state root (see `XDG_STATE_HOME`). |
 | `LLM_MODEL` | Model for `llmcall` when `--model` is unset; checked before `EVENER_MODEL`. |
 | `LLM_PROVIDER` | Provider for `llmcall` when `--provider` is unset; checked before `EVENER_PROVIDER`. |
 

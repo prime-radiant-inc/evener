@@ -308,9 +308,9 @@ unsandboxed root's `TMPDIR` is not in the tree.
 
   The project's `.gitignore`, `.gitattributes`, and `.git/info/exclude` are
   unaffected. Move needed rules into the repository, or use `--sandbox off` only
-  if you accept removing sandbox confinement. See the
-  [recorded limitation](product/friction.md#t06-global-git-excludes-files-in-restricted-mode)
-  and [design discussion](https://github.com/prime-radiant-inc/evener/issues/4234).
+  if you accept removing sandbox confinement. This is a known limitation, not a
+  configuration mistake; see
+  [design discussion](https://github.com/prime-radiant-inc/evener/issues/4234).
 
   **macOS Git uses the readable developer toolchain directly.** The environment
   floor inserts the active developer directory's `usr/bin` before the first

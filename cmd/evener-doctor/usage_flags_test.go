@@ -29,7 +29,11 @@ import (
 // code block. Prose lines in the same comment (the "Common flags:" sentence)
 // are deliberately not matched: they name flags shared by every subcommand
 // rather than flags of one, and have no subcommand to test them against.
-var usageCommentLineRE = regexp.MustCompile(`^//\t(?:evener-doctor) ([a-z][a-z-]*) +(.*)$`)
+//
+// The binary ships as `evener doctor`, so the block uses that name; the retired
+// standalone spelling is still accepted so an older revision of the comment
+// keeps its flags audited rather than silently checking nothing.
+var usageCommentLineRE = regexp.MustCompile(`^//\t(?:evener-doctor|evener doctor) ([a-z][a-z-]*) +(.*)$`)
 
 // usageCommentFlagRE pulls the `--flag` tokens out of one such line.
 var usageCommentFlagRE = regexp.MustCompile(`--([a-z][a-z0-9-]*)`)

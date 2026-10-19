@@ -81,7 +81,7 @@ var (
 	EVENERRunDir                      = Var{Name: "EVENER_RUN_DIR", Summary: "Rendezvous directory passed by evener-hub to spawned daemons.", Visibility: Internal}
 	EVENERScratchDir                  = Var{Name: "EVENER_SCRATCH_DIR", Summary: "Session-scoped private scratch directory provided to agent subprocesses.", Visibility: Internal}
 	EVENERSessionOrigin               = Var{Name: "EVENER_SESSION_ORIGIN", Summary: "Marks a session's launch origin (e.g. \"test\" for agentic-testing runs).", Visibility: Public}
-	EVENERStateDir                    = Var{Name: "EVENER_STATE_DIR", Summary: "Overrides the per-invocation project/session state directory (evener run --state-dir, hub-spawned daemons, evener-doctor); does not override the Evener state root (see XDG_STATE_HOME).", Visibility: Public}
+	EVENERStateDir                    = Var{Name: "EVENER_STATE_DIR", Summary: "Overrides the per-invocation project/session state directory (one-shot `evener --state-dir`, hub-spawned daemons, `evener doctor`); does not override the Evener state root (see XDG_STATE_HOME).", Visibility: Public}
 
 	LLMModel    = Var{Name: "LLM_MODEL", Summary: "Model for llmcall when --model is unset; checked before EVENER_MODEL.", Visibility: Public}
 	LLMProvider = Var{Name: "LLM_PROVIDER", Summary: "Provider for llmcall when --provider is unset; checked before EVENER_PROVIDER.", Visibility: Public}

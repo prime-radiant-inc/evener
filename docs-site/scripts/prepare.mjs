@@ -18,7 +18,10 @@ import GithubSlugger from "github-slugger";
 import { load } from "cheerio";
 
 export const base = "/evener/";
-export const origin = "https://prime-radiant-inc.github.io";
+// GitHub Pages serves this project through the organization's custom domain,
+// so the github.io address redirects here. Absolute links in the Markdown
+// exports and llms.txt name the final host to avoid a redirect per link.
+export const origin = "https://primeradiant.com";
 export const repository = "https://github.com/prime-radiant-inc/evener";
 export const site = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

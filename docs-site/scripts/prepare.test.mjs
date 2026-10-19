@@ -59,7 +59,7 @@ test("publishes only manifest members, rewrites nested links and emits complete 
     ["index.md", "/reference/two.html#repeat-1"],
     [
       "public/markdown/index.md",
-      "https://prime-radiant-inc.github.io/evener/markdown/reference/two.md#repeat-1",
+      "https://primeradiant.com/evener/markdown/reference/two.md#repeat-1",
     ],
   ]) {
     const tree = unified()
@@ -94,8 +94,8 @@ test("publishes only manifest members, rewrites nested links and emits complete 
     urls.push(n.url);
   });
   assert.deepEqual(urls, [
-    "https://prime-radiant-inc.github.io/evener/markdown/index.md",
-    "https://prime-radiant-inc.github.io/evener/markdown/reference/two.md",
+    "https://primeradiant.com/evener/markdown/index.md",
+    "https://primeradiant.com/evener/markdown/reference/two.md",
   ]);
 });
 for (const url of [
@@ -118,7 +118,7 @@ test("supports reference links, images through explicit asset selection, and sam
   f.manifest.assets = ["docs/pic.svg"];
   await prepare(f);
   assert.match(await readFile(path.join(f.out, "index.md"), "utf8"), /!\[image\]\(\/assets\/docs\/pic\.svg\)/);
-  assert.match(await readFile(path.join(f.out, "public/markdown/index.md"), "utf8"), /!\[image\]\(https:\/\/prime-radiant-inc\.github\.io\/evener\/assets\/docs\/pic\.svg\)/);
+  assert.match(await readFile(path.join(f.out, "public/markdown/index.md"), "utf8"), /!\[image\]\(https:\/\/primeradiant\.com\/evener\/assets\/docs\/pic\.svg\)/);
   assert.equal(
     await readFile(path.join(f.out, "public/assets/docs/pic.svg"), "utf8"),
     '<svg xmlns="http://www.w3.org/2000/svg"/>',

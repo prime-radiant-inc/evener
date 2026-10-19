@@ -78,9 +78,53 @@ evener doctor sessions --json
 evener doctor locate SESSION
 evener doctor transcript SESSION --format outline
 evener doctor jobs SESSION
+evener doctor apilog SESSION --summary
 ```
 
 Replace `SESSION` with an ID or full ref from `sessions`. If an ID matches more than one bucket, use its `proj:PROJECT_ID:SESSION_ID` ref. Doctor does not accept `current`. For a narrow transcript window, use `evener doctor transcript SESSION --range last:10`. These records can contain private task content. Keep them local until reviewed. Doctor sees settled on-disk evidence, not a guarantee that a live process has finished flushing its state. The [Doctor selector reference](cli.md#doctor-session-selectors) covers discovery, selector forms, and state roots.
+
+### When the problem is a provider call
+
+`evener doctor apilog` reads the session's provider-attempt log, which the
+transcript does not contain. Use it when a turn failed, stalled, or cost more
+than expected:
+
+```sh
+evener doctor apilog SESSION --summary    # attempts, tokens, latency
+evener doctor apilog SESSION --errors     # failed attempts by class
+evener doctor apilog SESSION --empty      # responses that carried no content
+evener doctor apilog SESSION --cache-spikes --threshold 50000
+evener doctor apilog SESSION --health     # one-line verdict
+evener doctor apilog SESSION --validate   # whole-history integrity scan
+```
+
+API-request logging is off by default, so the log may be empty or absent even
+for a session that failed. The hub's `api_log` setting records it for sessions
+it spawns; the `--api-log on` one-shot option records it for a direct run. Turn
+it on before reproducing the problem, not after.
+
+Where an attempt ended without a usable response, check whether the provider
+reported quota, authentication, or a transport failure. An attempt record is not
+proof that a generation happened: it records what Evener observed, and an
+interrupted stream leaves the provider-side outcome uncertain.
+
+### Other read-only inspections
+
+These subcommands answer narrower questions and are safe to run while the
+session is idle:
+
+| Command | Use it for |
+| --- | --- |
+| `evener doctor tree SESSION` | Parent, delegate, and observer relationships; `--observers` includes observer edges, `--depth N` limits expansion. |
+| `evener doctor watches SESSION` | Watch deliveries and provenance; `--self-loops` shows only watches where the runaway fuse fired. |
+| `evener doctor mutations SESSION` | The client-mutation journal and queue, when a UI action's outcome is unclear. |
+| `evener doctor turnids` | Reserved-turn-id sweep across every session, when a restore keeps failing. |
+| `evener doctor plugins` | Plugin-store health. Takes no session selector. |
+
+`evener doctor reconstruct` stages a lost transcript from an archive and
+surviving metadata without changing live state; it is a recovery tool for a
+damaged or missing transcript, not a general repair. Read its output before
+copying anything back into the state root.
 
 When an interface disconnects, reconnect to the same session before creating another. Compare the transcript, job status, filesystem changes, and any external service outcome. A shell exit code reports that command's result; it does not by itself prove or disprove the larger task. Follow [Daily work](daily-work.md) to review the result.
 

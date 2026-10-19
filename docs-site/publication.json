@@ -173,6 +173,12 @@
       "path": "job-control.md",
       "title": "Job control",
       "group": "Operate and troubleshoot"
+    },
+    {
+      "source": "UPGRADING.md",
+      "path": "upgrading.md",
+      "title": "Upgrading",
+      "group": "Operate and troubleshoot"
     }
   ],
   "assets": [

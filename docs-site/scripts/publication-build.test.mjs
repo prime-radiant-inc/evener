@@ -109,8 +109,8 @@ test("production VitePress config publishes exports and links from a space and U
   visit(unified().use(parse).parse(await readFile(path.join(dist, "markdown/index.md"), "utf8")), node => {
     if (node.type === "image" || node.type === "link") urls.push(node.url);
   });
-  assert.ok(urls.includes(`https://prime-radiant-inc.github.io/evener/assets/${imagePath}`));
-  assert.ok(urls.includes(`https://prime-radiant-inc.github.io/evener/assets/${textPath}`));
+  assert.ok(urls.includes(`https://primeradiant.com/evener/assets/${imagePath}`));
+  assert.ok(urls.includes(`https://primeradiant.com/evener/assets/${textPath}`));
   const hash = bytes => createHash("sha256").update(bytes).digest("hex");
   for (const [file, bytes] of [[imagePath, image], [textPath, text]]) {
     assert.equal(hash(await readFile(path.join(dist, "assets", file))), hash(bytes));
