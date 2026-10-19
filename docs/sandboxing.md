@@ -115,7 +115,7 @@ indirection even when the session's workspace sandbox is off.
 
 A root session's read-only role can write its authorized memory without
 workspace writes. A delegate only reads and searches memory, whatever its role;
-see [memory](product/memory.md). Memory permissions do not grant shell or
+see [memory](memory.md). Memory permissions do not grant shell or
 network access. Fresh and restored delegates retain their parent's effective
 memory tool/scope ceilings. Memory
 tool names do not count as workspace-mutation tools for the delegate safety
@@ -125,7 +125,7 @@ floor described above.
 I/O for that session, persistently through resume and compaction. It is not a
 general filesystem ban: an unrestricted shell or file tool keeps whatever
 access it already had. Stored files and earlier conversation remain. See
-[memory ownership and lifetime](product/memory.md).
+[memory](memory.md) for what memory is and what it is not.
 
 ## Flags
 
