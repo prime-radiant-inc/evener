@@ -40,7 +40,9 @@ const LIVING_IN_ARCHIVE = new Set([
 // and agent prompt testdata are deliberately outside this list: their links are
 // data, not references a reader follows. Component and SDK READMEs are included
 // because they are references readers follow, even when a directory around them
-// holds fixtures or generated samples.
+// holds fixtures or generated samples. Note that docs-site/ is walked whole, so
+// its fixtures are checked; they are small, and a broken link there is still a
+// broken link.
 const DOC_ROOTS = ["README.md", "AGENTS.md", "ABOUT.md", "UPGRADING.md"];
 const DOC_TREES = [
   "docs/",

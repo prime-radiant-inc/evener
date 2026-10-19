@@ -161,9 +161,16 @@ test("decodes an HTML entity in an attribute", async (t) => {
   await checkDocLinks({ root });
 });
 
-test("rejects a single-quoted and an unquoted HTML link", async (t) => {
+test("rejects a single-quoted HTML anchor", async (t) => {
   const root = await fixture(t, {
-    "docs/page.md": "# Page\n\n<a href='missing.md'>x</a>\n<img src=missing.png>\n",
+    "docs/page.md": "# Page\n\n<a href='missing.md'>x</a>\n",
   });
   await assert.rejects(checkDocLinks({ root }), /missing target missing\.md/);
+});
+
+test("rejects an unquoted HTML image source", async (t) => {
+  const root = await fixture(t, {
+    "docs/page.md": "# Page\n\n<img src=missing.png>\n",
+  });
+  await assert.rejects(checkDocLinks({ root }), /missing target missing\.png/);
 });
