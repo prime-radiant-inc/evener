@@ -6,9 +6,10 @@
 // its controls through modelHosts.
 import { type ModelDescriptor, sessionEffortLevels } from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useEffect, useState } from "react";
-import { Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { type SectionList, Text, View } from "react-native";
 import { ChoiceRow, ModelPicker } from "../ModelPicker";
+import type { ModelPickerEntry, ModelSection } from "../modelPickerEntries";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
 import { type SessionControls, useControlsState } from "../sessionControls";
@@ -62,6 +63,7 @@ function ModelSheetBody({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const list = useRef<SectionList<ModelPickerEntry, ModelSection>>(null);
 	const { session, controls, ready } = host;
 	const state = useControlsState(controls);
 	// The screen loads the catalog when it opens; a sheet opened before that
@@ -76,9 +78,17 @@ function ModelSheetBody({
 	const current = vision ? session.visionModel : session.modelProvider;
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
 	const error = state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
+	const revealError = () => {
+		// Each refusal reveals the first header row, even when it repeats the
+		// previous message after the user has scrolled away to try again.
+		if (controls?.getSnapshot().error) list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
+	};
 	const closeOn = (change: Promise<boolean>, then?: () => void) =>
 		void change.then((changed) => {
-			if (!changed) return;
+			if (!changed) {
+				revealError();
+				return;
+			}
 			finish();
 			then?.();
 		});
@@ -96,14 +106,6 @@ function ModelSheetBody({
 	};
 	const settings = (
 		<View style={{ paddingHorizontal: 16, paddingBottom: 8, gap: 8 }}>
-			{levels.length > 0 ? (
-				<Effort
-					levels={levels}
-					current={session.reasoningEffort ?? ""}
-					disabled={busy}
-					choose={(level) => void controls?.setReasoningEffort(level)}
-				/>
-			) : null}
 			{error ? (
 				<Text
 					accessibilityRole="alert"
@@ -112,6 +114,14 @@ function ModelSheetBody({
 				>
 					{error}
 				</Text>
+			) : null}
+			{levels.length > 0 ? (
+				<Effort
+					levels={levels}
+					current={session.reasoningEffort ?? ""}
+					disabled={busy}
+					choose={(level) => void controls?.setReasoningEffort(level).then(revealError)}
+				/>
 			) : null}
 		</View>
 	);
@@ -126,6 +136,7 @@ function ModelSheetBody({
 			}
 		>
 			<ModelPicker
+				ref={list}
 				catalog={state?.catalog ?? null}
 				loading={state?.loadingModels ?? true}
 				query={query}

@@ -4,13 +4,14 @@
 // controls and notices belong here, while search stays in the sheet header.
 import type { ModelDescriptor, ModelListResponse } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, type Ref, useState } from "react";
 import { Pressable, SectionList, Text, View } from "react-native";
 import { scaledType, uiType } from "./design/tokens";
 import { type ModelPickerEntry, type ModelSection, modelSections } from "./modelPickerEntries";
 import { allowFontScaling, useColors, useTextScale } from "./ui";
 
 export function ModelPicker({
+	ref,
 	catalog,
 	loading,
 	query,
@@ -21,6 +22,7 @@ export function ModelPicker({
 	header,
 	capabilities = false,
 }: {
+	ref?: Ref<SectionList<ModelPickerEntry, ModelSection>>;
 	catalog: ModelListResponse | null;
 	loading: boolean;
 	query: string;
@@ -37,6 +39,7 @@ export function ModelPicker({
 	const sections: ModelSection[] = catalog ? modelSections(catalog, query, visionOnly) : [];
 	return (
 		<SectionList
+			ref={ref}
 			sections={sections}
 			keyboardShouldPersistTaps="handled"
 			keyboardDismissMode="on-drag"
