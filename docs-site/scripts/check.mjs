@@ -37,9 +37,23 @@ const LIVING_IN_ARCHIVE = new Set([
 
 // Roots whose Markdown is maintained documentation. Test fixtures, eval seeds,
 // and agent prompt testdata are deliberately outside this list: their links are
-// data, not references a reader follows.
+// data, not references a reader follows. Component and SDK READMEs are included
+// because they are references readers follow, even when a directory around them
+// holds fixtures or generated samples.
 const DOC_ROOTS = ["README.md", "AGENTS.md", "ABOUT.md", "UPGRADING.md"];
-const DOC_DIRS = ["docs/", "cmd/", "mobile-native/", "docs-site/", "test/scenarios/", "internal/bundled/skills/"];
+const DOC_DIRS = [
+  "docs/",
+  "cmd/",
+  "mobile-native/",
+  "docs-site/",
+  "test/scenarios/",
+  "internal/bundled/skills/",
+  "appwire-client/typescript/",
+  "execsupport/",
+  "llm/",
+  "tools/prompt-eval/README.md",
+  "tools/prompt-eval/memory-lab/README.md",
+];
 
 // Generated and installed trees are not sources: `.generated` is restaged from
 // docs/ by the publisher, and node_modules is a package install.
@@ -47,7 +61,13 @@ const SKIP = new Set([".git", "node_modules", ".generated", ".vitepress"]);
 
 function maintained(file) {
   if (file.split("/").some((part) => SKIP.has(part))) return false;
-  if (!DOC_ROOTS.some((name) => file === name) && !DOC_DIRS.some((prefix) => file.startsWith(prefix))) return false;
+  if (file.startsWith("docs/") && file.endsWith("/README.md")) {
+    // An archive's own README is a current index even when the dated records
+    // around it are not.
+    return true;
+  }
+  if (!DOC_ROOTS.some((name) => file === name) && !DOC_DIRS.some((prefix) => file.startsWith(prefix)))
+    return false;
   if (LIVING_IN_ARCHIVE.has(file)) return true;
   if (!file.startsWith("docs/")) return true;
   return !ARCHIVE.some((prefix) => file.startsWith(prefix));
@@ -55,10 +75,19 @@ function maintained(file) {
 
 async function markdownFiles(root) {
   const found = new Set();
+  const rootReal = await realpath(root);
+  // A source file or directory that resolves outside the repository is refused
+  // rather than read: a symlinked README must not make the checker parse a file
+  // it was never given.
+  async function inside(path) {
+    const resolved = await realpath(join(root, path)).catch(() => null);
+    return resolved !== null && (resolved === rootReal || resolved.startsWith(rootReal + sep)) ? resolved : null;
+  }
   for (const name of DOC_ROOTS) {
-    if ((await stat(join(root, name)).catch(() => null))?.isFile()) found.add(name);
+    if ((await inside(name)) && (await stat(join(root, name)).catch(() => null))?.isFile()) found.add(name);
   }
   async function walk(dir) {
+    if (!(await inside(dir))) return;
     let entries;
     try {
       entries = await readdir(join(root, dir), { withFileTypes: true });
@@ -70,7 +99,7 @@ async function markdownFiles(root) {
       if (entry.isDirectory()) {
         if (!SKIP.has(entry.name)) await walk(path);
       }
-      else if (entry.name.endsWith(".md")) found.add(path);
+      else if (entry.name.endsWith(".md") && (await inside(path))) found.add(path);
     }
   }
   for (const dir of DOC_DIRS) await walk(dir.replace(/\/$/, ""));
@@ -84,6 +113,11 @@ function localLinks(tree) {
   const links = [];
   visit(tree, (node) => {
     if (node.type === "link" || node.type === "image" || node.type === "definition") links.push(node.url);
+    // Raw HTML links are not Markdown and the publisher refuses their component
+    // forms; a repository page that uses one is checked too rather than skipped.
+    if (node.type === "html") {
+      for (const match of node.value.matchAll(/<(?:a|img)\b[^>]*?\b(?:href|src)="([^"]+)"/gi)) links.push(match[1]);
+    }
   });
   return links.filter((url) => url && !/^(https?:|mailto:|tel:|file:)/i.test(url) && !url.startsWith("//"));
 }
@@ -172,6 +206,12 @@ export async function checkDocLinks({ root = repositoryRoot } = {}) {
         if (first < 1 || last < first || last > lineCount) {
           problems.push(`${file}: line range ${fragment} outside ${relativeTarget} (${lineCount} lines)`);
         }
+        continue;
+      }
+      // A fragment on a directory target would need the rendered README;
+      // report it rather than letting it pass unchecked.
+      if (found.kind === "directory") {
+        problems.push(`${file}: fragment on directory target ${url}`);
         continue;
       }
       if (found.kind !== "file" || !relativeTarget.endsWith(".md")) continue;

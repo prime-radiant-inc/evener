@@ -120,3 +120,21 @@ test("checks a living document inside an archive directory", async (t) => {
   });
   await assert.rejects(checkDocLinks({ root }), /ios-build-distribution\.md: missing target/);
 });
+
+test("checks an archive directory's own README index", async (t) => {
+  const root = await fixture(t, {
+    "docs/design/README.md": "# Design records\n\n[gone](missing.md)\n",
+  });
+  await assert.rejects(checkDocLinks({ root }), /docs\/design\/README\.md: missing target/);
+});
+
+test("refuses to read a source file that resolves outside the repository", async (t) => {
+  const outside = await mkdtemp(join(os.tmpdir(), "outside-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  await writeFile(join(outside, "external.md"), "# Outside\n\n[gone](missing.md)\n");
+  const root = await fixture(t, { "docs/page.md": "# Page\n" });
+  await symlink(join(outside, "external.md"), join(root, "README.md"));
+  // The external file's broken link must never be reported: the file itself is
+  // outside the repository and is skipped rather than parsed.
+  await checkDocLinks({ root });
+});

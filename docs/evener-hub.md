@@ -176,9 +176,11 @@ Write every duration as a TOML string, such as `"30s"` or `"1h"`. A bare integer
 is read by TOML as a nanosecond count, so `spawn_timeout = 30` arms 30ns rather
 than 30 seconds. Some duration fields refuse that form outright
 (`daemon_idle_timeout`, `host_probe_timeout`, and the host receipt and operation
-TTLs) and negative values are rejected where the field cannot use one, but the
-loader does not validate every duration field the same way. Assume a typo can
-take effect and check the resolved value rather than trusting a silent load.
+TTLs). Negative handling then differs by field: a negative
+`daemon_idle_timeout` is rejected, some fields fall back to their default, and
+others keep the negative value. The loader does not validate every duration
+field the same way, so assume a typo can take effect and check the resolved
+value rather than trusting a silent load.
 
 Host receipt and operation retention rows are documented beside the host
 registry in the [subsystem map](product/subsystems.md) rather than here.
