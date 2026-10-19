@@ -4,6 +4,7 @@
 // Jobs list. Both read the same tree, so each names its own rows and counts.
 import { useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import type { SessionActivityCounts, SessionActivitySummary } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { FlatList, Pressable, Text, useWindowDimensions, View } from "react-native";
@@ -16,13 +17,18 @@ import type { Routes } from "../screens";
 import { SearchField } from "../sheet/SearchField";
 import { Toast, useToast } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
-import { type ActivityFilter, type ActivityListItem, activityListItems, activityListKey } from "./activityList";
+import {
+	type ActivityFilter,
+	type ActivityKind,
+	type ActivityListItem,
+	activityListItems,
+	activityListKey,
+} from "./activityList";
 import {
 	flattenActivity,
 	SEARCH_AFTER,
 	type ShellJobRow,
 	type SubagentRow,
-	isJobRow,
 	isSubagentRow,
 	sameModel,
 	subagentQuietWake,
@@ -39,25 +45,39 @@ import { haptic } from "../haptics";
 
 /** Why the list shows words instead of rows: nothing to list yet, a read
  * that failed, a session that can't list, or one that's shut down. */
-const NOTICE_WORDS = {
+type Notice = keyof typeof KINDS.agents.notices;
+
+/** Everything that differs between the two lists, in one place: its name, the
+ * summary counts it reads, and what it says instead of rows. */
+const KINDS: Record<
+	ActivityKind,
+	{
+		noun: string;
+		counts: (summary: SessionActivitySummary | null) => SessionActivityCounts | undefined;
+		notices: Record<"empty" | "failed" | "unsupported" | "ended", string>;
+	}
+> = {
 	agents: {
-		empty: "No subagents yet.",
-		failed: "The subagents couldn't be listed right now.",
-		unsupported: "This session can't list its subagents.",
-		ended: "This session is shut down, so its subagents can't be listed.",
+		noun: "Agents",
+		counts: (summary) => summary?.delegates,
+		notices: {
+			empty: "No subagents yet.",
+			failed: "The subagents couldn't be listed right now.",
+			unsupported: "This session can't list its subagents.",
+			ended: "This session is shut down, so its subagents can't be listed.",
+		},
 	},
 	jobs: {
-		empty: "No shell jobs yet.",
-		failed: "The shell jobs couldn't be listed right now.",
-		unsupported: "This session can't list its shell jobs.",
-		ended: "This session is shut down, so its shell jobs can't be listed.",
+		noun: "Jobs",
+		counts: (summary) => summary?.jobs,
+		notices: {
+			empty: "No shell jobs yet.",
+			failed: "The shell jobs couldn't be listed right now.",
+			unsupported: "This session can't list its shell jobs.",
+			ended: "This session is shut down, so its shell jobs can't be listed.",
+		},
 	},
-} as const;
-
-/** Which kind of activity a screen lists. */
-export type ActivityKind = "agents" | "jobs";
-
-const KIND_WORDS: Record<ActivityKind, string> = { agents: "Agents", jobs: "Jobs" };
+};
 
 export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Routes, "Activity">) {
 	const { hubId, ref, threadId, title, kind } = route.params;
@@ -67,21 +87,27 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	const { tree, snapshot } = useFollowedSubagentTree(hubId, ref, threadId);
 
 	const activity = useMemo(() => (snapshot.tree ? flattenActivity(snapshot.tree, title) : []), [snapshot.tree, title]);
-	// One kind per screen: the Agents list holds only subagents, the Jobs list
-	// only shell jobs. The tree is shared, so a job still names the subagent
-	// that ran it from the delegates the tree has loaded.
-	const agents = useMemo(() => activity.filter(isSubagentRow), [activity]);
-	const jobs = useMemo(() => activity.filter(isJobRow), [activity]);
-	const rows = kind === "agents" ? agents : jobs;
-	// The strip and the chips count this screen's kind alone.
-	const tally = summaryTally(kind === "agents" ? snapshot.summary?.delegates : snapshot.summary?.jobs);
+	// One pass over the tree's rows splits them by kind. Each list shows one
+	// kind; the Jobs list also keeps the subagent rows, so a branch whose job
+	// couldn't be read is named by the subagent that owned it.
+	const { rows, subagents } = useMemo(() => {
+		const delegates: SubagentRow[] = [];
+		const shellJobs: ShellJobRow[] = [];
+		for (const row of activity) {
+			if (isSubagentRow(row)) delegates.push(row);
+			else shellJobs.push(row);
+		}
+		return { rows: kind === "agents" ? delegates : shellJobs, subagents: delegates };
+	}, [activity, kind]);
+	const spec = KINDS[kind];
+	const tally = summaryTally(spec.counts(snapshot.summary));
 	// Taken when the tree changes, so the list runs no clock (ruling 7); it
 	// moves on only when a running subagent's silence crosses the quiet
 	// threshold, dimming its dot.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot is what moves the clock
 	const treeTime = useMemo(() => Date.now(), [snapshot]);
 	const now = useNowPastQuiet(treeTime, (at) =>
-		kind === "agents" ? agents.map((row) => subagentQuietWake(row, at)) : [],
+		kind === "agents" ? subagents.map((row) => subagentQuietWake(row, at)) : [],
 	);
 
 	const [filter, setFilter] = useState<ActivityFilter>("all");
@@ -100,9 +126,11 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 				completedJobsOpen,
 				missing: snapshot.missing,
 				coordinator: { ref: coordinatorRef, title },
-				titles: activity,
+				// The Agents list already is the subagent rows; Jobs needs them
+				// only to name a branch whose job couldn't be read.
+				...(kind === "jobs" ? { subagents } : {}),
 			}),
-		[rows, activity, filter, query, doneOpen, completedJobsOpen, snapshot.missing, coordinatorRef, title],
+		[rows, subagents, kind, filter, query, doneOpen, completedJobsOpen, snapshot.missing, coordinatorRef, title],
 	);
 
 	// The stops you asked for, on their rows, and settled against each new
@@ -121,26 +149,23 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 		if (!focused || boundary?.tree !== tree || boundary.keys !== boundaryKeys) return;
 		// A closed fold can consume a page without changing the native list's
 		// height. Keep its observed edge demand, not a view-owned retry loop.
-		// Agents names only subagents; Jobs also advances the delegate pages a
-		// job's owner comes from.
-		const pages =
-			kind === "agents"
-				? ([["delegates", delegatePage]] as const)
-				: ([
-						["jobs", jobPage],
-						["delegates", delegatePage],
-					] as const);
-		for (const [resource, page] of pages) {
+		// Jobs advances the delegate pages too, since that is where a job's
+		// owner comes from.
+		for (const [resource, page] of [
+			["jobs", jobPage],
+			["delegates", delegatePage],
+		] as const) {
+			if (kind === "agents" && resource === "jobs") continue;
 			if (page?.hasMore && !page.loading && !page.error && !page.permanent) void tree.loadMore(resource);
 		}
 	}, [focused, boundary, boundaryKeys, tree, kind, delegatePage, jobPage]);
 	const toast = useToast();
 	const showToast = toast.show;
 	useEffect(() => {
-		if (!focused || agents.length === 0) return;
-		for (const stopped of requests.reconcile(ref, agents)) showToast({ text: `“${stopped.title}” stopped` });
+		if (!focused || subagents.length === 0) return;
+		for (const stopped of requests.reconcile(ref, subagents)) showToast({ text: `“${stopped.title}” stopped` });
 		// A request recorded after the tree already shows the stop settles too.
-	}, [focused, agents, requests, ref, showToast, stopRevision]);
+	}, [focused, subagents, requests, ref, showToast, stopRevision]);
 	const noteFor = useCallback(
 		(row: SubagentRow): SubagentNote | undefined => {
 			const view = requests.view(row);
@@ -155,7 +180,8 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 		[requests, stopRevision],
 	);
 
-	const modelName = useModelNames(hubId);
+	// Only a subagent row shows a model name; the Jobs screen reads no catalog.
+	const modelName = useModelNames(kind === "agents" ? hubId : null);
 	// A subagent's screen is its own session (ruling 30), over this list.
 	const openRow = useCallback(
 		(row: SubagentRow) =>
@@ -190,7 +216,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 		paddingHorizontal: 16,
 		paddingTop: 16,
 	};
-	const notice = snapshot.tree
+	const notice: Notice | null = snapshot.tree
 		? rows.length === 0 && !snapshot.partial && snapshot.missing.length === 0
 			? "empty"
 			: null
@@ -245,8 +271,8 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 				{tally ? (
 					<SubagentStrip tally={tally} width={width - 32} />
 				) : (
-					<Text accessibilityLabel={`${KIND_WORDS[kind]} counts unknown`} style={{ color: palette.inkMid }}>
-						{`${KIND_WORDS[kind]} …`}
+					<Text accessibilityLabel={`${spec.noun} counts unknown`} style={{ color: palette.inkMid }}>
+						{`${spec.noun} …`}
 					</Text>
 				)}
 			</View>
@@ -285,12 +311,12 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 			{/* Kept while it has words, so a list that shrinks never stays filtered with no way to clear it. */}
 			{(tally?.total ?? rows.length) > SEARCH_AFTER || query !== "" ? (
 				<View style={{ marginHorizontal: space.margin }}>
-					<SearchField label={`Filter ${KIND_WORDS[kind].toLowerCase()}`} value={query} onChangeText={setQuery} />
+					<SearchField label={`Filter ${spec.noun.toLowerCase()}`} value={query} onChangeText={setQuery} />
 				</View>
 			) : null}
 			{notice ? (
 				<Text testID={`activity-notice:${notice}`} allowFontScaling={allowFontScaling} style={quiet}>
-					{NOTICE_WORDS[kind][notice]}
+					{spec.notices[notice]}
 				</Text>
 			) : null}
 			{!snapshot.tree && !notice ? <Skeleton /> : null}
@@ -326,9 +352,9 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 }
 
 /** Display names from the hub's model catalog, read once while connected. */
-function useModelNames(hubId: string): (model: string) => string {
+function useModelNames(hubId: string | null): (model: string) => string {
 	const { client, state, activeProfile } = useConnection();
-	const connected = state === "ready" && activeProfile?.id === hubId;
+	const connected = hubId !== null && state === "ready" && activeProfile?.id === hubId;
 	const models = useMemo(() => new HubModels(connected ? client : null), [connected, client]);
 	useEffect(() => {
 		void models.refresh();
@@ -351,7 +377,7 @@ function HeaderTitle({ count, kind, title }: { count: string; kind: ActivityKind
 				numberOfLines={1}
 				style={{ color: palette.inkHi, fontSize: 15 * scale, lineHeight: 20 * scale, fontWeight: "600" }}
 			>
-				{`${KIND_WORDS[kind]} · ${count}`}
+				{`${KINDS[kind].noun} · ${count}`}
 			</Text>
 			<Text
 				allowFontScaling={allowFontScaling}

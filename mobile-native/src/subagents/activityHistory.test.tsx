@@ -24,7 +24,8 @@ import { type ActivityListItem, activityListKey } from "./activityList";
 import { forgetStopRequestsForHub } from "./nativeStopRequests";
 import { flattenSubagents } from "./subagentModel";
 import { forgetSubagentTrees, subagentTree, type SubagentTreeSnapshot } from "./subagentTree";
-import { ActivityScreen, type ActivityKind } from "./ActivityScreen";
+import { ActivityScreen } from "./ActivityScreen";
+import type { ActivityKind } from "./activityList";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,

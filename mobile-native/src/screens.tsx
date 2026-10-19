@@ -208,7 +208,7 @@ import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
-import type { ActivityKind } from "./subagents/ActivityScreen";
+import type { ActivityKind } from "./subagents/activityList";
 import { liveClientFor } from "./liveClient";
 import { type SubagentRow, timeInState } from "./subagents/subagentModel";
 import { useHeldSubagentTree } from "./subagents/useHeldSubagentTree";

@@ -26,7 +26,8 @@ import { Toast } from "../Toast";
 import { forgetStopRequestsForHub, stopRequests } from "./nativeStopRequests";
 import { flattenSubagents } from "./subagentModel";
 import { forgetSubagentTrees } from "./subagentTree";
-import { ActivityScreen, type ActivityKind } from "./ActivityScreen";
+import { ActivityScreen } from "./ActivityScreen";
+import type { ActivityKind } from "./activityList";
 import { paletteFor } from "../design/tokens";
 import { stopOffer } from "./stopOffer";
 
