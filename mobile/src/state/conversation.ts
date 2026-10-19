@@ -1390,6 +1390,28 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		});
 	}
 
+	// One frame about the open thread, routed to BOTH stores: the activity sink
+	// first (its outcome decides whether one shared reread is owed), then the
+	// conversation store's own fold. Every live handler goes through here, so
+	// the two cannot drift about which notifications reach which store.
+	function routeLiveFrame(
+		notification: AnyNotification,
+		sink: LiveActivitySink,
+		ref: string,
+		generation: number,
+	): void {
+		const conversation = storeGet?.().conversation;
+		if (conversation !== null && conversation !== undefined) {
+			const outcome = sink.applyLiveNotification(notification, {
+				threadId: conversation.threadId,
+				ref,
+				generation,
+			});
+			if (outcome === "rehydrate") requestRehydrate(ref);
+		}
+		storeGet?.().applyNotification(notification);
+	}
+
 	// Returns the current draft revision — passed to handleMutationError so it
 	// can detect post-clear edits (type-then-delete) without exposing the
 	// revision in public state.
@@ -1888,19 +1910,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					});
 					liveHandler = (n) => {
 						if (gen !== conversationGen) return;
-						// Route notifications to BOTH stores — conversation and activity.
-						// Propagate every returned outcome; rehydrate requests the one shared
-						// drain scheduler. Notification-first, identity-second.
-						const outcome = sink.applyLiveNotification(n, identity);
-						if (outcome === "rehydrate") {
-							requestRehydrate(ref);
-						}
-						// Also process the conversation store's own notification handler.
-						// Only call the conversation's applyNotification if the activity
-						// sink did not say "ignored" (ignored means the activity store
-						// rejected it on identity grounds — but conversation still needs
-						// its own processing for conversation-specific notifications).
-						get().applyNotification(n);
+						routeLiveFrame(n, sink, ref, gen);
 					};
 				} catch (err) {
 					if (gen !== conversationGen) return;
@@ -1939,15 +1949,11 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
 			async resumeProjected(service, sink, ref) {
 				const state = get();
-				// A reconnect, or the app returning to the front, rebuilds the
-				// connection client, so the screen resumes this same session through
-				// a NEW service object. The display is still the one the reader was
-				// looking at: retain it and let the read merge into it, rather than
-				// reopening (which clears the conversation and blanks the transcript
-				// until the fresh read lands). A different thread identity still
-				// replaces the history — the read's own identity states do that in
-				// rehydrate (a new incarnation or instance replaces wholesale), so
-				// nothing here has to guess before the read answers.
+				// A rebuilt client (reconnect, app foreground) resumes the same ref
+				// with a new service object. This store lives for one hub and ref, so
+				// that pair is the session here: keep the display and let the read
+				// merge. A read from another instance replaces the history in
+				// rehydrate, which owns that decision.
 				if (state.ref !== ref || state.conversation === null) {
 					await get().openProjected(service, sink, ref);
 					return;
@@ -1969,28 +1975,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				});
 
 				let active = true;
-				// The retained conversation is on screen while this read runs, so a
-				// frame that lands during it has a model to fold into — the same
-				// path every later reread takes (rehydrate merges the read against
-				// whatever the frames built, and a snapshot older than them is
-				// discarded by the package's own identity rules). Installing the
-				// handler only at commit drops those frames instead. A rebuilt
-				// client's first read subscribes, so its own response cut folds the
-				// frames before it in as well; applying one of those early is a
-				// no-op, while a same-service resume's refresh sends no subscription
-				// and would otherwise lose every frame that races it.
-				const liveHandler = (notification: AnyNotification) => {
-					const conversation = get().conversation;
-					if (conversation) {
-						const outcome = sink.applyLiveNotification(notification, {
-							threadId: conversation.threadId,
-							ref,
-							generation: gen,
-						});
-						if (outcome === "rehydrate") requestRehydrate(ref);
-					}
-					get().applyNotification(notification);
-				};
+				// Install the handler before the read: the retained conversation is
+				// on screen, so a frame during the read folds into it and rehydrate
+				// merges the read against the result.
+				const liveHandler = (notification: AnyNotification) => routeLiveFrame(notification, sink, ref, gen);
 				const unsubscribe = service.subscribeNotifications((notification) => {
 					if (!active || gen !== conversationGen) return;
 					liveHandler(notification);
