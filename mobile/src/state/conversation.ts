@@ -51,7 +51,11 @@ import type {
 	MutationPersistenceSnapshot,
 	PendingTurnEntry,
 } from "@evener/appwire-client/state/mutation";
-import { ownPendingSend, reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
+import {
+	appliedMutationIdentities,
+	ownPendingSend,
+	reconcilePendingEntries,
+} from "@evener/appwire-client/state/mutation";
 import { create } from "zustand";
 import type {
 	ActivityMember,
@@ -1302,7 +1306,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	// without holding its own service reference.
 	let boundService: LiveConversationService | null = null;
 	let boundSink: LiveActivitySink | null = null;
-	let suspendedService: LiveConversationService | null = null;
 	let acceptedRehydrate: { generation: number; sink: LiveActivitySink } | null = null;
 	// I1: Binding epoch — incremented on every openProjected/open/close/reset so
 	// a request queued for an older binding (serviceA+refA) can never run after
@@ -1378,13 +1381,51 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		const binding = captureBinding();
 		const service = boundService;
 		const sink = boundSink;
-		if (binding === null || service === null || sink === null) return;
+		if (binding === null) {
+			// A resume that is still opening can still receive a frame that needs
+			// the canonical read (a newer-epoch resync invalidates the retained
+			// history). Its binding is not schedulable yet, but the need is real:
+			// remember it and drain it when the resume settles, or the store opens
+			// on invalidated history with nothing scheduled to repair it.
+			const current = storeGet?.();
+			if (current !== undefined && current.ref === ref && current.status === "opening") {
+				deferredRereadRef = ref;
+			}
+			return;
+		}
+		if (service === null || sink === null) return;
 		scheduler.request(ref, async () => {
 			// I1: Suppress stale work BEFORE any read — if the binding changed,
 			// do not call rehydrate (serviceA must never be called with refB).
 			if (!isBindingCurrent(binding)) return;
 			await storeGet?.().rehydrate(service, sink);
 		});
+	}
+
+	// The ref whose reread was requested while a resume was opening. Drained
+	// exactly once, when that resume commits.
+	let deferredRereadRef: string | null = null;
+
+	// One frame about the open thread, routed to BOTH stores: the activity sink
+	// first (its outcome decides whether one shared reread is owed), then the
+	// conversation store's own fold. Every live handler goes through here, so
+	// the two cannot drift about which notifications reach which store.
+	function routeLiveFrame(
+		notification: AnyNotification,
+		sink: LiveActivitySink,
+		ref: string,
+		generation: number,
+	): void {
+		const conversation = storeGet?.().conversation;
+		if (conversation !== null && conversation !== undefined) {
+			const outcome = sink.applyLiveNotification(notification, {
+				threadId: conversation.threadId,
+				ref,
+				generation,
+			});
+			if (outcome === "rehydrate") requestRehydrate(ref);
+		}
+		storeGet?.().applyNotification(notification);
 	}
 
 	// Returns the current draft revision — passed to handleMutationError so it
@@ -1740,7 +1781,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			},
 
 			async open(service, ref) {
-				suspendedService = null;
 				// Any thread open retires the bound seam: the port is scoped by the
 				// durable target key (hub + ref) and the store cannot see the hub, so a
 				// same-ref open through a different hub must not inherit the prior
@@ -1812,7 +1852,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			},
 
 			async openProjected(service, sink, ref, replacement) {
-				suspendedService = null;
 				// Same rule as open(): any thread open retires the prior seam and its
 				// rows (the durable target key is hub + ref, and the store cannot see
 				// the hub), and the host rebinds for the conversation it opens. The
@@ -1887,19 +1926,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					});
 					liveHandler = (n) => {
 						if (gen !== conversationGen) return;
-						// Route notifications to BOTH stores — conversation and activity.
-						// Propagate every returned outcome; rehydrate requests the one shared
-						// drain scheduler. Notification-first, identity-second.
-						const outcome = sink.applyLiveNotification(n, identity);
-						if (outcome === "rehydrate") {
-							requestRehydrate(ref);
-						}
-						// Also process the conversation store's own notification handler.
-						// Only call the conversation's applyNotification if the activity
-						// sink did not say "ignored" (ignored means the activity store
-						// rejected it on identity grounds — but conversation still needs
-						// its own processing for conversation-specific notifications).
-						get().applyNotification(n);
+						routeLiveFrame(n, sink, ref, gen);
 					};
 				} catch (err) {
 					if (gen !== conversationGen) return;
@@ -1920,7 +1947,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			suspendProjected() {
 				const state = get();
 				if (state.ref === null) return;
-				suspendedService = boundService;
 				conversationGen += 1;
 				bindingEpoch += 1;
 				loadOlderToken += 1;
@@ -1939,7 +1965,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 
 			async resumeProjected(service, sink, ref) {
 				const state = get();
-				if (state.ref !== ref || state.conversation === null || suspendedService !== service) {
+				// A rebuilt client (reconnect, app foreground) resumes the same ref
+				// with a new service object. This store lives for one hub and ref, so
+				// that pair is the session here: keep the display and let the read
+				// merge. A read from another instance replaces the history in
+				// rehydrate, which owns that decision.
+				if (state.ref !== ref || state.conversation === null) {
 					await get().openProjected(service, sink, ref);
 					return;
 				}
@@ -1960,13 +1991,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				});
 
 				let active = true;
-				// As in openProjected: no handler until the snapshot has committed (a
-				// frame before the response is already in it — the response-cut note
-				// by applyThreadNotification).
-				let liveHandler: ((notification: AnyNotification) => void) | null = null;
+				// Install the handler before the read: the retained conversation is
+				// on screen, so a frame during the read folds into it and rehydrate
+				// merges the read against the result.
+				const liveHandler = (notification: AnyNotification) => routeLiveFrame(notification, sink, ref, gen);
 				const unsubscribe = service.subscribeNotifications((notification) => {
 					if (!active || gen !== conversationGen) return;
-					liveHandler?.(notification);
+					liveHandler(notification);
 				});
 				try {
 					await get().rehydrate(service, sink);
@@ -1980,27 +2011,19 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					) {
 						boundService = null;
 						boundSink = null;
-						suspendedService = service;
 						set({
 							status: "error",
 							error: current.error ?? "Could not load the session. Try again.",
 						});
 						return;
 					}
-					suspendedService = null;
 					set({ status: "open" });
-					liveHandler = (notification) => {
-						const conversation = get().conversation;
-						if (conversation) {
-							const outcome = sink.applyLiveNotification(notification, {
-								threadId: conversation.threadId,
-								ref,
-								generation: gen,
-							});
-							if (outcome === "rehydrate") requestRehydrate(ref);
-						}
-						get().applyNotification(notification);
-					};
+					// A frame that asked for the canonical read while this resume was
+					// opening could not schedule one; drain that need now.
+					if (deferredRereadRef === ref) {
+						deferredRereadRef = null;
+						requestRehydrate(ref);
+					}
 				} finally {
 					if (gen !== conversationGen || get().status === "error") {
 						active = false;
@@ -3029,7 +3052,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			},
 
 			close() {
-				suspendedService = null;
 				// Increment generation so late frames from the closed conversation
 				// cannot repopulate the store.
 				++conversationGen;
@@ -3075,6 +3097,19 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// when it carries one, else by threadId; a frame naming neither is
 				// not about this thread. Silently drop everything else.
 				if (!notificationTargetsThread(n, state.conversation)) return;
+				// A frame that names a mutation the daemon has moved past proves that
+				// send landed (appliedMutationIdentities), so its durable record
+				// retires now instead of waiting for a wide enough read. The
+				// applied-only rule: this store draws the message itself, so a queue
+				// row the daemon merely holds must not retire it early.
+				const settle = pendingPort?.settleIdentities;
+				const settledIds = settle === undefined ? [] : appliedMutationIdentities(n);
+				if (settle !== undefined && settledIds.length > 0) {
+					void settle(settledIds).catch(() => {
+						// A failed settlement proves nothing and changes nothing: the
+						// record stays for the next frame or authoritative read.
+					});
+				}
 				// A status frame the hub relays names pageBefore for its thread; one
 				// straight from a daemon names none and leaves the last answer.
 				if (n.method === "thread/status/changed" && n.params.threadId === state.conversation.threadId)
@@ -3246,7 +3281,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			},
 
 			reset() {
-				suspendedService = null;
 				// Invalidate the current conversation generation so late frames are
 				// rejected, then return to idle.
 				++conversationGen;

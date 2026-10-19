@@ -48,6 +48,7 @@ import { NotesSheet, notesHosts } from "./session/NotesSheet";
 import { QuestionDock } from "./session/QuestionDock";
 import { FindBar } from "./session/FindBar";
 import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
+import { indicatorRoom } from "./design/BarFrame";
 import { SessionHeader } from "./session/SessionHeader";
 import { sheetKey } from "./sheet/sheetHosts";
 import { holdQuote, takeQuote } from "./session/pendingQuote";
@@ -71,6 +72,18 @@ import { forgetStopRequestsForHub, stopRequests } from "./subagents/nativeStopRe
 import { forgetSubagentTrees } from "./subagents/subagentTree";
 import { SubagentScreen } from "./subagents/SubagentScreen";
 import { flattenSubagents } from "./subagents/subagentModel";
+import { DisplayPreferences } from "./display/displayPreferences";
+import { DisplayProvider } from "./display/displayContext";
+
+const memoryStorage = () => {
+	const values = new Map<string, string>();
+	return {
+		getItemSync: (key: string) => values.get(key) ?? null,
+		setItemSync: (key: string, value: string) => {
+			values.set(key, value);
+		},
+	};
+};
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -502,6 +515,9 @@ async function mount(
 		// leaves the transcript's geometry as it was); a test of what waits
 		// for that layout says false.
 		barLaysOut = true,
+		// The display choices to mount under; absent reads the defaults, as a
+		// tree without a provider does.
+		display = undefined as DisplayPreferences | undefined,
 	} = {},
 ) {
 	const hub = hubClient(served, failedReads, readLatencyMs, olderCursor, olderTurns, olderPage, compacting);
@@ -522,7 +538,8 @@ async function mount(
 	// read's clock, before handing the live renderer back to the case.
 	let tree!: ReactTestRenderer;
 	await act(async () => {
-		tree = render(<ConversationScreen route={route} navigation={navigation} />);
+		const screen = <ConversationScreen route={route} navigation={navigation} />;
+		tree = render(display ? <DisplayProvider value={display}>{screen}</DisplayProvider> : screen);
 	});
 	if (barLaysOut) {
 		const bar = tree.root.findAll(
@@ -582,11 +599,39 @@ it("sends a message when the agent is at rest", async () => {
 	expect(playedHaptics).toEqual(["impact:light"]);
 });
 
-it("stops the running turn from the tray and says so", async () => {
+it("stops the running turn from the composer's slot and says so", async () => {
 	const { tree, hub } = await mount(thread("ref-stop", "active"));
 	await press(tree, "Stop");
 	expect(hub.mutations()).toEqual(["turn/interrupt"]);
 	expect(toasts(tree)).toEqual(["stop:stopped"]);
+});
+
+it("shows Stop in the composer's slot only while the turn runs with an empty field", async () => {
+	// Running with an empty field: Stop, no Send.
+	const running = await mount(thread("ref-slot", "active"));
+	expect(pressable(running.tree, "Stop")).toBeDefined();
+	// A draft takes the slot back for the queueing Send.
+	await type(running.tree, "half a thought");
+	expect(pressable(running.tree, "Stop")).toBeUndefined();
+	expect(pressable(running.tree, "Queue message")).toBeDefined();
+});
+
+it("stops the running turn from the session menu while a draft waits", async () => {
+	const { tree, hub } = await mount(thread("ref-slot-menu", "active"));
+	await type(tree, "half a thought");
+	// The slot is Send while typing; the ⋯ menu is where Stop stays reachable.
+	expect(pressable(tree, "Stop")).toBeUndefined();
+	chooseMenu("Stop");
+	await settle();
+	expect(hub.mutations()).toEqual(["turn/interrupt"]);
+	// The draft survives the stop: stopping must not cost the typed message.
+	expect(field(tree)?.props.value).toBe("half a thought");
+});
+
+it("keeps Send in the slot when the session is not running", async () => {
+	const { tree } = await mount(thread("ref-slot-idle", "idle"));
+	expect(pressable(tree, "Stop")).toBeUndefined();
+	expect(pressable(tree, "Send")).toBeDefined();
 });
 
 it("queues a second Send pressed before the first one's turn is seen", async () => {
@@ -1220,6 +1265,36 @@ function twoTurns(ref: string): Thread {
 	return served;
 }
 
+/** Two turns where the unread one's agent side opens with a run before its
+ * reply: the jump target (the run, row 3) sits above the list's last row (the
+ * reply, row 4), which is what a restore that can land short (clamped) needs. */
+function twoTurnsWithRun(ref: string): Thread {
+	const served = thread(ref, "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		askReplyTurn("turn_1"),
+		{
+			id: "turn_2",
+			status: "completed",
+			itemsView: "default",
+			items: [
+				{ id: "u-turn_2", turnId: "turn_2", type: "userMessage", status: "completed", text: "ask turn_2" },
+				{
+					id: "run-turn_2",
+					turnId: "turn_2",
+					type: "commandExecution",
+					status: "completed",
+					toolName: "npm test",
+					callId: "call-run-2",
+					argumentsJson: JSON.stringify({}),
+				},
+				{ id: "a-turn_2", turnId: "turn_2", type: "agentMessage", status: "completed", text: "reply turn_2" },
+				{ id: "b-turn_2", turnId: "turn_2", type: "agentMessage", status: "completed", text: "reply again" },
+			],
+		},
+	];
+	return served;
+}
+
 it("opens at the start of a reply that finished since you last read to the end", async () => {
 	harness.kv.set(
 		"evener.reader-positions",
@@ -1247,20 +1322,10 @@ it("opens at the start of a reply that finished since you last read to the end",
 it("restores a reading position once, however its row's measured y moves after", async () => {
 	// A virtualized list re-estimating rows it unmounted (older pages provoke
 	// it) moves the anchor row's measured y back and forth; the restore used
-	// to chase every move, and the list ping-ponged.
-	harness.kv.set(
-		"evener.reader-positions",
-		JSON.stringify({
-			"hub-1\u0000ref-restore-once": {
-				hubId: "hub-1",
-				sessionRef: "ref-restore-once",
-				itemKey: "a-turn_2",
-				withinItemOffset: 0,
-				touchedAt: 1,
-				turnsSeen: "turn_2",
-			},
-		}),
-	);
+	// to chase every move, and the list ping-ponged. The anchor comes from the
+	// open-at-unread-replies jump (turn_2's reply is the unread one), the one
+	// opening that still lands through the restore machinery.
+	seedReaderPosition("ref-restore-once", "a-turn_2", "turn_1");
 	const { tree } = await mount(twoTurns("ref-restore-once"));
 	const list = transcriptList(tree);
 	act(() => list.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
@@ -1290,7 +1355,7 @@ it("restores a reading position once, however its row's measured y moves after",
 // content size they add up to. The restore waits for all of them, so a row
 // measured before the content size is known never lands the list short of it.
 it("restores a reading position once the frame's layouts are all in", async () => {
-	seedReaderPosition("ref-restore-frame", "a-turn_2", "turn_2");
+	seedReaderPosition("ref-restore-frame", "a-turn_2", "turn_1");
 	const { tree } = await mount(twoTurns("ref-restore-frame"));
 	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
 	await settle();
@@ -1308,7 +1373,7 @@ it("restores a reading position once the frame's layouts are all in", async () =
 // The content size can come in a later batch than the rows: until it is
 // known, where the list can reach isn't, so the restore waits for it.
 it("waits for the content size before restoring a reading position", async () => {
-	seedReaderPosition("ref-restore-size", "a-turn_2", "turn_2");
+	seedReaderPosition("ref-restore-size", "a-turn_2", "turn_1");
 	const { tree } = await mount(twoTurns("ref-restore-size"));
 	act(() => transcriptList(tree).props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
 	await settle();
@@ -1326,19 +1391,7 @@ it("waits for the content size before restoring a reading position", async () =>
 });
 
 it("waits for the bottom bar to lay out before restoring a reading position", async () => {
-	harness.kv.set(
-		"evener.reader-positions",
-		JSON.stringify({
-			"hub-1\u0000ref-restore-waits": {
-				hubId: "hub-1",
-				sessionRef: "ref-restore-waits",
-				itemKey: "a-turn_2",
-				withinItemOffset: 0,
-				touchedAt: 1,
-				turnsSeen: "turn_2",
-			},
-		}),
-	);
+	seedReaderPosition("ref-restore-waits", "a-turn_2", "turn_1");
 	const { tree } = await mount(twoTurns("ref-restore-waits"), { barLaysOut: false });
 	const list = transcriptList(tree);
 	act(() => list.props.onLayout({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 600 } } }));
@@ -1423,15 +1476,15 @@ describe("opening a session", () => {
 		expect(opacity(tree)).toBe(1);
 	});
 
-	it("shows a saved reading position only once the exact restore has landed", async () => {
-		savePosition("ref-open-anchor");
+	it("shows an unread reply only once the exact restore to it has landed", async () => {
+		savePosition("ref-open-anchor", "a-turn_2", "turn_1");
 		flatListCalls.length = 0;
 		const { tree } = await mount(twoTurns("ref-open-anchor"));
 		layOutViewport(tree);
 		await settle();
 		// The approximate jump toward the unmeasured row happens out of sight.
 		expect(flatListCalls.map((call) => call.method)).toContain("scrollToIndex");
-		expect(flatListCalls.map((call) => call.method)).not.toContain("scrollToOffset");
+		expect(flatListCalls.map((call) => call.method)).not.toContain("scrollToEnd");
 		expect(opacity(tree)).toBe(0);
 		layOutRow(tree, 3, 9_523);
 		await settle();
@@ -1443,8 +1496,8 @@ describe("opening a session", () => {
 		expect(opacity(tree)).toBe(1);
 	});
 
-	it("shows a reading position restored before the viewport's first layout without moving it again", async () => {
-		savePosition("ref-open-early");
+	it("shows an unread reply restored before the viewport's first layout without moving it again", async () => {
+		savePosition("ref-open-early", "a-turn_2", "turn_1");
 		const { tree } = await mount(twoTurns("ref-open-early"));
 		act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
 		// The row measures before the list's own layout: the restore lands, but
@@ -1476,8 +1529,29 @@ describe("opening a session", () => {
 		expect(opacity(tree)).toBe(1);
 	});
 
+	// Jesse, 2026-10-18 ("make it a setting"): with Open at unread replies
+	// off, the same saved history opens at the live end - no jump, no restore.
+	it("opens at the live end with the unread-reply jump turned off", async () => {
+		const prefs = new DisplayPreferences(memoryStorage());
+		prefs.set({ openAtUnreadReplies: false });
+		savePosition("ref-open-setting-off", "u-turn_1", "turn_1");
+		flatListCalls.length = 0;
+		const { tree } = await mount(twoTurns("ref-open-setting-off"), { display: prefs });
+		layOutViewport(tree);
+		await settle();
+		const indexes = flatListCalls
+			.filter((call) => call.method === "scrollToIndex")
+			.map((call) => (call.args as { index: number }).index);
+		// No jump to the reply: it pins the end like any other open.
+		expect(indexes).not.toContain(3);
+		layOutRow(tree, 3, 19_000);
+		await settle();
+		expect(flatListCalls.map((call) => call.method)).toContain("scrollToEnd");
+		expect(opacity(tree)).toBe(1);
+	});
+
 	it("shows the list at once when you touch it while it opens", async () => {
-		savePosition("ref-open-touch");
+		savePosition("ref-open-touch", "a-turn_2", "turn_1");
 		const { tree } = await mount(twoTurns("ref-open-touch"));
 		layOutViewport(tree);
 		await settle();
@@ -1487,8 +1561,8 @@ describe("opening a session", () => {
 		expect(opacity(tree)).toBe(1);
 	});
 
-	it("shows the list after a second even when the opening never lands", async () => {
-		savePosition("ref-open-cap");
+	it("shows the list after two caps even when the opening never lands", async () => {
+		savePosition("ref-open-cap", "a-turn_2", "turn_1");
 		const { tree } = await mount(twoTurns("ref-open-cap"));
 		vi.useFakeTimers();
 		try {
@@ -1498,6 +1572,38 @@ describe("opening a session", () => {
 			// stay hidden.
 			expect(opacity(tree)).toBe(0);
 			await advanceFakeTimers(1);
+			// Its row is loaded but still unmeasured: the first cap holds the
+			// list hidden rather than show the approximate position, and the
+			// second reveals it (never a permanent blank).
+			expect(opacity(tree)).toBe(0);
+			await advanceFakeTimers(1000);
+			expect(opacity(tree)).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// The cap must not show the list while the jump target's row is resolved
+	// but unmeasured: the list sits at the approximate offset, far above the
+	// row, and showing it there is the "way up" jump (Jesse, 2026-10-17). It
+	// shows only once the exact restore lands, or at the end of a second cap
+	// after that.
+	it("does not show the list at the cap while the jump target's row is still unmeasured", async () => {
+		savePosition("ref-open-cap-unmeasured", "a-turn_2", "turn_1");
+		const { tree } = await mount(twoTurns("ref-open-cap-unmeasured"));
+		vi.useFakeTimers();
+		try {
+			layOutViewport(tree);
+			await advanceFakeTimers(999);
+			expect(opacity(tree)).toBe(0);
+			await advanceFakeTimers(1);
+			// The anchor's row is loaded but never measured: the cap keeps the
+			// list hidden rather than show the approximate position.
+			expect(opacity(tree)).toBe(0);
+			// The row finally measures: the exact restore lands and shows the
+			// list at the saved position.
+			layOutRow(tree, 3, 9_523);
+			await advanceFakeTimers(0);
 			expect(opacity(tree)).toBe(1);
 		} finally {
 			vi.useRealTimers();
@@ -1505,7 +1611,7 @@ describe("opening a session", () => {
 	});
 
 	it("gives a session the screen switches to its own full second to land", async () => {
-		savePosition("ref-open-first");
+		savePosition("ref-open-first", "a-turn_2", "turn_1");
 		const { tree, route } = await mount(twoTurns("ref-open-first"));
 		const next = "ref-open-second";
 		otherThreads.set(next, twoTurns(next));
@@ -1528,10 +1634,48 @@ describe("opening a session", () => {
 		}
 	});
 
-	// Jesse, 2026-09-29: a saved spot that hasn't loaded within the cap opens
-	// at the live end instead, and the spot is dropped; never the top and then
-	// a jump, and never a blank wait.
-	describe("when the saved spot hasn't loaded within the cap", () => {
+	// A session whose saved row stays unmeasured consumes its first cap (the
+	// extra round this change adds); the session the screen switches to next
+	// must get its own extra round, not the leftovers of the one before.
+	it("gives a session the screen switches to its own extra cap round", async () => {
+		// The first session's jump target never measures: it burns its first cap
+		// and reveals at its second.
+		savePosition("ref-cap-first", "a-turn_2", "turn_1");
+		const { tree, route } = await mount(twoTurns("ref-cap-first"));
+		const next = "ref-cap-second";
+		savePosition(next, "a-turn_2", "turn_1");
+		otherThreads.set(next, twoTurns(next));
+		vi.useFakeTimers();
+		try {
+			layOutViewport(tree);
+			await advanceFakeTimers(1000);
+			// The first cap consumed: the list stays hidden on the extra round.
+			expect(opacity(tree)).toBe(0);
+			await advanceFakeTimers(1000);
+			expect(opacity(tree)).toBe(1);
+			const moved = { ...route, params: { ...route.params, ref: next } };
+			navigationState.state = { index: 0, routes: [moved] };
+			act(() => tree.update(<ConversationScreen route={moved} navigation={navigation} />));
+			await advanceFakeTimers(0);
+			// The second session's saved row is loaded but unmeasured too: it
+			// gets a fresh first cap, hidden through it.
+			await advanceFakeTimers(999);
+			expect(opacity(tree)).toBe(0);
+			await advanceFakeTimers(1);
+			// Revealed at its own second cap — never at the first, which the
+			// previous session had already consumed.
+			expect(opacity(tree)).toBe(0);
+			await advanceFakeTimers(1000);
+			expect(opacity(tree)).toBe(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	// Jesse, 2026-10-18: a saved spot never decides where a session opens, so
+	// one on an older page is simply ignored - no wait for a page the opening
+	// no longer needs, and no restore once it arrives.
+	describe("when the saved spot sits on an older page", () => {
 		const mountWaitingOnOlderPage = async (ref: string) => {
 			savePosition(ref, "a-turn_0", "turn_0");
 			let deliver = () => {};
@@ -1546,16 +1690,13 @@ describe("opening a session", () => {
 			return { ...mounted, deliver };
 		};
 
-		it("opens at the live end and forgets the spot", async () => {
+		it("opens at the live end without waiting for the older page", async () => {
 			const { tree, deliver } = await mountWaitingOnOlderPage("ref-open-unloaded");
 			vi.useFakeTimers();
 			try {
 				layOutViewport(tree);
-				await advanceFakeTimers(999);
-				expect(opacity(tree)).toBe(0);
-				flatListCalls.length = 0;
-				await advanceFakeTimers(1);
-				// It heads for the end, still out of sight until the end's last row measures.
+				// It heads for the end at once, out of sight until the end's last row
+				// measures: the saved spot never held the opening back.
 				expect(flatListCalls.map((call) => call.method)).toContain("scrollToEnd");
 				expect(opacity(tree)).toBe(0);
 				layOutRow(tree, 3, 19_000);
@@ -1571,13 +1712,11 @@ describe("opening a session", () => {
 			}
 		});
 
-		it("shows the live end a second later even if its last row never measures", async () => {
+		it("shows the live end at the cap even if its last row never measures", async () => {
 			const { tree } = await mountWaitingOnOlderPage("ref-open-unloaded-cap");
 			vi.useFakeTimers();
 			try {
 				layOutViewport(tree);
-				await advanceFakeTimers(1000);
-				expect(opacity(tree)).toBe(0);
 				await advanceFakeTimers(999);
 				expect(opacity(tree)).toBe(0);
 				await advanceFakeTimers(1);
@@ -1588,75 +1727,76 @@ describe("opening a session", () => {
 		});
 	});
 
-	// The list's content grows in stages as it renders the rows below a saved
-	// position, so the first restore can fall short of it (clamped). Showing
-	// the list there would show it land short and then move.
-	describe("when the list can't reach the saved position yet", () => {
+	// The list's content grows in stages as it renders the rows below the jump
+	// target, so the first restore can fall short of it (clamped). Showing the
+	// list there would show it land short and then move.
+	describe("when the list can't reach the jump target yet", () => {
 		const offsets = () =>
 			flatListCalls
 				.filter((call) => call.method === "scrollToOffset")
 				.map((call) => (call.args as { offset: number }).offset);
 
 		it("shows it only once the restore reaches the row", async () => {
-			savePosition("ref-open-clamped", "a-turn_1", "turn_2");
-			const { tree } = await mount(twoTurns("ref-open-clamped"));
+			savePosition("ref-open-clamped", "step:call-run-2", "turn_1");
+			const { tree } = await mount(twoTurnsWithRun("ref-open-clamped"));
 			flatListCalls.length = 0;
 			layOutViewport(tree, 3_000);
-			layOutRow(tree, 1, 9_523);
+			// The jump target, row 3, measures while the list reaches only 2_400.
+			layOutRow(tree, 3, 9_523);
 			await settle();
 			// It moves as far as the list reaches, out of sight.
-			expect(offsets().at(-1)).toBeLessThan(9_523);
+			expect(offsets().at(-1)).toBe(2_400);
 			expect(opacity(tree)).toBe(0);
 			act(() => transcriptList(tree).props.onContentSizeChange(390, 20_000));
-			layOutRow(tree, 3, 19_000);
 			await settle();
 			expect(offsets().at(-1)).toBe(9_523);
 			expect(opacity(tree)).toBe(1);
 		});
 
 		it("shows it short of the row once the last row has measured", async () => {
-			savePosition("ref-open-near-end", "a-turn_1", "turn_2");
-			const { tree } = await mount(twoTurns("ref-open-near-end"));
+			savePosition("ref-open-near-end", "step:call-run-2", "turn_1");
+			const { tree } = await mount(twoTurnsWithRun("ref-open-near-end"));
 			flatListCalls.length = 0;
 			layOutViewport(tree, 3_000);
-			layOutRow(tree, 1, 2_800);
 			layOutRow(tree, 3, 2_900);
+			// The last row, row 5, measures: the content is whole, so as far as
+			// the list reaches (2_400) is where it rests.
+			layOutRow(tree, 5, 3_050);
 			await settle();
-			// The content is whole, so as far as the list reaches is where it rests.
-			expect(offsets().at(-1)).toBeLessThan(2_800);
+			expect(offsets().at(-1)).toBe(2_400);
 			expect(opacity(tree)).toBe(1);
 		});
 
 		it("keeps it hidden when the restore runs again short of the row, until the last row measures", async () => {
-			savePosition("ref-open-clamped-again", "a-turn_1", "turn_2");
-			const { tree } = await mount(twoTurns("ref-open-clamped-again"));
+			savePosition("ref-open-clamped-again", "step:call-run-2", "turn_1");
+			const { tree } = await mount(twoTurnsWithRun("ref-open-clamped-again"));
 			layOutViewport(tree, 3_000);
-			layOutRow(tree, 1, 9_523);
+			layOutRow(tree, 3, 9_523);
 			await settle();
 			expect(opacity(tree)).toBe(0);
 			// A row between measures: the restore runs again, already as far as
 			// the list reaches, so it neither moves the list nor shows it, since
 			// the rows below are still estimates.
 			flatListCalls.length = 0;
-			layOutRow(tree, 2, 9_700);
+			layOutRow(tree, 4, 9_700);
 			await settle();
 			expect(flatListCalls).toEqual([]);
 			expect(opacity(tree)).toBe(0);
-			layOutRow(tree, 3, 9_900);
+			layOutRow(tree, 5, 9_900);
 			await settle();
 			expect(opacity(tree)).toBe(1);
 		});
 
 		it("shows it after a second when the last row never measures", async () => {
-			savePosition("ref-open-clamped-cap", "a-turn_1", "turn_2");
-			const { tree } = await mount(twoTurns("ref-open-clamped-cap"));
+			savePosition("ref-open-clamped-cap", "step:call-run-2", "turn_1");
+			const { tree } = await mount(twoTurnsWithRun("ref-open-clamped-cap"));
 			vi.useFakeTimers();
 			try {
 				layOutViewport(tree, 3_000);
-				layOutRow(tree, 1, 9_523);
+				layOutRow(tree, 3, 9_523);
 				await advanceFakeTimers(0);
 				// The restore fell short and the rows below never measure.
-				expect(offsets().at(-1)).toBeLessThan(9_523);
+				expect(offsets().at(-1)).toBe(2_400);
 				await advanceFakeTimers(999);
 				expect(opacity(tree)).toBe(0);
 				await advanceFakeTimers(1);
@@ -2429,7 +2569,7 @@ it("doesn't page older history while the hub is away", async () => {
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
 });
 
-it("retries a failed turn with Jesse's sentence, and leaves your draft alone", async () => {
+it("retries a failed turn by re-sending its own input, and leaves your draft alone", async () => {
 	const served = thread("ref-retry-turn", "idle");
 	(served as unknown as { turns: unknown[] }).turns = [
 		{
@@ -2437,7 +2577,7 @@ it("retries a failed turn with Jesse's sentence, and leaves your draft alone", a
 			status: "failed",
 			itemsView: "default",
 			error: { message: "go test exited 1" },
-			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "run the tests" }],
+			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "my original question" }],
 		},
 	];
 	const { tree, hub } = await mount(served);
@@ -2448,8 +2588,94 @@ it("retries a failed turn with Jesse's sentence, and leaves your draft alone", a
 	// Spec 16.6: a light impact on send, a retry's included.
 	expect(playedHaptics).toEqual(["impact:light"]);
 	const start = hub.requests.find((request) => request.method === "turn/start");
-	expect(start?.params.input).toEqual([{ type: "text", text: "Something went wrong. Please try again." }]);
+	expect(start?.params.input).toEqual([{ type: "text", text: "my original question" }]);
 	expect(field(tree)?.props.value).toBe("keep this");
+});
+
+it("re-sends the failed turn's images with its text on Retry", async () => {
+	const served = thread("ref-retry-images", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			items: [
+				{
+					id: "u-1",
+					turnId: "turn_1",
+					type: "userMessage",
+					status: "completed",
+					text: "(attached image 1: plot.png) my original question",
+					images: [{ mediaType: "image/png", data: "image-bytes", name: "plot.png" }],
+				},
+			],
+		},
+	];
+	const { tree, hub } = await mount(served);
+	await press(tree, "Retry");
+	expect(hub.mutations()).toEqual(["turn/start"]);
+	const start = hub.requests.find((request) => request.method === "turn/start");
+	// The anchor re-translates to the same marker prose at the submit boundary,
+	// and the image rides its own wire item with its bytes — exactly the input
+	// that opened the failed turn.
+	expect(start?.params.input).toEqual([
+		{ type: "text", text: "(attached image 1: plot.png) my original question" },
+		{ type: "image", mediaType: "image/png", data: "image-bytes", name: "plot.png" },
+	]);
+});
+
+it("says when a Retry went out without images it could not re-send", async () => {
+	const served = thread("ref-retry-dropped", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			items: [
+				{
+					id: "u-1",
+					turnId: "turn_1",
+					type: "userMessage",
+					status: "completed",
+					// A reloaded turn: the image's src is a sha reference the
+					// phone cannot turn back into bytes, so the retry can send
+					// the text but must drop the image — and say so.
+					text: "(attached image 1: plot.png) my original question",
+					images: [{ src: "sha:abc123", name: "plot.png" }],
+				},
+			],
+		},
+	];
+	const { tree, hub } = await mount(served);
+	await press(tree, "Retry");
+	expect(hub.mutations()).toEqual(["turn/start"]);
+	const start = hub.requests.find((request) => request.method === "turn/start");
+	// The text goes out alone; the toast says an image stayed behind.
+	expect(start?.params.input).toEqual([{ type: "text", text: "(attached image 1: plot.png) my original question" }]);
+	const toastText = tree.root
+		.findAll((node) => String(node.type) === "Text")
+		.find((node) => typeof node.props.children === "string" && node.props.children.includes("attached image"));
+	expect(toastText).toBeDefined();
+});
+
+it("offers no Retry when the failed turn's own input cannot be re-sent", async () => {
+	const served = thread("ref-retry-none", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			// A reloaded failure entry: no user input anywhere to re-issue.
+			items: [],
+		},
+	];
+	const { tree, hub } = await mount(served);
+	expect(pressable(tree, "Retry")).toBeUndefined();
+	// Nothing went out: no canned sentence stands in for the person's words.
+	expect(hub.mutations()).toEqual([]);
 });
 
 // Retry shows only while a press would send, which a session control going
@@ -2560,6 +2786,8 @@ it("names the model on the composer's chip, which opens the model sheet with the
 	const { tree, hub } = await mount(served);
 	// The screen loads the catalog once, so the chip can name the model.
 	expect(hub.requests.filter((request) => request.method === "model/list")).toHaveLength(1);
+	// The chip steps aside while the composer is collapsed, so reach for it first.
+	act(() => field(tree)?.props.onFocus());
 	const chip = pressable(tree, "Model: Claude Sonnet 5. Change model or effort");
 	if (!chip) throw new Error("no model chip");
 	act(() => chip.props.onPress());
@@ -2584,6 +2812,8 @@ it("names the model as the session's Board row does while the catalog can't be r
 	};
 	const { tree } = await mount(served);
 	await act(async () => {});
+	// The chip steps aside while the composer is collapsed, so reach for it first.
+	act(() => field(tree)?.props.onFocus());
 	expect(pressable(tree, "Model: Claude Sonnet 5. Change model or effort")).toBeDefined();
 	expect(renderedText(tree)).not.toContain("claude-sonnet-5");
 });
@@ -2735,6 +2965,42 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 			hub.requests.filter((request) => request.method === "resumeThread").map((request) => request.params.ref),
 		).toEqual(["ref-paused"]);
 	});
+});
+
+it("re-sends an image-only failed turn's images on Retry", async () => {
+	const served = thread("ref-retry-image-only", "idle");
+	(served as unknown as { turns: unknown[] }).turns = [
+		{
+			id: "turn_1",
+			status: "failed",
+			itemsView: "default",
+			error: { message: "go test exited 1" },
+			items: [
+				{
+					id: "u-1",
+					turnId: "turn_1",
+					type: "userMessage",
+					status: "completed",
+					text: "(attached image 1: plot.png)",
+					images: [{ mediaType: "image/png", data: "image-bytes", name: "plot.png" }],
+				},
+			],
+		},
+	];
+	const { tree, hub } = await mount(served);
+	expect(pressable(tree, "Retry")).toBeDefined();
+	await press(tree, "Retry");
+	expect(hub.mutations()).toEqual(["turn/start"]);
+	const start = hub.requests.find((request) => request.method === "turn/start");
+	// Marker-only text carries no words of the user's own: only the image
+	// rides, exactly as the original image-only send did.
+	// The recorded original is the marker prose with the image (that is how an
+	// image-only submission is stored), so the re-issue carries exactly that —
+	// no invented sentence, and the send actually goes out.
+	expect(start?.params.input).toEqual([
+		{ type: "text", text: "(attached image 1: plot.png)" },
+		{ type: "image", mediaType: "image/png", data: "image-bytes", name: "plot.png" },
+	]);
 });
 
 it("opens sign-in from an error that says a sign-in failed", async () => {
@@ -2971,8 +3237,11 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		];
 		const { tree, hub } = await mount(served);
 		const shown = () => textOf(transcriptList(tree)).split("check the logs").length - 1;
-		const frame = (notification: Record<string, unknown>) =>
-			act(() => hub.notify(notification as unknown as AnyNotification));
+		// A frame that names a mutation id settles its durable record, and that
+		// settlement is async: await the same act block so its re-render lands
+		// inside it.
+		const frame = async (notification: Record<string, unknown>) =>
+			act(async () => hub.notify(notification as unknown as AnyNotification));
 		await type(tree, "check the logs");
 		await press(tree, "Queue message");
 		const clientMutationId = String(hub.requests.find((r) => r.method === "turn/queue")?.params.clientMutationId);
@@ -2981,7 +3250,7 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 			...queueState(texts, revision),
 			clientMutationIds: texts.map(() => clientMutationId),
 		});
-		frame({
+		await frame({
 			method: "thread/queueChanged",
 			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue(["check the logs"], 1) },
 		});
@@ -2989,12 +3258,12 @@ describe("queued messages at the transcript's end (spec 8.5)", () => {
 		expect(lastGhost(tree)).toEqual(["queued"]);
 		// The turn ends and the hub takes the message for the next one: the
 		// queue frame comes first, then the message's own item.
-		frame({
+		await frame({
 			method: "thread/queueChanged",
 			params: { threadId: served.id, ref: "ref-queue-lands", queue: queue([], 2) },
 		});
 		expect(shown()).toBe(1);
-		frame({
+		await frame({
 			method: "history/updated",
 			params: {
 				threadId: served.id,
@@ -3521,13 +3790,16 @@ describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
 	const bar = (tree: ReactTestRenderer) =>
 		tree.root.find((node) => String(node.type) === "View" && node.props.testID === "session-bottom-bar");
 	const homeIndicator = () => useSafeAreaInsets().bottom;
+	/** The room the bar reserves: the home indicator less its trim, so the
+	 * composer sits close to the bottom edge (BarFrame INDICATOR_TRIM). */
+	const room = () => indicatorRoom(homeIndicator());
 
 	it("runs to the screen's bottom edge under a hairline, and keeps the composer above the home indicator", async () => {
 		const { tree } = await mount(thread("ref-bar", "active"));
 		// The screen leaves the bottom safe area to the bar, which paints it.
 		const [screen] = tree.root.findAll((node) => String(node.type) === "SafeAreaView");
 		expect(screen?.props.edges).not.toContain("bottom");
-		expect(flatStyle(bar(tree))).toMatchObject({ borderTopWidth: 0.5, paddingBottom: homeIndicator() });
+		expect(flatStyle(bar(tree))).toMatchObject({ borderTopWidth: 0.5, paddingBottom: room() });
 		// The tray and the composer ride in it, so the bar's padding lifts them
 		// clear of the home indicator.
 		expect(
@@ -3541,7 +3813,7 @@ describe("the bottom bar (spec 8.1, the prototype's .bottom)", () => {
 		act(() => keyboard.show());
 		expect(flatStyle(bar(tree)).paddingBottom).toBe(0);
 		act(() => keyboard.hide());
-		expect(flatStyle(bar(tree)).paddingBottom).toBe(homeIndicator());
+		expect(flatStyle(bar(tree)).paddingBottom).toBe(room());
 	});
 
 	it("lays the bar over the transcript's end, so the transcript runs under it", async () => {
@@ -4589,13 +4861,13 @@ describe("moving between sessions (spec 8.3, 13.2)", () => {
 		it("offers VoiceOver the sessions on either side, and only those there are", async () => {
 			const actions = () =>
 				headerTitle()
-					.root.find((node) => node.props.accessibilityRole === "button")
-					.props.accessibilityActions.map((action: { label: string }) => action.label);
+					.root.find((node) => node.props.accessibilityRole === "button" && node.props.accessibilityActions)
+					.props.accessibilityActions.map((action: { name: string }) => action.name);
 			await mount(thread("ref-title", "active"));
-			expect(actions()).toEqual(["Previous session", "Next session"]);
+			expect(actions()).toEqual(["previous", "next"]);
 			fleet.live = [failing, asking, working];
 			await mount(thread("ref-title", "active"));
-			expect(actions()).toEqual(["Previous session"]);
+			expect(actions()).toEqual(["previous"]);
 		});
 
 		it("goes nowhere on a pan the system cancelled", async () => {
@@ -5079,7 +5351,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(jobReads(hub)).toBeGreaterThan(before);
 	});
 
-	it("opens its coordinator's Subagents list from its own Subagents chip", async () => {
+	it("opens its coordinator's Agents list from its own Agents chip", async () => {
 		const served = subagent(true);
 		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
 			delegates: [
@@ -5100,8 +5372,8 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			],
 		};
 		const { tree } = await mountSubagent(served);
-		act(() => pressable(tree, "Subagents, 1")?.props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("Subagents", { hubId: "hub-1", ...COORDINATOR });
+		act(() => pressable(tree, "Agents, 1")?.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("Activity", { hubId: "hub-1", ...COORDINATOR, kind: "agents" });
 	});
 
 	it("opens a document it names in the Reader on its own ref, where its review goes (ruling 16)", async () => {

@@ -5,32 +5,86 @@ commands**. Both are plain text templates. What differs is where they come
 from, how they are invoked, and — critically — whether they can execute
 shell commands.
 
-## The trust model, up front
+## Create and use a skill
 
-A markdown template that can run shell commands is code. Evener's rule:
+Use a skill for instructions you want the agent to reuse. This example needs an
+Evener installation with a working provider and a project directory. Run the
+shell commands on the host where the session runs, from your project root.
 
-- **Templates you explicitly installed** (plugins) may execute shell at
-  expansion time. Installing a plugin is a trust decision, like installing
-  software.
-- **Templates evener discovers automatically** (project and user-global
-  `skills/` directories, project `.evener/commands/`, and your user-global
-  commands directory) never execute shell and never read files at expansion
-  time. Anything in a repo you merely cloned is inert text.
+1. Create `skills/change-summary/SKILL.md`:
 
-This mirrors codex's posture of inert skill text. In codex, a skill body is
-never executable template code: an explicitly mentioned or selected skill is
-resolved and injected by the runtime itself as a separate user-role fragment
-carrying the complete file text, while model-selected loading is a separate
-path through the model's own file reads. Claude Code instead allows `!`cmd``
-execution in skills and commands, but gates project-sourced content behind a
-workspace trust dialog and offers a `disableSkillShellExecution` kill
-switch. Evener keeps Claude Code-compatible execution for explicitly installed
-plugins, and adopts the codex posture of inert discovered text for everything
-it discovers on its own. (An earlier version of this paragraph claimed codex
-bodies reach the model only through the model's own permission-checked tool
-calls; the pinned Codex sources in the [skills implementation
-study](research/2026-09-10-skills-implementation-study.md) corrected that
-claim, and the correction is recorded here.)
+   ```markdown
+   ---
+   name: change-summary
+   description: Summarize a code change and its verification.
+   ---
+   Read the diff relevant to the request. Report what changed, what checks ran,
+   and what remains unverified. Do not edit files.
+   ```
+
+2. Start a new session in that project. In the browser, type `/` and select
+   `change-summary`, or send this leading slash prompt as typed text:
+
+   ```text
+   /change-summary Summarize the current diff.
+   ```
+
+3. Check that the catalog offers `change-summary` and that the session records
+   its activation. A response that merely mentions the name is not proof of
+   activation. Inspect discovery warnings if it is missing: `name` and
+   `description` must be nonempty strings, and `SKILL.md` must be inside a skill
+   directory that is an immediate child of a discovery root, such as
+   `skills/change-summary/SKILL.md`. The [format and discovery reference](#skills)
+   explains precedence and invocation controls.
+
+4. Edit the body and invoke it again to load current bytes. There is no live
+   filesystem watcher. New names require another catalog discovery or session
+   startup. To remove it, delete only the `SKILL.md` you created and start a new
+   session. Removing a file does not erase instructions already in context;
+   later reloads of the missing source fail visibly.
+
+The complete file is also in
+[`examples/extensions/skills/change-summary/SKILL.md`](examples/extensions/skills/change-summary/SKILL.md).
+To get a local copy, use the `git clone` command in
+[Optional disposable exercise](getting-started.md#optional-disposable-exercise); the file is under
+`evener-docs/docs/examples/extensions/skills/change-summary/`. No Evener build is
+needed: copy the skill into your project and use your installed executable.
+Skills are instructions, not a permission boundary. Even “Do not edit files”
+is guidance to the model, not an enforced read-only role.
+
+## Create a command with arguments
+
+Use a command when you need a reusable prompt with explicit arguments. Create
+`.evener/commands/summarize-change.md` in your project:
+
+```markdown
+---
+description: Summarize a requested change.
+argument-hint: change to summarize
+---
+Summarize this change: $ARGUMENTS
+State the evidence and anything not verified. Do not edit files.
+```
+
+Start a new session there and send `/summarize-change the current diff` as a
+**leading typed prompt**. The expanded instruction contains `the current diff`.
+Selecting a command chip instead invokes it with empty arguments; surrounding
+prose is not an argument. Check the command catalog and the expanded session
+input, not just the model's answer. If the name is absent, check the filename,
+project root, and load warnings. Avoid client built-in names such as `help`.
+
+To update or remove a command, edit or delete that file and start a new session.
+Do not expect a running session's command inventory to refresh. See the
+[command reference](#evener-wide-slash-commands) for user-global locations and
+precedence, and [plugins](plugins.md) for packaging executable commands.
+
+## Trust before invocation
+
+Read extensions before loading them. Skills and automatically discovered commands
+supply untrusted prompt text. Skills never expand shell, file, or argument
+syntax. Project and user-global commands substitute arguments but do not execute
+shell or include files. Plugin commands can do both: configuring or installing
+a plugin is a code-trust decision, not just adding text.
 
 | Source | Discovered from | `$ARGUMENTS` | `!`cmd`` | `@file` |
 |---|---|---|---|---|
@@ -184,9 +238,12 @@ a structured, data-safe context. The context includes `base_directory`, the
 skill directory against which relative references to scripts, references, or
 other collateral are resolved. Referenced resources are loaded lazily with the
 ordinary permission-checked tools only when the task needs them; they are not
-eagerly included with the skill body. A sandboxed session can read that directory
-in every mode, including for plugin skills and your own skills inside the masked
-`~/.config/evener` ([sandboxing](sandboxing.md#the-denylist-secrets-and-pseudo-filesystems)).
+eagerly included with the skill body. Activation does not grant directory access.
+Sandbox carve-outs cover the standard Evener plugin store and user skills
+location, including inside masked `~/.config/evener`. Other discovered locations,
+such as arbitrary `skills_dirs` or `~/.agents/skills`, need an existing readable
+root for collateral access in `restricted` mode. See
+[sandboxing](sandboxing.md#the-denylist-secrets-and-pseudo-filesystems).
 
 Skill bodies are inert instructions, not executable templates. Evener performs
 no expansion on them: no shell execution, no file inclusion, no argument
@@ -256,16 +313,6 @@ Every route a skill can take, and what each one means:
 | `model_tool` | Model calls `use_skill` | no — model choice under current controls | no; a same-source continuation reuses the prior record's answer | tracked ordinary activation |
 | `compaction_reload` | Reload selection honored at the next dispatch after compaction | yes, once the selection is recorded | no; reuses the prior same-source answer | restores the recorded activation's body |
 | `role_preload` | Delegate role declaration | yes — loaded before the delegate starts | no — frozen provenance | permanent-prompt / frozen-delegate lifetime |
-
-The model-interpreted inline path is the one part of this surface that
-depends on how a real model reads your text. The skills-lifecycle live
-evaluation (run 2026-09-12) measured it against a real model — operative
-requests, quotations, fenced code, paths/URLs, negations, multiple selections,
-and near-miss names — and its per-case record lives in the [evaluation
-evidence](research/2026-09-11-skills-lifecycle-evidence.md). The [skills
-implementation study](research/2026-09-10-skills-implementation-study.md)
-records how Evener's invocation surface compares with Pi, OpenCode, Codex,
-and Claude Code.
 
 ### Canonical skill input on AppWire
 
@@ -499,75 +546,26 @@ the plain clear-note behavior. An invalid selection in an accepted request
 never discards that request's valid note. A selection belongs to one
 compaction cycle and is consumed only by a compaction that actually publishes.
 
-Accepted requests are generation-owned, persisted compaction operations, not
-per-round flags. Each operation mints a generation from the session's
-lifecycle counter, records its origin (`forced` from `compact_context`,
-`automatic` from note elicitation), the note generation it owns, its steering
-instructions, and its selection; it stays pending until the fold publication
-claims it (moving it to the published phase for delivery) or a terminal
-cancellation retires it. The metadata save happens before the tool reports
-success, so an intent is never durable-by-assertion: a failed save returns a
-typed, retryable failure and retires the unsaved operation. Restart is not
-cancellation: a resumed session re-arms an unpublished forced operation's
-round-tail trigger from the persisted record, an automatic operation restores
-its elicitation latch, and a published operation resumes for delivery only.
-Clearing or replacing a note cancels only the automatic operation associated
-with that note; a forced operation survives a note clear, and a second forced
-request while one is pending is rejected without touching the first. While
-any pending or published-but-undelivered operation owns the cycle, note
-elicitation is latched — which is also the first-wins rule: a later
-elicitation can never overwrite the concrete selection the cycle already
-recorded, not even with an invalid one. Sessions persisted before this
-lifecycle metadata existed resume with fresh compaction state; nothing is
-reconstructed from old tool calls or transcript prose.
+Accepted compaction requests survive restart. A failed metadata save returns a
+retryable error rather than accepting an unsaved request. A successful compaction
+consumes its request and skill selection after saving the result; interrupted
+delivery resumes after restart without repeating the compaction.
 
-A fold publication claims its operation only when the fold actually
-compacted something and the operation is the one the fold's own requesting
-dispatch captured. The claim is generation-matched and runs inside the
-winning publish's critical section, so:
+- Clearing or replacing a note cancels its automatic compaction request, not an
+  explicit `compact_context` request. A second explicit request is rejected
+  while the first is pending, leaving the first unchanged.
+- Later note elicitation cannot replace the pending cycle's skill selection.
+- A fold that changes no content leaves the request pending. An unrelated manual
+  compaction does not consume it. If an explicit compaction exhausts its retries
+  without publishing, it cancels its request with a `forced_not_published` notice.
+- Sessions saved before compaction lifecycle metadata existed start with fresh
+  compaction state; Evener does not reconstruct requests from old tool calls.
 
-- **No-op publications claim nothing.** A publication that staged no actual
-  compaction (an unchanged publication) leaves the operation pending for the
-  next real fold — a claimed cycle always corresponds to content that truly
-  compacted.
-- **Unrelated folds claim nothing.** A fold whose requesting caller captured
-  no operation — for example a manual compact racing a pending one —
-  publishes its own compaction without adopting the pending operation or
-  touching its selection; the pending operation stays armed for its own
-  dispatch.
-- **Losing attempts record nothing.** A fold that loses the publication race
-  attaches no receipts and cancels nothing; only the winner claims. A forced
-  dispatch that exhausts its retries without ever publishing cancels its own
-  operation with a `forced_not_published` notice — a forced intent never
-  lingers past the dispatch that owned it.
-
-The winning claim moves the operation to its published phase under the
-publication's identity and stamps a typed receipt on every compaction turn
-the publication wrote — the checkpoint and the summary turn of one
-publication carry the same receipt, and the handoff list coalesces them into
-one final handoff per publication. Delivery completes only after the
-publication's transcript flush and metadata save both land: then the
-operation slot and its selection are consumed, the cycle reopens for a new
-request, and the receipt flips to delivered. A crash between the winning
-publication and its metadata save is repaired on restart: transcript
-receipts are reconciled against the persisted snapshot before history is
-resumed, and an interrupted delivery completes exactly as the live
-transaction would — the slot clears, the selection is consumed, and the
-publication's handoff advances to delivered, never re-armed — while a
-delivered operation stays consumed and a cancelled one stays retired. A
-receipt only ever advances its own generation, and a stale snapshot can
-never resurrect or repeat a claimed cycle. A persisted slot still in the
-published phase is completed the same way at restore: it can only be a
-concurrent save's snapshot of the delivery window (the live transaction
-clears the slot before its own save), so restore finishes the delivery
-rather than resuming it. Publication identities are minted
-from the persisted lifecycle revision stamped at the claim, so a restored
-session's later publications never collide with a restored handoff.
-
-The context-pressure nudge lists the loaded skills either way: with
+The context-pressure nudge lists the loaded skill names either way: with
 `compact_context` available it asks for the selection through `reload_skills`;
 without the tool it lists the skills for awareness and keeps its existing
 note advice, never requesting a structured response the model cannot submit.
+It omits descriptions; automatic note elicitation still carries them.
 
 ### Reload delivery after compaction
 
@@ -618,7 +616,7 @@ transcript receipt reconciliation keep a restart from repeating delivery.
 
 ## Evener-wide slash commands
 
-A evener-wide slash command is a markdown file — frontmatter optional — in one
+An Evener-wide slash command is a markdown file — frontmatter optional — in one
 of two places:
 
 - `<any dir from git root to cwd>/.evener/commands/name.md` (project commands)
@@ -634,25 +632,22 @@ last two are parsed but not enforced; their compatibility advisory appears
 only at Full transcript detail).
 
 Expansion substitutes `$ARGUMENTS` and `$1..$9` as inert text. `!`cmd``
-spans and `@file` references in a evener-wide command body never execute or
+spans and `@file` references in an Evener-wide command body never execute or
 read anything — they remain in the expanded text verbatim except that
 argument substitution still applies inside them as inert text — and evener
-warns at load time if a evener-wide command contains `!`` spans. If you want
+warns at load time if an Evener-wide command contains `!`` spans. If you want
 an executable template, package it as a plugin command instead.
 
-**Precedence:** project > user-global > plugin. A evener-wide command shadows
+**Precedence:** project > user-global > plugin. An Evener-wide command shadows
 a plugin command of the same bare name; the plugin command stays reachable
 as `/plugin:name`. Within project commands, the directory closest to your
 cwd wins.
 
 ### Client caveats
 
-- Both desktop surfaces intercept their own built-in slash commands before
-  your input reaches the session: the TUI has its registry (`/status`,
-  `/model`, `/help`, ...) and the web palette has its own, partly different
-  set (`/status`, `/model`, `/help`, `/steer`, `/queue`, ...). A command
-  whose name collides with a client's built-ins is unreachable in that
-  client's typed input — pick another name. Headless input always works.
+- The browser intercepts its built-in slash controls before session input.
+  Avoid names such as `/status`, `/model`, `/help`, `/steer`, and `/queue`.
+  Use distinct names for your commands. Headless input does not use that menu.
 - The web UI opens inline completion when you type `/` in either composer.
   Mod+K opens the separate command palette. Selecting a command in inline
   completion stages an atomic empty-argument invocation. Leaving a leading
@@ -672,7 +667,7 @@ cwd wins.
 ## Plugin commands
 
 Plugins (installed via the marketplace or configured via `plugin_dirs`) may
-ship `commands/*.md` files. These are Claude Code-compatible: in addition
+ship `commands/*.md` files. In addition
 to `$ARGUMENTS` substitution, ``!`cmd` `` spans execute in the session
 environment and `@file` inlines files at working-directory-relative paths
 (the constraint is lexical; symlinks are followed). Only install

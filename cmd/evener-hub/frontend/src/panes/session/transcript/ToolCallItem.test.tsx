@@ -19,7 +19,7 @@ import { ToolCallItem } from "./ToolCallItem";
 import itemStyles from "./toolcallitem.module.css";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
 import { ignoringTurn, itemRendererFor } from "./types";
-import "./tools/shellTool"; // registers the real "shell" descriptor (failed() from the exit code)
+import "./tools/shellTool"; // registers the real "shell" descriptor (its exitCode() feeds the inline exit mark)
 import "./tools/fsTools"; // registers the real "read_file" (openBesidePath) + grep/list_dir/glob (opt-out)
 import "./tools/jobTools"; // registers the real "delegate_send" (openTranscriptRef/openTranscriptInline)
 import "./tools/jobWatch"; // registers the real "job_watch" (hasBody predicate)
@@ -550,7 +550,7 @@ test("the same tool item id has independent disclosure state in different sessio
   expect(rowIsOpen(rows[1]!)).toBe(false);
 });
 
-test("shell: a failing exit code marks the row failed but does not auto-expand it (the real parseShellExitCode heuristic)", () => {
+test("shell: a nonzero exit alone is NOT failed - it shows the inline exit mark and stays collapsed", () => {
   const output = "stdout\n[exit 1]";
   renderTools(
     <ToolCallItem
@@ -560,8 +560,14 @@ test("shell: a failing exit code marks the row failed but does not auto-expand i
     />,
   );
   const details = screen.getByTestId("tool-call-item");
-  expect(details.getAttribute("data-failed")).toBe("true");
-  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
+  expect(details.getAttribute("data-failed")).toBe(null);
+  expect(screen.queryByTestId("failure-glyph")).toBe(null);
+  // The mark is the small attention cross (data-tone), not a danger-toned or
+  // oversized failure glyph.
+  const mark = screen.getByTestId("tool-row-exit");
+  const icon = mark.querySelector("svg");
+  expect(icon?.getAttribute("data-tone")).toBe("attention");
+  expect(icon?.getAttribute("width")).toBe("11");
   expect(rowIsOpen(details)).toBe(false);
 });
 
@@ -968,10 +974,28 @@ test("a whitespace-only error is not a failure (the shared predicate trims befor
   expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe(null);
 });
 
-test("a nonzero exit code is a failure even for a descriptor with no failed() hook", () => {
+test("a nonzero exit code alone is not a failure even for a descriptor with no exitCode() hook", () => {
   registerToolRenderer({ match: "tci_exit_code", summary: () => "s", body: () => <div>b</div> });
   render(<ToolCallItem item={item({ toolName: "tci_exit_code", exitCode: 2 })} turn={turn} live={false} />);
-  expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe("true");
+  expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe(null);
+  expect(screen.getByTestId("tool-row-exit").querySelector("svg")?.getAttribute("data-tone")).toBe("attention");
+});
+
+test("an error text still fails a call with a nonzero exit, and the row shows no exit mark", () => {
+  registerToolRenderer({ match: "tci_exit_err", summary: () => "s", body: () => <div>b</div> });
+  render(
+    <ToolCallItem item={item({ toolName: "tci_exit_err", error: "boom", exitCode: 3 })} turn={turn} live={false} />,
+  );
+  const details = screen.getByTestId("tool-call-item");
+  expect(details.getAttribute("data-failed")).toBe("true");
+  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
+  expect(screen.queryByTestId("tool-row-exit")).toBe(null);
+});
+
+test("a zero exit gets no exit mark", () => {
+  registerToolRenderer({ match: "tci_exit_zero", summary: () => "s", body: () => <div>b</div> });
+  render(<ToolCallItem item={item({ toolName: "tci_exit_zero", exitCode: 0 })} turn={turn} live={false} />);
+  expect(screen.queryByTestId("tool-row-exit")).toBe(null);
 });
 
 test("an empty-string error is not a failure (the wire only stamps failed when error is non-empty)", () => {
@@ -1988,6 +2012,9 @@ test.each(["chat", "intent"] as const)(
         toolName: "shell",
         description: "Checking for stray process records",
         argumentsJSON: JSON.stringify({ command: "git ls-tree -r --name-only HEAD" }),
+        // A real failure: error text (not the exit alone, which is now the
+        // inline mark's job, not a failure).
+        error: "fatal: not a git repository",
         output: "fatal: not a git repository\n[exit 128]",
       }),
     );

@@ -45,10 +45,10 @@ func TestWriterCountsFailuresAsTheyAreWritten(t *testing.T) {
 	if count, ok := w.FailedToolCalls(); !ok || count != 0 {
 		t.Fatalf("FailedToolCalls() = (%d, %t), want a measured 0 before anything is written", count, ok)
 	}
-	if err := w.Append(toolCallTurn("call_1", "shell")); err != nil {
+	if err := w.Append(toolCallTurn("call_1", "read_file")); err != nil {
 		t.Fatalf("Append call: %v", err)
 	}
-	if err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", ToolState: exitState(1)})); err != nil {
+	if err := w.Append(toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})); err != nil {
 		t.Fatalf("Append result: %v", err)
 	}
 	if count, ok := w.FailedToolCalls(); !ok || count != 1 {

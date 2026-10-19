@@ -893,10 +893,8 @@ async function runPane(driver, section) {
         `(() => { const root = document.querySelector("[data-testid='settings-content']"); return root !== null && root.innerText.includes("Browse") ? true : null; })()`,
         { label: "plugins-manager segmented control" },
       );
-      // The segments are Installed / Browse / Marketplaces; the tour lands on
-      // Installed. The registered marketplaces - the host-scoped data - are the
-      // "Marketplaces" segment, so drive the product's own control there.
-      await driver.clickSettingsSegment("Marketplaces");
+      // Sources owns both marketplace registration and additional directories.
+      await driver.clickSettingsSegment("Sources");
       const text = await driver.waitPage(
         `(() => { const el = document.querySelector("[data-testid='settings-content']"); if (el === null) return null; return el.innerText.includes(${JSON.stringify(c.hostMarketplace)}) ? el.innerText : null; })()`,
         {
@@ -917,14 +915,15 @@ async function runPane(driver, section) {
         );
       }
       record.probe =
-        'segmented control "Marketplaces" (the selected host\'s registered marketplaces, seeded through its own known_marketplaces.json)';
+        'segmented control "Sources" (the selected host\'s registered marketplaces, seeded through its own known_marketplaces.json)';
       record.evidence = { hostMarketplace: c.hostMarketplace, textExcerpt: text.slice(0, 400) };
       record.ok = true;
       return record;
     }
     case "plugins": {
       const c = expect.pluginsDir;
-      await driver.openPane(section);
+      await driver.openPane("plugins-manager");
+      await driver.clickSettingsSegment("Sources");
       const text = await driver.waitPage(
         `(() => { const el = document.querySelector("[data-testid='settings-content']"); return el !== null && el.innerText.includes(${JSON.stringify(c.host)}) ? el.innerText : null; })()`,
         { label: "host plugin directory" },

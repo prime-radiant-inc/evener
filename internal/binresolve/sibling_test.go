@@ -17,7 +17,7 @@ func TestResolvePrefersExplicitPath(t *testing.T) {
 	sibling := filepath.Join(dir, "evener-hub")
 	writeExecutable(t, sibling)
 
-	got, err := Resolve("evener-hub", explicit, filepath.Join(dir, "evener-tui"), func(string) (string, error) {
+	got, err := Resolve("evener-hub", explicit, filepath.Join(dir, "evener-doctor"), func(string) (string, error) {
 		return "", errors.New("should not search PATH")
 	})
 	if err != nil {
@@ -47,7 +47,7 @@ func TestResolvePrefersSiblingBeforePath(t *testing.T) {
 	pathHub := filepath.Join(t.TempDir(), "evener-hub")
 	writeExecutable(t, pathHub)
 
-	got, err := Resolve("evener-hub", "", filepath.Join(dir, "evener-tui"), func(string) (string, error) {
+	got, err := Resolve("evener-hub", "", filepath.Join(dir, "evener-doctor"), func(string) (string, error) {
 		return pathHub, nil
 	})
 	if err != nil {
@@ -59,7 +59,7 @@ func TestResolvePrefersSiblingBeforePath(t *testing.T) {
 }
 
 func TestResolveSurfacesLookPathErrorWhenNothingFound(t *testing.T) {
-	_, err := Resolve("evener-hub", "", filepath.Join(t.TempDir(), "evener-tui"), func(string) (string, error) {
+	_, err := Resolve("evener-hub", "", filepath.Join(t.TempDir(), "evener-doctor"), func(string) (string, error) {
 		return "", os.ErrNotExist
 	})
 	if err == nil {
@@ -90,7 +90,7 @@ func TestResolveResolvesRelativeCurrentExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	rel, err := filepath.Rel(cwd, filepath.Join(dir, "evener-tui"))
+	rel, err := filepath.Rel(cwd, filepath.Join(dir, "evener-doctor"))
 	if err != nil {
 		t.Fatalf("filepath.Rel: %v", err)
 	}
@@ -116,21 +116,21 @@ func TestResolveResolvesRelativeCurrentExecutable(t *testing.T) {
 }
 
 func TestResolveFollowsSymlinkedExecutable(t *testing.T) {
-	// /usr/local/bin/evener-tui -> /opt/evener/evener-tui style layout: the
+	// /usr/local/bin/evener-doctor -> /opt/evener/evener-doctor style layout: the
 	// sibling lives next to the real binary, not the symlink.
 	realDir := t.TempDir()
-	realTUI := filepath.Join(realDir, "evener-tui")
-	writeExecutable(t, realTUI)
+	realDoctor := filepath.Join(realDir, "evener-doctor")
+	writeExecutable(t, realDoctor)
 	sibling := filepath.Join(realDir, "evener-hub")
 	writeExecutable(t, sibling)
 
 	linkDir := t.TempDir()
-	linkTUI := filepath.Join(linkDir, "evener-tui")
-	if err := os.Symlink(realTUI, linkTUI); err != nil {
+	linkDoctor := filepath.Join(linkDir, "evener-doctor")
+	if err := os.Symlink(realDoctor, linkDoctor); err != nil {
 		t.Skipf("symlink unsupported: %v", err)
 	}
 
-	got, err := Resolve("evener-hub", "", linkTUI, func(string) (string, error) {
+	got, err := Resolve("evener-hub", "", linkDoctor, func(string) (string, error) {
 		return "", errors.New("should not search PATH")
 	})
 	if err != nil {
@@ -147,13 +147,13 @@ func TestResolveMissingSiblingFallsThroughToPath(t *testing.T) {
 	// No sibling exists alongside currentExecutable; Resolve should
 	// fall through to the PATH lookup hook.
 	dir := t.TempDir()
-	tuiPath := filepath.Join(dir, "evener-tui")
-	writeExecutable(t, tuiPath)
+	doctorPath := filepath.Join(dir, "evener-doctor")
+	writeExecutable(t, doctorPath)
 	// Deliberately do NOT create a sibling "evener-hub" next to it.
 
 	pathHub := filepath.Join(t.TempDir(), "evener-hub")
 	writeExecutable(t, pathHub)
-	got, err := Resolve("evener-hub", "", tuiPath, func(name string) (string, error) {
+	got, err := Resolve("evener-hub", "", doctorPath, func(name string) (string, error) {
 		return pathHub, nil
 	})
 	if err != nil {
@@ -173,7 +173,7 @@ func TestSiblingDirHandlesEmptyAndMissing(t *testing.T) {
 	}
 	// A path that does not exist still yields a usable directory (Abs
 	// succeeds; EvalSymlinks is best-effort).
-	dir, ok := SiblingDir(filepath.Join(t.TempDir(), "nonexistent", "evener-tui"))
+	dir, ok := SiblingDir(filepath.Join(t.TempDir(), "nonexistent", "evener-doctor"))
 	if !ok {
 		t.Fatal("SiblingDir(missing) returned ok=false")
 	}
@@ -227,7 +227,7 @@ func TestIsExecutable_Directory(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "evener-hub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Resolve("evener-hub", "", filepath.Join(dir, "evener-tui"), func(string) (string, error) {
+	_, err := Resolve("evener-hub", "", filepath.Join(dir, "evener-doctor"), func(string) (string, error) {
 		return "", errors.New("should not reach PATH")
 	})
 	if err == nil {
@@ -246,7 +246,7 @@ func TestResolve_SiblingExistsButNotExecutable_FallsThroughToPATH(t *testing.T) 
 	pathHub := filepath.Join(t.TempDir(), "evener-hub")
 	writeExecutable(t, pathHub)
 
-	got, err := Resolve("evener-hub", "", filepath.Join(dir, "evener-tui"), func(string) (string, error) {
+	got, err := Resolve("evener-hub", "", filepath.Join(dir, "evener-doctor"), func(string) (string, error) {
 		return pathHub, nil
 	})
 	if err != nil {
@@ -322,7 +322,7 @@ func TestResolveWithNilLookPath(t *testing.T) {
 	// Passing nil lookPath triggers the default exec.LookPath branch.
 	// Since evener-hub is unlikely to be on the real PATH, this should error.
 	const name = "evener-hub-definitely-not-on-path"
-	_, err := Resolve(name, "", filepath.Join(t.TempDir(), "evener-tui"), nil)
+	_, err := Resolve(name, "", filepath.Join(t.TempDir(), "evener-doctor"), nil)
 	if err == nil {
 		t.Fatal("expected error when lookPath is nil and no candidate exists")
 	}

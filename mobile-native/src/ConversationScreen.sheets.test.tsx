@@ -27,7 +27,6 @@ import {
 	playedHaptics,
 	render,
 	renderedText,
-	textOf,
 	screenConnection,
 	settle,
 	unmountMountedTrees,
@@ -39,7 +38,7 @@ import { forgetHistoryForHub } from "./session/historyMemory";
 import { detailLevels, forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
 import { SessionHeader } from "./session/SessionHeader";
-import { SessionTitle } from "./session/SessionTitle";
+import { LiveSessionTitle } from "./session/LiveSessionTitle";
 import { readerKey } from "./readerPosition";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
 import { sheetKey } from "./sheet/sheetHosts";
@@ -356,20 +355,21 @@ const withCapabilities = (capabilities: Partial<Thread["evener"]["capabilities"]
 	evener: { ...thread.evener, capabilities: { ...thread.evener.capabilities, ...capabilities } },
 });
 
-// A session with shell jobs and no subagents has an Activity list too, and
-// the session can't tell from its read whether it has jobs, so the menu
-// offers Activity whenever it's connected, as it offers Tasks.
-it("offers Activity from the header menu with no subagents", async () => {
+// A session with shell jobs and no subagents has a Jobs list too, and the
+// session can't tell from its read whether it has jobs, so the menu offers
+// Jobs whenever it's connected, as it offers Tasks.
+it("offers Jobs from the header menu with no subagents", async () => {
 	const { tree } = mount();
 	await settle();
 
-	act(() => menuAction("Activity").onPress());
+	act(() => menuAction("Jobs").onPress());
 
-	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+	expect(navigation.navigate).toHaveBeenCalledWith("Activity", {
 		hubId: "hub-1",
 		ref,
 		threadId: "thread-1",
 		title: "Session",
+		kind: "jobs",
 	});
 	await act(async () => tree.unmount());
 });
@@ -434,27 +434,15 @@ it("titles the header with the session's state, and opens its info on a press", 
 
 	const title = header().headerTitle;
 	if (typeof title !== "function") throw new Error("no header title component");
-	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof SessionTitle>>;
-	expect(element.type).toBe(SessionTitle);
-	expect(element.props).toMatchObject({ title: "Session", line: { state: "idle" } });
+	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof LiveSessionTitle>>;
+	expect(element.type).toBe(LiveSessionTitle);
+	expect(element.props.title).toBe("Session");
+	expect(element.props.store?.getState).toEqual(expect.any(Function));
 	act(() => element.props.onPress());
 
 	expect(navigation.navigate).toHaveBeenCalledWith("SessionInfoSheet", { hubId: "hub-1", ref });
 	// The sheet reads the session through the host the screen provides.
 	expect(sessionInfoHosts.get(sheetKey("hub-1", ref))?.session).toMatchObject({ ref, threadId: "thread-1" });
-	await act(async () => tree.unmount());
-});
-
-it("opens New session like this one: its host, folder, model and effort", async () => {
-	const { tree } = mount({ ...thread, evener: { ...thread.evener, reasoningEffort: "high" } });
-	await settle();
-
-	act(() => menuAction("New session like this").onPress());
-	expect(navigation.navigate).toHaveBeenCalledWith("NewSession", {
-		hubId: "hub-1",
-		hubName: expect.any(String),
-		like: { host: "local", cwd: "/tmp", model: "scripted", effort: "high" },
-	});
 	await act(async () => tree.unmount());
 });
 
@@ -699,6 +687,20 @@ it("opens Find in session from the Android ⋯ menu", async () => {
 	await act(async () => tree.unmount());
 });
 
+it("draws the header's ⋯ fallback as a symbol that follows Dynamic Type", async () => {
+	const { tree } = mount();
+	await settle();
+
+	const fallback = render(menuButton());
+	// The fallback (Android and older RN; iOS draws the native menu) is a
+	// SymbolView ellipsis, never a Text glyph pinned against Dynamic Type.
+	const [symbol] = fallback.root.findAll((node) => String(node.type) === "SymbolView");
+	expect(symbol?.props.name).toBe("ellipsis");
+	expect(fallback.root.findAll((node) => node.props.allowFontScaling === false)).toEqual([]);
+	act(() => fallback.unmount());
+	await act(async () => tree.unmount());
+});
+
 it("shuts the session down after a confirmation and stays on it (ruling 19)", async () => {
 	const { tree, requests } = mount(withCapabilities({ shutdown: true }), { "thread/shutdown": {} });
 	await settle();
@@ -937,7 +939,7 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 	await act(async () => tree.unmount());
 });
 
-it("opens the live run where tool calls show, and leaves it to its line at Intent", async () => {
+it("opens the live run where tool calls show, and shows the action's own line at Intent", async () => {
 	const running = {
 		...thread,
 		status: { type: "active" },
@@ -968,7 +970,11 @@ it("opens the live run where tool calls show, and leaves it to its line at Inten
 	const folds = () => withTestID(tree, "run-fold");
 	act(() => detailLevels("hub-1").set(ref, "intent"));
 	await settle();
-	expect(folds()[0]?.props.accessibilityState).toEqual({ expanded: false });
+	// Intent draws one line per action, never a folded run (Jesse,
+	// 2026-10-18): the call is a step row of its own, so there is no run to
+	// fold, and its words are on screen.
+	expect(folds()).toEqual([]);
+	expect(renderedText(tree)).toContain("Ran ls");
 	act(() => detailLevels("hub-1").set(ref, "tools"));
 	await settle();
 	expect(folds()).toEqual([]);
@@ -1004,11 +1010,11 @@ const busy = {
 	},
 } as unknown as Thread;
 
-// Spec 13.1: the tray names the hub's running-subagent count, the one the
-// Board's row names, polled for this session alone. The thread's own
+// Spec 13.1: the live status line names the hub's running-subagent count, the
+// one the Board's row names, polled for this session alone. The thread's own
 // delegates list only the subagent it started itself; the hub counts 3 at
 // every depth.
-it("names the hub's running-subagent count in the tray, as the Board's row does", async () => {
+it("names the hub's running-subagent count in the live status line, as the Board's row does", async () => {
 	const working = { ...busy, status: { type: "active" } } as Thread;
 	const { tree, requests } = mount(working, {
 		"evener/activity/read": { sessions: [{ ref, minutes: [0, 0, 0, 0, 0, 0, 0], runningSubagents: 3 }] },
@@ -1016,8 +1022,13 @@ it("names the hub's running-subagent count in the tray, as the Board's row does"
 	await settle();
 	const reads = requests.filter((request) => request.method === "evener/activity/read");
 	expect(reads.map((request) => request.params)).toContainEqual({ refs: [ref] });
-	const [tray] = withTestID(tree, "status-tray-line");
-	expect(tray && textOf(tray)).toMatch(/\b3\b/);
+	const title = header().headerTitle;
+	if (typeof title !== "function") throw new Error("no header title component");
+	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof LiveSessionTitle>>;
+	// The title reads the session itself and builds the live line, which names
+	// the running-subagent count the activity read carries.
+	const rendered = render(element);
+	expect(renderedText(rendered)).toContain("3");
 	await act(async () => tree.unmount());
 });
 
@@ -1103,20 +1114,31 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	session.measure(48);
 	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
 
-	act(() => chip("Subagents, 1").props.onPress());
-	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+	act(() => chip("Agents, 1").props.onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("Activity", {
 		hubId: "hub-1",
 		ref,
 		threadId: "thread-1",
 		title: "Session",
+		kind: "agents",
 	});
 	vi.mocked(navigation.navigate).mockClear();
-	act(() => menuAction("Activity").onPress());
-	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+	act(() => menuAction("Agents").onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("Activity", {
 		hubId: "hub-1",
 		ref,
 		threadId: "thread-1",
 		title: "Session",
+		kind: "agents",
+	});
+	vi.mocked(navigation.navigate).mockClear();
+	act(() => menuAction("Jobs").onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("Activity", {
+		hubId: "hub-1",
+		ref,
+		threadId: "thread-1",
+		title: "Session",
+		kind: "jobs",
 	});
 
 	act(() => chip("Tasks, 1 of 2 settled").props.onPress());
@@ -1150,7 +1172,7 @@ it("hides the Subagents and Tasks chips once the connection bar itself would say
 	try {
 		const { block } = sessionList(tree);
 		const label = (text: string) => block().findAll((node) => node.props.accessibilityLabel === text);
-		expect(label("Subagents, 1")).toHaveLength(1);
+		expect(label("Agents, 1")).toHaveLength(1);
 
 		// The connection drops; the thread's cached delegates/tasks survive.
 		harness.connection = { ...harness.connection, ...screenConnection(client, "reconnecting") };
@@ -1158,13 +1180,13 @@ it("hides the Subagents and Tasks chips once the connection bar itself would say
 		// A blip shorter than the bar's own grace period (spec 14) - the chips
 		// stay exactly as visible as they were, since the bar itself says
 		// nothing yet either.
-		expect(label("Subagents, 1")).toHaveLength(1);
+		expect(label("Agents, 1")).toHaveLength(1);
 
 		act(() => {
 			vi.advanceTimersByTime(2000);
 		});
 		act(() => tree.update(screen()));
-		expect(label("Subagents, 1")).toEqual([]);
+		expect(label("Agents, 1")).toEqual([]);
 		expect(label("Tasks, 1 of 2 settled")).toEqual([]);
 		// Goal and Queue need no connection, so they still show.
 		expect(label("Goal, blocked")).toHaveLength(1);
@@ -1189,12 +1211,13 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 				(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === label,
 			)[0];
 		vi.mocked(navigation.navigate).mockClear();
-		act(() => chip("Subagents, 1").props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+		act(() => chip("Agents, 1").props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("Activity", {
 			hubId: "hub-1",
 			ref,
 			threadId: "thread-1",
 			title: "Session",
+			kind: "agents",
 		});
 	} finally {
 		vi.useRealTimers();
@@ -1364,7 +1387,7 @@ it("says Update needed, with the spec's hint, when no retry can fix the connecti
 	await act(async () => tree.unmount());
 });
 
-it("says Reconnecting… and then how old the session is while the hub is out of reach", async () => {
+it("says why the connection closed while the hub is out of reach, and goes without a word when it returns", async () => {
 	const { tree, client } = mount(busy);
 	await settle();
 	vi.useFakeTimers();
@@ -1381,20 +1404,18 @@ it("says Reconnecting… and then how old the session is while the hub is out of
 				vi.advanceTimersByTime(ms);
 			});
 		expect(status()).toBeNull();
+		// A blip this fresh reconnects without a word.
 		advance(2000);
-		const reconnecting = status();
-		expect(reconnecting).not.toBeNull();
+		// Once the drop is old enough to speak, the bar carries the close's own
+		// sentence — the hub's words for why it is out of reach.
+		const why = status();
+		expect(why).toBe(OLD_TRANSPORT_ERROR);
 		advance(28_000);
-		const offline = status();
-		expect(offline).not.toBe(reconnecting);
-		expect(offline).toMatch(/\b1m\b/);
-		// The status re-renders once a minute of the data's age, one tick per
-		// act.
-		advance(30_000);
-		advance(60_000);
-		advance(60_000);
-		expect(status()).toMatch(/\b3m\b/);
-		expect(renderedText(tree)).not.toContain(OLD_TRANSPORT_ERROR);
+		// The sentence stays while the connection stays down — it runs no clock.
+		expect(status()).toBe(why);
+		advance(120_000);
+		expect(status()).toBe(why);
+		expect(renderedText(tree)).toContain(OLD_TRANSPORT_ERROR);
 		expect(hasTestID(tree, "connection-status")).toBe(true);
 
 		// Back in reach, the bar goes without a word.
@@ -1649,9 +1670,12 @@ it.each([false, true])("jumping live cancels browse demand and preserves Find (F
 		openFind(tree, "unique search needle");
 		await advanceHistory(0);
 	}
-	const composer = tree.root.findAll((node) => typeof node.props.onJumpToLive === "function")[0];
-	expect(composer).toBeDefined();
-	act(() => composer.props.onJumpToLive());
+	// The live state line, in the nav bar title, is what jumps now. The title
+	// leaves the tree while Find is open, so render it from the header options.
+	const title = header().headerTitle;
+	if (typeof title !== "function") throw new Error("no header title component");
+	const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof LiveSessionTitle>>;
+	act(() => element.props.onJumpToLive?.());
 	await advanceHistory(60_000);
 	expect(attempts).toBe(find ? 2 : 1);
 	expect(renderedText(tree).includes("unique search needle")).toBe(find);
@@ -1877,8 +1901,11 @@ it.each(["close Find", "jump live", "remove hub", "new binding"])(
 				act(() => bar.props.onDone());
 			}
 			if (stop === "jump live") {
-				const composer = journey.tree.root.find((node) => typeof node.props.onJumpToLive === "function");
-				act(() => composer.props.onJumpToLive());
+				// The live state line, in the nav bar title, is what jumps now.
+				const title = header().headerTitle;
+				if (typeof title !== "function") throw new Error("no header title component");
+				const element = title({ children: "Session" }) as ReactElement<ComponentProps<typeof LiveSessionTitle>>;
+				act(() => element.props.onJumpToLive?.());
 			}
 			journey.back();
 			if (stop === "remove hub") forgetHistoryForHub("hub-1");

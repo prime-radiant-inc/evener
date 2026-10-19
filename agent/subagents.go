@@ -2186,10 +2186,7 @@ func stableDelegateFatalRun(err error) bool {
 
 func stableDelegateFinish(sess *Session, result string, runErr error) delegateFinish {
 	inputs := delegateTerminalRunInputs{session: sess, result: result, runErr: runErr}
-	if sess != nil {
-		inputs.communicated = sess.Communicated()
-		inputs.structuredResult, inputs.structuredResultPresent = sess.communicateStructuredResult()
-	}
+	inputs.captureCommunicateReport(sess)
 	finish := stableDelegateFinishFromRun(inputs)
 	return finish
 }
@@ -2207,21 +2204,18 @@ func (a *subagent) stableDelegateFinish(result string, runErr error) delegateFin
 		descriptor = cloneDelegateStartDescriptor(*a.stableDescriptor)
 	}
 	a.mu.Unlock()
-	structuredResult, structuredResultPresent := a.sess.communicateStructuredResult()
 	inputs := delegateTerminalRunInputs{
-		session:                 a.sess,
-		result:                  result,
-		runErr:                  runErr,
-		communicated:            a.sess.Communicated(),
-		structuredResult:        structuredResult,
-		structuredResultPresent: structuredResultPresent,
-		descriptor:              descriptor,
-		startedAt:               startedAt,
-		endedAt:                 endedAt,
-		latestActivityAt:        endedAt,
-		usage:                   cumulativeUsageSnapshot(a.sess.CumulativeUsageSnapshot()),
-		stoppedByUser:           stoppedByUser,
+		session:          a.sess,
+		result:           result,
+		runErr:           runErr,
+		descriptor:       descriptor,
+		startedAt:        startedAt,
+		endedAt:          endedAt,
+		latestActivityAt: endedAt,
+		usage:            cumulativeUsageSnapshot(a.sess.CumulativeUsageSnapshot()),
+		stoppedByUser:    stoppedByUser,
 	}
+	inputs.captureCommunicateReport(a.sess)
 	reporter := a.sess
 	if controller := a.sess.delegateController; controller != nil {
 		controller.mu.Lock()
@@ -2271,6 +2265,22 @@ type delegateTerminalRunInputs struct {
 	// stoppedByUser: the run was cancelled on request (requestRunCancel), so a
 	// cancelled run with nothing to report tells its coordinator so.
 	stoppedByUser bool
+}
+
+// captureCommunicateReport keeps the accepted human report and structured value
+// paired without changing the generic reply or a failed run's diagnostic text.
+func (inputs *delegateTerminalRunInputs) captureCommunicateReport(sess *Session) {
+	if sess == nil {
+		return
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	inputs.communicated = sess.comm.called
+	inputs.structuredResult = sess.comm.structured
+	inputs.structuredResultPresent = sess.comm.structured != nil
+	if inputs.communicated && inputs.runErr == nil {
+		inputs.result = sess.comm.text
+	}
 }
 
 type delegateTerminalPacketMetadata struct {

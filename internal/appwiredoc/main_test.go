@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"text/template"
@@ -382,4 +383,117 @@ func TestBuildIncludesJobOutputPage(t *testing.T) {
 		return
 	}
 	t.Fatal("build() missing JobOutputPage")
+}
+
+func TestNestedSchemaVisibility(t *testing.T) {
+	value := struct {
+		Visible struct {
+			Clients map[string][]*appwire.ClientInfo `json:"clients"`
+		} `json:"visible"`
+		Ignored appwire.Capabilities `json:"-"`
+		hidden  appwire.Thread
+	}{}
+	types := map[string]typeView{}
+	registerType(types, value)
+	registerType(types, value) // Shared roots do not duplicate or re-enter schemas.
+	if len(types) != 2 || len(types["ClientInfo"].Fields) != 2 {
+		t.Fatalf("want only root and ClientInfo schemas, got %+v", types)
+	}
+}
+
+func TestReachableWireSchemasAndLinks(t *testing.T) {
+	d := build()
+	types := map[string]typeView{}
+	for _, typ := range d.Types {
+		if _, exists := types[typ.Name]; exists {
+			t.Fatalf("duplicate schema %s", typ.Name)
+		}
+		types[typ.Name] = typ
+	}
+	for _, name := range []string{"Thread", "InputItem", "MutationReceipt", "ClientInfo", "Capabilities", "ThreadContentParams"} {
+		if len(types[name].Fields) == 0 {
+			t.Errorf("missing reachable schema %s", name)
+		}
+	}
+	var markdown []byte
+	if code := run([]string{"-out", "unused"}, os.Stderr, func(_ string, data []byte, _ os.FileMode) error {
+		markdown = data
+		return nil
+	}); code != 0 {
+		t.Fatalf("run = %d", code)
+	}
+	// Check navigation structure, not explanatory copy.
+	links := regexp.MustCompile(`\]\(#([^)]*)\)`).FindAllSubmatch(markdown, -1)
+	linkTargets := map[string]bool{}
+	for _, match := range links {
+		linkTargets[string(match[1])] = true
+	}
+	for _, name := range []string{"InitializeParams", "InitializeResponse", "ClientInfo", "Thread", "ThreadContentParams", "InputItem"} {
+		anchor := strings.ToLower(name)
+		if !linkTargets[anchor] {
+			t.Errorf("missing schema link #%s", anchor)
+		}
+	}
+	// Start independently at every catalog root, not the generator's registered
+	// types. A visited set makes recursive schemas safe and repeated edges cheap.
+	var pending []reflect.Type
+	for _, method := range appwire.Methods {
+		pending = append(pending, reflect.TypeOf(method.Params))
+		if arms, union := appwire.MethodResultArms[method.Name]; union {
+			for _, arm := range arms {
+				pending = append(pending, reflect.TypeOf(arm))
+			}
+		} else {
+			pending = append(pending, reflect.TypeOf(method.Result))
+		}
+	}
+	for _, notification := range appwire.Notifications {
+		pending = append(pending, reflect.TypeOf(notification.Payload))
+	}
+	seen := map[reflect.Type]bool{}
+	for len(pending) > 0 {
+		typ := pending[0]
+		pending = pending[1:]
+		if typ == nil || seen[typ] {
+			continue
+		}
+		seen[typ] = true
+		if typ.PkgPath() != "" && typ.PkgPath() != "primeradiant.com/evener/appwire" {
+			continue
+		}
+		if typ.Name() != "" && typ.PkgPath() != "" {
+			if _, ok := types[typ.Name()]; !ok {
+				t.Errorf("reachable catalog type %s has no schema", typ)
+			}
+			if !linkTargets[strings.ToLower(typ.Name())] {
+				t.Errorf("reachable catalog type %s has no incoming link", typ)
+			}
+		}
+		switch typ.Kind() {
+		case reflect.Pointer, reflect.Array, reflect.Slice:
+			pending = append(pending, typ.Elem())
+		case reflect.Map:
+			pending = append(pending, typ.Key(), typ.Elem())
+		case reflect.Struct:
+			for field := range typ.Fields() {
+				if field.PkgPath == "" && field.Tag.Get("json") != "-" {
+					pending = append(pending, field.Type)
+				}
+			}
+		}
+	}
+	for _, name := range []string{"Time", "Client", "Message"} {
+		if _, ok := types[name]; ok {
+			t.Errorf("implementation type %s leaked into schemas", name)
+		}
+	}
+	anchors := map[string]bool{}
+	for _, match := range regexp.MustCompile("(?m)^### `(\\w+)`$").FindAllSubmatch(markdown, -1) {
+		anchors[strings.ToLower(string(match[1]))] = true
+	}
+	for _, match := range links {
+		if !anchors[string(match[1])] {
+			t.Errorf("unresolved schema link %s", match[1])
+		}
+	}
 }

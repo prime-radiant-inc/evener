@@ -5,6 +5,7 @@
 import type { NavigationProjectSummary, SearchResponse, SearchResult } from "@evener/appwire-client";
 import { groupSearchResults, type GroupedSearchRow } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { reconnectDelay } from "../hubConnection";
 import { type BoardState, decisiveState } from "./attention";
 
 export const SEARCH_DEBOUNCE = 250;
@@ -37,6 +38,16 @@ export function createSearchController(): SearchController {
 	let client: ConversationClientLike | null = null;
 	let snapshot: SearchSnapshot = { query: "", results: null, searching: false, failed: false };
 	let timer: ReturnType<typeof setTimeout> | null = null;
+	// The re-ask a failed search arms on its own, on the same capped backoff
+	// the Board's failed reads retry on: nothing else would re-ask while the
+	// query and client stand still. A new query, a client change or a landing
+	// answer resets the count; the re-ask chain itself grows it.
+	let reaskCount = 0;
+	let reask: ReturnType<typeof setTimeout> | null = null;
+	const clearReask = () => {
+		if (reask !== null) clearTimeout(reask);
+		reask = null;
+	};
 	// Bumped by every request and whatever abandons one, so only the newest
 	// request's answer lands.
 	let request = 0;
@@ -51,20 +62,31 @@ export function createSearchController(): SearchController {
 	const abandon = () => {
 		if (timer !== null) clearTimeout(timer);
 		timer = null;
+		clearReask();
 		request++;
+		reaskCount = 0;
 	};
 	const ask = () => {
 		timer = null;
+		clearReask();
 		if (!client || !snapshot.query) return;
 		const current = ++request;
 		const query = snapshot.query;
 		publish({ searching: true, failed: false });
 		client.request("evener/search", { query }).then(
 			(results) => {
-				if (current === request) publish({ results, searching: false });
+				if (current === request) {
+					publish({ results, searching: false });
+					reaskCount = 0;
+				}
 			},
 			() => {
-				if (current === request) publish({ searching: false, failed: true });
+				if (current !== request) return;
+				publish({ searching: false, failed: true });
+				// Ask again on the same backoff while the query and client stay
+				// unchanged; a new query, client or dispose clears it.
+				reaskCount += 1;
+				reask = setTimeout(ask, reconnectDelay(reaskCount));
 			},
 		);
 	};

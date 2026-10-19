@@ -1,6 +1,7 @@
+import { space } from "./design/tokens";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { KeyboardAvoidingView, Platform, ScrollView, TextInput, useWindowDimensions, View } from "react-native";
+import { View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { KeybindingsRule } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
@@ -12,10 +13,20 @@ import {
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import type { HubRoutes } from "./hub/hubSheetContext";
-import { allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import { Spinner } from "./sheet/Spinner";
-import { Button } from "./sheet/Grouped";
+import {
+	Button,
+	Group,
+	GroupedPage,
+	GroupFooter,
+	Row,
+	TextFieldRow,
+	useErrorInView,
+	useFormError,
+} from "./sheet/Grouped";
+import { HeaderButton } from "./sheet/HeaderButton";
 
 function shortcutLabel(chord: string): string {
 	return chord.replaceAll("$mod", "Command / Control").replaceAll("Meta", "Command").replaceAll("Alt", "Option");
@@ -24,24 +35,24 @@ function shortcutLabel(chord: string): string {
 function RuleSummary({ rules }: { rules: readonly KeybindingsRule[] }) {
 	const preview = keybindingPreview(rules);
 	return (
-		<View style={{ gap: 12 }}>
+		<Group>
 			{rules.length === 0 ? (
-				<Copy muted>All shortcuts use their defaults.</Copy>
+				<Row label="All shortcuts use their defaults" />
 			) : (
 				rules.map((rule, index) => (
-					<View
+					<Row
+						selectable
 						key={JSON.stringify([
 							rule.action,
 							rule.chord,
 							rules.slice(0, index).filter((other) => other.action === rule.action).length,
 						])}
-					>
-						<Copy>{preview.rows.find((row) => row.actionId === rule.action)?.title ?? rule.action}</Copy>
-						<Copy muted>{rule.chord === null ? "Unbound" : shortcutLabel(rule.chord)}</Copy>
-					</View>
+						label={preview.rows.find((row) => row.actionId === rule.action)?.title ?? rule.action}
+						sub={rule.chord === null ? "Unbound" : shortcutLabel(rule.chord)}
+					/>
 				))
 			)}
-		</View>
+		</Group>
 	);
 }
 
@@ -52,8 +63,7 @@ export function KeybindingPreferencesScreen({
 	const connection = useConnection();
 	const preferences = useNativePreferences();
 	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useFormError();
 	const scope = useMemo(
 		() => ({
 			model: preferences.model,
@@ -124,32 +134,46 @@ export function KeybindingPreferencesScreen({
 		? offlineStorageErrorMessage(preferences.offlineStorageUnavailable)
 		: null;
 	const shownError = error
-		? { source: "action", message: error }
+		? { source: "action", message: error.message }
 		: domain?.error
 			? { source: "store", message: domain.error }
 			: offlineStorageError
 				? { source: "storage", message: offlineStorageError }
 				: null;
+	const errorMessage = shownError?.message;
+	const errorReport = useMemo(() => error ?? (errorMessage ? { message: errorMessage } : null), [error, errorMessage]);
+	const scrollRef = useErrorInView(errorReport);
 	if (connection.activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	return (
-		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.background }]}>
-			<KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-				<ScrollView
-					keyboardShouldPersistTaps="handled"
-					keyboardDismissMode="on-drag"
-					contentContainerStyle={{ padding: 20, gap: 16 }}
-				>
-					<Copy>{connection.activeProfile.name}</Copy>
-					<Copy muted>
-						Configure this hub’s web keyboard shortcuts. This preview uses Apple keys. The web character-key setting can
-						turn the ? shortcut off.
-					</Copy>
-					{domain?.support === "unsupported" && <Copy>This hub does not support keyboard shortcut settings.</Copy>}
-					{(!domain || domain.loading) && <Spinner label="Loading keyboard shortcuts" />}
+		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
+			{!editor && domain?.draft && !domain.conflict && (
+				<View style={{ alignItems: "flex-end", paddingHorizontal: space.margin }}>
+					<HeaderButton
+						strong
+						label="Save changes"
+						disabled={busy}
+						onPress={() => {
+							if (model) run(() => model.saveKeybindings());
+						}}
+					/>
+				</View>
+			)}
+			<GroupedPage scrollRef={scrollRef}>
+				<View style={{ paddingHorizontal: space.labelInset }}>
 					<ErrorMessage
 						message={shownError?.message ?? null}
 						testID={shownError ? `keybinding-error:${shownError.source}` : undefined}
 					/>
+				</View>
+				<Group label={connection.activeProfile.name} selectableLabel>
+					<Row
+						label="Web keyboard shortcuts"
+						sub="Configure this hub’s web keyboard shortcuts. This preview uses Apple keys. The web character-key setting can turn the ? shortcut off."
+					/>
+				</Group>
+				<View style={{ paddingHorizontal: space.labelInset, gap: 12 }}>
+					{domain?.support === "unsupported" && <Copy>This hub does not support keyboard shortcut settings.</Copy>}
+					{(!domain || domain.loading) && <Spinner label="Loading keyboard shortcuts" />}
 					{domain?.writeUncertain && (
 						<Copy>
 							The save could not be confirmed. Your proposal is kept on this phone. Check the hub before making another
@@ -199,37 +223,32 @@ export function KeybindingPreferencesScreen({
 							onPress={() => run(() => model.refresh())}
 						/>
 					)}
-					{editor ? (
-						<>
-							<Copy>{action?.title ?? editor.actionId}</Copy>
-							<Copy muted>
-								{action
-									? `Current preview: ${action.shortcuts.map(shortcutLabel).join(" or ") || "Unbound"}`
-									: "This action is unavailable in this version."}
-							</Copy>
-							<TextInput
-								accessibilityLabel="Shortcut"
+				</View>
+				{editor ? (
+					<>
+						<Group label={action?.title ?? editor.actionId} selectableLabel>
+							<Row
+								selectable
+								label="Current preview"
+								sub={
+									action
+										? `Current preview: ${action.shortcuts.map(shortcutLabel).join(" or ") || "Unbound"}`
+										: "This action is unavailable in this version."
+								}
+							/>
+							<TextFieldRow
+								label="Shortcut"
 								value={editor.chord}
 								onChangeText={(chord) => navigation.setParams({ editor: { ...editor, chord } })}
-								editable={!busy && !!action}
-								autoCapitalize="none"
-								autoCorrect={false}
+								disabled={busy || !action}
 								placeholder="Meta+Shift+P"
-								placeholderTextColor={colors.secondary}
-								style={{
-									borderWidth: 1,
-									borderColor: colors.border,
-									borderRadius: 12,
-									padding: 14,
-									color: colors.text,
-									fontSize: 17 * (Platform.OS === "ios" ? fontScale : 1),
-								}}
-								allowFontScaling={allowFontScaling}
 							/>
-							<Copy muted>
-								Use + between keys. Meta means Command, Alt means Option, and $mod uses Command on Apple or Control
-								elsewhere. Put a space between successive key presses.
-							</Copy>
+						</Group>
+						<GroupFooter>
+							Use + between keys. Meta means Command, Alt means Option, and $mod uses Command on Apple or Control
+							elsewhere. Put a space between successive key presses.
+						</GroupFooter>
+						<Group>
 							<Button
 								primary
 								compact
@@ -247,12 +266,13 @@ export function KeybindingPreferencesScreen({
 									closeEditor();
 								}}
 							/>
-						</>
-					) : (
-						<>
-							{domain?.draft && (
-								<View style={{ gap: 12 }}>
-									<Copy>Changes saved on this phone</Copy>
+						</Group>
+					</>
+				) : (
+					<>
+						{domain?.draft && (
+							<Group label="Changes saved on this phone">
+								<View style={{ padding: space.rowInset, gap: space.rowGap }}>
 									{domain.conflict ? (
 										<>
 											<Copy>The hub has different shortcuts. Review both versions before replacing its settings.</Copy>
@@ -301,15 +321,6 @@ export function KeybindingPreferencesScreen({
 									) : (
 										<>
 											<Button
-												primary
-												compact
-												label="Save changes"
-												disabled={busy}
-												onPress={() => {
-													if (model) run(() => model.saveKeybindings());
-												}}
-											/>
-											<Button
 												text
 												label="Discard changes"
 												disabled={busy}
@@ -320,59 +331,49 @@ export function KeybindingPreferencesScreen({
 										</>
 									)}
 								</View>
-							)}
-							{preview.warnings.map((warning, index) => (
-								<Copy
-									muted
-									key={JSON.stringify([
-										warning.rule,
-										warning.reason,
-										warning.conflictWith,
-										preview.warnings
-											.slice(0, index)
-											.filter((other) => JSON.stringify(other) === JSON.stringify(warning)).length,
-									])}
-								>
-									{warning.message}. This rule is kept when you edit other shortcuts.
-								</Copy>
-							))}
-							{domain?.confirmed &&
-								preview.rows.map((row) => (
-									<View
+							</Group>
+						)}
+						{preview.warnings.map((warning, index) => (
+							<GroupFooter
+								selectable
+								key={JSON.stringify([
+									warning.rule,
+									warning.reason,
+									warning.conflictWith,
+									preview.warnings.slice(0, index).filter((other) => JSON.stringify(other) === JSON.stringify(warning))
+										.length,
+								])}
+							>
+								{`${warning.message}. This rule is kept when you edit other shortcuts.`}
+							</GroupFooter>
+						))}
+						{domain?.confirmed && (
+							<Group label="Shortcuts">
+								{preview.rows.map((row) => (
+									<Row
+										selectable
 										key={row.actionId}
-										style={{
-											borderTopWidth: 0.5,
-											borderColor: colors.border,
-											paddingTop: 10,
-											gap: 2,
+										label={row.title}
+										sub={`${row.shortcuts.map(shortcutLabel).join(" or ") || "Unbound"} · ${row.customized ? "Custom" : "Default"}`}
+										chevron
+										disabled={busy}
+										onPress={() => {
+											setError(null);
+											const raw = rules.findLast((rule) => rule.action === row.actionId);
+											navigation.setParams({
+												editor: {
+													actionId: row.actionId,
+													chord: raw?.chord ?? row.shortcuts[0] ?? "",
+												},
+											});
 										}}
-									>
-										<Button
-											text
-											label={row.title}
-											disabled={busy}
-											accessibilityLabel={`Edit ${row.title}`}
-											onPress={() => {
-												setError(null);
-												const raw = rules.findLast((rule) => rule.action === row.actionId);
-												navigation.setParams({
-													editor: {
-														actionId: row.actionId,
-														chord: raw?.chord ?? row.shortcuts[0] ?? "",
-													},
-												});
-											}}
-										/>
-										<Copy muted>
-											{row.shortcuts.map(shortcutLabel).join(" or ") || "Unbound"}
-											{row.customized ? " · Custom" : " · Default"}
-										</Copy>
-									</View>
+									/>
 								))}
-						</>
-					)}
-				</ScrollView>
-			</KeyboardAvoidingView>
+							</Group>
+						)}
+					</>
+				)}
+			</GroupedPage>
 		</SafeAreaView>
 	);
 }

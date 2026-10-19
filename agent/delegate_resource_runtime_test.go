@@ -891,16 +891,15 @@ func TestDelegateResourceRuntime_CommunicateSettlesExactlyOnce(t *testing.T) {
 func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDelivery(t *testing.T) {
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
-	sess := &Session{comm: communicateResult{called: true, structured: map[string]any{"answer": "stable"}}}
+	const report = "Prepared findings\nparser.go:42\nExporter remains unchecked"
+	output := communicateDefaultEnvelope("Prepared summary", map[string]any{"answer": "stable"})
+	sess := newCompetingCommunicateSession(t, nil)
+	execCommunicateCall(t, sess, "prepared-report", communicateArgsFor(nil, report, output))
+	reply, _ := sess.communicatedReply()
 	endedAt := time.Date(2026, 8, 14, 12, 15, 0, 0, time.UTC)
-	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
-		session:                 sess,
-		result:                  "canonical result",
-		communicated:            true,
-		structuredResult:        map[string]any{"answer": "stable"},
-		structuredResultPresent: true,
-		endedAt:                 endedAt,
-	})
+	inputs := delegateTerminalRunInputs{session: sess, result: reply, endedAt: endedAt}
+	inputs.captureCommunicateReport(sess)
+	finish := stableDelegateFinishFromRun(inputs)
 	want := cloneDelegateTerminalPacket(*finish.packet)
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
 	if continued, _, err := c.prepareSettlementForTest(lease, finish.packet); err != nil || continued {
@@ -935,6 +934,10 @@ func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDeliv
 	if got := aggregate.PendingDeliveries[0].Packet; !reflect.DeepEqual(got, want) {
 		t.Fatalf("delivered packet = %#v, want prepared packet %#v", got, want)
 	}
+	if aggregate.Generation != 1 || aggregate.PendingDeliveries[0].Generation != 1 || aggregate.PendingDeliveries[0].DeliveryID != "dlg_target/delivery/1" {
+		t.Fatalf("reconcile changed generation or identity: %#v", aggregate)
+	}
+	assertDelegateReportMessage(t, delegateFinish{packet: &aggregate.PendingDeliveries[0].Packet}, report, output)
 	events, err := reopened.Load()
 	if err != nil {
 		t.Fatalf("load terminal events: %v", err)

@@ -192,7 +192,7 @@ describe("archiving (rulings 16 and 20)", () => {
 		expect(covered.hub.writes).toEqual([]);
 	});
 
-	it("pins select mode's sessions through the same journal", async () => {
+	it("pins a session through the same journal", async () => {
 		const { hub, actions } = organization();
 		expect(await journalOutcome(actions, () => actions.assignPin({ sessionRef: local, sectionName: "Release" }))).toBe(
 			"confirmed",

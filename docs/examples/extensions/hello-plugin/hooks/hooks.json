@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "printf",
+            "args": [
+              "%s\n",
+              "{\"systemMessage\":\"hello-plugin startup hook ran\"}"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

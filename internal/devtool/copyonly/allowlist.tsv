@@ -10,7 +10,6 @@ agent/internal/tool/repair/explain_oneof_test.go	TestExplainSchemaError_Multiple
 agent/internal/tool/repair/suggest_test.go	TestUnknownToolMessage_NoSuggestionWhenFar	Unknown-tool repair message to the model (deferred model-facing text); TestSuggestToolName_NoMatchBeyondThreshold covers the structured half (#4415).
 agent/job_watch_branches_test.go	TestCallbackWatchesCancelledAtRestartMessage	System notification to the model (deferred model-facing text; #4424).
 agent/session_tools_jobs_list_test.go	TestDefJobListDescriptionMentionsActiveWatches	Tool description the model reads (deferred model-facing text; #4424).
-cmd/evener-tui/internal/launchconfig/launch_schema_covtest_test.go	TestCovDefaultStringEmpty	"(default)" is the in-band unset marker launchOptionValue and applyEdit compare against: a contract inside the package (#4415).
 internal/appwirets/emit_test.go	TestTypeExprNavigationArrayRendersAsSlice	False positive: a generated TypeScript type expression, a machine contract (#4424).
 llm/providers/chatcompletions/recompute_test.go	TestExtractRecordedResponse_SSE	False positive: scripted SSE deltas reassemble into the response text (#4424).
 test/e2e/fakellm/fakellm_coverage_test.go	TestContentTextArray	False positive: fixture parts concatenate into the text (#4424).

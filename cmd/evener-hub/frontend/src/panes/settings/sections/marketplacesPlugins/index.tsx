@@ -1,22 +1,11 @@
-// marketplacesPlugins/index.tsx is the "Marketplaces & Plugins" settings
-// section (#12 - parity-m7-settings.md §12), Segmented Workspace redesign:
-// one list at a time behind a page-level SegmentedControl (Installed /
-// Browse / Marketplaces) instead of the three stacked sub-sections the
-// parity wave shipped. Per-plugin actions live in the PluginDetailSheet
-// opened from an Installed row, and every per-marketplace action in the
-// MarketplaceSheet opened from a Marketplaces row, so each segment stays a
-// single-purpose list. The orchestrator's jobs are unchanged in kind: the
-// initial parallel fetch (mirroring the legacy's own Promise.all), the
-// top-level loading/error gate, and the lifted `expandedMarketplaces` (the
-// sheet's Refresh reads it - see MarketplaceSheet's own comment); on top of
-// those it owns the page-level states activeSegment, selectedPlugin and
-// selectedMarketplace.
+// Host-scoped plugin workspace. Sources keeps launch directories available
+// independently of the plugin and marketplace inventory reads.
 
 import type { AppwireClientLike } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { LOCAL_HOST } from "../../../../stores/hostRouting";
-import { InlineNotice, SegmentedControl, Skeleton } from "../../../../widgets";
+import { Button, InlineNotice, SegmentedControl, Skeleton } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "../hostScopedSurface";
 import { useHostScopedLoad } from "../useConnectedEffect";
@@ -24,15 +13,16 @@ import { BrowseSection } from "./BrowseSection";
 import { ExtensionsStoreProvider, useExtensionsHostState, useExtensionsHostStore } from "./hostStore";
 import { InstalledSection } from "./InstalledSection";
 import { MarketplaceSheet } from "./MarketplaceSheet";
-import { MarketplacesSection } from "./MarketplacesSection";
 import styles from "./marketplacesPlugins.module.css";
 import { PluginDetailSheet } from "./PluginDetailSheet";
+import { SourcesSection } from "./SourcesSection";
 
 const CLASS = {
   page: requireClass(styles.page, "marketplacesPlugins.module.css", "page"),
+  help: requireClass(styles.help, "marketplacesPlugins.module.css", "help"),
 };
 
-type SegmentId = "installed" | "browse" | "marketplaces";
+type SegmentId = "installed" | "browse" | "sources";
 
 type AppliedRemovalGuard = {
   host: string;
@@ -64,8 +54,8 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   const [activeSegment, setActiveSegment] = useState<SegmentId>("installed");
   const [selectedPlugin, setSelectedPlugin] = useState<{ plugin: string; marketplace: string } | null>(null);
   const [selectedMarketplace, setSelectedMarketplace] = useState<string | null>(null);
-  // The registry removal can finish while the sheet is unmounted by the page's
-  // load-error gate. Keep its no-repeat marker at the page lifecycle, and tie
+  // The registry removal can finish after its sheet closes. Keep its
+  // no-repeat marker at the page lifecycle, and tie
   // it to the host that owns the catalog AND the client that owns the
   // connection: a new host or a new hub starts unblocked.
   const [appliedRemovalGuard, setAppliedRemovalGuard] = useState<AppliedRemovalGuard>(() => ({
@@ -126,31 +116,11 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
   function handleSegmentChange(segment: SegmentId) {
     setActiveSegment(segment);
     // Each sheet belongs to the segment whose row opened it - the plugin
-    // detail sheet to Installed, the marketplace editor to Marketplaces.
+    // detail sheet to Installed, the marketplace editor to Sources.
     // Navigating away closes both rather than leaving an editor floating
     // over an unrelated list.
     setSelectedPlugin(null);
     setSelectedMarketplace(null);
-  }
-
-  const loadError = marketplacesError ?? pluginsError;
-  const stillLoading = (marketplacesLoading || marketplaces === null) && (pluginsLoading || plugins === null);
-
-  if (loadError !== null) {
-    return (
-      <section className={CLASS.page}>
-        <InlineNotice tone="danger" live="status" data-reason="unavailable">
-          Failed to load: {loadError}
-        </InlineNotice>
-      </section>
-    );
-  }
-  if (stillLoading) {
-    return (
-      <section className={CLASS.page}>
-        <Skeleton />
-      </section>
-    );
   }
 
   const pluginCount = plugins?.length ?? 0;
@@ -165,26 +135,78 @@ function MarketplacesPluginsBody({ host }: { host: string }) {
         options={[
           { value: "installed", label: `Installed (${pluginCount})` },
           { value: "browse", label: "Browse" },
-          { value: "marketplaces", label: `Marketplaces (${marketplaceCount})` },
+          { value: "sources", label: `Sources (${marketplaceCount})` },
         ]}
         fullWidth
       />
-      {activeSegment === "installed" && <InstalledSection onSelect={setSelectedPlugin} />}
-      {activeSegment === "browse" && (
-        <BrowseSection expandedMarketplaces={expandedMarketplaces} setExpandedMarketplaces={setExpandedMarketplaces} />
+      <p className={CLASS.help}>
+        Installation makes a plugin available on this host. Enabled defaults apply to new sessions using the default
+        plugin selection; custom launches choose their own plugins. Existing sessions keep their selected plugins.
+      </p>
+      {pluginsError !== null && (
+        <InlineNotice
+          tone="danger"
+          live="status"
+          data-reason="unavailable"
+          action={
+            <Button size="sm" onClick={() => void store.getState().fetchPlugins()} disabled={pluginsLoading}>
+              Retry plugins
+            </Button>
+          }
+        >
+          Failed to load plugins: {pluginsError}
+        </InlineNotice>
       )}
-      {activeSegment === "marketplaces" && <MarketplacesSection onSelect={setSelectedMarketplace} />}
-      <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />
-      <MarketplaceSheet
-        name={selectedMarketplace}
-        onClose={() => setSelectedMarketplace(null)}
-        onRenamed={setSelectedMarketplace}
-        expandedMarketplaces={expandedMarketplaces}
-        setExpandedMarketplaces={setExpandedMarketplaces}
-        appliedRemovalNames={appliedRemovalNames}
-        connectionClient={connectionClient}
-        onAppliedRemoval={markAppliedRemoval}
-      />
+      {marketplacesError !== null && activeSegment !== "sources" && (
+        <InlineNotice
+          tone="danger"
+          live="status"
+          data-reason="unavailable"
+          action={
+            <Button size="sm" onClick={() => void store.getState().fetchMarketplaces()} disabled={marketplacesLoading}>
+              Retry marketplaces
+            </Button>
+          }
+        >
+          Failed to load marketplaces: {marketplacesError}
+        </InlineNotice>
+      )}
+      {activeSegment === "sources" && (
+        <SourcesSection
+          host={host}
+          onSelectMarketplace={setSelectedMarketplace}
+          onBrowse={() => handleSegmentChange("browse")}
+        />
+      )}
+      {activeSegment === "installed" &&
+        (plugins === null ? (
+          pluginsError === null && <Skeleton />
+        ) : (
+          <InstalledSection onSelect={setSelectedPlugin} onBrowse={() => handleSegmentChange("browse")} />
+        ))}
+      {activeSegment === "browse" &&
+        (marketplaces === null ? (
+          marketplacesError === null && <Skeleton />
+        ) : (
+          <BrowseSection
+            expandedMarketplaces={expandedMarketplaces}
+            setExpandedMarketplaces={setExpandedMarketplaces}
+            onSources={() => handleSegmentChange("sources")}
+          />
+        ))}
+      {plugins !== null && <PluginDetailSheet target={selectedPlugin} onClose={() => setSelectedPlugin(null)} />}
+      {marketplaces !== null && (
+        <MarketplaceSheet
+          name={selectedMarketplace}
+          onClose={() => setSelectedMarketplace(null)}
+          onRenamed={setSelectedMarketplace}
+          expandedMarketplaces={expandedMarketplaces}
+          setExpandedMarketplaces={setExpandedMarketplaces}
+          appliedRemovalNames={appliedRemovalNames}
+          connectionClient={connectionClient}
+          onAppliedRemoval={markAppliedRemoval}
+        />
+      )}
     </section>
   );
 }
@@ -206,7 +228,7 @@ export function MarketplacesPluginsSection({ host = LOCAL_HOST }: MarketplacesPl
   );
 }
 
-/** MarketplacesPluginsHostScope is the "Marketplaces & Plugins" settings section
+/** MarketplacesPluginsHostScope is the Plugins settings section
  * scoped to the settings route's selected host: the one shared HostPicker plus
  * MarketplacesPluginsSection. */
 export function MarketplacesPluginsHostScope() {

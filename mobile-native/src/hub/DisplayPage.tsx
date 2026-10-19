@@ -100,8 +100,14 @@ export function DisplayPage({ navigation, route }: NativeStackScreenProps<HubRou
 					value={choices.showModel}
 					onChange={(showModel) => choose({ showModel }, "showModel")}
 				/>
+				<SwitchRow
+					label="Open at unread replies"
+					value={choices.openAtUnreadReplies}
+					onChange={(openAtUnreadReplies) => choose({ openAtUnreadReplies }, "openAtUnreadReplies")}
+					switchLabel="Open at unread replies"
+				/>
 			</Group>
-			{unsaved === "showModel" ? (
+			{unsaved === "showModel" || unsaved === "openAtUnreadReplies" ? (
 				<GroupFooter tone="danger" testID={`display-not-saved-${unsaved}`}>
 					{NOT_SAVED}
 				</GroupFooter>

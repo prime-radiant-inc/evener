@@ -8,7 +8,7 @@ import {
   isEndpointConflict,
   safeCredentialTestResult,
 } from "@evener/appwire-client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import {
   credentialsStore,
@@ -68,6 +68,7 @@ type ConnectionErrorReason =
 export interface ProviderConnectionProps {
   onClose(): void;
   onConnected(name?: string): void;
+  completionLabel: string;
   /** Hands the user to the settings pane's credentials section, where the
    * instances this flow connects are listed, edited, tested and removed. The
    * hosting dialog owns the handoff - it closes itself and navigates there
@@ -144,6 +145,46 @@ function needsConfiguration(row: InstanceEntry | undefined): boolean {
   return !row || !!row.hidden || !row.baseUrl || /[{}]/.test(row.baseUrl);
 }
 
+function resolvedAuthModes(row: ProviderDescriptor): string[] {
+  return row.setup?.authModes ?? row.authModes ?? [];
+}
+
+function authCapabilities(row: ProviderDescriptor): string {
+  const modes = resolvedAuthModes(row);
+  const labels = modes.flatMap((mode) => {
+    if (mode === "apiKey") return ["API key"];
+    if (mode === "credentialJson") return ["Credential JSON"];
+    if (mode === "oauth") return ["Account sign-in"];
+    if (mode === "none") return ["No credential"];
+    return [];
+  });
+  return labels.length > 0 ? labels.join(" or ") : "Host or endpoint access";
+}
+
+function ProviderChoice({
+  row,
+  disabled,
+  onSelect,
+}: {
+  row: ProviderDescriptor;
+  disabled: boolean;
+  onSelect(row: ProviderDescriptor): void;
+}) {
+  const descriptionId = useId();
+  const label = HELP[row.id]?.label || row.name || row.id;
+  return (
+    <ListRow
+      label={label}
+      meta={<span id={descriptionId}>{authCapabilities(row)}</span>}
+      aria-label={label}
+      aria-describedby={descriptionId}
+      data-auth-modes={resolvedAuthModes(row).join(" ")}
+      disabled={disabled}
+      onSelect={() => onSelect(row)}
+    />
+  );
+}
+
 /**
  * One tappable ListRow per provider rather than a box per provider. The whole
  * row is the target and a real <button>, so it is a tab stop whose accessible
@@ -163,11 +204,7 @@ function ProviderChoices({
     <ul aria-label="Providers" className={styles.providers}>
       {rows.map((row) => (
         <li key={row.id}>
-          <ListRow
-            label={HELP[row.id]?.label || row.name || row.id}
-            disabled={disabled}
-            onSelect={() => onSelect(row)}
-          />
+          <ProviderChoice row={row} disabled={disabled} onSelect={onSelect} />
         </li>
       ))}
     </ul>
@@ -262,6 +299,7 @@ function SelectedConnection({
   provider,
   onClose,
   onConnected,
+  completionLabel,
   onOpenSettings,
   onChange,
 }: ProviderConnectionProps & {
@@ -287,7 +325,8 @@ function SelectedConnection({
   }, [resolvedProviderId]);
   const [missingCredential, setMissingCredential] = useState(false);
   const [host, setHost] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [saved, setSaved] = useState(row?.activeSource === "store");
+  const [storedAccess, setStoredAccess] = useState(row?.activeSource === "store");
   const [configured, setConfigured] = useState(false);
   const [configure, setConfigure] = useState(false);
   const [oauth, setOAuth] = useState<OAuthEditor | null>(null);
@@ -337,6 +376,7 @@ function SelectedConnection({
         setConfigure(false);
         if (current.client !== previous.client) {
           setSaved(false);
+          setStoredAccess(false);
           setConfigured(false);
         }
       }
@@ -566,6 +606,7 @@ function SelectedConnection({
         else await state.setApiKey(name, value.trim(), asserted);
         if (!current(token)) return;
         setSaved(true);
+        setStoredAccess(true);
       } catch (err) {
         if (!current(token)) return;
         // The same two changes, and the same recovery: the hub refused the
@@ -649,6 +690,7 @@ function SelectedConnection({
     setConfigured(true);
     setConfigure(false);
     setSaved(false);
+    setStoredAccess(created?.activeSource === "store");
     // A value typed for a different destination must not be submitted to the
     // adopted connection, the reason the removal effect makes this same reset.
     // Keying that on providerId alone is not enough: one provider can host two
@@ -876,7 +918,7 @@ function SelectedConnection({
                 <p role="status" data-state="success">
                   Model list access confirmed. This does not verify generation access.
                 </p>
-                <Button onClick={() => leave(() => onConnected(name))}>Continue</Button>
+                <Button onClick={() => leave(() => onConnected(name))}>{completionLabel}</Button>
               </>
             ) : (
               <Button type="submit" disabled={busy || unavailable}>
@@ -942,7 +984,7 @@ function SelectedConnection({
             Change provider
           </Button>
           <Button variant="quiet" onClick={() => leave(onClose)}>
-            Cancel
+            {storedAccess ? "Close, access stays saved" : "Cancel"}
           </Button>
         </div>
       </form>

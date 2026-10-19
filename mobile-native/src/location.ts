@@ -240,10 +240,10 @@ export function locationForRoute(
 			? { hubId, conversation: { ref: session.ref, title: session.title }, reader: destination }
 			: null;
 	}
-	// A coordinator's Subagents list reopens as its session (ruling 21).
+	// A coordinator's Agents or Jobs list reopens as its session (ruling 21).
 	if (
 		route.name === "Conversation" ||
-		route.name === "Subagents" ||
+		route.name === "Activity" ||
 		route.name === "PinAssignment" ||
 		route.name === "SessionDeletion"
 	) {

@@ -4,7 +4,7 @@ The native app reuses the existing production Evener PWA mark byte-for-byte:
 `assets/evener-icon.png` is copied from
 `../cmd/evener-hub/assets/icon-512.png` (SHA-256
 `e25c17d290e8302388dee529834d9fd7c7be371073581764bb2a06d5cada1133`).
-`app.json` points Expo's app icon at this local copy so Expo SDK 57 can produce
+`app.config.js` points Expo's app icon at this local copy so Expo SDK 57 can produce
 the iOS AppIcon catalog during prebuild. The previous Expo fixture remains at
 `assets/icon.png` for history and is no longer referenced.
 

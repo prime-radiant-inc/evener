@@ -14,10 +14,11 @@
 // (panes/spawn/Spawn.tsx). Both get the identical affordance because it is the
 // identical component, which is the whole point of issue #198.
 //
-// The picker offers models and nothing else: no connect-provider entry on
-// either surface. Provider setup is not one of the choices, so it happens
-// where it has a real flow (the spawn pane's own notices, the credentials
-// pane), never mid-list.
+// Ordinary picker rows offer models and nothing else: provider setup is not a
+// model choice and never enters ModelCatalogPanel. After a failed, partial or empty
+// read, a pane-level caller such as Spawn may compose one Connection settings
+// recovery action outside the panel, handing off to its existing setup flow;
+// no widget API owns provider setup.
 //
 // The picker's OVERLAY is viewport-selected (docs/web-ui/design-system.md §11):
 // a floating Popover with the search combobox on desktop, the same catalog
@@ -62,6 +63,10 @@ export interface ModelSwitchTriggerProps {
   onPick: (entry: ModelCatalogEntry) => void;
   /** A new completion opens a fresh catalog scoped to the actual instance. */
   connectionRequest?: { name?: string };
+  /** Opens the caller's existing connection settings flow when catalogue
+   * recovery needs more than a read retry. Omitted where that connection is
+   * not editable from this surface, such as a remote host. */
+  onOpenConnection?: () => void;
   /** Changes when the caller learns its model list has newer data for the
    * same scope (the hub announced a refreshed list on evener/auth/updated).
    * An open picker then reloads in place: it keeps showing its list while
@@ -93,6 +98,7 @@ export function ModelSwitchTrigger({
   loadCatalog,
   onPick,
   connectionRequest,
+  onOpenConnection,
   refreshKey,
   disabled = false,
   actionLabel = "change model",
@@ -225,14 +231,34 @@ export function ModelSwitchTrigger({
     onPick(entry);
   }
 
+  function retryCatalog(): void {
+    const generation = loadGenerationRef.current + 1;
+    loadGenerationRef.current = generation;
+    loadedLoaderRef.current = loadCatalog;
+    // Keep healthy choices usable while retrying a partial provider failure.
+    const keepModels = listShown && (catalog.models.length > 0 || catalog.recent.length > 0);
+    void startLoad(generation, loadCatalog, true, keepModels);
+  }
+
+  function openConnection(): void {
+    closePicker();
+    onOpenConnection?.();
+  }
+
   const filteredCatalog =
     catalog && providerFilter
       ? {
           ...catalog,
           models: catalog.models.filter((entry) => entry.provider === providerFilter),
           recent: catalog.recent.filter((entry) => entry.provider === providerFilter),
+          diagnostics: catalog.diagnostics?.filter((entry) => !entry.provider || entry.provider === providerFilter),
         }
       : catalog;
+  const recoveryAvailable =
+    !loading &&
+    (error !== null ||
+      (filteredCatalog?.diagnostics?.length ?? 0) > 0 ||
+      (filteredCatalog !== null && filteredCatalog.models.length === 0 && filteredCatalog.recent.length === 0));
   const panel = (
     <>
       {providerFilter && (
@@ -253,6 +279,16 @@ export function ModelSwitchTrigger({
         onPick={handlePick}
         variant={isMobile ? "sheet" : "default"}
       />
+      {recoveryAvailable && (
+        <div>
+          <Button onClick={retryCatalog}>Retry models</Button>
+          {onOpenConnection && (
+            <Button variant="quiet" onClick={openConnection}>
+              Connection settings
+            </Button>
+          )}
+        </div>
+      )}
     </>
   );
 

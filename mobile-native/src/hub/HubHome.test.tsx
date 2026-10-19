@@ -165,7 +165,7 @@ const ROWS = [
 	"Display, System",
 	"In-app alerts",
 	"Hubs, 2",
-	"Keyboard shortcuts",
+	"Web keyboard shortcuts",
 	"Launch defaults",
 	"Hub settings",
 ];
@@ -247,7 +247,7 @@ it("says the hub is connected and lists its pages", async () => {
 it("opens today's screens inside the sheet, so Back returns to the Hub (audit M10)", async () => {
 	const { root, sheet, press } = await mount();
 	const interim: [string, string][] = [
-		["Keyboard shortcuts", "KeybindingPreferences"],
+		["Web keyboard shortcuts", "KeybindingPreferences"],
 		["Launch defaults", "LaunchSettings"],
 		["Hub settings", "HubSettings"],
 	];

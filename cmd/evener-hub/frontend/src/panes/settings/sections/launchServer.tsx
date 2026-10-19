@@ -1,4 +1,4 @@
-// Settings -> Evener launch (#9): the global launch-config layer, via the
+// Settings -> Session defaults: the global launch-config layer, via the
 // schema-driven LaunchConfigForm (launchShared/). Sequential load (schema()
 // then getLayer("/","global")) into a 2-state contract - unlike project.tsx's
 // 3-state contract, a load failure has no distinct recoverable state, just a
@@ -38,7 +38,7 @@ export interface LaunchServerSectionProps {
 }
 
 /**
- * Evener launch defaults: applied to every evener spawn unless overridden by a
+ * Session defaults: applied to every new session unless overridden by a
  * project layer or per-launch. Loads schema()+getLayer("/","global")
  * sequentially, then best-effort resolve("/") to seed the diagnostics panel
  * (failure there is swallowed - "non-fatal", matching the legacy exactly).
@@ -144,9 +144,9 @@ export function LaunchServerSection({ host = LOCAL_HOST }: LaunchServerSectionPr
 
   return (
     <div className={CLASS.root}>
-      <h2>Evener launch defaults</h2>
+      <h2>Session defaults</h2>
       <p className={CLASS.help}>
-        These values are applied to every evener spawn unless overridden by a project layer or per-launch.
+        Defaults for new sessions. Project settings and choices made when starting a session can override them.
       </p>
       {load.phase === "loading" && <Loader label="Loading launch settings" />}
       {load.phase === "error" && (

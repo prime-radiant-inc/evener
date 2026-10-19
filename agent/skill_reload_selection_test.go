@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -384,9 +385,7 @@ func TestSkillReloadElicitation_SessionInvalidSelectionPreservesNote(t *testing.
 // never requests a structured selection the model cannot submit.
 func TestSkillReloadSelection_NudgeListsLoadedSkills(t *testing.T) {
 	t.Parallel()
-	loaded := []schema.SkillInventorySummary{
-		{Name: "scope:probe", Description: "opaque-probe-description", Availability: "ordinary", HasOrdinary: true},
-	}
+	loaded := []string{"scope:probe"}
 	withTool := selfCompactNudge(true, loaded)
 	if !strings.Contains(withTool, "scope:probe") {
 		t.Fatal("compact-tool nudge must list the loaded skill")
@@ -401,6 +400,19 @@ func TestSkillReloadSelection_NudgeListsLoadedSkills(t *testing.T) {
 	}
 	if strings.Contains(withoutTool, "reload_skills") || strings.Contains(withoutTool, "skill-reload-selection") {
 		t.Fatal("no-tool nudge must not request a structured selection the model cannot submit")
+	}
+}
+
+// TestSkillInventoryNamesOmitsDescriptions pins that the nudge's input carries
+// names only: the descriptions stay on the elicitation summaries.
+func TestSkillInventoryNamesOmitsDescriptions(t *testing.T) {
+	t.Parallel()
+	inventory := map[string]schema.SkillInventoryEntry{
+		"scope:probe": {Ordinary: &schema.OrdinarySkillActivation{Description: "opaque-probe-description"}},
+	}
+	names := skillInventoryNames(inventory)
+	if !slices.Equal(names, []string{"scope:probe"}) {
+		t.Fatalf("skillInventoryNames = %v, want [scope:probe]", names)
 	}
 }
 

@@ -1,0 +1,8 @@
+.main-notice {
+  margin: 0 0 1.5rem;
+  padding: 0.6rem 1rem;
+  border-left: 3px solid var(--vp-c-brand-1);
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-2);
+  font-size: 0.9rem;
+}

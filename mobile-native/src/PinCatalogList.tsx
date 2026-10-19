@@ -1,15 +1,16 @@
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
-import { ActivityIndicator, FlatList, View } from "react-native";
+import { FlatList, View } from "react-native";
 import { updating } from "./navigationPages";
 import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Button } from "./sheet/Grouped";
+import { Spinner } from "./sheet/Spinner";
 
 /** What the catalog says about the list it shows, as its `pin-status:<reason>`
  * line. */
 const CATALOG_STATUS = {
-	offline: "You can see pinned sections once the hub is back.",
+	offline: "You can see pinned categories once the hub is back.",
 	"previous-change": "Check the previous pin change.",
-	unread: "Check the pinned sections again.",
+	unread: "Check the pinned categories again.",
 	updating: "Updating…",
 };
 
@@ -64,7 +65,7 @@ export function PinCatalogList({
 			ListHeaderComponent={
 				<View style={{ gap: 8, paddingBottom: 8 }}>
 					<Copy>{hubName}</Copy>
-					{loading || pending ? <ActivityIndicator accessibilityLabel="Checking pinned sections" /> : null}
+					{loading || pending ? <Spinner label="Checking pinned categories" /> : null}
 					{status ? (
 						<View testID={`pin-status:${status}`}>
 							<Copy muted>{CATALOG_STATUS[status]}</Copy>
@@ -76,8 +77,8 @@ export function PinCatalogList({
 					) : null}
 					{showEmpty ? (
 						<View style={{ gap: 8 }}>
-							<Copy>No pinned sections yet.</Copy>
-							<Copy muted>Pin a session from its actions menu to create a section.</Copy>
+							<Copy>No pinned categories yet.</Copy>
+							<Copy muted>Pin a session from its actions menu to create a category.</Copy>
 						</View>
 					) : null}
 				</View>
@@ -109,7 +110,7 @@ export function PinCatalogList({
 				remaining > 0 ? (
 					<Button
 						text
-						label={`Load more sections (${remaining} remaining)`}
+						label={`Load more categories (${remaining} remaining)`}
 						disabled={!connected || !loaded || loading || uncertain || pending}
 						onPress={more}
 					/>

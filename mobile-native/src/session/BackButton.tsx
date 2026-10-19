@@ -3,7 +3,8 @@
 // is waiting.
 import { SymbolView } from "expo-symbols";
 import { Pressable, Text } from "react-native";
-import { allowFontScaling, useColors, useTextScale } from "../ui";
+import { useHeaderTextScale } from "../headerText";
+import { allowFontScaling, useColors } from "../ui";
 
 function backLabel(count: number): string {
 	if (count <= 0) return "Back";
@@ -14,11 +15,13 @@ function backLabel(count: number): string {
  * Reader's "Back, 2 new while you read". */
 export function BackButton({ count, label, onPress }: { count: number; label?: string; onPress: () => void }) {
 	const { palette } = useColors();
-	const scale = useTextScale();
+	const scale = useHeaderTextScale();
 	return (
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={label ?? backLabel(count)}
+			accessibilityShowsLargeContentViewer
+			accessibilityLargeContentTitle={label ?? backLabel(count)}
 			onPress={onPress}
 			hitSlop={8}
 			style={({ pressed }) => ({

@@ -1,0 +1,11 @@
+Rendered command transcript
+Streams are recorded separately, not interleaved.
+
+$ git status --short
+cwd: daily-workspace
+stdout:
+?? NOTES.md
+
+stderr:
+
+exit: 0

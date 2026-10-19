@@ -1,4 +1,4 @@
-// One shell job in the Activity list (Jesse's ruling on shell jobs, beside
+// One shell job in the Jobs list (Jesse's ruling on shell jobs, beside
 // spec 9's subagent rows): a $ glyph whose hue is the job's state, its
 // description, the session or subagent that started it, and its status with
 // its quiet age while it runs or how long it ran once it ends (shellJobMeta).

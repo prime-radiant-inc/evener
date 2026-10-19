@@ -851,9 +851,11 @@ func scenarioSourceLineCount(cache map[string]int, path string) (int, error) {
 // audit below must actually read. A corpus audit is green both when the corpus
 // is clean and when its needle stopped matching, and only a floor tells the two
 // apart; the corpus carried 97 resolvable bare anchors when this landed, so the
-// floor sits just below that. Raise it as the corpus grows; lower it only with a
+// floor sat at 90, just below that. Lowered to 80 when the legacy TUI was
+// removed: deleting the `tui-*` cards (2026-10-16) dropped 14 cards and their
+// anchors, leaving 84. Raise it as the corpus grows; lower it again only with a
 // reason, and say why here.
-const scenarioMinBareLineAnchors = 90
+const scenarioMinBareLineAnchors = 80
 
 // TestScenarioBareLineAnchorsResolve reads the citation shape the rest of this
 // file cannot see: a `:NNN` anchor with the path left implicit. It resolves

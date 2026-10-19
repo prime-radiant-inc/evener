@@ -4,8 +4,7 @@
 //   has no redirect;
 // - a pending question: its dock, or the dock folded to a bar, and the
 //   composer once the dock folds or "Other answer…" brings it back;
-// - otherwise the tray, which hides itself while it has no line, then the
-//   composer.
+// - otherwise the composer.
 // The model chip steps aside while the composer answers an open dock.
 
 export interface BottomStackInput {
@@ -18,16 +17,15 @@ export interface BottomStackInput {
 
 export interface BottomStack {
 	dock: "approval" | "question" | "foldedQuestion" | null;
-	tray: boolean;
 	composer: boolean;
 	modelChip: boolean;
 }
 
 export function bottomStack(input: BottomStackInput): BottomStack {
-	if (input.approvalPending) return { dock: "approval", tray: false, composer: false, modelChip: false };
+	if (input.approvalPending) return { dock: "approval", composer: false, modelChip: false };
 	if (input.questionPending) {
-		if (input.folded) return { dock: "foldedQuestion", tray: false, composer: true, modelChip: true };
-		return { dock: "question", tray: false, composer: input.composerBack, modelChip: false };
+		if (input.folded) return { dock: "foldedQuestion", composer: true, modelChip: true };
+		return { dock: "question", composer: input.composerBack, modelChip: false };
 	}
-	return { dock: null, tray: true, composer: true, modelChip: true };
+	return { dock: null, composer: true, modelChip: true };
 }

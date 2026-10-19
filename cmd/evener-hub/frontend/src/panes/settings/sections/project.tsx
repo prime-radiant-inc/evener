@@ -1,26 +1,5 @@
-// Settings -> Per-project launch overrides (#18), reached via
-// /settings/project?cwd=<dir> - never through the settings-nav list (see
-// sections.ts's own comment; this "project" section id is deliberately
-// absent from SETTINGS_SECTIONS). Shares launchServer.tsx's engine
-// (LaunchConfigForm) but with the 3-state loaded contract (loading/error/
-// ready, vs. launch-evener's 2-state) and no diagnostics panel at all
-// (parity-m7-settings.md §18).
-//
-// Deliberate scope decision (this task's own report): when no `cwd` is
-// present, this renders a plain instructional message rather than the
-// legacy's project-picker list. That picker needs a {name, cwd} pair per
-// known project; the only available RPC, evener/projects/recent, returns bare
-// cwd strings with no name field, and isn't part of this task's assigned
-// wire ground truth - reproducing the legacy list faithfully isn't possible
-// with what's in scope here.
-//
-// cwd is read directly from window.location.search rather than through the
-// pane-params system: PaneProps<SettingsPaneParams> only carries `section`
-// (routing.ts's urlToPane/paneToURL have no query-string concept at all),
-// and extending that shared, cross-stream contract is out of this stream's
-// manifest. A popstate listener keeps it in sync with in-app navigation
-// (routing.ts's own navigate() dispatches popstate on every push, the same
-// signal AppShell itself listens for).
+// Contextual project configuration: repository review and local overrides.
+// The directory comes from ?cwd=; the selected host comes from the settings route.
 
 import type { LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
 import { friendlyErrorMessage } from "@evener/appwire-client";
@@ -30,6 +9,7 @@ import { launchConfigStoreForHost } from "../../../stores/launchConfig";
 import { Button, InlineNotice, Loader } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { HostScopedSurface } from "./hostScopedSurface";
+import { RepositoryConfigSection } from "./inrepo";
 import type { LaunchFormPaths } from "./launchShared/fields";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import styles from "./project.module.css";
@@ -187,8 +167,11 @@ export function ProjectSection({ host = LOCAL_HOST }: ProjectSectionProps) {
     <div className={CLASS.root}>
       <h2>Project launch settings</h2>
       <p className={CLASS.help}>{cwd}</p>
+      <RepositoryConfigSection host={host} cwd={cwd} />
+      <h3>Local overrides</h3>
       <p className={CLASS.help}>
-        Layered on top of the global Evener launch settings. Only fields set here override the global defaults.
+        Saved in <code>.evener/launch.local.toml</code> for this directory. These values override session defaults and
+        trusted repository settings.
       </p>
       {load.phase === "loading" && <Loader label="Loading project launch settings" />}
       {load.phase === "error" && (

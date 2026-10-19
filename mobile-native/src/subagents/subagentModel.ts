@@ -61,7 +61,7 @@ export function isStoppedStatus(status: string | undefined): boolean {
 	return STOPPED_STATUSES.has(status ?? "");
 }
 
-/** The delegate fields the state rule reads. The Subagents list passes its
+/** The delegate fields the state rule reads. The Agents list passes its
  * ActivityDelegate (turns included); other row consumers may pass a stable delegate
  * shape without turns. Summary counts remain the domain's authority. */
 export type SubagentStateSource = Pick<ActivityDelegate, "type" | "terminal" | "outcome" | "status" | "turns">;
@@ -89,7 +89,7 @@ export function subagentState(delegate: SubagentStateSource): SubagentState {
 
 /** A subagent that is done because a stop ended it, which says Stopped (its
  * outcome, or else its status, names the stop). The one rule for the
- * Subagents list's rows and the transcript's subagent row. */
+ * Agents list's rows and the transcript's subagent row. */
 export function endedInStop(delegate: SubagentStateSource): boolean {
 	return subagentState(delegate) === "done" && isStoppedStatus(delegate.outcome ?? delegate.status);
 }
@@ -137,7 +137,7 @@ export function subagentTitle(delegate: ActivityDelegate): string {
 	);
 }
 
-/** A shell job in the Activity list: a command a session or subagent ran,
+/** A shell job in the Jobs list: a command a session or subagent ran,
  * as the tree carries it (Jesse's ruling: shell jobs join spec 9's list). */
 export interface ShellJobRow {
 	kind: "job";
@@ -154,7 +154,7 @@ export interface ShellJobRow {
 	order: number;
 }
 
-/** A row of the Activity list. */
+/** A row of the Agents or Jobs list. */
 export type ActivityListRow = SubagentRow | ShellJobRow;
 
 /** The row-kind guards for the one activity list, shared by the flattening
@@ -472,7 +472,7 @@ export function subagentLastLine(
 	return Object.keys(line).length > 0 ? line : null;
 }
 
-/** The Activity list offers its search field past this many rows,
+/** The Agents and Jobs lists offer their search field past this many rows,
  * subagents and shell jobs together (ruling 8). */
 export const SEARCH_AFTER = 8;
 

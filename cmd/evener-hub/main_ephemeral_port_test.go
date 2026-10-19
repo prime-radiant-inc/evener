@@ -5,8 +5,10 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,6 +53,12 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 	defer cancel()
 
 	var gotSrv hubHTTPServer
+	t.Cleanup(func() {
+		cancel()
+		if gotSrv != nil {
+			_ = gotSrv.Shutdown(context.Background())
+		}
+	})
 	served := make(chan struct{})
 	deps := mainDeps{
 		loadRegistry:    hermeticRegistryLoader,
@@ -58,7 +66,7 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 		ensureDirs:      func() error { return nil },
 		acquireLock:     func(string) (func(), error) { return func() {}, nil },
 		newToken:        func() (string, error) { return "hub-token", nil },
-		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
+		loadAuthToken:   func(string) (string, error) { return "private-credential", nil },
 		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
 		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, *hubAuthController, func(func()), func()) {
 		},
@@ -112,6 +120,38 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 	reportedAddr := m[1]
 	if reportedAddr == "127.0.0.1:0" || reportedAddr == ":0" {
 		t.Fatalf("reported address is still the unresolved request %q, want the real bound port", reportedAddr)
+	}
+
+	var browserURL, privateURL *url.URL
+	for field := range strings.FieldsSeq(captured) {
+		u, err := url.Parse(field)
+		if err != nil || u.Scheme != "http" {
+			continue
+		}
+		switch {
+		case u.Path == "" || u.Path == "/":
+			browserURL = u
+		case strings.HasPrefix(u.Path, "/auth/"):
+			if privateURL != nil {
+				t.Fatalf("startup output contains more than one private sign-in URL: %q", captured)
+			}
+			privateURL = u
+		}
+	}
+	if browserURL == nil || privateURL == nil {
+		t.Fatalf("startup output URLs = browser %v, private %v; want both address and private sign-in link", browserURL, privateURL)
+	}
+	if browserURL.Host != reportedAddr || privateURL.Host != reportedAddr {
+		t.Fatalf("startup URL hosts = %q and %q, want reported address %q", browserURL.Host, privateURL.Host, reportedAddr)
+	}
+	if privateURL.Path != "/auth/private-credential" || privateURL.RawQuery != "" {
+		t.Fatalf("private sign-in URL path/query = %q, %q; want credential path and no query", privateURL.Path, privateURL.RawQuery)
+	}
+	if got := strings.Count(captured, "private-credential"); got != 1 {
+		t.Fatalf("credential appears %d times in startup output, want exactly once", got)
+	}
+	if tokenPath := filepath.Join(cfg.HubStateRoot, "auth-token"); !strings.Contains(captured, tokenPath) {
+		t.Fatalf("startup output does not retain token-file guidance for %s", tokenPath)
 	}
 
 	// And it must be genuinely listening: a real HTTP request should reach

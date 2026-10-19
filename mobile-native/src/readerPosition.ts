@@ -1,5 +1,5 @@
 import type { SyncStringStorage } from "./syncStringStorage";
-import { rowTurnId, type TimelineRow } from "./timeline";
+import { rowTurnId, stepKey, type TimelineRow } from "./timeline";
 
 export interface ReaderAnchor {
 	hubId: string;
@@ -71,8 +71,12 @@ export function readerKey(row: TimelineRow): string {
 	if (row.kind === "details" || row.kind === "time") return row.id;
 	if (row.kind === "assistant" && row.callKey) return row.callKey;
 	if (row.kind === "assistant" && row.roundKey) return row.roundKey;
+	// A step keys by its call id, a run by its first step's (see stepKey).
+	if (row.kind === "activity") return stepKey(row) ?? row.transcriptKey ?? row.id;
+	if (row.kind === "run") return stepKey(row.steps[0]) ?? row.transcriptKey ?? row.id;
 	return row.transcriptKey ?? row.id;
 }
+
 export function readerPosition(row: TimelineRow) {
 	if (row.kind === "details") return row.entries[0]?.position;
 	if (row.kind === "time") return undefined;
@@ -90,12 +94,15 @@ function matchesAnchor(
 	item: {
 		id: string;
 		transcriptKey?: string;
+		detail: { callId?: string };
 		position?: { entry: number; item: number };
 	},
 	anchor: ReaderAnchor,
 ): boolean {
+	const key = stepKey(item);
 	return (
 		(item.transcriptKey ?? item.id) === anchor.itemKey ||
+		(key !== undefined && key === anchor.itemKey) ||
 		(anchor.itemPosition !== undefined &&
 			item.position !== undefined &&
 			comparePosition(item.position, anchor.itemPosition) === 0)
@@ -119,23 +126,25 @@ export function resolveReaderAnchor(anchor: ReaderAnchor, rows: readonly Timelin
 	return inRun >= 0 ? inRun : null;
 }
 
-export type OpeningTarget = { kind: "live" } | { kind: "anchor" } | { kind: "row"; index: number };
+export type OpeningTarget = { kind: "live" } | { kind: "row"; index: number };
 
-/** Where a session opens (spec 7.3, ruling 31). While a question or approval
- * waits: the live end, where the dock is. After a reply that finished since
- * you last reached the end: the start of that reply, past your own message,
- * its time marker and any attachments row (a step's images ride inside its
- * run, and any other attachments row follows the row that produced it).
- * Otherwise where you left off, and failing that the live end. Turn ids,
+/** Where a session opens (spec 7.3, ruling 31; Jesse, 2026-10-18): always at
+ * the latest, never at a spot saved up the history. The one exception: with
+ * the open-at-unread-replies setting on, a reply that finished since you last
+ * reached the end opens at its start, past your own message, its time marker
+ * and any attachments row (a step's images ride inside its run, and any
+ * other attachments row follows the row that produced it). While a question
+ * or approval waits, the live end still wins, where the dock is. Turn ids,
  * never clocks, decide what is newer. */
 export function openingTarget(
 	anchor: ReaderAnchor | null,
 	rows: readonly TimelineRow[],
 	turnIds: readonly string[],
 	askPending: boolean,
+	openAtUnreadReplies: boolean,
 ): OpeningTarget {
 	if (askPending) return { kind: "live" };
-	if (anchor?.turnsSeen) {
+	if (openAtUnreadReplies && anchor?.turnsSeen) {
 		const seen = turnIds.indexOf(anchor.turnsSeen);
 		const newer = seen === -1 ? undefined : turnIds[seen + 1];
 		if (newer !== undefined) {
@@ -145,7 +154,7 @@ export function openingTarget(
 			if (index !== -1) return { kind: "row", index };
 		}
 	}
-	return anchor ? { kind: "anchor" } : { kind: "live" };
+	return { kind: "live" };
 }
 export function isReaderAnchorLoaded(
 	anchor: ReaderAnchor,

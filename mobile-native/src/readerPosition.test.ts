@@ -99,6 +99,50 @@ describe("reader positions", () => {
 		expect(readerKey(communicate)).toBe("call:c1:agentMessage");
 		expect(comparePosition({ entry: 1, item: 2 }, { entry: 1, item: 3 })).toBe(-1);
 	});
+	// The live and recorded turns differ, as they do for a daemon-minted turn;
+	// the row id changes too, so we key by the call id (stepKey).
+	it("keys a step and its run by the call id, through the recording transition", () => {
+		const live: TimelineRow = {
+			kind: "activity",
+			id: "tool:call:call-7",
+			label: "shell",
+			family: "tool",
+			state: "running",
+			detail: { callId: "call-7" },
+			turnId: "t_abc",
+		};
+		const recorded: TimelineRow = {
+			kind: "activity",
+			id: "item_tool_3_1",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			detail: { callId: "call-7" },
+			turnId: "turn_1",
+			transcriptKey: "apptranscript-item-v2:turn_1:3:1",
+		};
+		expect(readerKey(live)).toBe(readerKey(recorded));
+		// A run keys by its first step's call, so it too keeps one key as the
+		// step is recorded.
+		const liveRun: TimelineRow = { kind: "run", id: "run:tool:call:call-7", steps: [live] };
+		const recordedRun: TimelineRow = {
+			kind: "run",
+			id: "run:item_tool_3_1",
+			steps: [recorded],
+			transcriptKey: "apptranscript-item-v2:turn_1:3:1",
+		};
+		expect(readerKey(liveRun)).toBe(readerKey(recordedRun));
+		// A step with no call id keeps its transcript key, then its row id.
+		const keyless: TimelineRow = {
+			kind: "activity",
+			id: "tool:call:none",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			detail: {},
+		};
+		expect(readerKey(keyless)).toBe("tool:call:none");
+	});
 	it("captures content-space measurements and restores with a negative view offset", () => {
 		const rows = [row("a", { entry: 1, item: 1 }), row("b", { entry: 2, item: 1 })];
 		const anchor = captureReaderAnchor(
@@ -612,7 +656,7 @@ describe("a reading position inside a folded run (Review Focus 4)", () => {
 	});
 });
 
-describe("where a session opens (spec 7.3, ruling 31)", () => {
+describe("where a session opens (spec 7.3, ruling 31, Jesse 2026-10-18)", () => {
 	const rows: TimelineRow[] = [
 		{ kind: "user", id: "u1", text: "one", turnId: "turn_1" },
 		{ kind: "assistant", id: "a1", markdown: "one", streaming: false, turnId: "turn_1" },
@@ -623,10 +667,13 @@ describe("where a session opens (spec 7.3, ruling 31)", () => {
 	const turnIds = ["turn_1", "turn_2"];
 
 	it("opens at the live end while a question or approval waits", () => {
-		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rows, turnIds, true)).toEqual({ kind: "live" });
+		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rows, turnIds, true, true)).toEqual({ kind: "live" });
 	});
-	it("opens at the start of a reply that finished since you last reached the end", () => {
-		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rows, turnIds, false)).toEqual({ kind: "row", index: 4 });
+	it("opens at the start of a reply that finished since you last reached the end, when the setting is on", () => {
+		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rows, turnIds, false, true)).toEqual({
+			kind: "row",
+			index: 4,
+		});
 	});
 	// The "unread result" (spec 7.3) starts with the agent's first row, runs
 	// included, so a newer turn whose agent side opens with a run opens there,
@@ -640,7 +687,7 @@ describe("where a session opens (spec 7.3, ruling 31)", () => {
 			{ kind: "run", id: "run:a", steps: [], turnId: "turn_2" },
 			{ kind: "assistant", id: "a2", markdown: "two", streaming: false, turnId: "turn_2" },
 		];
-		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithRun, turnIds, false)).toEqual({
+		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithRun, turnIds, false, true)).toEqual({
 			kind: "row",
 			index: 4,
 		});
@@ -661,18 +708,25 @@ describe("where a session opens (spec 7.3, ruling 31)", () => {
 			},
 			{ kind: "run", id: "run:a", steps: [], turnId: "turn_2" },
 		];
-		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithImages, turnIds, false)).toEqual({
+		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithImages, turnIds, false, true)).toEqual({
 			kind: "row",
 			index: 5,
 		});
 	});
-	it("opens where you left off when nothing is newer, or the seen turn isn't loaded", () => {
-		expect(openingTarget(anchor({ turnsSeen: "turn_2" }), rows, turnIds, false)).toEqual({ kind: "anchor" });
-		expect(openingTarget(anchor({ turnsSeen: "turn_0" }), rows, turnIds, false)).toEqual({ kind: "anchor" });
-		expect(openingTarget(anchor({}), rows, turnIds, false)).toEqual({ kind: "anchor" });
+	// Jesse, 2026-10-18: a session always opens at the latest, never at a spot
+	// saved up the history. The reply-start jump is the one exception, and
+	// only when its setting is on.
+	it("opens at the live end even with a saved position, when the reply jump is off", () => {
+		expect(openingTarget(anchor({ turnsSeen: "turn_2" }), rows, turnIds, false, false)).toEqual({ kind: "live" });
+		expect(openingTarget(anchor({ turnsSeen: "turn_0" }), rows, turnIds, false, false)).toEqual({ kind: "live" });
+		expect(openingTarget(anchor({}), rows, turnIds, false, false)).toEqual({ kind: "live" });
+	});
+	it("opens at the live end with nothing newer to jump to, even with the setting on", () => {
+		expect(openingTarget(anchor({ turnsSeen: "turn_2" }), rows, turnIds, false, true)).toEqual({ kind: "live" });
+		expect(openingTarget(anchor({}), rows, turnIds, false, true)).toEqual({ kind: "live" });
 	});
 	it("opens at the live end with no saved position", () => {
-		expect(openingTarget(null, rows, turnIds, false)).toEqual({ kind: "live" });
+		expect(openingTarget(null, rows, turnIds, false, true)).toEqual({ kind: "live" });
 	});
 	it("stores turnsSeen, and still reads an anchor saved before it existed", () => {
 		const disk = storage();

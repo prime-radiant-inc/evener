@@ -29,7 +29,7 @@ vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("./TranscriptImages", () => ({ TranscriptImages: () => null }));
 
 const DANGER_INK = "#C51D23";
-const INK_LOW = "#6D6D64";
+const INK_LOW = "#62626D";
 const T0 = Date.parse("2026-09-28T20:00:00Z");
 
 function delegate(over: Partial<EvenerDelegateInfo> & { delegateId: string }): EvenerDelegateInfo {
@@ -89,7 +89,7 @@ function rowsAt(level: (typeof LEVELS)[number], items = notificationWireItems())
 	const conversation = projectConversation(model, undefined, config ?? undefined);
 	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
 	return {
-		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns)),
+		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns, { config })),
 		delegates: conversation.delegates,
 	};
 }

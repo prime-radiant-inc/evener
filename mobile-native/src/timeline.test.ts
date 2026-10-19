@@ -71,6 +71,26 @@ it("treats a saved note as routine, like a run or a time marker (spec 8.8)", () 
 	expect(timelineGap(note, message)).toBeLessThan(ordinary);
 });
 
+// Intent replaces a folded run with one line per action, so those lines keep
+// the run's rhythm instead of standing apart like prose. A failed action is
+// attention, not a routine line (Jesse, 2026-10-18).
+it("treats a settled intent line as routine, and a failed one as attention", () => {
+	const ordinary = timelineGap(message, message);
+	const intentLine: TimelineRow = {
+		kind: "activity",
+		id: "a",
+		label: "read_file",
+		family: "tool",
+		state: "completed",
+		summaryOnly: true,
+		detail: { description: "Read the runner" },
+	};
+	expect(timelineGap(message, intentLine)).toBeLessThan(ordinary);
+	expect(timelineGap(intentLine, message)).toBeLessThan(ordinary);
+	expect(timelineGap(intentLine, { ...intentLine, id: "b" })).toBeLessThan(ordinary);
+	expect(timelineGap(message, { ...intentLine, id: "c", state: "failed" })).toBe(ordinary);
+});
+
 it("collapses only typed non-warning interruption notices", () => {
 	const interrupted = {
 		...setup,

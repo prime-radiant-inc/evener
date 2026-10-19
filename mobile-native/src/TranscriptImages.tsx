@@ -1,19 +1,19 @@
 import * as SecureStore from "expo-secure-store";
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, FlatList, Image, Pressable, ScrollView, useWindowDimensions, View } from "react-native";
+import { FlatList, Image, Pressable, ScrollView, useWindowDimensions, View } from "react-native";
 import type { AttachmentRef } from "./projectedRows";
 import { useConnection } from "./ConnectionProvider";
 import { HubProfiles } from "./connection";
 import { ModalSheet } from "./sheet/ModalSheet";
 import { transcriptImageSource } from "./transcriptImageSource";
 import { Copy, useColors } from "./ui";
+import { Spinner } from "./sheet/Spinner";
 
 const hubs = new HubProfiles(SecureStore);
 
 function HubImage({ image, hubId }: { image: AttachmentRef; hubId: string }) {
 	const { profiles } = useConnection();
 	const origin = profiles.find((profile) => profile.id === hubId)?.origin;
-	const colors = useColors();
 	const [source, setSource] = useState<ReturnType<typeof transcriptImageSource> | null>(null);
 	const [error, setError] = useState(false);
 	const [loading, setLoading] = useState(true);
@@ -53,7 +53,16 @@ function HubImage({ image, hubId }: { image: AttachmentRef; hubId: string }) {
 				/>
 			) : null}
 			{loading ? (
-				<ActivityIndicator accessibilityLabel="Loading image" color={colors.accent} style={{ position: "absolute" }} />
+				<View
+					style={{
+						position: "absolute",
+						inset: 0,
+						alignItems: "center",
+						justifyContent: "center",
+					}}
+				>
+					<Spinner label="Loading image" />
+				</View>
 			) : null}
 			{error ? <Copy muted>Image unavailable</Copy> : null}
 		</View>
