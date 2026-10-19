@@ -3,6 +3,7 @@ import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { LaunchFieldEditor } from "./LaunchFieldEditor";
+import { Sheet } from "./sheet/Sheet";
 import { pressable, render } from "./renderNative.testkit";
 
 vi.mock("react-native", async () => ({
@@ -18,6 +19,19 @@ const option = (kind: LaunchOption["kind"], field: string): LaunchOption => ({
 	group: "Launch",
 	kind,
 	defaultableLayers: ["global"],
+});
+
+it("names the scalar sheet and applies an edit through its pinned Done action", async () => {
+	const edited = option("text", "systemPrompt");
+	const apply = vi.fn();
+	const tree = render(
+		<LaunchFieldEditor option={edited} value={{}} effective={{}} client={null} close={() => {}} apply={apply} />,
+	);
+	expect(tree.root.findByType(Sheet).props.title).toBe(edited.label);
+	act(() => tree.root.findByType("TextInput" as never).props.onChangeText("prompt-sentinel"));
+	await act(async () => pressable(tree, "Done")?.props.onPress());
+	expect(apply).toHaveBeenCalledWith("prompt-sentinel");
+	act(() => tree.unmount());
 });
 
 it.each([

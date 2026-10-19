@@ -126,6 +126,34 @@ it("lets a drag of the page put the keyboard away", () => {
 	harness.connection = { activeProfile: hub, client: null, state: "ready", retry: vi.fn() };
 	const tree = render(app());
 	expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+	expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.automaticallyAdjustKeyboardInsets).toBe(true);
+	expect(
+		tree.root.findAllByType("KeyboardAvoidingView" as never).filter((node) => node.props.behavior === "padding"),
+	).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
+it("keeps draft Save outside the scrolling settings and disabled offline", async () => {
+	writeDraft(hub.id, JSON.stringify({ id: "draft-1", baseRevision: 1, rules: [], writeUncertain: false }));
+	const connection = clientFixture();
+	harness.connection = screenConnection(connection.client, "ready");
+	const request = connection.nextRequest();
+	const tree = render(app());
+	await act(async () => {
+		await connection.connected;
+		await request;
+	});
+	const action = () => tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Save changes" });
+	expect(action().props.disabled).toBe(false);
+	for (let parent = action().parent; parent; parent = parent.parent) {
+		expect(String(parent.type)).not.toBe("ScrollView");
+	}
+	act(() => {
+		harness.connection = dropped(harness.connection);
+		tree.update(app());
+	});
+	expect(action().props.disabled).toBe(true);
+	expect(harness.values.has(draftKey(hub.id))).toBe(true);
 	act(() => tree.unmount());
 });
 
@@ -141,6 +169,26 @@ it("shows and invokes cold-offline discard for an unreadable stored record", () 
 
 	expect(harness.values.has(draftKey(hub.id))).toBe(false);
 	expect(tree.root.findAllByProps({ accessibilityLabel: "Discard unreadable draft" })).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
+it("brings a failed pinned save into view without dropping the keyboard draft", async () => {
+	writeDraft(hub.id, JSON.stringify({ id: "draft-1", baseRevision: 1, rules: [], writeUncertain: false }));
+	const connection = clientFixture();
+	harness.connection = screenConnection(connection.client, "ready");
+	const request = connection.nextRequest();
+	const scrollTo = vi.fn();
+	const tree = render(app(), { createNodeMock: (element) => (element.type === "ScrollView" ? { scrollTo } : null) });
+	await act(async () => {
+		await connection.connected;
+		await request;
+	});
+	await act(async () =>
+		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Save changes" }).props.onPress(),
+	);
+	expect(alertNodes(tree).length).toBeGreaterThan(0);
+	expect(scrollTo).toHaveBeenCalledWith({ y: 0, animated: true });
+	expect(harness.values.has(draftKey(hub.id))).toBe(true);
 	act(() => tree.unmount());
 });
 
