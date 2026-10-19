@@ -913,3 +913,69 @@ func TestSandboxMutations_RefuseUnderDeadRootThroughDotDotLinkTarget(t *testing.
 		t.Fatalf("refused remove recreated the deleted root: %v", statErr)
 	}
 }
+
+// F4 (roborev 43007): a candidate that resolves into a PROTECTED surface must
+// not pre-empt the canonically spelled mask candidate. With /alias ->
+// /real/wt/extra and a mask at /real/wt/extra/secret, delete and recreate extra
+// with secret pointing at /real/wt/.git/hooks, which exists. The resolved
+// spelling then lands on a git-protected path, so the guard used to answer with
+// the protected denial (Sensitive=false) before ever testing the canonical mask
+// candidate, exposing the masked basename. Masking is now decided across every
+// spelling before git protection is.
+func TestSandboxMutations_ProtectedCandidateDoesNotPreemptTheMaskedDenial(t *testing.T) {
+	t.Parallel()
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	worktree := filepath.Join(base, "real", "wt")
+	extra := filepath.Join(worktree, "extra")
+	hooks := filepath.Join(worktree, ".git", "hooks")
+	canonicalSecret := filepath.Join(extra, "secret")
+	for _, d := range []string{home, hooks, canonicalSecret} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(extra, alias); err != nil {
+		t.Fatal(err)
+	}
+	// Resolve against the REAL worktree, so its existing .git/hooks lands in the
+	// policy's protected paths; then leave the symlink spelling as the only
+	// writable root, which is what makes the resolved candidate protected while
+	// the canonical candidate is masked.
+	rp, err := sandbox.Resolve(
+		sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite, DenylistAdd: []string{canonicalSecret}},
+		sbTestHost(home), worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	rp.FileTool.WriteRoots = []string{alias}
+	env := NewLocalExecutionEnvironment(alias)
+	env.Sandbox = &rp
+	t.Cleanup(env.Cleanup)
+	if err := env.WriteFileRaw("seed.txt", []byte("seed"), 0o644); err != nil {
+		t.Fatalf("seed write (root fd capture): %v", err)
+	}
+	// Delete and recreate the captured root's canonical directory, pointing the
+	// masked entry at the protected hooks directory.
+	if err := os.RemoveAll(extra); err != nil {
+		t.Fatalf("remove canonical root: %v", err)
+	}
+	if err := os.MkdirAll(extra, 0o755); err != nil {
+		t.Fatalf("recreate canonical root: %v", err)
+	}
+	if err := os.Symlink(hooks, canonicalSecret); err != nil {
+		t.Fatalf("plant masked-entry symlink: %v", err)
+	}
+	err = env.RemovePath("secret/id_rsa")
+	if errors.Is(err, ErrWorkingDirectoryUnavailable) {
+		t.Fatalf("masked target under a dead symlink-spelled root got the recovery error: %v", err)
+	}
+	denied, ok := errors.AsType[*sandbox.DeniedError](err)
+	if !ok {
+		t.Fatalf("masked remove under a dead symlink-spelled root = %v, want *sandbox.DeniedError", err)
+	}
+	if denied.ReasonKind != sandbox.DenialMasked || !denied.Sensitive {
+		t.Fatalf("masked remove denial = %+v, want DenialMasked and Sensitive (a protected candidate pre-empted the mask)", denied)
+	}
+}

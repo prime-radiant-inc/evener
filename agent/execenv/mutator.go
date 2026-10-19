@@ -119,10 +119,17 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 	} else {
 		candidates = append(candidates, filepath.Clean(filepath.Join(canonicalCwd, filepath.FromSlash(p))))
 	}
+	// Masking is decided across EVERY spelling before git protection is: a
+	// candidate can resolve into a protected surface (secret -> .git/hooks)
+	// while a later candidate is the one that names the mask, and the protected
+	// denial is not sensitive, so testing the two reasons together would answer
+	// with the one that exposes the masked basename (issue #4703, roborev 43007).
 	for _, cand := range candidates {
 		if sfs.underMaskedForWrite(cand) {
 			return sfs.deny(tool, p, denyReasonMasked)
 		}
+	}
+	for _, cand := range candidates {
 		if sfs.underProtected(cand) {
 			return sfs.deny(tool, p, denyReasonProtected)
 		}
