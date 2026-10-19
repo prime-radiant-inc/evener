@@ -2900,7 +2900,10 @@ describe("ConversationStore", () => {
 			expect(service.notificationHandler).not.toBeNull();
 		});
 
-		it("reopens instead of retaining a display for a different service identity", async () => {
+		// Retention is keyed by the session, not the service object: a rebuilt
+		// client resumes the same ref and keeps the display. A read that names a
+		// different thread still replaces it, on the read's own identity.
+		it("replaces the retained display when the resume's read names another thread", async () => {
 			const service = new FakeConversationService();
 			const otherService = new FakeConversationService();
 			otherService.openConv = makeConversation({ threadId: "thread-2" });
@@ -2910,6 +2913,93 @@ describe("ConversationStore", () => {
 			await store.getState().resumeProjected(otherService, createFakeSink(), "ref-1");
 			expect(store.getState().conversation?.threadId).toBe("thread-2");
 			expect(store.getState().status).toBe("open");
+		});
+
+		// A reconnect (or the app returning to the front) rebuilds the connection
+		// client, so the screen resumes with a NEW service object for the SAME
+		// session. Reopening there sets conversation to null and republishes
+		// whatever the fresh read returns, so the transcript blanks and a lagging
+		// snapshot can briefly replace rows the reader already saw. The rows stay
+		// on screen and the read merges into them instead.
+		it("retains the transcript while a rebuilt client's read lands", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: [{ kind: "user", id: "u1", text: "first" }] });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			expect(store.getState().conversation?.items.map((item) => item.id)).toEqual(["u1"]);
+			store.getState().suspendProjected();
+
+			const rebuilt = new FakeConversationService();
+			rebuilt.openConv = service.openConv;
+			let release!: (value: ConversationReadProjection) => void;
+			rebuilt.readProjectionBlock = new Promise((resolve) => {
+				release = resolve;
+			});
+
+			const resume = store.getState().resumeProjected(rebuilt, createFakeSink(), "ref-1");
+			expect(store.getState().status).toBe("opening");
+			expect(store.getState().conversation?.items.map((item) => item.id)).toEqual(["u1"]);
+
+			release({
+				conversation: rebuilt.openConv,
+				activity: {
+					tasks: [],
+					work: [],
+					usage: {},
+					capabilities: ALL_TRUE_CAPS,
+				},
+				olderCursor: null,
+			});
+			await resume;
+			expect(store.getState().status).toBe("open");
+			expect(store.getState().conversation?.items.map((item) => item.id)).toEqual(["u1"]);
+		});
+
+		// The same rebuilt-client resume: a frame the session emits while the
+		// fresh read is in flight is a live update the reader must keep. The
+		// subscription is already installed, so nothing else will deliver it.
+		it("keeps a frame that lands while a rebuilt client's read is in flight", async () => {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: [{ kind: "user", id: "u1", text: "first" }] }, true);
+			const store = createConversationStore();
+			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			store.getState().suspendProjected();
+
+			const rebuilt = new FakeConversationService();
+			rebuilt.openConv = service.openConv;
+			let release!: (value: ConversationReadProjection) => void;
+			rebuilt.readProjectionBlock = new Promise((resolve) => {
+				release = resolve;
+			});
+			const resume = store.getState().resumeProjected(rebuilt, createFakeSink(), "ref-1");
+			await yieldMicrotask();
+
+			rebuilt.notificationHandler?.({
+				method: "history/updated",
+				params: {
+					threadId: "thread-1",
+					ref: "ref-1",
+					bootGeneration: "1",
+					epoch: 1,
+					snapshot: { incarnation: "inc-1", length: 1 },
+					turns: [{ id: "t2", status: "completed" }],
+					items: [{ type: "userMessage", id: "u2", text: "second", turnId: "t2" }],
+				},
+			} as AnyNotification);
+			expect(store.getState().conversation?.items.map((item) => item.id)).toContain("u2");
+
+			release({
+				conversation: rebuilt.openConv,
+				activity: {
+					tasks: [],
+					work: [],
+					usage: {},
+					capabilities: ALL_TRUE_CAPS,
+				},
+				olderCursor: null,
+			});
+			await resume;
+			expect(store.getState().conversation?.items.map((item) => item.id)).toContain("u2");
 		});
 
 		it("retains the suspended display when the fresh subscribed read fails", async () => {
