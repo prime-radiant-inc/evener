@@ -2999,6 +2999,26 @@ describe("ConversationStore", () => {
 			expect(ids()).toContain("u2");
 		});
 
+		// A resync that invalidates the retained history while the read is in
+		// flight asks for one authoritative reread. The request cannot be served
+		// while the resume is still opening, so it must be remembered and drained
+		// when the resume settles — otherwise the store opens on invalidated
+		// history with nothing scheduled to repair it.
+		it("repairs history when a resync lands while the rebuilt client's read is in flight", async () => {
+			const { rebuilt, read, resume } = await beginRebuiltClientResume(true);
+			rebuilt.notificationHandler?.({
+				method: "evener/thread/resync",
+				params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 2 },
+			} as AnyNotification);
+
+			const readsBefore = rebuilt.readProjectionCalls.length;
+			rebuilt.readProjectionBlock = null;
+			read.resolve(projectionFor(rebuilt));
+			await resume;
+			await yieldMicrotask();
+			expect(rebuilt.readProjectionCalls.length).toBeGreaterThan(readsBefore);
+		});
+
 		it("retains the suspended display when the fresh subscribed read fails", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();

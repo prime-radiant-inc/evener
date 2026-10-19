@@ -1381,7 +1381,19 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 		const binding = captureBinding();
 		const service = boundService;
 		const sink = boundSink;
-		if (binding === null || service === null || sink === null) return;
+		if (binding === null) {
+			// A resume that is still opening can still receive a frame that needs
+			// the canonical read (a newer-epoch resync invalidates the retained
+			// history). Its binding is not schedulable yet, but the need is real:
+			// remember it and drain it when the resume settles, or the store opens
+			// on invalidated history with nothing scheduled to repair it.
+			const current = storeGet?.();
+			if (current !== undefined && current.ref === ref && current.status === "opening") {
+				deferredRereadRef = ref;
+			}
+			return;
+		}
+		if (service === null || sink === null) return;
 		scheduler.request(ref, async () => {
 			// I1: Suppress stale work BEFORE any read — if the binding changed,
 			// do not call rehydrate (serviceA must never be called with refB).
@@ -1389,6 +1401,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 			await storeGet?.().rehydrate(service, sink);
 		});
 	}
+
+	// The ref whose reread was requested while a resume was opening. Drained
+	// exactly once, when that resume commits.
+	let deferredRereadRef: string | null = null;
 
 	// One frame about the open thread, routed to BOTH stores: the activity sink
 	// first (its outcome decides whether one shared reread is owed), then the
@@ -2002,6 +2018,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						return;
 					}
 					set({ status: "open" });
+					// A frame that asked for the canonical read while this resume was
+					// opening could not schedule one; drain that need now.
+					if (deferredRereadRef === ref) {
+						deferredRereadRef = null;
+						requestRehydrate(ref);
+					}
 				} finally {
 					if (gen !== conversationGen || get().status === "error") {
 						active = false;
