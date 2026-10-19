@@ -157,7 +157,9 @@ function LaunchDefaults({
 						</Copy>
 					))}
 				</View>
-				<SearchField label="Search launch settings" value={query} onChangeText={setQuery} />
+				<View style={{ marginHorizontal: space.margin }}>
+					<SearchField label="Search launch settings" value={query} onChangeText={setQuery} />
+				</View>
 				{Array.from(groups, ([group, options]) => (
 					<Group key={group} label={group}>
 						{options.map((option) => {

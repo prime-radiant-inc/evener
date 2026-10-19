@@ -11,6 +11,7 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
 import { LaunchSettingsScreen } from "./LaunchSettingsScreen";
 import { markers } from "./markerTestUtils";
 import { alertRequests, offersButton, render, renderedText } from "./renderNative.testkit";
+import { SearchField } from "./sheet/SearchField";
 
 const harness = vi.hoisted(() => ({
 	connection: null as unknown,
@@ -126,6 +127,11 @@ beforeEach(() => {
 it("lets a drag of the page put the keyboard away", async () => {
 	const tree = await mount(launchHub().hub);
 	expect(tree.root.findAllByType("ScrollView" as never)[0]?.props.keyboardDismissMode).toBe("on-drag");
+});
+
+it("insets the search control from the sheet edges", async () => {
+	const tree = await mount(launchHub().hub);
+	expect(tree.root.findByType(SearchField).parent?.props.style.marginHorizontal ?? 0).toBeGreaterThanOrEqual(16);
 });
 
 it("keeps Save outside the scrolling settings and saves the edited global layer", async () => {

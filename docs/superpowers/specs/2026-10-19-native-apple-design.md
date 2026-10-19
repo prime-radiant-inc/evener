@@ -39,3 +39,12 @@ Use red/green tests for adaptive layout and interaction contracts, existing scre
 ## Direction calibration
 
 The pinned Apple-native brief governs the direction. Candidate references considered were iOS Mail's list hierarchy, Notes' reading canvas, Settings' grouped forms, Reminders' focused work list, Books' reader, Files' navigation and Shortcuts' precise controls. The concept calibration assigned the fourth candidate; its task-first list discipline fits the Board. Catalog alternatives were declined because catalog grids, coded album sleeves, bitmap specimens and transit diagrams obscure familiar iPhone actions. Their useful disciplines are retained: consistent alignment, prioritization, truthful state, and restrained semantic color. No catalog motif overrides Apple-native behavior.
+
+Calibration record: direction seed `701a3594`, mode `operate`, approved pool
+`c3b204a1eed6`, seven grounded candidates, assigned index four. The original
+command result is retained in the design session's
+`job:job_034iKD7qCVWGQfi6rNvDAN_hilS6G7Gy8Qq` output. The quality bar is the
+first-party iPhone discipline above: work-first hierarchy, system navigation,
+readable Dynamic Type, restrained surfaces and deliberate light/dark contrast.
+Jesse declined mockups; there is no approved comp or separate catalog quality-bar
+selection to claim.

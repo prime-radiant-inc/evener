@@ -1,32 +1,51 @@
 # Native Apple redesign verification
 
-The iPhone redesign passes source-level verification. Native visual acceptance remains open: the installed iOS 27 runtime rejects the generated app's lifecycle before it displays the interface.
+The iPhone redesign runs in the native app against a real local hub. The bounded visual review accepted the corrected screens. Native checks also caught and resolved composer growth and Dynamic Type regressions that screenshots and renderer tests missed.
 
 ## Candidate and scope
 
-- Checked on 2026-10-19 UTC.
-- Source: `3653674537b19e6c62b5102df37b1197eb7b0778` on `wip/native-apple-design`.
-- Base: `34d4ea239ec6c192838b544d6c4dd4e7f70c04a1`.
-- Native artifact: the Debug simulator host at `mobile-native/ios/build/Build/Products/Debug-iphonesimulator/Evener.app` compiled during implementation. It did not launch successfully and is not a visually accepted final-candidate artifact.
-- Backend: no real-hub end-to-end journey ran. A scripted demonstration hub was started for inspection, then stopped after the launch failure.
-- No publication, main-branch merge, deployment or TestFlight upload was performed.
+- Checked on 2026-10-19 UTC, on branch `wip/native-apple-design`.
+- Original base: `34d4ea239ec6c192838b544d6c4dd4e7f70c04a1`. Scene startup is committed at `340fc1eff5`; the final UI corrections and this evidence are in the commit containing this record.
+- Native host: `mobile-native/ios/build/Build/Products/Debug-iphonesimulator/Evener.app`, built from this branch. The installed Debug host loaded the final JavaScript from Metro on port 8087. This is not a standalone release bundle or TestFlight build.
+- Device: iPhone 18 Pro simulator, iOS 27.0, 402×874 points. Captures are 1206×2622 pixels. Ordinary text uses the `large` category; maximum text uses `accessibility-extra-extra-extra-large`.
+- Backend: current-source real `evener hub`, AppWire and session daemon, with the maintained `test/e2e/fakellm/cmd` scripted provider only at the LLM boundary. No live provider credentials or production hub data were used.
+- No publication, main-branch merge, deployment or TestFlight upload was performed. iPad and Android delivery remain deferred.
 
-This record supplements [iPhone acceptance](acceptance.md). Historical simulator and TestFlight receipts do not qualify this candidate.
+This record supplements [iPhone acceptance](acceptance.md). It qualifies the checks below, not every release criterion in that guide.
 
 ## Implemented surfaces
 
 | Area | Source changes |
 | --- | --- |
 | Shared controls | Crisp neutral light/dark surfaces, sentence-case 15/20 section headings, adaptive segmented choices, consistent selection marks and 44-point search actions |
-| Board | Clearer title/context/age hierarchy, large-text reflow, consistent section headings and unchanged inline project navigation |
-| Conversation | Separate title and live-jump actions, protected navigation targets, a 44-point resting composer and viewport-aware expansion without replacing its input |
+| Board | Clearer title/context/age hierarchy, large-text reflow, readable project names and unchanged inline project navigation |
+| Conversation | Separate title and live-jump actions, protected navigation targets, intrinsically sized composer and viewport-aware expansion without replacing its input |
 | New session and model sheets | Readable provider headings and a consistent leading check slot for selected and unselected choices |
-| Hub administration | Grouped settings, consistent value summaries and scalar editors, and Save outside the scrolling form |
+| Hub administration | Grouped settings, consistent value summaries and scalar editors, inset search, and Save outside the scrolling form |
 | Retained settings | Disabled rows and inputs remain readable while editing is unavailable; native disabled semantics and retained drafts remain intact |
+| iOS startup | A repeatable Expo prebuild plugin installs a single-scene UIKit lifecycle while preserving Expo and React Native ownership |
 
-The design record is [mobile-native/DESIGN.md](../../../mobile-native/DESIGN.md), with its [Impeccable sidecar](../../../mobile-native/.impeccable/design.json). [The shared web guide](../../web-ui/design-system.md) distinguishes platform palettes while preserving common semantic colors and hierarchy. Web implementation was unchanged.
+The design record is [mobile-native/DESIGN.md](../../../mobile-native/DESIGN.md), with its [Impeccable sidecar](../../../mobile-native/.impeccable/design.json) and [product context](../../../mobile-native/PRODUCT.md). [The shared web guide](../../web-ui/design-system.md) distinguishes platform palettes while preserving common semantic colors and hierarchy. Web implementation was unchanged.
 
-## Checks completed
+## Native captures
+
+The first inspection found three material visual defects: clipped composer text at maximum size, an uninset launch-settings search field, and a truncated Board project name. One correction batch and one finish confirmation cleared those findings. Subsequent functional composer corrections were checked with real native input and the four conversation captures were refreshed from the final source.
+
+| Surface | Ordinary light | Ordinary dark | Maximum text |
+| --- | --- | --- | --- |
+| Board, with real session row and draft | [Light](assets/2026-10-19-apple-board-light.png) | [Dark](assets/2026-10-19-apple-board-dark.png) | [Large](assets/2026-10-19-apple-board-large-text.png) |
+| Conversation | [Light](assets/2026-10-19-apple-conversation-light.png) | [Dark](assets/2026-10-19-apple-conversation-dark.png) | [Large](assets/2026-10-19-apple-conversation-large-text.png), [keyboard open](assets/2026-10-19-apple-composer-keyboard-large-text.png) |
+| Hub | [Light](assets/2026-10-19-apple-hub-light.png) | Not captured | [Large](assets/2026-10-19-apple-hub-large-text.png) |
+| Hub settings | [Light](assets/2026-10-19-apple-hub-settings-light.png) | Not captured | Not captured |
+| Launch defaults | [Empty search](assets/2026-10-19-apple-launch-defaults-light.png), [entered query](assets/2026-10-19-apple-launch-search-query.png) | Not captured | Not captured |
+| Launch scalar editor | [Light](assets/2026-10-19-apple-launch-editor-light.png) | Not captured | [Large](assets/2026-10-19-apple-launch-editor-large-text.png) |
+| Web keyboard shortcuts | [Light](assets/2026-10-19-apple-shortcuts-light.png) | [Dark](assets/2026-10-19-apple-shortcuts-dark.png) | [Large](assets/2026-10-19-apple-shortcuts-large-text.png) |
+| New session | [Light](assets/2026-10-19-apple-new-session-light.png) | Not captured | [Large](assets/2026-10-19-apple-new-session-large-text.png), [options](assets/2026-10-19-apple-new-session-options-large-text.png) |
+| Model picker | [Light](assets/2026-10-19-apple-model-picker-light.png) | Not captured | [Large](assets/2026-10-19-apple-model-picker-large-text.png) |
+
+These 22 captures show the actual native interface, not browser mockups. Scrolled text at a viewport edge is not a complete-page capture. In the largest Board capture, the floating compose button overlaps the project disclosure symbol; the name remains readable, and the capture alone does not establish blocked row access.
+
+## Automated checks
 
 Run from the repository root:
 
@@ -34,56 +53,91 @@ Run from the repository root:
 make test-native
 ```
 
-The final run exited zero after the last source cleanup. The pre-commit formatter subsequently reported no changes.
+The final run exited zero after the last composer correction. The test phases emitted no React act warnings or fixture debug logs. The cold export reported its expected empty-cache rebuild warning; npm printed an update notice and Vitest printed performance suggestions.
 
 | Check actually run | Result |
 | --- | --- |
-| Cold Metro iOS export | Produced an iOS bundle from 2,476 modules |
-| Native Vitest suite | 376 files, 6,277 tests passed |
+| Cold Metro iOS export | Produced one iOS bundle from 2,476 modules |
+| Native Vitest suite | 377 files, 6,295 tests passed |
 | Shared mobile Vitest suite | 6 files, 762 tests passed |
-| Native TypeScript check | Passed with `tsc --noEmit --project tsconfig.check.json` |
-| Native/shared Biome gate | Passed, 816 files checked |
-| Native script import resolution | Passed |
-| Working and staged diff checks | Passed |
-| Design record verification | All 50 recorded palette values matched source; sidecar JSON, schema version and canonical color mappings checked |
+| Native TypeScript check | `tsc --noEmit --project tsconfig.check.json` passed |
+| Native/shared Biome gate | 816 files checked, no changes |
+| Native script import resolution | 7 tools resolved across 143 first-party modules, without executing those socket-owning tools |
 
-These checks include Board actions and ordering, conversation send/recovery behavior, draft retention, administration save guards, and component accessibility/layout contracts. They do not prove native text wrapping, hit geometry or visual composition.
+Additional targeted verification:
 
-## Review and regression evidence
+- `cd mobile-native && npm test -- src/session/Composer.test.tsx src/LaunchSettingsScreen.test.tsx src/board/ProjectTreeRow.test.tsx src/usePinNavigation.retry.test.tsx`: 4 files, 62 tests passed in the independent final review.
+- `cd mobile-native && npm run check`: TypeScript passed after the final input-scaling change.
+- `cd mobile-native && npx biome check --write src/session/Composer.tsx src/session/Composer.test.tsx`: no changes.
+- Scene-plugin tests: 10 tests passed, exercising actual Expo config mods against the Expo 57 fixture. Two real prebuild runs produced identical generated AppDelegate and Info.plist content.
+- Design record verification: all 50 recorded palette values matched source; sidecar JSON, schema version and canonical color mappings were checked during documentation review. The final correction batch changes layout guidance, not palette tokens.
 
-An independent whole-branch review found one important regression: newly grouped retained settings inherited disabled opacity. Supporting values fell to about 1.91:1 in light mode and 2.50:1 in dark mode.
+Renderer tests establish component contracts and behavior. They do not execute UIKit text measurement or establish native gesture, keyboard or VoiceOver behavior.
 
-New tests failed before the shared correction and passed afterward. They cover disabled Row, SwitchRow and TextFieldRow content in both themes, plus the real shortcut screen retaining its values through disconnect and reconnect. The contrast oracle accounts for native ancestor opacity. The reviewer independently confirmed the correction and its oracle; opaque supporting text now measures about 7.38:1 and 8.64:1 respectively.
+## Native behavior checked
 
-Four independent simplification angles completed. The actionable finding was duplicate Board-row vertical padding, consolidated without changing layout. The proposed reuse of a contiguous-group helper was rejected because it would change model grouping. No efficiency or abstraction-level changes were needed.
+### Real hub, reconnect and install-over preservation
 
-The Impeccable finish reviewer requested native captures and withheld visual approval. No current-source native screenshots were accepted.
+The isolated hub used fresh config/state/cache/tmp roots with inherited HOME and a clean process environment. Its provider pointed only to the local scripted LLM endpoint. The existing real hub and daemon executed a session and a follow-up through the native app. The scripted replies are labeled as such in the captures.
 
-## Native launch blocker
+The app returned from Home to the same conversation and exact unsent draft. Transport observation showed the old socket disappear and a new socket connect in the same app process; this is reconnect evidence, rather than merely a retained screen. Sending a follow-up produced another real daemon turn through the scripted provider.
 
-Device-specific compilation initially failed because Xcode expected CoreSimulator 1174.9.2 while the installed framework was 1171.7. Generic simulator compilation succeeded with:
+Installing the new native host over the existing app, without uninstalling or resetting it, retained the saved hub credential, open conversation and exact draft: `Retain this unsent native draft 7319.` The final JavaScript launch retained that same 37-character draft.
+
+### Composer typing and Dynamic Type
+
+The native checks exercised the installed React Native input, rather than injecting renderer callbacks:
+
+| Regression or action | Before correction | Final native result |
+| --- | --- | --- |
+| Long soft-wrapped typing | An explicit height kept a 326-character draft at 44pt | Native intrinsic layout grows; a settled 960-character soft-wrapped draft reaches the 144pt cap |
+| Expansion at cap | iOS could stop content-size callbacks, leaving no Expand action | Frame measurement exposes Expand at 144pt; the full editor measured 428pt and retained all 960 characters |
+| Done and clear | Fixed-height feedback could keep stale bounds | Done retained all text; clearing shrank to 44pt and removed Expand |
+| Existing draft, normal → largest → normal | Manually scaled font props left the field at 86pt until clear/retype | Native font scaling remeasured 44 → 257.333 → 44pt with the exact 37-character draft unchanged and native `IsEditing` retained |
+
+The inline field keeps the same React identity and no explicit height. Native font scaling handles its base 17/24 text; scaled minimum and maximum constraints protect line containment and transcript space. Add and Expand keep bounded symbols inside 44-point targets.
+
+These observations prove text and focus retention in the tested transition. They do not prove exact caret position or selection-range preservation.
+
+### Native startup and links
+
+Device-specific compilation initially failed because Xcode expected CoreSimulator 1174.9.2 while the installed framework was 1171.7. Generic simulator compilation succeeded. The original Expo host then exited because SDK 27 requires UIScene. The approved scene migration removed that launch blocker through source-controlled prebuild integration, not hand edits to generated files or falsified SDK metadata.
+
+The current host compiled and launched, dismissed its splash, and connected to the real hub:
 
 ```sh
 cd mobile-native
-LANG=en_US.UTF-8 RCT_METRO_PORT=8087 xcodebuild \
+npx expo prebuild --platform ios --no-clean --no-install
+LANG=en_US.UTF-8 RCT_METRO_PORT=8087 xcodebuild -quiet \
   -workspace ios/Evener.xcworkspace -scheme Evener \
   -configuration Debug -sdk iphonesimulator \
   -destination 'generic/platform=iOS Simulator' \
   -derivedDataPath ios/build build
 ```
 
-Installation and the launch request succeeded, but the application exited. The simulator reported:
+LLDB observed the cold test URL in `RCTHost.launchOptions` and the warm URL at `RCTLinkingManager.application:openURL:options:`. Breakpoints were removed and the debugger detached. This verifies the native-to-React-Native boundary, not exactly-once JavaScript URL events, external universal-link association or OAuth.
 
-> Application failed to launch: UIScene life cycle is required for apps built with this SDK.
+Home/return exercises foreground recovery. It does not exercise OS scene eviction and root reattachment; that ownership path received source review only.
 
-The only installed Xcode provides SDK 27.1. The Expo 57.0.20 / React Native 0.86.3 generated host creates its window in AppDelegate and has no scene delegate. Investigation found no supported configuration-only switch to repair this. No SDK metadata was falsified and no system toolchain or native lifecycle was changed.
+## Review and regression evidence
 
-## Remaining acceptance
+- **Retained-setting contrast:** whole-branch review found disabled opacity lowered supporting values to about 1.91:1 light and 2.50:1 dark. Direct shared-control tests and real shortcut-screen disconnect/reconnect tests failed before the correction and pass after it. The oracle includes ancestor opacity. Opaque supporting text measures about 7.38:1 and 8.64:1 respectively.
+- **Visual corrections:** search inset and project-label reflow tests failed before their changes. The finish reviewer accepted corrected glyph containment, search placeholder/query states, complete project identity and recorded calibration provenance. Its verdict covers those scored fixes, not whole-product release acceptance.
+- **Composer measurement:** independent review found the explicit-height feedback loop. Native reproduction confirmed it. Tests rejected the fixed height and missing cap action before the fixes. The native-scaling contract test failed with `false` instead of `true`, then all 32 Composer tests passed. Final source review found no remaining confirmed defect; it independently ran the four targeted suites above.
+- **Retry-test diagnostics:** awaited React `act` around mount reconciliation and fake-clock retries removed 16 act warnings. The journal case now proves an intermediate failed timed retry before recovery. Two fixture debug logs were removed without suppressing production output or weakening assertions.
+- **Simplification:** four independent angles completed. Duplicate Board-row vertical padding was consolidated. Reusing a contiguous-group helper was rejected because it would change model grouping. The final Composer review found no worthwhile further abstraction.
 
-- Inspect the running current-source iPhone app in light, dark and large text: Board, conversation, New session, Hub, Hub settings, Launch settings, keyboard shortcuts and scalar editors.
-- Confirm actual text containment, touch targets, focus/keyboard behavior, native materials and VoiceOver interaction. Submit those captures for finish review.
-- Use a compatible toolchain/runtime, or separately scope a genuine scene-lifecycle migration. Neither alternative has been launch-verified here.
-- Run any required current-backend journey and distribution checks against the exact final native artifact.
-- iPad and Android delivery remain deferred. Full web/Go gates and CI were not run for this native-only implementation and documentation change.
+## Tooling limitations and remaining acceptance
 
-Integration note: this branch leaves `mobile-native/src/readerPosition.ts` unchanged from its base. Local main already contains the separate open-at-latest change (`a7c4015de0`, PR #4738). Preserve that newer behavior when integrating this branch; the redesign does not supersede it.
+- Native commands emitted the machine's `Install Failed: Authorization is required to install the packages` preamble even when the requested simulator operation exited zero and visibly succeeded. Native tooling output was not pristine.
+- The idb bridge rejected two stale-element writes without changing the draft. The documented standard `--api ax` backend completed them. Queued HID typing was read only after all 960 expected characters arrived; an earlier bounded probe stopped at 691 while input was still queued.
+- VoiceOver traversal, Large Content Viewer interaction, exact caret/selection retention, complete scrolling reachability, all gesture/motion states, landscape and a physical iPhone remain unverified.
+- No full dark/large-text matrix exists beyond the captures listed above. Broader error, offline and active-work states have automated coverage, not complete native visual coverage in this pass.
+- OS scene eviction/root reattachment, JavaScript exactly-once links, universal links, OAuth and uncertain-delivery recovery through installation remain unverified.
+- Full web/Go gates, CI, distribution signing and TestFlight were not run for this native implementation and documentation change.
+
+## Cleanup
+
+Removed only the added `http://127.0.0.1:52514` hub through the app's normal Remove this hub action, which owns its credential and draft cleanup. The app returned to the empty saved-hub screen. Light appearance and normal text size were restored. The temporary Metro, hub, scripted provider and owned session daemon were stopped; private test state, credentials, logs, binaries, backup copy and automation scratch were removed. The installed app, native build artifact and the 22 repository captures remain. No production profile or app-wide data reset was used.
+
+Integration note: this branch leaves `mobile-native/src/readerPosition.ts` unchanged from its original base. Local main already contains the separate open-at-latest change (`a7c4015de0`, PR #4738). Preserve that newer behavior when integrating this branch; the redesign does not supersede it.
