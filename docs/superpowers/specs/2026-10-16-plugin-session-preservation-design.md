@@ -17,7 +17,12 @@ revision loaded successfully. This establishes a stale selected path, not a
 Claude manifest parsing failure. The actor that deleted that historical directory
 has not been established.
 
-Source verified at `936806aef7b838767d64590cc593d46aa764cde6`:
+Initial source inspection and reproduction used
+`936806aef7b838767d64590cc593d46aa764cde6`. After rebasing onto main
+`5b1020a7ae6d225828a1127680a6f7467cb6870c` on 2026-10-19, the affected source
+paths were rechecked. Plugin paths were unchanged; native reconnect handling
+changed and must be preserved. The runtime reproduction below was not rerun
+after the rebase.
 
 - `internal/plugins/gc.go`, `Manager.Gc`, protects current registry paths only.
   Hub startup and `evener plugin gc` both call it. Restorable sessions can still
@@ -156,6 +161,13 @@ specific recovery action; raw filesystem paths and nested OS errors stay in the
 technical diagnostic. No new wire payload or renderer is necessary. Full detail
 may show two distinct rows: the actionable summary and its technical diagnostic.
 
+Apply the shared code policy to overlay notices and direct idle warnings. Native
+currently loses a direct warning's code when seating it as a transient row; retain
+that metadata and filter at projection time so switching to full can reveal a
+retained notice. Preserve arrival position and bounded retention. The inspected
+plugin producer uses overlay notices; the direct-warning test covers an additional
+consumer boundary, not a second proven route for the screenshot's plugin errors.
+
 An episode ends only on confirmed successful validation/use of its source or
 component. Process restoration starts a fresh runtime observation; no permanent
 suppression record is introduced. Startup recovery emits its outcome after the
@@ -183,7 +195,11 @@ with an `overlayKey` would violate this contract.
 Preserve native full-turn omission rules, cross-turn reissues, cursor advancement,
 stale read/page rejection, bounded retained payloads, transient warning seating,
 loaded older pages, drafts and reading position. Cover refresh and reconnect after
-multiple pages with a visible later-page row.
+multiple pages with a visible later-page row. Bound recorded payloads at display
+configuration, follow-live and live-publication transitions too, so later overlay
+derivation cannot restore discarded bodies. Preserve main's same-ref resume across
+service replacement, live routing during reads, deferred opening-time rereads and
+applied-mutation settlement.
 
 ## Execution and integration
 
@@ -205,8 +221,9 @@ worktree contains them. Name that documentation commit in each brief. Later base
 must carry those same accepted documents plus their prerequisite fix.
 
 Preservation and native repair may start independently after plan acceptance.
-Recovery branches after preservation; warning work branches after recovery since
-both change initialization and share recovery outcomes. Keep PRs separate and
+Recovery branches after preservation; warning work branches after recovery and
+native repair since it shares initialization outcomes and transient warning code.
+Keep PRs separate and
 land preservation before recovery. The parent owns integration and cross-fix
 acceptance. Each coordinator owns its ticket, targeted evidence and reviews;
 follow repository PR and CI rules without bypassing hooks or gates.

@@ -24,7 +24,7 @@
 1. Two producers observe the same absent source: one episode, one actionable notice. Task 1.
 2. Recovery followed by a later failure: allow a new episode without permanent suppression. Task 1.
 3. Hook/MCP failure with readable skills: preserve the independent component failure. Task 1.
-4. Quiet recovery versus lost functionality at each detail level: shared policy agrees across clients. Task 2.
+4. Overlay and direct idle warnings at each detail level: shared policy agrees across clients, including detail changes after arrival. Task 2.
 5. Unknown warning codes and unrelated skill diagnostics: keep existing conservative visibility. Task 2.
 
 ---
@@ -32,8 +32,9 @@
 ## Ownership and execution
 
 Use coordinator `codex-jesse-at-pr/gpt-6.1-sol` with `isolation="worktree"`, based
-on the completed recovery fix. Own the paths below. The native-history work owns
-`mobile/src/state/conversation.ts`; do not repair overlay/history mixing here.
+on the completed recovery and native-history fixes. Own the paths below. Changes
+to `mobile/src/state/conversation.ts` are limited to transient warning metadata
+and shared visibility policy; do not redo overlay/history reconciliation here.
 Avoid new protocol fields, widgets, transports or a filesystem polling service.
 
 ### Task 1: consolidate source-failure episodes at the producer
@@ -97,6 +98,7 @@ if counts[events.WarningCodePluginDiagnostic] != 1 { t.Fatal(counts) }
 
 **Files:**
 - Modify: `appwire-client/typescript/warnings.ts`, root exports in `appwire-client/typescript/index.ts`, tests in `warnings.test.ts` and `transcriptProjector.test.ts`.
+- Modify/test: transient warning handling in `mobile/src/state/conversation.ts` and `mobile/src/state/conversation.test.ts`.
 - Test consumers: `mobile-native/src/projectedRows.test.ts`, `mobile-native/src/TimelineItem.test.tsx`, and `cmd/evener-hub/frontend/src/panes/session/transcript/messages/WarningItem.test.tsx`.
 - Create: `agent/plugin_warning_wire_test.go` and `agent/testdata/pluginwarningwire/README.md` with a recorded real-producer fixture beside it.
 - Update: `docs/product/history-content.md`, `docs/product/subsystems.md` S03/S10/S17–S19/S21.
@@ -104,13 +106,15 @@ if counts[events.WarningCodePluginDiagnostic] != 1 { t.Fatal(counts) }
 **Interfaces:**
 - Define/export `WarningCodePluginUnavailable`, `WarningCodePluginDiagnostic`, and `WarningCodePluginRecovered` in TypeScript with the exact values from Task 1. Bind their machine-token values to the Go constants in the existing warning contract test style.
 - Add only `plugin_diagnostic` and `plugin_recovered` to the existing informational-code policy. `plugin_unavailable` remains actionable at all levels.
+- Export `isInformationalWarningCode(code: unknown): boolean` from `warnings.ts` and the package root. Have the existing `isInformationalWarning(item: ItemModel)` call it, preserving one classification list. Native transient warnings retain the folded `code` alongside their row/anchor and use that predicate with existing `informationalNoticesVisible` at projection time. Do not discard a hidden notice on arrival or mistake detail filtering for retention eviction; it must appear when the reader selects full detail while it remains in the retained window.
 - Keep the current warning shape and projector API. Follow `agent/testdata/summaryfailurewire/README.md` for real producer → AppWire → shared decoder → client evidence, not a hand-authored warning that bypasses production mapping.
 
 - [ ] Produce a deterministic wire fixture from the real missing-source/recovery scenarios in Task 1. Add detail-level tests at conversation, tool-call and full configurations. Assert notice counts by warning code/severity and rendered role, not prose: unavailable = 1 at every level; technical/recovered = 0 at ordinary levels and 1 each when present at full. Unknown codes and unrelated skill diagnostics retain their baseline behavior.
+- [ ] Add `idle coded warnings follow shared detail policy` in the store tests. Send direct `warning` frames with no active turn for all three codes, unknown codes and uncoded warnings. Switch ordinary → full → ordinary, refresh, and apply retention pressure. Assert visibility, stable identity, arrival anchoring, bounded eviction and no promotion into recorded history. This is an additional consumer-boundary test: the inspected plugin producer emits overlay notices, so do not describe a direct frame as evidence of that producer route.
 - [ ] Run from `mobile-native`:
 
 ```bash
-node node_modules/vitest/vitest.mjs run --root .. --config mobile-native/vitest.config.mts --configLoader runner --no-cache --maxWorkers 2 --exclude '**/.worktrees/**' appwire-client/typescript/warnings.test.ts appwire-client/typescript/transcriptProjector.test.ts mobile-native/src/projectedRows.test.ts mobile-native/src/TimelineItem.test.tsx
+node node_modules/vitest/vitest.mjs run --root .. --config mobile-native/vitest.config.mts --configLoader runner --no-cache --maxWorkers 2 --exclude '**/.worktrees/**' appwire-client/typescript/warnings.test.ts appwire-client/typescript/transcriptProjector.test.ts mobile/src/state/conversation.test.ts mobile-native/src/projectedRows.test.ts mobile-native/src/TimelineItem.test.tsx
 ```
 
   Observe quiet codes failing the ordinary-detail assertions before changing the policy.

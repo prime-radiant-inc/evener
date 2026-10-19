@@ -89,7 +89,7 @@ if bytesReadFromCompanion != originalCompanion { t.Fatal("restored session lost 
 - [ ] Run `go test ./internal/plugins -run 'Test(Gc|Doctor).*' -count=1` and `go test ./agent -run '^TestPluginRevisionSurvives' -count=1`. Record the deletion failure before the fix. Use the narrow new test if unrelated package startup makes the red run costly.
 - [ ] Change the shared GC policy, doctor guidance and evergreen docs. Document disk growth and the explicit-delete boundary. Do not add an age timeout, current-process scan or default-state-root scan as a deletion shortcut.
 - [ ] Rerun those commands. Add caller-level checks using the existing CLI and startup test harnesses to show both still reach the protected `Manager.Gc`; do not launch a live hub or mutate the user's plugin store. Verify a failed new install leaves A usable and a successful fresh launch selects B.
-- [ ] Commit only the named touched files as `fix(plugins): retain revisions needed by resumable sessions`. Run specification and quality review, then whole-fix review. Report red/green commands, retained directory identities, remaining disk cost and CI results.
+- [ ] Commit only the named touched files as `fix(plugins): retain revisions needed by resumable sessions`. Run specification and quality review before Task 3. Record red/green commands and retained directory identities; whole-fix review follows migration coverage.
 
 ### Task 3: preserve physical paths through automatic marketplace migration
 
