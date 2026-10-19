@@ -504,6 +504,8 @@ function fakeSend(socket, { onNavigate } = {}) {
         return { result: { root: { nodeId: 1 } } };
       case "DOM.querySelector":
         return { result: { nodeId: 2 } };
+      case "Browser.getWindowForTarget":
+        return { result: { windowId: 1, bounds: { width: 800, height: 600 } } };
       default:
         return { result: { result: { value: 42 } } };
     }
