@@ -33,11 +33,12 @@ comments. This applies to streaming and nonstreaming responses, including vision
 channels and gzip-compressed wire bytes: a response can
 continue indefinitely while bytes keep arriving within the idle interval.
 
-Set a positive Go duration (for example `45s`, `10m`, or `1h`):
+Set a positive Go duration (for example `45s`, `10m`, or `1h`). Replace
+`provider/model` with an available model from your configured provider:
 
 ```sh
-evener --provider-idle-timeout 15m "your task"
-evener serve --provider-idle-timeout 15m
+evener --model provider/model --provider-idle-timeout 15m "your task"
+evener serve --model provider/model --provider-idle-timeout 15m
 ```
 
 The hub launch setting is **Provider idle timeout**. Launch TOML uses

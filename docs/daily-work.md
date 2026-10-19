@@ -6,13 +6,13 @@ This guide assumes you have completed [provider setup](getting-started.md#connec
 
 ## Try a CLI continuation
 
-Use a fresh directory so the two files below cannot overwrite existing work. Run these commands with your configured provider and model:
+Use a fresh directory so the two files below cannot overwrite existing work. Replace `provider/model` with an available model from your configured provider:
 
 ```sh
 mkdir daily-workspace
 cd daily-workspace
 git init
-evener 'Write initial.json with nonce b8e54d60 and a receipts array containing that nonce once.'
+evener --model provider/model 'Write initial.json with nonce b8e54d60 and a receipts array containing that nonce once.'
 evener --list-sessions
 ```
 

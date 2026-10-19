@@ -54,10 +54,10 @@ Keep the plugin directory and compiled MCP server on the machine running Evener.
 The [example files](examples/extensions/README.md) are optional source examples,
 not files bundled with an installed `evener` command.
 
-From your project directory, invoke an installed command:
+From your project directory, invoke an installed command. Replace `provider/model` with an available model from your configured provider:
 
 ```bash
-evener "/summarize-change review-42"
+evener --model provider/model "/summarize-change review-42"
 ```
 
 Check that `review-42` reaches the expanded session input. For the plugin example,

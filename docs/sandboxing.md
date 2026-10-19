@@ -4,14 +4,14 @@ Choose a sandbox before starting work. The default is **off**, so an ordinary se
 
 ## Start a confined task
 
-Prerequisites: a configured provider, a working directory, and a usable OS sandbox backend. Run these shell examples from the project directory; choose only one for the task you intend:
+Prerequisites: a configured provider, a working directory, and a usable OS sandbox backend. Replace `provider/model` with an available model from your configured provider. Run these shell examples from the project directory; choose only one for the task you intend:
 
 ```sh
-evener --sandbox read-only --sandbox-net off "Review the README without changing project files"
+evener --model provider/model --sandbox read-only --sandbox-net off "Review the README without changing project files"
 ```
 
 ```sh
-evener --sandbox workspace-write --sandbox-net off "Fix the failing unit test and run its checks"
+evener --model provider/model --sandbox workspace-write --sandbox-net off "Fix the failing unit test and run its checks"
 ```
 
 These are real agent requests and can incur provider charges. The second permits project writes. In the browser, choose the corresponding Sandbox and Sandbox network egress launch settings before Start. Check the startup report for the actual backend, mode, and network policy. If an explicit sandbox cannot be enforced, fix the backend or choose another host rather than silently rerunning with sandbox off.

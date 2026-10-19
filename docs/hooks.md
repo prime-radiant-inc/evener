@@ -14,10 +14,11 @@ then run from the resulting `evener-docs` directory. No Evener build is needed.
 The complete [`hello-plugin` fixture](examples/extensions/hello-plugin/hooks/hooks.json)
 runs a startup hook. The session makes a real provider call and may incur charges;
 `--sandbox read-only` prevents writes to the checkout but permits reads outside
-it and writes to session scratch.
+it and writes to session scratch. In each example, replace `provider/model` with
+an available model from your configured provider.
 
 ```bash
-evener --sandbox read-only --plugin-dir ./docs/examples/extensions/hello-plugin "Reply briefly."
+evener --model provider/model --sandbox read-only --plugin-dir ./docs/examples/extensions/hello-plugin "Reply briefly."
 ```
 
 This plugin has a manifest and a `SessionStart` hook. The hook uses exec-form
@@ -65,7 +66,7 @@ and input/output contracts. Parsed fields marked reserved have no runtime effect
 Point Evener at one or more plugin directories with `--plugin-dir`:
 
 ```bash
-evener --plugin-dir ./my-plugin "do the thing"
+evener --model provider/model --plugin-dir ./my-plugin "do the thing"
 ```
 
 For each plugin directory, Evener reads hooks from the **first** of these it finds:

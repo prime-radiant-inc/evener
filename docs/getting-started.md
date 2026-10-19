@@ -77,15 +77,16 @@ Leave the hub running. Closing a browser tab is not a stop command for the agent
 
 ## Connect a provider before starting work
 
-This walkthrough uses Settings. The [guided Connect provider dialog](connecting-a-provider.md#start-your-first-session) offers another route to the same host's provider connections and credentials. If you already connected there, choose that connection rather than entering its credentials again.
+This walkthrough opens the [guided Connect provider dialog](connecting-a-provider.md#start-your-first-session) from Settings. If you already connected a provider on this host, use that connection rather than entering its credentials again.
 
 In the authenticated browser, open **Settings → Providers & credentials**, at `/settings/credentials` on your hub. For a straightforward hosted setup:
 
 1. Obtain an API key from your provider's account dashboard. An ordinary chat subscription is not necessarily an API account.
-2. Select the matching configured provider entry, such as `openai` or `anthropic`, and save the key in **Providers & credentials**.
-3. Open **New session** at `/new` and choose an available model from that provider. Do not submit a task yet.
+2. Click **Connect provider** and choose your provider, such as **OpenAI** or **Anthropic**.
+3. Enter the **API key**, click **Save and check**, then click **Continue** after the check succeeds.
+4. Open **New session** at `/new` and choose an available model from that provider. Do not submit a task yet.
 
-For a supported ChatGPT/Codex subscription, the **Providers & credentials** page also offers OAuth sign-in for `openai-codex`. That is a separate configured provider entry from `openai`; saving an OpenAI API key is not the same action.
+For a supported ChatGPT/Codex subscription, choose **OpenAI Codex** in **Connect provider**, click **Sign in**, and follow the sign-in instructions. This connects `openai-codex`, a separate provider from `openai`; saving an OpenAI API key is not the same action.
 
 The default credential file is `~/.config/evener/credentials.toml` (under `XDG_CONFIG_HOME` when set). Evener writes it with owner-only permissions. Do not put keys in your project or prompt. Custom paths, environment-variable fallbacks, and provider-specific rules are covered in [configuration](configuration.md).
 
