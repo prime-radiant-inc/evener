@@ -214,12 +214,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	tPhaseStart = s.sclock().Now()
 
 	// Repair orphaned tool results through the shared locked helper (capture,
-	// repair, and publish are one critical section), then copy history once
-	// for both context management and message expansion.
+	// repair, and publish are one critical section). The request's history is
+	// snapshotted where it is consumed: each strategy fold attempt snapshots it
+	// under the same lock as the revision and append state it pairs with, and
+	// the HistoryExpand snapshot below pairs the final history with its
+	// in-flight boundary.
 	s.repairOrphanedToolResults(ctx, "before model request")
-	s.mu.Lock()
-	historyTurns := append([]schema.Turn{}, s.history...)
-	s.mu.Unlock()
+	var historyTurns []schema.Turn
 
 	// inFlightFrom is the N4 in-flight-turn boundary paired with the exact
 	// historyTurns this request expands. A winning fold sets both atomically
