@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -124,15 +125,11 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 	// while a later candidate is the one that names the mask, and the protected
 	// denial is not sensitive, so testing the two reasons together would answer
 	// with the one that exposes the masked basename (issue #4703, roborev 43007).
-	for _, cand := range candidates {
-		if sfs.underMaskedForWrite(cand) {
-			return sfs.deny(tool, p, denyReasonMasked)
-		}
+	if slices.ContainsFunc(candidates, sfs.underMaskedForWrite) {
+		return sfs.deny(tool, p, denyReasonMasked)
 	}
-	for _, cand := range candidates {
-		if sfs.underProtected(cand) {
-			return sfs.deny(tool, p, denyReasonProtected)
-		}
+	if slices.ContainsFunc(candidates, sfs.underProtected) {
+		return sfs.deny(tool, p, denyReasonProtected)
 	}
 	return errDeadWorkingDir(p, root)
 }
