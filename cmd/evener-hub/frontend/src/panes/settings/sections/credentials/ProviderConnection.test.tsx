@@ -88,7 +88,14 @@ function setup(list: InstanceListResponse = { instances: [], availableProviders:
   const connected = vi.fn();
   const close = vi.fn();
   const openSettings = vi.fn();
-  const view = render(<ProviderConnection onClose={close} onConnected={connected} onOpenSettings={openSettings} />);
+  const view = render(
+    <ProviderConnection
+      completionLabel="Choose model"
+      onClose={close}
+      onConnected={connected}
+      onOpenSettings={openSettings}
+    />,
+  );
   return { client, connected, close, openSettings, ...view, user: userEvent.setup() };
 }
 beforeEach(() => {
@@ -276,7 +283,14 @@ test("discovery load failure focuses recovery and retries the real listing", asy
     throw new Error("private-wire-body");
   });
   connectionStore.getState().connect(client);
-  render(<ProviderConnection onClose={() => {}} onConnected={() => {}} onOpenSettings={() => {}} />);
+  render(
+    <ProviderConnection
+      completionLabel="Choose model"
+      onClose={() => {}}
+      onConnected={() => {}}
+      onOpenSettings={() => {}}
+    />,
+  );
   const alert = await screen.findByRole("alert");
   expect(document.activeElement).toBe(alert);
   expect(screen.queryByText(/private-wire-body/)).toBeNull();
@@ -684,7 +698,14 @@ test("saved access survives a failed check and dismissal, then reopens without a
 
   first.client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
   const connected = vi.fn();
-  const reopened = render(<ProviderConnection onClose={() => {}} onConnected={connected} onOpenSettings={() => {}} />);
+  const reopened = render(
+    <ProviderConnection
+      completionLabel="Choose model"
+      onClose={() => {}}
+      onConnected={connected}
+      onOpenSettings={() => {}}
+    />,
+  );
   const user = userEvent.setup();
   await choose(user);
   expect(screen.getByTestId("credential-saved")).toBeTruthy();
@@ -1131,7 +1152,14 @@ test("reconnect restores initial loading and invalidates late check callbacks", 
   client.on("evener/instance/list", () => initial.promise);
   connectionStore.getState().connect(client);
   const connected = vi.fn();
-  render(<ProviderConnection onClose={() => {}} onConnected={connected} onOpenSettings={() => {}} />);
+  render(
+    <ProviderConnection
+      completionLabel="Choose model"
+      onClose={() => {}}
+      onConnected={connected}
+      onOpenSettings={() => {}}
+    />,
+  );
   const user = userEvent.setup();
   await act(async () => {
     client.emitStateChange("reconnecting");

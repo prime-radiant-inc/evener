@@ -1,6 +1,6 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -63,6 +63,7 @@ function Harness({ onClose }: { onClose(): void }) {
   if (!open) return null;
   return (
     <ConnectProviderDialog
+      completionLabel="Choose model"
       onClose={() => {
         setOpen(false);
         onClose();
@@ -122,7 +123,7 @@ test("the picker offers the connect choices and hands existing connections to th
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
-test("the dialog still renders the guided flow and hands the connected name to its caller", async () => {
+test.each(["dialog", "settings"])("%s completes without navigating away from its caller", async (surface) => {
   const setup = instance({
     name: "anthropic",
     providerId: "anthropic",
@@ -149,15 +150,33 @@ test("the dialog still renders the guided flow and hands the connected name to i
   fake.on("evener/auth/test", () => ({ provider: "anthropic", status: "success", message: "" }));
   connectionStore.getState().connect(fake);
   const onConnected = vi.fn();
-  render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
+  window.history.pushState({}, "", "/settings/credentials");
+  render(
+    surface === "dialog" ? (
+      <ConnectProviderDialog completionLabel="Choose model" onClose={() => {}} onConnected={onConnected} />
+    ) : (
+      <CredentialsSection sectionId="credentials" />
+    ),
+  );
   const user = userEvent.setup();
 
+  if (surface === "settings") await user.click(await screen.findByRole("button", { name: "Connect provider" }));
   await user.click(await screen.findByRole("button", { name: "Anthropic" }));
   await user.type(screen.getByLabelText("API key"), "sk-guided");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  await user.click(await screen.findByRole("button", { name: "Choose model" }));
+  await waitFor(() => expect(document.querySelector('[role="status"][data-state="success"]')).not.toBeNull());
+  const completion = document.querySelector('[role="status"][data-state="success"]')?.nextElementSibling;
+  if (!(completion instanceof HTMLButtonElement)) throw new Error("Missing completion action");
+  expect(onConnected).not.toHaveBeenCalled();
+  await user.click(completion);
 
-  expect(onConnected).toHaveBeenCalledWith("anthropic");
+  if (surface === "dialog") {
+    expect(onConnected).toHaveBeenCalledExactlyOnceWith("anthropic");
+  } else {
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  }
+  expect(window.location.pathname).toBe("/settings/credentials");
+  expect(fake.calls.filter((call) => call.method === "thread/start")).toEqual([]);
 });
 
 test.each(["onboarding", "settings"])(
@@ -169,7 +188,7 @@ test.each(["onboarding", "settings"])(
     connectionStore.getState().connect(fake);
     render(
       view === "onboarding" ? (
-        <ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />
+        <ConnectProviderDialog completionLabel="Choose model" onClose={() => {}} onConnected={() => {}} />
       ) : (
         <CredentialsSection sectionId="credentials" />
       ),
@@ -203,7 +222,7 @@ test("a registry load failure can be retried without closing the dialog", async 
   });
   connectionStore.getState().connect(fake);
   const close = vi.fn();
-  render(<ConnectProviderDialog onClose={close} onConnected={() => {}} />);
+  render(<ConnectProviderDialog completionLabel="Choose model" onClose={close} onConnected={() => {}} />);
 
   await screen.findByRole("alert");
   await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
@@ -228,7 +247,7 @@ test("mounting the dialog reads the controller's list and issues no proxied call
   });
   connectionStore.getState().connect(fake);
 
-  render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
+  render(<ConnectProviderDialog completionLabel="Choose model" onClose={() => {}} onConnected={() => {}} />);
 
   expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
   expect(fake.calls.some((call) => call.method === "evener/host/request")).toBe(false);

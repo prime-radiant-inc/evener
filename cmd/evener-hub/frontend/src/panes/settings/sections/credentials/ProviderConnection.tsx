@@ -68,6 +68,7 @@ type ConnectionErrorReason =
 export interface ProviderConnectionProps {
   onClose(): void;
   onConnected(name?: string): void;
+  completionLabel: string;
   /** Hands the user to the settings pane's credentials section, where the
    * instances this flow connects are listed, edited, tested and removed. The
    * hosting dialog owns the handoff - it closes itself and navigates there
@@ -298,6 +299,7 @@ function SelectedConnection({
   provider,
   onClose,
   onConnected,
+  completionLabel,
   onOpenSettings,
   onChange,
 }: ProviderConnectionProps & {
@@ -916,7 +918,7 @@ function SelectedConnection({
                 <p role="status" data-state="success">
                   Model list access confirmed. This does not verify generation access.
                 </p>
-                <Button onClick={() => leave(() => onConnected(name))}>Choose model</Button>
+                <Button onClick={() => leave(() => onConnected(name))}>{completionLabel}</Button>
               </>
             ) : (
               <Button type="submit" disabled={busy || unavailable}>
