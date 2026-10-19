@@ -21,6 +21,34 @@ bundle _2.7.2_ exec pod install --deployment --project-directory=ios
 
 The generated workspace is `mobile-native/ios/Evener.xcworkspace`, with scheme `Evener`. Generated iOS projects, installed dependencies, archives and exported bundles remain ignored. The app configuration and distribution helper restrict the product to iPhone device family 1. Use normal simulator signing for installed simulator tests: disabling code signing strips the application entitlement SecureStore needs and prevents saving credentials. No paid provisioning profile is required for the simulator. Keep the committed CocoaPods lock stable; a failed deployment install requires diagnosis rather than silently regenerating it.
 
+### iOS scene startup
+
+[`with-ios-scene-lifecycle.js`](../../../mobile-native/plugins/with-ios-scene-lifecycle.js)
+registers one application scene and embeds the tracked
+[`ios-scene-delegate.swift`](../../../mobile-native/plugins/ios-scene-delegate.swift)
+adapter in the generated AppDelegate. Do not patch the ignored iOS project by hand.
+The plugin preserves Expo's factory and bundle configuration and rejects unfamiliar
+startup templates so an SDK upgrade requires review of the integration.
+
+AppDelegate initializes the Expo/React factory once and retains the React root.
+SceneDelegate owns the window, attaches the root on connection, and detaches it on
+disconnection without resetting navigation or drafts. Cold scene URLs and browsing
+activities become React launch options for `Linking.getInitialURL()`; warm delivery
+uses the existing React and Expo URL handlers. Expo lifecycle subscribers receive
+scene callbacks. UIKit's application notifications remain the source for React
+Native AppState; the adapter does not synthesize duplicate notifications.
+
+The bundle identifier, URL scheme, SQLite and SecureStore ownership are unchanged.
+The JavaScript connection owner still closes transport in the background and
+recovers on foreground entry. Scene adoption does not enable multiple windows or
+configure associated domains. Test universal-link association and provider sign-in
+against their actual services separately from custom-scheme launch checks.
+
+Run `npm test -- plugins/ios-scene.test.ts` from `mobile-native` for persistent
+configuration and repeatability checks. Native compilation, actual launch, link
+delivery and background recovery require a simulator or device build; a successful
+`simctl launch` request alone does not prove the process stayed alive.
+
 ### Regenerating the pod lock
 
 Adding, removing or upgrading a native dependency in `mobile-native/package.json` changes the pods the Podfile asks for, and `pod install --deployment` then refuses the committed `mobile-native/Podfile.lock` (`make check-podfile-lock` names the pods that differ). Regenerate the lock from `mobile-native`, starting from the committed one so that no other pod moves:
