@@ -27,7 +27,7 @@ export const site = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const processor = unified()
+export const processor = unified()
   .use(parse)
   .use(gfm)
   .use(stringify, { fences: true });
@@ -50,7 +50,7 @@ async function local(root, file) {
     throw new Error(`Outside repository: ${file}`);
   return resolved;
 }
-function headings(tree) {
+export function headings(tree) {
   const ids = new Set();
   const slugger = new GithubSlugger();
   visit(tree, "heading", (node) => {

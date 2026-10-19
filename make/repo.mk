@@ -85,7 +85,8 @@ clean:
 ## trigger: Local pre-merge via make merge-approval-gate; CI's Documentation
 ##   workflow runs the same check plus tutorial tours and browser checks.
 ## requires: Node 22 and the docs-site install; docs-site/node_modules must not
-##   be a symlink to another worktree's install.
+##   be a symlink to another worktree's install. A real install newer than the
+##   lockfile is reused instead of reinstalled.
 ## fails-when: The publisher's tests fail, a manifest entry or link is invalid,
 ##   a published asset or tutorial file is missing, or the build fails. Evidence
 ##   captured at an older revision warns rather than fails.
@@ -95,7 +96,11 @@ docs-check:
 		echo "docs-check: docs-site/node_modules is a symlink; refusing to npm ci through it." >&2; \
 		exit 1; \
 	fi; \
-	npm --prefix docs-site ci --silent; \
+	if [ docs-site/node_modules -nt docs-site/package-lock.json ]; then \
+		:; \
+	else \
+		npm --prefix docs-site ci --silent; \
+	fi; \
 	npm --prefix docs-site run build
 
 ## Print every make target, grouped by family, with its one-line summary.

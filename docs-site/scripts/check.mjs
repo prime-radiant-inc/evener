@@ -1,38 +1,24 @@
-import { prepare } from "./prepare.mjs";
-import { readFile, readdir } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { prepare, headings, processor } from "./prepare.mjs";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { dirname, join, posix, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import GithubSlugger from "github-slugger";
-import { validateCandidate, fullMatrix, repositoryRoot, sourceTreeDigest } from "./tours/artifacts.mjs";
+import { validateCandidate, fullMatrix, repositoryRoot, provenanceMatches } from "./tours/artifacts.mjs";
 
 // Dated design records and research are kept for provenance, not maintained as
 // current references: their links point at paths and line numbers from the
-// moment they were written. Everything else is checked.
+// moment they were written. Each directory below says so in its own README.
+// Everything else is checked, including those directories' README indexes.
 const ARCHIVE = [
   "docs/superpowers/",
   "docs/design/",
+  "docs/specs/",
+  "docs/subagent-management/",
+  "docs/research/",
   "docs/web-ui/history/",
   "docs/web-ui/specs/",
   "docs/web-ui/mockups/",
   "docs/original-attractor-specs/",
 ];
-
-function anchored(text) {
-  const ids = new Set();
-  const slugger = new GithubSlugger();
-  let fence = false;
-  for (const line of text.split("\n")) {
-    if (/^\s*```/.test(line)) {
-      fence = !fence;
-      continue;
-    }
-    if (fence) continue;
-    const heading = /^#{1,6}\s+(.+)$/.exec(line);
-    if (heading) ids.add(slugger.slug(heading[1].replace(/`/g, "").trim()));
-    for (const attr of line.matchAll(/\bid=["']([^"']+)["']/g)) ids.add(attr[1]);
-  }
-  return ids;
-}
 
 async function markdownFiles(root) {
   const found = [];
@@ -51,24 +37,24 @@ async function markdownFiles(root) {
   return found.sort();
 }
 
-async function exists(path) {
-  try {
-    await readFile(path);
-    return "file";
-  } catch {}
-  try {
-    await readdir(path);
-    return "directory";
-  } catch {}
-  return null;
-}
-
 // checkDocLinks resolves every local Markdown link and fragment outside the
 // dated archive. Published pages already get this treatment from prepare();
 // this covers the repository references readers reach from README and the
 // contributor docs, which were previously unchecked.
 export async function checkDocLinks({ root = repositoryRoot } = {}) {
   const problems = [];
+  const targets = new Map();
+  // One read per target: a file reached by many links is stat'ed once, read
+  // once, and parsed for anchors at most once.
+  async function target(path) {
+    if (!targets.has(path)) {
+      const info = await stat(join(root, path)).catch(() => null);
+      const kind = info?.isFile() ? "file" : info?.isDirectory() ? "directory" : null;
+      const text = kind === "file" ? await readFile(join(root, path), "utf8") : null;
+      targets.set(path, { kind, text, anchors: null });
+    }
+    return targets.get(path);
+  }
   for (const file of await markdownFiles(root)) {
     // An archive's own README is a current index and is checked; the dated
     // records it points at are not.
@@ -89,35 +75,37 @@ export async function checkDocLinks({ root = repositoryRoot } = {}) {
         if (/^(https?:|mailto:|tel:|#|file:)/.test(url)) continue;
         const [pathname, hash] = url.split("#");
         if (!pathname) continue;
-        const target = pathname.startsWith("/")
+        const relativeTarget = pathname.startsWith("/")
           ? pathname.slice(1)
-          : join(relativePath(file), pathname).split(sep).join("/");
-        const kind = await exists(join(root, target));
-        if (!kind) {
+          : posix.normalize(posix.join(dirname(file), pathname));
+        // A source file may live outside docs/, but a path that climbs out of
+        // the repository is a broken link, not something to read.
+        if (relativeTarget.startsWith("../") || posix.isAbsolute(relativeTarget)) {
+          problems.push(`${file}:${index + 1}: target outside repository ${url}`);
+          continue;
+        }
+        const found = await target(relativeTarget);
+        if (!found.kind) {
           problems.push(`${file}:${index + 1}: missing target ${url}`);
           continue;
         }
         if (!hash) continue;
         // Source references use GitHub's #L1 or #L1-L3 syntax.
-        if (kind === "file" && /^L\d+(-L\d+)?$/.test(hash)) {
-          const lineCount = (await readFile(join(root, target), "utf8")).replace(/\n$/, "").split("\n").length;
+        if (found.kind === "file" && /^L\d+(-L\d+)?$/.test(hash)) {
+          const lineCount = found.text.replace(/\n$/, "").split("\n").length;
           const last = Number(hash.includes("-L") ? hash.split("-L")[1] : hash.slice(1));
-          if (last > lineCount) problems.push(`${file}:${index + 1}: line ${last} beyond ${target} (${lineCount} lines)`);
+          if (last > lineCount) problems.push(`${file}:${index + 1}: line ${last} beyond ${relativeTarget} (${lineCount} lines)`);
           continue;
         }
-        if (kind !== "file" || !target.endsWith(".md")) continue;
-        if (!anchored(await readFile(join(root, target), "utf8")).has(decodeURIComponent(hash))) {
+        if (found.kind !== "file" || !relativeTarget.endsWith(".md")) continue;
+        found.anchors ??= headings(processor.parse(found.text));
+        if (!found.anchors.has(decodeURIComponent(hash))) {
           problems.push(`${file}:${index + 1}: missing fragment ${url}`);
         }
       }
     }
   }
   if (problems.length) throw new Error(`Broken documentation links:\n${problems.join("\n")}`);
-}
-
-function relativePath(file) {
-  const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/")) : "";
-  return dir || ".";
 }
 
 export async function checkTutorialAssets({root=repositoryRoot, assetRoot=join(root, "docs/assets/tutorials"), publication}={}) {
@@ -131,24 +119,22 @@ export async function checkTutorialAssets({root=repositoryRoot, assetRoot=join(r
   }
   // Publication keeps the capture's own provenance: a later commit does not
   // invalidate a screenshot that was correct when taken. It does make the
-  // evidence older than the UI it shows, so say so rather than leaving the
-  // stale manifest looking current. Making this a hard failure would block
-  // every frontend change until all 24 captures are re-run; that is a policy
-  // decision, not something a link check should impose.
-  const current = await sourceTreeDigest(root);
-  if (manifest.sourceTreeDigest !== current) {
+  // evidence older than the UI it shows. Report that to the caller rather than
+  // warning here, so a test asserting successful acceptance stays silent and
+  // the build entry point decides how loud to be.
+  return { manifest, current: await provenanceMatches(manifest, root) };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  await checkDocLinks();
+  const { manifest, current } = await checkTutorialAssets();
+  if (!current) {
     process.emitWarning(
       `tutorial evidence was captured at ${manifest.sourceRevision}, which no longer matches this tree. ` +
         "Refresh before relying on the screenshots: node docs-site/scripts/tours/refresh.mjs refresh " +
         "--surfaces cli,web --out /ABS/NEW-CANDIDATE",
     );
   }
-  return manifest;
-}
-
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  await checkDocLinks();
-  await checkTutorialAssets();
   const result = await prepare();
   console.log(`Validated and staged ${result.pages} pages and ${result.assets} assets, including Markdown exports and llms.txt.`);
 }
