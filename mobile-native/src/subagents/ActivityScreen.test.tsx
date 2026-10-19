@@ -500,6 +500,46 @@ it("keeps an empty agents list empty through a disconnect while jobs failed", as
 	expect(agents.root.findAll((node) => node.props.testID === "subagent-skeleton")).toEqual([]);
 });
 
+// A gap in the other collection is not this list's: a disconnect must not
+// turn a healthy Agents list into one that reports missing activity.
+it("keeps the other collection's missing branch off a healthy list through a disconnect", async () => {
+	client = pagedHub({
+		counts: { delegates: { known: true, total: 1, active: 1, failed: 0, completed: 0 } },
+		delegates: () => [
+			{
+				runGeneration: 1,
+				projectionRevision: 1,
+				delegateId: "solo",
+				ownerRef: "local:coord",
+				rootRef: "local:coord",
+				childRef: "local:solo",
+				type: "delegate",
+				description: "Only one",
+				task: "Only one",
+				lifecycle: "running",
+				phase: "running",
+				status: "running",
+				terminal: false,
+				resumable: false,
+			},
+		],
+	});
+	client.on("evener/thread/jobs/list", ({ scope }) => ({
+		context: activityContext,
+		scope: scope ?? "session",
+		jobs: [],
+		page: { complete: false, issues: [{ ref: "local:unread-jobs", code: "unavailable" as const }] },
+	}));
+	harness.connection = screenConnection(client, "ready");
+	const agents = await mount();
+	expect(withTestID(agents, "activity-missing")).toEqual([]);
+	expect(text(agents)).toContain("Only one");
+	disconnect(agents, "agents", client);
+	await settle();
+	expect(withTestID(agents, "activity-missing")).toEqual([]);
+	expect(text(agents)).toContain("Only one");
+});
+
 // A shell job's detail is its own screen over the list, reading the job
 // from the same tree.
 it("opens a shell job's detail over the list", async () => {

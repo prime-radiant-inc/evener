@@ -129,14 +129,20 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 					? "empty"
 					: null;
 	// A disconnect clears the pages while the last tree is kept. Keep this
-	// collection's last notice instead of reading the kept tree, which cannot
-	// tell a proven empty list from evidence that never arrived.
-	const [keptNotice, setKeptNotice] = useState<{ kind: ActivityKind; notice: Notice | null } | null>(null);
+	// collection's last answer instead of reading the kept tree: it cannot tell
+	// a proven empty list from evidence that never arrived, nor this
+	// collection's gaps from the other's.
+	const [kept, setKept] = useState<{
+		kind: ActivityKind;
+		notice: Notice | null;
+		missing: readonly string[];
+	} | null>(null);
 	useEffect(() => {
-		if (page) setKeptNotice({ kind, notice: readNotice(page) });
+		if (page) setKept({ kind, notice: readNotice(page), missing: page.issues.map((issue) => issue.ref) });
 	}, [page, kind]);
-	const notice: Notice | null = page ? readNotice(page) : keptNotice?.kind === kind ? keptNotice.notice : null;
-	const missing = page ? page.issues.map((issue) => issue.ref) : notice === "empty" ? [] : snapshot.missing;
+	const retained = kept?.kind === kind ? kept : null;
+	const notice: Notice | null = page ? readNotice(page) : (retained?.notice ?? null);
+	const missing = page ? page.issues.map((issue) => issue.ref) : (retained?.missing ?? snapshot.missing);
 	const items = useMemo(
 		() =>
 			activityListItems(rows, {
