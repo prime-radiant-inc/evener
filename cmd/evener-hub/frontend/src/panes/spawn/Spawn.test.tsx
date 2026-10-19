@@ -1402,6 +1402,68 @@ test("missing credentials surface setup in the composer without opening a dialog
   expectWorkingDir("/tmp/my-project");
 });
 
+test("local model catalogue repair opens the existing connection dialog without saving credentials", async () => {
+  const user = setupUser();
+  const client = readyClient((fake) => {
+    fake.on("model/list", () => {
+      throw new WireError("catalog unavailable", -32000);
+    });
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await fillPrompt(user, "repair-draft");
+  await setWorkingDir(user, "/tmp/repair-project");
+
+  await user.click(modelTrigger());
+  await screen.findByRole("alert");
+  await user.click(screen.getByRole("button", { name: "Connection settings" }));
+  await act(async () => {
+    await vi.dynamicImportSettled();
+  });
+
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("textContent", "repair-draft");
+  expectWorkingDir("/tmp/repair-project");
+  expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toEqual([]);
+});
+
+test("remote model catalogue recovery retries the remote read without offering local connection settings", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  let modelReads = 0;
+  const modelRequests: HostRequestParams[] = [];
+  const client = readyClient((fake) => {
+    fake.on("evener/host/request", (params) => {
+      const request = params as HostRequestParams;
+      if (request.method === "model/list") {
+        modelRequests.push(request);
+        modelReads += 1;
+        throw new WireError("remote catalog unavailable", -32000);
+      }
+      return routedDiscoveryDefault(request.method);
+    });
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  await user.click(modelTrigger());
+  await screen.findByRole("alert");
+  expect(screen.queryByRole("button", { name: "Connection settings" })).toBeNull();
+  const beforeRetry = modelReads;
+  await user.click(screen.getByRole("button", { name: "Retry models" }));
+  await waitFor(() => expect(modelReads).toBeGreaterThan(beforeRetry));
+  expect(modelRequests.at(-1)).toMatchObject({ host: "buildbox", params: { refresh: true } });
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toEqual([]);
+});
+
 test("connection handoff shows the actual instance models and preserves draft until explicit Start", async () => {
   const user = setupUser();
   let saved = false;
@@ -1465,7 +1527,7 @@ test("connection handoff shows the actual instance models and preserves draft un
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
   fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
   await settled();
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await user.click(await screen.findByRole("button", { name: "Choose model" }));
   // The completed connection hands off to the picker, which reopens scoped to
   // the connected instance: its models are offered, the unrelated provider's
   // are not.
@@ -1486,7 +1548,7 @@ test("connection handoff shows the actual instance models and preserves draft un
   });
 });
 
-test("fresh guided connection waits for Continue and explicit model choice without changing the draft", async () => {
+test("fresh guided connection waits for a successful check and explicit model choice without changing the draft", async () => {
   const user = setupUser();
   let saved = false;
   const setup = {
@@ -1554,7 +1616,7 @@ test("fresh guided connection waits for Continue and explicit model choice witho
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
   fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
   await settled();
-  const next = await screen.findByRole("button", { name: "Continue" });
+  const next = await screen.findByRole("button", { name: "Choose model" });
   expect(screen.queryByRole("option", { name: /Server choice/ })).toBeNull();
   expect(modelValue().textContent).not.toBe("openai/from-server");
   expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
@@ -1639,7 +1701,7 @@ test("closing the handoff without choosing requires an explicit model before Sta
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
   fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
   await settled();
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await user.click(await screen.findByRole("button", { name: "Choose model" }));
   await screen.findByRole("option", { name: /Server choice/ });
   await user.keyboard("{Escape}");
   // The resolved default is non-empty, so the noDefaultModel gate alone would
@@ -1804,7 +1866,7 @@ test("successful keyless testing refreshes availability without an auth notifica
   const testConnection = await screen.findByRole("button", { name: "Check connection" });
   available = true;
   await user.click(testConnection);
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await user.click(await screen.findByRole("button", { name: "Choose model" }));
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
     { method: "evener/auth/test", params: { provider: "ollama", expectedEndpointFingerprint: "fp-ollama" } },
   ]);
@@ -3637,6 +3699,320 @@ test("Access mode names the resolved sandbox default once launch/resolve lands",
   expect(accessRow?.textContent).toContain(accessOptionLabels()[0]);
 });
 
+test.each(["desktop", "mobile"])("%s access inheritance survives an explicit mode round trip", async (surface) => {
+  const user = setupUser();
+  const inheritedSandbox = "off";
+  const fake = readyClient((client) => {
+    client.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "sandbox",
+          wireField: "sandbox",
+          label: "Sandbox",
+          group: "sandbox",
+          kind: "select",
+          perLaunch: true,
+          choices: ["", "off", "read-only", "workspace-write", "restricted"].map((value) => ({ value, label: value })),
+        },
+      ],
+    }));
+    client.on("evener/launch/resolve", ({ launchOverrides }) => ({
+      effective: {
+        model: "anthropic/claude-sonnet-4-5",
+        sandbox: (launchOverrides as { sandbox?: string } | undefined)?.sandbox ?? inheritedSandbox,
+      },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const select = screen.getByLabelText("Access mode") as HTMLSelectElement;
+  const option = (value: string) => Array.from(select.options).find((entry) => entry.value === value);
+  const unqualifiedDefault = option("")?.textContent;
+  const sandboxSelect = screen.getByLabelText("Sandbox") as HTMLSelectElement;
+  const sandboxDefault = () => Array.from(sandboxSelect.options).find((entry) => entry.value === "")?.textContent;
+  const unqualifiedSandboxDefault = sandboxDefault();
+  const mobileOptions = async () => {
+    const row = screen.getByTestId("spawn-mobile-config").querySelector('[data-label="Access mode"] button');
+    if (!(row instanceof HTMLElement)) throw new Error("missing access row");
+    await user.click(row);
+    return within(screen.getByRole("dialog"))
+      .getAllByRole("button")
+      .filter((button) => button.hasAttribute("aria-pressed"));
+  };
+  await setWorkingDir(user, "/tmp/inherited-access");
+  const summary = screen.getByTestId("spawn-effective-access");
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe(inheritedSandbox));
+  expect(option("")?.textContent).toContain(option("full")?.textContent);
+  if (surface === "desktop") {
+    await user.selectOptions(select, "read-only");
+  } else {
+    const index = Array.from(select.options).findIndex((entry) => entry.value === "read-only");
+    const target = (await mobileOptions())[index];
+    if (!target) throw new Error("missing explicit access option");
+    await user.click(target);
+  }
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe("read-only"));
+  expect(option("")?.textContent).toBe(unqualifiedDefault);
+  expect(sandboxDefault()).toBe(unqualifiedSandboxDefault);
+  if (surface === "desktop") {
+    await user.selectOptions(select, "");
+  } else {
+    const options = await mobileOptions();
+    const inherit = options[0];
+    if (!inherit) throw new Error("missing inherited access option");
+    expect(inherit.textContent).toBe(unqualifiedDefault);
+    await user.click(inherit);
+  }
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe(inheritedSandbox));
+  const resolve = fake.calls.filter((call) => call.method === "evener/launch/resolve").at(-1);
+  expect(resolve?.params).not.toHaveProperty("launchOverrides.sandbox");
+  expect(select.value).toBe("");
+  expect(option("")?.textContent).toContain(option("full")?.textContent);
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).not.toHaveProperty(
+    "launchOverrides.sandbox",
+  );
+});
+
+test("missing provider prerequisite precedes the editable composer and suppresses the later model prerequisite", async () => {
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+    fake.on("model/list", () => ({ data: [] }));
+    fake.on("evener/launch/resolve", () => ({ effective: { model: "" }, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+
+  const prerequisite = await screen.findByTestId("spawn-provider-prerequisite");
+  const composer = screen.getByTestId("spawn-prompt-card");
+  expect(prerequisite.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(screen.queryByTestId("spawn-provider-prerequisite")?.parentElement).not.toBeNull();
+  expect(document.querySelector('[data-reason="no-default-model"], [data-reason="provider-model"]')).toBeNull();
+  expect(screen.getByRole("textbox", { name: "Prompt" }).hasAttribute("disabled")).toBe(false);
+});
+
+test.each([
+  ["off", "full"],
+  ["read-only", "read-only"],
+  ["workspace-write", "workspace-write"],
+  ["restricted", "restricted"],
+  ["custom-sandbox", "custom-sandbox"],
+])("effective access renders resolver sandbox %s as machine access %s", async (sandbox, access) => {
+  const user = setupUser();
+  const fake = readyClient((client) => {
+    client.on("evener/launch/resolve", () => ({
+      effective: { sandbox },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/effective-access");
+
+  const summary = await screen.findByTestId("spawn-effective-access");
+  await waitFor(() => expect(summary.getAttribute("data-state")).toBe("ready"));
+  expect(summary.getAttribute("data-sandbox")).toBe(sandbox);
+  expect(summary.getAttribute("data-access")).toBe(access);
+  expect(summary.getAttribute("data-source")).toBe("access");
+});
+
+test.each([false, true])(
+  "Change leaves an earlier unrelated disclosure closed and focuses this Spawn control, Advanced initially open=%s",
+  async (initiallyOpen) => {
+    const user = setupUser();
+    const unrelated = vi.fn();
+    const fake = readyClient((client) => {
+      client.on("evener/launch/resolve", () => ({ effective: { sandbox: "read-only" }, layers: {}, provenance: {} }));
+    });
+    render(
+      <>
+        <button type="button" aria-controls="unrelated-panel" aria-expanded="false" onClick={unrelated}>
+          Unrelated disclosure
+        </button>
+        <ClientProvider client={fake}>
+          <Spawn params={{}} paneId="spawn-1" focused />
+          <Toast />
+        </ClientProvider>
+      </>,
+    );
+    await settled();
+    await setWorkingDir(user, "/tmp/scoped-effective-access");
+    await waitFor(() => expect(screen.getByTestId("spawn-effective-access").getAttribute("data-state")).toBe("ready"));
+    if (initiallyOpen) await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+    await user.click(within(screen.getByTestId("spawn-effective-access")).getByRole("button", { name: "Change" }));
+
+    expect(unrelated).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Advanced options" }).getAttribute("aria-expanded")).toBe("true");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Access mode")));
+  },
+);
+
+test("effective access clears stale resolution while the next directory is pending without changing Start eligibility", async () => {
+  const user = setupUser();
+  const first = deferred<LaunchConfigResolved>();
+  const second = deferred<LaunchConfigResolved>();
+  const fake = readyClient((client) => {
+    client.on("evener/launch/resolve", ({ cwd }) => (cwd === "/tmp/access-a" ? first.promise : second.promise));
+  });
+  renderSpawn(fake);
+  await settled();
+  const start = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+
+  await setWorkingDir(user, "/tmp/access-a");
+  const summary = screen.getByTestId("spawn-effective-access");
+  expect(summary.getAttribute("data-state")).toBe("pending");
+  expect(summary.hasAttribute("data-sandbox")).toBe(false);
+  await act(async () =>
+    first.resolve({
+      effective: { sandbox: "read-only", model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }),
+  );
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe("read-only"));
+  const eligibility = start.disabled;
+
+  await setWorkingDir(user, "/tmp/access-b");
+  await waitFor(() => expect(summary.getAttribute("data-state")).toBe("pending"));
+  expect(summary.hasAttribute("data-sandbox")).toBe(false);
+  expect(start.disabled).toBe(eligibility);
+  await act(async () =>
+    second.resolve({
+      effective: { sandbox: "workspace-write", model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }),
+  );
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe("workspace-write"));
+  expect(start.disabled).toBe(eligibility);
+});
+
+test("effective access Change focuses Access mode", async () => {
+  const user = setupUser();
+  const fake = readyClient((client) => {
+    client.on("evener/launch/resolve", () => ({ effective: { sandbox: "read-only" }, layers: {}, provenance: {} }));
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/effective-access-focus");
+  const summary = screen.getByTestId("spawn-effective-access");
+  await waitFor(() => expect(summary.getAttribute("data-state")).toBe("ready"));
+  await user.click(within(summary).getByRole("button", { name: "Change" }));
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText("Access mode")));
+});
+
+test.each([false, true])("Advanced sandbox select owns Change focus, initially open=%s", async (initiallyOpen) => {
+  const user = setupUser();
+  // launchconfig/schema.go: sandbox is a select, including an inherit choice.
+  const sandboxOption: LaunchOption = {
+    field: "sandbox",
+    wireField: "sandbox",
+    label: "Sandbox",
+    group: "sandbox",
+    kind: "select",
+    perLaunch: true,
+    choices: [
+      { value: "", label: "(inherit)" },
+      { value: "off", label: "off" },
+      { value: "read-only", label: "read-only" },
+      { value: "workspace-write", label: "workspace-write" },
+      { value: "restricted", label: "restricted" },
+    ],
+  };
+  const fake = readyClient((client) => {
+    client.on("evener/launch/schema", () => ({ options: [sandboxOption] }));
+    client.on("evener/launch/resolve", ({ launchOverrides }) => ({
+      effective: { sandbox: (launchOverrides as { sandbox?: string } | undefined)?.sandbox ?? "workspace-write" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  const unrelated = vi.fn();
+  render(
+    <>
+      <button type="button" aria-controls="unrelated-panel" aria-expanded="false" onClick={unrelated}>
+        Unrelated disclosure
+      </button>
+      <ClientProvider client={fake}>
+        <Spawn params={{}} paneId="spawn-1" focused />
+        <Toast />
+      </ClientProvider>
+    </>,
+  );
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Access mode"), "full");
+  await user.selectOptions(screen.getByLabelText("Sandbox"), "restricted");
+  await setWorkingDir(user, "/tmp/advanced-effective-access");
+
+  const summary = screen.getByTestId("spawn-effective-access");
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe("restricted"));
+  expect(summary.getAttribute("data-access")).toBe("restricted");
+  expect(summary.getAttribute("data-source")).toBe("advanced");
+  const resolveCall = fake.calls.find(
+    (call) =>
+      call.method === "evener/launch/resolve" &&
+      (call.params as { cwd?: string }).cwd === "/tmp/advanced-effective-access",
+  );
+  expect(resolveCall?.params).toMatchObject({ launchOverrides: { sandbox: "restricted" } });
+  expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("full");
+  if (!initiallyOpen) await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(within(summary).getByRole("button", { name: "Change" }));
+  expect(unrelated).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "Advanced options" }).getAttribute("aria-expanded")).toBe("true");
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("combobox", { name: "Sandbox" })));
+});
+
+test("Advanced sandbox override wins in effective access and Change focuses its control", async () => {
+  const user = setupUser();
+  const sandboxOption: LaunchOption = {
+    field: "sandbox",
+    wireField: "sandbox",
+    label: "Sandbox mode",
+    group: "general",
+    kind: "radio",
+    perLaunch: true,
+    choices: [
+      { value: "off", label: "Off" },
+      { value: "restricted", label: "Restricted" },
+    ],
+  };
+  const fake = readyClient((client) => {
+    client.on("evener/launch/schema", () => ({ options: [sandboxOption] }));
+    client.on("evener/launch/resolve", ({ launchOverrides }) => ({
+      effective: { sandbox: (launchOverrides as { sandbox?: string } | undefined)?.sandbox ?? "workspace-write" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Access mode"), "full");
+  await user.click(screen.getByRole("radio", { name: "Restricted" }));
+  await setWorkingDir(user, "/tmp/advanced-effective-access");
+
+  const summary = screen.getByTestId("spawn-effective-access");
+  await waitFor(() => expect(summary.getAttribute("data-sandbox")).toBe("restricted"));
+  expect(summary.getAttribute("data-access")).toBe("restricted");
+  expect(summary.getAttribute("data-source")).toBe("advanced");
+  const resolveCall = fake.calls.find(
+    (call) =>
+      call.method === "evener/launch/resolve" &&
+      (call.params as { cwd?: string }).cwd === "/tmp/advanced-effective-access",
+  );
+  expect(resolveCall?.params).toMatchObject({ launchOverrides: { sandbox: "restricted" } });
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(within(summary).getByRole("button", { name: "Change" }));
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("radio", { name: "Restricted" })));
+});
+
 test("the (default) labels stay plain when the resolve fails", async () => {
   const user = setupUser();
   const fake = readyClient((f) => {
@@ -3655,6 +4031,8 @@ test("the (default) labels stay plain when the resolve fails", async () => {
   expect(effortOptionLabels()[0]).toBe(plainEffort);
   expect(modelTrigger().textContent).not.toContain("claude");
   expect(modelState()).toBe("default");
+  expect(screen.getByTestId("spawn-effective-access").getAttribute("data-state")).toBe("error");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 });
 
 // The Advanced panel's own unset labels resolve the same way, off the same
@@ -4102,7 +4480,7 @@ test("an Advanced-options model override after onboarding satisfies the requirem
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
   fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
   await settled();
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await user.click(await screen.findByRole("button", { name: "Choose model" }));
   await screen.findByRole("option", { name: /Server choice/ });
   await user.keyboard("{Escape}");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);

@@ -3324,6 +3324,9 @@ type AuthLogoutResponse struct {
 type ModelListParams struct {
 	Harness string `json:"harness,omitempty"`
 	CWD     string `json:"cwd,omitempty"`
+	// Refresh waits for a live listing instead of serving a cached catalogue.
+	// Concurrent live listings for the same scope may share the request.
+	Refresh bool `json:"refresh,omitempty"`
 }
 
 type ModelDescriptor struct {

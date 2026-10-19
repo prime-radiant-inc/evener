@@ -255,12 +255,17 @@ function assertResult(result, expectedWidth) {
   // is the page's own (an h2 under the pane title), never aria-hidden.
   const prompt = result.accessiblePrompt;
   if (
+    prompt.headingCount !== 1 ||
     prompt.headingTag !== "h2" ||
-    prompt.headingText !== "What should the agent do?" ||
+    !prompt.headingHasName ||
     !prompt.headingVisible ||
+    !prompt.headingIsDirectChild ||
+    prompt.subtitleCount !== 1 ||
     prompt.subtitleTag !== "p" ||
-    prompt.subtitleText !== "Leave blank to start a dormant session." ||
+    !prompt.subtitleHasContent ||
     !prompt.subtitleVisible ||
+    !prompt.subtitleIsDirectChild ||
+    !prompt.headingBeforeSubtitle ||
     prompt.headingHiddenFromAT ||
     prompt.subtitleHiddenFromAT
   ) {

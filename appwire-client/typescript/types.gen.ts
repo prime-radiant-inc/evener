@@ -2283,6 +2283,11 @@ export interface ModelListDiagnostic {
 export interface ModelListParams {
   harness?: string;
   cwd?: string;
+  /**
+   * Refresh waits for a live listing instead of serving a cached catalogue.
+   * Concurrent live listings for the same scope may share the request.
+   */
+  refresh?: boolean;
 }
 
 export interface ModelListResponse {

@@ -1,8 +1,9 @@
 import { WireError } from "@evener/appwire-client";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { expect, test, vi } from "vitest";
-import type { ModelCatalog } from "../../../widgets";
+import { Button, Dialog, type ModelCatalog } from "../../../widgets";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
 import rawStyles from "./modelswitch.module.css";
@@ -114,6 +115,7 @@ test("picking reports the entry to the caller and closes the picker without chan
 
   expect(onPick).toHaveBeenCalledWith(expect.objectContaining({ provider: "openai", model: "gpt-5.5" }));
   await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
+  expect(document.activeElement).toBe(screen.getByTestId("trigger"));
   // The label is the caller's to change; this component never rewrites it.
   expect(screen.getByTestId("trigger-value").textContent).toBe("anthropic/claude-sonnet-4-5");
 });
@@ -248,6 +250,126 @@ test("a failed catalog load surfaces a friendly message inline, keeping the fiel
   expect(screen.getByTestId("trigger")).toBeTruthy();
 });
 
+test("a failed catalog load retries through the current loader without opening connection settings", async () => {
+  const user = userEvent.setup();
+  const onOpenConnection = vi.fn();
+  const loadCatalog = vi
+    .fn<Parameters<typeof ModelSwitchTrigger>[0]["loadCatalog"]>()
+    .mockRejectedValueOnce(new Error("catalog boom"))
+    .mockResolvedValueOnce(catalog());
+  renderTrigger({ loadCatalog, onOpenConnection });
+
+  await user.click(screen.getByTestId("trigger"));
+  await screen.findByRole("alert");
+  await user.click(screen.getByRole("button", { name: "Retry models" }));
+
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+  expect(loadCatalog).toHaveBeenNthCalledWith(2, true);
+  expect(onOpenConnection).not.toHaveBeenCalled();
+});
+
+test("a retry result from a replaced loader cannot publish into the new scope", async () => {
+  const user = userEvent.setup();
+  let resolveRetry: (value: ModelCatalog) => void = () => {};
+  const oldLoader = vi
+    .fn<Parameters<typeof ModelSwitchTrigger>[0]["loadCatalog"]>()
+    .mockRejectedValueOnce(new Error("catalog boom"))
+    .mockImplementationOnce(
+      () =>
+        new Promise<ModelCatalog>((resolve) => {
+          resolveRetry = resolve;
+        }),
+    );
+  const newLoader = vi.fn(async () => ({
+    models: [{ provider: "fresh", model: "current", displayName: "Current model" }],
+    recent: [],
+  }));
+  const { props, rerender } = renderTrigger({ loadCatalog: oldLoader });
+  await user.click(screen.getByTestId("trigger"));
+  await screen.findByRole("alert");
+  await user.click(screen.getByRole("button", { name: "Retry models" }));
+
+  rerender(<ModelSwitchTrigger {...props} loadCatalog={newLoader} />);
+  expect(await screen.findByRole("option", { name: /Current model/ })).toBeTruthy();
+  await act(async () => resolveRetry(catalog()));
+
+  expect(screen.getAllByRole("option")).toHaveLength(1);
+  expect(screen.queryByRole("option", { name: /GPT-5.5/ })).toBeNull();
+});
+
+test("an empty scoped catalogue can expose other instances or open the current connection settings", async () => {
+  const user = userEvent.setup();
+  const onOpenConnection = vi.fn();
+  const loadCatalog = vi.fn(async () => ({
+    models: [{ provider: "other", model: "available", displayName: "Other model" }],
+    recent: [],
+  }));
+  const { props, rerender } = renderTrigger({ loadCatalog, onOpenConnection });
+  rerender(<ModelSwitchTrigger {...props} connectionRequest={{ name: "team-local" }} />);
+
+  expect(await screen.findByRole("listbox")).toBeTruthy();
+  expect(screen.queryByRole("option")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Connection settings" }));
+  expect(onOpenConnection).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("combobox")).toBeNull();
+  expect(document.activeElement).toBe(screen.getByTestId("trigger"));
+
+  rerender(<ModelSwitchTrigger {...props} connectionRequest={{ name: "team-local" }} />);
+  await user.click(screen.getByRole("button", { name: "Show all models" }));
+  expect(await screen.findByRole("option", { name: /Other model/ })).toBeTruthy();
+});
+
+test("an empty actual-instance scope retries through the same loader and stays scoped", async () => {
+  const user = userEvent.setup();
+  const loadCatalog = vi.fn(async () => ({
+    models: [{ provider: "other", model: "available", displayName: "Other model" }],
+    recent: [],
+  }));
+  const { props, rerender } = renderTrigger({ loadCatalog });
+  rerender(<ModelSwitchTrigger {...props} connectionRequest={{ name: "team-local" }} />);
+  await screen.findByRole("listbox");
+
+  await user.click(screen.getByRole("button", { name: "Retry models" }));
+
+  await waitFor(() => expect(loadCatalog).toHaveBeenNthCalledWith(2, true));
+  expect(screen.queryByRole("option")).toBeNull();
+  expect(screen.getByRole("button", { name: "Show all models" })).toBeTruthy();
+});
+
+test("recovery actions use the latest loader and connection callback identities", async () => {
+  const user = userEvent.setup();
+  const firstLoader = vi.fn(async () => ({ models: [], recent: [] }));
+  const nextLoader = vi.fn(async () => ({ models: [], recent: [] }));
+  const firstConnection = vi.fn();
+  const nextConnection = vi.fn();
+  const { props, rerender } = renderTrigger({ loadCatalog: firstLoader, onOpenConnection: firstConnection });
+  await user.click(screen.getByTestId("trigger"));
+  await screen.findByRole("listbox");
+
+  rerender(<ModelSwitchTrigger {...props} loadCatalog={nextLoader} onOpenConnection={nextConnection} />);
+  await waitFor(() => expect(nextLoader).toHaveBeenCalledTimes(1));
+  await user.click(screen.getByRole("button", { name: "Connection settings" }));
+
+  expect(firstLoader).toHaveBeenCalledTimes(1);
+  expect(nextLoader).toHaveBeenCalledTimes(1);
+  expect(firstConnection).not.toHaveBeenCalled();
+  expect(nextConnection).toHaveBeenCalledTimes(1);
+});
+
+test("a pick uses the latest callback identity", async () => {
+  const user = userEvent.setup();
+  const firstPick = vi.fn();
+  const nextPick = vi.fn();
+  const { props, rerender } = renderTrigger({ onPick: firstPick });
+  await user.click(screen.getByTestId("trigger"));
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+  rerender(<ModelSwitchTrigger {...props} onPick={nextPick} />);
+  await user.click(screen.getByRole("option", { name: /GPT-5.5/ }));
+
+  expect(firstPick).not.toHaveBeenCalled();
+  expect(nextPick).toHaveBeenCalledWith(expect.objectContaining({ provider: "openai", model: "gpt-5.5" }));
+});
+
 // T3, the first-run worst moment: the hub answered but no agent daemon could be
 // reached, so the headline names the session start and the detail is actionable
 // copy rather than the launch-check's own raw text.
@@ -350,6 +472,64 @@ test("Escape closes the mobile sheet and returns focus to the trigger", async ()
     await user.keyboard("{Escape}");
 
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Choose model" })).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("a failed mobile Sheet retries through the catalogue loader", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const loadCatalog = vi
+    .fn<Parameters<typeof ModelSwitchTrigger>[0]["loadCatalog"]>()
+    .mockRejectedValueOnce(new Error("catalog boom"))
+    .mockResolvedValueOnce(catalog());
+  try {
+    renderTrigger({ loadCatalog });
+    await user.click(screen.getByTestId("trigger"));
+    const sheet = await screen.findByRole("dialog", { name: "Choose model" });
+    await user.click(within(sheet).getByRole("button", { name: "Retry models" }));
+
+    await waitFor(() => expect(within(sheet).getAllByRole("option")).toHaveLength(2));
+    expect(loadCatalog).toHaveBeenNthCalledWith(2, true);
+  } finally {
+    restoreViewport();
+  }
+});
+
+test("mobile connection repair moves focus into its replacement dialog and dismissal restores the trigger", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  function Harness() {
+    const [connectionOpen, setConnectionOpen] = useState(false);
+    return (
+      <>
+        <ModelSwitchTrigger
+          label="team-local/model"
+          value=""
+          loadCatalog={async () => ({ models: [], recent: [] })}
+          onPick={vi.fn()}
+          onOpenConnection={() => setConnectionOpen(true)}
+          data-testid="trigger"
+        />
+        <Dialog open={connectionOpen} onClose={() => setConnectionOpen(false)} title="Connection settings">
+          <Button>Editor control</Button>
+        </Dialog>
+      </>
+    );
+  }
+  try {
+    render(<Harness />);
+    const trigger = screen.getByTestId("trigger");
+    await user.click(trigger);
+    const sheet = await screen.findByRole("dialog", { name: "Choose model" });
+    await user.click(within(sheet).getByRole("button", { name: "Connection settings" }));
+
+    const replacement = await screen.findByRole("dialog", { name: "Connection settings" });
+    expect(document.activeElement).toBe(within(replacement).getByRole("button", { name: "Editor control" }));
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Connection settings" })).toBeNull());
     expect(document.activeElement).toBe(trigger);
   } finally {
     restoreViewport();
@@ -483,4 +663,79 @@ test("a refresh key change while the first load is out reloads bypassing the cac
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
   await act(async () => resolveFirst({ models: [], recent: [] }));
   expect(screen.getAllByRole("option")).toHaveLength(2);
+});
+
+test("partial catalogue recovery keeps healthy models usable while retrying", async () => {
+  const user = userEvent.setup();
+  const partial: ModelCatalog = {
+    models: catalog().models.filter((entry) => entry.provider === "anthropic"),
+    recent: [],
+    diagnostics: [{ provider: "openai", message: "fixture diagnostic" }],
+  };
+  let complete: (value: ModelCatalog) => void = () => {};
+  const loadCatalog = vi.fn(async (refresh?: boolean) =>
+    refresh
+      ? new Promise<ModelCatalog>((resolve) => {
+          complete = resolve;
+        })
+      : partial,
+  );
+  const onOpenConnection = vi.fn();
+  const { props } = renderTrigger({ loadCatalog, onOpenConnection, value: "" });
+  await user.click(screen.getByTestId("trigger"));
+  await screen.findByRole("option", { name: /Sonnet/ });
+  expect(screen.getByRole("button", { name: "Connection settings" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Retry models" }));
+  expect(screen.getByRole("option", { name: /Sonnet/ })).toBeTruthy();
+  await act(async () => complete(catalog()));
+  await user.click(await screen.findByRole("option", { name: /GPT-5.5/ }));
+  expect(props.onPick).toHaveBeenCalledWith(catalog().models[1]);
+  expect(loadCatalog).toHaveBeenLastCalledWith(true);
+  expect(onOpenConnection).not.toHaveBeenCalled();
+});
+
+test("partial catalogue failure offers connection repair without blocking healthy selection", async () => {
+  const user = userEvent.setup();
+  const onOpenConnection = vi.fn();
+  const { props } = renderTrigger({
+    value: "",
+    onOpenConnection,
+    loadCatalog: async () => ({ ...catalog(), diagnostics: [{ provider: "other", message: "fixture diagnostic" }] }),
+  });
+  await user.click(screen.getByTestId("trigger"));
+  await user.click(await screen.findByRole("option", { name: /Sonnet/ }));
+  expect(props.onPick).toHaveBeenCalledWith(catalog().models[0]);
+  await user.click(screen.getByTestId("trigger"));
+  await user.click(await screen.findByRole("button", { name: "Connection settings" }));
+  expect(onOpenConnection).toHaveBeenCalledOnce();
+  expect(screen.queryByRole("combobox")).toBeNull();
+});
+
+test("scoped catalogue recovery ignores other providers until showing all models", async () => {
+  const user = userEvent.setup();
+  const { props, rerender } = renderTrigger({
+    value: "",
+    onOpenConnection: vi.fn(),
+    loadCatalog: async () => ({ ...catalog(), diagnostics: [{ provider: "openai", message: "fixture diagnostic" }] }),
+  });
+  rerender(<ModelSwitchTrigger {...props} connectionRequest={{ name: "anthropic" }} />);
+  await screen.findByRole("option", { name: /Sonnet/ });
+  expect(screen.queryByRole("button", { name: "Retry models" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Connection settings" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Show all models" }));
+  expect(screen.getByRole("button", { name: "Retry models" })).toBeTruthy();
+});
+
+test("a failed partial-catalogue retry retains selectable healthy models", async () => {
+  const user = userEvent.setup();
+  const loadCatalog = vi.fn(async (refresh?: boolean) => {
+    if (refresh) throw new WireError("fixture transport failure", -32000);
+    return { ...catalog(), diagnostics: [{ provider: "other", message: "fixture diagnostic" }] };
+  });
+  const { props } = renderTrigger({ value: "", loadCatalog });
+  await user.click(screen.getByTestId("trigger"));
+  await user.click(await screen.findByRole("button", { name: "Retry models" }));
+  expect(loadCatalog).toHaveBeenLastCalledWith(true);
+  await user.click(screen.getByRole("option", { name: /Sonnet/ }));
+  expect(props.onPick).toHaveBeenCalledWith(catalog().models[0]);
 });

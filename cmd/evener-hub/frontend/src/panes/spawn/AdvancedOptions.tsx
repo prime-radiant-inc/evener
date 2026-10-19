@@ -224,19 +224,20 @@ export function AdvancedOptions({
           <div id={panelId} className={CLASS.panel}>
             {children}
             {options.map((opt) => (
-              <Control
-                key={opt.wireField}
-                option={opt}
-                value={values[opt.wireField]}
-                error={errors[opt.wireField]}
-                loadCatalog={loadCatalog}
-                complete={complete}
-                validatePath={validatePath}
-                createDirectory={createDirectory}
-                resolvedDefaults={resolvedDefaults}
-                onScalar={(v) => updateScalar(opt, v)}
-                onValue={(field) => update(opt.wireField, field)}
-              />
+              <div key={opt.wireField} data-launch-field={opt.wireField}>
+                <Control
+                  option={opt}
+                  value={values[opt.wireField]}
+                  error={errors[opt.wireField]}
+                  loadCatalog={loadCatalog}
+                  complete={complete}
+                  validatePath={validatePath}
+                  createDirectory={createDirectory}
+                  resolvedDefaults={resolvedDefaults}
+                  onScalar={(v) => updateScalar(opt, v)}
+                  onValue={(field) => update(opt.wireField, field)}
+                />
+              </div>
             ))}
             <div>
               <Button variant="quiet" size="sm" onClick={() => void showResolved()}>
