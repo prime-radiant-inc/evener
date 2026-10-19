@@ -199,8 +199,9 @@ func runServeForegroundShellPersistenceCaseWithCheckpoint(t *testing.T, mode for
 	shellChildPIDPath := filepath.Join(workDir, foregroundShellChildPIDFilename)
 	gatePath := filepath.Join(workDir, "shell-release")
 	shellCommand := fmt.Sprintf(
-		"sleep 600 & child=$!; printf '%%s' \"$child\" > %s; printf '%%s' $$ > %s; "+
+		"sleep 600 & child=$!; "+
 			"trap 'kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 0' TERM; "+
+			"printf '%%s' \"$child\" > %s; printf '%%s' $$ > %s; "+
 			"while [ ! -f %s ]; do sleep 0.01; done; "+
 			"kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; printf shell-complete",
 		strconv.Quote(shellChildPIDPath), strconv.Quote(shellPIDPath), strconv.Quote(gatePath))
