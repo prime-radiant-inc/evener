@@ -25,7 +25,7 @@ This record supplements [iPhone acceptance](acceptance.md). It qualifies the che
 | New session and model sheets | Readable provider headings and a consistent leading check slot for selected and unselected choices |
 | Hub administration | Grouped settings, consistent value summaries and scalar editors, inset search, and Save outside the scrolling form |
 | Retained settings | Disabled rows and inputs remain readable while editing is unavailable; native disabled semantics and retained drafts remain intact |
-| iOS startup | A repeatable Expo prebuild plugin installs a single-scene UIKit lifecycle while preserving Expo and React Native ownership |
+| iOS startup | Expo's built-in scene support owns the window and startup; installed-template tests cover plist preservation and repeated evaluation |
 
 The design record is [mobile-native/DESIGN.md](../../../mobile-native/DESIGN.md), with its [Impeccable sidecar](../../../mobile-native/.impeccable/design.json) and [product context](../../../mobile-native/PRODUCT.md). [The shared web guide](../../web-ui/design-system.md) distinguishes platform palettes while preserving common semantic colors and hierarchy. Web implementation was unchanged.
 
@@ -151,3 +151,12 @@ After integrating Expo 57.0.23 and removing the custom adapter, `make test-nativ
 The first integrated run exposed a camera-permission test reading the retired scene manifest from the local generated `ios` directory. Its corrected test evaluates the real Expo config against an empty native-project directory, with the installed fonts available. Permission assertions now check generated camera access and absent microphone access rather than pinning permission prose. The share-action and held-start tests also now own their asynchronous React updates; their existing behavior assertions remain.
 
 Dependency installation reported 37 audit findings, including the inherited critical `shell-quote` 1.10.0 advisory [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv). Both merge inputs locked that version. No dependency-audit remediation was made in this design change.
+
+### Local branch-review corrections
+
+RoboRev found two regressions in the integrated design:
+
+- **Model-sheet scroll ownership:** five stacked effort choices could consume the medium sheet's non-scrolling header. Search stays pinned; effort choices and errors now use the model list's scrolling header. Tests at font scales 1, 2 and 3.1 each failed before the fix because none of the five choices belonged to the list, then passed after it. Model selection, effort changes and vision choices retain their behavior coverage.
+- **Hub text selection:** grouped detail rows had replaced selectable `Copy` controls. Runtime values, agent names and paths, and MCP names now compose the existing selectable control inside grouped spacing. Thirteen runtime/MCP cases failed before the first repair; four adjacent identifier cases then failed before its extension. All 17 pass, checking native selection props, uncapped values, accessible values and machine-path typography.
+
+The integrated focused run passed 137 tests across six files: `HubSettingsScreen.details`, `HubSettingsScreen.mcp`, `HubSettingsScreen.reconnect`, `session/ModelSheet`, `sheet/Grouped` and `newSession/ModelPicker`. Biome checked all five changed TypeScript files without fixes. These corrections were not followed by another full local gate; CI owns the final test gates. Renderer checks do not verify actual medium-detent gestures, the native copy menu or VoiceOver traversal.

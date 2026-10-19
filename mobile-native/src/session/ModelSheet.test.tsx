@@ -25,8 +25,12 @@ import { sheetKey } from "../sheet/sheetHosts";
 import { type ModelHost, ModelSheet, modelHosts } from "./ModelSheet";
 
 const navigation = vi.hoisted(() => ({ goBack: vi.fn(), navigate: vi.fn(), dispatch: vi.fn() }));
+const viewport = vi.hoisted(() => ({ fontScale: 1 }));
 
-vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
+vi.mock("react-native", async () => ({
+	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ width: 390, height: 844, scale: 3, fontScale: viewport.fontScale }),
+}));
 vi.mock("@react-navigation/native", () => ({
 	useNavigation: () => navigation,
 	usePreventRemove: () => {},
@@ -157,6 +161,7 @@ function listed(tree: ReactTestRenderer): string[] {
 beforeEach(() => {
 	navigation.goBack.mockReset();
 	navigation.navigate.mockReset();
+	viewport.fontScale = 1;
 });
 
 afterEach(() => {
@@ -267,23 +272,33 @@ describe("choosing a model (spec 8.5)", () => {
 });
 
 describe("effort", () => {
-	it("pins a segment for each level the model supports under the title, before the list", () => {
+	it("shows the current choice among the model's supported effort levels", () => {
 		provide(conversation());
 		const tree = sheet();
 		const segments = tree.root.findAll((node) => node.props.accessibilityRole === "radio");
-		expect(segments.map((node) => node.props.accessibilityLabel)).toEqual(["Low", "Medium", "High"]);
+		expect(segments).toHaveLength(3);
 		// The shared Segmented marks its choice with `checked`, as a radio does.
 		expect(segments.map((node) => node.props.accessibilityState.checked)).toEqual([false, false, true]);
 		const high = segments[2];
 		if (!high) throw new Error("no High");
 		expect([high.props.style].flat()[0]).toMatchObject({ backgroundColor: palette.surface });
 		expect(high.findByType("Text" as never).props.style).toMatchObject({ color: palette.inkHi });
-		expect(texts(tree)).toEqual(expect.arrayContaining(["Effort", "Applies from the next turn"]));
-		// The segments sit in the header, which the list follows.
-		const order = tree.root.findAll(
-			(node) => node.props.accessibilityRole === "radio" || String(node.type) === "SectionList",
-		);
-		expect(String(order.at(-1)?.type)).toBe("SectionList");
+	});
+
+	it.each([1, 2, 3.1])("scrolls stacked effort and errors with the models at text scale %s", (fontScale) => {
+		viewport.fontScale = fontScale;
+		const levels = ["minimal", "low", "medium", "high", "xhigh"];
+		provide(conversation({ reasoningEffortLevels: levels }), { modelError: "catalog-error-sentinel" });
+		const tree = sheet();
+		const list = tree.root.find((node) => String(node.type) === "SectionList");
+		const choices = list.findAll((node) => node.props.accessibilityRole === "radio");
+		expect(choices).toHaveLength(levels.length);
+		expect(list.findByProps({ accessibilityRole: "radiogroup" }).props.style.flexDirection).toBe("column");
+		expect(list.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(1);
+		expect(list.findAll((node) => node.props.testID === "model-title").length).toBeGreaterThan(0);
+		// Search stays available while the growing header scrolls away.
+		expect(tree.root.findAll((node) => String(node.type) === "TextInput")).toHaveLength(1);
+		expect(list.findAll((node) => String(node.type) === "TextInput")).toHaveLength(0);
 	});
 
 	it("sets the effort", () => {

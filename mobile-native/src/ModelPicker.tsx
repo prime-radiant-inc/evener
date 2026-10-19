@@ -1,7 +1,7 @@
 // The model sheet's list (spec 8.5): "Recent", then each provider's models,
 // each row with its name, its context and price, the registry's notes, and a
-// check on the current model. It is the sheet's one scroll view, so what
-// stays in reach (search, Effort) lives in the sheet's header instead.
+// check on the current model. It is the sheet's one scroll view; growing
+// controls and notices belong here, while search stays in the sheet header.
 import type { ModelDescriptor, ModelListResponse } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { type ReactNode, useState } from "react";

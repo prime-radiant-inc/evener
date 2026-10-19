@@ -1,8 +1,8 @@
-import { space } from "./design/tokens";
+import { fonts, space } from "./design/tokens";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { View } from "react-native";
+import { Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { type ConnectionState, createHubOverviewStore } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -10,7 +10,7 @@ import { isReady, whenReady } from "./connectionDisplay";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
 import { FirstLoad, SheetStatus } from "./sheet/SheetStatus";
 import type { HubRoutes } from "./hub/hubSheetContext";
-import { Copy, ErrorMessage, styles, useColors } from "./ui";
+import { allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
 import { Spinner } from "./sheet/Spinner";
 import { Button, Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
 
@@ -50,8 +50,37 @@ function HubSettingsScreenBody({ route }: Props) {
 	);
 }
 
-function Detail({ label, value }: { label: string; value: string | number | undefined }) {
-	return <Row label={label} sub={value === undefined || value === "" ? "Unavailable" : String(value)} />;
+const detailRowStyle = {
+	minHeight: 44,
+	paddingHorizontal: space.rowInset,
+	paddingVertical: space.rowPadding,
+	gap: 2,
+};
+
+function Detail({
+	label,
+	value,
+	machineValue = false,
+}: {
+	label: string;
+	value: string | number | undefined;
+	machineValue?: boolean;
+}) {
+	const text = value === undefined || value === "" ? "Unavailable" : String(value);
+	return (
+		<View accessible accessibilityLabel={`${label}, ${text}`} style={detailRowStyle}>
+			<Copy>{label}</Copy>
+			<Copy muted>
+				{machineValue ? (
+					<Text allowFontScaling={allowFontScaling} style={{ fontFamily: fonts.mono }}>
+						{text}
+					</Text>
+				) : (
+					text
+				)}
+			</Copy>
+		</View>
+	);
 }
 function Section({ title, children }: { title: string; children: ReactNode }) {
 	const [open, setOpen] = useState(false);
@@ -219,11 +248,11 @@ function HubSettings({
 								<Row label="No agents discovered" />
 							) : (
 								data.agents.map((agent) => (
-									<Row
+									<Detail
 										key={agent.name}
 										label={agent.name}
-										sub={agent.editPath || "Built-in"}
-										machineSub={!!agent.editPath}
+										value={agent.editPath || "Built-in"}
+										machineValue={!!agent.editPath}
 									/>
 								))
 							)}
@@ -240,7 +269,9 @@ function HubSettings({
 									</View>
 									{data.mcpDiscovered.servers?.map((server) => (
 										<View key={server.name}>
-											<Row label={server.name} />
+											<View accessible accessibilityLabel={server.name} style={detailRowStyle}>
+												<Copy>{server.name}</Copy>
+											</View>
 											<Detail label="Transport" value={server.transport} />
 											<Detail label="Status" value={server.status} />
 											<View style={{ paddingHorizontal: space.rowInset }}>
