@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/internal/cappedoutput"
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/searchresult"
@@ -1366,7 +1367,7 @@ var (
 	runtimeGOOS        = runtime.GOOS
 	osVersionOutput    = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
 		cmd := execCommandContext(ctx, name, args...)
-		out := newCappedOutputBuffer(probeOutputCaptureCap)
+		out := cappedoutput.New(probeOutputCaptureCap)
 		cmd.Stdout = out
 		err := cmd.Run()
 		return newProbeCapture(out), err
@@ -1386,7 +1387,7 @@ var (
 	loginShellPATHOutput = func(ctx context.Context, name string, args ...string) (probeCapture, error) {
 		cmd := execCommandContext(ctx, name, args...)
 		cmd.WaitDelay = loginShellPATHWaitDelay
-		out := newCappedOutputBuffer(probeOutputCaptureCap)
+		out := cappedoutput.New(probeOutputCaptureCap)
 		cmd.Stdout = out
 		err := cmd.Run()
 		return newProbeCapture(out), orphanpipe.ChildErr(cmd, err)
@@ -1481,10 +1482,10 @@ type probeCapture struct {
 // authoritative head and tail windows directly rather than parsing the rendered
 // omission marker, so marker-shaped text in the command's own output cannot
 // move the guard's reference point.
-func newProbeCapture(b *cappedOutputBuffer) probeCapture {
-	c := probeCapture{view: []byte(b.String()), truncated: b.truncated()}
+func newProbeCapture(b *cappedoutput.Buffer) probeCapture {
+	c := probeCapture{view: []byte(b.String()), truncated: b.Truncated()}
 	if c.truncated {
-		c.tail = b.tailView()
+		c.tail = b.TailView()
 	}
 	return c
 }
@@ -2953,8 +2954,8 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 	}
 
 	start := time.Now()
-	stdout := newCappedOutputBuffer(e.outputCaptureCapBytes())
-	stderr := newCappedOutputBuffer(e.outputCaptureCapBytes())
+	stdout := cappedoutput.New(e.outputCaptureCapBytes())
+	stderr := cappedoutput.New(e.outputCaptureCapBytes())
 	env := injectLocalVenvPath(e.commandEnvironment(envVars), []string{dir, e.RootDir})
 	config := commandRuntimeConfig{
 		Dir:              dir,
@@ -3049,8 +3050,8 @@ func (e *LocalExecutionEnvironment) execPreparedCommandStdout(ctx context.Contex
 		ExitCode:        exitCode,
 		TimedOut:        timedOut,
 		DurationMS:      time.Since(start).Milliseconds(),
-		StdoutTruncated: stdout.truncated(),
-		StderrTruncated: stderr.truncated(),
+		StdoutTruncated: stdout.Truncated(),
+		StderrTruncated: stderr.Truncated(),
 	}, waitErr
 }
 

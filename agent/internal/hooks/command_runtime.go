@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/cappedoutput"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/execsupport/orphanpipe"
@@ -28,6 +29,14 @@ import (
 // ends, so a descendant the hook backgrounded cannot outlive the hook (see
 // procgroup.KillGroupAfterReap).
 const commandHookWaitDelay = time.Second
+
+// maxHookOutputBytes bounds the stdout and the stderr one command hook
+// captures per stream (#4561). A hook is a user's shell command, so one that
+// emits a firehose (or backgrounds one) would otherwise fill memory at pipe
+// speed until its timeout, which a container memory cap turns into a SIGKILL
+// of the whole session. Hook output is a decision or a few lines of context, so
+// 1 MiB leaves every real hook its exact output.
+const maxHookOutputBytes = 1 << 20
 
 // commandHookInvocation is the fully prepared external command boundary. Its
 // fields make the launch contract explicit without exposing an exec.Cmd to the
@@ -71,6 +80,9 @@ var _ commandHookExitCoder = (*exec.ExitError)(nil)
 type systemCommandHookRuntime struct {
 	environ func() []string
 	run     commandHookProcess
+	// outputCapBytes overrides maxHookOutputBytes when positive, so tests can
+	// trip the cap without streaming a megabyte.
+	outputCapBytes int
 }
 
 func newSystemCommandHookRuntime() systemCommandHookRuntime {
@@ -85,6 +97,15 @@ func (r systemCommandHookRuntime) Environ() []string {
 		return r.environ()
 	}
 	return os.Environ()
+}
+
+// outputCaptureCapBytes is the per-stream capture bound: the override when a
+// test sets one, else maxHookOutputBytes.
+func (r systemCommandHookRuntime) outputCaptureCapBytes() int {
+	if r.outputCapBytes > 0 {
+		return r.outputCapBytes
+	}
+	return maxHookOutputBytes
 }
 
 func runSystemCommandHookProcess(_ context.Context, _ commandHookInvocation, cmd *exec.Cmd) error {
@@ -111,9 +132,12 @@ func (r systemCommandHookRuntime) Run(ctx context.Context, invocation commandHoo
 	}
 	cmd.Env = env
 
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Capped captures drain the whole stream, so a flooding hook still runs to
+	// its own exit code; only the retained bytes are bounded (head and tail).
+	stdout := cappedoutput.New(r.outputCaptureCapBytes())
+	stderr := cappedoutput.New(r.outputCaptureCapBytes())
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	cmd.WaitDelay = commandHookWaitDelay
 
 	// Own the hook's whole process tree, not just the direct command. A hook is a
