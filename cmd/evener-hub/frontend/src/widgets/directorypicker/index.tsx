@@ -63,7 +63,7 @@ export function DirectoryPicker({
   const [typed, setTyped] = useState(initialPath);
   const [pathEdited, setPathEdited] = useState(false);
   const [entries, setEntries] = useState<string[] | null>(null);
-  const [validated, setValidated] = useState(false);
+  const [validatedInput, setValidatedInput] = useState<string | null>(null);
   const [recents, setRecents] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -79,13 +79,13 @@ export function DirectoryPicker({
   const pathId = useId();
   const nameId = useId();
 
-  async function browse(path: string) {
+  async function browse(path: string, preserveFocusedInput = false) {
     // Rows disappear during navigation. Keep focus on a persistent control
     // without opening the phone keyboard when browsing by touch.
     if (document.activeElement !== pathInput.current) goButton.current?.focus();
     const id = ++request.current;
     setPathEdited(false);
-    setValidated(false);
+    setValidatedInput(null);
     setEntries(null);
     setError(null);
     setCreating(false);
@@ -100,8 +100,10 @@ export function DirectoryPicker({
       }
       const canonical = result.path || path.trim();
       setCurrent(canonical);
-      setTyped(canonical);
-      setValidated(true);
+      // Initial validation must not collapse a selection made before the first
+      // input event. Explicit navigation still canonicalizes its submitted path.
+      if (!preserveFocusedInput || document.activeElement !== pathInput.current) setTyped(canonical);
+      setValidatedInput(path);
       const children = await complete(childrenPrefix(canonical), false);
       if (mounted.current && request.current === id) setEntries(children);
     } catch (err) {
@@ -115,7 +117,7 @@ export function DirectoryPicker({
   // biome-ignore lint/correctness/useExhaustiveDependencies: opening snapshot; callbacks belong to this picker lifetime
   useEffect(() => {
     mounted.current = true;
-    void browse(initialPath);
+    void browse(initialPath, true);
     listRecents?.().then(
       (paths) => {
         if (mounted.current) setRecents([...new Set(paths)]);
@@ -142,7 +144,7 @@ export function DirectoryPicker({
     }
   }, [creating, busy]);
 
-  const ready = validated && !pathEdited && typed === current && !busy;
+  const ready = validatedInput !== null && !pathEdited && (typed === current || typed === validatedInput) && !busy;
   // Paths belong to the Linux/macOS hub, regardless of the browser OS.
   // Match the shared path helpers and supported hub builds in .goreleaser.yml.
   const segments = current.split("/").filter(Boolean);
@@ -284,12 +286,15 @@ export function DirectoryPicker({
                   event.currentTarget.select();
                 }
               }}
+              onBlur={() => {
+                if (validatedInput !== null && !pathEdited && typed === validatedInput) setTyped(current);
+              }}
               onChange={(event) => {
                 request.current++;
                 setTyped(event.target.value);
                 setPathEdited(true);
                 setEntries(null);
-                setValidated(false);
+                setValidatedInput(null);
                 // Editing Path closes creation without moving focus away.
                 wasCreating.current = false;
                 setCreating(false);

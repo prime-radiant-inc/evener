@@ -65,10 +65,10 @@ change it, edit the catalog and/or the prose template
 
 ## Connection lifecycle
 
-1. **initialize.** The client's first request must be `initialize` (any other
-   request before it is rejected). The response carries the server's feature
-   set. The protocol version must match exactly. After success, the client sends
-   the `initialized` notification. Align client and server versions on mismatch.
+1. **initialize.** Send `initialize` before ordinary requests. Its response carries
+   the server's feature set. The protocol version must match exactly. After success,
+   the client sends the `initialized` notification. Align client and server versions
+   on mismatch. The connection-level `ping` keepalive also works before initialization.
 2. **Requests.** The client issues request/response calls from the catalog.
 3. **Subscriptions.** `thread/read` with `subscribe: true` registers the
    connection for that thread's notifications; `replaceSubscription: true`

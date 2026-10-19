@@ -39,8 +39,9 @@ test("Overview retains real late browser errors after successful or throwing tru
                       errors: [...window.__shellGuardErrors] });
                   }, { once: true });
                 });
-                window.addEventListener('keyup', event => {
+                window.addEventListener('keyup', function injectError(event) {
                   if (event.key !== 'Home') return;
+                  window.removeEventListener('keyup', injectError);
                   window.__overviewErrorInputTrusted = event.isTrusted;
                   // Fault the real focus check synchronously with trusted
                   // input, independently of async rejection delivery.
@@ -50,7 +51,7 @@ test("Overview retains real late browser errors after successful or throwing tru
                     document.head.append(style);
                   }
                   ${kind === "error" ? `throw new Error(${JSON.stringify(marker)});` : `void Promise.reject(new Error(${JSON.stringify(marker)}));`}
-                }, { once: true });
+                });
               })()`);
               // Await the actual browser event, not a sleep or fabricated list.
               observed = evaluate(send, "window.__overviewErrorSeen");

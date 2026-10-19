@@ -1,4 +1,4 @@
-// Screens stacked above a session (the Subagents list, a document) go back to
+// Screens stacked above a session (the Agents or Jobs list, a document) go back to
 // it rather than pushing a second copy of it. A subagent's session sits on the
 // "Subagent" route, so both session routes count.
 

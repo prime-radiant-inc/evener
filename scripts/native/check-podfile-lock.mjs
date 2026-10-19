@@ -59,7 +59,7 @@ ios/Podfile.lock back, and commit only Podfile.lock.`;
 // Ruby side adds them), so they are named here with the package they ship in
 // and the condition they wait on. ExpoCameraBarcodeScanning waits on the
 // expo.camera.barcode-scanner-enabled Podfile property, which mobile-native's
-// app.json never sets to "false" — set it there through the expo-camera
+// app.config.js never sets to "false" — set it there through the expo-camera
 // plugin's barcodeScannerEnabled option, and update this condition (`when`)
 // if anyone ever does; ExpoModulesWorkletsAdapter waits on the RNWorklets pod,
 // which react-native-worklets provides. A linked package that declares a

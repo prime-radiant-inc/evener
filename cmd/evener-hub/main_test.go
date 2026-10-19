@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -186,10 +187,30 @@ func TestRunMainPrintsStartupBannersToTheGivenStderr(t *testing.T) {
 		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
 	}
 	output := stderr.String()
-	for _, want := range []string{"listening on", "auth URL", "auth token also at"} {
-		if !strings.Contains(output, want) {
-			t.Errorf("stderr missing %q banner:\n%s", want, output)
+	m := hubListeningLine.FindStringSubmatch(output)
+	if m == nil {
+		t.Fatalf("stderr has no parseable listening address:\n%s", output)
+	}
+	var urls []*url.URL
+	for field := range strings.FieldsSeq(output) {
+		u, err := url.Parse(field)
+		if err == nil && u.Scheme == "http" {
+			urls = append(urls, u)
 		}
+	}
+	if len(urls) != 2 {
+		t.Fatalf("stderr has %d HTTP URLs, want browser and private URLs: %v", len(urls), urls)
+	}
+	for _, u := range urls {
+		if u.Host != m[1] {
+			t.Errorf("URL host = %q, want bound address %q", u.Host, m[1])
+		}
+	}
+	if got := strings.Count(output, "auth-token"); got != 2 {
+		t.Fatalf("auth token machine value occurs %d times, want once in private URL and once in token-file path", got)
+	}
+	if tokenPath := filepath.Join(cfg.HubStateRoot, "auth-token"); !strings.Contains(output, tokenPath) {
+		t.Fatalf("stderr does not carry token file path %s", tokenPath)
 	}
 }
 

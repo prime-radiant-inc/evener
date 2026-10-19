@@ -1,26 +1,33 @@
-// iOS keeps one camera sentence per app, and two config plugins write it:
-// expo-image-picker (attaching photos) and expo-camera (the pairing scanner).
-// Whichever plugin runs last wins, so both carry the same sentence, and this
-// reads the Info.plist Expo would generate to prove the one that ships.
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+// Inspect the permissions Expo generates from source, without reading a local
+// ios directory that may belong to a different SDK or scene lifecycle.
+import { mkdtempSync, readFileSync, rmdirSync, symlinkSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, it } from "vitest";
+import { getPrebuildConfigAsync } from "@expo/prebuild-config";
+import { compileModsAsync } from "expo/config-plugins";
+import { afterEach, expect, it, vi } from "vitest";
 
-const CAMERA =
-	"Scan the pairing code shown in Evener on your computer, or take photos to attach to your conversations.";
+afterEach(() => vi.unstubAllEnvs());
 
-it("asks for the camera with one sentence that covers scanning and photos, and never for the microphone", () => {
+it("generates camera permission without microphone access", async () => {
 	const root = join(__dirname, "..");
-	const config = JSON.parse(
-		execFileSync(join(root, "node_modules", ".bin", "expo"), ["config", "--type", "introspect", "--json"], {
-			cwd: root,
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-		}),
-	) as { ios: { infoPlist: Record<string, string | undefined> } };
-	expect(config.ios.infoPlist.NSCameraUsageDescription).toBe(CAMERA);
-	expect(config.ios.infoPlist.NSMicrophoneUsageDescription).toBeUndefined();
+	vi.stubEnv("APPLE_TEAM_ID", "");
+	const { exp } = await getPrebuildConfigAsync(root, { platforms: ["ios"] });
+	const projectRoot = mkdtempSync(join(process.env.EVENER_SCRATCH_DIR ?? tmpdir(), "camera-permission-"));
+	try {
+		// Info.plist introspection still reads local files even when Expo's
+		// ignoreExistingNativeFiles flag is set. Fonts need the real install.
+		symlinkSync(join(root, "node_modules"), join(projectRoot, "node_modules"), "dir");
+		try {
+			const config = await compileModsAsync(exp, { projectRoot, platforms: ["ios"], introspect: true });
+			expect(config.ios?.infoPlist).toHaveProperty("NSCameraUsageDescription", expect.any(String));
+			expect(config.ios?.infoPlist).not.toHaveProperty("NSMicrophoneUsageDescription");
+		} finally {
+			unlinkSync(join(projectRoot, "node_modules"));
+		}
+	} finally {
+		rmdirSync(projectRoot);
+	}
 }, 60_000);
 
 it("builds expo-camera's QR scanner from source, alongside the camera it plugs into", () => {

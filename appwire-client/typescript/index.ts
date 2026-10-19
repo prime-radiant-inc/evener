@@ -205,7 +205,7 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // readDocFile is deliberately absent from the root: it needs a DocPort from the
 // host, and a consumer that supplies one (or spies on the module) wants the
 // module itself, so it is published at the "./docContent" subpath instead.
-export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
+export { DOC_FILE_MAX_BYTES, DocFileError, docDownloadURL, docFileRawURL, docImageURL } from "./docContent";
 export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
 export { canonicalJson } from "./draftCheckpointPort";
 export { diffStats, editDiffText } from "./editDiff";
@@ -810,6 +810,8 @@ export {
 } from "./transcriptSteps";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
+export type { OriginatingInput, RetryInput } from "./turnRetryInput";
+export { findOriginatingItem, originatingInput, originFromItem, retryItem } from "./turnRetryInput";
 export type * from "./types.gen";
 export {
   HOST_REQUEST_METHODS,

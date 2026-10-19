@@ -106,7 +106,7 @@ export interface ContextChip {
 }
 
 /** The chips under the nav bar, each only when it has content (spec 8.1).
- * Subagents and Tasks open live views (the Subagents list, the Tasks sheet),
+ * Agents and Tasks open live views (the Agents list, the Tasks sheet),
  * so they hide while disconnected rather than looking tappable and doing
  * nothing (Calm). Files opens the documents the session wrote or linked, as
  * the screen last read them; Goal (opens the local Session sheet) and Queue
@@ -115,7 +115,7 @@ export interface ContextChip {
  * says one is new or changed since you last opened it. `subagents` supplies
  * authoritative summary counts; a transcript roster is never a count source,
  * only evidence that subagents exist while the count isn't known. A shut-down
- * session's count can stay unknown for good, so the Subagents chip shows no
+ * session's count can stay unknown for good, so the Agents chip shows no
  * count until the summary knows it. */
 export function contextChips(
 	session: Pick<ThreadModel, "delegates" | "tasks" | "goal" | "queue">,
@@ -128,16 +128,16 @@ export function contextChips(
 	if (connected && tally && tally.total > 0) {
 		chips.push({
 			kind: "subagents",
-			label: `Subagents ${tally.total}`,
+			label: `Agents ${tally.total}`,
 			attention: false,
-			accessibilityLabel: `Subagents, ${tally.total}`,
+			accessibilityLabel: `Agents, ${tally.total}`,
 		});
 	} else if (connected && !tally && (session.delegates?.length ?? 0) > 0) {
 		chips.push({
 			kind: "subagents",
-			label: "Subagents",
+			label: "Agents",
 			attention: false,
-			accessibilityLabel: "Subagents, count unknown",
+			accessibilityLabel: "Agents, count unknown",
 		});
 	}
 	if (files.count > 0)

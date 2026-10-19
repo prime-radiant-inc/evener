@@ -70,7 +70,8 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 			"Stop",
 			"Find in session",
 			"Files",
-			"Activity",
+			"Agents",
+			"Jobs",
 			"Tasks",
 			"Notes & links",
 			"Session info",
@@ -86,7 +87,8 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 			"stop",
 			"find",
 			"files",
-			"activity",
+			"agents",
+			"jobs",
 			"tasks",
 			"notes",
 			"info",
@@ -157,14 +159,15 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	] as const)("shows nothing for %s when it is false", (condition, label) => {
 		const entries = only(menu({ [condition]: false }).items).menu.items;
 		expect(labels(entries)).not.toContain(label);
-		expect(entries).toHaveLength(11);
+		expect(entries).toHaveLength(12);
 	});
 
-	// Activity and Tasks both read the hub live, so both wait for a connection.
-	it("shows neither Activity nor Tasks while disconnected", () => {
+	// Agents, Jobs and Tasks all read the hub live, so they wait for a connection.
+	it("shows none of Agents, Jobs or Tasks while disconnected", () => {
 		const entries = only(menu({ connected: false }).items).menu.items;
 		const kinds = chosenKinds({ connected: false });
-		expect(kinds).not.toContain("activity");
+		expect(kinds).not.toContain("agents");
+		expect(kinds).not.toContain("jobs");
 		expect(kinds).not.toContain("tasks");
 		expect(entries).toHaveLength(10);
 	});
@@ -188,7 +191,8 @@ describe("the Session's ⋯ menu (spec 8.1)", () => {
 	it.each([
 		["Stop", { kind: "stop" }],
 		["Find in session", { kind: "find" }],
-		["Activity", { kind: "activity" }],
+		["Agents", { kind: "agents" }],
+		["Jobs", { kind: "jobs" }],
 		["Tasks", { kind: "tasks" }],
 		["Notes & links", { kind: "notes" }],
 		["Session info", { kind: "info" }],

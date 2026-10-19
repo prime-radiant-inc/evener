@@ -250,7 +250,11 @@ func mainWithDeps(deps mainDeps) {
 	prompt := cliprompt.Read(fs.Args(), *flags.listSessions, deps.stdin, stdinIsCharDevice)
 
 	if prompt == "" && !isResume {
-		fs.Usage()
+		if len(deps.args) == 0 && stdinIsCharDevice {
+			printStartupUsage(deps.stderr)
+		} else {
+			fs.Usage()
+		}
 		deps.exit(1)
 		return
 	}
@@ -337,7 +341,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.resumeWith = fs.String("resume-with", "", "start a new prompt using a previous session's `id` as context")
 	flags.resumeLast = fs.Bool("resume-last", false, "resume the most recent session")
 	flags.listSessions = fs.Bool("list-sessions", false, "list saved sessions and exit")
-	flags.maxRounds = fs.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
+	flags.maxRounds = fs.Int("max-rounds", -1, "max tool rounds per input (-1=default: unlimited, 0=unlimited)")
 	flags.maxSubagentDepth = fs.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 2)")
 	flags.maxConcurrentDelegates = fs.Int("max-concurrent-delegates", -1, "max concurrently running delegate turns per session tree (default: 50)")
 	flags.maxRetainedTerminal = fs.Int("max-retained-terminal", -1, "max retained terminal delegate records per session (default: 2048)")
@@ -389,6 +393,16 @@ func printRunUsage(w io.Writer, fs *flag.FlagSet) {
 	printRunEnvVars(w)
 }
 
+func printStartupUsage(w io.Writer) {
+	_, _ = fmt.Fprintln(w, "Usage: evener <command> [flags]")
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Commands:")
+	printRunCommands(w)
+	_, _ = fmt.Fprintln(w, "")
+	_, _ = fmt.Fprintln(w, "Run 'evener hub' for the interactive web UI.")
+	_, _ = fmt.Fprintln(w, "Run 'evener --help' for agent flags and environment variables.")
+}
+
 func printRunCommands(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintf(tw, "  openai\tManage OpenAI OAuth login (login, logout, status)\n")
@@ -397,7 +411,7 @@ func printRunCommands(w io.Writer) {
 	_, _ = fmt.Fprintf(tw, "  upgrade\tUpgrade installed Evener binaries\n")
 	_, _ = fmt.Fprintf(tw, "  install\tInstall Evener on a remote macOS or Linux host over SSH\n")
 	_, _ = fmt.Fprintf(tw, "  plugin\tManage plugin marketplaces and plugins\n")
-	_, _ = fmt.Fprintf(tw, "  hub\tRun the evener-hub web orchestrator\n")
+	_, _ = fmt.Fprintf(tw, "  hub\tRun the interactive web UI\n")
 	_, _ = fmt.Fprintf(tw, "  doctor\tRead-only forensic inspector for sessions/jobs/watches\n")
 	_, _ = fmt.Fprintf(tw, "  migrate\tMigrate user data to the final evener layout\n")
 	_, _ = fmt.Fprintf(tw, "  models\tInspect the provider registry (list, inspect, refresh)\n")

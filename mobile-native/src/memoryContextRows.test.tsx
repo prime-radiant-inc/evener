@@ -126,7 +126,7 @@ function projectModel(level: Level, model: ReturnType<typeof hydrateThread>, sys
 	const conversation = projectConversation(model, undefined, config ?? undefined);
 	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
 	return {
-		rows: sessionRows(groupTimeline(presentation.items), conversation.turns),
+		rows: sessionRows(groupTimeline(presentation.items), conversation.turns, { config }),
 		expandByDefault: presentation.expandByDefault,
 	};
 }

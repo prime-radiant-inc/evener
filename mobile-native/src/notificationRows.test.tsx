@@ -89,7 +89,7 @@ function rowsAt(level: (typeof LEVELS)[number], items = notificationWireItems())
 	const conversation = projectConversation(model, undefined, config ?? undefined);
 	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
 	return {
-		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns)),
+		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns, { config })),
 		delegates: conversation.delegates,
 	};
 }

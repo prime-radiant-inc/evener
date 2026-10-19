@@ -88,7 +88,14 @@ function setup(list: InstanceListResponse = { instances: [], availableProviders:
   const connected = vi.fn();
   const close = vi.fn();
   const openSettings = vi.fn();
-  const view = render(<ProviderConnection onClose={close} onConnected={connected} onOpenSettings={openSettings} />);
+  const view = render(
+    <ProviderConnection
+      completionLabel="Choose model"
+      onClose={close}
+      onConnected={connected}
+      onOpenSettings={openSettings}
+    />,
+  );
   return { client, connected, close, openSettings, ...view, user: userEvent.setup() };
 }
 beforeEach(() => {
@@ -245,7 +252,7 @@ test("device authorization survives its own delayed listing refresh and proceeds
     await pending.promise;
   });
   vi.useRealTimers();
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await user.click(await screen.findByRole("button", { name: "Choose model" }));
   expect(connected).toHaveBeenCalledWith("openai-codex");
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
     {
@@ -276,7 +283,14 @@ test("discovery load failure focuses recovery and retries the real listing", asy
     throw new Error("private-wire-body");
   });
   connectionStore.getState().connect(client);
-  render(<ProviderConnection onClose={() => {}} onConnected={() => {}} onOpenSettings={() => {}} />);
+  render(
+    <ProviderConnection
+      completionLabel="Choose model"
+      onClose={() => {}}
+      onConnected={() => {}}
+      onOpenSettings={() => {}}
+    />,
+  );
   const alert = await screen.findByRole("alert");
   expect(document.activeElement).toBe(alert);
   expect(screen.queryByText(/private-wire-body/)).toBeNull();
@@ -323,6 +337,36 @@ test("resolved setup auth modes override public defaults rather than forcing a v
   expect(screen.queryByLabelText("API key")).toBeNull();
   expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
   expect(screen.queryByRole("link", { name: "Get an API key" })).toBeNull();
+});
+
+test("provider choices expose resolved authentication capabilities and select that exact provider", async () => {
+  const overridden = provider("anthropic", "Anthropic", ["apiKey"], {
+    authModes: ["oauth"],
+    auth: "oauth-openai-codex",
+  });
+  const apiKey = provider("openai", "OpenAI", ["apiKey"]);
+  const { user } = setup({ instances: [], availableProviders: [overridden, apiKey] });
+
+  await waitFor(() => expect(document.querySelector('[data-auth-modes="oauth"]')).not.toBeNull());
+  const oauthChoice = document.querySelector('[data-auth-modes="oauth"]');
+  expect(oauthChoice?.textContent).not.toBe("");
+  await user.click(oauthChoice as HTMLElement);
+
+  expect(screen.getByRole("dialog", { name: "Connect Anthropic" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Sign in" })).toBeTruthy();
+  expect(screen.queryByLabelText("API key")).toBeNull();
+});
+
+test("provider authentication capabilities describe the choice without changing its accessible name", async () => {
+  setup({ instances: [], availableProviders: [provider("anthropic", "Anthropic", ["apiKey"])] });
+
+  const choice = await screen.findByRole("button", { name: "Anthropic" });
+  const descriptionId = choice.getAttribute("aria-describedby");
+  expect(descriptionId).not.toBeNull();
+  const description = document.getElementById(descriptionId as string);
+  expect(description).not.toBeNull();
+  expect(description?.textContent).not.toBe("");
+  expect(description?.getAttribute("aria-hidden")).toBeNull();
 });
 
 test("a no-auth endpoint never asks for a key", async () => {
@@ -596,7 +640,7 @@ test("saves directly to the real public ID then reloads and checks before explic
   ]);
   expect(screen.queryByText("raw-provider-secret")).toBeNull();
   expect(connected).not.toHaveBeenCalled();
-  await user.click(screen.getByRole("button", { name: "Continue" }));
+  await user.click(screen.getByRole("button", { name: "Choose model" }));
   expect(connected).toHaveBeenCalledWith("anthropic");
 });
 test("save failure retains the draft and retry saves once more without a premature check", async () => {
@@ -638,6 +682,67 @@ test.each(["auth_rejected", "endpoint_failure", "configuration_failure", "unsupp
     expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set")).toHaveLength(1);
   },
 );
+test("saved access survives a failed check and dismissal, then reopens without another save", async () => {
+  const first = setup();
+  scriptSave(first.client);
+  first.client.on("evener/auth/test", ({ provider }) => ({ provider, status: "auth_rejected", message: "private" }));
+  await choose(first.user);
+  await enterText(first.user, screen.getByLabelText("API key"), "fixture-key");
+  await first.user.click(screen.getByRole("button", { name: "Save and check" }));
+  expect(await alertReason()).toBe("check-failed");
+  expect(first.client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+
+  await first.user.click(screen.getByRole("button", { name: /^Close, access stays saved$/i }));
+  expect(first.close).toHaveBeenCalledTimes(1);
+  first.unmount();
+
+  first.client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  const connected = vi.fn();
+  const reopened = render(
+    <ProviderConnection
+      completionLabel="Choose model"
+      onClose={() => {}}
+      onConnected={connected}
+      onOpenSettings={() => {}}
+    />,
+  );
+  const user = userEvent.setup();
+  await choose(user);
+  expect(screen.getByTestId("credential-saved")).toBeTruthy();
+  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
+  await user.click(screen.getByRole("button", { name: "Retry check" }));
+  await checkConfirmed();
+  await user.click(screen.getByRole("button", { name: "Choose model" }));
+
+  expect(connected).toHaveBeenCalledWith("anthropic");
+  expect(first.client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+  reopened.unmount();
+});
+test("editing reopened stored access can be dismissed without a write while the original stays saved", async () => {
+  const { user, client, close } = setup(savedList());
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "replacement-draft");
+
+  await user.click(screen.getByRole("button", { name: /^Close, access stays saved$/i }));
+
+  expect(close).toHaveBeenCalledTimes(1);
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
+});
+test("a failed stored-access replacement keeps the original access and truthful dismissal", async () => {
+  const { user, client, close } = setup(savedList());
+  client.on("evener/auth/apiKey/set", () => {
+    throw new Error("replacement refused");
+  });
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "replacement-draft");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  expect(await alertReason()).toBe("save-failed");
+
+  await user.click(screen.getByRole("button", { name: /^Close, access stays saved$/i }));
+
+  expect(close).toHaveBeenCalledTimes(1);
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+});
 test.each([{ activeSource: "api_key" }, { baseUrl: "https://changed.example/v1" }])(
   "requires explicit source/destination review after save: %j",
   async (change) => {
@@ -773,7 +878,7 @@ test("settings saved then key failed repairs the actual named connection without
   });
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  await user.click(await screen.findByRole("button", { name: "Choose model" }));
   expect(connected).toHaveBeenCalledWith("azure-team");
   expect(client.calls.filter((c) => c.method === "evener/instance/create")).toHaveLength(1);
   expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set").map((c) => c.params)).toEqual([
@@ -828,7 +933,7 @@ test.each(["save", "refresh", "check"])(
     await enterText(user, screen.getByLabelText("API key"), "new-draft");
     expect(connected).not.toHaveBeenCalled();
     expect(screen.getByLabelText("API key")).toHaveProperty("value", "new-draft");
-    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
   },
 );
 test("cancel immediately invalidates a late check even before the owner unmounts", async () => {
@@ -839,14 +944,14 @@ test("cancel immediately invalidates a late check even before the owner unmounts
   await choose(user);
   await user.type(screen.getByLabelText("API key"), "draft");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  await user.click(screen.getByRole("button", { name: /^(Cancel|Close, access stays saved)$/ }));
   expect(close).toHaveBeenCalledTimes(1);
   await act(async () => {
     pending.resolve({ provider: "anthropic", status: "success", message: "" });
     await pending.promise;
   });
   expect(connected).not.toHaveBeenCalled();
-  expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
 });
 test("a notification refresh invalidates a pending check and a completed result", async () => {
   const { user, client } = setup();
@@ -867,15 +972,15 @@ test("a notification refresh invalidates a pending check and a completed result"
     pending.resolve({ provider: "anthropic", status: "success", message: "" });
     await pending.promise;
   });
-  expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
   expect(screen.getByRole("alert")).toBeTruthy();
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
   await user.click(screen.getByRole("button", { name: "Retry check" }));
-  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
   await act(async () => {
     await credentialsStore.getState().fetch();
   });
-  expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
 });
 test("the originating client's own auth-update echo does not invalidate its save and check", async () => {
   const { user, client } = setup();
@@ -902,7 +1007,7 @@ test("the originating client's own auth-update echo does not invalidate its save
     pending.resolve({ provider: "anthropic", status: "success", message: "" });
     await pending.promise;
   });
-  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
   expect(reasonShown("changed")).toBe(false);
 });
 test("the store's own post-save refresh does not invalidate the completed check", async () => {
@@ -923,7 +1028,7 @@ test("the store's own post-save refresh does not invalidate the completed check"
   // A plain click: `user` was set up on the real clock, and its delays would
   // wait on a timer nothing advances now.
   fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
-  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
   const listReads = () => client.calls.filter((c) => c.method === "evener/instance/list").length;
   const reads = listReads();
   // The self-refresh has been issued and its answer has landed: the store
@@ -932,7 +1037,7 @@ test("the store's own post-save refresh does not invalidate the completed check"
     expect(listReads()).toBe(reads + 1);
     expect(credentialsStore.getState().loading).toBe(false);
   });
-  expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Choose model" })).toBeTruthy();
   expect(reasonShown("changed")).toBe(false);
 });
 test("the store's own debounced post-save refresh does not invalidate an in-flight check", async () => {
@@ -968,7 +1073,7 @@ test("the store's own debounced post-save refresh does not invalidate an in-flig
     pending.resolve({ provider: "anthropic", status: "success", message: "" });
     await pending.promise;
   });
-  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
   expect(reasonShown("changed")).toBe(false);
 });
 test("a slow save response extends the echo window so its late own echo keeps Continue", async () => {
@@ -1005,9 +1110,9 @@ test("a slow save response extends the echo window so its late own echo keeps Co
   // Read as foreign (the fixed window alone), that same read resets the flow
   // to "Connection or configuration changed" and the user loses a save that
   // actually succeeded.
-  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
   expect(reasonShown("changed")).toBe(false);
-  await user.click(screen.getByRole("button", { name: "Continue" }));
+  await user.click(screen.getByRole("button", { name: "Choose model" }));
   expect(connected).toHaveBeenCalledWith("anthropic");
 });
 test("a superseding pending refresh cannot authorize a check from discarded metadata", async () => {
@@ -1047,7 +1152,14 @@ test("reconnect restores initial loading and invalidates late check callbacks", 
   client.on("evener/instance/list", () => initial.promise);
   connectionStore.getState().connect(client);
   const connected = vi.fn();
-  render(<ProviderConnection onClose={() => {}} onConnected={connected} onOpenSettings={() => {}} />);
+  render(
+    <ProviderConnection
+      completionLabel="Choose model"
+      onClose={() => {}}
+      onConnected={connected}
+      onOpenSettings={() => {}}
+    />,
+  );
   const user = userEvent.setup();
   await act(async () => {
     client.emitStateChange("reconnecting");
@@ -1068,7 +1180,7 @@ test("reconnect restores initial loading and invalidates late check callbacks", 
     await pending.promise;
     client.emitReady();
   });
-  expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
   expect(connected).not.toHaveBeenCalled();
   expect(screen.getByLabelText("API key")).toHaveProperty("value", "draft");
 });
@@ -1086,7 +1198,7 @@ test("read-only provider settings do not disable an existing credential store wr
   await choose(user);
   await user.type(screen.getByLabelText("API key"), "draft");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
 });
 test("switching to existing host access does not send the new key or claim authentication is disabled", async () => {
   const { user, client } = setup(
@@ -1098,7 +1210,7 @@ test("switching to existing host access does not send the new key or claim authe
   await user.click(screen.getByRole("button", { name: "Use existing host access" }));
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
   await user.click(screen.getByRole("button", { name: "Check connection" }));
-  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
+  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
   expect(client.calls.some((c) => c.method === "evener/auth/apiKey/set" || c.method === "evener/auth/logout")).toBe(
     false,
   );

@@ -54,6 +54,7 @@ import {
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
+import type { SharedPayload } from "./share/sharePayload";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { openProviders } from "./board/BoardNotices";
@@ -207,6 +208,7 @@ import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
+import type { ActivityKind } from "./subagents/activityList";
 import { liveClientFor } from "./liveClient";
 import { type SubagentRow, timeInState } from "./subagents/subagentModel";
 import { useHeldSubagentTree } from "./subagents/useHeldSubagentTree";
@@ -219,6 +221,7 @@ import { hasUsageLines, projectNativeTranscript } from "./transcriptPresentation
 import { refreshLoadedArchivedLists } from "./archivedLists";
 import { SymbolView } from "expo-symbols";
 import { Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { useDisplayChoices } from "./display/displayContext";
 import { haptic } from "./haptics";
 import { Button } from "./sheet/Grouped";
 
@@ -262,7 +265,15 @@ export type Routes = {
 	/** The Hub sheet (spec 12), a modal holding its own stack of pages. */
 	Hub: NavigatorScreenParams<HubRoutes>;
 	/** New session (spec 11), a modal holding its own stack of pages. */
-	NewSession: { hubId: string; hubName: string };
+	NewSession: {
+		hubId: string;
+		hubName: string;
+		/** A share's text to seed the prompt with (spec: share intent). */
+		share?: { id: string; text: string };
+	};
+	/** Where a share goes (spec: share intent): a modal sheet listing New
+	 * session, the hub's live sessions and search results. */
+	ShareTarget: { item: SharedPayload };
 	/** openedBy says Next opened this session (ruling 2), so Next from it
 	 * replaces it. slideFrom says the title's swipe opened it as the
 	 * previous ("left") or next ("right") session in Live order, the side it
@@ -305,13 +316,13 @@ export type Routes = {
 	};
 	CommentsSheet: ReviewSheetParams;
 	ReviewSheet: ReviewSheetParams;
-	/** A coordinator's subagents (spec 9). */
-	Subagents: { hubId: string; ref: string; threadId: string; title: string };
+	/** A coordinator's subagents or shell jobs (spec 9). */
+	Activity: { hubId: string; ref: string; threadId: string; title: string; kind: ActivityKind };
 	/** Ask a subagent's coordinator to stop it (spec 9, ruling 10). */
 	StopSubagentSheet: { hubId: string; coordinator: Coordinator; ref: string };
 	/** A subagent's own session, over its coordinator's (ruling 30). */
 	Subagent: { hubId: string; ref: string; title: string; coordinator: Coordinator };
-	/** A shell job's detail, over its coordinator's Activity list. */
+	/** A shell job's detail, over its coordinator's Jobs list. */
 	ShellJob: { hubId: string; jobId: string; ownerRef: string; title: string; coordinator: Coordinator };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
 	FilesSheet: { hubId: string; ref: string; title: string; cwd: string; documents: SessionDocument[] };
@@ -350,8 +361,9 @@ export function useFocusAfterModal(
 
 /** The sheet or screen each context chip and ⋯ menu item opens. */
 const SESSION_DESTINATIONS = {
-	subagents: "subagents",
-	activity: "subagents",
+	subagents: "agents",
+	agents: "agents",
+	jobs: "jobs",
 	tasks: "tasks",
 	notes: "notes",
 	goal: "session",
@@ -373,6 +385,7 @@ export function ConversationScreen({
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const textScale = useTextScale();
+	const displayChoices = useDisplayChoices();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	// Find in session (ruling 29), open while non-null. The current match is
 	// remembered by its row's reader key, since older pages prepend rows.
@@ -947,17 +960,19 @@ export function ConversationScreen({
 				});
 				return;
 			}
-			// The Subagents list (spec 9), in place of the Activity sheet. A
-			// subagent's screen opens its coordinator's, which lists every depth.
+			// The Agents and Jobs lists (spec 9), in place of the Activity
+			// sheet. A subagent's screen opens its coordinator's, which lists
+			// every depth.
 			navigation.navigate(
-				"Subagents",
+				"Activity",
 				subagentOf
-					? { hubId: route.params.hubId, ...subagentOf }
+					? { hubId: route.params.hubId, ...subagentOf, kind: destination }
 					: {
 							hubId: route.params.hubId,
 							ref: route.params.ref,
 							threadId: current.threadId,
 							title: route.params.title,
+							kind: destination,
 						},
 			);
 		},
@@ -1196,7 +1211,8 @@ export function ConversationScreen({
 			case "files":
 				openFiles();
 				return;
-			case "activity":
+			case "agents":
+			case "jobs":
 			case "tasks":
 			case "notes":
 			case "info":
@@ -1322,9 +1338,10 @@ export function ConversationScreen({
 			hideAnswerMessages(
 				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], {
 					olderToLoad: olderPage !== null,
+					config: displayConfig,
 				}),
 			),
-		[presentation.items, conversation?.turns, olderPage],
+		[presentation.items, conversation?.turns, olderPage, displayConfig],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
 	// A subagent row's coordinator: this session, or on a subagent's screen,
@@ -1476,11 +1493,12 @@ export function ConversationScreen({
 		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 		if (lastRowMeasured()) landOpening();
 	}
-	// Where the session opens (spec 7.3, ruling 31), decided once per route on
-	// the first layout with rows: the live end while a question or approval
-	// waits, the start of a reply that finished since you last reached the
-	// end, or where you left off. It only sets the reading position; the
-	// restore effect below moves the list there.
+	// Where the session opens (spec 7.3, ruling 31; Jesse, 2026-10-18: always
+	// the latest), decided once per route on the first layout with rows: the
+	// live end while a question or approval waits, or the start of a reply
+	// that finished since you last reached the end when the open-at-unread-
+	// replies setting is on. It only sets the reading position; the restore
+	// effect below moves the list there.
 	useEffect(() => {
 		const routeKey = `${route.params.hubId}\u0000${route.params.ref}`;
 		if (
@@ -1497,12 +1515,9 @@ export function ConversationScreen({
 			timelineRows,
 			conversation.turns.map((turn) => turn.id),
 			pendingQuestions(conversation).length > 0 || conversation.pendingEscalations.length > 0,
+			displayChoices.openAtUnreadReplies,
 		);
-		if (target.kind === "live") {
-			readerAnchor.current = null;
-			follow.dispatch({ type: "follow" });
-			pinOpeningToEnd();
-		} else if (target.kind === "row") {
+		if (target.kind === "row") {
 			readerAnchor.current = readerAnchorAt(
 				route.params.hubId,
 				route.params.ref,
@@ -1515,8 +1530,22 @@ export function ConversationScreen({
 			follow.dispatch({ type: "unfollow" });
 			appliedReaderRestore.current = null;
 			readerRestoreAttempts.current.reset();
+		} else {
+			// The latest is the resting answer.
+			readerAnchor.current = null;
+			follow.dispatch({ type: "follow" });
+			pinOpeningToEnd();
 		}
-	}, [conversation, snapshot.status, timelineRows, focused, bindingInstance, route.params.hubId, route.params.ref]);
+	}, [
+		conversation,
+		snapshot.status,
+		timelineRows,
+		focused,
+		bindingInstance,
+		route.params.hubId,
+		route.params.ref,
+		displayChoices.openAtUnreadReplies,
+	]);
 	// A session with no rows has nowhere to travel. One with rows shows after
 	// OPENING_REVEAL_CAP_MS however far it got, so an opening that can't land
 	// (its reading position never measures) never leaves the transcript hidden.

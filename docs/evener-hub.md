@@ -14,7 +14,10 @@ operation, and smoke checks. For non-local hosts, see
 ## Trust boundary
 
 The hub requires a capability token on every route except the `/auth/<token>`
-bootstrap, `/api/health`, and the PWA icons. At startup it loads
+bootstrap, `/api/health`, `/api/device-pairing`, and the PWA icons. Device pairing
+uses an invitation and requires approval before releasing credentials; it does
+not require the hub token or cookie. See [device pairing](device-pairing.md).
+At startup it loads
 `<hub_state_root>/auth-token`; the default `hub_state_root` is
 `${XDG_STATE_HOME:-$HOME/.local/state}/evener`, and `hub.toml` may override it.
 It creates a fresh 256-bit token when the file is absent. A newly created token
@@ -85,18 +88,19 @@ create a default launch stanza; launch defaults still come from the layered
 launch files described below.
 
 Create `hub.toml` when you need to override those paths or the listen
-address. If it already exists, preserve a private copy and edit only the intended fields rather than running this file-creation recipe over it. The shell expands `hub_config` and the `$HOME` values in the heredoc
+address. If it already exists, preserve a private copy and edit only the intended fields rather than running this file-creation recipe over it. The shell expands `hub_config` and `hub_state_root` in the heredoc
 before writing the file; TOML itself does not expand shell variables.
 
 ```bash
 hub_config="${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml"
+hub_state_root="${XDG_STATE_HOME:-$HOME/.local/state}/evener"
 mkdir -p "$(dirname "$hub_config")"
 cat > "$hub_config" <<EOF
 addr = "127.0.0.1:9180"
-hub_state_root = "$HOME/.local/state/evener"
-run_dir = "$HOME/.local/state/evener/run"
-state_glob = "$HOME/.local/state/evener/projects/*"
-past_index_db = "$HOME/.local/state/evener/index.db"
+hub_state_root = "$hub_state_root"
+run_dir = "$hub_state_root/run"
+state_glob = "$hub_state_root/projects/*"
+past_index_db = "$hub_state_root/index.db"
 spawn_timeout = "30s"
 past_index_rebuild_interval = "60s"
 past_results_per_page = 50
@@ -105,6 +109,9 @@ EOF
 
 chmod 600 "$hub_config"
 ```
+
+This recipe explicitly sets `run_dir` to `$hub_state_root/run`.
+Omit `run_dir` to use the hub's runtime-directory default.
 
 `api_log` controls the hub's default for durable API-request logging on the
 `evener serve` daemons it spawns: `true` passes `--api-log on`, recording every
@@ -121,6 +128,62 @@ force: launch config layers that set `api_log` explicitly (either direction)
 win over the hub-wide value. The `evener/launch/resolve` preview reports the
 same floor (provenance `hub`), so what the Launch settings show matches what a
 spawned session actually runs with.
+
+### Daemon idle retirement
+
+The hub retires an idle session daemon after one hour by default, so a session
+you stopped using does not keep a process, a listener, and its runtime tree
+alive. Retirement is not a delete: the saved session stays resumable, and the
+next message to it starts a replacement that restores the same identity. Your
+transcript, jobs, and memory are unaffected.
+
+```toml
+# hub.toml
+# One hour is the default; omit the field to keep it.
+daemon_idle_timeout = "1h"
+# To disable automatic retirement instead, set this one field to "0s".
+```
+
+Only *proven* inactivity counts: an active turn, accepted input, a running shell
+job, an outstanding delegate, a pending question, or an active goal resets the
+full interval. A directly launched `evener serve` is resident by default and
+takes the same value through `--daemon-idle-timeout`. A `hub.toml` change applies
+to daemons spawned or resumed afterward, never to one already running. An
+omitted field and an explicit `0s` are different: only `0s` disables retirement.
+
+If a session appears to stop on its own after an idle period, this is the
+expected behavior rather than a failure; sending a message resumes it. See
+[daemon idle retirement](daemon-idle-retirement.md) for the inactivity rules and
+for how a retired, unavailable, and incompatible daemon differ.
+
+### Other operator knobs
+
+These `hub.toml` fields are set less often. Defaults are the values used when the
+field is absent.
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `daemon_idle_timeout` | `"1h"` | Idle retirement interval; `"0s"` disables it. See above. |
+| `plugin_auto_upgrade` | `true` | Master switch for the background plugin upgrade daemon. A plugin still opts in individually. |
+| `plugin_auto_upgrade_interval` | `"12h"` | How often marketplaces refresh and opted-in plugins are re-checked. |
+| `host_probe_timeout` | `"10s"` | Deadline for one remote-host health probe; also bounds how long a hung remote holds a deploy gate. |
+| `host_min_free_space_bytes` | 512 MiB | Free space each state root needs before the hub reports itself healthy. |
+| `host_tombstone_retention` | `"168h"` | How long a removed host's tombstone is retained before pruning. |
+| `status_poll_interval` | `"2s"` | How often the hub polls session state. |
+| `mobile_base_url` | unset | Default hub address offered to paired phones; otherwise the browser's own origin is used. |
+
+Write every duration as a TOML string, such as `"30s"` or `"1h"`. A bare integer
+is read by TOML as a nanosecond count, so `spawn_timeout = 30` arms 30ns rather
+than 30 seconds. Some duration fields refuse that form outright
+(`daemon_idle_timeout`, `host_probe_timeout`, and the host receipt and operation
+TTLs). Negative handling then differs by field: a negative
+`daemon_idle_timeout` is rejected, some fields fall back to their default, and
+others keep the negative value. The loader does not validate every duration
+field the same way, so assume a typo can take effect and check the resolved
+value rather than trusting a silent load.
+
+Host receipt and operation retention rows are documented beside the host
+registry in the [subsystem map](product/subsystems.md) rather than here.
 
 ## Launch configuration
 

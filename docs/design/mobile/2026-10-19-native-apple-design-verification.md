@@ -2,6 +2,8 @@
 
 The iPhone redesign runs in the native app against a real local hub. The bounded visual review accepted the corrected screens. Native checks also caught and resolved composer growth and Dynamic Type regressions that screenshots and renderer tests missed.
 
+**Integration qualification:** The native captures and simulator observations below were recorded before integrating main's Expo upgrade and share support. Jesse chose Expo's built-in scene startup, superseding this branch's custom adapter. The integrated host has not been rebuilt or launched locally: iOS prebuild now requires `APPLE_TEAM_ID`, which is absent in this environment. Earlier simulator results do not verify that replacement host or the share extension.
+
 ## Candidate and scope
 
 - Checked on 2026-10-19 UTC, on branch `wip/native-apple-design`.
@@ -103,7 +105,7 @@ These observations prove text and focus retention in the tested transition. They
 
 Device-specific compilation initially failed because Xcode expected CoreSimulator 1174.9.2 while the installed framework was 1171.7. Generic simulator compilation succeeded. The original Expo host then exited because SDK 27 requires UIScene. The approved scene migration removed that launch blocker through source-controlled prebuild integration, not hand edits to generated files or falsified SDK metadata.
 
-The current host compiled and launched, dismissed its splash, and connected to the real hub:
+The pre-integration host compiled and launched, dismissed its splash, and connected to the real hub:
 
 ```sh
 cd mobile-native
@@ -140,4 +142,12 @@ Home/return exercises foreground recovery. It does not exercise OS scene evictio
 
 Removed only the added `http://127.0.0.1:52514` hub through the app's normal Remove this hub action, which owns its credential and draft cleanup. The app returned to the empty saved-hub screen. Light appearance and normal text size were restored. The temporary Metro, hub, scripted provider and owned session daemon were stopped; private test state, credentials, logs, binaries, backup copy and automation scratch were removed. The installed app, native build artifact and the 22 repository captures remain. No production profile or app-wide data reset was used.
 
-Integration note: this branch leaves `mobile-native/src/readerPosition.ts` unchanged from its original base. Local main already contains the separate open-at-latest change (`a7c4015de0`, PR #4738). Preserve that newer behavior when integrating this branch; the redesign does not supersede it.
+Integration note: main's newer open-at-latest behavior, Agents/Jobs activity surfaces and share support are retained. Current scene ownership is documented in [iOS build and distribution](ios-build-distribution.md); Expo owns the window and the generated AppDelegate supplies its React factory. The installed-template scene tests cover generated startup, unrelated plist preservation and repeated evaluation. They do not replace a native build or simulator run.
+
+## Integrated automated verification
+
+After integrating Expo 57.0.23 and removing the custom adapter, `make test-native` exited zero: 3 installed-template scene tests, 6,376 native tests, 769 shared tests, a cold iOS bundle from 2,495 modules, TypeScript, Biome and script-import checks passed. No React act warnings remained. The cold-cache warning, npm notice and Vitest performance advice remained informational.
+
+The first integrated run exposed a camera-permission test reading the retired scene manifest from the local generated `ios` directory. Its corrected test evaluates the real Expo config against an empty native-project directory, with the installed fonts available. Permission assertions now check generated camera access and absent microphone access rather than pinning permission prose. The share-action and held-start tests also now own their asynchronous React updates; their existing behavior assertions remain.
+
+Dependency installation reported 37 audit findings, including the inherited critical `shell-quote` 1.10.0 advisory [GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv). Both merge inputs locked that version. No dependency-audit remediation was made in this design change.

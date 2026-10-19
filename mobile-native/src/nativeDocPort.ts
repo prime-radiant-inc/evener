@@ -5,7 +5,7 @@ import { type DocPort, docImageURL } from "@evener/appwire-client/docContent";
 // and the bearer token, because there is no cookie jar for credentials to ride
 // in. Both come from the stored hub the app is connected to, the same pair
 // createHubClient takes (connection.ts).
-function docAuthHeaders(token: string): Record<string, string> {
+export function docAuthHeaders(token: string): Record<string, string> {
 	return token ? { Authorization: `Bearer ${token}` } : {};
 }
 

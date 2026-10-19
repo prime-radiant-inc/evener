@@ -355,20 +355,21 @@ const withCapabilities = (capabilities: Partial<Thread["evener"]["capabilities"]
 	evener: { ...thread.evener, capabilities: { ...thread.evener.capabilities, ...capabilities } },
 });
 
-// A session with shell jobs and no subagents has an Activity list too, and
-// the session can't tell from its read whether it has jobs, so the menu
-// offers Activity whenever it's connected, as it offers Tasks.
-it("offers Activity from the header menu with no subagents", async () => {
+// A session with shell jobs and no subagents has a Jobs list too, and the
+// session can't tell from its read whether it has jobs, so the menu offers
+// Jobs whenever it's connected, as it offers Tasks.
+it("offers Jobs from the header menu with no subagents", async () => {
 	const { tree } = mount();
 	await settle();
 
-	act(() => menuAction("Activity").onPress());
+	act(() => menuAction("Jobs").onPress());
 
-	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+	expect(navigation.navigate).toHaveBeenCalledWith("Activity", {
 		hubId: "hub-1",
 		ref,
 		threadId: "thread-1",
 		title: "Session",
+		kind: "jobs",
 	});
 	await act(async () => tree.unmount());
 });
@@ -938,7 +939,7 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 	await act(async () => tree.unmount());
 });
 
-it("opens the live run where tool calls show, and leaves it to its line at Intent", async () => {
+it("opens the live run where tool calls show, and shows the action's own line at Intent", async () => {
 	const running = {
 		...thread,
 		status: { type: "active" },
@@ -969,7 +970,11 @@ it("opens the live run where tool calls show, and leaves it to its line at Inten
 	const folds = () => withTestID(tree, "run-fold");
 	act(() => detailLevels("hub-1").set(ref, "intent"));
 	await settle();
-	expect(folds()[0]?.props.accessibilityState).toEqual({ expanded: false });
+	// Intent draws one line per action, never a folded run (Jesse,
+	// 2026-10-18): the call is a step row of its own, so there is no run to
+	// fold, and its words are on screen.
+	expect(folds()).toEqual([]);
+	expect(renderedText(tree)).toContain("Ran ls");
 	act(() => detailLevels("hub-1").set(ref, "tools"));
 	await settle();
 	expect(folds()).toEqual([]);
@@ -1109,20 +1114,31 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 	session.measure(48);
 	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
 
-	act(() => chip("Subagents, 1").props.onPress());
-	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+	act(() => chip("Agents, 1").props.onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("Activity", {
 		hubId: "hub-1",
 		ref,
 		threadId: "thread-1",
 		title: "Session",
+		kind: "agents",
 	});
 	vi.mocked(navigation.navigate).mockClear();
-	act(() => menuAction("Activity").onPress());
-	expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+	act(() => menuAction("Agents").onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("Activity", {
 		hubId: "hub-1",
 		ref,
 		threadId: "thread-1",
 		title: "Session",
+		kind: "agents",
+	});
+	vi.mocked(navigation.navigate).mockClear();
+	act(() => menuAction("Jobs").onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("Activity", {
+		hubId: "hub-1",
+		ref,
+		threadId: "thread-1",
+		title: "Session",
+		kind: "jobs",
 	});
 
 	act(() => chip("Tasks, 1 of 2 settled").props.onPress());
@@ -1156,7 +1172,7 @@ it("hides the Subagents and Tasks chips once the connection bar itself would say
 	try {
 		const { block } = sessionList(tree);
 		const label = (text: string) => block().findAll((node) => node.props.accessibilityLabel === text);
-		expect(label("Subagents, 1")).toHaveLength(1);
+		expect(label("Agents, 1")).toHaveLength(1);
 
 		// The connection drops; the thread's cached delegates/tasks survive.
 		harness.connection = { ...harness.connection, ...screenConnection(client, "reconnecting") };
@@ -1164,13 +1180,13 @@ it("hides the Subagents and Tasks chips once the connection bar itself would say
 		// A blip shorter than the bar's own grace period (spec 14) - the chips
 		// stay exactly as visible as they were, since the bar itself says
 		// nothing yet either.
-		expect(label("Subagents, 1")).toHaveLength(1);
+		expect(label("Agents, 1")).toHaveLength(1);
 
 		act(() => {
 			vi.advanceTimersByTime(2000);
 		});
 		act(() => tree.update(screen()));
-		expect(label("Subagents, 1")).toEqual([]);
+		expect(label("Agents, 1")).toEqual([]);
 		expect(label("Tasks, 1 of 2 settled")).toEqual([]);
 		// Goal and Queue need no connection, so they still show.
 		expect(label("Goal, blocked")).toHaveLength(1);
@@ -1195,12 +1211,13 @@ it("a Subagents/Tasks chip tap still works during a blip shorter than the connec
 				(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === label,
 			)[0];
 		vi.mocked(navigation.navigate).mockClear();
-		act(() => chip("Subagents, 1").props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("Subagents", {
+		act(() => chip("Agents, 1").props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("Activity", {
 			hubId: "hub-1",
 			ref,
 			threadId: "thread-1",
 			title: "Session",
+			kind: "agents",
 		});
 	} finally {
 		vi.useRealTimers();

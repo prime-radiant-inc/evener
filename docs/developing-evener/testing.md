@@ -389,10 +389,13 @@ ssh paradise-park 'chmod +x ~/.local/bin/evener && codesign --force --sign - ~/.
 # path both machines share (like /opt/homebrew when the controller is also a Mac)
 # answers the direct half of the provenance check too, so the test then fails
 # with "entries here would mean the forwarded answer above was served locally
-# too" even though the forwarding is fine. On a macOS host its own home
-# directory is the natural choice.
+# too" even though the forwarding is fine. Pick a path that exists only on the
+# remote host; the controller's own $HOME is exactly wrong, because it is
+# populated locally. Verify the prerequisite before running:
+#   ssh HOST '[ -d /srv/remote-only ] && ls -A /srv/remote-only'
+#   test ! -e /srv/remote-only && echo "controller cannot see it"
 EVENER_SSH_E2E=1 EVENER_SSH_E2E_HOST=paradise-park \
-  EVENER_SSH_E2E_REMOTE_DIR=/Users/jesse \
+  EVENER_SSH_E2E_REMOTE_DIR=/srv/remote-only \
   go test ./cmd/evener-hub/ -run TestHostAddAttachForwardedDiscoveryE2E -count=1 -v
 ~~~
 

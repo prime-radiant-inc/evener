@@ -123,7 +123,7 @@ if (new URLSearchParams(window.location.search).has("onboarding")) {
     baseUrl: "https://provider.example/v1",
     // A real listing gives a destination its endpoint fingerprint (the hub keys
     // one unless it cannot). The onboarding check asserts it, so without it the
-    // flow refuses the check and never exposes Continue.
+    // flow refuses the check and never exposes Choose model.
     endpointFingerprint: "fp-provider",
   };
   fake.on("evener/instance/list", () => {
@@ -376,8 +376,11 @@ function measureSpawn() {
     };
   });
 
-  const heading = document.querySelector<HTMLElement>("[data-testid='spawn-prompt-intro'] h2");
-  const subtitle = document.querySelector<HTMLElement>("[data-testid='spawn-prompt-intro'] p");
+  const promptIntro = document.querySelector<HTMLElement>("[data-testid='spawn-prompt-intro']");
+  const headings = Array.from(promptIntro?.querySelectorAll<HTMLElement>("h2") ?? []);
+  const subtitles = Array.from(promptIntro?.querySelectorAll<HTMLElement>("p") ?? []);
+  const heading = headings[0] ?? null;
+  const subtitle = subtitles[0] ?? null;
   const pluginSummary = document.querySelector<HTMLElement>('[data-testid="spawn-plugin-summary"]');
   const pluginRow = document.querySelector<HTMLElement>('[data-label="Plugins"]');
   const pluginSheet = document.querySelector<HTMLElement>('[role="dialog"][aria-labelledby] h2')?.parentElement
@@ -400,12 +403,20 @@ function measureSpawn() {
     rows,
     attachments: measureAttachments(),
     accessiblePrompt: {
+      headingCount: headings.length,
       headingTag: heading?.tagName.toLowerCase() ?? "missing",
-      headingText: heading?.textContent?.trim() ?? "",
+      headingHasName: (heading?.textContent?.trim().length ?? 0) > 0,
       headingVisible: heading ? isVisible(visibility("[data-testid='spawn-prompt-intro'] h2")) : false,
+      headingIsDirectChild: heading?.parentElement === promptIntro,
+      subtitleCount: subtitles.length,
       subtitleTag: subtitle?.tagName.toLowerCase() ?? "missing",
-      subtitleText: subtitle?.textContent?.trim() ?? "",
+      subtitleHasContent: (subtitle?.textContent?.trim().length ?? 0) > 0,
       subtitleVisible: subtitle ? isVisible(visibility("[data-testid='spawn-prompt-intro'] p")) : false,
+      subtitleIsDirectChild: subtitle?.parentElement === promptIntro,
+      headingBeforeSubtitle:
+        heading !== null &&
+        subtitle !== null &&
+        Boolean(heading.compareDocumentPosition(subtitle) & Node.DOCUMENT_POSITION_FOLLOWING),
       headingHiddenFromAT: heading?.getAttribute("aria-hidden") === "true",
       subtitleHiddenFromAT: subtitle?.getAttribute("aria-hidden") === "true",
     },
@@ -660,7 +671,10 @@ async function onboardingButton(name: string): Promise<HTMLButtonElement> {
   const deadline = performance.now() + 10_000;
   for (;;) {
     const button = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find(
-      (candidate) => candidate.textContent?.trim() === name && isElementVisible(candidate) && !candidate.disabled,
+      (candidate) =>
+        (candidate.getAttribute("aria-label") ?? candidate.textContent?.trim()) === name &&
+        isElementVisible(candidate) &&
+        !candidate.disabled,
     );
     if (button) return button;
     if (performance.now() > deadline) throw new Error(`Onboarding did not expose ${name}`);
@@ -697,7 +711,7 @@ async function exerciseProviderOnboarding(): Promise<string[]> {
   freshKey.dispatchEvent(new Event("input", { bubbles: true }));
   await new Promise((resolve) => requestAnimationFrame(resolve));
   (await onboardingButton("Save and check")).click();
-  const continuation = await onboardingButton("Continue");
+  const continuation = await onboardingButton("Choose model");
   if (fake.calls.some((call) => call.method === "thread/start")) failures.push("save started a session");
   failures.push(...scanHorizontalOverflow());
   continuation.click();

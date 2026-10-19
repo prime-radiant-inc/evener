@@ -90,7 +90,7 @@ function rowsAt(level: Level, turns: Turn[], systemEvents = true) {
 	const conversation = projectConversation(model, undefined, config ?? undefined);
 	const presentation = projectNativeTranscript(conversation, config, { justTheConversation });
 	return {
-		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns)),
+		rows: hideAnswerMessages(sessionRows(groupTimeline(presentation.items), conversation.turns, { config })),
 		model,
 		expandByDefault: presentation.expandByDefault,
 	};

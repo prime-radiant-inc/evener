@@ -4,6 +4,11 @@ The native app connects your iPhone to an Evener hub. The agent still runs on th
 
 **Distribution limitation:** this guide documents the source-build path and the repository's internal TestFlight tooling. It does not promise a public App Store listing or an open TestFlight invitation. The current delivery scope is iPhone. iPad work is paused, and Android delivery is deferred despite retained Android sources.
 
+**Tutorial verification is deferred:** the executed tutorial matrix covers CLI
+and web only. These iPhone instructions, simulator interaction, physical-device
+behavior, and camera pairing have not been verified by those tours. Browser
+screenshots are not native evidence. See the [coverage limits](developing-evener/tutorial-tours.md#active-coverage).
+
 ## Obtain a build
 
 If your organization supplies a signed build or a TestFlight invitation, use that distribution channel and confirm which source version it contains. A hub snapshot and an older phone build may not implement the same protocol.
@@ -51,7 +56,7 @@ Open a known session and confirm that its recent conversation appears. Send a ha
 
 The app also offers **Paste pairing link** and **Enter the address**. Manual entry needs the hub's base address, such as `https://hub.example.invalid:9180` (a schematic example, not a working server). Include the `http://` or `https://` scheme and any required port, but no session path. This base address is also called the hub's **origin**.
 
-Manual entry also needs the hub's **bearer token**, a secret that grants access to the hub. It is not a provider API key. The hub operator can obtain it from the `auth-token` file in the hub state root, normally `~/.local/state/evener/auth-token`. Transfer it privately, and keep it out of screenshots, prompts, and source control. The app stores credentials in the phone's secure credential storage, SecureStore.
+Manual entry also needs the hub's **bearer token**, a secret that grants access to the hub. It is not a provider API key. The hub operator can obtain it from the `auth-token` file in the hub state root, `${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth-token` by default. A `hub_state_root` override in `hub.toml` relocates it. Transfer it privately, and keep it out of screenshots, prompts, and source control. The app stores credentials in the phone's secure credential storage, SecureStore.
 
 Pairing grants access to the hub. It does not configure model credentials, make an unreachable address reachable, or start a stopped hub. The [device-pairing reference](device-pairing.md) defines invitation expiry, approval, and credential delivery for client authors.
 
@@ -64,6 +69,30 @@ The [daily-work guide](daily-work.md) explains the distinction between sending f
 Backgrounding the app is not a stop request to the agent. On returning, let it reconnect and recover the session before sending the same request again. A disconnected phone cannot tell you that an operation failed merely because it did not receive the reply.
 
 For a code change, use the phone to inspect progress and ask questions, then review the actual diff and run the acceptance checks on the project host. A readable transcript is not proof that the change has been merged or deployed.
+
+## Share text into a session
+
+The app appears in the iOS share sheet for text and web links, so you can send a
+note or a page to Evener without switching apps first. Sharing writes nothing to
+a session on its own; it opens Evener with a **Share to Evener** sheet, and you
+choose the destination.
+
+- **New session** opens New session with the shared text already in the prompt.
+  The host, project, model, and effort this phone remembers still apply.
+- **Live** lists the active hub's sessions in attention order. **Search
+  sessions** queries the same grouped results the Board shows, including past
+  sessions.
+
+Choosing a destination writes the text into that session's saved draft; it does
+not send a message. Review and edit the draft in the composer, then send it
+yourself. An existing draft is appended to rather than replaced. If the share
+cannot be placed, the sheet says why and keeps the share; dismissing the sheet
+without choosing leaves the share available on the next launch or foreground.
+
+The share sheet uses the app's active hub and has no hub switcher. If no hub is
+ready, it says the session list is waiting for one; add or select the hub first,
+then share again. Only text and URLs are supported: images, files, and videos
+are not share targets in this version.
 
 ## Update and recover
 
