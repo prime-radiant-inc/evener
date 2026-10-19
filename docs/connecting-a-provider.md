@@ -67,7 +67,8 @@ pasting an API key. Availability depends on your account and provider terms.
   The guided form also offers **Use existing host access** under **Advanced
   settings**.
 - **Advanced management:** Settings → Providers & credentials → **Connect provider** uses the
-  same connector. The instance rows are the real editor, with custom instances,
+  same connector. After a successful check, **Done** returns to Settings; it does
+  not open the New session model chooser. The instance rows are the real editor, with custom instances,
   rename, reset overrides, replace/clear stored credentials, logout, source
   inspection, and explicit default management. In the session model chooser,
   only an explicit model pick requests a session model switch.

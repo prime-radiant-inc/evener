@@ -1,0 +1,27 @@
+Rendered command transcript
+Streams are recorded separately, not interleaved.
+
+$ python3 <workspace>/extension-events.py <workspace>/extension-0.jsonl
+cwd: extensions-workspace
+stdout:
+HOOK_END {"event": "SessionStart", "matcher": "startup", "plugin_name": "hello-plugin", "exit_code": 0}
+PLUGIN_LOADED {"name": "hello-plugin"}
+USER_INPUT {"text": "Summarize this change: 99b3623a9fae974b8db95c3028607e27\nState the evidence and anything not verified. Do not edit files.\n"}
+SKILL_ACTIVATED {"name": "change-summary"}
+TOOL_CALL_START {"tool_name": "example__echo", "call_id": "call_fakellm_2", "arguments_json": "{\"message\":\"61b94aab88f51164c9b665f44e8bc799\"}"}
+TOOL_CALL_END {"tool_name": "example__echo", "call_id": "call_fakellm_2", "arguments_json": "{\"message\":\"61b94aab88f51164c9b665f44e8bc799\"}", "output": "61b94aab88f51164c9b665f44e8bc799"}
+
+stderr:
+
+exit: 0
+
+$ python3 <workspace>/extension-events.py <workspace>/extension-1.jsonl
+cwd: extensions-workspace
+stdout:
+HOOK_END {"event": "SessionStart", "matcher": "startup", "plugin_name": "hello-plugin", "exit_code": 0}
+PLUGIN_LOADED {"name": "hello-plugin"}
+USER_INPUT {"text": "Greet da57893921584dfb40539d1624d8d96e in one sentence. Do not use tools.\n"}
+
+stderr:
+
+exit: 0

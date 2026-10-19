@@ -3,7 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test scripts/*.test.mjs",
+    "tours:refresh": "node scripts/tours/refresh.mjs refresh",
+    "tours:check": "node scripts/tours/refresh.mjs check --surfaces cli,web",
+    "tours:validate": "node scripts/tours/refresh.mjs validate",
+    "test": "node --test scripts/*.test.mjs scripts/tours/*.test.mjs",
     "check": "npm test && node scripts/check.mjs",
     "prepare:docs": "node scripts/prepare.mjs",
     "build": "npm run check && vitepress build . && node scripts/check-built.mjs",

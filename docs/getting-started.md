@@ -102,6 +102,8 @@ you will run the same check afterward. If the tree is not clean, either account
 for every existing change or choose another project. Evener does not decide
 which pre-existing changes are safe to overwrite.
 
+<a id="connect-a-provider-before-starting-work"></a>
+
 ## Connect a provider in New session
 
 Open **New session** at `/new`. The working directory, task draft, provider, and
@@ -182,6 +184,8 @@ output back to the same session and ask for a focused repair.
 You have now completed the basic loop: state a bounded task, choose its actual
 permissions, observe the work, and verify it independently.
 
+<a id="prepare-the-example"></a>
+
 ## Optional disposable exercise
 
 Use this exercise if you do not have a suitable project. It copies a small
@@ -208,8 +212,26 @@ pwd &&
 python3 check.py
 ```
 
-The check should exit 1 because `receipt.py` ignores quantities. Use the printed
-directory in New session, choose **Workspace write**, and give this task:
+The `git -c` options set a throwaway author identity for this commit only; they
+do not change your global Git settings.
+
+The check should exit 1 because `receipt.py` ignores quantities:
+
+```text
+FAIL: quantity: expected 750, got 250
+FAIL: mixed: expected 490, got 205
+FAIL: zero quantity: expected 100, got 1049
+```
+
+<a id="ask-evener-to-repair-it"></a>
+
+The checker uses only Python's standard library and makes no model request.
+Read `check.py`: its expected answers are fixed examples, not values calculated
+by the function under test. Complete the provider setup above if you have not
+already connected a provider. In **New session**, open **Working directory**,
+enter the printed absolute path in **Path**, press Enter, and choose **Use this
+folder**. Choose your model, review **Effective access**, select **Workspace
+write**, and give this task:
 
 ```text
 Fix total_cents in receipt.py so each item's price is multiplied by its
@@ -218,7 +240,53 @@ the bug, then make the smallest repair in receipt.py and rerun the check. Do not
 change check.py or README.md. Do not commit. Report the diff and check result.
 ```
 
-Afterward, run:
+Select **Start**. Watch for the baseline failure, the edit to `receipt.py`, and
+the rerun. The CLI below is an alternative, not a second repair to run at the
+same time.
+
+### Use the CLI instead
+
+Run this from the disposable `evener-first-task` directory. Replace
+`provider/model` with your configured model. The CLI does not need the hub.
+This example explicitly turns the sandbox **off**: the disposable fixture
+limits what you intend to edit, not what the process can access. Use only the
+credentials the task needs, and review local instructions and extensions first.
+
+```sh
+evener --model provider/model --timeout 2m --max-rounds 8 --sandbox off "$(cat <<'PROMPT'
+Fix total_cents in receipt.py so each item's price is multiplied by its
+quantity. Work only in this directory. Read README.md and check.py first.
+Run python3 check.py to reproduce the bug, then make the smallest repair
+in receipt.py and rerun the check. Do not change check.py or README.md.
+Do not commit. Report what changed and the actual check result.
+PROMPT
+)"
+```
+
+The final answer goes to stdout; progress and errors go to stderr. An exit of
+0 means the invocation finished without an error, not that the repair is
+correct. Run the independent checks below. If setup fails, fix the reported
+provider or Python prerequisite before retrying. If the task reaches its time
+or round limit, inspect the diff and checker result before continuing.
+
+Maintainer verification: the receipt CLI and web tours use the real binary, tools and
+Python checker with a loopback scripted HTTP provider, `fake/fake-test-model`.
+They verify the initial failure, the edit and the unchanged checker independently.
+They do not test host installation, live-provider authentication, or model quality.
+Native verification is deferred. The [tour manifest and review process](developing-evener/tutorial-tours.md#review-and-publication)
+record capture revision, source digest, and representation; historical captures
+do not imply a new run on every main revision. CLI images are
+labeled **Rendered command transcript** and retain stdout and stderr separately;
+they do not claim cross-stream timing. Web captures come from the built browser
+client after real UI actions, not a mock conversation. Black rectangles hide the
+temporary workspace path labels without changing the live page's text.
+Run the partial check with
+`node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --scenario receipt`
+from the source checkout. This command publishes nothing.
+
+### Check the exercise result
+
+After the agent finishes, run:
 
 ```sh
 python3 check.py
@@ -231,7 +299,57 @@ Success is `PASS: 4 receipt cases`, a focused `receipt.py` diff, no protected-fi
 diff, and only changes you understand. The checker covers four fixed examples,
 not every possible input. A disposable directory still is not a security sandbox.
 
+Python may have created an untracked `__pycache__/` directory. If a protected
+file changed, inspect its diff before restoring it from your tutorial commit.
+When finished, stop remaining tutorial work and inspect running jobs before
+removing `evener-first-task`. Keep the diff and checker output if needed. Do not
+remove provider configuration or other projects as part of this cleanup.
+
+<a id="move-to-your-own-project"></a>
+
 Continue with [daily work](daily-work.md) for steering and review,
 [concepts](concepts.md) for session lifetimes, or [the CLI](cli.md) for
 noninteractive tasks. The [native app guide](native-app.md) explains how an
 iPhone connects to the same hub.
+
+## Captured walkthrough
+
+These historical checkpoints show the disposable exercise, not the current
+provider-connection flow. They use a scripted fake provider, not live-provider authentication.
+CLI images render recorded command output; web images are browser screenshots.
+Owned temporary paths are masked. Native verification is deferred. See the
+[capture provenance and review process](developing-evener/tutorial-tours.md#review-and-publication).
+
+### CLI transcript checkpoints
+
+**Entry.** The baseline checker fails before the repair.
+
+![Receipt CLI entry checkpoint](assets/tutorials/receipt/cli/entry.png)
+
+[Read the entry command transcript](assets/tutorials/receipt/cli/entry.txt).
+
+**Action.** The diff multiplies each price by its quantity.
+
+![Receipt CLI action checkpoint](assets/tutorials/receipt/cli/action.png)
+
+[Read the action command transcript](assets/tutorials/receipt/cli/action.txt).
+
+**Verified.** The transcript ends with `PASS: 4 receipt cases` and exit code 0.
+
+![Receipt CLI verified checkpoint](assets/tutorials/receipt/cli/verified.png)
+
+[Read the verified command transcript](assets/tutorials/receipt/cli/verified.txt).
+
+### Web checkpoints
+
+**Entry.** The workspace and model are selected, ready for the repair request.
+
+![Receipt web entry checkpoint](assets/tutorials/receipt/web/entry.png)
+
+**Action.** The tool rows show a failed checker run followed by an edit to `receipt.py`.
+
+![Receipt web action checkpoint](assets/tutorials/receipt/web/action.png)
+
+**Verified.** The final response reports the quantity repair and a checker exit code of zero.
+
+![Receipt web verified checkpoint](assets/tutorials/receipt/web/verified.png)

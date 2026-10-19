@@ -33,11 +33,12 @@ comments. This applies to streaming and nonstreaming responses, including vision
 channels and gzip-compressed wire bytes: a response can
 continue indefinitely while bytes keep arriving within the idle interval.
 
-Set a positive Go duration (for example `45s`, `10m`, or `1h`):
+Set a positive Go duration (for example `45s`, `10m`, or `1h`). Replace
+`provider/model` with an available model from your configured provider:
 
 ```sh
-evener --provider-idle-timeout 15m "your task"
-evener serve --provider-idle-timeout 15m
+evener --model provider/model --provider-idle-timeout 15m "your task"
+evener serve --model provider/model --provider-idle-timeout 15m
 ```
 
 The hub launch setting is **Provider idle timeout**. Launch TOML uses
@@ -235,15 +236,14 @@ flowchart TD
 
 Each subprocess loads its own provider registry. The hub forwards configuration paths and process coordination, not a selected provider key injected into the child. The daemon records how the hub can reconnect to it.
 
-**The hub no longer materializes `providers.toml` at startup.** It passes
-`EVENER_PROVIDERS_CONFIG` to children only when a file already exists.
-`EVENER_PROVIDERS_CONFIG` is a **tri-state**: unset means the default path;
-set to a path means that file; set and **empty**
-(`export EVENER_PROVIDERS_CONFIG=`) means "no user layer" — `os.LookupEnv`,
-not `Getenv`, distinguishes unset from empty. A hub whose own file failed to
-load sets it empty in every child's environment, overriding anything the
-hub itself inherited, so sessions keep launching against the implicit
-instance set while the broken file gets fixed by hand.
+**The hub does not create a default `providers.toml` at startup.**
+`EVENER_PROVIDERS_CONFIG` is tri-state: unset selects the default path, a path
+selects that file, and an empty value selects no user layer. After a failed
+provider-file load, children receive a private snapshot of the last good user
+layer if the hub retained one; otherwise they receive no user layer. Project
+overrides still apply with their normal precedence. See
+[provider-file reload](llm-providers.md#providerstoml) for snapshot and startup
+behavior.
 
 `EVENER_CREDENTIALS_CONFIG` names `credentials.toml` explicitly (new
 variable); when unset, the store is the sibling of the providers path, as
@@ -292,13 +292,18 @@ carrying the resolved instance name.
 Session metadata still persists the instance name in `ProfileID` — the
 field keeps its name; it now holds the registry instance name rather than a
 provider type. On hub resume, the stored `ProfileID` is passed through as
-the instance to resolve; a saved session, `launch.toml`, `EVENER_MODEL`, or
-plugin `model:` declaration that names an instance that no longer exists
+the instance to resolve; a saved session, `launch.toml`, or `EVENER_MODEL`
+that names an instance that no longer exists
 fails with the "unknown instance" error, which lists the instances that are
 actually available — this is exactly what happens on resume for a session
 saved before the upgrade that named `kimi`, `glm`, `kimi-anthropic`, or
 `openrouter-anthropic` (see
 ["Upgrading from the old schema"](#upgrading-from-the-old-schema) below).
+
+A plugin agent's `model:` is advisory. If its instance or model is unavailable,
+Evener warns and falls back to the delegate call's explicit model, or to the
+parent model if none was supplied. An invalid explicit model override still
+fails. See [plugin model selection](subagent-runtime-contracts.md#plugin-and-agent-loading).
 
 Cost display follows the same registry-driven rule everywhere it appears —
 the model picker, a live session, and past-session history: it's priced
@@ -374,9 +379,10 @@ protocol = "anthropic"
 surface  = "anthropic"
 ```
 
-A saved session, `launch.toml`, `EVENER_MODEL`, or plugin `model:`
-declaration naming an old instance fails with the unknown-instance error,
-naming the instances that are actually available.
+A saved session, `launch.toml`, or `EVENER_MODEL` naming an old instance fails
+with the unknown-instance error, which lists available instances. Plugin agent
+`model:` declarations instead use the advisory fallback described under
+[resume and persistence](#resume--persistence).
 
 **Environment variables that changed meaning or disappeared** (this table
 intentionally overlaps

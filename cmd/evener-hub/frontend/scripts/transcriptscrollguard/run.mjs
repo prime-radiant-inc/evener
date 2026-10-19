@@ -29,6 +29,7 @@ import {
   waitForHttp,
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
+import { assertNativeViewportWheel } from "./nativeViewport.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -148,6 +149,7 @@ async function main() {
     let initial = null;
     let landed = null;
     try {
+      await assertNativeViewportWheel(cdpEndpoint);
       await applyViewport(send, VIEWPORT);
       await navigateTo(page, `http://127.0.0.1:${vitePort}/transcriptscrollguard.html?paged=1&deferRead=1`, BOOT);
       // Fonts FIRST, then settle: a late-arriving webfont changes row

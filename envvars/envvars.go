@@ -58,7 +58,7 @@ func (v Var) Assignment(value string) string {
 }
 
 var (
-	EVENERAllowedDecisions            = Var{Name: "EVENER_ALLOWED_DECISIONS", Summary: "Restricts tool-decision modes allowed by the active profile.", Visibility: Public}
+	EVENERAllowedDecisions            = Var{Name: "EVENER_ALLOWED_DECISIONS", Summary: "Sets allowed communicate.output.decision values for workflow routing, as a JSON array or comma-separated list; not tool approval modes.", Visibility: Public}
 	EVENERFluencyModel                = Var{Name: "EVENER_FLUENCY_MODEL", Summary: "Default model for the tool-fluency development harness.", Visibility: Tooling}
 	EVENERHostTempBases               = Var{Name: "EVENER_HOST_TEMP_BASES", Summary: "OS path list of absolute directories that replaces /tmp and /var/tmp as the world-usable host temp bases session temp containers are created in and the startup crashed-scratch sweep walks; each must be a world-writable sticky directory. Set but empty or malformed is refused, never replaced by the defaults.", Visibility: Public}
 	EVENERHubAddr                     = Var{Name: "EVENER_HUB_ADDR", Summary: "Default hub address for local development tooling (the Vite dev-server proxy and browser guards).", Visibility: Public}
@@ -67,7 +67,7 @@ var (
 	EVENERLoginHeadless               = Var{Name: "EVENER_LOGIN_HEADLESS", Summary: "Overrides OpenAI login flow detection: 1 for device-code, 0 for browser.", Visibility: Public}
 	EVENERModel                       = Var{Name: "EVENER_MODEL", Summary: "Default model as provider/model when --model is omitted.", Visibility: Public}
 	EVENERNoUserSkills                = Var{Name: "EVENER_NO_USER_SKILLS", Summary: "Set to 1 to omit the operator's user-global sources: their home skills (~/.agents/skills), user config skills directory, installed plugins' skills, global MCP servers (~/.config/evener/mcp.json), and evener-wide commands (~/.config/evener/commands). Bundled, project, and explicitly added sources remain. The tool-fluency harness sets it so eval rounds depend only on the revision under test.", Visibility: Tooling}
-	EVENEROffline                     = Var{Name: "EVENER_OFFLINE", Summary: "Set to 1 to keep the provider registry offline: no models.dev refresh, embedded snapshot only.", Visibility: Public}
+	EVENEROffline                     = Var{Name: "EVENER_OFFLINE", Summary: "Set to 1 to disable models.dev refresh; the provider registry can still use a newer valid local catalog cache.", Visibility: Public}
 	EVENEROpenAIResponsesContinuation = Var{Name: "EVENER_OPENAI_RESPONSES_CONTINUATION", Summary: "Default OpenAI Responses continuation mode: off|auto. CLI and launch config override it.", Visibility: Public}
 	EVENERPprofAddr                   = Var{Name: "EVENER_PPROF_ADDR", Summary: "Serves live net/http/pprof profiles from evener serve and evener hub on this loopback host:port (port 0 picks a free one, logged at startup); unset disables it. Hub-spawned daemons inherit it.", Visibility: Tooling}
 	EVENERProvider                    = Var{Name: "EVENER_PROVIDER", Summary: "Fallback provider for llmcall when --provider and LLM_PROVIDER are unset.", Visibility: Public}

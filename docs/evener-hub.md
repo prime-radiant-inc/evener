@@ -14,7 +14,10 @@ operation, and smoke checks. For non-local hosts, see
 ## Trust boundary
 
 The hub requires a capability token on every route except the `/auth/<token>`
-bootstrap, `/api/health`, and the PWA icons. At startup it loads
+bootstrap, `/api/health`, `/api/device-pairing`, and the PWA icons. Device pairing
+uses an invitation and requires approval before releasing credentials; it does
+not require the hub token or cookie. See [device pairing](device-pairing.md).
+At startup it loads
 `<hub_state_root>/auth-token`; the default `hub_state_root` is
 `${XDG_STATE_HOME:-$HOME/.local/state}/evener`, and `hub.toml` may override it.
 It creates a fresh 256-bit token when the file is absent. A newly created token
@@ -85,18 +88,19 @@ create a default launch stanza; launch defaults still come from the layered
 launch files described below.
 
 Create `hub.toml` when you need to override those paths or the listen
-address. If it already exists, preserve a private copy and edit only the intended fields rather than running this file-creation recipe over it. The shell expands `hub_config` and the `$HOME` values in the heredoc
+address. If it already exists, preserve a private copy and edit only the intended fields rather than running this file-creation recipe over it. The shell expands `hub_config` and `hub_state_root` in the heredoc
 before writing the file; TOML itself does not expand shell variables.
 
 ```bash
 hub_config="${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml"
+hub_state_root="${XDG_STATE_HOME:-$HOME/.local/state}/evener"
 mkdir -p "$(dirname "$hub_config")"
 cat > "$hub_config" <<EOF
 addr = "127.0.0.1:9180"
-hub_state_root = "$HOME/.local/state/evener"
-run_dir = "$HOME/.local/state/evener/run"
-state_glob = "$HOME/.local/state/evener/projects/*"
-past_index_db = "$HOME/.local/state/evener/index.db"
+hub_state_root = "$hub_state_root"
+run_dir = "$hub_state_root/run"
+state_glob = "$hub_state_root/projects/*"
+past_index_db = "$hub_state_root/index.db"
 spawn_timeout = "30s"
 past_index_rebuild_interval = "60s"
 past_results_per_page = 50
@@ -105,6 +109,9 @@ EOF
 
 chmod 600 "$hub_config"
 ```
+
+This recipe explicitly sets `run_dir` to `$hub_state_root/run`.
+Omit `run_dir` to use the hub's runtime-directory default.
 
 `api_log` controls the hub's default for durable API-request logging on the
 `evener serve` daemons it spawns: `true` passes `--api-log on`, recording every

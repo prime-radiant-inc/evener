@@ -2,7 +2,36 @@
 
 A useful Evener session ends with a result you can inspect, not just a convincing answer. Give the agent a bounded task, intervene when the direction changes, and review the files and checks before accepting its work.
 
-This guide assumes you have completed [provider setup](getting-started.md#connect-a-provider-in-new-session) and can open your hub in a browser. All interface paths below are relative to that hub, normally `http://127.0.0.1:9180`.
+This guide assumes you have completed [provider setup](getting-started.md#connect-a-provider-in-new-session). The browser instructions use your hub, normally `http://127.0.0.1:9180`. The CLI runs one request at a time and resumes saved sessions explicitly. It does not offer the browser's interactive Send, Steer, and Stop controls.
+
+## Try a CLI continuation
+
+Use a fresh directory so the two files below cannot overwrite existing work. Replace `provider/model` with an available model from your configured provider:
+
+```sh
+mkdir daily-workspace
+cd daily-workspace
+git init
+evener --model provider/model 'Write initial.json with nonce b8e54d60 and a receipts array containing that nonce once.'
+evener --list-sessions
+```
+
+Wait for the first command to finish. Identify the session you just ran in the listing, using its creation time, then substitute its ID for `SESSION_ID`. Do not guess if another run started at the same time:
+
+```sh
+evener --resume SESSION_ID 'Continue by writing continued.json with nonce c9f65e71 and a receipts array containing that nonce once.'
+python3 -c 'import json; print(json.dumps({p:json.load(open(p)) for p in ["initial.json","continued.json"]},sort_keys=True))'
+```
+
+Check that each file has its requested nonce and exactly one matching receipt. This is sequential continuation of the same saved conversation, not a queued request to a running CLI process. Keep using the same working directory; resuming a conversation does not undo file changes made since its last turn.
+
+For contributors, the deterministic tutorial check runs this CLI path and the browser controls below against a local scripted provider. Run it from the Evener repository root after installing the [tour prerequisites](developing-evener/tutorial-tours.md#run-serially). It verifies files and persisted session identity, not a live model's ability to follow these prompts:
+
+```sh
+node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --scenario daily
+```
+
+These checks cover CLI and web only. They do not publish screenshots.
 
 ## Start with a task you can check
 
@@ -61,6 +90,33 @@ the parser internally instead.
 ```
 
 Steering cannot retract a command that already ran. If the agent is about to take an unsafe action, use Stop, then inspect what actually happened. Do not send a second copy of a destructive request because the first copy has not appeared in the transcript yet.
+
+### Try the browser controls
+
+In a fresh workspace, start a session with `Read the workspace and wait for my next instruction. Reference: d4a10f26`. While a turn is active:
+
+1. Type `Record one receipt in steered.json for nonce e5b21a37` and choose **Steer**. This changes the current turn at a tool boundary.
+2. Type `Next, record one receipt in queued.json for nonce f6c32b48` and choose **Send**. Confirm that one message is queued before sending anything else.
+3. Let the first turn finish. The queued request starts a later turn. Inspect `steered.json` and `queued.json` for distinct nonces and one receipt each.
+4. Choose **Stop** while work is active. Wait for the turn to stop, then send `Continue here. Record one receipt in continued.json for nonce a7d43c59`.
+5. Inspect `continued.json` and the earlier files. Stop must not erase completed receipts, and continuation must not duplicate the queued receipt.
+
+```mermaid
+flowchart LR
+    Active[Active turn] --> Steer[Steer at a tool boundary]
+    Steer --> Complete[First turn finishes]
+    Complete --> Queued[Queued request starts a later turn]
+    Queued --> Stop[Stop interrupts active work]
+    Stop --> Continue[Send continues the session]
+```
+
+A live model may finish before you press a control; asking it to wait does not keep a turn active. If the control disappears, inspect the files and delivery state first. Retry the exercise in a fresh workspace with another bounded task that takes time. Do not resend a message whose delivery is uncertain.
+
+The automated tour holds real HTTP provider requests at these boundaries to verify queue depth, delivery order, cancellation, and file effects. It cancels a held request, then attempts to answer it and checks that `cancelled.json` is absent. This covers a cancelled held request, not a race with an already-delivered response. Stop cannot undo a command that has already executed.
+
+After the control exercise, stop any remaining work and inspect **Jobs** for
+processes still running. Keep the receipt files if you need them, then remove
+only the disposable workspace you created. Closing the tab alone is not cleanup.
 
 ## Return after a break
 
@@ -135,3 +191,44 @@ Commit only after review. Deploying, publishing, and merging are separate decisi
 Tell Evener durable preferences and project decisions that should affect later work. Ask it to correct obsolete notes when those decisions change. [Memory](memory.md) explains what persists and where; a transcript is the record of this session, while memory is selected knowledge for future sessions.
 
 For reusable procedures, use [extensions](extensions.md). For repeatable unattended runs, use [automation](automation.md) and the [CLI reference](cli.md). Those guides own the exact configuration and command contracts.
+
+## Captured walkthrough
+
+These checkpoints use a scripted fake provider, not live-provider authentication.
+CLI images render recorded command output; web images are browser screenshots.
+Owned temporary paths are masked. Native verification is deferred. See the
+[capture provenance and review process](developing-evener/tutorial-tours.md#review-and-publication).
+
+### CLI transcript checkpoints
+
+**Entry.** `git status --short` lists an untracked `NOTES.md`.
+
+![Daily CLI entry checkpoint](assets/tutorials/daily/cli/entry.png)
+
+[Read the entry command transcript](assets/tutorials/daily/cli/entry.txt).
+
+**Action.** The command reports writing `initial.json`, and `--list-sessions` lists the saved session.
+
+![Daily CLI action checkpoint](assets/tutorials/daily/cli/action.png)
+
+[Read the action command transcript](assets/tutorials/daily/cli/action.txt).
+
+**Verified.** The `--resume` command uses the saved session ID; the final command prints both receipt files.
+
+![Daily CLI verified checkpoint](assets/tutorials/daily/cli/verified.png)
+
+[Read the verified command transcript](assets/tutorials/daily/cli/verified.txt).
+
+### Web checkpoints
+
+**Entry.** The session shows the request to read the workspace and wait, with Stop and Steer controls available.
+
+![Daily web entry checkpoint](assets/tutorials/daily/web/entry.png)
+
+**Action.** The conversation shows the steering request, its response, and the queued request with a tool row.
+
+![Daily web action checkpoint](assets/tutorials/daily/web/action.png)
+
+**Verified.** An interrupted marker precedes the continuation request and the report that `continued.json` was written.
+
+![Daily web verified checkpoint](assets/tutorials/daily/web/verified.png)

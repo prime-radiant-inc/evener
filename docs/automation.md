@@ -10,12 +10,12 @@ Review repository instructions, hooks, plugins and MCP configuration first. Thos
 
 ## Capture one result
 
-This shell recipe writes private output into a fresh directory. It does not overwrite an earlier run or automatically retry a failed task.
+This shell recipe writes private output into a fresh directory. It does not overwrite an earlier run or automatically retry a failed task. In each example, replace `provider/model` with an available model from your configured provider.
 
 ```sh
 umask 077
 report_dir=$(mktemp -d "${TMPDIR:-/tmp}/evener-review.XXXXXX") || exit 1
-if evener --timeout 2m --max-rounds 8 \
+if evener --model provider/model --timeout 2m --max-rounds 8 \
   --sandbox read-only --sandbox-net off \
   'Inspect this repository without changing files. Name three public entry points with their file paths. Do not start services.' \
   >"$report_dir/result.txt" 2>"$report_dir/diagnostics.txt"
@@ -42,7 +42,7 @@ Open the result and verify each named path and entry point in source. Nonblank o
 Redirect a trusted UTF-8 text file into the same bounded invocation:
 
 ```sh
-evener --timeout 2m --max-rounds 8 --sandbox read-only --sandbox-net off < prompt.txt
+evener --model provider/model --timeout 2m --max-rounds 8 --sandbox read-only --sandbox-net off < prompt.txt
 ```
 
 Run from the intended working directory, or set `--dir`. The prompt is read to EOF before the run begins. Command-line prompt arguments override stdin; do not accidentally supply both and expect concatenation.
@@ -52,7 +52,7 @@ Run from the intended working directory, or set `--dir`. The prompt is read to E
 Pass a schema document as one quoted argument. This example requests a result object; it does not turn diagnostics into JSON.
 
 ```sh
-evener --timeout 2m --max-rounds 8 --sandbox read-only --sandbox-net off \
+evener --model provider/model --timeout 2m --max-rounds 8 --sandbox read-only --sandbox-net off \
   --output-schema '{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}' \
   'Summarize this repository in the summary field of your final structured output.'
 ```
