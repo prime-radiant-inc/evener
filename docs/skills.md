@@ -561,10 +561,13 @@ delivery resumes after restart without repeating the compaction.
 - Sessions saved before compaction lifecycle metadata existed start with fresh
   compaction state; Evener does not reconstruct requests from old tool calls.
 
-The context-pressure nudge lists the loaded skills either way: with
+The context-pressure nudge lists the loaded skill names either way: with
 `compact_context` available it asks for the selection through `reload_skills`;
 without the tool it lists the skills for awareness and keeps its existing
 note advice, never requesting a structured response the model cannot submit.
+It omits descriptions, because the nudge arrives when headroom is scarce and
+the selection only needs canonical names; automatic note elicitation still
+carries names and descriptions, since there the model chooses by content.
 
 ### Reload delivery after compaction
 

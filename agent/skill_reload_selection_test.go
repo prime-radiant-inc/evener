@@ -391,6 +391,9 @@ func TestSkillReloadSelection_NudgeListsLoadedSkills(t *testing.T) {
 	if !strings.Contains(withTool, "scope:probe") {
 		t.Fatal("compact-tool nudge must list the loaded skill")
 	}
+	if strings.Contains(withTool, "opaque-probe-description") {
+		t.Fatal("compact-tool nudge must not repeat loaded-skill descriptions")
+	}
 	if !strings.Contains(withTool, "reload_skills") {
 		t.Fatal("compact-tool nudge must name the reload_skills selection parameter")
 	}
@@ -398,6 +401,9 @@ func TestSkillReloadSelection_NudgeListsLoadedSkills(t *testing.T) {
 	withoutTool := selfCompactNudge(false, loaded)
 	if !strings.Contains(withoutTool, "scope:probe") {
 		t.Fatal("no-tool nudge must still list the loaded skill for awareness")
+	}
+	if strings.Contains(withoutTool, "opaque-probe-description") {
+		t.Fatal("no-tool nudge must not repeat loaded-skill descriptions")
 	}
 	if strings.Contains(withoutTool, "reload_skills") || strings.Contains(withoutTool, "skill-reload-selection") {
 		t.Fatal("no-tool nudge must not request a structured selection the model cannot submit")

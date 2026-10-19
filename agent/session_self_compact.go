@@ -128,16 +128,19 @@ func (s *Session) claimPinnedNoteLocked(gen uint64) {
 // selfCompactNudge is the low-headroom warning. The pressure is real either
 // way; only the remedy is tool-dependent, so a session without compact_context
 // gets the same warning worded as something it can actually do. loaded lists
-// the session's successfully loaded skills: the compact-tool remedy asks which
-// to reload via reload_skills; the no-tool remedy lists them for awareness and
-// never requests a structured selection the model cannot submit.
+// the session's successfully loaded skill names: the compact-tool remedy asks
+// which to reload via reload_skills; the no-tool remedy lists them for
+// awareness and never requests a structured selection the model cannot submit.
+// Names only: the descriptions belong to the elicitation prompt, where the
+// model must choose reloads by content, and would eat the headroom this
+// warning exists to reclaim.
 func selfCompactNudge(canCompact bool, loaded []schema.SkillInventorySummary) string {
 	list := ""
 	if len(loaded) > 0 {
 		var b strings.Builder
 		b.WriteString(" Skills loaded in this session:\n")
 		for _, sk := range loaded {
-			fmt.Fprintf(&b, "- %s — %s\n", sk.Name, sk.Description)
+			fmt.Fprintf(&b, "- %s\n", sk.Name)
 		}
 		list = b.String()
 	}
