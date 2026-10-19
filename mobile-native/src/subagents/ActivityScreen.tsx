@@ -220,16 +220,16 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 		paddingHorizontal: 16,
 		paddingTop: 16,
 	};
-	const notice: Notice | null = snapshot.tree
-		? rows.length === 0 && page?.complete === true && missing.length === 0
-			? "empty"
-			: null
-		: snapshot.failed
-			? "failed"
-			: snapshot.unsupported
-				? "unsupported"
-				: snapshot.ended
-					? "ended"
+	// The notice speaks for this screen's collection alone: the other one
+	// failing, or still loading, says nothing about this list.
+	const notice: Notice | null = !page
+		? null
+		: page.permanent
+			? "unsupported"
+			: page.error !== null && page.rows.length === 0 && !page.loading
+				? "failed"
+				: page.complete && page.rows.length === 0 && page.issues.length === 0
+					? "empty"
 					: null;
 
 	const renderItem = useCallback(
@@ -323,7 +323,7 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 					{spec.notices[notice]}
 				</Text>
 			) : null}
-			{!snapshot.tree && !notice ? <Skeleton /> : null}
+			{!notice && rows.length === 0 && (page === null || page.loading || page.pending) ? <Skeleton /> : null}
 		</View>
 	);
 

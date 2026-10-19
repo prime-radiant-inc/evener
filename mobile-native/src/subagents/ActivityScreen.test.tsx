@@ -1044,3 +1044,25 @@ it("says there are no subagents while jobs pages remain", async () => {
 	expect(notices(tree)).toEqual(["empty"]);
 	expect(text(tree)).toContain("No subagents yet.");
 });
+
+// The same holds when the other collection fails outright: delegates read as
+// an empty success, so Agents says so rather than reporting a failure.
+it("says there are no subagents when the jobs read fails", async () => {
+	client = pagedHub({ counts: { jobs: { known: false, total: 0, active: 0, failed: 0, completed: 0 } } });
+	client.on("evener/thread/jobs/list", () => Promise.reject(new Error("offline")) as never);
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(notices(tree)).toEqual(["empty"]);
+	expect(text(tree)).toContain("No subagents yet.");
+});
+
+// And the mirror image: a failed delegates read leaves Jobs saying it has
+// none, not reporting the other collection's failure.
+it("says there are no shell jobs when the delegates read fails", async () => {
+	client = pagedHub({ counts: { delegates: { known: false, total: 0, active: 0, failed: 0, completed: 0 } } });
+	client.on("evener/thread/delegates/list", () => Promise.reject(new Error("offline")) as never);
+	harness.connection = screenConnection(client, "ready");
+	const jobs = await mount(true, "jobs");
+	expect(notices(jobs)).toEqual(["empty"]);
+	expect(text(jobs)).toContain("No shell jobs yet.");
+});
