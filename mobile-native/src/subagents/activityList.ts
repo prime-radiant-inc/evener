@@ -25,6 +25,9 @@ export function activityListItems(
 		completedJobsOpen: boolean;
 		missing: readonly string[];
 		coordinator: { ref: string; title: string };
+		/** Every loaded row, for naming a missing branch by its subagent's
+		 * title when the list itself shows only one kind. Defaults to `rows`. */
+		titles?: readonly ActivityListRow[];
 	},
 ): ActivityListItem[] {
 	const running: ActivityListRow[] = [];
@@ -59,10 +62,11 @@ export function activityListItems(
 			for (const row of history.rows) items.push({ kind: "row", row });
 		}
 	}
+	const titleRows = view.titles ?? rows;
 	const titleOf = (ref: string) =>
 		ref === view.coordinator.ref
 			? view.coordinator.title
-			: rows.find((row) => isSubagentRow(row) && row.ref === ref)?.title;
+			: titleRows.find((row) => isSubagentRow(row) && row.ref === ref)?.title;
 	// Two branches can share a title; the line names the title once.
 	for (const title of new Set(view.missing.map(titleOf))) items.push({ kind: "missing", title });
 	return items;

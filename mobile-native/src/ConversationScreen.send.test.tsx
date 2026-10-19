@@ -5351,7 +5351,7 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 		expect(jobReads(hub)).toBeGreaterThan(before);
 	});
 
-	it("opens its coordinator's Subagents list from its own Subagents chip", async () => {
+	it("opens its coordinator's Agents list from its own Agents chip", async () => {
 		const served = subagent(true);
 		(served as unknown as { evener: Record<string, unknown> }).evener.diagnostics = {
 			delegates: [
@@ -5372,8 +5372,8 @@ describe("a subagent's own session (spec 9, rulings 10 and 30)", () => {
 			],
 		};
 		const { tree } = await mountSubagent(served);
-		act(() => pressable(tree, "Subagents, 1")?.props.onPress());
-		expect(navigation.navigate).toHaveBeenCalledWith("Subagents", { hubId: "hub-1", ...COORDINATOR });
+		act(() => pressable(tree, "Agents, 1")?.props.onPress());
+		expect(navigation.navigate).toHaveBeenCalledWith("Activity", { hubId: "hub-1", ...COORDINATOR, kind: "agents" });
 	});
 
 	it("opens a document it names in the Reader on its own ref, where its review goes (ruling 16)", async () => {

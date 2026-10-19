@@ -764,7 +764,7 @@ function delegatesOf(session: FleetSession, now: number): EvenerDelegateInfo[] {
 			status: SUBAGENT_STATUS[subagent.state],
 			terminal: !running,
 			// The activity tree carries the same outcome (demoSubagents.ts), so the
-			// chip and the Subagents list classify this delegate alike (issue #2684).
+			// chip and the Agents list classify this delegate alike (issue #2684).
 			...(running ? {} : { outcome: subagent.state === "failed" ? "failed" : "completed" }),
 			resumable: false,
 			needsAttention: subagent.state === "failed",

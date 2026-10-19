@@ -1,5 +1,7 @@
-// Native activity renders loaded subtree pages and authoritative summary counts.
-// The shared activity store owns reads, notifications and recovery.
+// The Agents and Jobs lists (Jesse: split apart). Each renders one kind of a
+// coordinator's tree over the shared activity store, which owns reads,
+// notifications and recovery: subagents on the Agents list, shell jobs on the
+// Jobs list. Both read the same tree, so each names its own rows and counts.
 import { useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
@@ -20,6 +22,7 @@ import {
 	SEARCH_AFTER,
 	type ShellJobRow,
 	type SubagentRow,
+	isJobRow,
 	isSubagentRow,
 	sameModel,
 	subagentQuietWake,
@@ -37,31 +40,49 @@ import { haptic } from "../haptics";
 /** Why the list shows words instead of rows: nothing to list yet, a read
  * that failed, a session that can't list, or one that's shut down. */
 const NOTICE_WORDS = {
-	empty: "No subagents or shell jobs yet.",
-	failed: "The activity couldn't be listed right now.",
-	unsupported: "This session can't list its activity.",
-	ended: "This session is shut down, so its activity can't be listed.",
+	agents: {
+		empty: "No subagents yet.",
+		failed: "The subagents couldn't be listed right now.",
+		unsupported: "This session can't list its subagents.",
+		ended: "This session is shut down, so its subagents can't be listed.",
+	},
+	jobs: {
+		empty: "No shell jobs yet.",
+		failed: "The shell jobs couldn't be listed right now.",
+		unsupported: "This session can't list its shell jobs.",
+		ended: "This session is shut down, so its shell jobs can't be listed.",
+	},
 } as const;
 
-export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Routes, "Subagents">) {
-	const { hubId, ref, threadId, title } = route.params;
+/** Which kind of activity a screen lists. */
+export type ActivityKind = "agents" | "jobs";
+
+const KIND_WORDS: Record<ActivityKind, string> = { agents: "Agents", jobs: "Jobs" };
+
+export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Routes, "Activity">) {
+	const { hubId, ref, threadId, title, kind } = route.params;
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { width } = useWindowDimensions();
 	const { tree, snapshot } = useFollowedSubagentTree(hubId, ref, threadId);
 
 	const activity = useMemo(() => (snapshot.tree ? flattenActivity(snapshot.tree, title) : []), [snapshot.tree, title]);
-	// The strip, stops and subagent screens are the subagents' own; the list,
-	// its chips and its count hold the shell jobs too.
-	const rows = useMemo(() => activity.filter(isSubagentRow), [activity]);
-	const subagentTally = summaryTally(snapshot.summary?.delegates);
-	const activityTally = summaryTally(snapshot.summary?.delegates, snapshot.summary?.jobs);
+	// One kind per screen: the Agents list holds only subagents, the Jobs list
+	// only shell jobs. The tree is shared, so a job still names the subagent
+	// that ran it from the delegates the tree has loaded.
+	const agents = useMemo(() => activity.filter(isSubagentRow), [activity]);
+	const jobs = useMemo(() => activity.filter(isJobRow), [activity]);
+	const rows = kind === "agents" ? agents : jobs;
+	// The strip and the chips count this screen's kind alone.
+	const tally = summaryTally(kind === "agents" ? snapshot.summary?.delegates : snapshot.summary?.jobs);
 	// Taken when the tree changes, so the list runs no clock (ruling 7); it
 	// moves on only when a running subagent's silence crosses the quiet
 	// threshold, dimming its dot.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: a new snapshot is what moves the clock
 	const treeTime = useMemo(() => Date.now(), [snapshot]);
-	const now = useNowPastQuiet(treeTime, (at) => rows.map((row) => subagentQuietWake(row, at)));
+	const now = useNowPastQuiet(treeTime, (at) =>
+		kind === "agents" ? agents.map((row) => subagentQuietWake(row, at)) : [],
+	);
 
 	const [filter, setFilter] = useState<ActivityFilter>("all");
 	const [query, setQuery] = useState("");
@@ -72,15 +93,16 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const coordinatorRef = snapshot.tree?.root.ref ?? ref;
 	const items = useMemo(
 		() =>
-			activityListItems(activity, {
+			activityListItems(rows, {
 				filter,
 				query,
 				doneOpen,
 				completedJobsOpen,
 				missing: snapshot.missing,
 				coordinator: { ref: coordinatorRef, title },
+				titles: activity,
 			}),
-		[activity, filter, query, doneOpen, completedJobsOpen, snapshot.missing, coordinatorRef, title],
+		[rows, activity, filter, query, doneOpen, completedJobsOpen, snapshot.missing, coordinatorRef, title],
 	);
 
 	// The stops you asked for, on their rows, and settled against each new
@@ -99,20 +121,26 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		if (!focused || boundary?.tree !== tree || boundary.keys !== boundaryKeys) return;
 		// A closed fold can consume a page without changing the native list's
 		// height. Keep its observed edge demand, not a view-owned retry loop.
-		for (const [resource, page] of [
-			["delegates", delegatePage],
-			["jobs", jobPage],
-		] as const) {
+		// Agents names only subagents; Jobs also advances the delegate pages a
+		// job's owner comes from.
+		const pages =
+			kind === "agents"
+				? ([["delegates", delegatePage]] as const)
+				: ([
+						["jobs", jobPage],
+						["delegates", delegatePage],
+					] as const);
+		for (const [resource, page] of pages) {
 			if (page?.hasMore && !page.loading && !page.error && !page.permanent) void tree.loadMore(resource);
 		}
-	}, [focused, boundary, boundaryKeys, tree, delegatePage, jobPage]);
+	}, [focused, boundary, boundaryKeys, tree, kind, delegatePage, jobPage]);
 	const toast = useToast();
 	const showToast = toast.show;
 	useEffect(() => {
-		if (!focused || rows.length === 0) return;
-		for (const stopped of requests.reconcile(ref, rows)) showToast({ text: `“${stopped.title}” stopped` });
+		if (!focused || agents.length === 0) return;
+		for (const stopped of requests.reconcile(ref, agents)) showToast({ text: `“${stopped.title}” stopped` });
 		// A request recorded after the tree already shows the stop settles too.
-	}, [focused, rows, requests, ref, showToast, stopRevision]);
+	}, [focused, agents, requests, ref, showToast, stopRevision]);
 	const noteFor = useCallback(
 		(row: SubagentRow): SubagentNote | undefined => {
 			const view = requests.view(row);
@@ -148,10 +176,12 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		[navigation, hubId, ref, threadId, title],
 	);
 
-	const count = activityTally ? String(activityTally.total) : "…";
+	const count = tally ? String(tally.total) : "…";
 	useEffect(() => {
-		navigation.setOptions({ headerTitle: () => <HeaderTitle count={count} title={title} /> });
-	}, [navigation, count, title]);
+		navigation.setOptions({
+			headerTitle: () => <HeaderTitle count={count} kind={kind} title={title} />,
+		});
+	}, [navigation, count, kind, title]);
 
 	const quiet = {
 		color: palette.inkMid,
@@ -161,7 +191,7 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 		paddingTop: 16,
 	};
 	const notice = snapshot.tree
-		? activity.length === 0 && !snapshot.partial && snapshot.missing.length === 0
+		? rows.length === 0 && !snapshot.partial && snapshot.missing.length === 0
 			? "empty"
 			: null
 		: snapshot.failed
@@ -212,31 +242,31 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 	const header = (
 		<View style={{ paddingTop: 12, gap: 12 }}>
 			<View style={{ paddingHorizontal: 16 }}>
-				{subagentTally ? (
-					<SubagentStrip tally={subagentTally} width={width - 32} />
+				{tally ? (
+					<SubagentStrip tally={tally} width={width - 32} />
 				) : (
-					<Text accessibilityLabel="Subagent counts unknown" style={{ color: palette.inkMid }}>
-						Subagents …
+					<Text accessibilityLabel={`${KIND_WORDS[kind]} counts unknown`} style={{ color: palette.inkMid }}>
+						{`${KIND_WORDS[kind]} …`}
 					</Text>
 				)}
 			</View>
-			{!activityTally || activityTally.total > 0 ? (
+			{!tally || tally.total > 0 ? (
 				// One row, as spec 9 draws it: past the phone's width it scrolls
 				// sideways and fades at its trailing edge, as the Board's and the
 				// Session's chip rows do.
-				<ChipStrip testID="subagent-filters" onGlass={false}>
+				<ChipStrip testID="activity-filters" onGlass={false}>
 					<FilterChip
 						label="All"
-						count={activityTally?.total ?? "…"}
+						count={tally?.total ?? "…"}
 						selected={filter === "all"}
 						onPress={() => setFilter("all")}
 					/>
 					{[
-						{ id: "running" as const, label: "Running", count: activityTally?.running },
+						{ id: "running" as const, label: "Running", count: tally?.running },
 						{
 							id: "done" as const,
 							label: "Done",
-							count: activityTally ? activityTally.failed + activityTally.done : undefined,
+							count: tally ? tally.failed + tally.done : undefined,
 						},
 					]
 						.filter((state) => state.count === undefined || state.count > 0)
@@ -253,14 +283,14 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 				</ChipStrip>
 			) : null}
 			{/* Kept while it has words, so a list that shrinks never stays filtered with no way to clear it. */}
-			{(activityTally?.total ?? activity.length) > SEARCH_AFTER || query !== "" ? (
+			{(tally?.total ?? rows.length) > SEARCH_AFTER || query !== "" ? (
 				<View style={{ marginHorizontal: space.margin }}>
-					<SearchField label="Filter activity" value={query} onChangeText={setQuery} />
+					<SearchField label={`Filter ${KIND_WORDS[kind].toLowerCase()}`} value={query} onChangeText={setQuery} />
 				</View>
 			) : null}
 			{notice ? (
 				<Text testID={`activity-notice:${notice}`} allowFontScaling={allowFontScaling} style={quiet}>
-					{NOTICE_WORDS[notice]}
+					{NOTICE_WORDS[kind][notice]}
 				</Text>
 			) : null}
 			{!snapshot.tree && !notice ? <Skeleton /> : null}
@@ -311,7 +341,7 @@ function useModelNames(hubId: string): (model: string) => string {
 	);
 }
 
-function HeaderTitle({ count, title }: { count: string; title: string }) {
+function HeaderTitle({ count, kind, title }: { count: string; kind: ActivityKind; title: string }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
@@ -321,7 +351,7 @@ function HeaderTitle({ count, title }: { count: string; title: string }) {
 				numberOfLines={1}
 				style={{ color: palette.inkHi, fontSize: 15 * scale, lineHeight: 20 * scale, fontWeight: "600" }}
 			>
-				{`Activity · ${count}`}
+				{`${KIND_WORDS[kind]} · ${count}`}
 			</Text>
 			<Text
 				allowFontScaling={allowFontScaling}

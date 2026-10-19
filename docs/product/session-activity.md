@@ -538,18 +538,24 @@ for these shared ownership contracts.
 
 ## Native activity histories
 
-The phone's Activity screen shows current work outside two independent history
-folds: Done for terminal delegates and Completed for terminal background jobs.
-Both start closed under All. Opening one leaves the other unchanged. The Done
-filter reveals both terminal histories without an extra disclosure and includes
-failed outcomes in its count. Summary counts remain independent of loaded rows;
-search narrows loaded labels without changing those counts.
+The phone splits background jobs and subagents into two lists. Agents lists
+only subagents, from the top bar's Agents chip or the session menu; Jobs lists
+only shell jobs, from the session menu. Each list shows current work outside
+one quiet history fold — Done for Agents, Completed for Jobs — which starts
+closed under All. The Done filter reveals that list's terminal rows without an
+extra disclosure and includes failed outcomes in its count. Each list's
+summary counts, strip, chips and header title cover its own kind alone;
+counts remain independent of loaded rows, and search narrows loaded labels
+without changing those counts. A job still names the subagent that ran it from
+the delegates the shared tree has loaded, and the Jobs list advances delegate
+pages only to find those names.
 
 Terminal rows keep their true failure, stop and report evidence in ordinary ink.
-Running descendants remain visible even when a terminal parent is folded, with
-their original navigation and stop identities. Live questions and approvals keep
-their attention treatment. The active strip combines all terminal outcomes in
-its quiet Done segment and disappears when no work is running.
+Running descendants remain visible on the Agents list even when a terminal
+parent is folded, with their original navigation and stop identities. Live
+questions and approvals keep their attention treatment. A list's active strip
+combines its terminal outcomes in its quiet Done segment and disappears when
+none of its rows is running.
 
 The native binding retains shared membership across disconnection and client
 replacement. Its shared store owns paging, retries and later-page replay; the

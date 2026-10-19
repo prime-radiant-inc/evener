@@ -55,7 +55,7 @@ import { ReviewSheet } from "./src/reader/ReviewSheet";
 import { StopSubagentSheet } from "./src/subagents/StopSubagentSheet";
 import { SubagentScreen } from "./src/subagents/SubagentScreen";
 import { ShellJobScreen } from "./src/subagents/ShellJobScreen";
-import { SubagentsScreen } from "./src/subagents/SubagentsScreen";
+import { ActivityScreen } from "./src/subagents/ActivityScreen";
 import { ReaderScreen } from "./src/reader/ReaderScreen";
 import { replaceAnimation } from "./src/session/titleSwipe";
 import { TasksSheet } from "./src/TasksSheet";
@@ -156,7 +156,7 @@ function Navigation() {
 				ref={navigationRef}
 				initialState={restoredStack(initialLocation)}
 				onReady={() => {
-						setNavigationReady(true);
+					setNavigationReady(true);
 					const root = navigationRef.getRootState();
 					if (root) reportRoutes(stackRoutes(root));
 				}}
@@ -203,27 +203,24 @@ function Navigation() {
 						component={NewSessionSheet}
 						options={{ presentation: "modal", headerShown: false }}
 					/>
-						<Stack.Screen
-							name="ShareTarget"
-							options={{ presentation: "modal", title: "Share to Evener" }}
-						>
-							{({ navigation, route }) => (
-								<ShareTargetSheet
-									navigation={navigation}
-									route={route}
-									drafts={drafts}
-									onPlaced={(item) => {
-										intake.forget(item.id);
-										void intake.advance(item.id);
-									}}
-									onDiscarded={(item) => {
-										intake.forget(item.id);
-										void intake.advance(item.id);
-									}}
-									onClosed={() => intake.release()}
-								/>
-							)}
-						</Stack.Screen>
+					<Stack.Screen name="ShareTarget" options={{ presentation: "modal", title: "Share to Evener" }}>
+						{({ navigation, route }) => (
+							<ShareTargetSheet
+								navigation={navigation}
+								route={route}
+								drafts={drafts}
+								onPlaced={(item) => {
+									intake.forget(item.id);
+									void intake.advance(item.id);
+								}}
+								onDiscarded={(item) => {
+									intake.forget(item.id);
+									void intake.advance(item.id);
+								}}
+								onClosed={() => intake.release()}
+							/>
+						)}
+					</Stack.Screen>
 					<Stack.Screen
 						name="Conversation"
 						component={ConversationScreen}
@@ -233,7 +230,7 @@ function Navigation() {
 						})}
 					/>
 					<Stack.Screen name="Reader" component={ReaderScreen} options={{ title: "" }} />
-					<Stack.Screen name="Subagents" component={SubagentsScreen} options={{ title: "" }} />
+					<Stack.Screen name="Activity" component={ActivityScreen} options={{ title: "" }} />
 					<Stack.Screen
 						name="Subagent"
 						component={SubagentScreen}

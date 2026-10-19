@@ -148,14 +148,14 @@ describe("the connection bar (spec 8.1, 14)", () => {
 describe("the chips row (spec 8.1)", () => {
 	it("renders the authoritative Subagents total with a quiet label and symbol", () => {
 		const tree = render(header({ chips: [subagents, tasks, goal, queue] }));
-		expect(renderedText(tree)).toBe("Subagents 5 Tasks 2/5 Goal Queue 2");
+		expect(renderedText(tree)).toBe("Agents 5 Tasks 2/5 Goal Queue 2");
 		expect(tree.root.findAllByType("SymbolView" as never).map((node) => node.props.name)).toEqual([
 			"person.2",
 			"checklist",
 			"target",
 			"tray",
 		]);
-		expect(textNode(tree, "Subagents 5").props.style).toMatchObject({ color: palette.inkHi });
+		expect(textNode(tree, "Agents 5").props.style).toMatchObject({ color: palette.inkHi });
 		expect(textNode(tree, "Tasks 2/5").props.style).toMatchObject({
 			fontSize: 15,
 			lineHeight: 20,
@@ -208,7 +208,7 @@ describe("the chips row (spec 8.1)", () => {
 		const tree = render(header({ chips: [subagents, tasks, goal, queue], onChip }));
 		const chips = chipButtons(tree);
 		expect(chips.map((chip) => chip.props.accessibilityLabel)).toEqual([
-			"Subagents, 5",
+			"Agents, 5",
 			"Tasks, 2 of 5 settled",
 			"Goal",
 			"2 queued messages",
@@ -249,7 +249,7 @@ describe("the chips row (spec 8.1)", () => {
 		const tree = render(header({ chips, onChip: (kind) => opened.push(kind) }));
 		// No count to show: the chip names itself alone.
 		expect(renderedText(tree)).not.toMatch(/\d/);
-		expect(chipButtons(tree).map((chip) => chip.props.accessibilityLabel)).toEqual(["Subagents, count unknown"]);
+		expect(chipButtons(tree).map((chip) => chip.props.accessibilityLabel)).toEqual(["Agents, count unknown"]);
 		act(() => chipButtons(tree)[0]?.props.onPress());
 		expect(opened).toEqual(["subagents"]);
 		act(() => tree.update(header({ chips: contextChips(source, false, { count: 0, fresh: false }, unknown) })));

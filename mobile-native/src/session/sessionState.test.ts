@@ -152,9 +152,9 @@ describe("the context chips (spec 8.1)", () => {
 		);
 		expect(chip).toEqual({
 			kind: "subagents",
-			label: "Subagents 5",
+			label: "Agents 5",
 			attention: false,
-			accessibilityLabel: "Subagents, 5",
+			accessibilityLabel: "Agents, 5",
 		});
 	});
 
@@ -250,15 +250,15 @@ describe("the Subagents chip", () => {
 
 	it("counts from the whole-subtree summary, not the transcript's roster", () => {
 		expect(subagentsChip(withSubagents, counts(501, 20))).toMatchObject({
-			label: "Subagents 501",
+			label: "Agents 501",
 			attention: false,
-			accessibilityLabel: "Subagents, 501",
+			accessibilityLabel: "Agents, 501",
 		});
 		expect(subagentsChip(withSubagents, counts(3))).toEqual({
 			kind: "subagents",
-			label: "Subagents 3",
+			label: "Agents 3",
 			attention: false,
-			accessibilityLabel: "Subagents, 3",
+			accessibilityLabel: "Agents, 3",
 		});
 	});
 
@@ -279,13 +279,13 @@ describe("the Subagents chip", () => {
 	});
 
 	// A shut-down session's summary can stay unknown for good, so the chip says
-	// "Subagents" with no count until the summary knows it.
+	// "Agents" with no count until the summary knows it.
 	it.each(notKnown)("shows without a count with a roster of subagents and %s", (_name, summary) => {
 		expect(subagentsChip(withSubagents, summary)).toEqual({
 			kind: "subagents",
-			label: "Subagents",
+			label: "Agents",
 			attention: false,
-			accessibilityLabel: "Subagents, count unknown",
+			accessibilityLabel: "Agents, count unknown",
 		});
 	});
 });
