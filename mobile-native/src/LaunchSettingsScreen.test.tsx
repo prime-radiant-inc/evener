@@ -16,9 +16,11 @@ import { SearchField } from "./sheet/SearchField";
 const harness = vi.hoisted(() => ({
 	connection: null as unknown,
 	focus: null as null | (() => void | (() => void)),
+	fontScale: 1,
 }));
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ width: 320, height: 568, scale: 2, fontScale: harness.fontScale }),
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
@@ -122,6 +124,7 @@ function problems(tree: ReturnType<typeof render>): string[] {
 beforeEach(() => {
 	alertRequests.length = 0;
 	harness.focus = null;
+	harness.fontScale = 1;
 });
 
 it("lets a drag of the page put the keyboard away", async () => {
@@ -155,7 +158,8 @@ it("keeps Save outside the scrolling settings and saves the edited global layer"
 	});
 });
 
-it("brings a refused pinned save into view and retains the edited value", async () => {
+it.each([1, 2, 3.1])("reveals a refused pinned save before the introduction at text scale %s", async (fontScale) => {
+	harness.fontScale = fontScale;
 	const launch = launchHub();
 	launch.hub.on("evener/launch/setLayer", () => {
 		throw new Error("save rejected");
@@ -163,12 +167,55 @@ it("brings a refused pinned save into view and retains the edited value", async 
 	const scrollTo = vi.fn();
 	const tree = await mount(launch.hub, { hubId: "hub-1" }, scrollTo);
 	await editModel(tree, "proposal-sentinel");
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		scrollTo.mockClear();
+		await act(async () =>
+			tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Save defaults" }).props.onPress(),
+		);
+		expect(problems(tree)).toContain("settings");
+		expect(scrollTo).toHaveBeenCalledWith({ y: 0, animated: true });
+		const firstText = tree.root.findByType("ScrollView" as never).findAllByType("Text" as never)[0];
+		expect(firstText?.props.accessibilityRole).toBe("alert");
+		expect(tree.root.findByProps({ label: "Model", chevron: true }).props.sub).toBe("proposal-sentinel");
+	}
+	launch.hub.on("evener/launch/setLayer", ({ config }) => {
+		launch.hub.on("evener/launch/getLayer", () => config);
+		return { effective: config, layers: {}, provenance: {} };
+	});
 	await act(async () =>
 		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Save defaults" }).props.onPress(),
 	);
-	expect(problems(tree)).toContain("settings");
+	expect(problems(tree)).toEqual([]);
+	expect(
+		tree.root.findByProps({ accessibilityRole: "button", accessibilityLabel: "Save defaults" }).props.disabled,
+	).toBe(true);
+});
+
+it.each(["changed-elsewhere", "resolve"])("places %s before growing introductory content", async (problem) => {
+	harness.fontScale = 3.1;
+	const launch = launchHub();
+	if (problem === "resolve") launch.failNextResolve();
+	const scrollTo = vi.fn();
+	const tree = await mount(launch.hub, { hubId: "hub-1" }, scrollTo);
+	if (problem === "changed-elsewhere") {
+		await editModel(tree, "draft-sentinel");
+		await act(async () => launch.changeElsewhere("other-sentinel"));
+	}
+	expect(problems(tree)).toContain(problem);
 	expect(scrollTo).toHaveBeenCalledWith({ y: 0, animated: true });
-	expect(tree.root.findByProps({ label: "Model", chevron: true }).props.sub).toBe("proposal-sentinel");
+	const firstText = tree.root.findByType("ScrollView" as never).findAllByType("Text" as never)[0];
+	expect(firstText?.props.accessibilityRole).toBe("alert");
+});
+
+it("keeps the hub identity and editable setting values selectable", async () => {
+	const tree = await mount(launchHub().hub);
+	const header = tree.root.findAllByType("Text" as never).find((node) => node.props.children === "Work hub");
+	expect(header?.props.selectable).toBe(true);
+	const value = tree.root.findByProps({ label: "Model", chevron: true }).findByProps({ testID: "row-sub" });
+	expect(value.props.selectable).toBe(true);
+	expect(value.props.numberOfLines).toBeUndefined();
+	await editModel(tree, "selection-edit-sentinel");
+	expect(tree.root.findByProps({ label: "Model", chevron: true }).props.sub).toBe("selection-edit-sentinel");
 });
 
 it("offers no Reload, loaded or not", async () => {

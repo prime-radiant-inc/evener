@@ -197,8 +197,9 @@ function HubSettings({
 	return (
 		<SafeAreaView edges={["bottom", "left", "right"]} style={[styles.fill, { backgroundColor: colors.palette.canvas }]}>
 			<GroupedPage>
-				<Group label={hubName}>
+				<Group label={hubName} selectableLabel>
 					<Row
+						selectable
 						label="Evener"
 						value={hub?.version || "Version unavailable"}
 						sub={hub?.listenAddr || "Listen address unavailable"}

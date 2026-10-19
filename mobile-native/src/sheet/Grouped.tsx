@@ -57,13 +57,22 @@ export function GroupedPage({ children, scrollRef }: { children: ReactNode; scro
 /** A sentence-case section heading. A machine label (a marketplace or
  * provider profile) is Menlo as typed. A group takes its label as Group's `label`; this
  * heads anything else, such as a segmented control or a footer. */
-export function GroupLabel({ children, machine = false }: { children: string; machine?: boolean }) {
+export function GroupLabel({
+	children,
+	machine = false,
+	selectable = false,
+}: {
+	children: string;
+	machine?: boolean;
+	selectable?: boolean;
+}) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const { fontSize, lineHeight, ...sectionCase } = scaledType(uiType.sectionLabel, scale);
 	return (
 		<Text
 			accessibilityRole="header"
+			selectable={selectable}
 			allowFontScaling={allowFontScaling}
 			style={[
 				{
@@ -101,6 +110,7 @@ export function Group({
 	children,
 	label,
 	machineLabel = false,
+	selectableLabel = false,
 	section,
 }: {
 	children: ReactNode;
@@ -109,6 +119,8 @@ export function Group({
 	section?: string;
 	/** The label is a marketplace or similar machine name (see GroupLabel). */
 	machineLabel?: boolean;
+	/** A user-authored identity that can be selected and copied. */
+	selectableLabel?: boolean;
 }) {
 	const { palette } = useColors();
 	const rows = Children.toArray(children);
@@ -143,7 +155,9 @@ export function Group({
 	if (!label) return group;
 	return (
 		<>
-			<GroupLabel machine={machineLabel}>{label}</GroupLabel>
+			<GroupLabel machine={machineLabel} selectable={selectableLabel}>
+				{label}
+			</GroupLabel>
 			{group}
 		</>
 	);
@@ -191,6 +205,8 @@ export interface RowProps {
 	accessibilityLabel?: string;
 	/** Names the state the row reports, so a test can read it without its words. */
 	testID?: string;
+	/** Preserve native selection for displayed settings and identifiers. */
+	selectable?: boolean;
 	/** A control of its own at the row's end, such as a mini button
 	 * ("Install"): outside what a press on the row opens, so each is its own
 	 * target and its own VoiceOver element. */
@@ -216,6 +232,7 @@ function RowText({
 	machineLabel = false,
 	machineSub = false,
 	labelColor,
+	selectable = false,
 	children,
 }: {
 	label: string;
@@ -225,6 +242,7 @@ function RowText({
 	machineSub?: boolean;
 	/** A row's action or destructive ink overrides the default inkHi. */
 	labelColor?: string;
+	selectable?: boolean;
 	/** A row's value, drawn on the label's wrapping line. */
 	children?: ReactNode;
 }) {
@@ -244,6 +262,7 @@ function RowText({
 			>
 				<Text
 					testID="row-label"
+					selectable={selectable}
 					allowFontScaling={allowFontScaling}
 					style={{
 						flexGrow: 1,
@@ -260,6 +279,7 @@ function RowText({
 			{sub ? (
 				<Text
 					testID="row-sub"
+					selectable={selectable}
 					allowFontScaling={allowFontScaling}
 					style={[
 						{
@@ -295,6 +315,7 @@ export function Row({
 	onPress,
 	accessibilityLabel,
 	testID,
+	selectable = false,
 	accessory,
 }: RowProps) {
 	const { palette } = useColors();
@@ -323,10 +344,11 @@ export function Row({
 					machineLabel={machineLabel}
 					machineSub={machineSub}
 					labelColor={labelColor}
+					selectable={selectable}
 				>
 					{rendersSomething(value) ? (
 						<View testID="row-value" style={{ flexShrink: 1 }}>
-							{plainValue !== undefined ? <RowValue text={plainValue} /> : value}
+							{plainValue !== undefined ? <RowValue text={plainValue} selectable={selectable} /> : value}
 						</View>
 					) : null}
 				</RowText>
@@ -754,6 +776,7 @@ export function GroupFooter({
 	tone = "normal",
 	machine = false,
 	live = false,
+	selectable = false,
 	testID,
 }: {
 	children: string;
@@ -762,6 +785,8 @@ export function GroupFooter({
 	live?: boolean;
 	/** Text the machine wrote, such as an error the hub reported: Menlo. */
 	machine?: boolean;
+	/** Preserve selection when the diagnostic includes user-supplied values. */
+	selectable?: boolean;
 	/** Names what the footer reports, so a test can tell one report from another. */
 	testID?: string;
 }) {
@@ -771,6 +796,7 @@ export function GroupFooter({
 	return (
 		<Text
 			allowFontScaling={allowFontScaling}
+			selectable={selectable}
 			accessibilityLiveRegion={live ? "polite" : undefined}
 			testID={testID}
 			style={[
@@ -916,11 +942,13 @@ export function RowValue({
 	text,
 	tag,
 	tone = "normal",
+	selectable = false,
 }: {
 	text?: string;
 	tag?: { text: string; tone: keyof typeof TAG_TONES } | null;
 	/** "attention" for a value that may need a human, such as Offline. */
 	tone?: "normal" | "attention";
+	selectable?: boolean;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -929,6 +957,7 @@ export function RowValue({
 			{text ? (
 				<Text
 					allowFontScaling={allowFontScaling}
+					selectable={selectable}
 					style={{
 						flexShrink: 1,
 						color: tone === "attention" ? palette.attentionInk : palette.inkMid,

@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Platform, TextInput, View } from "react-native";
-import { friendlyErrorMessage, type LaunchOption, schemaPathKind } from "@evener/appwire-client";
+import { ActivityIndicator, type FlatList, KeyboardAvoidingView, Platform, TextInput, View } from "react-native";
+import { friendlyErrorMessage, type LaunchOption, type PickerRow, schemaPathKind } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubPathField } from "./HubPathField";
 import { LaunchModelPicker } from "./LaunchModelPicker";
 import { assertLaunchFieldCurrent, launchFieldConflictMessage, parseLaunchScalar } from "./launchScalar";
 import { allowFontScaling, ErrorMessage, styles, useColors, useTextScale } from "./ui";
-import { Group, GroupedPage, GroupFooter, Row, TextFieldRow } from "./sheet/Grouped";
+import { Group, GroupedPage, GroupFooter, Row, TextFieldRow, useErrorInView, useFormError } from "./sheet/Grouped";
 import { ModalSheet } from "./sheet/ModalSheet";
 import { space, uiType } from "./design/tokens";
 
@@ -32,7 +32,13 @@ export function LaunchScalarEditor({
 	const currentValue = useRef(value);
 	currentValue.current = value;
 	const [busy, setBusy] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useFormError();
+	const page = useErrorInView(error);
+	const modelList = useRef<FlatList<PickerRow>>(null);
+	useEffect(() => {
+		// Each refusal has its own report, even when its words haven't changed.
+		if (error) modelList.current?.scrollToOffset({ offset: 0, animated: true });
+	}, [error]);
 	const alive = useRef(true);
 	useEffect(
 		() => () => {
@@ -98,14 +104,14 @@ export function LaunchScalarEditor({
 			: option.choices?.filter((choice) => choice.value !== "");
 	const fieldHeader = (
 		<>
+			<View style={{ paddingHorizontal: space.labelInset }}>
+				<ErrorMessage message={error?.message ?? null} />
+			</View>
 			{option.description && <GroupFooter>{option.description}</GroupFooter>}
 			<Group>
-				<Row label="Effective value" sub={effective || "Unavailable"} />
+				<Row label="Effective value" sub={effective || "Unavailable"} selectable />
 				<Row label="Use inherited value" checked={raw === ""} disabled={busy} onPress={() => setRaw("")} />
 			</Group>
-			<View style={{ paddingHorizontal: space.labelInset }}>
-				<ErrorMessage message={error} />
-			</View>
 		</>
 	);
 	return (
@@ -127,9 +133,9 @@ export function LaunchScalarEditor({
 				enabled={Platform.OS === "android"}
 			>
 				{option.kind === "modelPicker" ? (
-					<LaunchModelPicker client={client} value={raw} onChange={setRaw} header={fieldHeader} />
+					<LaunchModelPicker client={client} value={raw} onChange={setRaw} header={fieldHeader} scrollRef={modelList} />
 				) : (
-					<GroupedPage>
+					<GroupedPage scrollRef={page}>
 						{fieldHeader}
 						<Group label={option.label}>
 							{choices ? (

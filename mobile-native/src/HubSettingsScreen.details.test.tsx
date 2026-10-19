@@ -61,6 +61,25 @@ const details = [
 	{ field: "pastIndex.perPage", label: "Past results per page", value: "37" },
 ].map((detail) => ({ ...detail, section: "Runtime and storage" }));
 
+it.each(["fixture-hub-name", overview.hub.version, overview.hub.listenAddr])(
+	"keeps summary data selectable: %s",
+	async (value) => {
+		const response = Promise.withResolvers<SettingsOverviewResponse>();
+		const hub = new FakeClient("ready");
+		hub.on("evener/settings/overview", () => response.promise);
+		harness.connection = {
+			...screenConnection(hub, "ready"),
+			activeProfile: { id: "hub-1", name: "fixture-hub-name" },
+		};
+		const tree = render(<HubSettingsScreen {...props} />);
+		await act(async () => response.resolve(overview));
+		const text = tree.root.find((node) => String(node.type) === "Text" && textOf(node) === value);
+		expect(text.props.selectable).toBe(true);
+		expect(text.props.numberOfLines).toBeUndefined();
+		act(() => tree.unmount());
+	},
+);
+
 it.each([
 	...details,
 	{ field: "mcp.transport", label: "Transport", value: "stdio", section: "Discovered MCP servers" },

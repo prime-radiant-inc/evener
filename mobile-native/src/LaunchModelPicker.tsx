@@ -1,7 +1,7 @@
-import { type ReactNode, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { type ReactNode, type Ref, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { FlatList, Platform, Pressable, TextInput, View } from "react-native";
 import { SymbolView } from "expo-symbols";
-import { buildPickerRows } from "@evener/appwire-client";
+import { buildPickerRows, type PickerRow } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubModels } from "./hubModels";
 import { Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
@@ -12,11 +12,13 @@ export function LaunchModelPicker({
 	value,
 	onChange,
 	header,
+	scrollRef,
 }: {
 	client: ConversationClientLike | null;
 	value: string;
 	onChange(value: string): void;
 	header: ReactNode;
+	scrollRef?: Ref<FlatList<PickerRow>>;
 }) {
 	const colors = useColors();
 	const scale = useTextScale();
@@ -30,6 +32,7 @@ export function LaunchModelPicker({
 	const rows = useMemo(() => buildPickerRows(state.catalog, query), [state.catalog, query]);
 	return (
 		<FlatList
+			ref={scrollRef}
 			style={styles.fill}
 			contentContainerStyle={{ padding: 20, paddingBottom: 28 }}
 			automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}

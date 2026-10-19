@@ -27,6 +27,7 @@ const harness = vi.hoisted(() => {
 	return {
 		connection: {} as Record<string, unknown>,
 		scheme: "light" as "light" | "dark",
+		fontScale: 1,
 		storage,
 		values,
 	};
@@ -36,6 +37,7 @@ vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 	KeyboardAvoidingView: "KeyboardAvoidingView",
 	useColorScheme: () => harness.scheme,
+	useWindowDimensions: () => ({ width: 320, height: 568, scale: 2, fontScale: harness.fontScale }),
 }));
 vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "screen-test-id" }));
@@ -119,6 +121,7 @@ beforeEach(() => {
 	harness.values.clear();
 	harness.storage.throwKey = null;
 	harness.scheme = "light";
+	harness.fontScale = 1;
 	harness.connection = {
 		activeProfile: hub,
 		client: null,
@@ -215,7 +218,8 @@ it("shows and invokes cold-offline discard for an unreadable stored record", () 
 	act(() => tree.unmount());
 });
 
-it("brings a failed pinned save into view without dropping the keyboard draft", async () => {
+it.each([1, 2, 3.1])("reveals a failed pinned save before the introduction at text scale %s", async (fontScale) => {
+	harness.fontScale = fontScale;
 	writeDraft(hub.id, JSON.stringify({ id: "draft-1", baseRevision: 1, rules: [], writeUncertain: false }));
 	const connection = clientFixture();
 	harness.connection = screenConnection(connection.client, "ready");
@@ -231,7 +235,114 @@ it("brings a failed pinned save into view without dropping the keyboard draft", 
 	);
 	expect(alertNodes(tree).length).toBeGreaterThan(0);
 	expect(scrollTo).toHaveBeenCalledWith({ y: 0, animated: true });
+	// The renderer does not lay out UIKit text. The reveal target must have
+	// no heading or introduction before it, regardless of their measured height.
+	const firstText = tree.root.findByType("ScrollView" as never).findAllByType("Text" as never)[0];
+	expect(firstText?.props.accessibilityRole).toBe("alert");
 	expect(harness.values.has(draftKey(hub.id))).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("keeps the hub identity, shortcut values and unknown-rule diagnostics selectable", async () => {
+	const unknown = { action: "fixture.unknown-action", chord: "Meta+U" };
+	writeDraft(hub.id, JSON.stringify({ id: "draft-1", baseRevision: 1, rules: [unknown], writeUncertain: false }));
+	const connection = clientFixture();
+	harness.connection = screenConnection(connection.client, "ready");
+	const request = connection.nextRequest();
+	const tree = render(app());
+	await act(async () => {
+		await connection.connected;
+		await request;
+	});
+	const text = tree.root.findAllByType("Text" as never);
+	const identity = text.find((node) => node.props.children === hub.name);
+	expect(identity?.props.selectable).toBe(true);
+	const shortcutValues = tree.root.findAllByProps({ testID: "row-sub" }).slice(1);
+	expect(shortcutValues.length).toBeGreaterThan(0);
+	for (const value of shortcutValues) expect(value.props.selectable).toBe(true);
+	const diagnostic = text.find((node) => String(node.props.children).includes(unknown.action));
+	expect(diagnostic?.props.selectable).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("keeps unknown conflict rules selectable when they have no editor", async () => {
+	const unknown = { action: "fixture.unknown-action", chord: "Control+U" };
+	writeDraft(hub.id, JSON.stringify({ id: "draft-1", baseRevision: 0, rules: [unknown], writeUncertain: false }));
+	const connection = clientFixture();
+	harness.connection = screenConnection(connection.client, "ready");
+	const request = connection.nextRequest();
+	const tree = render(app());
+	await act(async () => {
+		await connection.connected;
+		await request;
+	});
+	act(() => tree.root.findByProps({ accessibilityLabel: "Review current settings" }).props.onPress());
+	const rule = tree.root.findByProps({ label: unknown.action, sub: unknown.chord });
+	for (const text of rule.findAllByType("Text" as never)) expect(text.props.selectable).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("keeps a retained editor's action identifier and shortcut preview selectable", async () => {
+	const connection = clientFixture();
+	harness.connection = screenConnection(connection.client, "ready");
+	const request = connection.nextRequest();
+	const tree = render(
+		<NativePreferencesProvider>
+			<KeybindingPreferencesScreen
+				route={
+					{
+						params: { hubId: hub.id, editor: { actionId: "fixture.unknown-action", chord: "Control+U" } },
+					} as ComponentProps<typeof KeybindingPreferencesScreen>["route"]
+				}
+				navigation={navigation as unknown as ComponentProps<typeof KeybindingPreferencesScreen>["navigation"]}
+			/>
+		</NativePreferencesProvider>,
+	);
+	await act(async () => {
+		await connection.connected;
+		await request;
+	});
+	const identifier = tree.root
+		.findAllByType("Text" as never)
+		.find((node) => node.props.children === "fixture.unknown-action");
+	expect(identifier?.props.selectable).toBe(true);
+	const preview = tree.root.findByProps({ label: "Current preview" });
+	expect(preview.findByProps({ testID: "row-sub" }).props.selectable).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("reveals every refusal of the same invalid shortcut without dropping the editor", async () => {
+	harness.fontScale = 3.1;
+	const connection = clientFixture();
+	harness.connection = screenConnection(connection.client, "ready");
+	const request = connection.nextRequest();
+	const scrollTo = vi.fn();
+	const tree = render(
+		<NativePreferencesProvider>
+			<KeybindingPreferencesScreen
+				route={
+					{ params: { hubId: hub.id, editor: { actionId: "palette.open", chord: "Meta+" } } } as ComponentProps<
+						typeof KeybindingPreferencesScreen
+					>["route"]
+				}
+				navigation={navigation as unknown as ComponentProps<typeof KeybindingPreferencesScreen>["navigation"]}
+			/>
+		</NativePreferencesProvider>,
+		{ createNodeMock: (element) => (element.type === "ScrollView" ? { scrollTo } : null) },
+	);
+	await act(async () => {
+		await connection.connected;
+		await request;
+	});
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		scrollTo.mockClear();
+		act(() => tree.root.findByProps({ accessibilityLabel: "Use shortcut" }).props.onPress());
+		expect(scrollTo).toHaveBeenCalledWith({ y: 0, animated: true });
+		expect(tree.root.findByType("ScrollView" as never).findAllByType("Text" as never)[0]?.props.accessibilityRole).toBe(
+			"alert",
+		);
+		expect(tree.root.findByType("TextInput" as never).props.value).toBe("Meta+");
+	}
 	act(() => tree.unmount());
 });
 

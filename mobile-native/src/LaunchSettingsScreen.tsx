@@ -121,14 +121,13 @@ function LaunchDefaults({
 				/>
 			</View>
 			<GroupedPage scrollRef={scrollRef}>
-				<Group label={hubName}>
-					<Row
-						label="Launch defaults"
-						sub="Defaults for new Evener sessions. Project and per-launch settings can override these values."
-					/>
-				</Group>
-				{!client && <GroupFooter>Disconnected. Your unsaved changes are kept here.</GroupFooter>}
 				<View style={{ paddingHorizontal: space.labelInset }}>
+					<ErrorMessage message={state.error} testID="launch-problem:settings" />
+					<ErrorMessage
+						message={state.dirty && state.changedElsewhere ? LAUNCH_CHANGED_ELSEWHERE : null}
+						testID="launch-problem:changed-elsewhere"
+					/>
+					<ErrorMessage message={state.resolveError} testID="launch-problem:resolve" />
 					{state.dirty && state.changedElsewhere ? (
 						<Button
 							text
@@ -142,14 +141,17 @@ function LaunchDefaults({
 							}
 						/>
 					) : null}
+				</View>
+				<Group label={hubName} selectableLabel>
+					<Row
+						label="Launch defaults"
+						sub="Defaults for new Evener sessions. Project and per-launch settings can override these values."
+					/>
+				</Group>
+				{!client && <GroupFooter>Disconnected. Your unsaved changes are kept here.</GroupFooter>}
+				<View style={{ paddingHorizontal: space.labelInset }}>
 					{state.loading && <Spinner label="Loading launch defaults" />}
 					{state.saving && <Spinner label="Saving launch defaults" />}
-					<ErrorMessage message={state.error} testID="launch-problem:settings" />
-					<ErrorMessage
-						message={state.dirty && state.changedElsewhere ? LAUNCH_CHANGED_ELSEWHERE : null}
-						testID="launch-problem:changed-elsewhere"
-					/>
-					<ErrorMessage message={state.resolveError} testID="launch-problem:resolve" />
 					{notice && <Copy>{notice}</Copy>}
 					{state.resolved?.diagnostics?.map((d) => (
 						<Copy muted key={JSON.stringify(d)}>
@@ -168,6 +170,7 @@ function LaunchDefaults({
 								`Inherited · ${scalarValue(state.resolved?.effective ?? null, option.wireField) || "Default"}`;
 							return (
 								<Row
+									selectable
 									key={option.wireField}
 									label={option.label}
 									sub={displayValue}

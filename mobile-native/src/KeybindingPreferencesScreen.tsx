@@ -16,7 +16,16 @@ import type { HubRoutes } from "./hub/hubSheetContext";
 import { Copy, ErrorMessage, styles, useColors } from "./ui";
 import { HUB_NO_LONGER_SELECTED } from "./retainedScreen";
 import { Spinner } from "./sheet/Spinner";
-import { Button, Group, GroupedPage, GroupFooter, Row, TextFieldRow, useErrorInView } from "./sheet/Grouped";
+import {
+	Button,
+	Group,
+	GroupedPage,
+	GroupFooter,
+	Row,
+	TextFieldRow,
+	useErrorInView,
+	useFormError,
+} from "./sheet/Grouped";
 import { HeaderButton } from "./sheet/HeaderButton";
 
 function shortcutLabel(chord: string): string {
@@ -32,6 +41,7 @@ function RuleSummary({ rules }: { rules: readonly KeybindingsRule[] }) {
 			) : (
 				rules.map((rule, index) => (
 					<Row
+						selectable
 						key={JSON.stringify([
 							rule.action,
 							rule.chord,
@@ -53,7 +63,7 @@ export function KeybindingPreferencesScreen({
 	const connection = useConnection();
 	const preferences = useNativePreferences();
 	const colors = useColors();
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useFormError();
 	const scope = useMemo(
 		() => ({
 			model: preferences.model,
@@ -124,14 +134,14 @@ export function KeybindingPreferencesScreen({
 		? offlineStorageErrorMessage(preferences.offlineStorageUnavailable)
 		: null;
 	const shownError = error
-		? { source: "action", message: error }
+		? { source: "action", message: error.message }
 		: domain?.error
 			? { source: "store", message: domain.error }
 			: offlineStorageError
 				? { source: "storage", message: offlineStorageError }
 				: null;
 	const errorMessage = shownError?.message;
-	const errorReport = useMemo(() => (errorMessage ? { message: errorMessage } : null), [errorMessage]);
+	const errorReport = useMemo(() => error ?? (errorMessage ? { message: errorMessage } : null), [error, errorMessage]);
 	const scrollRef = useErrorInView(errorReport);
 	if (connection.activeProfile?.id !== route.params.hubId) return <Copy>{HUB_NO_LONGER_SELECTED}</Copy>;
 	return (
@@ -149,7 +159,13 @@ export function KeybindingPreferencesScreen({
 				</View>
 			)}
 			<GroupedPage scrollRef={scrollRef}>
-				<Group label={connection.activeProfile.name}>
+				<View style={{ paddingHorizontal: space.labelInset }}>
+					<ErrorMessage
+						message={shownError?.message ?? null}
+						testID={shownError ? `keybinding-error:${shownError.source}` : undefined}
+					/>
+				</View>
+				<Group label={connection.activeProfile.name} selectableLabel>
 					<Row
 						label="Web keyboard shortcuts"
 						sub="Configure this hub’s web keyboard shortcuts. This preview uses Apple keys. The web character-key setting can turn the ? shortcut off."
@@ -158,10 +174,6 @@ export function KeybindingPreferencesScreen({
 				<View style={{ paddingHorizontal: space.labelInset, gap: 12 }}>
 					{domain?.support === "unsupported" && <Copy>This hub does not support keyboard shortcut settings.</Copy>}
 					{(!domain || domain.loading) && <Spinner label="Loading keyboard shortcuts" />}
-					<ErrorMessage
-						message={shownError?.message ?? null}
-						testID={shownError ? `keybinding-error:${shownError.source}` : undefined}
-					/>
 					{domain?.writeUncertain && (
 						<Copy>
 							The save could not be confirmed. Your proposal is kept on this phone. Check the hub before making another
@@ -214,8 +226,9 @@ export function KeybindingPreferencesScreen({
 				</View>
 				{editor ? (
 					<>
-						<Group label={action?.title ?? editor.actionId}>
+						<Group label={action?.title ?? editor.actionId} selectableLabel>
 							<Row
+								selectable
 								label="Current preview"
 								sub={
 									action
@@ -322,6 +335,7 @@ export function KeybindingPreferencesScreen({
 						)}
 						{preview.warnings.map((warning, index) => (
 							<GroupFooter
+								selectable
 								key={JSON.stringify([
 									warning.rule,
 									warning.reason,
@@ -337,6 +351,7 @@ export function KeybindingPreferencesScreen({
 							<Group label="Shortcuts">
 								{preview.rows.map((row) => (
 									<Row
+										selectable
 										key={row.actionId}
 										label={row.title}
 										sub={`${row.shortcuts.map(shortcutLabel).join(" or ") || "Unbound"} · ${row.customized ? "Custom" : "Default"}`}

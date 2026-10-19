@@ -44,6 +44,29 @@ const isSurface = (node: { type: unknown; props: { style?: unknown } }) =>
 const surfaces = (tree: ReturnType<typeof render>) => tree.root.findAll(isSurface);
 
 describe("a row", () => {
+	it.each([true, false])("keeps native text selection opt-in: %s", (selectable) => {
+		let opened = false;
+		const tree = render(
+			<Row
+				label="fixture-label"
+				sub="fixture-detail"
+				value="fixture-value"
+				selectable={selectable}
+				onPress={() => {
+					opened = true;
+				}}
+			/>,
+		);
+		expect(texts(tree)).toHaveLength(3);
+		for (const text of texts(tree)) {
+			expect(!!text.props.selectable).toBe(selectable);
+			expect(text.props.numberOfLines).toBeUndefined();
+		}
+		act(() => tree.root.findByProps({ accessibilityRole: "button" }).props.onPress());
+		expect(opened).toBe(true);
+		act(() => tree.unmount());
+	});
+
 	it("reads as its label, detail and value, and opens on a tap", () => {
 		const onPress = vi.fn();
 		const tree = render(
@@ -125,6 +148,23 @@ describe("a row", () => {
 });
 
 describe("a group", () => {
+	it.each([true, false])("keeps identity and diagnostic text selection opt-in: %s", (selectable) => {
+		const tree = render(
+			<>
+				<Group label="fixture-hub" selectableLabel={selectable}>
+					<View />
+				</Group>
+				<GroupFooter selectable={selectable}>fixture-rule</GroupFooter>
+			</>,
+		);
+		expect(texts(tree)).toHaveLength(2);
+		for (const text of texts(tree)) {
+			expect(!!text.props.selectable).toBe(selectable);
+			expect(text.props.numberOfLines).toBeUndefined();
+		}
+		act(() => tree.unmount());
+	});
+
 	it("draws hairlines between its rows, not around them", () => {
 		const tree = render(
 			<Group>
