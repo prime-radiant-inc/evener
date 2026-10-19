@@ -4,6 +4,16 @@ Status: **current editorial design system**. The canonical
 system for the React + CSS Modules frontend under `cmd/evener-hub/frontend/src/`.
 The real `/dev/widgets`, `/dev/type`, and `/dev/surfaces` galleries show it in both themes.
 
+**Platform scope.** This guide governs the web frontend, including its phone browser
+layout. The native iPhone app is governed by [mobile-native/DESIGN.md](../../mobile-native/DESIGN.md)
+and its [native tokens](../../mobile-native/src/design/tokens.ts). Evener shares semantic
+color meanings, identity, and the distinction between conversation, evidence, and controls.
+Typography, surface values, geometry, and navigation remain platform-native: do not copy
+this guide's desktop hex values, type sizes, radii, or breakpoint rules literally onto iOS.
+The native app uses neutral light/dark surfaces, SF interface text, optional Source Serif
+reading text, Menlo evidence, and native stacks and sheets. References to phone or mobile
+layout below mean the web frontend, not the React Native app.
+
 The approved [editorial-instrument design](../superpowers/specs/2026-09-09-tufte-webui-design.md)
 supersedes the Beautiful UI aesthetic mandate for palette, typography, enclosure and elevation.
 It does **not** replace the interaction law, widget APIs, semantic color meanings,
@@ -312,7 +322,7 @@ keep their default placement.
 ## 2. Tokens as shipped
 
 `src/styles/tokens.css` is the single source of every color, type, space, radius, and motion
-value in the app. Consumers only ever write `var(--name)` — no component CSS branches on
+value in the web app. Consumers only ever write `var(--name)` — no component CSS branches on
 theme; the light-theme block (`[data-theme="light"]`) redeclares every color token under the
 same name, and `token-contract.test.ts` (§4) fails CI if a token exists in one theme's block
 but not the other's.
