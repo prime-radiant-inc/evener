@@ -196,16 +196,3 @@ reason (`automatic retirement refused: …` or `automatic retirement failed:
 - Provider stream idle timeout and archive retention are separate features with
   their own configuration and lifetimes. Retirement does not change either, and
   it never deletes an archived session.
-
-## A note on the browser guard gate in this environment
-
-`make test-web-browser` needs a short `TMPDIR` here, for example:
-
-```sh
-TMPDIR=/tmp/eb make test-web-browser
-```
-
-Chrome's process-singleton Unix socket otherwise exceeds `sun_path` under the
-default sandbox root. This is environmental — it applies to all six browser
-guards, including `retirementguard` — and is not a test result. A run that fails
-before Chrome starts is a prerequisite failure, not a retirement failure.

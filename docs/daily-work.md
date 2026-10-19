@@ -228,22 +228,25 @@ For reusable procedures, use [extensions](extensions.md). For repeatable unatten
 
 ## Set your own viewing preferences
 
-**Settings → Preferences** changes how the hub looks and behaves for you. These
-settings are not session configuration: they do not change what the agent may
-do, and a running session does not need to be restarted to pick them up.
+**Settings → Preferences** changes how the hub looks and behaves. These settings
+are not session configuration: they do not change what the agent may do, and a
+running session does not need to be restarted to pick them up.
 
-| Screen | What it controls |
-| --- | --- |
-| **Appearance** | Light, dark, or system theme; compact or comfortable density; transcript width and text size. Changes apply as you make them. |
-| **Conversation display** | Whether reasoning, tool calls, token and cost figures, and desktop or mobile layout detail appear in a transcript. |
-| **Input & shortcuts** | What Enter does in the composer, and the keyboard shortcut for each command. Shortcuts save to the hub and sync to every browser paired with it. |
-| **Notifications** | Title-bar count, browser-tab indicator, desktop notifications, and sound. Each is off until you enable it. Desktop notifications need the browser's permission; **Loud for** chooses whether only questions, reply requests, approvals, and errors are loud or everything needing you is. |
+| Screen | What it controls | Where it is saved |
+| --- | --- | --- |
+| **Appearance** | Light, dark, or system theme; phone density; font size; transcript width. | That browser |
+| **Conversation display** | How much detail a transcript shows, chosen separately for desktop and mobile: which of reasoning, tool calls, tool intent, and informational rows appear, plus round timings, token counts, estimated cost, system events, and hook exits. | The hub, as its default for every client; a browser can keep its own live view instead |
+| **Input & shortcuts** | Whether Enter sends or inserts a newline, and the keyboard shortcut for each command. | Enter behavior is per browser; shortcuts save to the hub and sync to every browser paired with it |
+| **Notifications** | Title-bar count, browser-tab indicator, desktop notifications, and sound. Title-bar count is on by default; the other three are opt-in. **Loud for** chooses whether only questions, reply requests, approvals, and errors are loud or everything needing you is. | That browser |
 
-Shortcut changes are saved by the hub, so a second browser shows the same
-bindings after it syncs. If the hub cannot accept a change, the shortcut screen
-reports it inline and keeps your previous binding. The notification toggles are
-stored in that browser, so they do not follow you to another machine or another
-browser.
+Desktop notifications also need the browser's permission. A browser that blocks
+them keeps the preference but cannot deliver, and the screen says so instead of
+silently appearing to work.
+
+Because **Conversation display** edits a shared hub default, a change there
+affects other browsers that have not chosen a local view. If the hub cannot
+accept a change, the screen reports it inline and keeps the previous value.
+Shortcut changes work the same way: a second browser shows them after it syncs.
 
 For what to open when a session asks you something, see
 [Answer a question, or approve an action](#answer-a-question-or-approve-an-action).
