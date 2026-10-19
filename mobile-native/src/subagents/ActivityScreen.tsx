@@ -120,7 +120,23 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 	// What this list alone reads: a gap or a still-loading page in the other
 	// collection says nothing about whether this one is empty.
 	const page = snapshot.pages ? (kind === "agents" ? snapshot.pages.delegates : snapshot.pages.jobs) : null;
-	const missing = page ? page.issues.map((issue) => issue.ref) : snapshot.missing;
+	const readNotice = (read: NonNullable<typeof page>): Notice | null =>
+		read.permanent
+			? "unsupported"
+			: read.error !== null && read.rows.length === 0 && !read.loading
+				? "failed"
+				: read.complete && read.rows.length === 0 && read.issues.length === 0
+					? "empty"
+					: null;
+	// A disconnect clears the pages while the last tree is kept. Keep this
+	// collection's last notice instead of reading the kept tree, which cannot
+	// tell a proven empty list from evidence that never arrived.
+	const [keptNotice, setKeptNotice] = useState<{ kind: ActivityKind; notice: Notice | null } | null>(null);
+	useEffect(() => {
+		if (page) setKeptNotice({ kind, notice: readNotice(page) });
+	}, [page, kind]);
+	const notice: Notice | null = page ? readNotice(page) : keptNotice?.kind === kind ? keptNotice.notice : null;
+	const missing = page ? page.issues.map((issue) => issue.ref) : notice === "empty" ? [] : snapshot.missing;
 	const items = useMemo(
 		() =>
 			activityListItems(rows, {
@@ -220,22 +236,6 @@ export function ActivityScreen({ route, navigation }: NativeStackScreenProps<Rou
 		paddingHorizontal: 16,
 		paddingTop: 16,
 	};
-	// The notice speaks for this screen's collection alone: the other one
-	// failing, or still loading, says nothing about this list. A disconnect
-	// clears the pages while the last tree is kept, and an empty list stays
-	// empty for it.
-	const notice: Notice | null = !page
-		? snapshot.tree && rows.length === 0 && missing.length === 0
-			? "empty"
-			: null
-		: page.permanent
-			? "unsupported"
-			: page.error !== null && page.rows.length === 0 && !page.loading
-				? "failed"
-				: page.complete && page.rows.length === 0 && page.issues.length === 0
-					? "empty"
-					: null;
-
 	const renderItem = useCallback(
 		({ item }: { item: ActivityListItem }) => {
 			switch (item.kind) {

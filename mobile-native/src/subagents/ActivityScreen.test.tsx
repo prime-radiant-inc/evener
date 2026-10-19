@@ -441,6 +441,65 @@ it("keeps saying there are none when the connection drops after an empty list", 
 	expect(tree.root.findAll((node) => node.props.testID === "subagent-skeleton")).toEqual([]);
 });
 
+/** Drops the connection and re-renders this screen at the same kind. */
+function disconnect(view: ReactTestRenderer, kind: "agents" | "jobs", connection: FakeClient): void {
+	act(() => {
+		harness.connection = screenConnection(connection, "reconnecting");
+		view.update(
+			<ActivityScreen
+				route={{ key: kind, name: "Activity", params: { hubId: "hub-1", ...COORDINATOR, kind } } as never}
+				navigation={navigation as never}
+			/>,
+		);
+	});
+}
+
+// A disconnect keeps each collection's own last answer: proven emptiness stays
+// empty, and a failure stays a failure, even though the kept tree can't tell
+// them apart.
+it("keeps a failed jobs read a failure through a disconnect while delegates loaded", async () => {
+	client = pagedHub({
+		counts: { delegates: { known: true, total: 1, active: 1, failed: 0, completed: 0 } },
+		delegates: () => [
+			{
+				runGeneration: 1,
+				projectionRevision: 1,
+				delegateId: "solo",
+				ownerRef: "local:coord",
+				rootRef: "local:coord",
+				childRef: "local:solo",
+				type: "delegate",
+				description: "Only one",
+				task: "Only one",
+				lifecycle: "running",
+				phase: "running",
+				status: "running",
+				terminal: false,
+				resumable: false,
+			},
+		],
+	});
+	client.on("evener/thread/jobs/list", () => Promise.reject(new Error("offline")) as never);
+	harness.connection = screenConnection(client, "ready");
+	const jobs = await mount(true, "jobs");
+	expect(notices(jobs)).toEqual(["failed"]);
+	disconnect(jobs, "jobs", client);
+	await settle();
+	expect(notices(jobs)).toEqual(["failed"]);
+});
+
+it("keeps an empty agents list empty through a disconnect while jobs failed", async () => {
+	client = pagedHub({ counts: { jobs: { known: false, total: 0, active: 0, failed: 0, completed: 0 } } });
+	client.on("evener/thread/jobs/list", () => Promise.reject(new Error("offline")) as never);
+	harness.connection = screenConnection(client, "ready");
+	const agents = await mount();
+	expect(notices(agents)).toEqual(["empty"]);
+	disconnect(agents, "agents", client);
+	await settle();
+	expect(notices(agents)).toEqual(["empty"]);
+	expect(agents.root.findAll((node) => node.props.testID === "subagent-skeleton")).toEqual([]);
+});
+
 // A shell job's detail is its own screen over the list, reading the job
 // from the same tree.
 it("opens a shell job's detail over the list", async () => {
