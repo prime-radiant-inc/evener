@@ -172,11 +172,16 @@ field is absent.
 | `status_poll_interval` | `"2s"` | How often the hub polls session state. |
 | `mobile_base_url` | unset | Default hub address offered to paired phones; otherwise the browser's own origin is used. |
 
-Every duration field is a TOML string such as `"30s"` or `"1h"`. A bare integer
-is rejected, because TOML would read it as nanoseconds and silently arm a
-timeout thousands of times shorter than intended. Negative values are rejected
-at load. Host receipt and operation retention rows are documented beside the
-host registry in the [subsystem map](product/subsystems.md) rather than here.
+Write every duration as a TOML string, such as `"30s"` or `"1h"`. A bare integer
+is read by TOML as a nanosecond count, so `spawn_timeout = 30` arms 30ns rather
+than 30 seconds. Some duration fields refuse that form outright
+(`daemon_idle_timeout`, `host_probe_timeout`, and the host receipt and operation
+TTLs) and negative values are rejected where the field cannot use one, but the
+loader does not validate every duration field the same way. Assume a typo can
+take effect and check the resolved value rather than trusting a silent load.
+
+Host receipt and operation retention rows are documented beside the host
+registry in the [subsystem map](product/subsystems.md) rather than here.
 
 ## Launch configuration
 
