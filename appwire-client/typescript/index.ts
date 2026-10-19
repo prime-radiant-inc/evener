@@ -205,7 +205,7 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // readDocFile is deliberately absent from the root: it needs a DocPort from the
 // host, and a consumer that supplies one (or spies on the module) wants the
 // module itself, so it is published at the "./docContent" subpath instead.
-export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
+export { DOC_FILE_MAX_BYTES, DocFileError, docDownloadURL, docFileRawURL, docImageURL } from "./docContent";
 export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
 export { canonicalJson } from "./draftCheckpointPort";
 export { diffStats, editDiffText } from "./editDiff";

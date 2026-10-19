@@ -1,0 +1,17 @@
+Rendered command transcript
+Streams are recorded separately, not interleaved.
+
+$ evener --model fake/fake-test-model --max-rounds 1 --sandbox off 'Read input.json, then write forbidden.json with the same content. Bound 1.'
+cwd: configuration-workspace
+stdout:
+
+stderr:
+[model] fake-test-model (fake)
+[prompt] embedded:prompts/system.md.tmpl (26102B)
+[prompt] agent:default (0B)
+[usage] in=1 out=1 total=2
+[tool] read_file {"file_path":"input.json","intent":"Reading configuration fixture"}
+[tool] read_file: done
+evener: max_tool_rounds_per_input exhausted at limit 1
+
+exit: 1

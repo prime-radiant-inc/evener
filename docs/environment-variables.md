@@ -19,6 +19,15 @@ A variable listed here does not automatically create an instance. Curated implic
 - `EVENER_OFFLINE=1` suppresses models.dev refresh. It does not block model requests, live endpoint checks, tools, or MCP networking.
 - Provider base URLs generally include their version path. DeepSeek is an exception. `OLLAMA_BASE_URL` wins over normalized `OLLAMA_HOST`; see [Ollama](ollama.md#environment-variables).
 
+## Tooling-switch exception
+
+`EVENER_NO_USER_SKILLS=1` appears in the [MCP](mcp.md) and
+[sandboxing](sandboxing.md) guides, but the registry classifies it as **Tooling**,
+not a public setting. The evaluation harness uses it to omit home and user-config
+skills, installed plugins' skills, global MCP servers, and user-global commands.
+Bundled, project, and explicitly added sources remain; it does not disable all
+extensions or networking. The public table below excludes tooling switches.
+
 ## Public settings
 
 `llmcall` in the table below is a separate executable for a single model call,
@@ -32,11 +41,12 @@ build-llmcall` builds `./llmcall`; run that path or install it separately on you
 
 | Variable | Secret | Purpose |
 | --- | --- | --- |
-| `EVENER_ALLOWED_DECISIONS` | no | Restricts tool-decision modes allowed by the active profile. |
+| `EVENER_ALLOWED_DECISIONS` | no | Sets allowed communicate.output.decision values for workflow routing, as a JSON array or comma-separated list; not tool approval modes. |
 | `EVENER_HOST_TEMP_BASES` | no | OS path list of absolute directories that replaces /tmp and /var/tmp as the world-usable host temp bases session temp containers are created in and the startup crashed-scratch sweep walks; each must be a world-writable sticky directory. Set but empty or malformed is refused, never replaced by the defaults. |
+| `EVENER_HUB_ADDR` | no | Default hub address for local development tooling (the Vite dev-server proxy and browser guards). |
 | `EVENER_LOGIN_HEADLESS` | no | Overrides OpenAI login flow detection: 1 for device-code, 0 for browser. |
 | `EVENER_MODEL` | no | Default model as provider/model when --model is omitted. |
-| `EVENER_OFFLINE` | no | Set to 1 to keep the provider registry offline: no models.dev refresh, embedded snapshot only. |
+| `EVENER_OFFLINE` | no | Set to 1 to disable models.dev refresh; the provider registry can still use a newer valid local catalog cache. |
 | `EVENER_OPENAI_RESPONSES_CONTINUATION` | no | Default OpenAI Responses continuation mode: off&#124;auto. CLI and launch config override it. |
 | `EVENER_PROVIDER` | no | Fallback provider for llmcall when --provider and LLM_PROVIDER are unset. |
 | `EVENER_PROVIDERS_CONFIG` | no | Path to providers.toml. |

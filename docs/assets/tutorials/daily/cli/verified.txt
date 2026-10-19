@@ -1,0 +1,31 @@
+Rendered command transcript
+Streams are recorded separately, not interleaved.
+
+$ evener --model fake/fake-test-model --timeout 2m --max-rounds 8 --sandbox off --resume 034iIGJjq9S52QR7AHkF3G 'Continue by writing continued.json with nonce c9f65e71 and a receipts array containing that nonce once.'
+cwd: daily-workspace
+stdout:
+Wrote continued.json. Review its receipt before continuing.
+
+stderr:
+[resumed] session 034iIGJjq9S52QR7AHkF3G with model override fake/fake-test-model (was fake/fake-test-model)
+[model] fake-test-model (fake)
+[prompt] embedded:prompts/system.md.tmpl (26228B)
+[prompt] agent:default (0B)
+[usage] in=1 out=1 total=2
+[tool] shell {"command":"python3 -c 'import json,pathlib; p=pathlib.Path(\"continued.json\"); d=json.loads(p.r...
+[tool] shell: done
+[usage] in=1 out=1 total=2
+[tool] communicate {"end_turn":true,"message":"Wrote continued.json. Review its receipt before continuing.","output"...
+[communicate:end_turn] Wrote continued.json. Review its receipt before continuing.
+[tool] communicate: done
+
+exit: 0
+
+$ python3 -c 'import json; print(json.dumps({p:json.load(open(p)) for p in ["initial.json","continued.json"]},sort_keys=True))'
+cwd: daily-workspace
+stdout:
+{"continued.json": {"nonce": "c9f65e71", "receipts": ["c9f65e71"]}, "initial.json": {"nonce": "b8e54d60", "receipts": ["b8e54d60"]}}
+
+stderr:
+
+exit: 0

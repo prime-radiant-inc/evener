@@ -23,28 +23,13 @@ An idle delegate is still available for follow-up. A stop request instead
 cancels its subtree. Do not infer cancellation from a disconnected client or
 confuse a metadata-only status read with consumption of a result packet.
 
-Status: Evergreen reference for the shipped subagent runtime. This documents what
-evener **does today** across the cross-cutting runtime concerns that subagents,
-plugins, hooks, helpers, and lineage share. It is the current-reality counterpart
-to the point-in-time design specs `06`–`10` in
-[`subagent-management/`](subagent-management/). The shipped stable-delegate
-authority is
-[`11-delegate-resource-model.md`](subagent-management/11-delegate-resource-model.md);
-where this doc disagrees with it on delegate lifecycle, model 11 wins.
-
-Scope boundaries with the other evergreen docs:
-
-- The **job-control tools** (`shell`, `delegate`, `delegate_send`, `job_watch`,
-  `job_status`, `job_list`, `job_stop`) — their parameters, return shapes,
-  delegation allowance, and the
-  per-context tool-availability matrix — are owned by [`job-control.md`](job-control.md).
-  This doc covers the runtime *policy* those tools sit inside and does not restate them.
-- The job-control runtime **mechanics** (the watch outbox, drive-down, single-hop
-  forwarding, the deadlock-avoiding lock discipline) are owned by
-  [`architecture.md`](architecture.md).
-
-Citations are `path` + symbol rather than line numbers, so they survive edits — grep
-the symbol in the cited file.
+This reference covers shipped runtime policy for delegates, plugins, hooks,
+helpers, and lineage. See [job control](job-control.md) for tool parameters,
+results, allowance, and availability; [architecture](architecture.md) for runtime
+mechanics; and the [stable delegate model](subagent-management/11-delegate-resource-model.md)
+for the lifecycle contract. Earlier [design specs](subagent-management/) are
+historical proposals, not current behavior. Source citations use paths and
+symbols so readers can locate the implementation after line numbers change.
 
 Stable attention drives revalidate transcript-owned pending IDs after claiming
 the retained child for a start (`Session.driveStableDelegateAttention`). A delayed
@@ -99,12 +84,10 @@ not by parallel policy checks:
   session can already call; the spawn path rejects a grant of a root-only or
   not-currently-callable tool (`agent/subagents.go`, e.g. `"cannot grant tool %q via
   grant_tools…"`, `"cannot grant tool %q: it is not currently callable…"`).
-- **Root-only delegation tools are allowance-gated.** `delegate` and `job_watch` are
-  stripped from a child whose `delegation_allowance` is 0 and granted to one with a
-  positive allowance — gated by allowance, **not** by a fixed depth. The authoritative
-  contract is in [`job-control.md`](job-control.md) ("Delegation allowance",
-  "V1 tool availability"); the strip happens in `agent/session_init.go`
-  (`rootOnlySubagentTools`).
+- **Delegation is allowance-gated.** A child with `delegation_allowance: 0`
+  cannot call `delegate`; it retains `job_watch`, subject to tool policy and
+  watch-source permissions. A positive allowance permits delegation, subject to
+  tool policy, regardless of depth. See [delegation allowance](job-control.md#delegation-allowance-recursive-delegation).
 - **Close/cancel denies new child work.** The stable delegate-tree controller
   admits starts and sends against one fenced lifecycle aggregate. Once a session
   or subtree is closing/stopping, new child/model/shell admission cannot commit
@@ -142,8 +125,10 @@ What validation actually runs when evener loads a plugin (`agent/plugin/plugin.g
 - **Claude manifest first.** `Load` reads `.claude-plugin/plugin.json` and falls
   back to `.codex-plugin/plugin.json` only when the first is absent, not malformed.
   See the [plugin package format](plugins.md#package-format-reference).
-- **Duplicate plugin names are rejected** across loaded plugins (`LoadAll`,
-  `"duplicate plugin name %q…"`).
+- **Duplicate plugin names use the first valid manifest.** Session loading uses
+  `LoadAllFailSoft`: later manifests with the same name are skipped with a warning,
+  even if an unrelated component of the first plugin fails to load. The separate
+  `LoadAll` API rejects duplicates; it is not the session-loading policy.
 - **Agent `name`/`description`** are required non-empty strings (`getString`).
   **`tools`** accepts string lists, comma-separated strings, single tool names,
   or scalar `all`; see [role metadata and validation](plugins.md#add-a-delegate-role)
@@ -239,9 +224,9 @@ and the `http`/`mcp_tool`/`agent` handlers are parsed-but-inert. See
   delegate task-seed failures (`agent/subagents.go`). A warning with no display surface
   is treated as a bug.
 - **Policy denials name the action and the boundary**, not just "not allowed" — e.g. the
-  `grant_tools` rejections above, `"agent_type %q is top-level only: it requires root-only
-  tools"`, and the delegation-allowance / ownership errors in the stable delegate
-  controller.
+  `grant_tools` rejections above and the delegation-allowance and ownership
+  errors in the stable delegate controller. A role's tool policy and the child's
+  allowance govern which delegation tools it can receive.
 - **Compatibility gaps are reported, not half-accepted.** Recognized-but-unsupported and
   unknown hook events are recorded (`Instance.UnsupportedHooks`/`UnknownHooks`) and turned
   into load-time warnings; reserved handler fields are captured for diagnostics rather
@@ -293,9 +278,12 @@ tool-freeness simply by never populating `Tools`.
 
 Fork and subagent are **distinct relations** sharing lineage fields, kept explicit:
 
-- **Fork copies history; a subagent starts fresh.** `ForkSession` (`agent/fork.go`)
-  replays the parent's first `divergenceTurn-1` entries into the child transcript; a
-  spawned subagent gets a new empty session with only a lineage pointer.
+- **Fork copies history; delegates start fresh by default.** `ForkSession`
+  (`agent/fork.go`) replays the parent's first `divergenceTurn-1` entries into the
+  child transcript. A delegate starts with a fresh conversation unless the caller
+  sets `fork_context: true`, which copies the parent's recorded conversation,
+  excluding the unfinished tool round. The delegate keeps its own role and
+  permissions. See [forked context](job-control.md#delegate).
 - **A fork may defer the diverging input.** `ForkSessionAtUserTurn` (`agent/fork.go`)
   writes only the prefix (no replacement user turn) and returns the original message
   text, so the web UI's fork-from-message flow can stage it in the composer for

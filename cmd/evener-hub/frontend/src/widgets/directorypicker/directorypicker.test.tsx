@@ -16,12 +16,29 @@ function setup(overrides: Partial<DirectoryPickerProps> = {}, onCommit: () => vo
     createDirectory: async () => {},
     ...overrides,
   };
-  render(
+  const view = render(
     <Profiler id="picker" onRender={onCommit}>
       <DirectoryPicker {...props} />
     </Profiler>,
   );
-  return { ...props, user: userEvent.setup() };
+  return { ...props, user: userEvent.setup(), unmount: view.unmount };
+}
+
+function setupPendingInitialValidation() {
+  let resolveInitial: (result: { valid: boolean; path: string }) => void = () => {};
+  const initial = new Promise<{ valid: boolean; path: string }>((resolve) => {
+    resolveInitial = resolve;
+  });
+  const validatePath = vi
+    .fn(async (path: string) => ({ valid: path !== "/missing", path: `/canonical${path}` }))
+    .mockReturnValueOnce(initial);
+  const complete = vi.fn(async (prefix: string) => [`${prefix}child`]);
+  return {
+    ...setup({ value: "~", validatePath, complete }),
+    validatePath,
+    complete,
+    resolveInitial: () => resolveInitial({ valid: true, path: "/home/test" }),
+  };
 }
 
 test("its folder glyph is exported from the widget barrel", () => {
@@ -249,4 +266,102 @@ test("typing before initial validation resolves preserves the unsubmitted path",
   );
   await user.click(screen.getByRole("button", { name: "Use this folder" }));
   expect(onPick).toHaveBeenCalledExactlyOnceWith("/draft");
+});
+
+test.each(["Enter", "Go"])(
+  "initial validation preserves focused selection before replacement and %s",
+  async (submit) => {
+    const { user, validatePath, complete, resolveInitial, onPick } = setupPendingInitialValidation();
+    const input = screen.getByRole<HTMLInputElement>("textbox", { name: "Path" });
+    await user.click(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 1]);
+    await act(async () => resolveInitial());
+    expect(input.value).toBe("~");
+    expect(document.activeElement).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 1]);
+    expect(complete).toHaveBeenCalledExactlyOnceWith("/home/test/", false);
+    await screen.findByRole("button", { name: "Open /home/test/child" });
+    await user.keyboard("/replacement");
+    expect(input.value).toBe("/replacement");
+    if (submit === "Enter") await user.keyboard("{Enter}");
+    else await user.click(screen.getByRole("button", { name: "Go" }));
+    await waitFor(() => expect(input.value).toBe("/canonical/replacement"));
+    expect(validatePath).toHaveBeenNthCalledWith(2, "/replacement", "dir");
+    await user.click(screen.getByRole("button", { name: "Use this folder" }));
+    expect(onPick).toHaveBeenCalledExactlyOnceWith("/canonical/replacement");
+  },
+);
+
+test.each(["confirm", "blur"])(
+  "an untouched focused validated draft supports %s without revalidation",
+  async (action) => {
+    const { user, resolveInitial, validatePath, onPick } = setupPendingInitialValidation();
+    const input = screen.getByRole<HTMLInputElement>("textbox", { name: "Path" });
+    await user.click(input);
+    await act(async () => resolveInitial());
+    expect(input.value).toBe("~");
+    const confirm = screen.getByRole<HTMLButtonElement>("button", { name: "Use this folder" });
+    expect(confirm.disabled).toBe(false);
+    if (action === "blur") {
+      await user.tab();
+      expect(input.value).toBe("/home/test");
+      expect(onPick).not.toHaveBeenCalled();
+    }
+    await user.click(confirm);
+    expect(onPick).toHaveBeenCalledExactlyOnceWith("/home/test");
+    expect(validatePath).toHaveBeenCalledTimes(1);
+  },
+);
+
+test("editing a preserved initial draft prevents normalization and selection of the old canonical directory", async () => {
+  const { user, resolveInitial, validatePath, onPick } = setupPendingInitialValidation();
+  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "Path" });
+  await user.click(input);
+  await act(async () => resolveInitial());
+  expect(input.value).toBe("~");
+  await user.keyboard("/missing");
+  await user.tab();
+  expect(input.value).toBe("/missing");
+  expect(validatePath).toHaveBeenCalledTimes(1);
+  const confirm = screen.getByRole<HTMLButtonElement>("button", { name: "Use this folder" });
+  expect(confirm.disabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Go" }));
+  await screen.findByRole("alert");
+  expect(validatePath).toHaveBeenNthCalledWith(2, "/missing", "dir");
+  expect(input.value).toBe("/missing");
+  expect(confirm.disabled).toBe(true);
+  await user.click(confirm);
+  expect(onPick).not.toHaveBeenCalled();
+});
+
+test("explicit recent navigation replaces a preserved initial draft with its canonical destination", async () => {
+  const { user, resolveInitial, onPick } = setupPendingInitialValidation();
+  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "Path" });
+  await user.click(input);
+  await act(async () => resolveInitial());
+  expect(input.value).toBe("~");
+  await user.click(screen.getByRole("button", { name: "Open recent /recent/app" }));
+  await waitFor(() => expect(input.value).toBe("/canonical/recent/app"));
+  await user.click(screen.getByRole("button", { name: "Use this folder" }));
+  expect(onPick).toHaveBeenCalledExactlyOnceWith("/canonical/recent/app");
+});
+
+test("late initial validation cannot replace a submitted focused draft", async () => {
+  const { user, resolveInitial, complete } = setupPendingInitialValidation();
+  const input = screen.getByRole<HTMLInputElement>("textbox", { name: "Path" });
+  await user.click(input);
+  await user.keyboard("/replacement{Enter}");
+  await waitFor(() => expect(input.value).toBe("/canonical/replacement"));
+  await act(async () => resolveInitial());
+  expect(input.value).toBe("/canonical/replacement");
+  expect(complete).toHaveBeenCalledExactlyOnceWith("/canonical/replacement/", false);
+});
+
+test("initial validation after closing a focused picker starts no listing or selection", async () => {
+  const { user, resolveInitial, unmount, complete, onPick } = setupPendingInitialValidation();
+  await user.click(screen.getByRole("textbox", { name: "Path" }));
+  unmount();
+  await act(async () => resolveInitial());
+  expect(complete).not.toHaveBeenCalled();
+  expect(onPick).not.toHaveBeenCalled();
 });

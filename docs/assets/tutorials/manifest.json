@@ -1,0 +1,742 @@
+{
+  "version": 1,
+  "sourceRevision": "8c257f91db073a08b406c9de582718f81365c539",
+  "sourceTreeDigest": "8a4f9dbf837882be3282a66ce70a722fb06a8fe549022b1f7ebb88666226bae9",
+  "toolVersions": {
+    "node": "v22.13.1",
+    "go": "go version go1.27.1 darwin/arm64",
+    "playwright": "1.56.1"
+  },
+  "coverage": [
+    {
+      "scenario": "receipt",
+      "surface": "cli",
+      "checkpoint": "entry"
+    },
+    {
+      "scenario": "receipt",
+      "surface": "cli",
+      "checkpoint": "action"
+    },
+    {
+      "scenario": "receipt",
+      "surface": "cli",
+      "checkpoint": "verified"
+    },
+    {
+      "scenario": "receipt",
+      "surface": "web",
+      "checkpoint": "entry"
+    },
+    {
+      "scenario": "receipt",
+      "surface": "web",
+      "checkpoint": "action"
+    },
+    {
+      "scenario": "receipt",
+      "surface": "web",
+      "checkpoint": "verified"
+    },
+    {
+      "scenario": "daily",
+      "surface": "cli",
+      "checkpoint": "entry"
+    },
+    {
+      "scenario": "daily",
+      "surface": "cli",
+      "checkpoint": "action"
+    },
+    {
+      "scenario": "daily",
+      "surface": "cli",
+      "checkpoint": "verified"
+    },
+    {
+      "scenario": "daily",
+      "surface": "web",
+      "checkpoint": "entry"
+    },
+    {
+      "scenario": "daily",
+      "surface": "web",
+      "checkpoint": "action"
+    },
+    {
+      "scenario": "daily",
+      "surface": "web",
+      "checkpoint": "verified"
+    },
+    {
+      "scenario": "configuration",
+      "surface": "cli",
+      "checkpoint": "entry"
+    },
+    {
+      "scenario": "configuration",
+      "surface": "cli",
+      "checkpoint": "action"
+    },
+    {
+      "scenario": "configuration",
+      "surface": "cli",
+      "checkpoint": "verified"
+    },
+    {
+      "scenario": "configuration",
+      "surface": "web",
+      "checkpoint": "entry"
+    },
+    {
+      "scenario": "configuration",
+      "surface": "web",
+      "checkpoint": "action"
+    },
+    {
+      "scenario": "configuration",
+      "surface": "web",
+      "checkpoint": "verified"
+    },
+    {
+      "scenario": "extensions",
+      "surface": "cli",
+      "checkpoint": "entry"
+    },
+    {
+      "scenario": "extensions",
+      "surface": "cli",
+      "checkpoint": "action"
+    },
+    {
+      "scenario": "extensions",
+      "surface": "cli",
+      "checkpoint": "verified"
+    },
+    {
+      "scenario": "extensions",
+      "surface": "web",
+      "checkpoint": "entry"
+    },
+    {
+      "scenario": "extensions",
+      "surface": "web",
+      "checkpoint": "action"
+    },
+    {
+      "scenario": "extensions",
+      "surface": "web",
+      "checkpoint": "verified"
+    }
+  ],
+  "complete": true,
+  "deferredSurfaces": [
+    "native"
+  ],
+  "rows": [
+    {
+      "scenario": "receipt",
+      "surface": "cli",
+      "checkpoint": "entry",
+      "representation": "rendered-command-transcript",
+      "file": "receipt/cli/entry.png",
+      "sha256": "a43a501040d1dad3024f4d3e5f007e04b2b13471c8302dd2dc9d651a5c49ea25",
+      "dimensions": {
+        "width": 1200,
+        "height": 1800
+      },
+      "assertions": [
+        {
+          "name": "baseline exit 1",
+          "passed": true
+        }
+      ],
+      "result": "passed",
+      "text": {
+        "file": "receipt/cli/entry.txt",
+        "sha256": "d16d68f24fc7fa813dffcb41cc144c060b373910a26283e5f657802701b9d3c4"
+      }
+    },
+    {
+      "scenario": "receipt",
+      "surface": "cli",
+      "checkpoint": "action",
+      "representation": "rendered-command-transcript",
+      "file": "receipt/cli/action.png",
+      "sha256": "f82d51d5652255b67fdd968a874c94c6f9eac0a24a6ac8c64d9c60183f4516c1",
+      "dimensions": {
+        "width": 1200,
+        "height": 1800
+      },
+      "assertions": [
+        {
+          "name": "edit result",
+          "passed": true
+        },
+        {
+          "name": "diff exit",
+          "passed": true
+        }
+      ],
+      "result": "passed",
+      "text": {
+        "file": "receipt/cli/action.txt",
+        "sha256": "5122e1cd40d7a2599a9cf16f97e0ddf57a793788cadc2735b326d492e70f5ba0"
+      }
+    },
+    {
+      "scenario": "receipt",
+      "surface": "cli",
+      "checkpoint": "verified",
+      "representation": "rendered-command-transcript",
+      "file": "receipt/cli/verified.png",
+      "sha256": "6324f721b8ecf9d471eb433dee56ee57a76055d6fc8df16b175fff76c9f4f07a",
+      "dimensions": {
+        "width": 1200,
+        "height": 1800
+      },
+      "assertions": [
+        {
+          "name": "independent checker",
+          "passed": true
+        }
+      ],
+      "result": "passed",
+      "text": {
+        "file": "receipt/cli/verified.txt",
+        "sha256": "1d5d6e391527f5618aedae85e41e0a0867546cb0d7cc6e59d432324aecc77a69"
+      }
+    },
+    {
+      "scenario": "receipt",
+      "surface": "web",
+      "checkpoint": "entry",
+      "representation": "web-screenshot",
+      "file": "receipt/web/entry.png",
+      "sha256": "efb5894c95d71b9166bc8c6e6248710ead3e80749c36fa90611995b7a0660125",
+      "dimensions": {
+        "width": 1280,
+        "height": 900
+      },
+      "assertions": [
+        {
+          "name": "baseline checker",
+          "passed": true
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "scenario": "receipt",
+      "surface": "web",
+      "checkpoint": "action",
+      "representation": "web-screenshot",
+      "file": "receipt/web/action.png",
+      "sha256": "7627b69d06fb9c24a7412185267efd83d306a1a51ff1cc9ecafb0d97544ea8ca",
+      "dimensions": {
+        "width": 1280,
+        "height": 900
+      },
+      "assertions": [
+        {
+          "name": "actual edit",
+          "passed": true
+        },
+        {
+          "name": "persisted edit",
+          "passed": true
+        },
+        {
+          "name": "edit_file",
+          "passed": true
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "scenario": "receipt",
+      "surface": "web",
+      "checkpoint": "verified",
+      "representation": "web-screenshot",
+      "file": "receipt/web/verified.png",
+      "sha256": "b76e2d47d183cfa3553dd34d4dde93e217464e1261569d89704b12cc2454280e",
+      "dimensions": {
+        "width": 1280,
+        "height": 900
+      },
+      "assertions": [
+        {
+          "name": "persisted tool",
+          "passed": true
+        },
+        {
+          "name": "read_file",
+          "passed": true
+        },
+        {
+          "name": "persisted tool",
+          "passed": true
+        },
+        {
+          "name": "read_file",
+          "passed": true
+        },
+        {
+          "name": "persisted tool",
+          "passed": true
+        },
+        {
+          "name": "read_file",
+          "passed": true
+        },
+        {
+          "name": "persisted tool",
+          "passed": true
+        },
+        {
+          "name": "shell",
+          "passed": true
+        },
+        {
+          "name": "persisted tool",
+          "passed": true
+        },
+        {
+          "name": "edit_file",
+          "passed": true
+        },
+        {
+          "name": "persisted tool",
+          "passed": true
+        },
+        {
+          "name": "shell",
+          "passed": true
+        },
+        {
+          "name": "persisted tool",
+          "passed": true
+        },
+        {
+          "name": "communicate",
+          "passed": true
+        },
+        {
+          "name": "shell",
+          "passed": true
+        },
+        {
+          "name": "shell",
+          "passed": true
+        },
+        {
+          "name": "checker exit",
+          "passed": true
+        },
+        {
+          "name": "checker hash",
+          "passed": true
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "scenario": "daily",
+      "surface": "cli",
+      "checkpoint": "entry",
+      "representation": "rendered-command-transcript",
+      "file": "daily/cli/entry.png",
+      "sha256": "708fca34600d090f5da80ac992e8196b37f2a7050d92b07c65cab8e58af87832",
+      "dimensions": {
+        "width": 1200,
+        "height": 1800
+      },
+      "assertions": [
+        {
+          "name": "held CLI provider call",
+          "passed": true
+        },
+        {
+          "name": "workspace status",
+          "passed": true
+        }
+      ],
+      "result": "passed",
+      "text": {
+        "file": "daily/cli/entry.txt",
+        "sha256": "4b14360936346ce6e7baf205beb18516d4960c8ab403bdec5decd9c1ae78551d"
+      }
+    },
+    {
+      "scenario": "daily",
+      "surface": "cli",
+      "checkpoint": "action",
+      "representation": "rendered-command-transcript",
+      "file": "daily/cli/action.png",
+      "sha256": "53ee17067a933fc9c457aa3f01393b319b44261c4a8c9d6630d24b447e56b3aa",
+      "dimensions": {
+        "width": 1200,
+        "height": 1800
+      },
+      "assertions": [
+        {
+          "name": "owned saved session",
+          "passed": true
+        }
+      ],
+      "result": "passed",
+      "text": {
+        "file": "daily/cli/action.txt",
+        "sha256": "6138ea366a071e9728e8b76ddb3674b2bd50e155d92338205a27508e37449da6"
+      }
+    },
+    {
+      "scenario": "daily",
+      "surface": "cli",
+      "checkpoint": "verified",
+      "representation": "rendered-command-transcript",
+      "file": "daily/cli/verified.png",
+      "sha256": "74a9bd18188c24062be952323923e49f2a4e7d17292cd937a324f78e6a8dec6e",
+      "dimensions": {
+        "width": 1200,
+        "height": 1800
+      },
+      "assertions": [
+        {
+          "name": "same session resumed",
+          "passed": true
+        }
+      ],
+      "result": "passed",
+      "text": {
+        "file": "daily/cli/verified.txt",
+        "sha256": "31fe62a0617a461617cc7f4a2bf185bc64b0ccbd9aebf28b3ee07562902986f3"
+      }
+    },
+    {
+      "scenario": "daily",
+      "surface": "web",
+      "checkpoint": "entry",
+      "representation": "web-screenshot",
+      "file": "daily/web/entry.png",
+      "sha256": "9c87d8e1235ea6c5da33d467733636d63213db5c3ed8af717a54f92c31c8c003",
+      "dimensions": {
+        "width": 1280,
+        "height": 900
+      },
+      "assertions": [
+        {
+          "name": "held active turn",
+          "passed": true
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "scenario": "daily",
+      "surface": "web",
+      "checkpoint": "action",
+      "representation": "web-screenshot",
+      "file": "daily/web/action.png",
+      "sha256": "ff405851ac07136e9c217ba14a0d8d309d9d8fd45351c636b69e864f40fbadde",
+      "dimensions": {
+        "width": 1280,
+        "height": 900
+      },
+      "assertions": [
+        {
+          "name": "later turn",
+          "passed": true
+        },
+        {
+          "name": "unique queued receipt",
+          "passed": true
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "scenario": "daily",
+      "surface": "web",
+      "checkpoint": "verified",
+      "representation": "web-screenshot",
+      "file": "daily/web/verified.png",
+      "sha256": "8cdfe9b2e2996a6f070527cfda0c09a61d4f138d84ae17c9d64636aaff19aeff",
+      "dimensions": {
+        "width": 1280,
+        "height": 900
+      },
+      "assertions": [
+        {
+          "name": "cancelled request and absent effect",
+          "passed": true
+        },
+        {
+          "name": "continued effect and unique deliveries",
+          "passed": true
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "scenario": "configuration",
+      "surface": "cli",
+      "checkpoint": "entry",
+      "representation": "rendered-command-transcript",
+      "file": "configuration/cli/entry.png",
+      "sha256": "ac533cafaf94c5f13faff6ab12640451d7fa94236e01d06c31a0540d559ce174",
+      "dimensions": {
+        "width": 1200,
+        "height": 1800
+      },
+      "assertions": [
+        {
+          "name": "effective launch",
+          "passed": true
+        },
+        {
+          "name": "input read",
+          "passed": true
+        }
+      ],
+      "result": "passed",
+      "text": {
+        "file": "configuration/cli/entry.txt",
+        "sha256": "9afa5921c29268d2f88cda95baab0734e31307b2d297d8f3dfb4d39b61946976"
+      }
+    },
+    {
+      "scenario": "configuration",
+      "surface": "cli",
+      "checkpoint": "action",
+      "representation": "rendered-command-transcript",
+      "file": "configuration/cli/action.png",
+      "sha256": "de9961a0df0030422b604f9796c0f44865bb2b0d699c3532cc6614309d48c565",
+      "dimensions": {
+        "width": 1200,
+        "height": 1800
+      },
+      "assertions": [
+        {
+          "name": "effective bound and file effects",
+          "passed": true
+        }
+      ],
+      "result": "passed",
+      "text": {
+        "file": "configuration/cli/action.txt",
+        "sha256": "6f86904409b177a0935de920c2354e0221b0f947a1776b8af693c025bafaaa76"
+      }
+    },
+    {
+      "scenario": "configuration",
+      "surface": "cli",
+      "checkpoint": "verified",
+      "representation": "rendered-command-transcript",
+      "file": "configuration/cli/verified.png",
+      "sha256": "6b02e0673fbd73c056a35dfa4432ad42de250b5c7da368d58ded31b0231e83a3",
+      "dimensions": {
+        "width": 1200,
+        "height": 1800
+      },
+      "assertions": [
+        {
+          "name": "effective bound and file effects",
+          "passed": true
+        }
+      ],
+      "result": "passed",
+      "text": {
+        "file": "configuration/cli/verified.txt",
+        "sha256": "c21a046de4f19c2a9276879586909a6b86617bc2a2e37ad5a70c19744ff6b2a3"
+      }
+    },
+    {
+      "scenario": "configuration",
+      "surface": "web",
+      "checkpoint": "entry",
+      "representation": "web-screenshot",
+      "file": "configuration/web/entry.png",
+      "sha256": "fcc43602a75957216c399148340a6d0b9c886743131d3c084ffa9ee6404393f1",
+      "dimensions": {
+        "width": 1280,
+        "height": 900
+      },
+      "assertions": [
+        {
+          "name": "original unlimited effective session",
+          "passed": true
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "scenario": "configuration",
+      "surface": "web",
+      "checkpoint": "action",
+      "representation": "web-screenshot",
+      "file": "configuration/web/action.png",
+      "sha256": "b33f85f9e2b600774af67499b9fb26d59c25863500e4634be04d657e32ecc228",
+      "dimensions": {
+        "width": 1280,
+        "height": 900
+      },
+      "assertions": [
+        {
+          "name": "saved project limit and scope isolation",
+          "passed": true
+        },
+        {
+          "name": "old active launch unchanged",
+          "passed": true
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "scenario": "configuration",
+      "surface": "web",
+      "checkpoint": "verified",
+      "representation": "web-screenshot",
+      "file": "configuration/web/verified.png",
+      "sha256": "f04cef94a7bf1388e468f7aa54d112d81a58eb25788ea583d1c0062036077b7a",
+      "dimensions": {
+        "width": 1280,
+        "height": 900
+      },
+      "assertions": [
+        {
+          "name": "new effective bounds and independent file effects",
+          "passed": true
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "scenario": "extensions",
+      "surface": "cli",
+      "checkpoint": "entry",
+      "representation": "rendered-command-transcript",
+      "file": "extensions/cli/entry.png",
+      "sha256": "6834c378c9d7840a23fffa82f60666d58810c05835de89debcb834b4432b34a6",
+      "dimensions": {
+        "width": 1200,
+        "height": 1800
+      },
+      "assertions": [
+        {
+          "name": "installed examples and baseline hash",
+          "passed": true
+        }
+      ],
+      "result": "passed",
+      "text": {
+        "file": "extensions/cli/entry.txt",
+        "sha256": "d9a8a02ef9bcd6becb8f47ef1ccd6ce7e600637795426cbab11463da3591c566"
+      }
+    },
+    {
+      "scenario": "extensions",
+      "surface": "cli",
+      "checkpoint": "action",
+      "representation": "rendered-command-transcript",
+      "file": "extensions/cli/action.png",
+      "sha256": "7895f3dbe19f35803bf2092ab67d0c6828b3661c90f9e60af26f16ec2ee47439",
+      "dimensions": {
+        "width": 1200,
+        "height": 1800
+      },
+      "assertions": [
+        {
+          "name": "skill hook and MCP execution",
+          "passed": true
+        }
+      ],
+      "result": "passed",
+      "text": {
+        "file": "extensions/cli/action.txt",
+        "sha256": "9dc2aba0fa8296a899b561dd06c34e204e1292e8e487fb4f462f07dd469efc08"
+      }
+    },
+    {
+      "scenario": "extensions",
+      "surface": "cli",
+      "checkpoint": "verified",
+      "representation": "rendered-command-transcript",
+      "file": "extensions/cli/verified.png",
+      "sha256": "fb9dbbd285e2d3d277591f8bb22e7943dcd2ba2874d9bb81997e58d0c1ecba45",
+      "dimensions": {
+        "width": 1200,
+        "height": 1800
+      },
+      "assertions": [
+        {
+          "name": "plugin command routing and unchanged workspace",
+          "passed": true
+        }
+      ],
+      "result": "passed",
+      "text": {
+        "file": "extensions/cli/verified.txt",
+        "sha256": "0d99d4d9f3f514e0daa802d411cf3058c0e9bad0560a659aa2797390389b7f49"
+      }
+    },
+    {
+      "scenario": "extensions",
+      "surface": "web",
+      "checkpoint": "entry",
+      "representation": "web-screenshot",
+      "file": "extensions/web/entry.png",
+      "sha256": "2f92068d6347dfae61c937382ab548c683c15e005e33a1c7c9528315216b0e0d",
+      "dimensions": {
+        "width": 1280,
+        "height": 900
+      },
+      "assertions": [
+        {
+          "name": "host installation and baseline hash",
+          "passed": true
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "scenario": "extensions",
+      "surface": "web",
+      "checkpoint": "action",
+      "representation": "web-screenshot",
+      "file": "extensions/web/action.png",
+      "sha256": "933328b4dc1ff1f668d64204b89b3990d8e5031174f20df0d13b45fb36ff6c16",
+      "dimensions": {
+        "width": 1280,
+        "height": 900
+      },
+      "assertions": [
+        {
+          "name": "skill hook and correlated MCP result",
+          "passed": true
+        }
+      ],
+      "result": "passed"
+    },
+    {
+      "scenario": "extensions",
+      "surface": "web",
+      "checkpoint": "verified",
+      "representation": "web-screenshot",
+      "file": "extensions/web/verified.png",
+      "sha256": "fb3c0a0986398c9770b30609d0d84f3f944227b032eafd8c8ae473b3bde2a4e2",
+      "dimensions": {
+        "width": 1280,
+        "height": 900
+      },
+      "assertions": [
+        {
+          "name": "plugin command routing and unchanged workspace",
+          "passed": true
+        }
+      ],
+      "result": "passed"
+    }
+  ]
+}

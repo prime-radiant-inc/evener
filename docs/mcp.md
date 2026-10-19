@@ -13,13 +13,14 @@ an Evener source checkout, and an Evener installation with a working provider
 for the final agent invocation. Get the checkout with the `git clone` command in
 [Optional disposable exercise](getting-started.md#optional-disposable-exercise). You will build only
 the example server, not Evener. The final `evener` command makes a real provider
-call and may incur charges. Run on the session host, from the checkout root:
+call and may incur charges. Replace `provider/model` with an available model
+from your configured provider. Run on the session host, from the checkout root:
 
 ```bash
 example_dir=$(mktemp -d)
 go build -o "$example_dir/echo-server" ./docs/examples/extensions/mcp-server
 export EVENER_EXAMPLE_MCP_SERVER="$example_dir/echo-server"
-evener --mcp-config ./docs/examples/extensions/mcp.json \
+evener --model provider/model --mcp-config ./docs/examples/extensions/mcp.json \
   'Call example__echo with message "extension check", then report the result.'
 ```
 

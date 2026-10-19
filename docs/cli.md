@@ -6,14 +6,14 @@ For a bounded scripting recipe, see [Automate a task](automation.md). Configure 
 
 ## Run one task
 
-From the repository you want Evener to inspect:
+From the repository you want Evener to inspect, replace `provider/model` with an available model from your configured provider:
 
 ```sh
-evener --timeout 2m --max-rounds 8 --sandbox read-only --sandbox-net off \
+evener --model provider/model --timeout 2m --max-rounds 8 --sandbox read-only --sandbox-net off \
   'Summarize this repository. Do not change files or start background services.'
 ```
 
-This uses your configured default model. Supply `--model provider/model` to override it. Sandbox support depends on the host; a failed sandbox setup is an error, not permission to retry without protection.
+Fresh CLI tasks require `--model provider/model` or `EVENER_MODEL=provider/model`; the flag takes precedence. A registry default or browser model selection does not supply the CLI model. Sandbox support depends on the host; a failed sandbox setup is an error, not permission to retry without protection.
 
 **The default sandbox is off and network access is on.** A prompt is not an access control. Review project instructions, hooks, plugins and MCP servers before unattended execution. Run in a disposable checkout with only the credentials the task needs.
 
@@ -23,10 +23,10 @@ Syntax: `evener [flags] [--] prompt...`. Put flags before the prompt: Go's flag 
 
 ```sh
 printf '%s\n' 'Explain the public API without modifying files.' |
-  evener --timeout 2m --max-rounds 8 --sandbox read-only --sandbox-net off
+  evener --model provider/model --timeout 2m --max-rounds 8 --sandbox read-only --sandbox-net off
 ```
 
-An empty prompt without a resume or listing option prints usage and exits 1. `--list-sessions` does not read stdin. Do not leave a pipe open: stdin is read before the run timeout starts.
+Bare `evener` in an interactive terminal lists the top-level commands and points to `evener hub` for the browser interface, then exits 1. It does not start the hub, open a browser, or launch a terminal UI. An empty scripted prompt without a resume or listing option prints usage and exits 1. `--list-sessions` does not read stdin. Do not leave a pipe open: stdin is read before the run timeout starts.
 
 ### Output and exits
 

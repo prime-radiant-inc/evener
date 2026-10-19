@@ -1,0 +1,26 @@
+Rendered command transcript
+Streams are recorded separately, not interleaved.
+
+$ cp docs/examples/extensions/skills/change-summary/SKILL.md <workspace>/skills/change-summary/SKILL.md
+cwd: evener-checkout
+stdout:
+
+stderr:
+
+exit: 0
+
+$ cp docs/examples/extensions/commands/summarize-change.md <workspace>/.evener/commands/summarize-change.md
+cwd: evener-checkout
+stdout:
+
+stderr:
+
+exit: 0
+
+$ cp docs/examples/extensions/mcp.json <workspace>/.mcp.json
+cwd: evener-checkout
+stdout:
+
+stderr:
+
+exit: 0
