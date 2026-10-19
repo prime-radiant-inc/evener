@@ -697,10 +697,11 @@ function Board({
 		setOrganizeBy(next);
 	};
 	const testRuns = manifest?.catalogs.test_runs.count ?? 0;
+	const projectTitle = projectGrouping === "host-project" ? "Hosts" : "Projects";
 	const projectHeaders: Record<ProjectSection, { title: string; label: string; shown: boolean }> = {
 		projects: {
-			title: projectGrouping === "host-project" ? "Hosts" : "Projects",
-			label: projectGrouping === "host-project" ? "Hosts" : "Projects",
+			title: projectTitle,
+			label: projectTitle,
 			shown: projectsShown,
 		},
 		"test-runs": {
