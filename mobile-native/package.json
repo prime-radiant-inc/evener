@@ -18,9 +18,9 @@
     "@react-navigation/native": "^7.3.18",
     "@react-navigation/native-stack": "^7.18.10",
     "anser": "2.3.5",
-    "expo": "~57.0.20",
+    "expo": "57.0.23",
     "expo-application": "~57.0.3",
-    "expo-build-properties": "~57.0.17",
+    "expo-build-properties": "57.0.19",
     "expo-camera": "~57.0.5",
     "expo-clipboard": "~57.0.1",
     "expo-crypto": "~57.0.2",
@@ -31,6 +31,7 @@
     "expo-image-manipulator": "~57.0.16",
     "expo-image-picker": "~57.0.16",
     "expo-secure-store": "~57.0.3",
+    "expo-sharing": "~57.0.23",
     "expo-splash-screen": "57.0.8",
     "expo-sqlite": "~57.0.2",
     "expo-status-bar": "~57.0.1",
@@ -55,6 +56,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@bacons/apple-targets": "^5.0.0",
     "@biomejs/biome": "^2.5.12",
     "@react-navigation/core": "^7.23.0",
     "@types/node": "^26.4.1",
@@ -81,7 +83,7 @@
     "check:scripts": "tsx scripts/check-script-imports.mts",
     "lint": "biome ci src ../mobile/src",
     "format": "biome format --write src ../mobile/src",
-    "test": "sh ../scripts/native/run-tests.sh",
+    "test": "node --test ../scripts/native/scene-lifecycle.test.mjs && sh ../scripts/native/run-tests.sh",
     "test:shared": "sh ../scripts/native/run-tests.sh --root .. --config mobile-native/vitest.config.mts mobile/src",
     "postinstall": "patch-package --error-on-fail"
   },

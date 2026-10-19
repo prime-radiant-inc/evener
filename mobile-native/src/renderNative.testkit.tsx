@@ -36,6 +36,8 @@ import { expect, onTestFinished, vi } from "vitest";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ComposerFocus } from "./session/composerFocus";
 import { shrinkingScroller } from "./session/dockCard";
+import { isStep } from "./session/transcriptRows";
+import type { RunStep, TimelineRow } from "./timeline";
 
 // React 19's act() only drives effects when it is told it is inside a test
 // environment; vitest is not jest, so nothing sets this for us.
@@ -308,6 +310,10 @@ export function nativeModuleMock() {
 		// In front the whole test; a test that needs the app to come and go
 		// mocks its own.
 		AppState: { currentState: "active", addEventListener: () => ({ remove: () => {} }) },
+		// No share URL is delivered: the intake hook's read answers null, so a
+		// suite that isn't about shares mounts the app with none pending (and
+		// one that is mocks Linking itself).
+		Linking: { getInitialURL: async () => null, addEventListener: () => ({ remove: () => {} }) },
 		Animated,
 		Appearance: { setColorScheme: () => {} },
 		Alert: { alert: recordAlert, prompt: recordPrompt },
@@ -473,6 +479,12 @@ export function reanimatedModuleMock() {
 		},
 		LinearTransition: transition,
 		// An animated style is its worklet's result at render time.
+		//
+		// This runs the updater as ordinary JS, as the real worklet runtime
+		// cannot be reached here (vitest applies no worklets transform). It
+		// therefore cannot catch an update that calls an app function, which
+		// Reanimated refuses on the UI runtime: compute any such value outside
+		// useAnimatedStyle and capture it instead.
 		useAnimatedStyle: <T,>(updater: () => T) => updater(),
 	};
 }
@@ -623,6 +635,7 @@ export function screenConnection(client: unknown, state: ConnectionState): Recor
 		client,
 		state,
 		fatal: false,
+		error: null,
 		downSince: downAt,
 		lastLiveAt: downAt,
 	};
@@ -763,6 +776,14 @@ export function renderedText(tree: ReactTestRenderer): string {
  * nothing between them, the way nested Text elements run together on screen. */
 export function textOf(node: ReactTestInstance): string {
 	return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
+}
+
+/** Every step a level's rows show: a run's folded members where tool calls
+ * show, and the standalone activity rows Intent and Chat draw instead, since
+ * no run forms there. One rule, so a test cannot under-collect steps and pass
+ * on an empty list. */
+export function stepsIn(rows: readonly TimelineRow[]): RunStep[] {
+	return rows.flatMap((row) => (row.kind === "run" ? row.steps : isStep(row) ? [row] : []));
 }
 
 /** What each rendered host node whose testID starts with `prefix` says

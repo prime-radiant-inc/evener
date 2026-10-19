@@ -434,7 +434,7 @@ async function warmRoute(
   // effect cleanup), so no warm render leaks a write into a later test.
   cleanup();
   resetWorkspaceStoreForTests();
-  // The /settings/general warm route mounts the real GeneralSection, whose
+  // The /settings/hub warm route mounts the real HubSection, whose
   // mount effect calls settingsOverviewStore.getState().fetch() for real
   // against this warm-up's own FakeClient (no handler scripted for
   // "evener/settings/overview", so it settles into a scripted-looking
@@ -469,7 +469,7 @@ beforeAll(async () => {
   await warmRoute("/", (wait) => screen.findByText("No session open", undefined, wait));
   await warmRoute("/new", (wait) => screen.findByRole("button", { name: "Start" }, wait));
   await warmRoute("/s/local:ref_warm", (wait) => screen.findByText(/loading transcript/i, undefined, wait));
-  await warmRoute("/settings/general", (wait) => screen.findByRole("navigation", { name: "Settings sections" }, wait));
+  await warmRoute("/settings/hub", (wait) => screen.findByRole("navigation", { name: "Settings sections" }, wait));
 });
 
 beforeEach(() => {
@@ -511,7 +511,7 @@ afterEach(() => {
   // open palette never leaks into the next.
   paletteStore.setState({ open: false, query: "" });
   // Several tests below navigate to /settings/* and mount the real
-  // GeneralSection, whose mount effect touches settingsOverviewStore for
+  // HubSection, whose mount effect touches settingsOverviewStore for
   // real - same module-singleton reasoning as warmRoute's own reset above.
   resetSettingsOverviewStoreForTests();
   vi.unstubAllGlobals();
@@ -3264,7 +3264,7 @@ test("Welcome at / preserves existing session panes when no provider is configur
 });
 
 test("navigating from Settings to /new replaces Settings and clears secondary panes", async () => {
-  workspaceStore.getState().openPane("settings", { section: "general" });
+  workspaceStore.getState().openPane("settings", { section: "hub" });
   workspaceStore.getState().openPane("doc", {
     session: "local:settings",
     path: "README.md",
@@ -4133,7 +4133,7 @@ test.each(["missing origin", "replaced origin", "session mismatch", "path mismat
   },
 );
 
-test.each(["/thread/local:child", "/s/local:next", "/settings/general"])(
+test.each(["/thread/local:child", "/s/local:next", "/settings/hub"])(
   "explicit popstate navigation to %s overrides filename source promotion",
   async (pathname) => {
     await settledDocumentRoute("local:child");
@@ -4433,7 +4433,7 @@ test("navigating to /settings/{section} shows that section, replacing main setti
       {
         id: "settings-main",
         type: "settings",
-        params: { section: "general" },
+        params: { section: "hub" },
         slot: "main",
       },
       {
@@ -4450,9 +4450,9 @@ test("navigating to /settings/{section} shows that section, replacing main setti
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(await screen.findByRole("navigation", { name: "Settings sections" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Theme" }).getAttribute("aria-current")).toBe("page");
+  expect(screen.getByRole("button", { name: "Appearance" }).getAttribute("aria-current")).toBe("page");
   const tabs = document.querySelectorAll(".dv-tab");
-  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Theme"]);
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Appearance"]);
   const mainSettingsPane = workspaceStore.getState().mainPane();
   expect(mainSettingsPane).not.toBeNull();
   expect(mainSettingsPane!.id).toBe("settings-main");
@@ -4465,12 +4465,45 @@ test("navigating to /settings/{section} shows that section, replacing main setti
   expect(workspaceStore.getState().focusedPaneId).toBe("settings-main");
 });
 
-test("deep-linking to bare /settings opens the settings pane on its default (General) section", async () => {
+test.each(["general", "display", "plugins", "unknown-section"])(
+  "mobile Back to retired settings %s replaces history and preserves Forward",
+  async (section) => {
+    vi.stubGlobal("innerWidth", 390);
+    installMobileViewport();
+    const search = section === "plugins" ? "?host=beta" : "";
+    window.history.pushState({ retained: section }, "", `/settings/${section}${search}`);
+    window.history.pushState({}, "", `/settings/hub${search}`);
+    render(<AppShell client={new FakeClient("ready")} />);
+    await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ section: "hub" }));
+    const push = vi.spyOn(window.history, "pushState");
+    const replace = vi.spyOn(window.history, "replaceState");
+
+    try {
+      act(() => window.history.back());
+      await waitFor(() => expect(window.location.pathname).toBe("/settings/theme"));
+      expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ section: "theme" });
+      expect(window.location.search).toBe(search);
+      expect(window.history.state).toEqual({ retained: section });
+      expect(push).not.toHaveBeenCalled();
+      expect(replace).toHaveBeenCalledTimes(1);
+
+      act(() => window.history.forward());
+      await waitFor(() => expect(window.location.pathname).toBe("/settings/hub"));
+      await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ section: "hub" }));
+      expect(push).not.toHaveBeenCalled();
+    } finally {
+      push.mockRestore();
+      replace.mockRestore();
+    }
+  },
+);
+
+test("deep-linking to bare /settings opens the settings pane on its default (Appearance) section", async () => {
   window.history.pushState({}, "", "/settings");
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(await screen.findByRole("navigation", { name: "Settings sections" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "General" }).getAttribute("aria-current")).toBe("page");
+  expect(screen.getByRole("button", { name: "Appearance" }).getAttribute("aria-current")).toBe("page");
 });
 
 test("deep-linking to /credentials resolves to the settings pane, pre-focused on credentials", async () => {
@@ -4487,7 +4520,7 @@ test("deep-linking to /credentials resolves to the settings pane, pre-focused on
 
 test("navigating from one settings section to another, post-mount, updates the SAME pane (singleton) rather than opening a second tab", async () => {
   const user = userEvent.setup();
-  window.history.pushState({}, "", "/settings/general");
+  window.history.pushState({}, "", "/settings/hub");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByRole("navigation", { name: "Settings sections" });
   const initialPaneId = workspaceStore.getState().mainPane()?.id;
@@ -5346,7 +5379,7 @@ test("Escape in Settings exits to welcome and the URL stays there, not reinstate
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByRole("navigation", { name: "Settings sections" });
 
-  fireEvent.keyDown(screen.getByRole("button", { name: "General" }), { key: "Escape" });
+  fireEvent.keyDown(screen.getByRole("button", { name: "Appearance" }), { key: "Escape" });
 
   await screen.findByText("No session open");
   expect(window.location.pathname).toBe("/");

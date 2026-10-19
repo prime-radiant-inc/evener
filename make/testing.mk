@@ -233,6 +233,7 @@ merge-approval-gate:
 	@tsv="$$(mktemp)"; trap 'rm -f "$$tsv"' EXIT INT TERM; \
 		$(MAKE) lint && \
 		$(MAKE) build && \
+		$(MAKE) docs-check && \
 		ROOT_FULL=1 EVENER_GATE_TIMING_TSV="$$tsv" $(MAKE) test && \
 		scripts/gate/test-timing-budget.sh --check --measured "$$tsv" && \
 		$(MAKE) test-native test-api-package

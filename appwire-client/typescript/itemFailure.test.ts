@@ -5,6 +5,7 @@ import {
   hasErrorText,
   hasFailureStatus,
   hasItemFailure,
+  isExitOnly,
   isInProgressStatus,
   isNonZeroExit,
   isTurnError,
@@ -37,8 +38,18 @@ describe("hasItemFailure", () => {
     expect(hasItemFailure(wireItem({ status }))).toBe(true);
   });
 
-  test("a nonzero exit code is a failure even with an empty error", () => {
-    expect(hasItemFailure(wireItem({ error: "", exitCode: 7 }))).toBe(true);
+  // Jesse, 2026-10-16: a non-zero exit is common and expected (a grep that
+  // finds nothing, a check inside a passing run), so it must not, by itself,
+  // raise a tool call to failed. The exit stays visible as an inline mark on
+  // the call (isNonZeroExit, still exported below); it is not the failure.
+  test("a nonzero exit alone (even with an empty error) is not a failure", () => {
+    expect(hasItemFailure(wireItem({ error: "", exitCode: 7 }))).toBe(false);
+    expect(hasItemFailure(wireItem({ exitCode: 1 }))).toBe(false);
+  });
+
+  test("a nonzero exit alongside real failure text is still a failure", () => {
+    expect(hasItemFailure(wireItem({ error: "denied", exitCode: 7 }))).toBe(true);
+    expect(hasItemFailure(wireItem({ status: "failed", exitCode: 7 }))).toBe(true);
   });
 
   test("a zero exit code is a clean exit, and an absent one says nothing", () => {
@@ -51,8 +62,14 @@ describe("hasItemFailure", () => {
   });
 
   test("a projected ItemModel answers the same question as the wire item", () => {
-    const model: ItemModel = { id: "item-1", turnId: "turn-1", type: "commandExecution", text: "", exitCode: 2 };
-    expect(hasItemFailure(model)).toBe(true);
+    const clean: ItemModel = { id: "item-1", turnId: "turn-1", type: "commandExecution", text: "" };
+    expect(hasItemFailure(clean)).toBe(false);
+    // An exit code alone, projected, says nothing about failure.
+    const exited: ItemModel = { id: "item-1", turnId: "turn-1", type: "commandExecution", text: "", exitCode: 2 };
+    expect(hasItemFailure(exited)).toBe(false);
+    // Real failure text still does.
+    const errored: ItemModel = { id: "item-1", turnId: "turn-1", type: "commandExecution", text: "", error: "boom" };
+    expect(hasItemFailure(errored)).toBe(true);
   });
 });
 
@@ -113,6 +130,26 @@ describe("isNonZeroExit", () => {
   test("zero and undefined are not nonzero exits", () => {
     expect(isNonZeroExit(wireItem({ exitCode: 0 }))).toBe(false);
     expect(isNonZeroExit(wireItem())).toBe(false);
+  });
+});
+
+// The inline mark's rule: a call is "exit only" exactly when it settled
+// otherwise clean but its process exited nonzero. It is NOT a failure (see
+// hasItemFailure); the mark is how the exit stays visible without the alarm.
+describe("isExitOnly", () => {
+  test("a nonzero exit with no error text and a clean status is exit only", () => {
+    expect(isExitOnly(wireItem({ exitCode: 7 }))).toBe(true);
+  });
+
+  test("a clean exit, or no exit at all, is not exit only", () => {
+    expect(isExitOnly(wireItem({ exitCode: 0 }))).toBe(false);
+    expect(isExitOnly(wireItem())).toBe(false);
+  });
+
+  test("a real failure is a failure, never exit only", () => {
+    expect(isExitOnly(wireItem({ error: "denied", exitCode: 7 }))).toBe(false);
+    expect(isExitOnly(wireItem({ status: "failed", exitCode: 7 }))).toBe(false);
+    expect(isExitOnly(wireItem({ status: "interrupted", exitCode: 7 }))).toBe(false);
   });
 });
 

@@ -137,3 +137,10 @@ func skillInventorySummaries(inventory map[string]schema.SkillInventoryEntry) []
 	}
 	return summaries
 }
+
+// skillInventoryNames is the names-only view for a consumer that renders the
+// inventory without its metadata, sorted by canonical name like
+// skillInventorySummaries.
+func skillInventoryNames(inventory map[string]schema.SkillInventoryEntry) []string {
+	return slices.Sorted(maps.Keys(inventory))
+}

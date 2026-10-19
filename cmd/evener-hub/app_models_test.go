@@ -677,11 +677,11 @@ func TestFetchLaunchModelsCachesPerWorkingDir(t *testing.T) {
 	}}
 	web := newLaunchModelsTestWeb(t, spawner, true)
 
-	first, err := web.fetchLaunchModels(context.Background(), "")
+	first, err := web.fetchLaunchModels(context.Background(), "", false)
 	if err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
-	second, err := web.fetchLaunchModels(context.Background(), "")
+	second, err := web.fetchLaunchModels(context.Background(), "", false)
 	if err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
@@ -694,7 +694,7 @@ func TestFetchLaunchModelsCachesPerWorkingDir(t *testing.T) {
 
 	second.Data[0].Model = "mutated"
 	second.Data[0].Warnings[0] = "mutated"
-	third, err := web.fetchLaunchModels(context.Background(), "")
+	third, err := web.fetchLaunchModels(context.Background(), "", false)
 	if err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
@@ -705,7 +705,7 @@ func TestFetchLaunchModelsCachesPerWorkingDir(t *testing.T) {
 		t.Fatalf("launch contract called %d times after a mutating read, want 1", got)
 	}
 
-	if _, err := web.fetchLaunchModels(context.Background(), "/tmp/other"); err != nil {
+	if _, err := web.fetchLaunchModels(context.Background(), "/tmp/other", false); err != nil {
 		t.Fatalf("fetchLaunchModels(other): %v", err)
 	}
 	if got := spawner.callCount(); got != 2 {
@@ -730,7 +730,7 @@ func TestFetchLaunchModelsServesStaleThenRefreshesOnGenerationBump(t *testing.T)
 		lifetime:     context.Background(),
 	}
 
-	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+	if _, err := web.fetchLaunchModels(context.Background(), "", false); err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
 	if got := spawner.callCount(); got != 1 {
@@ -740,7 +740,7 @@ func TestFetchLaunchModelsServesStaleThenRefreshesOnGenerationBump(t *testing.T)
 	if err := reg.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	stale, err := web.fetchLaunchModels(context.Background(), "")
+	stale, err := web.fetchLaunchModels(context.Background(), "", false)
 	if err != nil {
 		t.Fatalf("fetchLaunchModels after bump: %v", err)
 	}
@@ -750,7 +750,7 @@ func TestFetchLaunchModelsServesStaleThenRefreshesOnGenerationBump(t *testing.T)
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		resp, err := web.fetchLaunchModels(context.Background(), "")
+		resp, err := web.fetchLaunchModels(context.Background(), "", false)
 		if err != nil {
 			t.Fatalf("fetchLaunchModels: %v", err)
 		}
@@ -777,7 +777,7 @@ func TestFetchLaunchModelsDoesNotCacheWithoutRegistry(t *testing.T) {
 	}}
 	web := newLaunchModelsTestWeb(t, spawner, false)
 	for range 2 {
-		if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+		if _, err := web.fetchLaunchModels(context.Background(), "", false); err != nil {
 			t.Fatalf("fetchLaunchModels: %v", err)
 		}
 	}
@@ -806,7 +806,7 @@ func TestStartLaunchModelsPrefetchWarmsTheCache(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 
-	resp, err := web.fetchLaunchModels(ctx, "")
+	resp, err := web.fetchLaunchModels(ctx, "", false)
 	if err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
@@ -861,7 +861,7 @@ func TestFetchLaunchModelsCoalescesColdLoads(t *testing.T) {
 		wg.Go(func() {
 			<-start
 			started.Add(1)
-			resp, err := web.fetchLaunchModels(context.Background(), "")
+			resp, err := web.fetchLaunchModels(context.Background(), "", false)
 			if err != nil {
 				errs <- err
 				return
@@ -915,12 +915,12 @@ func TestLoadLaunchModelsReusesAFreshEntry(t *testing.T) {
 	}
 
 	// The first load fills the unscoped entry.
-	if _, err := web.loadLaunchModels(context.Background(), "", gen); err != nil {
+	if _, err := web.loadLaunchModels(context.Background(), "", gen, false); err != nil {
 		t.Fatalf("first load: %v", err)
 	}
 	// A second reader that arrived with a stale snapshot is served the entry the
 	// first load published rather than running the launch check again.
-	if _, err := web.loadLaunchModels(context.Background(), "", gen); err != nil {
+	if _, err := web.loadLaunchModels(context.Background(), "", gen, false); err != nil {
 		t.Fatalf("second load: %v", err)
 	}
 	if got := spawner.callCount(); got != 1 {
@@ -960,13 +960,13 @@ func TestRefreshLaunchModelsUsesTheServerLifetime(t *testing.T) {
 
 	// The first read is a cold load on the caller's context; the second, after a
 	// Reload retires the entry, is served stale and refreshes behind it.
-	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+	if _, err := web.fetchLaunchModels(context.Background(), "", false); err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
 	if err := reg.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+	if _, err := web.fetchLaunchModels(context.Background(), "", false); err != nil {
 		t.Fatalf("fetchLaunchModels after bump: %v", err)
 	}
 
@@ -998,7 +998,7 @@ func TestColdLaunchLoadUsesTheServerLifetime(t *testing.T) {
 		lifetime:     context.WithValue(context.Background(), lifetimeKey{}, "hub-lifetime"),
 	}
 
-	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+	if _, err := web.fetchLaunchModels(context.Background(), "", false); err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
 	if got, _ := spawner.contextOf().Value(lifetimeKey{}).(string); got != "hub-lifetime" {
@@ -1083,9 +1083,9 @@ func TestWarmLaunchModelsUsesTheConfiguredLoader(t *testing.T) {
 	web := newLaunchModelsTestWeb(t, spawner, true)
 	inner := web.cfg.LaunchModels
 	var calls atomic.Int32
-	web.cfg.LaunchModels = func(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
+	web.cfg.LaunchModels = func(ctx context.Context, workingDir string, refresh bool) (appwire.ModelListResponse, error) {
 		calls.Add(1)
-		return inner(ctx, workingDir)
+		return inner(ctx, workingDir, refresh)
 	}
 
 	web.warmLaunchModels(context.Background())
@@ -1118,13 +1118,13 @@ func TestWaitLaunchRefreshesAwaitsInFlightRefresh(t *testing.T) {
 		lifetime:     context.Background(),
 	}
 
-	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+	if _, err := web.fetchLaunchModels(context.Background(), "", false); err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
 	if err := reg.Reload(); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
-	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+	if _, err := web.fetchLaunchModels(context.Background(), "", false); err != nil {
 		t.Fatalf("fetchLaunchModels after bump: %v", err)
 	}
 	waitFor(t, func() bool { return spawner.callCount() == 2 }, "the refresh never started")

@@ -1,7 +1,11 @@
 import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
+import { PulseMeter } from "../board/PulseMeter";
+import { palettes } from "../design/tokens";
 import { type PanGestureMock, render, renderedText } from "../renderNative.testkit";
 import { NAV_BAR_BUTTON_SPAN, SessionTitle } from "./SessionTitle";
+
+const light = palettes.light;
 
 // The window the mocked react-native reports. useTextScale reads fontScale on
 // iOS, so a test raises it to stand at an accessibility text size (AX1-AX5).
@@ -23,8 +27,7 @@ const base = { onPress: () => {}, onSwipe: () => {}, neighbors: { previous: fals
 
 const maxWidthOf = (tree: ReturnType<typeof render>) => {
 	const button = tree.root.find((node) => node.props.accessibilityRole === "button");
-	return (typeof button.props.style === "function" ? button.props.style({ pressed: false }) : button.props.style)
-		.maxWidth;
+	return button.parent?.props.style?.maxWidth ?? button.props.style({ pressed: false }).maxWidth;
 };
 
 describe("the Session's nav bar title (spec 8.1)", () => {
@@ -49,6 +52,52 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 		expect(mark?.props).toMatchObject({ name: "circle.fill", size: 12 });
 		expect(mark?.props.tintColor).toMatch(/^#/);
 		expect(symbols(tree)).toEqual(["circle.fill", "chevron.right"]);
+	});
+
+	it("carries the live line in the state line, with the meter where the dot was", () => {
+		const live = { text: "Checking for an existing remote…", attention: false };
+		const tree = render(
+			<SessionTitle
+				title="S"
+				line={{ state: "working", text: "Checking for an existing remote… · 23s", live }}
+				perMinute={[1, 2, 3, 4, 5, 6, 7]}
+				{...base}
+			/>,
+		);
+		expect(renderedText(tree)).toContain("Checking for an existing remote… · 23s");
+		expect(symbols(tree)).toEqual(["chevron.right"]);
+		expect(tree.root.findByType(PulseMeter).props).toMatchObject({ perMinute: [1, 2, 3, 4, 5, 6, 7], tone: "alive" });
+	});
+
+	it("turns the meter and its words amber when the agent may be stuck", () => {
+		const live = { text: "May be stuck", attention: true };
+		const tree = render(<SessionTitle title="S" line={{ state: "working", text: "May be stuck", live }} {...base} />);
+		expect(tree.root.findByType(PulseMeter).props.tone).toBe("attention");
+		const [state] = tree.root.findAllByType("Text" as never).slice(1);
+		expect(state?.props.style).toMatchObject({ color: light.attentionInk });
+	});
+
+	it("jumps to the live end when the live state line is pressed", () => {
+		const onJumpToLive = vi.fn();
+		const tree = render(
+			<SessionTitle
+				title="S"
+				line={{ state: "working", text: "Thinking… · 5s", live: { text: "Thinking…", attention: false } }}
+				onJumpToLive={onJumpToLive}
+				{...base}
+			/>,
+		);
+		const jump = tree.root.find(
+			(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "Thinking… · 5s",
+		);
+		act(() => jump.props.onPress());
+		expect(onJumpToLive).toHaveBeenCalledTimes(1);
+		const info = tree.root.findAllByProps({ accessibilityRole: "button" }).find((button) => button !== jump);
+		expect(info?.findAll((node) => node === jump)).toHaveLength(0);
+		const style = typeof jump.props.style === "function" ? jump.props.style({ pressed: false }) : jump.props.style;
+		expect(style.minWidth).toBeGreaterThanOrEqual(44);
+		expect(style.minHeight).toBeGreaterThanOrEqual(44);
+		expect(tree.root.findAllByType(PulseMeter)).toHaveLength(1);
 	});
 
 	it("is one button that opens session info, read title first", () => {
@@ -100,25 +149,26 @@ describe("the Session's nav bar title (spec 8.1)", () => {
 		expect(maxWidthOf(tree)).toBe(390 - 2 * 100);
 	});
 
-	it("widens the span with the accessibility text size, so the scaled Back pill cannot overlap (#3063)", () => {
-		// At fontScale 3 the chevron (20pt) and the one count digit (~10pt) are
-		// three times their default size, so the span grows by 2 * 30.
+	it("shares the header scale cap with Back instead of letting the title disappear", () => {
 		mockWindow.fontScale = 3;
 		try {
 			const tree = render(<SessionTitle title="S" line={{ state: "idle", text: "Idle" }} {...base} />);
-			expect(maxWidthOf(tree)).toBe(390 - 2 * (80 + 60));
+			expect(maxWidthOf(tree)).toBeGreaterThan(200);
+			const title = tree.root.findAllByType("Text" as never)[0];
+			expect(title?.props.style.fontSize).toBeLessThanOrEqual(23);
+			expect(tree.root.findByProps({ accessibilityRole: "button" }).props.accessibilityShowsLargeContentViewer).toBe(
+				true,
+			);
 		} finally {
 			mockWindow.fontScale = 1;
 		}
 	});
 
-	it("never lets the reserved spans leave the title a negative width (#3063)", () => {
-		// A 3-digit count at the largest accessibility size wants more span than
-		// the window has; the title floors at zero instead of going negative.
+	it("keeps a readable title allocation beside a three-digit Back count at accessibility sizes", () => {
 		mockWindow.fontScale = 3;
 		try {
 			const tree = render(<SessionTitle title="S" line={{ state: "idle", text: "Idle" }} backCount={123} {...base} />);
-			expect(maxWidthOf(tree)).toBe(0);
+			expect(maxWidthOf(tree)).toBeGreaterThanOrEqual(140);
 		} finally {
 			mockWindow.fontScale = 1;
 		}

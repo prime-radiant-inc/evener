@@ -3,6 +3,7 @@ import { View } from "react-native";
 import { useColors } from "../ui";
 import { type BoardState, stateWord } from "./attention";
 import { PulseMeter } from "./PulseMeter";
+import { meterTone } from "./pulse";
 
 type Tint = "danger" | "attention" | "accent" | "alive";
 export type Glyph = { name: SFSymbol; tint: Tint; size: number };
@@ -52,7 +53,7 @@ export function StateMark({
 }) {
 	const { palette } = useColors();
 	const mark = markFor(state, moving);
-	const tone = !connected ? "gray" : stuck ? "attention" : "alive";
+	const tone = meterTone(connected, stuck);
 	return (
 		<View
 			style={{ width: markColumnWidth, alignItems: "center", justifyContent: "center" }}

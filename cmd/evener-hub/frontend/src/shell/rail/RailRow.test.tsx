@@ -1489,6 +1489,26 @@ describe("project row", () => {
     expect(observer).toHaveBeenCalledTimes(1);
   });
 
+  test.each([undefined, "devbox"])("project menu opens contextual settings on host %s", async (host) => {
+    window.history.replaceState({}, "", "/settings/theme?host=previous-host");
+    render(
+      <RailRow
+        node={
+          { ...projectRailNode(apiProject({ working_dir: "/repo/with spaces" })), spawnHost: host } as ProjectRailNode
+        }
+        info={info({ hasChildren: true })}
+        actions={actions()}
+      />,
+    );
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Project settings" }));
+    expect(window.location.pathname).toBe("/settings/project");
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("cwd")).toBe("/repo/with spaces");
+    expect(params.get("host")).toBe(host ?? null);
+    window.history.replaceState({}, "", "/");
+  });
+
   test("changed retry, spawn directory, and project action input replace captured project-row behavior", async () => {
     window.history.replaceState({}, "", "/");
     const observer = vi.fn();

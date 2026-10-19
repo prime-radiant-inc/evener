@@ -54,6 +54,7 @@ import {
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
 import { useAlertedRecently, useNextUsed } from "./alerts/alertsContext";
+import type { SharedPayload } from "./share/sharePayload";
 import { ApprovalControls } from "./approvalControls";
 import { useMarkSeenInFront } from "./board/sessionSeen";
 import { openProviders } from "./board/BoardNotices";
@@ -84,7 +85,6 @@ import {
 	type NativeMutationHost,
 } from "./nativeMutationHost";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
-import { type SessionSeed, seedFromSession } from "./newSession/launchSetup";
 import { readerPositions } from "./nativeReaderPosition";
 import { MessageDocuments } from "./reader/DocumentChip";
 import { documentReferences, fileWrites, writtenPaths } from "./reader/documentReferences";
@@ -127,7 +127,8 @@ import {
 	exactRestoreDue,
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
-import { type ErrorAction, errorAction, RETRY_MESSAGE } from "./session/errorAction";
+import { type ErrorAction, errorAction } from "./session/errorAction";
+import { originatingInput } from "./session/turnRetryInput";
 import {
 	type Ghost,
 	type GhostAction,
@@ -166,6 +167,7 @@ import {
 import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
+import { composerRests, composerShowsStop } from "./session/composerSlot";
 import { ComposerFocus } from "./session/composerFocus";
 import { type ModelHost, modelHosts } from "./session/ModelSheet";
 import { type CommandsHost, commandHosts, insertInvocation } from "./session/CommandsSheet";
@@ -197,16 +199,16 @@ import {
 	modelChipLabel,
 	sessionHosts,
 } from "./session/sessionFacts";
-import { type ChipKind, contextChips, SHUT_DOWN, sessionStateLine } from "./session/sessionState";
+import { type ChipKind, contextChips, SHUT_DOWN } from "./session/sessionState";
 import { canWriteHumanNote, NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
 import { hasFinishedSubagentRow } from "./session/subagentLine";
-import { SessionTitle } from "./session/SessionTitle";
+import { LiveSessionTitle } from "./session/LiveSessionTitle";
 import { useActivityPoll } from "./board/useActivityPoll";
-import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
 import { screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { takeQuote } from "./session/pendingQuote";
 import { type Coordinator, SubagentPanel } from "./subagents/SubagentPanel";
+import type { ActivityKind } from "./subagents/activityList";
 import { liveClientFor } from "./liveClient";
 import { type SubagentRow, timeInState } from "./subagents/subagentModel";
 import { useHeldSubagentTree } from "./subagents/useHeldSubagentTree";
@@ -217,7 +219,9 @@ import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow } from "./timeline";
 import { hasUsageLines, projectNativeTranscript } from "./transcriptPresentation";
 import { refreshLoadedArchivedLists } from "./archivedLists";
+import { SymbolView } from "expo-symbols";
 import { Copy, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { useDisplayChoices } from "./display/displayContext";
 import { haptic } from "./haptics";
 import { Button } from "./sheet/Grouped";
 
@@ -260,9 +264,16 @@ export type Routes = {
 	Sessions: undefined;
 	/** The Hub sheet (spec 12), a modal holding its own stack of pages. */
 	Hub: NavigatorScreenParams<HubRoutes>;
-	/** New session (spec 11), a modal holding its own stack of pages. `like`
-	 * opens it on a session's setup ("New session like this"). */
-	NewSession: { hubId: string; hubName: string; like?: SessionSeed };
+	/** New session (spec 11), a modal holding its own stack of pages. */
+	NewSession: {
+		hubId: string;
+		hubName: string;
+		/** A share's text to seed the prompt with (spec: share intent). */
+		share?: { id: string; text: string };
+	};
+	/** Where a share goes (spec: share intent): a modal sheet listing New
+	 * session, the hub's live sessions and search results. */
+	ShareTarget: { item: SharedPayload };
 	/** openedBy says Next opened this session (ruling 2), so Next from it
 	 * replaces it. slideFrom says the title's swipe opened it as the
 	 * previous ("left") or next ("right") session in Live order, the side it
@@ -305,13 +316,13 @@ export type Routes = {
 	};
 	CommentsSheet: ReviewSheetParams;
 	ReviewSheet: ReviewSheetParams;
-	/** A coordinator's subagents (spec 9). */
-	Subagents: { hubId: string; ref: string; threadId: string; title: string };
+	/** A coordinator's subagents or shell jobs (spec 9). */
+	Activity: { hubId: string; ref: string; threadId: string; title: string; kind: ActivityKind };
 	/** Ask a subagent's coordinator to stop it (spec 9, ruling 10). */
 	StopSubagentSheet: { hubId: string; coordinator: Coordinator; ref: string };
 	/** A subagent's own session, over its coordinator's (ruling 30). */
 	Subagent: { hubId: string; ref: string; title: string; coordinator: Coordinator };
-	/** A shell job's detail, over its coordinator's Activity list. */
+	/** A shell job's detail, over its coordinator's Jobs list. */
 	ShellJob: { hubId: string; jobId: string; ownerRef: string; title: string; coordinator: Coordinator };
 	/** The session's documents as they were when the sheet opened (ruling 26). */
 	FilesSheet: { hubId: string; ref: string; title: string; cwd: string; documents: SessionDocument[] };
@@ -350,8 +361,9 @@ export function useFocusAfterModal(
 
 /** The sheet or screen each context chip and ⋯ menu item opens. */
 const SESSION_DESTINATIONS = {
-	subagents: "subagents",
-	activity: "subagents",
+	subagents: "agents",
+	agents: "agents",
+	jobs: "jobs",
 	tasks: "tasks",
 	notes: "notes",
 	goal: "session",
@@ -372,6 +384,8 @@ export function ConversationScreen({
 	const { activeProfile, profiles, client, state: connectionState } = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
+	const textScale = useTextScale();
+	const displayChoices = useDisplayChoices();
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	// Find in session (ruling 29), open while non-null. The current match is
 	// remembered by its row's reader key, since older pages prepend rows.
@@ -581,7 +595,7 @@ export function ConversationScreen({
 	const live = useMemo(() => liveOrder(fleet.bands), [fleet.bands]);
 	// This session's own row, which the fleet re-reads when a turn ends.
 	const fleetRow = useMemo(() => live.find((row) => row.ref === route.params.ref), [live, route.params.ref]);
-	// This session's activity while it is in front: the status tray's pulse
+	// This session's activity while it is in front: the live status line's pulse
 	// and quiet time, and the last-moved time the in-front mark follows. The
 	// hub reports activity only for top-level sessions.
 	const { activityOf } = useActivityPoll(subagentOf ? null : client, connected, focused, route.params.ref);
@@ -946,30 +960,24 @@ export function ConversationScreen({
 				});
 				return;
 			}
-			// The Subagents list (spec 9), in place of the Activity sheet. A
-			// subagent's screen opens its coordinator's, which lists every depth.
+			// The Agents and Jobs lists (spec 9), in place of the Activity
+			// sheet. A subagent's screen opens its coordinator's, which lists
+			// every depth.
 			navigation.navigate(
-				"Subagents",
+				"Activity",
 				subagentOf
-					? { hubId: route.params.hubId, ...subagentOf }
+					? { hubId: route.params.hubId, ...subagentOf, kind: destination }
 					: {
 							hubId: route.params.hubId,
 							ref: route.params.ref,
 							threadId: current.threadId,
 							title: route.params.title,
+							kind: destination,
 						},
 			);
 		},
 		[store, client, chipsConnected, route.params.hubId, route.params.ref, navigation, route.params.title],
 	);
-	// The title's state line reads live ages ("Working · 38m", "Idle · 1h
-	// ago"): re-render twice a minute while the session is in front.
-	const [, setClock] = useState(0);
-	useEffect(() => {
-		if (!focused) return;
-		const clock = setInterval(() => setClock((tick) => tick + 1), 30_000);
-		return () => clearInterval(clock);
-	}, [focused]);
 	const conversation = snapshot.conversation;
 	// A subagent's screen times its run as its Subagents row does, from the
 	// row its panel reads (one number per subagent everywhere). An ended row
@@ -1003,8 +1011,6 @@ export function ConversationScreen({
 		if (follow.state.current.following)
 			(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 	}, [barHeight]);
-	const now = Date.now();
-	const stateLine = conversation ? sessionStateLine(conversation, now, runMs(now)) : null;
 	// Files (spec 10.1): what the session wrote or linked, and
 	// whether any of it is new or changed since you last opened it.
 	const documents = useMemo(() => {
@@ -1088,6 +1094,22 @@ export function ConversationScreen({
 	const canAside = connected && service !== null && !!conversation?.capabilities.forkFromTurn;
 	const canShutDown =
 		controls !== null && !!conversation?.capabilities.shutdown && !SHUT_DOWN.has(conversation.status.type);
+	// Whether the running turn can be stopped, derived here so the header menu
+	// can depend on the boolean rather than on the conversation object, which
+	// changes on every streamed frame.
+	const canStop = connected && conversation !== null && conversationControls(conversation).stop;
+	// The facts both ⋯ surfaces read (the iOS header menu and the Android
+	// sheet): one object, so a new capability lands in both or neither.
+	const menuFacts = {
+		current: menuLevel,
+		hasDocuments: documents.length > 0,
+		connected,
+		sharedNotes: !!conversation?.capabilities.sharedNotes,
+		canAside,
+		canShutDown,
+		canStop,
+		choose: (action: SessionMenuAction) => chooseSessionActionRef.current(action),
+	};
 	function openAside(ref: string, title: string) {
 		Keyboard.dismiss();
 		navigation.push("Conversation", {
@@ -1182,10 +1204,15 @@ export function ConversationScreen({
 			case "find":
 				setFind(newFind(""));
 				return;
+			case "stop":
+				// stop() shows its own outcome toast.
+				void stop();
+				return;
 			case "files":
 				openFiles();
 				return;
-			case "activity":
+			case "agents":
+			case "jobs":
 			case "tasks":
 			case "notes":
 			case "info":
@@ -1195,16 +1222,6 @@ export function ConversationScreen({
 			case "aside":
 			case "archive":
 				void runSessionAction(action.kind).then(showSessionToast);
-				return;
-			case "like":
-				// Ruling 24: the sheet opens on this session's host, folder, model
-				// and effort; the menu shows only once the session has loaded.
-				if (!conversation) return;
-				navigation.navigate("NewSession", {
-					hubId: route.params.hubId,
-					hubName: activeProfile?.name ?? "Hub",
-					like: seedFromSession(route.params.ref, conversation),
-				});
 				return;
 			case "shutDown":
 				if (!controls) return;
@@ -1219,42 +1236,42 @@ export function ConversationScreen({
 	const chooseSessionActionRef = useRef(chooseSessionAction);
 	const runSessionActionRef = useRef(runSessionAction);
 	const swipeToSessionRef = useRef(swipeToSession);
+	// The header title's jump-to-live reaches the latest jumpToLive through a
+	// ref, so a re-render never hands it a stale closure (as the swipe does).
+	const jumpToLiveRef = useRef(jumpToLive);
 	useEffect(() => {
 		chooseSessionActionRef.current = chooseSessionAction;
 		runSessionActionRef.current = runSessionAction;
 		swipeToSessionRef.current = swipeToSession;
+		jumpToLiveRef.current = jumpToLive;
 	});
 	useEffect(() => {
 		navigation.setOptions({
 			// iPhone only: the pressable title with the session's state (spec
-			// 8.1). Android keeps the plain title.
+			// 8.1). Android keeps the plain title. The title builds the state
+			// line itself, on its own clock, so the live line's seconds tick
+			// without re-rendering the transcript under it.
 			headerTitle:
-				Platform.OS === "ios" && stateLine
+				Platform.OS === "ios" && hasConversation
 					? ({ children }) => (
-							<SessionTitle
+							<LiveSessionTitle
 								title={children}
-								line={stateLine}
+								runMs={runMs}
+								activity={sessionActivity}
+								row={fleetRow}
+								store={store}
+								connected={connected}
 								backCount={othersWaitingCount}
 								onPress={() => openSessionDestination("session")}
 								onSwipe={(direction) => swipeToSessionRef.current(direction)}
 								neighbors={{ previous: hasPrevious, next: hasNext }}
+								onJumpToLive={() => jumpToLiveRef.current()}
 							/>
 						)
 					: undefined,
 			// iOS draws these as a native menu and ignores headerRight; Android
 			// ignores them and keeps headerRight's SessionMenu.
-			unstable_headerRightItems: () =>
-				hasConversation
-					? sessionMenu({
-							current: menuLevel,
-							hasDocuments: documents.length > 0,
-							connected,
-							sharedNotes: !!conversation?.capabilities.sharedNotes,
-							canAside,
-							canShutDown,
-							choose: (action) => chooseSessionActionRef.current(action),
-						})
-					: [],
+			unstable_headerRightItems: () => (hasConversation ? sessionMenu(menuFacts) : []),
 			headerRight: () => (
 				<Pressable
 					accessibilityRole="button"
@@ -1273,9 +1290,10 @@ export function ConversationScreen({
 						opacity: !hasConversation ? 0.4 : pressed ? 0.6 : 1,
 					})}
 				>
-					<Text allowFontScaling={false} style={{ fontSize: 24, color: colors.text }}>
-						⋮
-					</Text>
+					{/* The Android/older-RN fallback for the ⋯ iOS draws as a native
+						    menu (sessionMenu's ellipsis.circle): a symbol, so Dynamic Type
+						    grows it with everything else. */}
+					<SymbolView name="ellipsis" tintColor={colors.text} size={20 * textScale} />
 				</Pressable>
 			),
 		});
@@ -1286,8 +1304,12 @@ export function ConversationScreen({
 		connected,
 		openSessionDestination,
 		colors.text,
-		stateLine?.state,
-		stateLine?.text,
+		// The title reads the conversation itself, so the header options key
+		// off whether there is one, not the per-frame conversation object.
+		hasConversation,
+		sessionActivity,
+		fleetRow,
+		runMs,
 		hasPrevious,
 		hasNext,
 		othersWaitingCount,
@@ -1296,6 +1318,7 @@ export function ConversationScreen({
 		conversation?.capabilities.sharedNotes,
 		canAside,
 		canShutDown,
+		canStop,
 	]);
 	const currentName = snapshot.conversation?.name;
 	useEffect(() => {
@@ -1315,9 +1338,10 @@ export function ConversationScreen({
 			hideAnswerMessages(
 				sessionRows(groupTimeline(presentation.items), conversation?.turns ?? [], {
 					olderToLoad: olderPage !== null,
+					config: displayConfig,
 				}),
 			),
-		[presentation.items, conversation?.turns, olderPage],
+		[presentation.items, conversation?.turns, olderPage, displayConfig],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
 	// A subagent row's coordinator: this session, or on a subagent's screen,
@@ -1446,6 +1470,9 @@ export function ConversationScreen({
 		openedFor.current = null;
 		openingLandedNow.current = false;
 		setOpeningLanded(false);
+		// Each session's opening gets its own caps: a round a previous session
+		// consumed must not shorten the next one's.
+		setOpeningCapRound(0);
 	}, [route.params.hubId, route.params.ref, follow.dispatch]);
 	// A layout effect, so a cell's layout or the cap can never read the rows of
 	// the render before (a passive effect leaves a window after the commit),
@@ -1466,11 +1493,12 @@ export function ConversationScreen({
 		(timeline.current?.getScrollResponder() as ScrollView | null)?.scrollToEnd({ animated: false });
 		if (lastRowMeasured()) landOpening();
 	}
-	// Where the session opens (spec 7.3, ruling 31), decided once per route on
-	// the first layout with rows: the live end while a question or approval
-	// waits, the start of a reply that finished since you last reached the
-	// end, or where you left off. It only sets the reading position; the
-	// restore effect below moves the list there.
+	// Where the session opens (spec 7.3, ruling 31; Jesse, 2026-10-18: always
+	// the latest), decided once per route on the first layout with rows: the
+	// live end while a question or approval waits, or the start of a reply
+	// that finished since you last reached the end when the open-at-unread-
+	// replies setting is on. It only sets the reading position; the restore
+	// effect below moves the list there.
 	useEffect(() => {
 		const routeKey = `${route.params.hubId}\u0000${route.params.ref}`;
 		if (
@@ -1487,12 +1515,9 @@ export function ConversationScreen({
 			timelineRows,
 			conversation.turns.map((turn) => turn.id),
 			pendingQuestions(conversation).length > 0 || conversation.pendingEscalations.length > 0,
+			displayChoices.openAtUnreadReplies,
 		);
-		if (target.kind === "live") {
-			readerAnchor.current = null;
-			follow.dispatch({ type: "follow" });
-			pinOpeningToEnd();
-		} else if (target.kind === "row") {
+		if (target.kind === "row") {
 			readerAnchor.current = readerAnchorAt(
 				route.params.hubId,
 				route.params.ref,
@@ -1505,8 +1530,22 @@ export function ConversationScreen({
 			follow.dispatch({ type: "unfollow" });
 			appliedReaderRestore.current = null;
 			readerRestoreAttempts.current.reset();
+		} else {
+			// The latest is the resting answer.
+			readerAnchor.current = null;
+			follow.dispatch({ type: "follow" });
+			pinOpeningToEnd();
 		}
-	}, [conversation, snapshot.status, timelineRows, focused, bindingInstance, route.params.hubId, route.params.ref]);
+	}, [
+		conversation,
+		snapshot.status,
+		timelineRows,
+		focused,
+		bindingInstance,
+		route.params.hubId,
+		route.params.ref,
+		displayChoices.openAtUnreadReplies,
+	]);
 	// A session with no rows has nowhere to travel. One with rows shows after
 	// OPENING_REVEAL_CAP_MS however far it got, so an opening that can't land
 	// (its reading position never measures) never leaves the transcript hidden.
@@ -1515,6 +1554,10 @@ export function ConversationScreen({
 	// or offline) gives way to the live end, and the position is dropped
 	// (Jesse, 2026-09-29): showing the top and then jumping, or a blank wait,
 	// is worse. The end's last row lands it, with a fresh cap behind that.
+	// A position whose row is loaded but not yet measured gets one more cap
+	// first: the list sits at its approximate offset, far above the row, and
+	// showing it there is the visible "way up" jump; the row measuring lands
+	// the exact restore, and the second cap reveals the list if it never does.
 	function capOpening() {
 		const anchor = readerAnchor.current;
 		if (anchor && resolveReaderAnchor(anchor, rowsNow.current) === null) {
@@ -1524,6 +1567,13 @@ export function ConversationScreen({
 			pinOpeningToEnd();
 			setOpeningCapRound((round) => round + 1);
 			return;
+		}
+		if (anchor && openingCapRound === 0) {
+			const index = resolveReaderAnchor(anchor, rowsNow.current);
+			if (index !== null && !readerMeasurements.current.has(readerKey(rowsNow.current[index]))) {
+				setOpeningCapRound((round) => round + 1);
+				return;
+			}
 		}
 		landOpening();
 	}
@@ -1850,6 +1900,11 @@ export function ConversationScreen({
 		(!conversation || canComposeFor(conversation));
 	const goalCommand = goalObjective(draft.record.draft, draft.record.images?.length);
 	const command = composerCommand(draft.record.draft, draft.record.images?.length);
+	// The draft's whole shape, said once: how many images it holds. The composer
+	// can't see the attachments, so the screen answers both "may it rest" and
+	// "does Stop take the slot" from this.
+	const imageCount = draft.record.images?.length ?? 0;
+	const draftMayRest = composerRests({ text: draft.record.draft, images: imageCount, editable: draft.loaded });
 	async function applyCommand(clear = false) {
 		const action = clear ? "goal" : command?.command.id;
 		if (
@@ -2096,7 +2151,6 @@ export function ConversationScreen({
 		}
 		return acceptedAnswers;
 	}
-	const frames = useFrameCounter(store);
 	const toaster = useToast();
 	const showToast = toaster.show;
 	const showSubagentToast = useCallback((text: string) => showToast({ text }), [showToast]);
@@ -2514,18 +2568,40 @@ export function ConversationScreen({
 		},
 		[store],
 	);
-	// An error row's Retry sends Jesse's sentence as your message through
-	// Send's own path (ruling 26), leaving whatever you were typing alone.
+	// An error row's Retry re-sends the input that opened the failed turn
+	// through Send's own path (ruling 26): your words and images again, never a
+	// sentence invented for you, and whatever you were typing stays alone.
+	const toastShow = useToast().show;
 	const retryFailedTurn = useCallback(async () => {
 		const kind = liveSendKind();
 		if (!service || kind === null) return;
+		const live = store.getState();
+		const latest = live.conversation?.turns[live.conversation.turns.length - 1];
+		const origin = latest ? originatingInput(live.conversation.turns, latest.id) : undefined;
+		if (origin?.kind !== "retry") return;
 		setActionError(null);
+		// Images whose bytes did not survive (a reloaded turn's sha-routed
+		// sources) stay behind: the request goes out with the text it can
+		// re-send, and the person is told what to re-attach, as on the web.
+		const dropped = origin.input.sourceImageCount - (origin.input.attachments?.length ?? 0);
 		try {
-			await document.submitText(RETRY_MESSAGE, (text, images) => deliver(service, kind, text, images));
+			await document.submitText(
+				origin.input.text,
+				async (text, images) => deliver(service, kind, text, images),
+				origin.input.attachments,
+			);
+			if (dropped > 0)
+				toastShow({
+					text:
+						dropped === 1
+							? "Retried without an attached image. Re-attach it to ask about it again."
+							: `Retried without ${dropped} attached images. Re-attach them to ask about them again.`,
+					kind: "retry:dropped-images",
+				});
 		} catch {
 			// As with Send, a refusal leaves the unconfirmed ghost to say so.
 		}
-	}, [liveSendKind, service, document, deliver]);
+	}, [liveSendKind, service, document, deliver, store, toastShow]);
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
 			if (errorAction === "resume") void controls?.resume();
@@ -2968,10 +3044,11 @@ export function ConversationScreen({
 				<SessionMenu
 					title={conversation?.name || route.params.title}
 					hubName={activeProfile?.name ?? "Hub"}
-					connected={connected}
+					menu={menuFacts}
 					deletionAvailable={deletionAvailable}
 					close={() => setSessionMenuOpen(false)}
 					choose={openSessionDestination}
+					onAction={(action) => chooseSessionActionRef.current(action)}
 				/>
 			) : null}
 			<KeyboardAvoidingView
@@ -3349,21 +3426,6 @@ export function ConversationScreen({
 								/>
 							) : null}
 						</View>
-						{bottom.tray ? (
-							<LiveStatusTray
-								session={conversation}
-								frames={frames}
-								activity={sessionActivity}
-								row={fleetRow}
-								connected={connected}
-								canStop={!!permitted?.stop}
-								stopping={stopping || pending}
-								onStop={() => {
-									void stop();
-								}}
-								onJumpToLive={jumpToLive}
-							/>
-						) : null}
 						{subagentOf ? (
 							<SubagentPanel
 								hubId={route.params.hubId}
@@ -3381,6 +3443,7 @@ export function ConversationScreen({
 							<Composer
 								value={draft.record.draft}
 								editable={draft.loaded}
+								mayRest={draftMayRest}
 								onChangeText={(text) => {
 									// A "/" that starts an empty draft opens Commands and
 									// skills in its place (spec 8.5).
@@ -3397,6 +3460,27 @@ export function ConversationScreen({
 								// this Send says it sends what you typed.
 								sendLabel={bottom.dock === "question" ? "Send your answer" : composerSendLabel}
 								sendEnabled={sendEnabled}
+								// While the turn runs and the field is empty, Stop takes
+								// Send's slot: it can act only from a reachable hub (spec
+								// 8.5), and a stop already in flight disables it. An image
+								// attachment keeps Send: an image-only draft is a message.
+								// The screen owns the whole emptiness test, since only it
+								// sees the images as well as the text.
+								stop={
+									composerShowsStop({
+										connected,
+										canStop,
+										text: draft.record.draft,
+										images: imageCount,
+									})
+										? {
+												onStop: () => {
+													void stop();
+												},
+												disabled: stopping || pending,
+											}
+										: undefined
+								}
 								onSend={() => {
 									void send();
 								}}

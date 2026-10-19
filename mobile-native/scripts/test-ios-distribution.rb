@@ -70,6 +70,8 @@ def test_configure_helper(tmpdir)
   project_path = File.join(tmpdir, "Evener.xcodeproj")
   project = Xcodeproj::Project.new(project_path)
   app = project.new_target(:application, "Evener", :ios, "16.0")
+  # The share extension target prebuild generates from targets/share.
+  extension = project.new_target(:app_extension, "EvenerShareExtension", :ios, "16.4")
   library = project.new_target(:framework, "Unrelated", :ios, "16.0")
   project.save
   project = Xcodeproj::Project.open(project_path)
@@ -77,13 +79,24 @@ def test_configure_helper(tmpdir)
     target.add_build_configuration("Release", :release)
     target.add_build_configuration("Debug", :debug)
   end
+  extension_target = project.targets.find { |candidate| candidate.name == "EvenerShareExtension" }
+  extension_target.build_configurations.each do |config|
+    config.build_settings["PRODUCT_BUNDLE_IDENTIFIER"] = "com.primeradiant.evener.native.ShareExtension"
+    config.build_settings["TARGETED_DEVICE_FAMILY"] = "1,2"
+  end
   project.save
   before = Xcodeproj::Project.open(project_path)
   debug_before = before.targets.find { |target| target.name == "Evener" }.build_configurations.find { |config| config.name == "Debug" }.build_settings.dup
   unrelated_before = before.targets.find { |target| target.name == "Unrelated" }.build_configurations.map { |config| [config.name, config.build_settings.dup] }
   export_options = File.join(tmpdir, "build", "ExportOptions.plist")
   profile_name = "Evener & <Distribution>"
-  env = { "APPLE_TEAM_ID" => "TEAM123", "IOS_PROVISIONING_PROFILE_NAME" => profile_name, "IOS_BUNDLE_IDENTIFIER" => "com.primeradiant.evener.native" }
+  extension_profile_name = "Evener Share <Distribution>"
+  env = {
+    "APPLE_TEAM_ID" => "TEAM123",
+    "IOS_PROVISIONING_PROFILE_NAME" => profile_name,
+    "IOS_SHARE_PROVISIONING_PROFILE_NAME" => extension_profile_name,
+    "IOS_BUNDLE_IDENTIFIER" => "com.primeradiant.evener.native",
+  }
   helper = File.join(ROOT, "scripts", "configure-ios-distribution.rb")
   system(env, RbConfig.ruby, helper, project_path, export_options) || raise("distribution helper failed")
   after = Xcodeproj::Project.open(project_path)
@@ -93,15 +106,42 @@ def test_configure_helper(tmpdir)
   assert(evener_release.build_settings["CODE_SIGN_STYLE"] == "Manual", "helper did not select manual signing")
   assert(evener_release.build_settings["CODE_SIGN_IDENTITY"] == "Apple Distribution", "helper did not select distribution identity")
   assert(evener_release.build_settings["PROVISIONING_PROFILE_SPECIFIER"] == profile_name, "helper did not select app profile")
+  extension_release = after.targets.find { |candidate| candidate.name == "EvenerShareExtension" }.build_configurations.find { |config| config.name == "Release" }
+  assert(extension_release.build_settings["DEVELOPMENT_TEAM"] == "TEAM123", "helper did not configure extension team")
+  assert(extension_release.build_settings["CODE_SIGN_STYLE"] == "Manual", "helper did not select manual extension signing")
+  assert(extension_release.build_settings["CODE_SIGN_IDENTITY"] == "Apple Distribution", "helper did not select the extension's distribution identity")
+  assert(extension_release.build_settings["PROVISIONING_PROFILE_SPECIFIER"] == extension_profile_name, "helper did not select the extension profile")
+  assert(extension_release.build_settings["TARGETED_DEVICE_FAMILY"] == "1", "helper did not force the extension to iPhone family")
   export = Xcodeproj::Plist.read_from_path(export_options)
   assert(export["method"] == "app-store-connect", "helper did not select App Store Connect export")
   assert(export["manageAppVersionAndBuildNumber"] == false, "helper enabled App Store version management")
   assert(export["teamID"] == "TEAM123", "helper did not serialize team")
-  assert(export["provisioningProfiles"] == { "com.primeradiant.evener.native" => profile_name }, "helper did not preserve XML-sensitive profile name")
+  assert(
+    export["provisioningProfiles"] == {
+      "com.primeradiant.evener.native" => profile_name,
+      "com.primeradiant.evener.native.ShareExtension" => extension_profile_name,
+    },
+    "helper did not serialize both profiles with their XML-sensitive names",
+  )
   debug_after = after.targets.find { |target| target.name == "Evener" }.build_configurations.find { |config| config.name == "Debug" }.build_settings
   assert(debug_before == debug_after, "helper changed app Debug")
   unrelated_after = after.targets.find { |target| target.name == "Unrelated" }.build_configurations.map { |config| [config.name, config.build_settings] }
   assert(unrelated_before == unrelated_after, "helper changed an unrelated target")
+
+  # An extension's bundle id cannot be signed with the app's profile.
+  without_extension_profile = {
+    "APPLE_TEAM_ID" => "TEAM123",
+    "IOS_PROVISIONING_PROFILE_NAME" => profile_name,
+    "IOS_BUNDLE_IDENTIFIER" => "com.primeradiant.evener.native",
+  }
+  expected_failure = system(
+    without_extension_profile,
+    RbConfig.ruby,
+    helper,
+    project_path,
+    File.join(tmpdir, "build", "RefusedExportOptions.plist"),
+  )
+  assert(!expected_failure, "helper signed the extension with the app's profile")
 end
 
 def test_readiness_waiter

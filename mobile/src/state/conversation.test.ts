@@ -27,6 +27,7 @@ import {
 	TURN_RUNNING,
 	WireError,
 } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import type {
 	MutationOptimisticRecord,
 	MutationOutboxRecord,
@@ -1880,6 +1881,65 @@ describe("ConversationStore", () => {
 			expect(store.getState().pendingMutations ?? null).toBeNull();
 		});
 
+		it("settles the ids a live frame proves delivered and clears them at once", async () => {
+			const port = fakePort({ optimistic: [optimistic({ clientMutationId: "cmid-3" })] });
+			const settled: string[][] = [];
+			const configured = {
+				...port,
+				settleIdentities: async (ids: readonly string[]) => {
+					settled.push([...ids]);
+					port.publish({ optimistic: [] });
+				},
+			};
+			const store = await openStore(makeConversation({}, true));
+			store.getState().bindPendingMutations(configured);
+			await yieldMicrotask();
+			expect(store.getState().pendingMutations?.map((row) => row.id)).toEqual(["cmid-3"]);
+
+			store.getState().applyNotification({
+				method: "history/updated",
+				params: {
+					threadId: "thread-1",
+					ref: "ref-1",
+					bootGeneration: "1",
+					epoch: 1,
+					snapshot: { incarnation: "inc-1", length: 2 },
+					items: [{ type: "user", id: "item-1", turnId: "turn-1", clientMutationId: "cmid-3" }],
+				},
+			} as AnyNotification);
+
+			await yieldMicrotask();
+			expect(settled).toEqual([["cmid-3"]]);
+			expect(store.getState().pendingMutations).toEqual([]);
+		});
+
+		it("settles nothing for a frame about another thread", async () => {
+			const port = fakePort({ optimistic: [optimistic({ clientMutationId: "cmid-3" })] });
+			const settled: string[][] = [];
+			const store = await openStore(makeConversation({}, true));
+			store.getState().bindPendingMutations({
+				...port,
+				settleIdentities: async (ids: readonly string[]) => void settled.push([...ids]),
+			});
+			await yieldMicrotask();
+
+			store.getState().applyNotification({
+				method: "history/updated",
+				params: {
+					threadId: "thread-other",
+					ref: "ref-other",
+					bootGeneration: "1",
+					epoch: 1,
+					snapshot: { incarnation: "inc-1", length: 2 },
+					items: [{ type: "user", id: "item-1", turnId: "turn-1", clientMutationId: "cmid-3" }],
+				},
+			} as AnyNotification);
+
+			await yieldMicrotask();
+			expect(settled).toEqual([]);
+			expect(store.getState().pendingMutations?.map((row) => row.id)).toEqual(["cmid-3"]);
+		});
+
 		it("projects an optimistic record", async () => {
 			const port = fakePort({
 				optimistic: [optimistic({ clientMutationId: "cmid-3" })],
@@ -2841,16 +2901,122 @@ describe("ConversationStore", () => {
 			expect(service.notificationHandler).not.toBeNull();
 		});
 
-		it("reopens instead of retaining a display for a different service identity", async () => {
+		// Retention is keyed by the session, not the service object: a rebuilt
+		// client resumes the same ref and keeps the display. A read that names a
+		// different thread still replaces it, on the read's own identity.
+		it("replaces the retained display when the resume's read names another thread", async () => {
 			const service = new FakeConversationService();
+			service.openConv = makeConversation({
+				threadId: "thread-1",
+				instanceId: "instance-1",
+				items: [{ kind: "user", id: "held", text: "held" }],
+			});
 			const otherService = new FakeConversationService();
-			otherService.openConv = makeConversation({ threadId: "thread-2" });
+			otherService.openConv = makeConversation({
+				threadId: "thread-2",
+				instanceId: "instance-2",
+				items: [{ kind: "user", id: "replacement", text: "replacement" }],
+			});
 			const store = createConversationStore();
 			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			expect(store.getState().conversation?.items.map((item) => item.id)).toEqual(["held"]);
 			store.getState().suspendProjected();
 			await store.getState().resumeProjected(otherService, createFakeSink(), "ref-1");
 			expect(store.getState().conversation?.threadId).toBe("thread-2");
+			// The held row is gone: the read's instance identity replaced the
+			// history rather than merging into it.
+			expect(store.getState().conversation?.items.map((item) => item.id)).toEqual(["replacement"]);
 			expect(store.getState().status).toBe("open");
+		});
+
+		function projectionFor(service: FakeConversationService): ConversationReadProjection {
+			return {
+				conversation: service.openConv,
+				activity: {
+					tasks: [],
+					work: [],
+					usage: {},
+					capabilities: ALL_TRUE_CAPS,
+				},
+				olderCursor: null,
+			};
+		}
+
+		// A session suspended mid-life, resumed by a fresh service object (the
+		// connection client a reconnect or foreground rebuilds) whose read is held
+		// open, so a test can land frames or assert the retained rows first.
+		async function beginRebuiltClientResume(versioned: boolean) {
+			const service = new FakeConversationService();
+			service.openConv = makeConversation({ items: [{ kind: "user", id: "u1", text: "first" }] }, versioned);
+			const store = createConversationStore();
+			await store.getState().openProjected(service, createFakeSink(), "ref-1");
+			store.getState().suspendProjected();
+			const rebuilt = new FakeConversationService();
+			rebuilt.openConv = service.openConv;
+			const read = deferred<ConversationReadProjection>();
+			rebuilt.readProjectionBlock = read.promise;
+			const resume = store.getState().resumeProjected(rebuilt, createFakeSink(), "ref-1");
+			await yieldMicrotask();
+			return { store, rebuilt, read, resume };
+		}
+
+		// A rebuilt client (a reconnect, or the app returning to the front)
+		// resumes the same session through a new service object. The transcript
+		// stays on screen and the fresh read merges into it.
+		it("retains the transcript while a rebuilt client's read lands", async () => {
+			const { store, rebuilt, read, resume } = await beginRebuiltClientResume(false);
+			const ids = () => store.getState().conversation?.items.map((item) => item.id);
+			expect(ids()).toEqual(["u1"]);
+			expect(store.getState().status).toBe("opening");
+
+			read.resolve(projectionFor(rebuilt));
+			await resume;
+			expect(store.getState().status).toBe("open");
+			expect(ids()).toEqual(["u1"]);
+		});
+
+		// The subscription is already installed and nothing else will deliver a
+		// frame that races the read, so the store must fold it in itself.
+		it("keeps a frame that lands while a rebuilt client's read is in flight", async () => {
+			const { store, rebuilt, read, resume } = await beginRebuiltClientResume(true);
+			const ids = () => store.getState().conversation?.items.map((item) => item.id);
+			rebuilt.notificationHandler?.({
+				method: "history/updated",
+				params: {
+					threadId: "thread-1",
+					ref: "ref-1",
+					bootGeneration: "1",
+					epoch: 1,
+					snapshot: { incarnation: "inc-1", length: 1 },
+					turns: [{ id: "t2", status: "completed" }],
+					items: [{ type: "userMessage", id: "u2", text: "second", turnId: "t2" }],
+				},
+			} as AnyNotification);
+			expect(ids()).toContain("u2");
+
+			read.resolve(projectionFor(rebuilt));
+			await resume;
+			expect(ids()).toContain("u2");
+		});
+
+		// A resync that invalidates the retained history while the read is in
+		// flight asks for one authoritative reread. The request cannot be served
+		// while the resume is still opening, so it must be remembered and drained
+		// when the resume settles — otherwise the store opens on invalidated
+		// history with nothing scheduled to repair it.
+		it("repairs history when a resync lands while the rebuilt client's read is in flight", async () => {
+			const { rebuilt, read, resume } = await beginRebuiltClientResume(true);
+			rebuilt.notificationHandler?.({
+				method: "evener/thread/resync",
+				params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 2 },
+			} as AnyNotification);
+
+			const readsBefore = rebuilt.readProjectionCalls.length;
+			rebuilt.readProjectionBlock = null;
+			read.resolve(projectionFor(rebuilt));
+			await resume;
+			await yieldMicrotask();
+			expect(rebuilt.readProjectionCalls.length).toBeGreaterThan(readsBefore);
 		});
 
 		it("retains the suspended display when the fresh subscribed read fails", async () => {
@@ -4222,7 +4388,9 @@ describe("ConversationStore", () => {
 
 		it.each([
 			["completed", undefined, undefined, "completed"],
-			["failed on a nonzero exit code and no error", 1, undefined, "failed"],
+			// A nonzero exit alone is not a failure: it shows as a small inline
+			// mark on the call, not a failed row (Jesse, 2026-10-16).
+			["completed on a nonzero exit code and no error", 1, undefined, "completed"],
 			["completed on a zero exit code and no error", 0, undefined, "completed"],
 			["failed with an error and no exit code", undefined, "boom", "failed"],
 		] as const)("marks an activity item as %s on item/completed", async (_label, exitCode, error, expected) => {

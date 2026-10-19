@@ -86,6 +86,7 @@ const CLASS = {
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
   mono: requireClass(styles.mono, "toolcallitem.module.css", "mono"),
   status: requireClass(styles.status, "toolcallitem.module.css", "status"),
+  exitMark: requireClass(styles.exitMark, "toolcallitem.module.css", "exitMark"),
   rowIcon: requireClass(styles.rowIcon, "toolcallitem.module.css", "rowIcon"),
   demoted: requireClass(styles.demoted, "toolcallitem.module.css", "demoted"),
   clamped: requireClass(styles.clamped, "toolcallitem.module.css", "clamped"),
@@ -123,6 +124,10 @@ export interface ToolRowProps {
    * every tool read like a terminal. */
   monoSummary?: boolean;
   failed: boolean;
+  /** A nonzero exit code on an otherwise-clean call: the row draws the small
+   * inline exit mark instead of a failure (Jesse, 2026-10-16). Set only when
+   * the call is NOT failed - the two never both apply to one row. */
+  exitCode?: number;
   expandable: boolean;
   expanded: boolean;
   onToggle?: () => void;
@@ -504,6 +509,7 @@ export function ToolRow({
   icon,
   monoSummary,
   failed,
+  exitCode,
   expandable,
   expanded,
   onToggle,
@@ -604,6 +610,17 @@ export function ToolRow({
     </span>
   ) : null;
   const failureNode = failed ? <FailureGlyph /> : null;
+  // The small exit mark: a nonzero exit on an otherwise-clean call. A plain
+  // cross in attention ink (ToolIcon's cross kind, attention tone), NOT the
+  // failure glyph's danger. Carries the code as its accessible name, since the
+  // row's own text says nothing about the exit (the number's home is the
+  // expanded body's own "[exit N]" footer).
+  const exitNode =
+    exitCode === undefined ? null : (
+      <span className={CLASS.exitMark} data-testid="tool-row-exit" role="img" aria-label={`exit ${exitCode}`}>
+        <ToolIcon kind="cross" size={11} tone="attention" />
+      </span>
+    );
   // The id lets the intent-only overlay trigger name the status as its
   // description: the visible status is a SIBLING of that trigger (valid DOM
   // order text/Open/chevron), so without aria-describedby a focused trigger
@@ -711,6 +728,7 @@ export function ToolRow({
           inside flowing prose, where a blank reserved column reads as a stray
           indent. Different context, different answer. */}
       {failureNode}
+      {exitNode}
       {statusNode}
       {hasIntent && (
         <span className={CLASS.intent} data-testid="tool-row-intent">
@@ -947,6 +965,7 @@ export function ToolRow({
           <span className={CLASS.intentTriggerContent} data-testid="tool-row-intent-trigger-content">
             {iconNode}
             {failureNode}
+            {exitNode}
             {statusNode}
             <span className={CLASS.intent} data-testid="tool-row-intent">
               {statedIntent}
@@ -965,6 +984,7 @@ export function ToolRow({
         <span className={CLASS.intentLine} data-testid="tool-row-intent-line">
           {iconNode}
           {failureNode}
+          {exitNode}
           {statusNode}
           <span className={CLASS.intent} data-testid="tool-row-intent">
             {statedIntent}
@@ -981,6 +1001,7 @@ export function ToolRow({
         >
           {iconNode}
           {failureNode}
+          {exitNode}
           {statusNode}
           <span className={CLASS.intent} data-testid="tool-row-intent">
             <TailUnit line="intent" segments={[{ kind: "text", text: statedIntent ?? "" }]}>
@@ -992,6 +1013,7 @@ export function ToolRow({
         <>
           {iconNode}
           {failureNode}
+          {exitNode}
           {statusNode}
         </>
       )}

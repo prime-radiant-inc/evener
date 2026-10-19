@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"text/template"
@@ -43,6 +44,7 @@ type fieldView struct {
 type typeView struct {
 	Name   string
 	Fields []fieldView
+	Kind   string
 }
 
 type methodView struct {
@@ -83,6 +85,7 @@ func run(args []string, stderr *os.File, writeFile func(string, []byte, os.FileM
 
 	data := build()
 	tmpl := template.Must(template.New("protocol").Funcs(template.FuncMap{
+		"typeLink": typeLinker(data.Types),
 		"yesno": func(b bool) string {
 			if b {
 				return "yes"
@@ -120,80 +123,9 @@ func build() docData {
 	for _, v := range appwire.AllJobActivityTypes {
 		register(v)
 	}
+	// Supplemental roots carried outside typed catalog params/results.
 	register(appwire.EvenerDelegateInfo{})
-	// Nested session activity resources need field tables independently of the
-	// catalog's top-level read and page responses.
-	register(appwire.Task{})
-	register(appwire.SessionActivityAncestor{})
-	register(appwire.SessionActivityContext{})
-	register(appwire.SessionActivityCounts{})
-	register(appwire.SessionActivityIssue{})
-	register(appwire.SessionActivityPage{})
-	register(appwire.SessionDelegate{})
-	register(appwire.SessionWatch{})
-	register(appwire.HostEntry{})
-	register(appwire.JobOutputPage{})
 	register(appwire.JobOutputPrunedErrorData{})
-	// InstanceEntry never appears as a method's own Params/Result - only
-	// nested inside InstanceListResponse.Instances - so without this it
-	// would never get a field table of its own, and a field documented on
-	// its AuthStatusResponse twin (e.g. shadowedEnvVar) would silently go
-	// undocumented here (PR #758 review).
-	register(appwire.InstanceEntry{})
-	// InstanceModelEntry likewise only nests inside InstanceEntry.models,
-	// so it needs the same explicit registration for its own table.
-	register(appwire.InstanceModelEntry{})
-	// HostCredentialPushResult is the element type of
-	// HostPushCredentialsResponse.Results, never a method's own Params/Result,
-	// so it needs the same explicit registration: without it the push report's
-	// instance/action/reason fields have no field table at all while
-	// types.gen.ts still emits the interface (roborev review of the 07c push).
-	register(appwire.HostCredentialPushResult{})
-	// HostPlan and HostPlanStaleFacts nest inside the evener/host/plan union's
-	// arms — HostPlanPlanned.Plan and HostPlanNoToken.StaleFacts — so without
-	// these the reference would name both types with no field table of their own
-	// while the TypeScript output emits them.
-	register(appwire.HostPlan{})
-	register(appwire.HostPlanStaleFacts{})
-	// SearchResult is the element type of SearchResponse.Live/.Past/.InSessions
-	// (S14), never a method's own Params/Result, so without this it would name
-	// the array but document none of its fields (archived, hits, hitCount
-	// included). SearchHit and SearchSnippetPart are in turn SearchResult.Hits'
-	// and SearchHit.Snippet's own element types, so they need the same
-	// explicit registration (roborev review of PR 25). SearchTopLevel is
-	// SearchResult.TopLevel's own nested type — the search grouping wire — so
-	// it needs the same registration or its anchor fields (ref, state, ask and
-	// approval flags) would go undocumented.
-	register(appwire.SearchResult{})
-	register(appwire.SearchHit{})
-	register(appwire.SearchSnippetPart{})
-	register(appwire.SearchTopLevel{})
-	// HostRow and RemovedRow are the row shapes the registry mutations' union
-	// arms carry — HostMutationCommitted.Host, the teardown-failure arms' Host,
-	// HostMutationAmbiguous.ObservedRow, HostMutationCollisionDropped.Host and
-	// .DroppedEntry — and they are also the shapes evener/host/list and
-	// evener/host/status return, so the reference needs both field tables:
-	// without them the row's own fields (`openRemnantId`, `escalationAgeSec`,
-	// `retainedRows`, …) are named but never documented (roborev review of the
-	// S12 union conversion).
-	register(appwire.HostRow{})
-	register(appwire.RemovedRow{})
-	// HostTeardownAttestation only nests inside HostTeardownRecoverParams and
-	// the recovery receipt record, so it needs the same explicit registration
-	// for a field table of its own — the operator/statement/observedAt triple is
-	// the audited recovery contract a reader has to see.
-	register(appwire.HostTeardownAttestation{})
-	// HubNotice is only ever the element type of NoticesListResponse.Notices
-	// (evener/notices/list's result and evener/notices/changed's payload),
-	// never a method's own Params/Result, so it needs the same explicit
-	// registration for a field table of its own (RoboRev review of PR 22).
-	register(appwire.HubNotice{})
-	// OperationRecord is the element type of HostOperationsResponse.Operations —
-	// the deploy pipeline's operations read (08b §§8, 10) — never a method's own
-	// Params/Result, so it needs the same explicit registration: without it the
-	// reference would name the record but document none of its fields (state,
-	// result, and the progress entries a reader inspects).
-	register(appwire.OperationRecord{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{
@@ -236,7 +168,10 @@ func resultType(register func(any) string, m appwire.MethodSpec) string {
 }
 
 func registerType(typeNames map[string]typeView, v any) string {
-	t := reflect.TypeOf(v)
+	return registerReflectType(typeNames, reflect.TypeOf(v))
+}
+
+func registerReflectType(typeNames map[string]typeView, t reflect.Type) string {
 	if t == nil {
 		return "(inline)"
 	}
@@ -248,9 +183,54 @@ func registerType(typeNames map[string]typeView, v any) string {
 		name = t.String()
 	}
 	if _, seen := typeNames[name]; !seen {
-		typeNames[name] = typeView{Name: name, Fields: fieldsOf(t)}
+		typeNames[name] = typeView{Name: name, Fields: fieldsOf(t), Kind: t.Kind().String()}
+		registerNestedTypes(typeNames, t)
 	}
 	return name
+}
+
+// Follow only JSON-visible fields. External types remain leaves: walking their
+// implementation structs (for example time.Time) would invent a wire schema.
+func registerNestedTypes(types map[string]typeView, t reflect.Type) {
+	visit := func(nested reflect.Type) {
+		if nested.PkgPath() == reflect.TypeFor[appwire.Thread]().PkgPath() {
+			registerReflectType(types, nested)
+		} else if nested.PkgPath() == "" {
+			registerNestedTypes(types, nested)
+		}
+	}
+	switch t.Kind() {
+	case reflect.Pointer, reflect.Slice, reflect.Array:
+		visit(t.Elem())
+	case reflect.Map:
+		visit(t.Key())
+		visit(t.Elem())
+	case reflect.Struct:
+		for f := range t.Fields() {
+			if f.IsExported() && strings.Split(f.Tag.Get("json"), ",")[0] != "-" {
+				visit(f.Type)
+			}
+		}
+	}
+}
+
+var typeToken = regexp.MustCompile(`(?:[A-Za-z_][A-Za-z0-9_]*\.)?[A-Za-z_][A-Za-z0-9_]*`)
+
+func typeLinker(types []typeView) func(string) string {
+	known := make(map[string]bool, len(types))
+	for _, typ := range types {
+		known[typ.Name] = true
+	}
+	return func(text string) string {
+		text = strings.ReplaceAll(text, "*", `\*`)
+		return typeToken.ReplaceAllStringFunc(text, func(token string) string {
+			name := strings.TrimPrefix(token, "appwire.")
+			if known[name] {
+				return "[" + token + "](#" + strings.ToLower(name) + ")"
+			}
+			return token
+		})
+	}
 }
 
 func fieldsOf(t reflect.Type) []fieldView {

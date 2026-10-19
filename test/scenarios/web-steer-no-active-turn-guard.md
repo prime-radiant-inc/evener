@@ -8,8 +8,7 @@ that there is no active turn.
 AppWire v3 intentionally accepts an idle `turn/steer` from callers that reach
 the daemon: it reserves a `turn_mN` and runs a steering-carrier turn. That is
 a separate acceptance invariant and is not covered by this card. This card
-covers only the browser guard; it does not imply that the TUI and web pin the
-same daemon contract.
+covers only the browser guard; it does not pin the daemon contract itself.
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web
 UI" and "The REST surface, and what is no longer on it". There is no REST

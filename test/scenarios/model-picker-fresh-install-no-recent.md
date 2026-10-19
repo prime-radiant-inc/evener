@@ -5,10 +5,9 @@
 index (no `meta.json` anywhere under the state glob), every model picker
 must show only the provider-grouped catalog and never an
 empty/degenerate "Recent" group. Three surfaces: web spawn (`/new`), web
-settings (`/settings/launch-evener`), and the TUI's `n` new-session
-picker.
+settings (`/settings/launch-evener`).
 
-The rule is enforced independently at three layers, which is what makes
+The rule is enforced independently at two layers, which is what makes
 it worth an e2e card at all:
 
 - **Wire**: the typed `model/list` response omits `recent` when there is no
@@ -17,9 +16,6 @@ it worth an e2e card at all:
 - **Web**: `buildPickerRows` emits the `Recent` group head *only* when
   the filtered recent list is non-empty
   (`appwire-client/typescript/modelCatalogPickerRows.ts#buildPickerRows`).
-- **TUI**: `modelPickerItemsFromResponse` early-returns before building
-  any Recent items when `len(resp.Recent) == 0`
-  (`cmd/evener-tui/hub_commands.go#modelPickerItemsFromResponse`).
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map. The old `button[data-chip="model"]` / `.chip-picker-group`
@@ -86,16 +82,6 @@ there is one markup to assert against, not two.
    whose block label reads exactly `Model`; only one panel is open at a
    time, so the listbox query above is unambiguous once it is.
 
-### TUI
-
-4. In a tmux session running `evener tui --hub-addr 127.0.0.1:$PORT`, send
-   `n` (opens the spawn form focused on Prompt,
-   `cmd/evener-tui/hub_keys.go:95`), then `BTab BTab` to reach the Model
-   field (field order Prompt/Harness/Model/Dir,
-   `cmd/evener-tui/hub_model.go:27-30`; backwards focus wraps through Dir,
-   `hub_spawn.go:222-230`), then `Enter` to open the picker overlay;
-   `capture-pane`.
-
 ## Expected
 
 - **Step 1**: `result.recent` is omitted or empty, and never contains a model.
@@ -106,25 +92,13 @@ there is one markup to assert against, not two.
   non-zero (a picker that rendered nothing at all would trivially
   "pass" the no-Recent assertion; this is the guard against that false
   green).
-- **Step 4**: capture-pane shows group headers `OLLAMA` and `OPENAI`
-  only — uppercased by `strings.ToUpper(item.Group)`
-  (`cmd/evener-tui/internal/tuipick/model_picker.go:165-167`) — e.g.:
-  ```
-  OLLAMA
-  > Gemma4:e4b  ollama/gemma4:e4b  (active)
-  OPENAI
-    Codex Auto Review  openai/codex-auto-review
-    Gpt 5.4  openai/gpt-5.4  1M ctx · $2.50/$15.00 · tools,vision,reasoning
-    ...
-  ```
-  with no `RECENT` header anywhere above `OLLAMA`.
 - Falsification: any picker renders a `Recent`/`RECENT` group (even an
   empty one with a header and no rows), or `result.recent` contains a model
   despite the empty Past index.
 
 ## Cleanup
 
-- Kill the hub by the PID you captured and the tmux session you named;
+- Kill the hub by the PID you captured;
   remove the hermetic scratch `$HOME`/`$XDG_STATE_HOME` trees (or keep
   them — the next card, `model-picker-recent-reflects-last-5-global`,
   reuses this exact state dir to seed history on top of a
@@ -160,9 +134,7 @@ there is one markup to assert against, not two.
   a `diagnostics[]` entry, not a picker group. Real infra being down,
   not a test artifact; re-verify with `lunarouter` live if convenient.
 - The unit-level counterpart is
-  `TestModelPickerItemsFromResponse_NoRecentOmitsGroup`
-  (`cmd/evener-tui/hub_model_picker_items_test.go#TestModelPickerItemsFromResponse_NoRecentOmitsGroup`) for the TUI and
   `appwire-client/typescript/modelCatalogPickerRows.test.ts:56-57` ("no Recent group when the envelope carries
-  none") for the web. If those pass and the live picker still shows a
+  none"). If it passes and the live picker still shows a
   Recent header, the bug is in what the hub put in `recent`, not in the
   rendering.

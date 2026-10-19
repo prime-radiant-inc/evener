@@ -29,7 +29,12 @@ import type {
 	MutationStopBarrier,
 	SecureRandomSource,
 } from "@evener/appwire-client/state/mutation";
-import { acceptedRecord, carriesOptimisticInput, createSecureUUID } from "@evener/appwire-client/state/mutation";
+import {
+	acceptedRecord,
+	carriesOptimisticInput,
+	createSecureUUID,
+	PENDING_TURN_METHODS,
+} from "@evener/appwire-client/state/mutation";
 import { type SqliteSync, type SqliteSyncRunResult, withSavepoint } from "./sqliteSync";
 
 // This app's SecureRandomSource: expo-crypto's synchronous randomUUID and
@@ -172,6 +177,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			state TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0,
 			unresolved_attempts INTEGER NOT NULL DEFAULT 0,
 			stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0,
+			accepted_at INTEGER NOT NULL DEFAULT 0,
 			recovery_kind TEXT, recovery_reason TEXT)`;
 		for (const table of Object.values(TABLES)) this.db.execSync(schema(table));
 		this.db.execSync(
@@ -237,6 +243,27 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
 			if (!columns.some((column) => column.name === "stop_epoch_at_enqueue")) {
 				this.db.execSync(`ALTER TABLE ${table} ADD COLUMN stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0`);
+			}
+		}
+		// When a record was accepted. The prune below asks "accepted before this
+		// read began", which enqueue time cannot answer: a replacement client's
+		// read can be out when an earlier request's receipt lands, so pruning that
+		// fresh acceptance by its older enqueue time would drop a send whose
+		// snapshot never mentioned it. Shared insert shape, so every record table
+		// carries it. A row written before the column existed is backfilled from
+		// its enqueue time: it was accepted at some point before the upgrade, so
+		// any read after the upgrade began later than its acceptance - and leaving
+		// it at 0 would permanently exclude exactly the records this prune exists
+		// to heal. The ALTER and its backfill commit together: a process that died
+		// between them would leave the column present and the rows unstamped, and
+		// no later start would retry the backfill.
+		for (const table of Object.values(TABLES)) {
+			const columns = this.db.getAllSync<{ name: string }>(`PRAGMA table_info(${table})`);
+			if (!columns.some((column) => column.name === "accepted_at")) {
+				withSavepoint(this.db, `mutation_accepted_at_${table}`, () => {
+					this.db.execSync(`ALTER TABLE ${table} ADD COLUMN accepted_at INTEGER NOT NULL DEFAULT 0`);
+					this.db.execSync(`UPDATE ${table} SET accepted_at = created_at WHERE state = 'accepted'`);
+				});
 			}
 		}
 	}
@@ -501,6 +528,14 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				// (source.recoveryKind/recoveryReason) and attempted evidence do
 				// not leak into the optimistic row.
 				this.replace(TABLES.optimistic, acceptedRecord(source));
+				// Acceptance is its own moment. A read already in flight when this
+				// receipt lands never saw the record, so its absence must not retire
+				// it; the prune compares against this stamp, never enqueue time.
+				this.db.runSync(
+					`UPDATE ${TABLES.optimistic} SET accepted_at = ? WHERE client_mutation_id = ?`,
+					this.#now(),
+					clientMutationId,
+				);
 			} else if (optimisticRecord) {
 				this.delete(TABLES.optimistic, clientMutationId);
 			}
@@ -708,6 +743,49 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				...named,
 			);
 			return restored
+				.sort((left, right) => left.intent_sequence - right.intent_sequence)
+				.map((row) => row.client_mutation_id);
+		});
+	}
+
+	// Retires accepted records the daemon's complete mutation projection no
+	// longer lists. An accepted record is already applied (its receipt said so)
+	// and is kept only until a read shows it reflected; the daemon drops a
+	// start or queue from that projection the moment its turn is incorporated,
+	// so once the transcript item leaves a bounded read's window nothing would
+	// ever name the id again and the composer would show it as a send still on
+	// its way, with no action to take. Absence from a mutation-authoritative
+	// projection is the proof, exactly as it is for a parked outbox row.
+	// `acceptedBefore` is the read's own start: acceptance is stamped separately
+	// from enqueue, so a receipt landing while that read was out keeps its record
+	// out of the prune. `authoritativeIds` is what that read DID name - a named
+	// record is proof it is still pending, so it stays even if settling it failed.
+	// Only the turn verbs the daemon's pending projection can name take part - a
+	// note or a clear is never listed there, and its absence proves nothing.
+	async pruneUnlistedAccepted(
+		targetRef: string,
+		acceptedBefore: number,
+		authoritativeIds: ReadonlySet<string>,
+	): Promise<string[]> {
+		return this.transaction("mutation_optimistic_prune_unlisted", () => {
+			const methods = [...PENDING_TURN_METHODS];
+			const prunable = this.db.getAllSync<{ client_mutation_id: string; intent_sequence: number }>(
+				`SELECT client_mutation_id, intent_sequence FROM ${TABLES.optimistic}
+				 WHERE target_ref = ? AND state = 'accepted' AND accepted_at > 0 AND accepted_at <= ?
+				   AND method IN (${methods.map(() => "?").join(", ")})`,
+				targetRef,
+				acceptedBefore,
+				...methods,
+			);
+			const unlisted = prunable.filter((row) => !authoritativeIds.has(row.client_mutation_id));
+			if (unlisted.length === 0) return [];
+			const removed = this.db.getAllSync<{ client_mutation_id: string; intent_sequence: number }>(
+				`DELETE FROM ${TABLES.optimistic}
+				 WHERE client_mutation_id IN (${unlisted.map(() => "?").join(", ")})
+				 RETURNING client_mutation_id, intent_sequence`,
+				...unlisted.map((row) => row.client_mutation_id),
+			);
+			return removed
 				.sort((left, right) => left.intent_sequence - right.intent_sequence)
 				.map((row) => row.client_mutation_id);
 		});

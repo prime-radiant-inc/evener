@@ -65,7 +65,7 @@ const flatten = (style: unknown): Style =>
 		.flat(Number.POSITIVE_INFINITY)
 		.reduce<Style>((all, part) => ({ ...all, ...(part ?? {}) }), {});
 
-it("draws the header as a band header: pin, the name in capitals, the hub's count and a fold chevron", () => {
+it("draws the header with the shared hierarchy, authored name, hub count and fold chevron", () => {
 	// The count is the catalog's, the hub's number, whatever has loaded.
 	const tree = render(<Category hub={hubId()} />);
 	const press = header(tree);
@@ -81,21 +81,21 @@ it("draws the header as a band header: pin, the name in capitals, the hub's coun
 		["chevron.right", palette.inkLow],
 	]);
 	expect(textsOf(press)).toEqual(["Release", " · 2"]);
-	// The name and its count read as one label, "RELEASE · 2", as a band
+	// The name and its count read as one label, as a band
 	// header's do: only the count's own spaces sit between them, so the row
 	// adds no gap and the pin keeps its distance with a margin of its own.
 	expect(flatten(press.props.style).columnGap ?? 0).toBe(0);
 	expect(press.findAllByType("SymbolView" as never)[0].props.style).toMatchObject({ marginRight: 6 });
 	const name = press.findAll((node) => node.type === ("Text" as never))[0];
-	// The name keeps the user's casing underneath, so VoiceOver reads it as
-	// written; only the drawing is in capitals.
+	// Both the visible name and VoiceOver keep the user's casing.
 	expect(flatten(name.props.style)).toMatchObject({
-		fontSize: 13,
+		fontSize: 15,
+		lineHeight: 20,
 		fontWeight: "600",
-		letterSpacing: 0.4,
-		color: palette.inkMid,
-		textTransform: "uppercase",
+		color: palette.inkHi,
 	});
+	expect(flatten(name.props.style).textTransform).toBeUndefined();
+	expect(flatten(name.props.style).letterSpacing).toBeUndefined();
 	// No ⋯ while no change can go out.
 	expect(menuButton(tree)).toHaveLength(0);
 });

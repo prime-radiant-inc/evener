@@ -145,6 +145,44 @@ describe("durable draft lifecycle", () => {
 		expect(() => repository.imageInputs(destination, [image])).toThrow();
 	});
 
+	it("persists re-issued attachments through an uncertain retry, so restore recovers them", async () => {
+		const { repository, destination } = setup();
+		repository.write(destination, { draft: "untouched", unconfirmed: null }, []);
+		const document = new DraftDocument(() => repository, destination);
+		const reissued = [{ marker: 1, mediaType: "image/png", data: "AQID", name: "plot.png" }];
+		await document.submitText("retry this", async () => false, reissued);
+		// The uncertain record carries the re-issued images as references, with
+		// their bytes in storage: a crash or a refused send still recovers the
+		// whole input, not text with orphaned markers.
+		const record = repository.read(destination);
+		expect(record.unconfirmed).toBe("retry this");
+		const [reference] = record.unconfirmedImages ?? [];
+		expect(reference?.marker).toBe(1);
+		expect(reference?.id).toBeTruthy();
+		const reopened = new DraftDocument(() => repository, destination);
+		expect(reopened.getSnapshot().record.unconfirmedImages?.length).toBe(1);
+		const preview = reopened.imagePreviews(reopened.getSnapshot().record.unconfirmedImages ?? []);
+		expect(preview[0]).toMatchObject({ marker: 1, data: "AQID", name: "plot.png" });
+	});
+
+	it("gives each retry's re-issued images their own identity, even with the same marker and length", async () => {
+		const { repository, destination } = setup();
+		repository.write(destination, { draft: "", unconfirmed: null }, []);
+		const document = new DraftDocument(() => repository, destination);
+		const reissued = [{ marker: 1, mediaType: "image/png", data: "AQID" }];
+		await document.submitText("first try", async () => false, reissued);
+		document.restore();
+		// The composer now holds the first retry's recovered image; a second
+		// failed turn retries with different bytes of the same length and
+		// marker. Both must persist: one identity per re-issue.
+		await document.submitText("second try", async () => false, reissued);
+		const record = repository.read(destination);
+		expect(record.unconfirmed).toBe("second try");
+		expect(record.unconfirmedImages?.length).toBe(1);
+		expect(record.images?.length).toBe(1);
+		expect(new Set([...(record.images ?? []), ...(record.unconfirmedImages ?? [])].map((i) => i.id)).size).toBe(2);
+	});
+
 	it("a structured answer preserves ordinary images and manual restore does not replace newer images", async () => {
 		const { repository, destination } = setup();
 		const image = { id: "photo", marker: 1, mediaType: "image/png" };

@@ -1,9 +1,9 @@
-# LLM Provider Configuration, Credentials & Launch Architecture
+# Credentials and provider launch behavior
 
 **Connecting your first provider?** Follow [Connecting a provider](connecting-a-provider.md)
 for the New session → connection → model → Start walkthrough.
 
-How evener stores provider credentials, signs you in to OpenAI, and how the
+How Evener stores provider credentials, signs you in to OpenAI, and how the
 **hub** turns a launch request into a running model session.
 
 Companion docs:
@@ -33,14 +33,15 @@ comments. This applies to streaming and nonstreaming responses, including vision
 channels and gzip-compressed wire bytes: a response can
 continue indefinitely while bytes keep arriving within the idle interval.
 
-Set a positive Go duration (for example `45s`, `10m`, or `1h`):
+Set a positive Go duration (for example `45s`, `10m`, or `1h`). Replace
+`provider/model` with an available model from your configured provider:
 
 ```sh
-evener --provider-idle-timeout 15m "your task"
-evener serve --provider-idle-timeout 15m
+evener --model provider/model --provider-idle-timeout 15m "your task"
+evener serve --model provider/model --provider-idle-timeout 15m
 ```
 
-The hub/TUI launch setting is **Provider idle timeout**. Launch TOML uses
+The hub launch setting is **Provider idle timeout**. Launch TOML uses
 `provider_idle_timeout = "15m"`; the launch API uses
 `"providerIdleTimeout": "15m"`. Session configuration and snapshots use
 `"provider_idle_timeout": "15m"`. Empty selects the default for new sessions
@@ -106,8 +107,9 @@ Wherever a credential value accepts an environment-variable reference —
 `api_key` and `credential_headers` — it also accepts a command
 expression, `$(...)`: the command runs through your shell and its
 whitespace-trimmed stdout becomes the value. This is how a gateway whose
-credentials live outside evener gets used: the key stays in your password
-manager, or a short-lived token gets minted per request. Display `headers`
+credentials live outside Evener gets used: the key stays in your password
+manager, or the command obtains a short-lived token. Evener caches the result
+within each process rather than running the command for every request. Display `headers`
 and transport `vars` do not run commands: a command's output is a
 credential, and those fields' values reach URLs and logs as ordinary
 text, so a `$(...)` there is refused when the file loads.
@@ -129,7 +131,7 @@ first — the trimmed stdout is the value, verbatim. MCP server config
 accepts the same forms in the fields it expands (command, args, env, url,
 headers) in the layers you author yourself — the global
 `~/.config/evener/mcp.json` and `--mcp-config` files. The project's
-`.evener/mcp.json` and plugin configs are content evener does not author,
+`.evener/mcp.json` and plugin configs are content Evener does not author,
 so they refuse `$(command)` at load and skip the layer with a warning.
 
 The rules that matter in practice:
@@ -141,9 +143,9 @@ The rules that matter in practice:
   verbatim, so `${MY-VAR}` or `${MY.VAR}` used to expand; the shared
   grammar now refuses them.
 - Commands run with the process environment, no TTY, a closed stdin, and a
-  30-second timeout; results are cached per command (until a token's JWT
-  `exp` is a minute away, else five minutes), so an agent loop mints once
-  and reuses.
+  30-second timeout. Each process caches successful results by command text
+  until one minute before a readable JWT `exp`, or for five minutes if there
+  is no readable expiry. The next lookup after that deadline reruns the command.
 - A `$(...)` ends at the first `)` that brings the paren depth back to
   zero; quotes are not parsed, so a literal `)` inside a quoted argument
   ends the expression early — restructure the command or wrap it in a
@@ -161,8 +163,8 @@ The rules that matter in practice:
 ## Environment-variable reference
 
 The complete list — API keys and base URLs together — lives in
-[`docs/developing-evener/environment.md`](developing-evener/environment.md#provider-configuration).
-Single source, not duplicated here, so it can't drift out of sync.
+[Environment variables](environment-variables.md).
+The public reference follows `envvars/envvars.go`; provider resolution rules remain in the provider reference.
 
 ## OpenAI OAuth and the Codex transport
 
@@ -181,13 +183,7 @@ oauth-openai-codex`).
 
 ### Precedence
 
-This used to be "stored OAuth record beats `OPENAI_API_KEY` env beats (hub
-only) a `credentials.toml` file key" **within one instance**. That framing
-is gone: `openai` and `openai-codex` never share a credential, so there's
-nothing to arbitrate between within either one. What used to feel like
-"OAuth wins" is now `openai-codex` simply ranking before `openai` in
-`default_order` — a fresh sign-in becomes the default *instance* by ranking,
-not by precedence inside one instance's credential resolution.
+`openai` and `openai-codex` do not share credentials. The latter ranks before the former in the default-instance order, so signing in can change the automatically selected instance. Set an explicit default or use an explicit `instance/model` when that choice matters.
 
 ### How a user signs in
 
@@ -207,8 +203,7 @@ name-equals-`openai` check, so a custom instance can carry Codex OAuth too
 A stray record — `auth/<name>.json` where `<name>` isn't an instance on the
 Codex transport (including one left over from `evener openai login
 --instance work` under the old scheme) — produces a one-line startup notice
-naming the file, remedied with `evener openai logout --instance <name>` or
-deleting it by hand.
+naming the file, remedied with `evener openai logout --instance <name>` after confirming that the record is no longer needed.
 
 ## Hub launch / spawn process model
 
@@ -228,48 +223,27 @@ admission; `thread/start` owns scalar precedence and launch admission, while
 This is the part most worth internalizing: **the hub orchestrates, separate
 `evener` processes do the work.**
 
-```
-                        ┌──────────────────────────────────────────────┐
-                        │  evener hub process                          │
-                        │  (cmd/evener-hub)                            │
-                        │                                              │
-   credentials.toml ───▶│  hub's own provider registry load           │
-   auth/*.json      ───▶│  hubAuthController (app_auth.go)             │
-   providers.toml   ───▶│  (only if the file exists — never written    │
-                        │   or materialized at startup)                │
-                        │  HubSpawner (spawn.go)                       │
-                        └───────────────┬──────────────┬───────────────┘
-                                        │              │
-                EVENER_PROVIDERS_CONFIG │              │  EVENER_PROVIDERS_CONFIG
-              EVENER_CREDENTIALS_CONFIG │              │  EVENER_CREDENTIALS_CONFIG
-                                        ▼              ▼
-              ┌─────────────────────────────┐   ┌─────────────────────────────┐
-              │ evener launch-check         │   │ evener serve  (the daemon)  │
-              │ (subprocess, short-lived)   │   │ (subprocess, long-lived)    │
-              │ cmd/evener/launch_check.go  │   │ cmd/evener/serve.go         │
-              │                             │   │                             │
-              │ loads its own registry      │   │ loads its own registry      │
-              │ → instance list / models    │   │ → resolves + runs the model │
-              │ validates one model         │   │ writes a rendezvous entry   │
-              └─────────────────────────────┘   └──────────────┬──────────────┘
-                                                                │
-                                                  rendezvous file (run dir)
-                                                  carries the instance name
-                                                                │
-                        ┌───────────────────────────────────────┘
-                        ▼
-                hub reads rendezvous for roster / resume
+```mermaid
+flowchart TD
+  Config[Provider file and credential store] --> Hub[Hub registry and connection UI]
+  Hub --> Check[Short-lived launch-check]
+  Hub --> Serve[Long-lived session daemon]
+  Config --> Check
+  Config --> Serve
+  Serve --> Rendezvous[Private rendezvous record]
+  Rendezvous --> Hub
 ```
 
-**The hub no longer materializes `providers.toml` at startup.** It passes
-`EVENER_PROVIDERS_CONFIG` to children only when a file already exists.
-`EVENER_PROVIDERS_CONFIG` is a **tri-state**: unset means the default path;
-set to a path means that file; set and **empty**
-(`export EVENER_PROVIDERS_CONFIG=`) means "no user layer" — `os.LookupEnv`,
-not `Getenv`, distinguishes unset from empty. A hub whose own file failed to
-load sets it empty in every child's environment, overriding anything the
-hub itself inherited, so sessions keep launching against the implicit
-instance set while the broken file gets fixed by hand.
+Each subprocess loads its own provider registry. The hub forwards configuration paths and process coordination, not a selected provider key injected into the child. The daemon records how the hub can reconnect to it.
+
+**The hub does not create a default `providers.toml` at startup.**
+`EVENER_PROVIDERS_CONFIG` is tri-state: unset selects the default path, a path
+selects that file, and an empty value selects no user layer. After a failed
+provider-file load, children receive a private snapshot of the last good user
+layer if the hub retained one; otherwise they receive no user layer. Project
+overrides still apply with their normal precedence. See
+[provider-file reload](llm-providers.md#providerstoml) for snapshot and startup
+behavior.
 
 `EVENER_CREDENTIALS_CONFIG` names `credentials.toml` explicitly (new
 variable); when unset, the store is the sibling of the providers path, as
@@ -318,13 +292,18 @@ carrying the resolved instance name.
 Session metadata still persists the instance name in `ProfileID` — the
 field keeps its name; it now holds the registry instance name rather than a
 provider type. On hub resume, the stored `ProfileID` is passed through as
-the instance to resolve; a saved session, `launch.toml`, `EVENER_MODEL`, or
-plugin `model:` declaration that names an instance that no longer exists
+the instance to resolve; a saved session, `launch.toml`, or `EVENER_MODEL`
+that names an instance that no longer exists
 fails with the "unknown instance" error, which lists the instances that are
 actually available — this is exactly what happens on resume for a session
 saved before the upgrade that named `kimi`, `glm`, `kimi-anthropic`, or
 `openrouter-anthropic` (see
 ["Upgrading from the old schema"](#upgrading-from-the-old-schema) below).
+
+A plugin agent's `model:` is advisory. If its instance or model is unavailable,
+Evener warns and falls back to the delegate call's explicit model, or to the
+parent model if none was supplied. An invalid explicit model override still
+fails. See [plugin model selection](subagent-runtime-contracts.md#plugin-and-agent-loading).
 
 Cost display follows the same registry-driven rule everywhere it appears —
 the model picker, a live session, and past-session history: it's priced
@@ -333,51 +312,27 @@ dollar figure rather than a placeholder. A session recorded before this
 cut-over, with no instance name in its `ProfileID`, shows no cost in the
 hub's past-sessions list.
 
-## Web / TUI provider surfaces
+## Manage existing connections
 
-The duplicate type-based Providers and Credentials screens are gone,
-replaced by one instance-aware CRUD screen
-(`cmd/evener-hub/frontend/src/panes/settings/sections/credentials/`,
-backed by `cmd/evener-hub/app_instances.go`) that calls the same functions
-the CLI does. Its instance rows follow `Registry.Instances()`'s launch-ready
-credential filter; uncredentialed implicit presets do **not** all appear there.
-The separate public provider catalogue supplies discovery and setup metadata,
-so **Connect provider** can offer a fresh install `openai-codex` sign-in or a
-first API key without broadening the launch-ready instance list. Existing
-instances remain manageable through their rows and the full editor.
+Settings → Providers & credentials shows launch-ready instances. **Connect provider** uses the broader catalogue so you can configure a provider that does not yet have credentials. Editing an implicit instance writes a shadowing entry containing authored changes, not a copy of every displayed default. Removing an override is different from removing the environment variable or OAuth record that creates an implicit instance.
 
-Editing an implicit instance, or setting it as the default, writes a
-**shadowing** entry that carries only the fields the user changed — never a
-literal `base_url` the form merely displayed, which would otherwise trip
-the credential-inheritance stop described in
-[`llm-providers.md`](llm-providers.md#providerstoml). Removing a
-purely-implicit instance (one with no shadowing entry of its own) is
-refused, with a message naming the variable or record that makes it exist —
-unset the variable, or remove the OAuth record, instead.
-
-The RPCs feeding this pane (`evener/auth/*`) now return one status per
-curated implicit provider plus every explicit instance, not the old fixed
-`envvars` roster.
-
-### Model strings and display
-
-The TUI strips a model chip's instance-name prefix generically now
-(`modeldisplay.AbbreviateModel`, `cmd/evener-tui/internal/modeldisplay/`) —
-it takes whatever the first slash-segment is, rather than matching a
-hardcoded provider allowlist, so it stays correct as instance names change.
-The web hub's frontend was rewritten to a React SPA as part of a separate
-effort — the old `spawn.js` and its hardcoded prefix list are gone along
-with it, and a search of the current frontend source turned up no
-equivalent allowlist function to describe here.
+Use the inspector to check the actual endpoint and credential source before changing access. The hub observes provider-file edits every five seconds. Valid edits update settings and future launches; invalid edits retain the last good configuration and block writes. See [provider-file reload](llm-providers.md#providerstoml) for snapshot and startup behavior. This does not promise hot reload of a running session daemon.
 
 ## Upgrading from the old schema
 
-Run `evener migrate` once after upgrading: it converts an old-schema
+First run `evener migrate --dry-run --verbose` and review the paths. Stop writers and make a private [backup](security.md#storage-and-backups) before applying `evener migrate`: it converts an old-schema
 `providers.toml` in place, keeps the original beside it as
 `providers.toml.pre-registry`, and records every dropped field as a
 `# migrate:` comment. The rest of this section is the by-hand story, for
 when you'd rather rewrite the file yourself — the release notes and the
 load-error message both point here.
+
+**Missing variables no longer prevent the whole file from loading.** An unset
+variable in `api_key` resolves to an empty credential with a warning; the request
+fails when a credential is required. An unset variable in `headers` drops that
+header. Both cases were load-time errors in the old schema. Check each instance's
+resolved credential and headers after migration; a successful config load does
+not prove that a request is authenticated.
 
 **`providers.toml` fails to load.** An old-schema file (`[instances.*]`,
 `type`, `api_style`, `quirks`, `compat`) fails to load. The CLI exits with a
@@ -386,19 +341,17 @@ pointer to
 the hub starts with implicit instances only, shows the error as a
 diagnostic, launches sessions against the implicit set, and refuses
 instance writes until the file is fixed. Fix it with `evener migrate`, or by
-hand — edit, delete, or move the file aside. Most users need no
-file at all afterward: every implicit provider (see the table in
-[`llm-providers.md`](llm-providers.md#the-implicit-provider-list)) exists
-from its key alone, and `*_BASE_URL` variables cover proxies. Re-create a
+hand after preserving an exact private copy of the file. Most users need no
+file at all afterward: implicit providers become available when their required credentials and endpoint variables resolve (see the [provider table](llm-providers.md#the-implicit-provider-list)). `*_BASE_URL` variables cover proxies. Re-create a
 gateway or custom-named instance with `evener providers add … --api-key-env
-NAME` or `--credential-header K=V`; remember an instance with its own
-`base_url` never inherits the vendor key the way today's
+NAME` or `--credential-header K=V`; remember an instance with a different
+`base_url` does not inherit vendor key variables the way the old
 `[instances.anthropic] base_url = …` shape did.
 
 **Default instance ranking changed.** With more than one instance and no
 `default` set, the default now follows `default_order` (the table in
 [`llm-providers.md`](llm-providers.md#the-implicit-provider-list)), then
-custom-named entries by sorted name — not today's alphabetical registration
+custom-named entries by sorted name — not the old alphabetical registration
 order. Concretely: `GEMINI_API_KEY` + `OPENAI_API_KEY` set together now
 defaults to `openai`, not `google`. Set `default` explicitly to keep the old
 pick.
@@ -413,8 +366,10 @@ pick.
 | `openrouter-anthropic` | the `orclaude` recipe below — there's no single renamed instance, it's a `providers.toml` entry now |
 | `openai-compatible` as a vendor/type name | still exists, but only as the protocol-only pseudo-provider instance, not a `type = "openai" api_style = "chat-completions"` recipe |
 
-The `orclaude` recipe (the anthropic-protocol route to OpenRouter, for
-MiniMax's Anthropic-style tool calls):
+This example names the instance `orclaude`, selects OpenRouter's Anthropic
+protocol route, and pins the Anthropic agent surface for `minimax/*` models.
+The instance name is arbitrary; the `protocol` and model-glob settings control
+the behavior:
 
 ```toml
 [providers.orclaude]
@@ -424,14 +379,15 @@ protocol = "anthropic"
 surface  = "anthropic"
 ```
 
-A saved session, `launch.toml`, `EVENER_MODEL`, or plugin `model:`
-declaration naming an old instance fails with the unknown-instance error,
-naming the instances that are actually available.
+A saved session, `launch.toml`, or `EVENER_MODEL` naming an old instance fails
+with the unknown-instance error, which lists available instances. Plugin agent
+`model:` declarations instead use the advisory fallback described under
+[resume and persistence](#resume--persistence).
 
 **Environment variables that changed meaning or disappeared** (this table
 intentionally overlaps
-[`docs/developing-evener/environment.md`](developing-evener/environment.md#provider-configuration)
-— keep the two in sync on a future edit):
+[Environment variables](environment-variables.md)
+— the registry defines current names):
 
 - `KIMI_API_KEY` now means the Kimi coding plan (`kimi-for-coding`), not
   Moonshot's platform key.
@@ -454,8 +410,7 @@ user writes `[providers.openai] base = "openai-codex"` — in which case the
 *old* record is read as that instance's. A stray record — `auth/<name>.json`
 for any instance not on the Codex transport, including `auth/work.json`
 from a prior `evener openai login --instance work` — produces a startup
-notice until it's removed with `evener openai logout --instance <name>` or
-deleted by hand.
+notice until it's removed with `evener openai logout --instance <name>` after confirming that the record is no longer needed.
 
 **`credentials.toml` entries under old names** are ignored and reported by
 `evener providers list`; re-enter them under the new names through the
@@ -486,7 +441,7 @@ fires late (see [`ollama.md`](ollama.md#context-length) for the full
 explanation — this is the same fact, not restated differently there).
 
 **`EVENER_PROVIDERS_CONFIG` tri-state.** `export EVENER_PROVIDERS_CONFIG=`
-(present, empty) now means "no user layer"; today it meant the default
+(present, empty) now means "no user layer"; older builds treated it as the default
 path. `evener providers list` and the hub diagnostics print `user layer:
 none (EVENER_PROVIDERS_CONFIG is empty)` so the state is visible.
 
@@ -500,6 +455,6 @@ files are renamed or deleted.
 
 - [`llm-providers.md`](llm-providers.md) — the registry: layers, instances,
   resolution, wire protocols, and the implicit provider table.
-- [`ollama.md`](ollama.md) — running evener against a local Ollama server.
+- [`ollama.md`](ollama.md) — running Evener against a local Ollama server.
 - [`superpowers/specs/2026-08-28-provider-registry-design.md`](superpowers/specs/2026-08-28-provider-registry-design.md)
   — the registry design: data model, layers, resolution, and the flag day.

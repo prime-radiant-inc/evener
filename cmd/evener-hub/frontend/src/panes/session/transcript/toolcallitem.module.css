@@ -356,6 +356,22 @@
   line-height: var(--line-height-title);
 }
 
+/* The small exit mark: a nonzero exit on an otherwise-clean call (Jesse,
+ * 2026-10-16). It composes .status's seat wholesale (align-self: flex-start +
+ * height: 1lh pins it to line 1 however the row wraps, and the 1lh box matches
+ * the first line's height) rather than copying it, so the two can never drift
+ * apart; only the width differs - a lone cross needs no trailing gap, which the
+ * status's composed gap would add. Its hue is the ToolIcon's own attention tone
+ * (--attention, amber): visible, never the failure glyph's --danger. */
+.exitMark {
+  composes: status;
+  gap: 0;
+}
+
+.row[data-intent="true"] .exitMark {
+  line-height: var(--line-height-title);
+}
+
 /* The tool-KIND glyph in the RAIL beside the rationale line (Jesse's review
  * call: icons out of the text, into the gutter - the kind is ambient
  * context, not content). The row's first flex item, seated by the shared

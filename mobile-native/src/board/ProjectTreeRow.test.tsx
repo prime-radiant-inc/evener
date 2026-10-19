@@ -1,14 +1,20 @@
 import type { NavigationProjectSummary } from "@evener/appwire-client";
 import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "../renderNative.testkit";
 import { type ProjectRowItem, ProjectTreeRow } from "./ProjectTreeRow";
 
+const viewport = vi.hoisted(() => ({ fontScale: 1 }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	useWindowDimensions: () => ({ width: 402, height: 874, scale: 3, ...viewport }),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
+
+beforeEach(() => {
+	viewport.fontScale = 1;
+});
 
 const project = (over: Partial<NavigationProjectSummary> = {}): NavigationProjectSummary => ({
 	key: "evener",
@@ -30,6 +36,24 @@ const texts = (tree: ReactTestRenderer) =>
 const symbols = (tree: ReactTestRenderer) =>
 	tree.root.findAll((node) => node.type === ("SymbolView" as never)).map((node) => node.props.name);
 const pressables = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.type === ("Pressable" as never));
+
+it("lets project and host names wrap at accessibility sizes while bounding their symbols", () => {
+	viewport.fontScale = 3;
+	const rows: ProjectRowItem[] = [
+		{ kind: "project", key: "p", fold: "p", depth: 0, project: project(), liveCount: null, folded: true },
+		{ kind: "host", key: "h", fold: "h", depth: 0, host: laptop, liveCount: null, folded: true },
+		{ kind: "branch", key: "b", fold: "b", depth: 1, host: laptop, folded: true },
+	];
+	for (const item of rows) {
+		const tree = draw(item);
+		const name = tree.root.findByType("Text" as never);
+		expect(name.props.numberOfLines).toBeUndefined();
+		expect(name.props.style.fontSize).toBeGreaterThanOrEqual(45);
+		for (const symbol of tree.root.findAllByType("SymbolView" as never)) {
+			expect(symbol.props.size).toBeLessThanOrEqual(24);
+		}
+	}
+});
 
 describe("host rows", () => {
 	it("says an offline host is Offline, with no count", () => {

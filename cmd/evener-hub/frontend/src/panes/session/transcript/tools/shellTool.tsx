@@ -1,32 +1,26 @@
 // The shell/exec_command/run_shell_command descriptor (parity checklist
-// §2's shellRenderer). Failure signal for a settled call: the daemon promotes
-// the process exit code onto the item as a typed wire field
-// (ItemModel.exitCode), so that structured number is the PRIMARY source for
-// the row's failure glyph. One fact still shapes the
-// logic: a nonzero EXIT is not a tool error. The wire stamps an honest settled
-// status — "failed" only when the tool RESULT carried an error, "completed"
-// otherwise (apptranscript.SettledToolStatus, appwire_projection.go:438) — and
-// a command that ran and returned nonzero is a clean tool result (empty
-// ItemModel.error, status "completed") that this descriptor still flags via
-// exitCode alone. ItemModel.error carries a denial/failure message when the
-// call itself failed or was denied (mapped by reducer.ts's wireItemToModel); it
-// drives the generic failed-row treatment in ToolCallItem and is a distinct
-// signal from a nonzero exit, handled there, not here. When exitCode is absent (an
-// old daemon that doesn't populate it), the descriptor falls back to the
-// output-footer text heuristic below: agent/session_tools_shell.go's
+// §2's shellRenderer). A nonzero EXIT is not a tool error (Jesse,
+// 2026-10-16: "don't call out failed in lists of tool calls just for nonzero
+// exits ... show a small x inline on the call"). The wire stamps an honest
+// settled status — "failed" only when the tool RESULT carried an error,
+// "completed" otherwise (apptranscript.SettledToolStatus,
+// appwire_projection.go:438) — and a command that ran and returned nonzero is
+// a clean tool result (empty ItemModel.error, status "completed"). So this
+// descriptor does NOT declare the exit as a failure; it exposes the exit code
+// through the exitCode hook, which ToolCallItem turns into the small inline
+// exit mark via the shared isExitOnly rule. The daemon promotes the process
+// exit code onto the item as a typed wire field (ItemModel.exitCode), and when
+// that is absent (an old daemon that doesn't populate it) the descriptor falls
+// back to the output-footer text heuristic: agent/session_tools_shell.go's
 // formatShellResult appends a trailing "[exit <N> · ...]" bracketed footer
 // whenever the command wasn't backgrounded and an exit code was captured. The
 // heuristic looks only inside the FINAL bracketed segment (never the command's
-// own stdout/stderr body) to keep false positives unlikely.
+// own stdout/stderr body) to keep false positives unlikely. ItemModel.error
+// carries a denial/failure message when the call itself failed or was denied
+// (mapped by reducer.ts's wireItemToModel); it drives the generic failed-row
+// treatment in ToolCallItem, a distinct signal from a nonzero exit.
 
-import {
-  type ItemModel,
-  parseArgs,
-  shellCommand,
-  shellOutput,
-  shellSummary,
-  stripRedundantCd,
-} from "@evener/appwire-client";
+import { parseArgs, shellCommand, shellOutput, shellSummary, stripRedundantCd } from "@evener/appwire-client";
 import { useRef } from "react";
 import { useThreadsStore } from "../../../../stores/threads";
 import { useOptionalTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
@@ -44,14 +38,6 @@ import { TOOL_BODY_MAX_CHARS } from "./bodies";
 // "[… exit N …]" footer, or the buffered environment's exit_code= trailer),
 // which the phone reads too. It reads only the tail, never an "exit_code="
 // token a command echoed mid-stream.
-
-// shellExitCode is the descriptor's single exit-code source: the typed wire
-// field (ItemModel.exitCode) first, the output's footer only as the
-// old-daemon fallback. `??` (not `||`) so a real typed 0 stays 0 rather
-// than falling through to the text scan.
-function shellExitCode(item: ItemModel): number | undefined {
-  return item.exitCode ?? shellOutput(item.output ?? "").exitCode;
-}
 
 // The row summary owns collapsed command presentation. The expanded body owns
 // a readable formatted command block and the output block independently.
@@ -131,25 +117,17 @@ function ShellBody(props: ToolRenderProps) {
   );
 }
 
-// nonzeroExit is the "this command failed" predicate behind failed(), the
-// row's failure glyph. It does not auto-open the row: a failed call earns the
-// glyph and data-attention, and the reader opens it to read the output.
-function nonzeroExit(item: ItemModel): boolean {
-  const exitCode = shellExitCode(item);
-  return exitCode !== undefined && exitCode !== 0;
-}
-
 registerToolRenderer({
-  // These three names are mirrored server-side by
-  // internal/apptranscript's ShellToolNames, which the session-scale failure
-  // count reads exit codes for. The two lists have to agree: a name here and
-  // not there is a row wearing a failure glyph the count omits.
+  // These three names are mirrored by the shared toolFamily's shell family
+  // (@evener/appwire-client's toolSummaries), which toolExitCode reads the exit
+  // code under. The two lists have to agree: a name here and not there is a row
+  // whose exit the mark would miss.
   match: (name) => name === "shell" || name === "exec_command" || name === "run_shell_command",
   icon: "terminal",
   monoSummary: true,
   fold: "consequential",
   // The exit code is NOT in the summary: a nonzero exit is announced by the
-  // row's failure glyph instead (A2 - "exit 1" as the headline made every
+  // row's small inline mark instead (A2 - "exit 1" as the headline made every
   // failure look like a footnote). The number's home is the real text at the
   // tail of the expanded body: formatShellResult bakes "[exit N]" into the
   // captured output itself (agent/session_tools_shell.go) — and when the
@@ -157,7 +135,6 @@ registerToolRenderer({
   // code's line instead (see ShellBodyContent's exitFooter).
   summary: shellSummary,
   body: ShellBody,
-  failed: nonzeroExit,
   // The row summary IS the raw one-line command; the expanded body renders
   // that same command pretty-printed. Showing both on an open row duplicated
   // the call, so while expanded the summary text swaps to this placeholder:

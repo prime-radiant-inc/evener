@@ -6,6 +6,7 @@ import {
   type DocFetch,
   DocFileError,
   type DocPort,
+  docDownloadURL,
   docFileRawURL,
   docImageReadURL,
   docImageURL,
@@ -72,6 +73,17 @@ test("docFileRawURL builds the raw variant with format=raw and both values escap
   // and its url query params, escaped exactly as the image href is.
   expect(docFileRawURL(SAME_ORIGIN, "a b&c", "dir/one two.md")).toBe(
     "/doc/file?format=raw&session=a%20b%26c&path=dir%2Fone%20two.md",
+  );
+});
+
+test("docDownloadURL names the file route's download format with both values escaped", () => {
+  // The representation a native client saves or shares from: it has no pane
+  // cap, so the body is the file itself. Its query shape matches the Go handler.
+  expect(docDownloadURL(SAME_ORIGIN, "a b&c", "dir/one two.mp4")).toBe(
+    "/doc/file?format=download&session=a%20b%26c&path=dir%2Fone%20two.mp4",
+  );
+  expect(docDownloadURL("https://hub.test/", "sess_1", "onboarding.mp4")).toBe(
+    "https://hub.test/doc/file?format=download&session=sess_1&path=onboarding.mp4",
   );
 });
 

@@ -41,6 +41,132 @@ Design documentation for the web hub (`cmd/evener-hub`).
   observer auto-open). Point-in-time; the multi-pane one is still named as
   source of truth by its implementation plan.
 
+## New session and first-run provider setup
+
+The New session form keeps its working-directory and task drafts while provider
+setup and model selection open, fail, retry and close. When the selected local
+host has no usable provider access, the prerequisite appears before the task
+composer and opens the existing Connect provider dialog. Remote targets name the
+missing remote setup but do not expose the controller's credential editor.
+
+**Save and check** persists resolved host access and requests only that
+connection's model list. A failed check keeps a successfully saved credential and
+offers retry; unsupported listing has an explicit unverified continuation. A
+successful check hands the connection's actual instance name to **Choose model**,
+which scopes the first view to that instance. Failed or empty model reads offer a
+cache-bypassing retry. Local launches may reopen connection settings; remote
+launches cannot write controller credentials.
+
+Provider connection and model choice never start a session. A person explicitly
+chooses the session model and selects **Start**. Start may also create a blank
+session, whose task is written later. The Effective access summary beside Start
+comes from launch resolution; an explicit Advanced sandbox override wins over
+the Access mode choice. Its Change action opens this form's Advanced controls and
+focuses the setting that owns the displayed value. Task prose does not grant or
+restrict tool permissions.
+
+The [first-task guide](../getting-started.md) walks through this path. The
+[provider guide](../connecting-a-provider.md) covers authentication alternatives,
+model-list limits and recovery.
+
+## Settings
+
+Settings groups controls by task:
+
+- **Preferences:** Appearance, Conversation display, Input & shortcuts, Notifications.
+- **Agent setup:** Providers & credentials, Agents, AGENTS.md, Session defaults.
+- **Extensions:** Plugins, Skill directories, MCP servers.
+- **System:** Hosts, Devices, Hub, Storage, About.
+
+Search matches destination names and control keywords, such as font, Enter,
+tokens, marketplace and plugin directory. Results open the owning page.
+Phone density opens Appearance; desktop or mobile layout opens Conversation
+display; desktop notifications or quiet opens Notifications. Pairing still opens Devices.
+Appearance is the default. Explicit unknown or retired `general`, `display`
+`plugins` and `inrepo` section URLs open Appearance, without aliases or a remembered
+section overriding that request. A host-qualified URL retains its host scope.
+AppShell replaces retired or unknown URLs before placing their settings pane,
+so mobile URL synchronization cannot restore retired params or discard Forward history.
+Project settings remain reachable through the Project settings action in each sidebar project menu.
+They combine repository-file review and explicit trust with local overrides for the
+selected host and working directory. Shared `.evener/launch.toml` settings apply
+only after approval of the reviewed hash; `.evener/launch.local.toml` overrides
+remain separate. Discovery checks that directory, not its ancestors. Repository
+inspection failures do not prevent editing local overrides.
+
+Conversation display edits one device layout at a time, initially the current
+device class. Both shared layouts remain available through the layout selector.
+Use the shared default clears only the selected layout's browser-local override.
+Scope and the local-override action appear before the editor. Editing a shared
+default keeps both browser-local layout choices. **Use the shared default** clears
+only the selected layout's browser-local override, without writing shared defaults.
+The preview stays visible; Technical details contains revisions and inventories.
+
+On phones, settings opens as a full-width list. Drilling into a page and using
+Back preserves the list's search and scroll position. Desktop keeps the list
+beside the selected page.
+
+Input & shortcuts brings Enter-to-send and keyboard customization together.
+Enter-to-send and character-key accessibility stay visible. Customize shortcuts
+opens the searchable editor; folding or filtering it preserves captured chords
+and pending writes. Synchronization failures and retry remain visible outside it.
+Failed saves and same-hub reconnects retain the proposed shortcut. **Retry**
+reloads the hub's current shortcuts without saving again. Once recovery finishes,
+focus the retained capture and press Enter to save explicitly, or Escape to cancel.
+Replacing the hub connection discards its proposal; it never moves to another hub.
+Enter-to-send and character-key enablement remain browser-local; keyboard
+overrides retain their existing hub synchronization. Appearance and notification
+preferences retain their existing browser storage. Conversation display keeps
+its Desktop/Mobile hub defaults and browser overrides. Organization does not
+change persistence or introduce new synchronization.
+
+Notifications shows Loud for only when sound or desktop notifications are enabled.
+Hiding that control preserves its selection. Browser tab indicator is independent
+of those channels. The desktop switch records a browser-local preference, not a
+promise that the browser can deliver notifications. Inline status explains blocked
+or unsupported notifications; toggling on preserves the preference in those cases
+but warns that delivery is unavailable. A browser permission prompt appears only
+when enabling with an undecided permission. Denying or dismissing that prompt
+leaves the preference off; a rejected request also leaves it off and raises an
+inline alert with retry guidance. Other preferences remain usable while the browser
+prompt is pending. Resolved permission choices never trigger another prompt.
+To recover from a denial, allow notifications in the browser's site settings and
+reload. Unsupported browsers can use sound instead.
+
+Plugins has one home with Installed, Browse and Sources views. Sources contains
+marketplaces and additional plugin directories under one host picker. With no
+installed plugins, **Browse plugins** opens Browse. With no marketplaces,
+**Manage sources** opens Sources, where **+ Add marketplace** accepts a reviewed
+repository URL, `owner/repo`, or local directory containing a
+`.claude-plugin/marketplace.json` catalog. See the
+[plugin marketplace guide](../plugins.md#install-from-a-marketplace).
+After adding a source, **Browse plugins** opens its catalog list. These navigation
+actions never install or enable plugins; installation is a separate confirmation.
+
+Plugin and marketplace read failures have separate retries. A failed marketplace
+read does not hide Installed; a failed plugin read does not prevent browsing
+catalogs, but installation waits until the installed inventory is available.
+Cached installed-plugin details remain inspectable during a failed read or retry.
+Plugin mutations wait for that retry to finish, and an install confirmation does
+not reinstall a target that the refreshed inventory already contains.
+Directory loading and editing recover independently of both inventories.
+Temporary marketplace read failures retain source add/edit drafts and let you
+keep typing; retry the read before saving. Untouched source editors follow
+canonical changes. An edited source that changes elsewhere requires **Reload
+latest** or **Keep my edits** before Save; neither choice saves by itself.
+Host switching keeps reads and saves bound to the selected host, and replacement
+host registrations never inherit drafts. Skill directories remain separate.
+
+Source and shortcut recovery applies while staying in the same editing context.
+Save or cancel before leaving: Settings does not provide a Stay/Discard navigation
+confirmation. These recovery behaviors do not change launch-form saving.
+
+The former General summary's runtime, listen address, masked token and token
+age belong to Hub; state/index paths, run directory and page size belong to Storage; version
+and credits belong to About. Hub and Storage fold these read-only facts under
+Technical details; updates, resident controls and browser-cache management stay
+visible. Existing stores and APIs remain authoritative.
+
 ## Older history demand
 
 The browser [transcript reader](../../cmd/evener-hub/frontend/src/panes/session/transcript/useTranscript.ts)

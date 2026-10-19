@@ -17,9 +17,9 @@ and `job-watch-observer-snide-thread.md`.
 
 ## Pre-state
 
-- Fresh binaries from the branch under test: `make build build-doctor` →
-  `./evener` and `./evener-doctor`. Put the worktree on `PATH` so the doctor agent's
-  shell tool resolves `evener doctor` (`PATH="$PWD:$PATH"`).
+- A fresh binary from the branch under test: `make build` → `./evener`, which
+  carries doctor as the `evener doctor` subcommand. Put the worktree on `PATH`
+  so the doctor agent's shell tool resolves it (`PATH="$PWD:$PATH"`).
 - A credentialed model (e.g. `--model kimi/kimi-for-coding`).
 - An **observer-watch session** to inspect. Either reuse an existing one (run
   `job-watch-actually-monty-python-injection.md` first and capture its caller
@@ -191,7 +191,7 @@ There is no `watch_self_loop` category.
 ## Out of scope
 
 `evener doctor` is read-only forensics over settled state — not a live monitor
-(that is appwire + tui + hub), not a mutator (mutation is the hub REST surface),
+(that is appwire + hub), not a mutator (mutation is the hub REST surface),
 and not a test harness (it exposes numbers; scenarios assert them with `jq`).
 The doctor's repair authority is graduated (`repair-guardrails.md`): diagnosis is
 autonomous; core-skill / Go-tool repair is propose-only behind review + a gate.

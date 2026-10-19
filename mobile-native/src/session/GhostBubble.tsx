@@ -134,7 +134,7 @@ export function GhostBubble({ ghost, disabled, canEdit, editHint, attachments, b
 				</Text>
 			) : null}
 			{ghost.buttons.length > 0 ? (
-				<View style={{ flexDirection: "row", gap: 4 }}>
+				<View style={{ flexDirection: "row", gap: 8 }}>
 					{ghost.buttons.map((action) => (
 						<GhostButton
 							key={action}

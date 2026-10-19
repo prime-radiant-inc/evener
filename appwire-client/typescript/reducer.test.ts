@@ -6307,9 +6307,9 @@ test("warning with bare-string `warning` and no top-level message renders that s
 
 // A warning frame that carries no message anywhere renders the frame itself,
 // not a blank row — the same contract appwire/warning.go's EffectiveMessage/
-// DecodeWarningParams enforces server-side (cmd/evener-tui/hub_notifications_test.go's
-// "no message anywhere renders the frame itself, not a bare title"): a
-// malformed or message-less warning must stay visible, or a producer's typo
+// DecodeWarningParams enforces server-side ("no message anywhere renders the
+// frame itself, not a bare title"): a malformed or message-less warning must
+// stay visible, or a producer's typo
 // vanishes silently instead of surfacing as the diagnosis it is. Bounded
 // because the frame's shape is unknown on the wire and can carry anything.
 test.each([
@@ -7894,8 +7894,7 @@ test("modelRetry clears once the model's own output item (agentMessage) complete
 // modelRetry clearing (turn/completed or turn/started ending the wait
 // regardless of output) — the same rule applyNotification's own comment
 // documents as dropped (no read-model replacement: a turn boundary carries
-// no notification of its own any more), matching the Go TUI port's
-// clearModelRetryOnProgress trim (fc12305a41).
+// no notification of its own any more).
 
 // announcementFrame/PLUGIN_LOADED_ITEM/PROMPT_LOADED_ITEM (the no-active-turn
 // announcement path's turn/completed fixture) were deleted along with the

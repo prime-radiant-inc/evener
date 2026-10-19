@@ -1,6 +1,9 @@
 import { activityNodeID } from "@evener/appwire-client";
 import { type ActivityListRow, isSubagentRow, matchesSearch, newestFirst } from "./subagentModel";
 
+/** Which kind of activity a list shows: subagents, or shell jobs. */
+export type ActivityKind = "agents" | "jobs";
+
 export type ActivityFilter = "all" | "running" | "done";
 
 export type ActivityListItem =
@@ -25,6 +28,9 @@ export function activityListItems(
 		completedJobsOpen: boolean;
 		missing: readonly string[];
 		coordinator: { ref: string; title: string };
+		/** The subagent rows, for naming a missing branch by its subagent's
+		 * title when the list itself shows only one kind. Defaults to `rows`. */
+		subagents?: readonly ActivityListRow[];
 	},
 ): ActivityListItem[] {
 	const running: ActivityListRow[] = [];
@@ -59,10 +65,10 @@ export function activityListItems(
 			for (const row of history.rows) items.push({ kind: "row", row });
 		}
 	}
-	const titleOf = (ref: string) =>
-		ref === view.coordinator.ref
-			? view.coordinator.title
-			: rows.find((row) => isSubagentRow(row) && row.ref === ref)?.title;
+	const titleOfRef = new Map(
+		(view.subagents ?? rows).flatMap((row) => (isSubagentRow(row) ? [[row.ref, row.title] as const] : [])),
+	);
+	const titleOf = (ref: string) => (ref === view.coordinator.ref ? view.coordinator.title : titleOfRef.get(ref));
 	// Two branches can share a title; the line names the title once.
 	for (const title of new Set(view.missing.map(titleOf))) items.push({ kind: "missing", title });
 	return items;

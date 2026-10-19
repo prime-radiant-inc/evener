@@ -151,8 +151,7 @@ rm -rf "$tmpdir"
   input gives `Conflict("queue is empty")`. A drain that fails this way is a
   race, not a regression — retry from a fresh snapshot before filing.
 - **A partial drain is its own error code.** `appwire.ErrorQueuedDrainPartial`
-  reports that some entries drained and some did not; the TUI treats it as a
-  success-ish outcome (`cmd/evener-tui/hub_session_keys.go:529-538`). If you
+  reports that some entries drained and some did not. If you
   see a partial, count what actually landed in the transcript rather than
   reading the error as a flat failure.
 - **The strip disappears when the queue empties.** Its absence after a drain

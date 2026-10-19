@@ -17,6 +17,7 @@ import {
   applyViewport,
   clearViewportOverride,
   closePage,
+  connectBrowser,
   connectPage,
   createStartupDeadline,
   evaluate,
@@ -29,6 +30,7 @@ import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady }
 import { Driver } from "../skillguard/run.mjs";
 import { measureDelayedFloatingDock } from "./startup.mjs";
 import { checkSessionHoverCards } from "./sessionHoverCard.mjs";
+import { checkSettingsGeometry } from "./settingsGeometry.mjs";
 import { checkMovingControls } from "./click-regression.mjs";
 import {
   DOCKVIEW_READY_LABEL,
@@ -1009,11 +1011,16 @@ async function measureActivityRowPadding(send, viewport) {
 
 // Browser regressions may prepare real page input without replacing the flow.
 export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, childGesture, preparePage) {
-  const target = await openPage(cdpEndpoint, "about:blank");
-  const page = await connectPage(cdpEndpoint, target.id);
-  const { send } = page;
+  const browser = await connectBrowser(cdpEndpoint);
+  let browserContextId;
+  let page;
   try {
-    await send("Storage.clearDataForOrigin", { origin: `http://127.0.0.1:${vitePort}`, storageTypes: "local_storage" });
+    // Clearing a shared origin races with outgoing fixtures' pagehide saves.
+    // Each journey needs a genuinely fresh reader, not a saved closed child.
+    ({ browserContextId } = (await browser.send("Target.createBrowserContext", { disposeOnDetach: true })).result);
+    const { targetId } = (await browser.send("Target.createTarget", { url: "about:blank", browserContextId })).result;
+    page = await connectPage(cdpEndpoint, targetId);
+    const { send } = page;
     await applyViewport(send, viewport);
     await navigateTo(page, `http://127.0.0.1:${vitePort}/shellguard.html`, BOOT);
     await evaluate(send, "window.settledShell");
@@ -1054,9 +1061,21 @@ export async function overviewOnPage(cdpEndpoint, vitePort, viewport, theme, chi
     failures.push(...result.errors.map(error => `page error: ${error}`));
     return { result, failures };
   } finally {
-    await clearViewportOverride(send);
-    page.close();
-    await closePage(cdpEndpoint, target.id);
+    try {
+      if (page) {
+        try {
+          await clearViewportOverride(page.send);
+        } finally {
+          page.close();
+        }
+      }
+    } finally {
+      try {
+        if (browserContextId) await browser.send("Target.disposeBrowserContext", { browserContextId });
+      } finally {
+        browser.close();
+      }
+    }
   }
 }
 
@@ -1066,6 +1085,7 @@ async function main() {
     guard = await startBrowserGuard({
       frontend: FRONTEND,
       profilePrefix: "shellguard-chrome-",
+      viteConfigFile: "scripts/shellguard/settingsGeometry.vite.config.mjs",
       // Headless hosts may have no pointer hardware. These Chromium settings
       // supply a hover-capable mouse, touch emulation still owns phone cases.
       chromeArgs: ["--blink-settings=availableHoverTypes=2,primaryHoverType=2,availablePointerTypes=4,primaryPointerType=4"],
@@ -1140,6 +1160,7 @@ async function main() {
     failures.push(...assertFloatingDock(delayedFloatingDock));
     console.log(`shellguard delayed workspace: ${JSON.stringify(delayedFloatingDock)}`);
     failures.push(...await checkSessionHoverCards(cdpEndpoint, vitePort));
+    failures.push(...await checkSettingsGeometry(cdpEndpoint, vitePort));
     if (failures.length === 0) {
       console.log(
         `shellguard ok: document ${result.document.scrollHeight}px in a ${result.viewport.height}px viewport, ` +

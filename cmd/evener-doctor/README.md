@@ -20,7 +20,8 @@ scripts that used to live in `tools/` were removed (they only served the benchma
 the one capability worth keeping — API-call analysis — became the `apilog`
 subcommand here.
 
-Build: `make build-doctor` (or `go run ./cmd/evener doctor`)).
+Build: `go build ./cmd/evener` and run `evener doctor`, or use
+`go run ./cmd/evener doctor` directly from a checkout.
 and the diagnose→findings workflow live in the bundled `doctoring-evener` skill;
 design rationale is in `docs/superpowers/specs/2026-06-19-evener-doctor-unified-design.md`
 and `…/2026-06-20-evener-doctor-apilog-design.md`.

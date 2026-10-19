@@ -55,3 +55,13 @@ docs/experiments/dashboard-session24.html
 /.roborev.toml
 
 # subagent-driven-development scratch (ledgers, briefs, review packages)
+
+# Documentation site build input and output (node_modules is ignored above).
+/docs-site/.generated/
+/docs-site/.vitepress/dist/
+/docs-site/.vitepress/cache/
+/docs-site/.vitepress/.temp/
+/docs-site/test-results/
+/docs-site/.vitepress/mermaid-test-dist/
+/docs-site/fixtures/mermaid/.vitepress/cache/
+/docs-site/fixtures/mermaid/.vitepress/.temp/

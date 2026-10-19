@@ -6,13 +6,13 @@ package dev
 // scripts/web/test-web-browser.sh keeps only the load-aware default for the
 // slot count and hands off here.
 //
-// The skill, cascade, background Jobs and retirement guards are never-signalled checks: each
-// is a go test (the retirement guard's behind `npm run`) whose driver, Chrome
-// and helper daemons are cleaned up by the test binary's own t.Cleanup, which a
-// TERM to go test would skip and a TERM to npm alone would orphan; an interrupt
-// waits for them instead. The skill and cascade guards also need the built
-// frontend (the hub serves the embedded dist), which the gate builds first
-// when it is missing.
+// The skill/onboarding, cascade, background Jobs and retirement guards are
+// never-signalled checks: each is a go test (the retirement guard's behind
+// `npm run`) whose driver, Chrome and helper daemons are cleaned up by the test
+// binary's own t.Cleanup, which a TERM to go test would skip and a TERM to npm
+// alone would orphan; an interrupt waits for them instead. The skill/onboarding
+// and cascade guards also need the built frontend (the hub serves the embedded
+// dist), which the gate builds first when it is missing.
 
 import (
 	"fmt"
@@ -79,14 +79,14 @@ func browserGuardSpec(guard, root string) guardSpec {
 			waitOnInterrupt: true,
 		}
 	case skillGuard:
-		// web-skillguard is the full-stack guard: cmd/evener-hub's
-		// TestSkillComposerBrowser (browserguard build tag) drives the
-		// production web app in real Chrome through a real hub against two
-		// real `evener serve` daemons. The TestSkillGuard* unit tests ride
-		// along: they need no browser and only this tag compiles them.
+		// web-skillguard carries the full-stack skill and onboarding guards:
+		// cmd/evener-hub's TestSkillComposerBrowser and TestOnboardingBrowser
+		// (browserguard build tag) drive the production web app in real Chrome
+		// through a real hub against real `evener serve` daemons. Their tagged
+		// TestSkillGuard* and TestOnboardingEvidence* rejection tests ride along.
 		return guardSpec{
 			name:            guard,
-			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestSkillComposerBrowser$|^TestSkillGuard", "-count=1"},
+			argv:            []string{"go", "test", "-tags", "browserguard", "./cmd/evener-hub", "-run", "^TestSkillComposerBrowser$|^TestSkillGuard|^TestOnboardingBrowser$|^TestOnboardingEvidence", "-count=1"},
 			dir:             ".",
 			env:             []string{vite},
 			needsBuild:      true,

@@ -1318,3 +1318,157 @@ test("pre-instanceId record tables migrate in place and their existing rows read
 	expect(after.intentSequence).toBe(2);
 	expect(rawRow("mutation_outbox", after.clientMutationId)).toMatchObject({ instance_id: "instance-new" });
 });
+
+// The stuck-sending heal's storage rule: an accepted start or queue record
+// whose turn left a bounded read's window is retired on a complete
+// authoritative read, while a record accepted after that read began - and any
+// record the daemon's pending projection never names (a note, a clear) - stays.
+test("pruneUnlistedAccepted retires only old accepted turn records of the target", async () => {
+	let now = 1000;
+	storage = new MutationOutboxSQLite(port, {
+		createMutationId: (() => {
+			let next = 0;
+			return () => `mutation-${++next}`;
+		})(),
+		now: () => now,
+	});
+	const send = await storage.enqueueIntent({
+		...intent("left the window"),
+		method: "turn/start",
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "left the window" }] },
+	});
+	await storage.settleReceipt(send.clientMutationId, "pending");
+	now = 2000;
+	const recent = await storage.enqueueIntent({
+		...intent("accepted during the read"),
+		method: "turn/start",
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "accepted during the read" }] },
+	});
+	await storage.settleReceipt(recent.clientMutationId, "pending");
+	// An accepted note can retain a display copy (the web keeps one so a retry
+	// lookup sees the save as pending), and the daemon's pending projection
+	// never names a note: absence must not retire it.
+	const note = await storage.enqueueIntent({
+		...noteIntent("a note is never in the pending projection"),
+		optimisticDisplay: { input: [{ type: "text", text: "a note is never in the pending projection" }] },
+	});
+	await storage.settleReceipt(note.clientMutationId, "pending");
+
+	await expect(storage.pruneUnlistedAccepted(TARGET, 1500, new Set())).resolves.toEqual([send.clientMutationId]);
+	expect(rawRow("mutation_optimistic", send.clientMutationId)).toBeUndefined();
+	expect(rawRow("mutation_optimistic", recent.clientMutationId)).toBeDefined();
+	expect(rawRow("mutation_optimistic", note.clientMutationId)).toBeDefined();
+});
+
+// RoboRev #996: acceptance is its own moment. A request enqueued before a read
+// can have its pending receipt land after that read's snapshot, and the
+// replacement client's read never saw the record - so pruning by enqueue time
+// would drop a send the snapshot had no evidence about.
+test("pruneUnlistedAccepted keeps a record accepted after the read began", async () => {
+	let now = 1000;
+	storage = new MutationOutboxSQLite(port, { createMutationId: () => "mutation-late", now: () => now });
+	const send = await storage.enqueueIntent({
+		...intent("enqueued before the read, accepted after it"),
+		method: "turn/start",
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "late receipt" }] },
+	});
+	// The read starts at 1500 and snapshots without this record; the receipt
+	// lands at 2000, still before the read's reconcile runs.
+	now = 2000;
+	await storage.settleReceipt(send.clientMutationId, "pending");
+
+	await expect(storage.pruneUnlistedAccepted(TARGET, 1500, new Set())).resolves.toEqual([]);
+	expect(rawRow("mutation_optimistic", send.clientMutationId)).toBeDefined();
+});
+
+test("pruneUnlistedAccepted leaves a submitting row alone", async () => {
+	const queued = await storage.enqueueIntent(intent("still owed to the daemon"));
+	await expect(storage.pruneUnlistedAccepted(TARGET, 9999, new Set())).resolves.toEqual([]);
+	expect(rawRow("mutation_outbox", queued.clientMutationId)).toBeDefined();
+});
+
+test("pruneUnlistedAccepted keeps an accepted record the read actually named", async () => {
+	storage = new MutationOutboxSQLite(port, { createMutationId: () => "mutation-named", now: () => 1000 });
+	const send = await storage.enqueueIntent({
+		...intent("named by the read, settlement failed"),
+		method: "turn/start",
+		optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "named" }] },
+	});
+	await storage.settleReceipt(send.clientMutationId, "pending");
+
+	// The read named this id, so it is still pending on the daemon; a failed
+	// settlement must not let the absence rule delete what the read proved.
+	await expect(storage.pruneUnlistedAccepted(TARGET, 9999, new Set([send.clientMutationId]))).resolves.toEqual([]);
+	expect(rawRow("mutation_optimistic", send.clientMutationId)).toBeDefined();
+});
+
+// RoboRev 998: an accepted record written by the previous schema has no
+// accepted_at, and the prune's fence would exclude it forever - so exactly the
+// rows this fix exists to heal could never retire. The migration backfills it
+// from enqueue time, which is always earlier than any read after the upgrade.
+test("pre-accepted_at accepted rows are backfilled so a later read can retire them", async () => {
+	database.exec("DROP TABLE mutation_optimistic");
+	database.exec(`CREATE TABLE mutation_optimistic (client_mutation_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
+		origin_client_id TEXT, target_ref TEXT NOT NULL, thread_id TEXT, instance_id TEXT, method TEXT NOT NULL,
+		payload TEXT NOT NULL, attachments TEXT NOT NULL, optimistic_display TEXT NOT NULL,
+		composer_text TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
+		state TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0, unresolved_attempts INTEGER NOT NULL DEFAULT 0,
+		stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0, recovery_kind TEXT, recovery_reason TEXT)`);
+	database
+		.prepare(
+			`INSERT INTO mutation_optimistic (client_mutation_id, version, target_ref, method, payload,
+			 attachments, optimistic_display, intent_sequence, created_at, state)
+			 VALUES (?, 1, ?, 'turn/start', '{}', '[]', '{}', 1, 900, 'accepted')`,
+		)
+		.run("mutation-old", TARGET);
+
+	openStorage();
+
+	expect(
+		database.prepare("SELECT accepted_at FROM mutation_optimistic WHERE client_mutation_id = ?").get("mutation-old"),
+	).toMatchObject({ accepted_at: 900 });
+	await expect(storage.pruneUnlistedAccepted(TARGET, 1000, new Set())).resolves.toEqual(["mutation-old"]);
+});
+
+// RoboRev 999: the column addition and its backfill must commit together. A
+// process that died between them would leave accepted_at present and every
+// accepted row at 0, and the migration above would never run the backfill
+// again - permanently excluding those rows from the prune.
+test("a failed accepted_at backfill rolls the column back, so the next start migrates and heals", async () => {
+	database.exec("DROP TABLE mutation_optimistic");
+	database.exec(`CREATE TABLE mutation_optimistic (client_mutation_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
+		origin_client_id TEXT, target_ref TEXT NOT NULL, thread_id TEXT, instance_id TEXT, method TEXT NOT NULL,
+		payload TEXT NOT NULL, attachments TEXT NOT NULL, optimistic_display TEXT NOT NULL,
+		composer_text TEXT, intent_sequence INTEGER NOT NULL, created_at INTEGER NOT NULL,
+		state TEXT NOT NULL, attempted INTEGER NOT NULL DEFAULT 0, unresolved_attempts INTEGER NOT NULL DEFAULT 0,
+		stop_epoch_at_enqueue INTEGER NOT NULL DEFAULT 0, recovery_kind TEXT, recovery_reason TEXT)`);
+	database
+		.prepare(
+			`INSERT INTO mutation_optimistic (client_mutation_id, version, target_ref, method, payload,
+			 attachments, optimistic_display, intent_sequence, created_at, state)
+			 VALUES (?, 1, ?, 'turn/start', '{}', '[]', '{}', 1, 900, 'accepted')`,
+		)
+		.run("mutation-old", TARGET);
+
+	// The first start's backfill dies mid-migration (the constructor's UPDATE
+	// goes through execSync, the bare-statement path).
+	const originalExecSync = port.execSync;
+	port.execSync = (sql: string) => {
+		if (sql.includes("SET accepted_at = created_at")) throw new Error("disk unavailable");
+		originalExecSync(sql);
+	};
+	expect(() => openStorage()).toThrow("disk unavailable");
+	port.execSync = originalExecSync;
+	// The rollback left the previous schema intact, so the next start retries
+	// the whole migration instead of finding a column it never backfilled.
+	expect(
+		database
+			.prepare("PRAGMA table_info(mutation_optimistic)")
+			.all()
+			.some((column) => column.name === "accepted_at"),
+	).toBe(false);
+
+	openStorage();
+
+	await expect(storage.pruneUnlistedAccepted(TARGET, 1000, new Set())).resolves.toEqual(["mutation-old"]);
+});

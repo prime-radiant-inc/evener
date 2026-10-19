@@ -9,12 +9,13 @@
 // keybindingDisplay.ts - the same module the cheatsheet overlay reads -
 // never a hand-maintained copy (the survey's stale-HELP_ROWS lesson).
 //
-// Editing requires a hub with synced-override support whose override state
+// Saving requires a hub with synced-override support whose override state
 // is CURRENT: hubSupport === "supported" plus the store's `loaded` flag (set
 // only by a confirmed apply in the current ready generation, cleared on
 // rewire/disconnect), no in-flight refresh, and no hub error. Anything less
-// gets the read-only listing with a truthful status line - a PATCH composed
-// in the stale window would carry the previous hub's revision and payload.
+// gets a truthful status line and no writes - a PATCH composed in the stale
+// window would carry the previous hub's revision and payload. Existing
+// captures survive same-client recovery, but never a client replacement.
 //
 // The overrides model owns an action's WHOLE chord set, so the editor edits
 // each action's base chord only; cheatsheet.toggle's conditional "?" entry
@@ -35,13 +36,14 @@ import {
   serializeChord,
   storeErrorText,
 } from "@evener/appwire-client";
-import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { keybindingsRegistry } from "../../../keybindings/appRegistry";
 import { isIMECompositionKeydown } from "../../../keybindings/dispatcher";
-import { keybindingsStore, useKeybindingsStore } from "../../../stores/keybindings";
+import { connectionStore } from "../../../stores/connection";
+import { type KeybindingsStoreState, keybindingsStore, useKeybindingsStore } from "../../../stores/keybindings";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
-import { Button, Chip, InlineNotice, KeyHint, Switch } from "../../../widgets";
+import { Button, Chip, InlineNotice, Input, KeyHint, Switch } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./keybindings.module.css";
 
@@ -97,6 +99,10 @@ function errorMessage(error: unknown): string {
   return storeErrorText(error);
 }
 
+function canWriteOverrides(state: KeybindingsStoreState): boolean {
+  return state.hubSupport === "supported" && state.hubError === null && !state.hubLoading && state.loaded;
+}
+
 /** The full replacement rule set a single-action edit produces: the store's
  * patch semantics are whole-payload (an action the payload drops gets its
  * defaults restored), so every edit re-sends the current overrides with this
@@ -114,12 +120,18 @@ function replacementRules(actionId: string, chord: string | null | undefined): O
 
 interface CaptureBoxProps {
   title: string;
+  active: boolean;
   /** Returns null on success (the box unmounts) or the message to show. */
   onSave: (chord: Chord) => Promise<string | null>;
   /** `refocus` is true when the capture ended from the keyboard (Escape) -
    * the row returns focus to its chord button - and false when it ended by
    * clicking away (focus already went where the user put it). */
   onCancel: (refocus: boolean) => void;
+}
+
+// Searching or folding the editor changes visibility, not the captured chord.
+function isShortcutNavigation(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest("[data-keybinding-navigation]") !== null;
 }
 
 /** The capture widget: a focusable box that consumes EVERY keydown while it
@@ -138,10 +150,11 @@ interface CaptureBoxProps {
  * The FIRST non-modifier press records the chord; later presses are ignored
  * (a stray key before Enter must not silently replace what is saved) - to
  * change the chord, cancel and re-capture. */
-function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
+function CaptureBox({ title, active, onSave, onCancel }: CaptureBoxProps) {
   const [held, setHeld] = useState<string[]>([]);
   const [captured, setCaptured] = useState<Chord | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const writable = useKeybindingsStore(canWriteOverrides);
   const boxRef = useRef<HTMLDivElement>(null);
   // A save is a hub round trip; keypresses that land while it is in flight
   // are ignored rather than queued into a second patch.
@@ -159,15 +172,21 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
   // (focus goes where the user put it - or stays, for a non-focusable
   // target). The listener dies with the box (unmount on cancel/save).
   useEffect(() => {
+    if (!active) return;
     function onPointerDown(event: PointerEvent): void {
       const box = boxRef.current;
-      if (box !== null && event.target instanceof Node && !box.contains(event.target)) {
+      if (
+        box !== null &&
+        event.target instanceof Node &&
+        !box.contains(event.target) &&
+        !isShortcutNavigation(event.target)
+      ) {
         onCancel(false);
       }
     }
     document.addEventListener("pointerdown", onPointerDown, true);
     return () => document.removeEventListener("pointerdown", onPointerDown, true);
-  }, [onCancel]);
+  }, [active, onCancel]);
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>): void {
     // IME composition keydowns are not presses: during composition events
@@ -192,13 +211,16 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
       return;
     }
     if (event.key === "Enter" && modifiers.length === 0) {
-      if (captured === null) return;
+      // Retaining a proposal is not write authority. A failed/uncertain save
+      // must first reconcile through a canonical read, never an automatic
+      // second mutation. Check live state, not the last render's snapshot.
+      if (captured === null || !canWriteOverrides(keybindingsStore.getState())) return;
       savingRef.current = true;
       const chord = captured;
       void onSave(chord).then((saveError) => {
         savingRef.current = false;
-        // On success the parent unmounted this box; only a failure needs
-        // the state write.
+        // A confirmed save closes the box; a fenced result leaves it alone.
+        // Only a failure needs the state write.
         if (saveError !== null) setError(saveError);
       });
       return;
@@ -241,12 +263,14 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
         className={CLASS.capture}
         role="textbox"
         aria-readonly="true"
-        tabIndex={-1}
-        aria-label={`Press the new shortcut for ${title}. Enter saves, Escape cancels.`}
+        tabIndex={0}
+        aria-label={`Press the new shortcut for ${title}. ${writable ? "Enter saves" : "Saving is unavailable"}, Escape cancels.`}
         data-state={captured !== null ? "captured" : held.length > 0 ? "holding" : "idle"}
         onKeyDown={handleKeyDown}
         onKeyUp={handleKeyUp}
-        onBlur={() => onCancel(false)}
+        onBlur={(event) => {
+          if (active && !isShortcutNavigation(event.relatedTarget)) onCancel(false);
+        }}
       >
         {captured !== null ? (
           <KeyHint keys={chordDisplayKeys(captured)} />
@@ -255,7 +279,11 @@ function CaptureBox({ title, onSave, onCancel }: CaptureBoxProps) {
         ) : (
           <span className={CLASS.capturePrompt}>Press new shortcut…</span>
         )}
-        <span className={CLASS.captureHint}>Enter to save · Esc to cancel</span>
+        <span className={CLASS.captureHint}>
+          {writable
+            ? "Enter to save · Esc to cancel"
+            : "Shortcut retained. Saving waits for hub recovery · Esc to cancel"}
+        </span>
       </div>
       {error !== null && <InlineNotice tone="danger">{error}</InlineNotice>}
     </div>
@@ -269,9 +297,10 @@ interface KeybindingRowProps {
   editable: boolean;
   bindings: readonly Binding[];
   characterKeyTriggers: boolean;
+  hidden: boolean;
 }
 
-function KeybindingRow({ actionId, title, editable, bindings, characterKeyTriggers }: KeybindingRowProps) {
+function KeybindingRow({ actionId, title, editable, bindings, characterKeyTriggers, hidden }: KeybindingRowProps) {
   const [capturing, setCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // A failed save leaves this row's inline error AND the store's hubError
@@ -299,6 +328,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
   // action - replacementRules composes from rawOverrides for the same
   // reason. The Customized marker stays on the effective bindings.
   const hasOverride = useKeybindingsStore((s) => s.rawOverrides.some((rule) => rule.action === actionId));
+  const rowRef = useRef<HTMLLIElement>(null);
   const chordButtonRef = useRef<HTMLButtonElement>(null);
   // Set when a capture ends from the keyboard (Escape cancel, Enter save):
   // focus returns to the chord button so the keyboard flow continues where
@@ -322,19 +352,28 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
     }
   }, [capturing]);
 
-  // A capture must not outlive editability: a disconnect, support loss, or
-  // hub replacement mid-capture would strand an interactive box in a
-  // read-only section (the store side already rejects the save). Cancel
-  // like a click-away: bump the generation so an in-flight save's
-  // continuation no-ops, and do NOT refocus - the controls focus would
-  // return to are going away with editability.
+  // Capability loss invalidates an in-flight save's continuation, NOT its
+  // proposal. The store can synthesize a result when an old generation's
+  // response arrives; that is not confirmation this capture was saved.
+  // Subscribe synchronously so a batched disconnect/reconnect cannot hide
+  // the loss. A different client is a different registration: discard its
+  // capture instead of transferring intent to the replacement hub.
   useEffect(() => {
-    if (!editable && capturing) {
+    const unsubscribeCapability = keybindingsStore.subscribe((state, previous) => {
+      if (canWriteOverrides(previous) && !canWriteOverrides(state)) captureGenerationRef.current += 1;
+    });
+    const unsubscribeConnection = connectionStore.subscribe((state, previous) => {
+      if (state.client === previous.client) return;
       captureGenerationRef.current += 1;
       refocusOnCloseRef.current = false;
       setCapturing(false);
-    }
-  }, [editable, capturing]);
+      setError(null);
+    });
+    return () => {
+      unsubscribeCapability();
+      unsubscribeConnection();
+    };
+  }, []);
 
   const binding = displayBindingFor(bindings, actionId);
   const customized = isActionCustomized(keybindingsRegistry.parseKeybinding, bindings, actionId, characterKeyTriggers);
@@ -361,7 +400,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
     // the capture this save belongs to is gone; its resolution must not
     // touch the row's current capture state.
     if (captureGenerationRef.current !== generation) return null;
-    refocusOnCloseRef.current = true;
+    refocusOnCloseRef.current = rowRef.current?.contains(document.activeElement) ?? false;
     setCapturing(false);
     setError(null);
     return null;
@@ -396,7 +435,9 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
 
   return (
     <li
+      ref={rowRef}
       className={CLASS.row}
+      hidden={hidden}
       data-action={actionId}
       data-customized={customized || undefined}
       data-unbound={binding === undefined || undefined}
@@ -406,7 +447,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
         {customized && <Chip>Customized</Chip>}
       </span>
       {capturing ? (
-        <CaptureBox title={title} onSave={saveCapture} onCancel={cancelCapture} />
+        <CaptureBox title={title} active={!hidden} onSave={saveCapture} onCancel={cancelCapture} />
       ) : editable ? (
         <span className={CLASS.controls}>
           <Button
@@ -473,6 +514,15 @@ const LOAD_FAILED_STATUS: ReadOnlyStatus = {
 };
 
 export function KeybindingsSection() {
+  const [customizeOpen, setCustomizeOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const editorId = useId();
+  const search = query.trim().toLocaleLowerCase();
+  const matchingActions = new Set(
+    ACTION_DISPLAY_ROWS.filter((row) => `${row.title} ${row.actionId}`.toLocaleLowerCase().includes(search)).map(
+      (row) => row.actionId,
+    ),
+  );
   const hubSupport = useKeybindingsStore((s) => s.hubSupport);
   const hubLoading = useKeybindingsStore((s) => s.hubLoading);
   const hubError = useKeybindingsStore((s) => s.hubError);
@@ -480,7 +530,7 @@ export function KeybindingsSection() {
   const warnings = useKeybindingsStore((s) => s.warnings);
   const bindings = useStore(keybindingsRegistry, (s) => s.bindings);
   const characterKeyTriggers = usePrefsStore((s) => s.characterKeyTriggers);
-  const editable = hubSupport === "supported" && hubError === null && !hubLoading && loaded;
+  const editable = useKeybindingsStore(canWriteOverrides);
 
   let status: ReadOnlyStatus | undefined;
   if (hubSupport === "unknown") {
@@ -519,12 +569,6 @@ export function KeybindingsSection() {
 
   return (
     <div className={CLASS.root}>
-      <p className={CLASS.intro}>
-        {editable
-          ? "Click a shortcut to change it; Enter saves and Escape cancels. Changes sync to this hub. Bindings marked Customized come from this hub's synced overrides."
-          : "The keyboard shortcuts currently in effect. Bindings marked Customized come from this hub's synced overrides."}
-      </p>
-
       {/* The WCAG 2.1.4 character-key turn-off (the p4 plan's Design
           decision 3): off unregisters the "?" cheatsheet trigger, leaving
           every shortcut on a modifier chord. Browser-local (prefs store),
@@ -533,7 +577,7 @@ export function KeybindingsSection() {
         label="Character-key shortcuts"
         checked={characterKeyTriggers}
         onChange={(value) => prefsStore.getState().setCharacterKeyTriggers(value)}
-        description="When on, pressing ? outside a text field opens the keyboard shortcuts overlay. Turn off to keep every shortcut on a modifier chord."
+        description="Saved in this browser. When on, pressing ? outside a text field opens the keyboard shortcuts overlay. Turn off to keep every shortcut on a modifier chord."
       />
 
       {status !== undefined && (
@@ -553,14 +597,16 @@ export function KeybindingsSection() {
             // Disabled while hubLoading so a double-click cannot double-fire
             // the refresh.
             hubSupport === "supported" ? (
-              <Button
-                variant="quiet"
-                size="xs"
-                disabled={hubLoading}
-                onClick={() => void keybindingsStore.getState().refreshOverrides()}
-              >
-                Retry
-              </Button>
+              <span data-keybinding-navigation>
+                <Button
+                  variant="quiet"
+                  size="xs"
+                  disabled={hubLoading}
+                  onClick={() => void keybindingsStore.getState().refreshOverrides()}
+                >
+                  Retry
+                </Button>
+              </span>
             ) : undefined
           }
         >
@@ -584,18 +630,45 @@ export function KeybindingsSection() {
         </div>
       )}
 
-      <ul className={CLASS.list}>
-        {ACTION_DISPLAY_ROWS.map((row) => (
-          <KeybindingRow
-            key={row.actionId}
-            actionId={row.actionId}
-            title={row.title}
-            editable={editable}
-            bindings={bindings}
-            characterKeyTriggers={characterKeyTriggers}
+      <div data-keybinding-navigation>
+        <Button
+          variant="secondary"
+          aria-expanded={customizeOpen}
+          aria-controls={editorId}
+          onClick={() => setCustomizeOpen((open) => !open)}
+        >
+          Customize shortcuts
+        </Button>
+      </div>
+      <div id={editorId} hidden={!customizeOpen}>
+        <p className={CLASS.intro}>
+          {editable
+            ? "Keyboard shortcuts sync to this hub. Click a shortcut to change it; Enter saves and Escape cancels."
+            : "Keyboard shortcuts use this hub's synced overrides. The shortcuts currently in effect are shown below."}
+        </p>
+        <div data-keybinding-navigation>
+          <Input
+            aria-label="Search shortcuts"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search shortcuts"
           />
-        ))}
-      </ul>
+        </div>
+        {matchingActions.size === 0 && <p role="status">No matching shortcuts.</p>}
+        <ul className={CLASS.list}>
+          {ACTION_DISPLAY_ROWS.map((row) => (
+            <KeybindingRow
+              key={row.actionId}
+              actionId={row.actionId}
+              title={row.title}
+              editable={editable}
+              bindings={bindings}
+              characterKeyTriggers={characterKeyTriggers}
+              hidden={!customizeOpen || !matchingActions.has(row.actionId)}
+            />
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

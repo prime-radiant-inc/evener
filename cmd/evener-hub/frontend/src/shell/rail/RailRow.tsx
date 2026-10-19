@@ -40,6 +40,7 @@ import {
 } from "@evener/appwire-client";
 import { subagentTallyToShow } from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode, useCallback, useRef } from "react";
+import { settingsURLWithQuery } from "../../panes/settings/settingsHost";
 import { LOCAL_HOST } from "../../stores/hostRouting";
 import {
   relativeAge,
@@ -290,6 +291,7 @@ function projectMenuItems(
   canSpawn = true,
 ): MenuItem[] {
   if (project.key === NO_PROJECT_KEY) return [];
+  const cwd = project.working_dir;
   return [
     // An offline host copy offers no launch at all: the request would
     // silently fall back to this hub with the remote working_dir.
@@ -299,6 +301,18 @@ function projectMenuItems(
             id: "new-session",
             label: "New session",
             onSelect: () => spawnInProject(project, spawnHost),
+          },
+        ]
+      : []),
+    ...(cwd
+      ? [
+          {
+            id: "project-settings",
+            label: "Project settings",
+            onSelect: () =>
+              navigate(settingsURLWithQuery("project", spawnHost ?? "local", new URLSearchParams({ cwd }).toString()), {
+                carrySettingsHost: false,
+              }),
           },
         ]
       : []),

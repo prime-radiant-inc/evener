@@ -881,11 +881,10 @@ func TestLocalDaemonSourceListUsesProbedCapabilities(t *testing.T) {
 	}
 }
 
-// TestLocalDaemonSourceListCarriesAskPending guards the TUI attach path (Task
+// TestLocalDaemonSourceListCarriesAskPending guards the attach path (Task
 // 29's per-row ask marker): when the hub's entries() feed reports PendingAsk
 // on a LocalDaemonEntry, threadFromEntry must carry it through to
-// appwire.EvenerThread.AskPending, since that's the field the TUI dashboard
-// reads (cmd/evener-tui/hub_types.go).
+// appwire.EvenerThread.AskPending, since that's the field clients read.
 func fuzzScenarioLocalDaemonSourceListCarriesAskPending(t *testing.T) {
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
 		return []LocalDaemonEntry{

@@ -808,6 +808,7 @@ function measureTapTargets() {
 
 const target = window as typeof window & {
   settledShell: Promise<unknown>;
+  shellGuardCalls: () => string[] | undefined;
   activityRowFixture: (open: boolean) => void;
   configureOverview: (theme: ThemePref) => void;
   overviewGuardState: () => unknown;
@@ -879,6 +880,7 @@ target.activityRowFixture = (open) => {
     fixture.remove();
   };
 };
+target.shellGuardCalls = () => shellClient?.calls.map((call) => call.method);
 target.configureOverview = (theme) => {
   prefsStore.getState().setFontSize("xl");
   prefsStore.getState().setTheme(theme);

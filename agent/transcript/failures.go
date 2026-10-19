@@ -3,24 +3,18 @@ package transcript
 import (
 	"bytes"
 	"encoding/json"
-	"slices"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
-// ShellToolNames are the tool names whose result carries a process exit code
-// that the transcript reads as failure. It mirrors the transcript renderer's
-// own shell descriptor (cmd/evener-hub/frontend/src/panes/session/transcript/
-// tools/shellTool.tsx's registerToolRenderer match), and the two lists have to
-// agree: a name in one and not the other means a row wearing a failure glyph
-// that the session's failure count does not include, or the reverse.
+// ShellToolNames are the tool names whose result carries a process exit code.
+// It exists for the failure-rule fuzz oracle, which draws tool names from it.
+// It is NOT the list of tools whose failures count: a nonzero exit is not a
+// failure (Jesse, 2026-10-16); only a result carrying an error counts (see
+// FailedToolResult). The clients' own shell-family list lives in
+// @evener/appwire-client's toolSummaries (toolFamily + toolExitCode).
 var ShellToolNames = []string{"shell", "exec_command", "run_shell_command"}
-
-// IsShellTool reports whether a tool's result carries a process exit code.
-func IsShellTool(name string) bool {
-	return slices.Contains(ShellToolNames, name)
-}
 
 // ExitCodeFromToolState reads the process exit code a shell tool records in its
 // opaque tool state. Absent state, unreadable state, or state without the field
@@ -52,28 +46,23 @@ func ExitCodeFromToolState(raw json.RawMessage) *int64 {
 //
 //   - a tool result carrying an error (llm.ToolResultData.IsError — the wire's
 //     ThreadItem.Error, and the "failed" status SettledToolStatus stamps);
-//   - a SHELL call that ran and exited nonzero. That is a clean tool result
-//     (IsError false) whose command failed, and the renderer marks it anyway.
-//     On the session measured in kata hw2n, counting only IsError would report
-//     1 against 6 visible glyphs.
+//
+// A SHELL call that ran and exited nonzero is NOT one of them (Jesse,
+// 2026-10-16). A nonzero exit is common and expected, so the transcript shows
+// it as a small inline mark on the call, never as a failure — and a count of
+// failures must match the glyphs, not outrun them. Only a result carrying an
+// error reads as failed, on any tool.
 //
 // communicate results are excluded: ProjectTurn drops them, so they render no
 // row and wear no glyph.
 //
 // name is the RESOLVED tool name — a result whose own record omits it takes the
 // name from the call that announced it, the way ProjectTurn resolves it.
-func FailedToolResult(name string, isError bool, toolState json.RawMessage) bool {
+func FailedToolResult(name string, isError bool) bool {
 	if name == "communicate" {
 		return false
 	}
-	if isError {
-		return true
-	}
-	if !IsShellTool(name) {
-		return false
-	}
-	exitCode := ExitCodeFromToolState(toolState)
-	return exitCode != nil && *exitCode != 0
+	return isError
 }
 
 // FailureCounter accumulates a session's failure count over the turns it is
@@ -156,7 +145,7 @@ func (c *FailureCounter) observe(turn schema.Turn, unresolved *bool) {
 				}
 				name = resolved
 			}
-			if FailedToolResult(name, part.ToolResult.IsError, part.ToolResult.ToolState) {
+			if FailedToolResult(name, part.ToolResult.IsError) {
 				c.count++
 			}
 		}

@@ -87,8 +87,6 @@ So the assertion is **absence of the element**, not an empty one.
    (`cmd/evener-hub/internal/launchconfig/schema.go:85,87`). Open the one
    whose block label reads exactly `Model`; only one panel is open at a
    time, so the listbox query above is unambiguous once it is.
-6. TUI: `n` → `BTab BTab` (focus Model) → `Enter`; `capture-pane` and
-   inspect the row under the `OLLAMA` header.
 
 ## Expected
 
@@ -115,14 +113,6 @@ So the assertion is **absence of the element**, not an empty one.
   `ollama/gemma4:e4b` instead of the display name (see Sharp edges —
   that means the `model/list` enrichment failed, a different fault);
   or the row is greyed/disabled.
-- **Step 6**: the TUI row reads `Gemma4:e4b  ollama/gemma4:e4b` with no
-  ` · ctx · price · caps` tail — `modelInfoMetaTail` returns `""` for a
-  descriptor carrying none of those fields
-  (`cmd/evener-tui/hub_commands.go#modelInfoMetaTail`), pinned by
-  `TestModelPickerItems_DescriptorWithoutMetadataStillRendersEmptyMeta`
-  (`cmd/evener-tui/hub_model_picker_items_test.go#TestModelPickerItems_DescriptorWithoutMetadataStillRendersEmptyMeta`). Contrast the
-  adjacent `Gpt 5.4` row's
-  `1M ctx · $2.50/$15.00 · tools,vision,reasoning`.
 - **Step 3**: `thread/start` returns a
   `result.thread.evener.ref` and the transcript outline shows real
   `USER_INPUT` and `ASSISTANT` turns with generated
@@ -156,10 +146,8 @@ So the assertion is **absence of the element**, not an empty one.
   If a successful row reads `ollama/gemma4:e4b` rather than `Gemma4:e4b`, inspect
   the `model/list` response before concluding anything about the catalog.
 - Don't confuse "uncatalogued" with "disabled" — this model has no
-  `DisabledReason` and is fully selectable and launchable. The TUI only
-  sets `DisabledReason` from a provider's launch diagnostic
-  (`cmd/evener-tui/hub_commands.go:468-492`), and graceful degradation
-  here means *fewer rendered facts*, never a blocked action.
+  `DisabledReason` and is fully selectable and launchable. Graceful
+  degradation here means *fewer rendered facts*, never a blocked action.
 - The same `gemma4:e4b` row also appears in the `Recent` group (see
   `model-picker-recent-reflects-last-5-global.md`) — Recent reuses the
   same already-built entry, so the degradation carries over unchanged.

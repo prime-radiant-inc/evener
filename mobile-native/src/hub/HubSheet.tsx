@@ -123,7 +123,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 						<HubStack.Screen
 							name="KeybindingPreferences"
 							component={KeybindingPreferencesScreen}
-							options={{ title: "Keyboard shortcuts" }}
+							options={{ title: "Web keyboard shortcuts" }}
 						/>
 						<HubStack.Screen
 							name="LaunchSettings"

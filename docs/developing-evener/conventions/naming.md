@@ -50,7 +50,7 @@ collectively outnumber AppWire fields. This revision backs off.
 | Hub config (`~/.config/evener/hub.toml`) | `cmd/evener-hub/config.go` | snake_case |
 | Launch config (`~/.config/evener/launch.toml`, `.evener/launch.toml`) | `internal/launchconfig/` | snake_case |
 | Project meta (`~/.config/evener/projects/<id>/meta.toml`) | `internal/launchconfig/` | snake_case |
-| `evener` CLI flags | `cmd/evener/`, `cmd/evener-hub/`, `cmd/evener-tui/`, `cmd/llmcall/`, `cmd/evenereval/` | kebab-case |
+| `evener` CLI flags | `cmd/evener/`, `cmd/evener-hub/`, `cmd/llmcall/` | kebab-case |
 
 Go struct tags follow the rule directly: `json:"snake_case"` and
 `toml:"snake_case"`. Field names in Go source stay idiomatic Go
@@ -108,7 +108,7 @@ Plus the usual trivial cases: `inspo/codex/**` is skipped entirely
 `thread/start` method carries protocol fields such as `launchOverrides`,
 `reasoningEffort`, and `nonInteractive`, which follow the AppWire
 camelCase wire format described above. There is no REST launch payload to
-maintain alongside it; the SPA and TUI both use this AppWire method.
+maintain alongside it; the SPA uses this AppWire method.
 
 
 ## Enforcement
@@ -182,7 +182,6 @@ appwire/providers carve-outs intentionally stay camelCase:
   mirrors the Claude `.mcp.json` format. Marked
   `// evener:naming-ignore` with a pointer back to the upstream format.
 
-Hub REST/SSE shapes and TUI-internal types that previously leaked
-camelCase have all migrated: REST request bodies use `turn_id`, the
-TUI now reuses the appwire-defined `NotificationRef` type directly
-instead of locally redeclaring the wire shape with camelCase tags.
+Hub REST/SSE shapes that previously leaked
+camelCase have all migrated: REST request bodies use `turn_id`, and the
+appwire-defined `NotificationRef` type carries the wire shape directly.

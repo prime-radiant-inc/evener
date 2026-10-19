@@ -49,6 +49,7 @@ function renderCard(overrides: Partial<React.ComponentProps<typeof TranscriptDis
       saveState="idle"
       onChange={vi.fn()}
       onRetry={vi.fn()}
+      onClearLocal={vi.fn()}
       {...overrides}
     />,
   );
@@ -62,7 +63,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test("renders controls before a production-backed example and inventories shown and hidden categories", () => {
+test("keeps the preview available while technical inventories are folded", async () => {
   renderCard();
   const card = screen.getByTestId("transcript-display-card-desktop");
   const controls = screen.getByTestId("transcript-display-controls-desktop");
@@ -75,16 +76,16 @@ test("renders controls before a production-backed example and inventories shown 
   expect(card.querySelector(":scope > div")).toBeTruthy();
   expect(card.querySelectorAll("h2")).toHaveLength(1);
   expect(card.querySelectorAll("h3")).toHaveLength(1);
-  expect((card.textContent ?? "").match(/Hub revision/g)).toHaveLength(1);
   if (cardHeading === null || exampleHeading === null) throw new Error("card headings were not rendered");
   expect(cardHeading.compareDocumentPosition(exampleHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(card.textContent).not.toContain("Current detail");
   expect(screen.getAllByRole("radio", { checked: true })).toHaveLength(1);
   expect(controls.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(canvas.contains(preview)).toBe(true);
   expect(preview.getAttribute("style")).toBeNull();
   expect(preview.style.width).toBe("");
   expect(canvas.contains(exampleHeading)).toBe(true);
+  expect(card.querySelector('[data-inventory="shown"]')).toBeNull();
+  await userEvent.setup().click(screen.getByText("Technical details", { selector: "summary" }));
   expect(inventoryCategories(card, "shown")).toEqual(
     expect.arrayContaining(["userMessages", "agentMessages", "criticalRows"]),
   );
@@ -107,10 +108,11 @@ test("offers one isolated disclosure and updates a controlled draft immediately"
       saveState="idle"
       onChange={onChange}
       onRetry={vi.fn()}
+      onClearLocal={vi.fn()}
     />,
   );
 
-  expect(screen.getAllByRole("group")).toHaveLength(1);
+  expect(within(screen.getByTestId("transcript-display-controls-desktop")).getAllByRole("group")).toHaveLength(1);
   expect(screen.getAllByRole("radio", { checked: true })).toHaveLength(1);
   await user.click(screen.getByRole("radio", { name: "Activity" }));
   expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ content: { kind: "preset", level: "activity" } }));
@@ -122,6 +124,7 @@ test("offers one isolated disclosure and updates a controlled draft immediately"
       saveState="idle"
       onChange={onChange}
       onRetry={vi.fn()}
+      onClearLocal={vi.fn()}
     />,
   );
   expect(screen.getByRole("radio", { name: "Activity" }).getAttribute("aria-checked")).toBe("true");
@@ -156,6 +159,7 @@ test("isolates preview disclosures and never consults the live threads store", a
         saveState="idle"
         onChange={vi.fn()}
         onRetry={vi.fn()}
+        onClearLocal={vi.fn()}
       />
       <TranscriptDisplayCard
         layout="mobile"
@@ -164,6 +168,7 @@ test("isolates preview disclosures and never consults the live threads store", a
         saveState="idle"
         onChange={vi.fn()}
         onRetry={vi.fn()}
+        onClearLocal={vi.fn()}
       />
     </>,
   );

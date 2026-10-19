@@ -16,6 +16,13 @@ export interface PulseBar {
 	opacity: number;
 }
 
+/** The one meter tone every surface draws (spec 16.4): offline is gray, an
+ * agent that may be stuck is amber, otherwise alive. Offline wins over stuck -
+ * a dropped connection isn't the session stalling. */
+export function meterTone(connected: boolean, stuck: boolean): "alive" | "attention" | "gray" {
+	return !connected ? "gray" : stuck ? "attention" : "alive";
+}
+
 /** A session's per-minute counts as the meter's PULSE_BARS minutes: the
  * newest minute last, a short history padded with zeros on the left, and
  * only the newest PULSE_BARS minutes of a longer one. */

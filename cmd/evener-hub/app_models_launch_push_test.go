@@ -31,7 +31,7 @@ func staleLaunchWeb(t *testing.T, models func(call int) appwire.ModelListRespons
 	}
 	announced := 0
 	web.launchModelsChanged = func() { announced++ }
-	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+	if _, err := web.fetchLaunchModels(context.Background(), "", false); err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
 	if err := reg.Reload(); err != nil {
@@ -47,7 +47,7 @@ func changingModels(call int) appwire.ModelListResponse {
 
 func TestLaunchRefreshAnnouncesAChangedList(t *testing.T) {
 	web, announced, _ := staleLaunchWeb(t, changingModels)
-	stale, err := web.fetchLaunchModels(context.Background(), "")
+	stale, err := web.fetchLaunchModels(context.Background(), "", false)
 	if err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestLaunchRefreshOfAnUnchangedListStaysSilent(t *testing.T) {
 	web, announced, _ := staleLaunchWeb(t, func(int) appwire.ModelListResponse {
 		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "same"}}}
 	})
-	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+	if _, err := web.fetchLaunchModels(context.Background(), "", false); err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
 	web.waitLaunchRefreshes()
@@ -109,7 +109,7 @@ func TestLaunchRefreshThatFailsStaysSilent(t *testing.T) {
 	spawner.mu.Lock()
 	spawner.err = errors.New("launch check failed")
 	spawner.mu.Unlock()
-	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+	if _, err := web.fetchLaunchModels(context.Background(), "", false); err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
 	web.waitLaunchRefreshes()
@@ -132,7 +132,7 @@ func TestLaunchRefreshOfAnEvictedEntryAnnounces(t *testing.T) {
 		return next(call, dir)
 	}
 	spawner.mu.Unlock()
-	if _, err := web.fetchLaunchModels(context.Background(), ""); err != nil {
+	if _, err := web.fetchLaunchModels(context.Background(), "", false); err != nil {
 		t.Fatalf("fetchLaunchModels: %v", err)
 	}
 	// The refresh is waiting on the launch check; evict the entry under it.
