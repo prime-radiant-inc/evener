@@ -238,9 +238,12 @@ a structured, data-safe context. The context includes `base_directory`, the
 skill directory against which relative references to scripts, references, or
 other collateral are resolved. Referenced resources are loaded lazily with the
 ordinary permission-checked tools only when the task needs them; they are not
-eagerly included with the skill body. A sandboxed session can read that directory
-in every mode, including for plugin skills and your own skills inside the masked
-`~/.config/evener` ([sandboxing](sandboxing.md#the-denylist-secrets-and-pseudo-filesystems)).
+eagerly included with the skill body. Activation does not grant directory access.
+Sandbox carve-outs cover the standard Evener plugin store and user skills
+location, including inside masked `~/.config/evener`. Other discovered locations,
+such as arbitrary `skills_dirs` or `~/.agents/skills`, need an existing readable
+root for collateral access in `restricted` mode. See
+[sandboxing](sandboxing.md#the-denylist-secrets-and-pseudo-filesystems).
 
 Skill bodies are inert instructions, not executable templates. Evener performs
 no expansion on them: no shell execution, no file inclusion, no argument
@@ -543,70 +546,20 @@ the plain clear-note behavior. An invalid selection in an accepted request
 never discards that request's valid note. A selection belongs to one
 compaction cycle and is consumed only by a compaction that actually publishes.
 
-Accepted requests are generation-owned, persisted compaction operations, not
-per-round flags. Each operation mints a generation from the session's
-lifecycle counter, records its origin (`forced` from `compact_context`,
-`automatic` from note elicitation), the note generation it owns, its steering
-instructions, and its selection; it stays pending until the fold publication
-claims it (moving it to the published phase for delivery) or a terminal
-cancellation retires it. The metadata save happens before the tool reports
-success, so an intent is never durable-by-assertion: a failed save returns a
-typed, retryable failure and retires the unsaved operation. Restart is not
-cancellation: a resumed session re-arms an unpublished forced operation's
-round-tail trigger from the persisted record, an automatic operation restores
-its elicitation latch, and a published operation resumes for delivery only.
-Clearing or replacing a note cancels only the automatic operation associated
-with that note; a forced operation survives a note clear, and a second forced
-request while one is pending is rejected without touching the first. While
-any pending or published-but-undelivered operation owns the cycle, note
-elicitation is latched — which is also the first-wins rule: a later
-elicitation can never overwrite the concrete selection the cycle already
-recorded, not even with an invalid one. Sessions persisted before this
-lifecycle metadata existed resume with fresh compaction state; nothing is
-reconstructed from old tool calls or transcript prose.
+Accepted compaction requests survive restart. A failed metadata save returns a
+retryable error rather than accepting an unsaved request. A successful compaction
+consumes its request and skill selection after saving the result; interrupted
+delivery resumes after restart without repeating the compaction.
 
-A fold publication claims its operation only when the fold actually
-compacted something and the operation is the one the fold's own requesting
-dispatch captured. The claim is generation-matched and runs inside the
-winning publish's critical section, so:
-
-- **No-op publications claim nothing.** A publication that staged no actual
-  compaction (an unchanged publication) leaves the operation pending for the
-  next real fold — a claimed cycle always corresponds to content that truly
-  compacted.
-- **Unrelated folds claim nothing.** A fold whose requesting caller captured
-  no operation — for example a manual compact racing a pending one —
-  publishes its own compaction without adopting the pending operation or
-  touching its selection; the pending operation stays armed for its own
-  dispatch.
-- **Losing attempts record nothing.** A fold that loses the publication race
-  attaches no receipts and cancels nothing; only the winner claims. A forced
-  dispatch that exhausts its retries without ever publishing cancels its own
-  operation with a `forced_not_published` notice — a forced intent never
-  lingers past the dispatch that owned it.
-
-The winning claim moves the operation to its published phase under the
-publication's identity and stamps a typed receipt on every compaction turn
-the publication wrote — the checkpoint and the summary turn of one
-publication carry the same receipt, and the handoff list coalesces them into
-one final handoff per publication. Delivery completes only after the
-publication's transcript flush and metadata save both land: then the
-operation slot and its selection are consumed, the cycle reopens for a new
-request, and the receipt flips to delivered. A crash between the winning
-publication and its metadata save is repaired on restart: transcript
-receipts are reconciled against the persisted snapshot before history is
-resumed, and an interrupted delivery completes exactly as the live
-transaction would — the slot clears, the selection is consumed, and the
-publication's handoff advances to delivered, never re-armed — while a
-delivered operation stays consumed and a cancelled one stays retired. A
-receipt only ever advances its own generation, and a stale snapshot can
-never resurrect or repeat a claimed cycle. A persisted slot still in the
-published phase is completed the same way at restore: it can only be a
-concurrent save's snapshot of the delivery window (the live transaction
-clears the slot before its own save), so restore finishes the delivery
-rather than resuming it. Publication identities are minted
-from the persisted lifecycle revision stamped at the claim, so a restored
-session's later publications never collide with a restored handoff.
+- Clearing or replacing a note cancels its automatic compaction request, not an
+  explicit `compact_context` request. A second explicit request is rejected
+  while the first is pending, leaving the first unchanged.
+- Later note elicitation cannot replace the pending cycle's skill selection.
+- A fold that changes no content leaves the request pending. An unrelated manual
+  compaction does not consume it. If an explicit compaction exhausts its retries
+  without publishing, it cancels its request with a `forced_not_published` notice.
+- Sessions saved before compaction lifecycle metadata existed start with fresh
+  compaction state; Evener does not reconstruct requests from old tool calls.
 
 The context-pressure nudge lists the loaded skills either way: with
 `compact_context` available it asks for the selection through `reload_skills`;

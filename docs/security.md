@@ -31,6 +31,16 @@ If a credential leaks, revoke or rotate it with its issuer first, then replace i
 
 Use `read-only` for review, `workspace-write` for code changes, or `restricted` to narrow reads as well. Pair a non-off mode with network off when tools do not need network access. Check the startup report for the backend and actual policy. See [Sandboxing](sandboxing.md) for platform limits, secret-path masking, cache behavior, and the degraded read-only delegate exception.
 
+**`read-only` and `workspace-write` do not hide all Evener credentials.** The
+standard denylist masks Evener's config root, not its default state root,
+`${XDG_STATE_HOME:-$HOME/.local/state}/evener`. OAuth records under `auth/`, the
+hub's `auth-token`, and secrets in `run/` may therefore be readable by a session
+running as the same user. Mode `0600` does not prevent that user's own processes
+from reading a file. `--sandbox-net off` does not stop file-tool reads or keep
+read content out of model context. `restricted` excludes the state root only
+when it lies outside the session's granted read roots; inspect the effective
+paths and grants before relying on that boundary.
+
 Sandboxing does not protect against other processes running as your user. It also cannot retract data already sent to a provider, erase earlier conversation, or make an allowed command harmless. An unsandboxed shell retains its normal filesystem access even if a particular tool is unavailable.
 
 ## Storage and backups

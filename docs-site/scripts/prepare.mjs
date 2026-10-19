@@ -140,7 +140,7 @@ export async function prepare({
     if (image && !assets.has(target))
       throw new Error(`Image not in assets: ${target}`);
     if (assets.has(target))
-      return `${kind === "export" ? origin : ""}${base}assets/${encodePath(target)}${query}${hash}`;
+      return `${kind === "export" ? origin + base : "/"}assets/${encodePath(target)}${query}${hash}`;
     // VitePress resolves source routes before adding the deployment base.
     if (pages.has(target))
       return kind === "export"

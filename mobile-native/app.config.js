@@ -60,6 +60,9 @@ const config = {
 			[
 				"expo-build-properties",
 				{
+					ios: {
+						enableSceneSupport: true,
+					},
 					android: {
 						usesCleartextTraffic: true,
 					},

@@ -15,6 +15,83 @@ Use launch settings to choose how a new session runs, provider settings to choos
 
 For a single CLI invocation, use [CLI flags](cli.md#one-shot-options). The layered `launch.toml` resolver described here belongs to hub launches; do not assume a direct CLI invocation reads those files.
 
+## Try a bounded launch
+
+First [install Evener](getting-started.md) and [connect a provider](connecting-a-provider.md).
+Live authentication, OAuth/device login, and provider compatibility are **untested
+prerequisites** of this walkthrough. The automated checks below use a local
+scripted provider, not a live account.
+
+### CLI: set the limit for this invocation
+
+From a disposable working directory, create a small input file:
+
+```sh
+printf '{"value":42}\n' > input.json
+```
+
+Set `MODEL` to a configured `instance/model` identifier, then run from that same
+directory:
+
+```sh
+evener --model "$MODEL" --max-rounds 1 \
+  'Read input.json, then copy its contents to forbidden.json.'
+```
+
+A run that exhausts this limit exits nonzero. The limit bounds tool-call rounds
+per input, not individual tool calls or file permissions. A live model might
+combine reading and writing in one round, or finish without using a tool. Do not
+treat the limit as a guarantee that a particular file remains untouched.
+
+For a fresh session with more room to work, rerun the command with
+`--max-rounds 4`. Inspect the actual tool records and file contents; a success
+message alone proves neither. Direct CLI flags do not save hub launch defaults.
+
+### Web: save a project default, then start a new session
+
+On the selected host, create `input.json` containing `{"value":42}` in a fresh
+working directory, as in the CLI example. The browser does not upload this file.
+
+1. Choose the intended host and working directory. Open the project's menu and
+   choose **Project settings**.
+2. Under **Local overrides**, set **Max rounds** to `1` and choose
+   **Save launch defaults**. This saves the private project layer, not credentials
+   or user-wide defaults.
+3. Start a **new session** in that directory. Select your configured model and
+   leave the round limit inherited rather than overriding it for this launch.
+4. Ask it to read `input.json`, then copy it to `forbidden.json`. Inspect the
+   resulting tools, limit status, and files, with the same live-model caveat as
+   the CLI example.
+5. Save `4` in the same project editor and start another new session. An already
+   running session keeps its original configuration. Another directory's project
+   defaults remain separate.
+
+After the exercise, stop work in both test sessions. Restore the project's
+previous **Max rounds** value and save it for future sessions. Review the
+disposable directory before deleting it; keep any results you need. CLI flags
+apply only to that invocation and need no saved-default rollback.
+
+### Contributor checks, not provider setup
+
+From the Evener checkout root, follow the [build setup](developing-evener/building.md)
+and [testing prerequisites](developing-evener/testing.md). These tours need Go,
+Node 22.13 or newer, the frontend and docs-site dependencies, and Playwright
+Chromium. They build and launch the real CLI and web hub in disposable projects.
+
+```sh
+go test ./cmd/evener-hub -run '^TestTutorialConfigEffectiveLaunch$' -count=1
+node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web --scenario configuration
+```
+
+The scripted provider requests a read in one round and a write in the next.
+The checks read persisted effective model/limit fields and actual tool records:
+one round produces one read, no write, and no `forbidden.json`; four rounds allow
+the write and the independent file check passes. The web check also saves through
+the real project editor, checks project isolation, and confirms that a running
+session's configuration does not change. These are partial CLI/web checks, not
+native coverage or screenshot publication. The tour opens the project settings
+route directly; it does not verify the menu navigation described above.
+
 ## Locate the files
 
 `<config-root>` means `${XDG_CONFIG_HOME:-$HOME/.config}/evener`. `<state-root>` means `${XDG_STATE_HOME:-$HOME/.local/state}/evener`. Set XDG variables in the environment of the host process, not in your browser.
@@ -62,7 +139,7 @@ Later layers override earlier ones where the field's merge rule permits it. An u
 | Legacy `system_prompt_append` | Uses the first file, warns if more were supplied |
 | `app_replay_size` | Global only; other layers produce a diagnostic |
 
-Duplicate inline MCP names produce a diagnostic and fail launch validation; they are not a way to override a server. Launch environment keys containing `API_KEY`, `_KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` (case-insensitive) are refused. This is a guardrail, not a secret detector. Never hide a key under another name to bypass it.
+Duplicate inline MCP names produce a merge diagnostic, but do not fail launch validation on that basis. The runtime resolves duplicate server names with the later definition winning. Use distinct names unless you intend that replacement. Launch environment keys containing `API_KEY`, `_KEY`, `TOKEN`, `SECRET`, `PASSWORD`, or `CREDENTIAL` (case-insensitive) are refused. This is a guardrail, not a secret detector. Never hide a key under another name to bypass it.
 
 After file merging, unset model, reasoning effort, and Responses continuation settings may fall back to `EVENER_MODEL`, `EVENER_REASONING_EFFORT`, and `EVENER_OPENAI_RESPONSES_CONTINUATION`. Configured values win over those fallbacks. `hub.toml` supplies the `api_log` floor, below explicit launch values. Other defaults come from the launch schema and the spawned runtime.
 
@@ -132,3 +209,44 @@ Do not infer live-session reload from a settings page updating. If a provider ch
 The exact launch field catalog is [schema.go](../cmd/evener-hub/internal/launchconfig/schema.go); file behavior is defined by [resolver.go](../cmd/evener-hub/internal/launchconfig/resolver.go), [merge.go](../cmd/evener-hub/internal/launchconfig/merge.go), [paths.go](../cmd/evener-hub/internal/launchconfig/paths.go), and [runtime_defaults.go](../cmd/evener-hub/internal/launchconfig/runtime_defaults.go). These are implementation links, not alternate user procedures.
 
 Next: [Connect a provider](connecting-a-provider.md), [operate the hub](evener-hub.md), or [troubleshoot a setting](troubleshooting.md). Before moving state or upgrading, read [storage and backups](security.md#storage-and-backups).
+
+## Captured walkthrough
+
+These checkpoints use a scripted fake provider, not live-provider authentication.
+CLI images render recorded command output; web images are browser screenshots.
+Owned temporary paths are masked. Native verification is deferred. See the
+[capture provenance and review process](developing-evener/tutorial-tours.md#review-and-publication).
+
+### CLI transcript checkpoints
+
+**Entry.** The input file contains the value the session will copy.
+
+![Configuration CLI entry checkpoint](assets/tutorials/configuration/cli/entry.png)
+
+[Read the entry command transcript](assets/tutorials/configuration/cli/entry.txt).
+
+**Action.** The command reads `input.json`, then exits with the round-limit error at limit 1.
+
+![Configuration CLI action checkpoint](assets/tutorials/configuration/cli/action.png)
+
+[Read the action command transcript](assets/tutorials/configuration/cli/action.txt).
+
+**Verified.** The transcript contrasts the limit-1 error with a limit-4 run that reports copying the file.
+
+![Configuration CLI verified checkpoint](assets/tutorials/configuration/cli/verified.png)
+
+[Read the verified command transcript](assets/tutorials/configuration/cli/verified.txt).
+
+### Web checkpoints
+
+**Entry.** The active session shows the request to stay open while project defaults change.
+
+![Configuration web entry checkpoint](assets/tutorials/configuration/web/entry.png)
+
+**Action.** Project settings show Max rounds set to 1 and a saved-settings confirmation.
+
+![Configuration web action checkpoint](assets/tutorials/configuration/web/action.png)
+
+**Verified.** The session shows a read, a patch to `forbidden.json`, and a report that the input was copied.
+
+![Configuration web verified checkpoint](assets/tutorials/configuration/web/verified.png)

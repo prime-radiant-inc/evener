@@ -39,15 +39,12 @@ transforms that can't be expressed any other way.
 
 ### Why keyed by provider name, not endpoint
 
-A URL says nothing once a gateway (Portkey, Helicone, a corporate reverse
-proxy) sits in front of the vendor — `baseUrl.includes("deepseek.com")`-style
-detection is fragile and wrong the moment someone puts a proxy in front of
-it. So behavior attaches to a **named provider record**, and the endpoint is
-just a field on it. A gateway instance says `base = "openai"` plus its own
-`base_url` and gets OpenAI's behavior explicitly, trimmed with `fields`. An
-endpoint nobody has a record for uses a protocol-only pseudo-provider
-(`openai-compatible`, `anthropic-compatible`, `google-compatible`) with
-baseline caps and the `generic` surface.
+Choose the provider record for the service's behavior, and use `base_url` for
+its address. A proxy URL does not identify the provider behind it. For example,
+a gateway instance with `base = "openai"` inherits OpenAI behavior even at a custom
+URL; `fields` can disable unsupported optional fields. For an unlisted endpoint,
+use `openai-compatible`, `anthropic-compatible`, or `google-compatible` for the
+matching protocol's baseline capabilities and `generic` surface.
 
 ### Why Surface is separate from Protocol and Provider
 
@@ -288,11 +285,11 @@ No substring or longest-prefix matching anywhere.
 A model id matching nothing is still resolvable: it's synthesized from
 provider-level caps, matching glob rows, and the provider's surface and
 family. `Warnings` carries `model not in catalog`; the wire id is the
-reference verbatim; the context window is unset, which the agent treats as
-"unknown" — compaction budgets against a conservative assumed window (128K),
-disclosed once as a warning naming the remedy (declare `context_window` on
-the model's row), until a live listing or a user row supplies the real one.
-Catalog and declared windows keep governing untouched. The anthropic
+reference verbatim. The synthesized row inherits any context window from
+provider-level capabilities or matching glob rows. Only when the resolved row
+has no window does the agent budget compaction against an assumed 128K window
+and warn once to declare `context_window`. A live listing or user row can supply
+a model-specific window. Catalog and declared windows remain authoritative. The anthropic
 protocol's required `max_tokens` falls back to 32000.
 This is how a model released this morning works before the cache refreshes.
 **Exception:** the `oauth-openai-codex` transport enforces a model
@@ -444,8 +441,7 @@ GOOGLE_VERTEX_LOCATION = "global"
 
 `[providers.work]` above is also the pattern for a gateway that needs
 per-model overrides (a custom `context_window`/`effort_values`/`default_effort`/
-`thinking_format` on one model id) — there's no separate worked example for
-that, this is it.
+`thinking_format` on one model ID).
 
 Key mapping: `base`, `inherit_models`, `inherit_models_matching`, `api_key`,
 `api_key_env`, `headers`, `credential_headers`, `surface`, `family`,
@@ -559,8 +555,7 @@ Source: [`effectiveAPIKeyEnv`](../llm/registry/instances.go).
 
 ## Cloud transports: Azure, Bedrock, Vertex
 
-None of these three needs request signing or non-SSE framing — that's why
-they fit the same transport model as everything else.
+These presets use SSE streaming and do not require request signing.
 
 **Azure.** `base_url = https://{AZURE_RESOURCE_NAME}.openai.azure.com/openai/v1`;
 `auth = header`, `auth_header = api-key` (Entra bearer tokens work through
@@ -582,13 +577,12 @@ alias_of = "claude-opus-4-5"  # facts, the anthropic protocol, the Foundry /anth
 
 **Bedrock.** `amazon-bedrock` uses Anthropic's Messages API on
 `bedrock-mantle` (`https://bedrock-mantle.{AWS_REGION}.api.aws/anthropic/v1`),
-bearer token via `x-api-key`. Mantle serves exactly the six unprefixed Claude
-ids its own `/v1/models` catalog lists; `global.`/`us.`/`eu.`/`jp.`/`au.`
-inference-profile ids resolve for metadata and stay usable by explicit
-reference, but are hidden from `evener models list` and 404 on this endpoint
-(verified live 2026-08-31 — see spec §9.3) because they address
-`bedrock-runtime`'s `InvokeModel`/`Converse` path, not Mantle. Nine Mantle
-OpenAI-shaped rows (gpt-oss, gpt-5.x, grok) also exist, via a separate
+bearer token via `x-api-key`. Use unprefixed Claude IDs from Mantle's own
+`/v1/models` catalog. The `global.`/`us.`/`eu.`/`jp.`/`au.` inference-profile IDs
+resolve for metadata and remain accepted as explicit references, but are hidden
+from `evener models list`. They address `bedrock-runtime`'s
+`InvokeModel`/`Converse` path, not the Mantle endpoint. Catalog resolution alone
+does not prove endpoint access. Mantle's OpenAI-shaped models use a separate
 bearer-auth preset. Token counting is estimate-only — exact counting is
 tracked as
 [issue #565](https://github.com/prime-radiant-inc/evener/issues/565).
@@ -758,38 +752,15 @@ injected at construction (cycle-free: `cmd/evener` builds the closure;
 
 ## Tool choice: Evener never forces it
 
-`Session.buildModelRequest` (`agent/session_model_call.go`) sends
-`ToolChoice: &llm.ToolChoice{Mode: "auto"}` on every main model call, and
-never a forcing mode (`"required"` or a named tool). This is deliberate and
-regression-guarded, not an oversight.
+Agent requests use `tool_choice: auto` for gateway compatibility. Forcing a tool
+call can prevent some models from stopping. Runtime nudges enforce required
+reporting when a model returns bare text, including reminding delegates to call
+`communicate` before ending their turn.
 
-**Why.** A model that cannot honor a forcing `tool_choice` has no legal way
-to stop, and Evener targets arbitrary models on arbitrary gateways where that
-capability is not knowable in advance. Measured against glm-5.2-vision (full
-system prompt, interleaved arms in one window): `auto` finished cleanly 3/3,
-one tool call, under 15s. `required` never terminated 3/3, emitting
-83/237/373 tool calls with no `finish_reason` before the run budget cut it
-off, one response repeating a single byte-identical call 231 times.
-
-**Enforcement moved from the wire to software.** Nothing about the
-result-tool contract weakened. `decideNoToolCalls` steers bare text back
-toward a tool call, and a delegate that ends its turn without communicating
-still gets `communicateNudge` — see `TestBareText_RedirectsToCommunicate`.
-The wire-level guarantee a forcing `tool_choice` used to buy is now bought by
-that software loop instead.
-
-**The regression guard:** `TestProcessInput_ToolChoiceIsNeverForced`
-(`agent/session_dod_definition_test.go`) fails if `ToolChoice.Mode` is ever
-anything but `"auto"`. Its doc comment carries the same evidence above — read
-it before arguing with this section.
-
-**`llm/` keeps full `"required"` support on purpose.** `llm/` is a general
-provider protocol library, not agent-specific: its builder tests cover
-`"required"` translation across the anthropic/google/openai protocols, and a
-gateway may itself downgrade a forcing request it receives from some other
-caller down to `auto`. Do not delete this as dead code because the agent
-layer never exercises it — the separation is deliberate: `llm/` supports
-forcing, `agent/` declines to use it.
+The regression test `TestProcessInput_ToolChoiceIsNeverForced` and its
+[experiment notes](../agent/session_dod_definition_test.go) cover the request
+setting; `TestBareText_RedirectsToCommunicate` covers the reporting nudge.
+The general-purpose `llm/` library still supports `required` for other callers.
 
 ## Reasoning effort
 
@@ -822,13 +793,13 @@ generation, the zai and qwen thinking toggles) do move to `medium`. Set
 the off level that reaches the wire, and on any other model it means no
 reasoning control at all, so the provider decides.
 
-**Per-model clamping and vouching.** Each resolved row advertises the levels
-it supports (`EffortValues` → `Profile.ReasoningEffortLevels()`), so an
-over-range request (e.g. `xhigh` to a model capped at `high`) is reduced rather
-than rejected. A row that states no ladder vouches for no level: the effort
-still sizes budget-shaped thinking, but a field that spells the level is
-omitted rather than sent (see
-[Reasoning and thinking dialects](#reasoning-and-thinking-dialects)).
+**Supported effort levels.** When a model lists supported levels, Evener clamps
+requests to that list; for example, `xhigh` becomes `high` on a model capped at
+`high`. Missing level metadata does not have one universal result. Most named-level
+fields are omitted, but OpenRouter passes explicit effort through, and Google's
+level-shaped models pass it through when no supported-level list is supplied.
+Budget-shaped thinking can still use effort to size its token budget. See
+[Reasoning and thinking dialects](#reasoning-and-thinking-dialects) for each mapping.
 
 **Provider mapping.** The openai-chat dialects send the `reasoning_effort`
 enum (see [Reasoning and thinking dialects](#reasoning-and-thinking-dialects)
@@ -878,5 +849,3 @@ transcript marker.
 - [`ollama.md`](ollama.md) — running Evener against a local Ollama server.
 - [`superpowers/specs/2026-08-28-provider-registry-design.md`](superpowers/specs/2026-08-28-provider-registry-design.md)
   — the registry design: data model, layers, resolution, and the flag day.
-- Historical point-in-time audits live under `docs/audit-logs/` (Feb 2026;
-  paths there predate the `internal/llm` → `llm/` move).

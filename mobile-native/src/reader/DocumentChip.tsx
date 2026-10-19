@@ -10,12 +10,14 @@ import { spokenDuration, timeAgo } from "../session/format";
 import { useMinuteClock } from "../session/minuteClock";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useReadingFace } from "../display/displayContext";
+import { menuAccessibility, menuPreview, showMenu } from "../longPressMenu";
 import { documentKind } from "./documentSource";
 import { FreshDot } from "./FreshDot";
 import { messageDocuments } from "./documentReferences";
 import { documentMemory } from "./nativeDocumentMemory";
 import { documentFreshness } from "./sessionDocuments";
 import { useDocumentSummary } from "./useDocumentSummary";
+import { useShareDocument } from "./useShareDocument";
 
 export interface DocumentChipProps {
 	hubId: string;
@@ -53,6 +55,7 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 	const scale = useTextScale();
 	const face = useReadingFace();
 	const { kind, title, name, lines, age, spokenAge, freshness } = useDocumentFacts(hubId, sessionRef, path, updatedAt);
+	const shareDocument = useShareDocument(hubId, sessionRef);
 	// A chip marks only a change (8.2); Files and its chip mark what's new. On
 	// screen the change is the blue dot alone; VoiceOver, which can't see the
 	// dot, says it in words.
@@ -65,11 +68,22 @@ export function DocumentChip({ hubId, sessionRef, path, updatedAt, onOpen }: Doc
 	const label = [kind, title, secondary, lines, spokenAge, spokenChange].filter((part) => part !== null).join(", ");
 	const details = secondary === null ? facts.join(" · ") : facts.map((fact) => ` · ${fact}`).join("");
 	const small = { fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow };
+	// A chip is where the agent's video or PDF first appears, so it offers the
+	// same system sheet the Reader does. The hook reports a failure itself.
+	// Memoized because a chip is a transcript row that re-renders on every
+	// minute tick, and its Pressable props should stay stable between them.
+	const menu = useMemo(
+		() => [{ name: "share", label: "Share", run: () => shareDocument(path) }],
+		[shareDocument, path],
+	);
+	const accessibility = useMemo(() => menuAccessibility(menu), [menu]);
 	return (
 		<Pressable
 			accessibilityRole="button"
 			accessibilityLabel={label}
 			onPress={onOpen}
+			onLongPress={() => showMenu(menu, menuPreview(title))}
+			{...accessibility}
 			// The list's 16pt sides and the row's 8pt gap place it (spec 8.2).
 			style={({ pressed }) => ({
 				minHeight: 44,

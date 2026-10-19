@@ -1,0 +1,11 @@
+Rendered command transcript
+Streams are recorded separately, not interleaved.
+
+$ cat input.json
+cwd: configuration-workspace
+stdout:
+{"value":42}
+
+stderr:
+
+exit: 0

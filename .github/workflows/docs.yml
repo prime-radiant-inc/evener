@@ -15,16 +15,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: docs-site/package-lock.json
+          cache-dependency-path: |
+            docs-site/package-lock.json
+            cmd/evener-hub/frontend/package-lock.json
       - run: npm --prefix docs-site ci
-      - run: npm --prefix docs-site run build
+      - run: npm --prefix cmd/evener-hub/frontend ci
       - name: Install Chromium for documentation checks
         working-directory: docs-site
         run: npx playwright install --with-deps chromium
+      - name: Execute all four CLI and web tutorial scenarios
+        run: node docs-site/scripts/tours/refresh.mjs check --surfaces cli,web
+      - run: npm --prefix docs-site run build
       - name: Check diagrams, search and navigation in Chromium
         working-directory: docs-site
         run: npx playwright test
