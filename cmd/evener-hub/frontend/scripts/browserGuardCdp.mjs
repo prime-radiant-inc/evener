@@ -291,6 +291,11 @@ async function listPageTabs(endpoint) {
   return targets.filter((entry) => entry.type === "page");
 }
 
+/** Connect to browser-level commands such as disposable context ownership. */
+export async function connectBrowser(endpoint) {
+  return openTabChannel({ webSocketDebuggerUrl: endpoint.url });
+}
+
 /**
  * Connect to the browser's one page tab, the startup tab a guard that opens no
  * tabs of its own drives. More than one listed tab is refused rather than
