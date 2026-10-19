@@ -194,8 +194,8 @@ func runForegroundCleanupCase(t *testing.T, stage string) {
 	shellSurvived := ownedProcessSurvives(report.ShellPID, report.ShellIdentity, 2*time.Second)
 	descendantSurvived := ownedProcessSurvives(report.DescendantPID, report.DescendantIdentity, 2*time.Second)
 	t.Cleanup(func() {
-		killOwnedProcess(report.ShellPID, report.ShellIdentity)
-		killOwnedProcess(report.DescendantPID, report.DescendantIdentity)
+		terminateOwnedProcessTree(report.ShellPID, report.ShellIdentity,
+			report.DescendantPID, report.DescendantIdentity, 2*time.Second)
 	})
 
 	if wantFailure {
@@ -365,10 +365,10 @@ func ownedProcessSurvives(pid int, identity string, grace time.Duration) bool {
 	}
 }
 
-// killOwnedProcess kills only a process whose recorded identity is non-empty and
-// still matches the current one, so an empty or mismatched identity never
-// authorizes a kill. It reports whether it signaled.
-func killOwnedProcess(pid int, identity string) bool {
+// signalOwnedProcess signals a process only when the recorded identity is
+// non-empty and still matches the current one, so an empty or mismatched
+// identity never authorizes a signal. It reports whether it signaled.
+func signalOwnedProcess(pid int, identity string, sig syscall.Signal) bool {
 	if pid <= 0 || identity == "" {
 		return false
 	}
@@ -376,7 +376,53 @@ func killOwnedProcess(pid int, identity string) bool {
 	if !ok || got != identity {
 		return false
 	}
-	return syscall.Kill(pid, syscall.SIGKILL) == nil
+	return syscall.Kill(pid, sig) == nil
+}
+
+// killOwnedProcess kills only a process whose recorded identity is non-empty and
+// still matches the current one, so an empty or mismatched identity never
+// authorizes a kill. It reports whether it signaled.
+func killOwnedProcess(pid int, identity string) bool {
+	return signalOwnedProcess(pid, identity, syscall.SIGKILL)
+}
+
+// waitForOwnedProcessesGone waits bounded for both the shell and its descendant
+// to disappear (reaped, not merely non-running). An empty or mismatched identity
+// counts as gone because it is never signaled.
+func waitForOwnedProcessesGone(shellPID int, shellIdentity string, descendantPID int, descendantIdentity string, grace time.Duration) bool {
+	deadline := time.Now().Add(grace)
+	for {
+		if !ownedProcessExistsWithIdentity(shellPID, shellIdentity) &&
+			!ownedProcessExistsWithIdentity(descendantPID, descendantIdentity) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// terminateOwnedProcessTree stops the fixture's shell and its descendant without
+// removing the descendant's reaper first. The shell is asked to TERM first so its
+// trap can kill and wait the child; only after the grace does escalation SIGKILL
+// the descendant before the shell, leaving the still-parent shell to reap its
+// child instead of orphaning a zombie. Only a non-empty, matching recorded
+// identity is ever signaled; nothing is killed by name or process group. It
+// reports whether it signaled anything.
+func terminateOwnedProcessTree(shellPID int, shellIdentity string, descendantPID int, descendantIdentity string, grace time.Duration) bool {
+	signaled := signalOwnedProcess(shellPID, shellIdentity, syscall.SIGTERM)
+	if waitForOwnedProcessesGone(shellPID, shellIdentity, descendantPID, descendantIdentity, grace) {
+		return signaled
+	}
+	if signalOwnedProcess(descendantPID, descendantIdentity, syscall.SIGKILL) {
+		signaled = true
+	}
+	if signalOwnedProcess(shellPID, shellIdentity, syscall.SIGKILL) {
+		signaled = true
+	}
+	waitForOwnedProcessesGone(shellPID, shellIdentity, descendantPID, descendantIdentity, grace)
+	return signaled
 }
 
 type foregroundCleanupSentinel struct{ process *os.Process }
@@ -508,5 +554,84 @@ func TestOwnedProcessSurvivesCountsAnUnreapedZombie(t *testing.T) {
 	waitForZombie(t, cmd.Process.Pid)
 	if !ownedProcessSurvives(cmd.Process.Pid, identity, 200*time.Millisecond) {
 		t.Fatal("an unreaped zombie was reported clean; a lingering zombie must count as a survivor")
+	}
+}
+
+// TestTerminateOwnedProcessTreeReapsDescendant is the real fallback-teardown
+// reproducer: a shell with the fixture's TERM trap and a background child are
+// both alive when termination starts. SIGTERM to the shell first lets its trap
+// kill and wait the child; the old parent-first SIGKILL removed the child's
+// reaper and left it behind as an unreaped zombie. Both must be gone, not
+// zombies, after the helper returns.
+func TestTerminateOwnedProcessTreeReapsDescendant(t *testing.T) {
+	dir := t.TempDir()
+	shellPIDPath := filepath.Join(dir, "shell.pid")
+	childPIDPath := filepath.Join(dir, "child.pid")
+	gatePath := filepath.Join(dir, "gate")
+	script := fmt.Sprintf(
+		"sleep 600 & child=$!; "+
+			"trap 'kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 0' TERM; "+
+			"printf '%%s' \"$child\" > %s; printf '%%s' $$ > %s; "+
+			"while [ ! -f %s ]; do sleep 0.01; done; "+
+			"kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null",
+		strconv.Quote(childPIDPath), strconv.Quote(shellPIDPath), strconv.Quote(gatePath))
+	cmd := exec.Command("sh", "-c", script)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start terminating shell: %v", err)
+	}
+	waited := make(chan struct{})
+	go func() {
+		_, _ = cmd.Process.Wait()
+		close(waited)
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		<-waited
+	})
+
+	shellPIDData, ok := waitForFileContent(shellPIDPath, 10*time.Second)
+	if !ok {
+		t.Fatalf("terminating shell never wrote its PID file %s", shellPIDPath)
+	}
+	shellPID, err := strconv.Atoi(strings.TrimSpace(shellPIDData))
+	if err != nil || shellPID <= 0 {
+		t.Fatalf("parse terminating shell PID %q: %v", shellPIDData, err)
+	}
+	childPIDData, ok := waitForFileContent(childPIDPath, 10*time.Second)
+	if !ok {
+		t.Fatalf("terminating shell never wrote its child PID file %s", childPIDPath)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(childPIDData))
+	if err != nil || childPID <= 0 {
+		t.Fatalf("parse terminating shell child PID %q: %v", childPIDData, err)
+	}
+	shellIdentity, ok := ownedProcessIdentity(shellPID)
+	if !ok {
+		t.Fatalf("could not read the terminating shell identity for %d", shellPID)
+	}
+	childIdentity, ok := ownedProcessIdentity(childPID)
+	if !ok {
+		t.Fatalf("could not read the terminating shell child identity for %d", childPID)
+	}
+	if !ownedProcessExistsWithIdentity(shellPID, shellIdentity) {
+		t.Fatalf("terminating shell %d was not alive before termination", shellPID)
+	}
+	if !ownedProcessExistsWithIdentity(childPID, childIdentity) {
+		t.Fatalf("terminating shell child %d was not alive before termination", childPID)
+	}
+
+	if !terminateOwnedProcessTree(shellPID, shellIdentity, childPID, childIdentity, 2*time.Second) {
+		t.Fatal("terminateOwnedProcessTree signaled nothing while both processes were alive")
+	}
+	select {
+	case <-waited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("terminating shell was not reaped after termination")
+	}
+	if _, _, ok := processSnapshot(shellPID); ok {
+		t.Fatalf("terminating shell %d still exists after termination", shellPID)
+	}
+	if _, _, ok := processSnapshot(childPID); ok {
+		t.Fatalf("terminating shell child %d still exists after termination; a reaper was removed first", childPID)
 	}
 }
