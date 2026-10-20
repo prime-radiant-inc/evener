@@ -402,6 +402,8 @@ the recorded replacement even if the original attempt failed before choosing a
 restart command. A confirmed deploy-only operation remains deploy-only on retry.
 An unacknowledged write is retried before recovery can settle, since equal build
 labels such as `dev` do not prove the requested executable was installed.
+Even an acknowledged deploy-only write remains pending until its build and startup
+contract are verified, preserving its repair authority for a later Restart.
 Before stopping the live hub, Restart re-reads the selected executable's startup
 contract and uses those fresh facts to reconcile any pending deployment. An
 already-authorized deployment can repair an invalid contract or a changed build;
@@ -411,6 +413,9 @@ restart and preserves the live connection. Fix the executable, then retry Restar
 Connect and reconnect also validate the executable before retrying
 a pending restart, whether the predecessor is still running or has stopped.
 Refusal retains the pending intent so recovery can finish after the repair.
+A pending standalone start or Restart retains its original build and predecessor;
+enabling automatic deployment does not authorize replacing that intent with a
+controller-build installation.
 A verified restart retires the predecessor's bridge before reattaching and
 checking the replacement, even if the old SSH connection has not reported EOF.
 If the first health probe missed the predecessor, a later probe can identify it

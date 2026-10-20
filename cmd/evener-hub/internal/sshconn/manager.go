@@ -1887,6 +1887,11 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			return nil, preflight.launchErr
 		}
 		if !pending.needsDeployment(facts) && !pending.restart {
+			// An acknowledged write and matching label do not prove a usable
+			// installation. Keep its repair authority until its contract is valid.
+			if err := validateStartupContract(host.Name, facts); err != nil {
+				return nil, err
+			}
 			m.clearPendingRestart(host.Name)
 		} else if pending.needsDeployment(facts) && !m.canDeploy() {
 			return nil, errDeployDisabled
@@ -2240,6 +2245,11 @@ func (m *Manager) deployRequired(facts Preflight) bool {
 // Build labels alone never request deployment or process replacement.
 func (m *Manager) ensureDecision(name string, facts Preflight, liveIncompatible, hubPresent bool) (deploy, restart bool) {
 	pending := m.pendingRestart(name)
+	if pending.active() && !pending.deployment {
+		// A recorded start/restart authorized only that effect, not installation
+		// of the controller's build. Validate its target before retrying it.
+		return false, true
+	}
 	deploy = liveIncompatible || m.deployRequired(facts) || pending.needsDeployment(facts)
 	restart = (deploy && hubPresent) || pending.command != ""
 	if pending.deployment {
