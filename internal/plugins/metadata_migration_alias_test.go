@@ -3,6 +3,7 @@ package plugins
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -95,6 +96,17 @@ func TestManagedMetadataMigrationPreservesAliasTargets(t *testing.T) {
 			}
 			if warnings.Len() == 0 {
 				t.Fatal("an unverified migration emitted no diagnostic")
+			}
+			stateBytes, err := os.ReadFile(filepath.Join(m.Root, storeFormatFileName))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var state storeFormat
+			if err := json.Unmarshal(stateBytes, &state); err != nil {
+				t.Fatal(err)
+			}
+			if state.Version != 1 || state.ManagedContent != managedContentUnverified {
+				t.Fatalf("persisted state = %+v, want version 1 unverified", state)
 			}
 
 			if err := os.Remove(entry); err != nil {
