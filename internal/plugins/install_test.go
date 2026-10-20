@@ -284,6 +284,44 @@ func TestInstall_ManifestLessPlugin_NoUsableFields_Installs(t *testing.T) {
 	}
 }
 
+func TestInstall_ManifestLessPluginValidatedBeforePublication(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	pluginRepo := filepath.Join(t.TempDir(), "plugin")
+	makeGitRepo(t, pluginRepo, "resource.txt", "companion") // deliberately has no manifest
+	marketRepo := filepath.Join(t.TempDir(), "market")
+	writeURLCatalog(t, marketRepo, "widget", pluginRepo, "")
+	makeGitRepo(t, marketRepo, "README.md", "market")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: marketRepo}); err != nil {
+		t.Fatal(err)
+	}
+	oldRename := installRename
+	t.Cleanup(func() { installRename = oldRename }) // package-wide seam; keep this test serial.
+	renamed := false
+	installRename = func(from, to string) error {
+		renamed = true
+		if _, err := os.Stat(filepath.Join(from, ".claude-plugin", "plugin.json")); err != nil {
+			t.Fatalf("manifest missing in owned staging before publication: %v", err)
+		}
+		if err := validatePluginDir(from); err != nil {
+			t.Fatalf("staging did not validate before publication: %v", err)
+		}
+		return oldRename(from, to)
+	}
+	entry, err := m.Install(context.Background(), "widget", "acme")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !renamed {
+		t.Fatal("publication rename was not attempted")
+	}
+	if err := validatePluginDir(entry.InstallPath); err != nil {
+		t.Fatalf("published plugin failed validation: %v", err)
+	}
+}
+
 // installBareNPMRepo installs a manifest-less plugin repo laid out from files
 // (path -> contents) whose marketplace entry declares no components, and
 // returns the entry and manager.
