@@ -40,17 +40,24 @@ test("older failure identity", () => {
 });
 
 test("empty running turn", () => {
-  // The running turn has produced no display items yet, so identity alone
-  // establishes it as the live tail.
+  // A running turn with no display row cannot establish that the source
+  // failure is the latest canonical turn.
   expect(
     isLatestRetryTurn(
       thread({ turns: [turn("older")], runningTurnId: "latest", status: { type: "active" } }),
       "latest",
     ),
-  ).toBe(true);
+  ).toBe(false);
   // A different running identity prevents Retry even when that turn has no
   // display row either.
   expect(isLatestRetryTurn(thread({ runningTurnId: "new-running" }), "latest")).toBe(false);
+  // The same running identity is still eligible when it is also the last
+  // canonical turn.
+  expect(isLatestRetryTurn(thread({ runningTurnId: "latest", status: { type: "active" } }), "latest")).toBe(true);
+});
+
+test("a running identity does not make an older failure the latest turn", () => {
+  expect(isLatestRetryTurn(thread({ runningTurnId: "older" }), "older")).toBe(false);
 });
 
 test("invalidated history", () => {

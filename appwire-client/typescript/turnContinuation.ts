@@ -18,9 +18,10 @@ type RetryTurnThread = Pick<ThreadModel, "turns" | "runningTurnId" | "history" |
 // - Invalidated or failed history cannot establish the live tail until the
 //   existing owner refreshes it. Absent history carries no invalidation
 //   signal, so the canonical turns and live state are used instead.
-// - A running identity is the live answer. A different one prevents Retry
-//   even when its turn has produced no display items yet; the same one is
-//   enough for the same reason.
+// - A running identity is a veto: a different one prevents Retry even when
+//   its turn has produced no display items yet. It is never permission to
+//   bypass the latest-turn test below; the source failure must still be the
+//   last canonical display turn.
 // - Active status without a running identity is not coherent live state, so
 //   it cannot authorize Retry.
 // - Otherwise the last canonical turn is the tail. Ids are compared by
@@ -30,8 +31,8 @@ export function isLatestRetryTurn(thread: RetryTurnThread, failedTurnId: string)
   if (history?.invalidatedAtGeneration !== undefined || history?.failed !== undefined) return false;
 
   const runningTurnId = thread.runningTurnId;
-  if (runningTurnId !== undefined) return runningTurnId === failedTurnId;
-  if (isTurnActive(thread.status.type)) return false;
+  if (runningTurnId !== undefined && runningTurnId !== failedTurnId) return false;
+  if (runningTurnId === undefined && isTurnActive(thread.status.type)) return false;
 
   return thread.turns[thread.turns.length - 1]?.id === failedTurnId;
 }
