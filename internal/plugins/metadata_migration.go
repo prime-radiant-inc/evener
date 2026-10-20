@@ -174,14 +174,14 @@ func (m *Manager) unsafeGitEntry(entry string) bool {
 // targetIsMixedManagedContent reports whether target lies under any managed
 // content root at a path that is not itself inside a .git entry.
 func (m *Manager) targetIsMixedManagedContent(target string) bool {
-	targets := []string{target}
+	targets := []string{normalizeDataVolumeAlias(target)}
 	if resolved, err := filepath.EvalSymlinks(target); err == nil && resolved != target {
-		targets = append(targets, resolved)
+		targets = append(targets, normalizeDataVolumeAlias(resolved))
 	}
 	for _, root := range m.managedRoots() {
-		spellings := []string{root.path}
+		spellings := []string{normalizeDataVolumeAlias(root.path)}
 		if resolved, err := filepath.EvalSymlinks(root.path); err == nil && resolved != root.path {
-			spellings = append(spellings, resolved)
+			spellings = append(spellings, normalizeDataVolumeAlias(resolved))
 		}
 		for _, spelling := range spellings {
 			for _, candidate := range targets {
@@ -196,6 +196,23 @@ func (m *Manager) targetIsMixedManagedContent(target string) bool {
 		}
 	}
 	return false
+}
+
+// normalizeDataVolumeAlias collapses macOS's APFS data-volume firmlink spelling
+// onto the plain one. EvalSymlinks does not collapse a firmlink, so a store
+// reached by one spelling would otherwise look unrelated to a target named by
+// the other. This mirrors agent/sandbox.StripDataVolumeAlias; the plugin store
+// must not import the sandbox package for it.
+func normalizeDataVolumeAlias(path string) string {
+	const prefix = "/System/Volumes/Data"
+	clean := filepath.Clean(path)
+	if clean == prefix {
+		return "/"
+	}
+	if rest, ok := strings.CutPrefix(clean, prefix+"/"); ok {
+		return filepath.Clean("/" + rest)
+	}
+	return clean
 }
 
 func pathDepth(path string) int {
