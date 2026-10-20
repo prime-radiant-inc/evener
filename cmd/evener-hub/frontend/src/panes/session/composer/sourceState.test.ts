@@ -40,7 +40,7 @@ import {
 } from "./queue/pendingTurnsStore";
 import { SkillEditor } from "./SkillEditor";
 import type { SkillEditorValue } from "./skillDocument";
-import { type ComposerSourceState, createComposerSourceState } from "./sourceState";
+import { type ComposerSourceState, carryBrowserDraft, createComposerSourceState } from "./sourceState";
 
 // File-local cleanup, independent of the shared testing helper: injected
 // repository/outbox sources are not registered with createTestComposerSource.
@@ -1417,6 +1417,32 @@ test("a real storage abort keeps the same accepted entry for a later bounded ret
   expect(source.alive).toBe(true);
 });
 
+// A send can go out while the durable platform is unavailable: the accepted
+// submission still settles locally, and the edits it submitted stay in the
+// accepted queue until the platform returns. Retrying them then would write
+// the sent message back as a draft, so the settlement must retire exactly the
+// queue entries its capture covered.
+test("a send accepted without durable storage retires the queued edits it submitted", async () => {
+  resetBrowserDraftRepositoryForTests();
+  const platform = globalThis.indexedDB;
+  vi.stubGlobal("indexedDB", undefined);
+  const ref = "source-state-send-without-storage";
+  const key = browserDraftKey(ref);
+  const source = createTestComposerSource(ref);
+  const sent = "sent while storage is unavailable";
+  source.acceptEdit({ text: sent, skillNames: [] });
+  await source.whenSettled();
+  const perform = vi.fn(async () => undefined);
+  await submitWithPendingTracking({ ref, text: sent, skillNames: [], source, onFailure: () => {} }, perform);
+  expect(perform).toHaveBeenCalledTimes(1);
+  expect(source.getSnapshot()).toMatchObject({ text: "" });
+  // The platform returns after the send was accepted: the settled draft is
+  // empty, never the message the user already sent.
+  vi.stubGlobal("indexedDB", platform);
+  await source.whenSettled();
+  expect(await getBrowserDraftRepository().load(key)).toMatchObject({ text: "", skillNames: [] });
+});
+
 // 6. Namespace replacement: the captured write is refused and left unsaved, a
 // guarded reconciliation follows, a fresh deliberate edit writes, and the old
 // destructive callback stays unauthorized.
@@ -2735,6 +2761,51 @@ test("a default source persists an accepted edit without an explicit ready call"
     expect(row?.text).toBe("default persisted");
   });
   expect(source.getSnapshot()).toMatchObject({ text: "default persisted" });
+});
+
+// A resume can land in a session pane whose destination composer already
+// hydrated: its cached readiness never re-reads the draft row. The carry
+// therefore has to reconcile that live source itself.
+test("a committed carry reconciles an already-hydrated destination source", async () => {
+  const fromRef = "source-state-carry-from";
+  const toRef = "source-state-carry-to";
+  const repository = getBrowserDraftRepository();
+  const destination = createTestComposerSource(toRef);
+  await destination.ready();
+  expect(destination.getSnapshot()).toMatchObject({ text: "" });
+  await repository.seedDraft(browserDraftKey(fromRef), { text: "carried winner", skillNames: [] });
+  await carryBrowserDraft(fromRef, toRef);
+  expect(destination.getSnapshot()).toMatchObject({ text: "carried winner" });
+  expect(readComposerDraft(toRef).text).toBe("carried winner");
+});
+
+// A carry must not repaint a destination whose editor holds an accepted edit
+// the carry did not supersede: that newer local work stays visible and its own
+// persistence decides the row.
+test("a committed carry leaves a destination source's newer local edit alone", async () => {
+  const fromRef = "source-state-carry-guard-from";
+  const toRef = "source-state-carry-guard-to";
+  const repository = getBrowserDraftRepository();
+  const local = createTestComposerSource(toRef);
+  await local.ready();
+  const realCommit = repository.commitEdit.bind(repository);
+  const commit = vi
+    .spyOn(repository, "commitEdit")
+    .mockImplementation((key, expected, value, stillAuthorized) =>
+      key.sessionRef === toRef
+        ? Promise.reject(new Error("storage unavailable"))
+        : realCommit(key, expected, value, stillAuthorized),
+    );
+  try {
+    local.acceptEdit({ text: "newer local edit", skillNames: [] });
+    await local.whenSettled();
+    await repository.seedDraft(browserDraftKey(fromRef), { text: "carried winner", skillNames: [] });
+    await carryBrowserDraft(fromRef, toRef);
+    expect(local.getSnapshot()).toMatchObject({ text: "newer local edit" });
+    expect(readComposerDraft(toRef).text).toBe("newer local edit");
+  } finally {
+    commit.mockRestore();
+  }
 });
 
 test("a committed source edit updates the runtime draft projection without a localStorage fallback", async () => {

@@ -201,6 +201,32 @@ export function settleBrowserDraftsForRef(ref: string): Promise<void> {
 // cannot show the destination without the carried draft.
 const pendingDraftCarries = new Map<string, Promise<void>>();
 
+// Live sources that could already be showing the destination draft. A resume
+// may land in a pane whose composer hydrated before the carry wrote, and its
+// cached readiness never reads the row again; the carry hands the committed
+// row to these sources so the winner is what the pane displays. Each callback
+// decides for itself whether a newer local edit (an accepted queue entry the
+// carry did not supersede) keeps the editor as it is.
+type DraftCarryReconcile = (before: StoredComposerDraft | null, carried: StoredComposerDraft) => void;
+const draftSourceReconcilers = new Map<string, Set<DraftCarryReconcile>>();
+
+function reconcileDraftCarryInto(
+  key: BrowserDraftKey,
+  before: StoredComposerDraft | null,
+  carried: StoredComposerDraft,
+): void {
+  const reconcilers = draftSourceReconcilers.get(serializeSessionKey(key));
+  if (reconcilers === undefined) return;
+  for (const reconcile of [...reconcilers]) {
+    try {
+      reconcile(before, carried);
+    } catch {
+      // One source's fault cannot deny the destination's other live sources
+      // the carried winner.
+    }
+  }
+}
+
 /** Carries the superseded ref's draft to the resumed identity, settling live sources first. */
 export function carryBrowserDraft(fromRef: string, toRef: string): Promise<void> {
   const from = browserDraftKey(fromRef);
@@ -214,7 +240,15 @@ export function carryBrowserDraft(fromRef: string, toRef: string): Promise<void>
     // resume that triggered it.
     try {
       await settleBrowserDraftsForRef(fromRef);
-      await getBrowserDraftRepository().carryDraft(from, to);
+      const repository = getBrowserDraftRepository();
+      // The destination row as the retained pane knows it: a source that still
+      // shows exactly this value has no newer local edit to protect, so the
+      // carry's committed winner can be published into it. Reading it before
+      // the carry is what makes that comparison meaningful.
+      const before = await repository.load(to).catch(() => null);
+      await repository.carryDraft(from, to);
+      const carried = await repository.load(to).catch(() => null);
+      if (carried) reconcileDraftCarryInto(to, before, carried);
     } catch {
       return;
     }
@@ -304,7 +338,13 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
   let hydrationToken: DraftSessionToken | null = null;
   let localGeneration = 0;
   let runtimeBacking: DraftBackingIdentity = { kind: "draft" };
+  let registeredReconcilers: Set<DraftCarryReconcile> | null = null;
   const acceptedQueue: SkillEditorValue[] = [];
+  // Edits an accepted submission superseded while they were still waiting for
+  // durable storage. They are marked, not removed, so an in-flight drain keeps
+  // its own entry where it is; the drain skips a retired entry when it reaches
+  // the front.
+  const retiredQueueEntries = new WeakSet<SkillEditorValue>();
   let drainPromise: Promise<void> = Promise.resolve();
   let readyPromise: Promise<void> | null = null;
   let pendingRefused = false;
@@ -423,9 +463,46 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       ...(mentions === undefined ? {} : { mentions: mentions.map((m) => ({ ...m })) }),
     });
   }
+  // The durable winner a resume carried into this ref reached an editor that
+  // already hydrated, so its readiness will never publish the row again. Adopt
+  // the committed row only while this source still shows exactly the value its
+  // own hydration read: a newer same-ref edit, an accepted edit still waiting
+  // for storage, or a selected recovery owns the visible draft and the carry
+  // did not supersede any of them.
+  function reconcileCarriedDraft(before: StoredComposerDraft | null, carried: StoredComposerDraft): void {
+    if (disposed || hydrationToken === null) return;
+    if (activeRecoveryIdRef.current !== null || !ownsDraft()) return;
+    if (hasQueuedEdits()) return;
+    const durable: {
+      text: string;
+      skillNames: readonly string[];
+      commandNames?: readonly string[];
+      mentions?: readonly ComposerMention[];
+    } = before ?? { text: "", skillNames: [] };
+    if (
+      textRef.current !== durable.text ||
+      !sameSkillSelections(skillNamesRef.current, durable.skillNames) ||
+      !sameSkillSelections(selectionMetaRef.current.commandNames, durable.commandNames ?? []) ||
+      !sameMentions(selectionMetaRef.current.mentions, durable.mentions)
+    )
+      return;
+    draftToken = { ...carried.token };
+    publishValue(storedValue(carried), { restores: true });
+  }
+  // Registration follows the key's resolution: a source is only a candidate
+  // destination once it knows which durable row it shows.
+  function registerDraftReconciler(): void {
+    if (registeredReconcilers !== null || !draftKey) return;
+    const destination = serializeSessionKey(draftKey);
+    const reconcilers = draftSourceReconcilers.get(destination) ?? new Set<DraftCarryReconcile>();
+    reconcilers.add(reconcileCarriedDraft);
+    draftSourceReconcilers.set(destination, reconcilers);
+    registeredReconcilers = reconcilers;
+  }
   async function ensureDeps(): Promise<void> {
     if (!repository) repository = getBrowserDraftRepository();
     if (!draftKey) draftKey = browserDraftKey(ref);
+    registerDraftReconciler();
     // A retired source must not start the shared mutation runtime: auto-init
     // may still be in flight when the source disposes.
     if (!outbox && !disposed) outbox = await getComposerMutationStorage();
@@ -440,6 +517,10 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     while (acceptedQueue.length > 0) {
       const entry = acceptedQueue[0];
       if (entry === undefined) break;
+      if (retiredQueueEntries.has(entry)) {
+        acceptedQueue.shift();
+        continue;
+      }
       if (needsReconcile || draftToken === null) {
         const row = await r.load(k);
         if (!row) break;
@@ -480,6 +561,12 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
   function scheduleDrain(): void {
     drainPromise = drainPromise.then(() => drainAccepted()).catch(() => undefined);
   }
+  // Only edits the source still owes durable storage: a retired entry is an
+  // already-sent value waiting for the drain to reach and skip it, and it must
+  // not keep hydration or preparation treating the ref as unsaved.
+  function hasQueuedEdits(): boolean {
+    return acceptedQueue.some((entry) => !retiredQueueEntries.has(entry));
+  }
   function ready(): Promise<void> {
     readyPromise ??= (async () => {
       // Captured before ANY await: explicit work accepted before ready started
@@ -515,7 +602,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
           !disposed &&
           localGeneration === hydrationGeneration &&
           sameBacking(runtimeBacking, hydrationBacking) &&
-          acceptedQueue.length === 0
+          !hasQueuedEdits()
         ) {
           // Hydration is an authoritative restoration for a mounted editor,
           // not a text patch: an editor bound before the storage read settled
@@ -667,7 +754,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     const r = repository;
     const k = draftKey;
     if (!r || !k) return null;
-    if (acceptedQueue.length > 0) return null;
+    if (hasQueuedEdits()) return null;
     const generation = localGeneration;
     const backing: DraftBackingIdentity = { ...runtimeBacking };
     // The selected recovery is part of the capture: reading it AFTER the durable
@@ -848,7 +935,7 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
   // numeric generation and backing may coincide.
   const ownedCaptureGuards = new WeakMap<
     DraftSettlementGuard,
-    { replacementEpoch: number; items: PendingAttachment[] }
+    { replacementEpoch: number; items: PendingAttachment[]; queued: readonly SkillEditorValue[] }
   >();
   async function submissionDraft(
     value?: SkillEditorValue,
@@ -859,6 +946,12 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     const entryBacking: DraftBackingIdentity = { ...runtimeBacking };
     const entryReplacementEpoch = recoveryReplacementEpochRef.current;
     const entryItems = [...attachments.getState().items];
+    // The accepted queue as the submission found it: every one of these edits
+    // is superseded by the accepted payload, and a send that goes out while
+    // the durable platform is unavailable leaves them queued for a later
+    // retry. Edits accepted after this point are newer typing, not part of
+    // what was sent.
+    const entryQueue = [...acceptedQueue];
     // The shared per-ref edit revision at entry: another same-ref source's
     // explicit edit since this point advances it.
     const entryEditRevision = readDraftRevision(ref);
@@ -910,7 +1003,11 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       backing: entryBacking,
       localGeneration: entryGeneration,
     };
-    ownedCaptureGuards.set(settlementGuard, { replacementEpoch: entryReplacementEpoch, items: entryItems });
+    ownedCaptureGuards.set(settlementGuard, {
+      replacementEpoch: entryReplacementEpoch,
+      items: entryItems,
+      queued: entryQueue,
+    });
     return {
       draftRevisionAtStart: entryEditRevision,
       text: payload.text,
@@ -999,10 +1096,23 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     operations.reset();
     return true;
   }
+  // A settlement runs only for a submission the transport accepted. Whatever
+  // was queued when that submission captured its payload was superseded by
+  // the payload itself: retrying those values after storage recovers would
+  // write the sent message back as a draft. Entries queued after the capture
+  // stay live because they are edits the user made while the send was in
+  // flight.
+  function retireSubmittedQueue(guard: DraftSettlementGuard): void {
+    const capture = ownedCaptureGuards.get(guard);
+    if (!capture) return;
+    for (const entry of capture.queued) retiredQueueEntries.add(entry);
+    scheduleDrain();
+  }
   async function settleDraft(submitted: SubmittedDraft, opts?: { command?: boolean }): Promise<DraftSettlement> {
     if (disposed) return { cleared: false, draftUnchanged: false, persistence: "committed" };
     const guard = submitted.settlementGuard;
     if (!guard) return { cleared: false, draftUnchanged: false, persistence: "committed" };
+    retireSubmittedQueue(guard);
     if (submitted.stillOwnsEdit && !submitted.stillOwnsEdit()) {
       // An edit already present at settlement entry keeps its full value. This
       // sender's accepted RESEND consumed the old recovery backing, so the veto
@@ -1797,6 +1907,13 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       if (settles !== undefined) {
         settles.delete(settleEntry);
         if (settles.size === 0) draftSourceSettles.delete(ref);
+      }
+      if (registeredReconcilers !== null) {
+        registeredReconcilers.delete(reconcileCarriedDraft);
+        if (registeredReconcilers.size === 0 && draftKey) {
+          draftSourceReconcilers.delete(serializeSessionKey(draftKey));
+        }
+        registeredReconcilers = null;
       }
       retirementHolds.clear();
       retirementPersistenceAttempt = null;
