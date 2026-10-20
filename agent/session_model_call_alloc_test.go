@@ -6,7 +6,7 @@ package agent
 // ContextMgmt phase and then overwrite that copy before anything read it: the
 // strategy fold re-snapshots at the top of every attempt, and the final
 // HistoryExpand snapshot replaces it on the no-strategy path. This file pins
-// the request's contents and ordering across a large text-only history and
+// the request's contents and ordering across large text-only histories and
 // holds the per-preparation allocation below a literal ceiling calibrated on
 // the copy-bearing implementation, so reintroducing the dead copy fails here.
 //
@@ -15,11 +15,15 @@ package agent
 // made and no session internals are mocked.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strconv"
 	"testing"
 	"unsafe"
 
@@ -33,6 +37,8 @@ import (
 // calibrated on. Its text-only turns are large enough that one dead shallow
 // copy of s.history is a measurable share of a preparation.
 const requestHistoryBudgetTurns = 1024
+
+var requestHistoryFixtureTurns = []int{256, requestHistoryBudgetTurns}
 
 // maxRequestHistoryBytesPerPreparation is the frozen ceiling for one
 // preparation of the 1,024-turn fixture. Calibrated on the unchanged
@@ -95,11 +101,22 @@ func requestHistorySourceTexts(t *testing.T, s *Session) []string {
 	t.Helper()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	texts := make([]string, 0, len(s.history))
-	for _, turn := range s.history {
-		texts = append(texts, turn.Message.Text())
+	return turnTexts(s.history)
+}
+
+// requestHistorySourceSnapshot captures a complete representation of the live
+// source history under the session lock. Message text alone says nothing about
+// turn kind, identity, provenance, timestamps, roles, tool-call IDs or
+// content-part structure, so preservation is proved against these bytes.
+func requestHistorySourceSnapshot(t *testing.T, s *Session) []byte {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snapshot, err := json.Marshal(s.history)
+	if err != nil {
+		t.Fatalf("marshal source history: %v", err)
 	}
-	return texts
+	return snapshot
 }
 
 // assertRequestHistoryPayloadsInOrder requires every fixture payload to appear
@@ -120,13 +137,28 @@ func assertRequestHistoryPayloadsInOrder(t *testing.T, projected []llm.Message, 
 	}
 }
 
+// assertPreparedRequestHistory checks one preparation's outputs against the
+// fixture and against the settled source history captured before it. It is
+// shared by both fixture sizes and runs outside any allocation measurement.
+func assertPreparedRequestHistory(t *testing.T, s *Session, history []llm.Message, req llm.Request, settledTexts []string, settledSnapshot []byte, turns int) {
+	t.Helper()
+	assertRequestHistoryPayloadsInOrder(t, history, turns)
+	assertRequestHistoryPayloadsInOrder(t, req.Messages, turns)
+	if got := requestHistorySourceTexts(t, s); !slices.Equal(got, settledTexts) {
+		t.Fatalf("preparation mutated the source history text (len %d, want %d)", len(got), len(settledTexts))
+	}
+	if got := requestHistorySourceSnapshot(t, s); !bytes.Equal(got, settledSnapshot) {
+		t.Fatalf("preparation mutated the complete source history: its text is unchanged, but turn kind, identity, provenance, timestamp, role or content structure changed")
+	}
+}
+
 // measureRequestHistoryBytesPerPreparation returns the smallest total-allocated
 // delta observed across repetitions of one preparation. The minimum discards
 // one-off background allocations; the deleted copy is present in every
 // repetition, so it cannot be mistaken for noise.
 func measureRequestHistoryBytesPerPreparation(t *testing.T, s *Session, repetitions int) int64 {
 	t.Helper()
-	best := int64(^uint64(0) >> 1)
+	best := int64(math.MaxInt64)
 	for range repetitions {
 		var before, after runtime.MemStats
 		runtime.ReadMemStats(&before)
@@ -140,65 +172,53 @@ func measureRequestHistoryBytesPerPreparation(t *testing.T, s *Session, repetiti
 }
 
 // TestPrepareModelRequestHistoryAllocationBudget pins that a preparation
-// carries each fixture payload into the request in order and leaves the source
-// history unchanged, then requires the 1,024-turn preparation to stay under a
-// ceiling calibrated against the dead initial snapshot. Content assertions run
-// before the budget assertion so a failing baseline demonstrates valid
-// behavior alongside excess allocation.
+// carries each fixture payload into the request in order and leaves the
+// complete source history unchanged, then requires the 1,024-turn preparation
+// to stay under a ceiling calibrated against the dead initial snapshot. Content
+// assertions run before the budget assertion so a failing baseline demonstrates
+// valid behavior alongside excess allocation.
 func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
-	t.Run("1024 turns", func(t *testing.T) {
-		s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns)
+	for _, turns := range requestHistoryFixtureTurns {
+		t.Run(fmt.Sprintf("%d turns", turns), func(t *testing.T) {
+			s := newRequestHistoryPreparationSession(t, turns)
 
-		// Warm preparation lets the notes/memory projection settle; a second
-		// warm round proves the measured rounds see a stable source history.
-		prepareRequestHistoryRound(t, s)
-		settled := requestHistorySourceTexts(t, s)
-		prepareRequestHistoryRound(t, s)
-		if got := requestHistorySourceTexts(t, s); !slices.Equal(got, settled) {
-			t.Fatalf("source history changed between warm preparations (len %d then %d): the fixture has not settled before measurement", len(settled), len(got))
-		}
+			// The first warm round lets the notes/memory projection settle. The
+			// second warm round is also the assertion round: source stability
+			// across both, and this round's outputs asserted, before measuring.
+			prepareRequestHistoryRound(t, s)
+			settledTexts := requestHistorySourceTexts(t, s)
+			settledSnapshot := requestHistorySourceSnapshot(t, s)
+			history, req := prepareRequestHistoryRound(t, s)
+			assertPreparedRequestHistory(t, s, history, req, settledTexts, settledSnapshot, turns)
 
-		history, req := prepareRequestHistoryRound(t, s)
-		assertRequestHistoryPayloadsInOrder(t, history, requestHistoryBudgetTurns)
-		assertRequestHistoryPayloadsInOrder(t, req.Messages, requestHistoryBudgetTurns)
-		if got := requestHistorySourceTexts(t, s); !slices.Equal(got, settled) {
-			t.Fatalf("preparation mutated the source history (len %d, want %d)", len(got), len(settled))
-		}
-
-		bytesPerPreparation := measureRequestHistoryBytesPerPreparation(t, s, 5)
-		removable := int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
-		t.Logf("bytes per preparation %d, removable dead copy %d, budget %d", bytesPerPreparation, removable, maxRequestHistoryBytesPerPreparation)
-		if bytesPerPreparation >= maxRequestHistoryBytesPerPreparation {
-			t.Fatalf("bytes per preparation %d, budget %d", bytesPerPreparation, maxRequestHistoryBytesPerPreparation)
-		}
-	})
-
-	t.Run("256 turns", func(t *testing.T) {
-		const turns = 256
-		s := newRequestHistoryPreparationSession(t, turns)
-		prepareRequestHistoryRound(t, s)
-		settled := requestHistorySourceTexts(t, s)
-		history, req := prepareRequestHistoryRound(t, s)
-		assertRequestHistoryPayloadsInOrder(t, history, turns)
-		assertRequestHistoryPayloadsInOrder(t, req.Messages, turns)
-		if got := requestHistorySourceTexts(t, s); !slices.Equal(got, settled) {
-			t.Fatalf("preparation mutated the source history (len %d, want %d)", len(got), len(settled))
-		}
-	})
+			if turns != requestHistoryBudgetTurns {
+				return
+			}
+			bytesPerPreparation := measureRequestHistoryBytesPerPreparation(t, s, 5)
+			removable := int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
+			t.Logf("bytes per preparation %d, removable dead copy %d, budget %d", bytesPerPreparation, removable, maxRequestHistoryBytesPerPreparation)
+			if bytesPerPreparation >= maxRequestHistoryBytesPerPreparation {
+				t.Fatalf("bytes per preparation %d, budget %d", bytesPerPreparation, maxRequestHistoryBytesPerPreparation)
+			}
+		})
+	}
 }
 
-// BenchmarkPrepareModelRequestHistory measures one real preparation of the
-// 1,024-turn text-only fixture, including expansion, request construction,
-// continuation planning and token budgeting. The 256-turn shape is covered by
-// the correctness subtests above.
+// BenchmarkPrepareModelRequestHistory measures one real preparation for both
+// fixture sizes, including expansion, request construction, continuation
+// planning and token budgeting.
 func BenchmarkPrepareModelRequestHistory(b *testing.B) {
-	s := newRequestHistoryPreparationSession(b, requestHistoryBudgetTurns)
-	prepareRequestHistoryRound(b, s) // warm the projection before the timed loop
-	var timings events.RoundTimings
-	b.ReportAllocs()
-	for b.Loop() {
-		if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &timings); err != nil {
-			b.Fatalf("prepareModelRequestWithError: %v", err)
-		}
+	for _, turns := range requestHistoryFixtureTurns {
+		b.Run(strconv.Itoa(turns), func(b *testing.B) {
+			s := newRequestHistoryPreparationSession(b, turns)
+			prepareRequestHistoryRound(b, s) // warm the projection before the timed loop
+			var timings events.RoundTimings
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &timings); err != nil {
+					b.Fatalf("prepareModelRequestWithError: %v", err)
+				}
+			}
+		})
 	}
 }

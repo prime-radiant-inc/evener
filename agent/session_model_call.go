@@ -214,11 +214,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	tPhaseStart = s.sclock().Now()
 
 	// Repair orphaned tool results through the shared locked helper (capture,
-	// repair, and publish are one critical section). The request's history is
-	// snapshotted where it is consumed: each strategy fold attempt snapshots it
-	// under the same lock as the revision and append state it pairs with, and
-	// the HistoryExpand snapshot below pairs the final history with its
-	// in-flight boundary.
+	// repair, and publish are one critical section). The paired history
+	// snapshots this request consumes live in the fold attempts and in the
+	// HistoryExpand phase below.
 	s.repairOrphanedToolResults(ctx, "before model request")
 	var historyTurns []schema.Turn
 
