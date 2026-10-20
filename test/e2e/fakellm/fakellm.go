@@ -77,10 +77,12 @@ func (c *Call) Cancelled() <-chan struct{} { return c.cancelled }
 func (c *Call) AffinityHeader() string { return c.affinityHeader }
 
 type reply struct {
-	text     string
-	toolName string
-	toolArgs map[string]any
-	toolID   string
+	status    int
+	errorCode string
+	text      string
+	toolName  string
+	toolArgs  map[string]any
+	toolID    string
 }
 
 // toolCallSeq mints tool-call ids. The id is the key a transcript pairs a
@@ -166,6 +168,11 @@ func (s *Server) Next(done <-chan struct{}) (*Call, error) {
 // "stop", which ends the turn.
 func (c *Call) RespondText(text string) {
 	c.respond(reply{text: text})
+}
+
+// RespondHTTPError returns an external provider failure before streaming begins.
+func (c *Call) RespondHTTPError(status int, code string) {
+	c.respond(reply{status: status, errorCode: code})
 }
 
 // RespondToolCall finishes the round with a single tool call, so the session
@@ -342,6 +349,14 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeReply(w http.ResponseWriter, stream bool, rep reply) {
+	if rep.status != 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(rep.status)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
+			"code": rep.errorCode, "type": "invalid_request_error", "message": rep.errorCode,
+		}})
+		return
+	}
 	if stream {
 		writeSSE(w, rep)
 		return
