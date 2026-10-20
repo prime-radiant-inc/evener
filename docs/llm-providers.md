@@ -146,12 +146,16 @@ the list itself. `Reasoning` and `EffortValues` come from OpenRouter's
 ladder (lunaroute's shape), where a level mapped to a string is supported, a
 null is not, and levels sharing a wire value are advertised once. The ladder
 is ordered as the picker shows it, with an off level first when `off` maps to
-`none`; a `capabilities.reasoning: false` verdict states no ladder at all. A
-model whose listing states no ladder keeps whatever ladder its curated row
-carries, and an uncatalogued one resolves with none, so the request builder
-sends no effort name it cannot vouch for. The gateway's `thinkingFormat`,
-`maxTokensField`, and `supportsReasoningEffort` fields are not read yet; the
-dialect comes from the row's `thinking_format`.
+`none`. A published map with no usable level is the gateway stating that the
+model takes no effort control, so it clears any inherited ladder; a
+`capabilities.reasoning: false` verdict states no ladder at all. A usable
+ladder is itself evidence the model tunes effort and raises a verdict inferred
+from a provider-wide parameter list. A model whose listing carries no map at
+all keeps whatever ladder its curated row supplies, and an uncatalogued one
+resolves with none, so the request builder sends no effort name it cannot
+vouch for. The gateway's `thinkingFormat`, `maxTokensField`, and
+`supportsReasoningEffort` fields are not read yet; the dialect comes from the
+row's `thinking_format`.
 
 The live layer overrides catalog and curated facts but **never a field the
 user layer (layer 4) set**, and it never touches any other wire-shaping cap.

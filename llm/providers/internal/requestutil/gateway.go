@@ -41,20 +41,30 @@ type GatewayPiCompat struct {
 // provider-wide parameters only infer, and a fact it does not state leaves what
 // the caller inferred in place.
 //
+// A usable ladder is itself evidence the model tunes effort, so it raises a
+// verdict inferred elsewhere (a provider-wide parameter list, the catalog) to
+// true. An explicit capabilities verdict still wins: a gateway saying the model
+// does not reason is not overruled by a stale map beside it.
+//
 // A row the gateway marks non-reasoning carries no ladder. Clearing it here,
 // rather than merely skipping the write, is what keeps the raw live row
 // honest: a listing that also publishes supported_efforts has already set one,
 // and the row reaches ApplyLive, the live snapshot, and standalone listings
-// before derivation would clear it.
+// before derivation would clear it. A published map with no usable level is the
+// gateway saying the same thing, so it too clears any inherited ladder rather
+// than letting the replay keep one the gateway marks unsupported.
 func ApplyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
+	ladder, published := GatewayEffortLadder(compat)
 	if capsFacts.Reasoning != nil {
 		caps.Reasoning = capsFacts.Reasoning
 		if !*capsFacts.Reasoning {
 			caps.EffortValues = nil
 			return
 		}
+	} else if len(ladder) > 0 {
+		caps.Reasoning = new(true)
 	}
-	if ladder := GatewayEffortLadder(compat); len(ladder) > 0 {
+	if published {
 		caps.EffortValues = ladder
 	}
 }
@@ -67,13 +77,14 @@ func ApplyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, c
 // Values are wire spellings deduped in vocabulary order, so two keys sharing a
 // value (glm maps medium and high to "high") advertise it once.
 //
-// Nil means the listing stated no usable map, so the live replay inherits any
-// curated ladder instead of erasing it. That includes a map whose every level
-// is null: a model with no effort control is stated by reasoning = false,
-// which the capabilities block carries.
-func GatewayEffortLadder(compat GatewayClientCompat) []string {
+// published reports whether the listing stated a map at all. Absent (no
+// client_compat block) leaves the ladder nil so the live replay inherits a
+// curated one. A published map whose every level is null is the gateway
+// stating that the model takes no effort control: the ladder is empty and the
+// caller must apply it as such, not inherit around it.
+func GatewayEffortLadder(compat GatewayClientCompat) (ladder []string, published bool) {
 	if compat.Pi == nil {
-		return nil
+		return nil, false
 	}
 	levels := compat.Pi.ThinkingLevelMap
 	// off plus the six ranked levels, the most a full map can advertise.
@@ -86,7 +97,13 @@ func GatewayEffortLadder(compat GatewayClientCompat) []string {
 			out = append(out, wire)
 		}
 	}
-	return DedupStrings(out)
+	// Non-nil even when nothing survived: the live layer merges a non-nil
+	// slice wholesale, and that is how a published map with no usable level
+	// clears an inherited ladder instead of inheriting around it.
+	if ladder = DedupStrings(out); ladder == nil {
+		ladder = []string{}
+	}
+	return ladder, true
 }
 
 // GatewayInputModalities is the input modality list a /models row advertises:

@@ -60,9 +60,10 @@ func TestGatewayEffortLadder(t *testing.T) {
 		return GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}
 	}
 	cases := []struct {
-		name   string
-		compat GatewayClientCompat
-		want   []string
+		name      string
+		compat    GatewayClientCompat
+		want      []string
+		published bool
 	}{
 		{
 			name: "map levels come back in rank order",
@@ -70,21 +71,24 @@ func TestGatewayEffortLadder(t *testing.T) {
 				"max": "max", "high": "high", "low": "low",
 				"medium": "medium", "xhigh": "xhigh", "minimal": "", "off": "",
 			}),
-			want: []string{"low", "medium", "high", "xhigh", "max"},
+			want:      []string{"low", "medium", "high", "xhigh", "max"},
+			published: true,
 		},
 		{
 			name: "an explicit off level leads the ladder",
 			compat: levels(map[string]string{
 				"off": "none", "low": "low", "high": "high",
 			}),
-			want: []string{"none", "low", "high"},
+			want:      []string{"none", "low", "high"},
+			published: true,
 		},
 		{
 			name: "an off level spelled as another tier is not an off",
 			compat: levels(map[string]string{
 				"off": "low", "low": "low", "high": "high",
 			}),
-			want: []string{"low", "high"},
+			want:      []string{"low", "high"},
+			published: true,
 		},
 		{
 			// glm maps medium→high, minimal→low and xhigh→max: the menu offers
@@ -94,14 +98,16 @@ func TestGatewayEffortLadder(t *testing.T) {
 				"minimal": "low", "low": "low", "medium": "high",
 				"high": "high", "xhigh": "max", "max": "max", "off": "none",
 			}),
-			want: []string{"none", "low", "high", "max"},
+			want:      []string{"none", "low", "high", "max"},
+			published: true,
 		},
 		{
 			name: "a level spelled outside the vocabulary is dropped",
 			compat: levels(map[string]string{
 				"low": "low", "high": "turbo",
 			}),
-			want: []string{"low"},
+			want:      []string{"low"},
+			published: true,
 		},
 		{
 			name:   "a compat block without pi states no ladder",
@@ -109,23 +115,30 @@ func TestGatewayEffortLadder(t *testing.T) {
 			want:   nil,
 		},
 		{
-			// Every level null is a model with no effort control; the
-			// capabilities block, not an empty ladder, must state that.
-			name:   "an all-null map states no ladder",
-			compat: levels(map[string]string{"low": "", "high": ""}),
-			want:   nil,
+			// A published map with every level null is the gateway stating that
+			// the model takes no effort control. That is not the same as an
+			// absent map: inheriting a curated ladder would send levels the
+			// gateway marks unsupported.
+			name:      "an all-null map states an empty ladder",
+			compat:    levels(map[string]string{"low": "", "high": ""}),
+			want:      []string{},
+			published: true,
 		},
 		{
-			name:   "an empty map states no ladder",
-			compat: levels(map[string]string{}),
-			want:   nil,
+			name:      "an empty map states an empty ladder",
+			compat:    levels(map[string]string{}),
+			want:      []string{},
+			published: true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := GatewayEffortLadder(tc.compat)
-			if !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
-				t.Fatalf("GatewayEffortLadder = %#v, want %#v", got, tc.want)
+			got, published := GatewayEffortLadder(tc.compat)
+			if published != tc.published {
+				t.Fatalf("published = %v, want %v", published, tc.published)
+			}
+			if !slices.Equal(got, tc.want) || (!published && got != nil) {
+				t.Fatalf("GatewayEffortLadder = %#v, want %#v (published %v)", got, tc.want, published)
 			}
 		})
 	}
@@ -138,12 +151,13 @@ func TestApplyGatewayReasoning(t *testing.T) {
 	}
 	ladder := map[string]string{"low": "low", "high": "high", "max": "max"}
 	cases := []struct {
-		name       string
-		capsFacts  GatewayCapabilities
-		compat     GatewayClientCompat
-		before     []string
-		wantReason *bool
-		wantLadder []string
+		name         string
+		capsFacts    GatewayCapabilities
+		compat       GatewayClientCompat
+		before       []string
+		beforeReason *bool
+		wantReason   *bool
+		wantLadder   []string
 	}{
 		{
 			name:       "a verdict and map fill both facts",
@@ -172,7 +186,27 @@ func TestApplyGatewayReasoning(t *testing.T) {
 		{
 			name:       "no verdict still takes the map",
 			compat:     levels(ladder),
+			wantReason: &yes,
 			wantLadder: []string{"low", "high", "max"},
+		},
+		{
+			// A usable ladder is itself evidence the model tunes effort, even
+			// when the row arrived with a false verdict inferred from a
+			// provider-wide parameter list or the catalog.
+			name:         "a usable ladder raises an inherited false verdict",
+			compat:       levels(ladder),
+			beforeReason: &no,
+			wantReason:   &yes,
+			wantLadder:   []string{"low", "high", "max"},
+		},
+		{
+			// A published map with no usable level is the gateway saying the
+			// model has no effort control: it must not inherit a curated
+			// ladder, and it does not imply reasoning.
+			name:       "a published empty map clears an inherited ladder",
+			compat:     levels(map[string]string{"low": "", "high": ""}),
+			before:     []string{"low", "medium", "high"},
+			wantLadder: []string{},
 		},
 		{
 			name:       "a verdict without a map states no ladder",
@@ -185,13 +219,16 @@ func TestApplyGatewayReasoning(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			caps := registry.Caps{EffortValues: tc.before}
+			caps := registry.Caps{EffortValues: tc.before, Reasoning: tc.beforeReason}
 			ApplyGatewayReasoning(&caps, tc.capsFacts, tc.compat)
 			if (caps.Reasoning == nil) != (tc.wantReason == nil) || (caps.Reasoning != nil && *caps.Reasoning != *tc.wantReason) {
 				t.Fatalf("Reasoning = %v, want %v", caps.Reasoning, tc.wantReason)
 			}
 			if !slices.Equal(caps.EffortValues, tc.wantLadder) {
 				t.Fatalf("EffortValues = %v, want %v", caps.EffortValues, tc.wantLadder)
+			}
+			if tc.wantLadder == nil && caps.EffortValues != nil && len(caps.EffortValues) == 0 && tc.compat.Pi == nil {
+				t.Fatalf("an absent map must leave the ladder unset, got %#v", caps.EffortValues)
 			}
 		})
 	}

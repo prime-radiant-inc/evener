@@ -180,6 +180,31 @@ func TestListModelsGatewayWithoutPiKeepsOtherFacts(t *testing.T) {
 	}
 }
 
+// TestListModelsGatewayLadderRaisesInferredFalse pins that a usable ladder is
+// evidence the model tunes effort, even when supported_parameters inferred
+// reasoning = false first. Without the raise, registry derivation discards the
+// ladder and request shaping drops the selected effort.
+func TestListModelsGatewayLadderRaisesInferredFalse(t *testing.T) {
+	c := listRow(t, `{"id":"no-reasoning-param","supported_parameters":["tools"],"client_compat":{"pi":{"thinkingLevelMap":{"low":"low","high":"high"}}}}`)
+	if c.Reasoning == nil || !*c.Reasoning {
+		t.Fatalf("Reasoning = %v, want true from the ladder", c.Reasoning)
+	}
+	if got, want := c.EffortValues, []string{"low", "high"}; !slices.Equal(got, want) {
+		t.Fatalf("EffortValues = %v, want %v", got, want)
+	}
+}
+
+// TestListModelsGatewayPublishedEmptyMapStatesNoEffort covers a gateway map
+// whose every level is null: the gateway is saying the model takes no effort
+// control, so the row must not carry a ladder at all rather than inherit one
+// from a curated row at resolve time.
+func TestListModelsGatewayPublishedEmptyMapStatesNoEffort(t *testing.T) {
+	c := listRow(t, `{"id":"no-effort","capabilities":{"reasoning":true},"client_compat":{"pi":{"thinkingLevelMap":{"low":null,"high":null}}}}`)
+	if len(c.EffortValues) != 0 || c.EffortValues == nil {
+		t.Fatalf("EffortValues = %#v, want a published empty ladder", c.EffortValues)
+	}
+}
+
 // TestListModelsPrefersContextLengthOverContextWindow keeps OpenRouter's
 // ordering: context_length wins when both spellings are present.
 func TestListModelsPrefersContextLengthOverContextWindow(t *testing.T) {
