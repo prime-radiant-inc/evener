@@ -19,6 +19,7 @@ import {
   createBrowserDraftRepository,
   type StoredComposerDraft,
 } from "./browserDraftRepository";
+import { serializeSessionKey } from "./compositionRevision";
 import { DRAFT_TRANSFERS_STORE, MUTATION_RECOVERY_STORE, MUTATION_SEQUENCES_STORE } from "./localCompositionSchema";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";
 import type { MutationIntent } from "./mutationOutbox";
@@ -242,6 +243,7 @@ test.each([
         recoveryKind: "rejected",
         recoveryReason: "refused",
         transferredSessionToken: beforeOpening?.token,
+        transferredSessionKey: serializeSessionKey(browserKey()),
       };
       expect(recovered).toEqual(expectedRecovery);
       expect(await outbox.getRecovery(sent.clientMutationId)).toEqual(expectedRecovery);
@@ -336,6 +338,7 @@ test("inactive metadata refuses an aborted migration and healthy retry preserves
       recoveryKind: "rejected",
       recoveryReason: "refused",
       transferredSessionToken: afterRecovery?.token,
+      transferredSessionKey: serializeSessionKey(browserKey()),
     };
     expect(recovered).toEqual(expectedRecovery);
     expect(await outbox.getRecovery(sent.clientMutationId)).toEqual(expectedRecovery);

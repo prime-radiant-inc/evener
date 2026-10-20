@@ -1075,9 +1075,18 @@ export class MutationOutboxIndexedDB {
         const { writes, sessionToken } = this.#issueSessionWrite(transaction, key, namespace, row, undefined);
         // The transfer's own session write carried no edit, so the token it
         // produced is the durable proof later preparations adopt in
-        // preference to guessing at a competing advance.
+        // preference to guessing at a competing advance. It records that
+        // session key too: the revision is only meaningful in the counter that
+        // produced it, and a later retarget moves the record without moving
+        // that counter.
         const transferred: MutationRecoveryRecord =
-          sessionToken === undefined ? recovery : { ...recovery, transferredSessionToken: sessionToken };
+          sessionToken === undefined
+            ? recovery
+            : {
+                ...recovery,
+                transferredSessionToken: sessionToken,
+                transferredSessionKey: serializeSessionKey(key),
+              };
         const allWrites = [
           requestResult(transaction.objectStore(RECOVERY_STORE).put(transferred)),
           requestResult(outbox.delete(clientMutationId)),

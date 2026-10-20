@@ -783,14 +783,24 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
   // unadopted (#4581): adopting it would put a competing tab's authority into
   // this submission's settlement guard, and its post-send clear would erase
   // the competing tab's newer row.
+  //
+  // The baseline also names the session key whose write produced it. A
+  // retarget moves a recovery record to a resumed ref without carrying that
+  // ref's revision counter, so the two independent counters can land on the
+  // same number; the matching key is what distinguishes the transfer's own
+  // advance from a peer's unrelated one there.
   async function adoptProvenTransferBaseline(row: StoredComposerDraft, tolerateFault: boolean): Promise<void> {
     const box = outbox;
-    if (!box) return;
+    const keyNow = draftKey;
+    if (!box || !keyNow) return;
+    const sessionKey = serializeSessionKey(keyNow);
     const records = tolerateFault ? await box.listRecovery(ref).catch(() => []) : await box.listRecovery(ref);
     if (
       records.some(
         (record) =>
-          record.transferredSessionToken !== undefined && sameSessionToken(record.transferredSessionToken, row.token),
+          record.transferredSessionToken !== undefined &&
+          record.transferredSessionKey === sessionKey &&
+          sameSessionToken(record.transferredSessionToken, row.token),
       )
     ) {
       draftToken = { ...row.token };

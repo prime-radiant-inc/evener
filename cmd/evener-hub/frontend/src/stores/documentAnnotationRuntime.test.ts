@@ -230,7 +230,7 @@ it.each(["draft", "recovery"] as const)(
     await retainedRuntime.whenIdle();
     observeSuccess = false;
     expect(observedSuccesses).toBeGreaterThan(0); // actual authority success during the pass did not recurse
-    expect(retries.mock.calls).toEqual([["foreground"]]);
+    expect(retries.mock.calls.map(([reason]) => reason)).toEqual(["foreground"]);
     expect(saves.mock.calls.filter(([value]) => value.operationId === original.operationId)).toHaveLength(1); // NO failed saves left
     expect(appendAttempts).toBe(2); // initial handoff plus the unsuccessful real repository retry
     await expectStillPending();
@@ -297,7 +297,7 @@ it.each(["draft", "recovery"] as const)(
     expect(saves.mock.calls.filter(([value]) => value.operationId === "op-1").map(([value]) => value)).toEqual([
       f.operation,
     ]);
-    expect(retries.mock.calls).toEqual([["foreground"], ["storage-recovered"]]);
+    expect(retries.mock.calls.map(([reason]) => reason)).toEqual(["foreground", "storage-recovered"]);
     expect(outcomes).toHaveBeenCalledTimes(2);
     const [firstOutcome, secondOutcome] = outcomes.mock.results;
     if (!firstOutcome || !secondOutcome) throw new Error("missing retry outcome observations");
@@ -411,6 +411,56 @@ it("disposal preserves the composer while handoffs are queued behind an in-fligh
   const receipts = await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE);
   expect(receipts.find((row) => row.operationId === "op-second")?.state).toBe("pending");
   expect(receipts.find((row) => row.operationId === "op-third")?.state).toBe("pending");
+});
+
+// RoboRev review 43186: the persisted retry sweep drives repository handoffs
+// directly, so the runtime's disposal guard never saw them. Disposal while the
+// sweep's first handoff was awaiting completion still started every later
+// handoff, and each one could append to a retained composer after teardown.
+it("disposal during a persisted sweep stops later handoffs and leaves them pending", async () => {
+  let appendIssued: (() => void) | undefined;
+  const firstAppend = new Promise<void>((resolve) => {
+    appendIssued = resolve;
+  });
+  let observeAppend = false;
+  const f = await fixture("sweep-disposal", {
+    onAppendReadsIssued: () => {
+      if (!observeAppend) return;
+      observeAppend = false;
+      appendIssued?.();
+    },
+  });
+  // op-1 is already persisted pending by the fixture; two more queued
+  // annotations make the sweep a multi-operation one in session save order.
+  for (const [operationId, note] of [
+    ["op-second", "second note"],
+    ["op-third", "third note"],
+  ] as const) {
+    const operation = await acceptedOperation(f.repo, f.document, operationId, note, f.destination);
+    await f.repo.saveAnnotation(operation);
+  }
+  const runtime = createDocumentAnnotationRuntime(f.repo);
+  const retainedRuntime = runtime;
+  cleanupAfterTest(async () => {
+    await retainedRuntime.whenIdle();
+    retainedRuntime.dispose();
+  });
+  observeAppend = true;
+  const pass = retainedRuntime.retryPending("foreground");
+  await firstAppend; // op-1's append reads are issued, its handoff is still awaiting
+  retainedRuntime.dispose(); // application teardown lands mid-sweep
+  await pass;
+
+  const receipts = await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE);
+  expect(receipts.find((row) => row.operationId === "op-1")?.state).toBe("applied");
+  // The operations the sweep never started remain the durable pending work a
+  // later runtime retries; they are neither applied nor dropped.
+  expect(receipts.find((row) => row.operationId === "op-second")?.state).toBe("pending");
+  expect(receipts.find((row) => row.operationId === "op-third")?.state).toBe("pending");
+  const text = (await f.drafts.load(f.key))?.text;
+  expect(text).toContain('"Keep this scope."');
+  expect(text).not.toContain('"second note"');
+  expect(text).not.toContain('"third note"');
 });
 
 it("retries a recovery-backed handoff refused while typing once the recovery edit commits", async () => {
@@ -535,7 +585,7 @@ it("invalidates failed work and disposal stops later storage and explicit retry 
   ).toBe(false);
   await f.repo.beginRead({ ...f.document, path: "AFTER-INVALIDATION.md" });
   await retainedRuntime.whenIdle();
-  expect(retries.mock.calls).toEqual([["foreground"]]); // actual empty outcome cleared prior failed-save health
+  expect(retries.mock.calls.map(([reason]) => reason)).toEqual(["foreground"]); // actual empty outcome cleared prior failed-save health
   const disposed = await acceptedOperation(
     f.repo,
     f.document,
@@ -551,7 +601,7 @@ it("invalidates failed work and disposal stops later storage and explicit retry 
   await retainedRuntime.retryPending("foreground");
   await retainedRuntime.whenIdle();
   expect(await retainedRuntime.save(disposed)).toBeNull();
-  expect(retries.mock.calls).toEqual([["foreground"]]);
+  expect(retries.mock.calls.map(([reason]) => reason)).toEqual(["foreground"]);
   expect(saves.mock.calls.filter(([operation]) => operation.operationId === disposed.operationId)).toHaveLength(1);
   expect(
     (await rowsForTests<AnnotationPayloadRow>(f.factory, f.databaseName, ANNOTATION_PAYLOADS_STORE)).some(

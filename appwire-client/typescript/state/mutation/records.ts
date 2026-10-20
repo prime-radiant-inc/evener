@@ -150,6 +150,14 @@ export interface MutationRecoveryRecord<A extends MutationAttachmentRef = Mutati
   // transfers advance no session row has no token to record: such a record
   // simply proves nothing.
   transferredSessionToken?: DraftSessionToken;
+  // The session key whose own write produced transferredSessionToken, in the
+  // host's serialized session-key encoding. Refs keep independent revision
+  // counters, and a retarget moves this record without touching the resumed
+  // session, so the numbers alone can coincide with a competing peer's advance
+  // under another key. Adoption therefore requires this key to name the row's
+  // session as well. Absent on records written before the field existed; such
+  // a baseline cannot prove which session it belongs to and is not adopted.
+  transferredSessionKey?: string;
 }
 
 // --- receipt settlement ------------------------------------------------------

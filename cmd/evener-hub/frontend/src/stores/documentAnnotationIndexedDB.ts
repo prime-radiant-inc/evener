@@ -111,6 +111,15 @@ export interface AnnotationSaveCancellation {
   onCancel(listener: () => void): () => void;
 }
 
+// Retry-pass-scoped cancellation, owned by the runtime that started the pass.
+// The persisted sweep hands off directly to the repository, so disposal during
+// a pass must reach it here: a handoff it has not started yet is left pending
+// for whichever runtime retries after teardown, never run against a retained
+// composer.
+export interface AnnotationRetryCancellation {
+  readonly cancelled: boolean;
+}
+
 export interface BrowserDocumentAnnotationRepository extends AnnotationReadRepository {
   saveAnnotation(operation: PreparedAnnotation, cancellation?: AnnotationSaveCancellation): Promise<SaveReceipt>;
   listAnnotations(key: DocumentKey): Promise<AnnotationView[]>;
@@ -125,8 +134,11 @@ export interface BrowserDocumentAnnotationRepository extends AnnotationReadRepos
   // annotation needs, whose durable row must survive for the expiry machinery
   // to retire while its handoff must not append behind the changed source.
   suppressEpochForExpiry(lease: AcceptedSourceLease): void;
-  retryPending(reason: AnnotationRetryReason): Promise<void>;
-  retryPendingWithOutcome(reason: AnnotationRetryReason): Promise<BrowserAnnotationRetryOutcome>;
+  retryPending(reason: AnnotationRetryReason, cancellation?: AnnotationRetryCancellation): Promise<void>;
+  retryPendingWithOutcome(
+    reason: AnnotationRetryReason,
+    cancellation?: AnnotationRetryCancellation,
+  ): Promise<BrowserAnnotationRetryOutcome>;
   resetOwnedNamespace(
     namespace: BrowserDraftKey["namespace"],
     expectedIncarnation: string,
@@ -1206,7 +1218,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // throwing pass always carried. Other sessions and namespaces never block one
   // session's FIFO; terminal receipts and duplicate handling stay in the real
   // handoff path, so an applied operation is never recaptured here.
-  async retryPending(reason: AnnotationRetryReason): Promise<void> {
+  async retryPending(reason: AnnotationRetryReason, cancellation?: AnnotationRetryCancellation): Promise<void> {
     void reason;
     const retainedFaults: unknown[] = [];
     for (const [identity, record] of [...this.#pendingExpiries]) {
@@ -1223,7 +1235,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       }
     }
     retainedFaults.push(...(await this.#sweepUnfinishedExpiries()));
-    await this.#retryPersistedPending();
+    await this.#retryPersistedPending(cancellation);
     if (retainedFaults.length > 0) throw retainedFaults[0];
   }
 
@@ -1257,7 +1269,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // session then session sequence, so a session's earlier operation is retried
   // before its later one while a session whose owner is unavailable stays pending
   // without holding up another session.
-  async #retryPersistedPending(): Promise<void> {
+  async #retryPersistedPending(cancellation?: AnnotationRetryCancellation): Promise<void> {
     const pending = await this.#transaction(
       [ANNOTATION_OPERATIONS_STORE, ANNOTATION_PAYLOADS_STORE],
       "readonly",
@@ -1282,6 +1294,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       },
     );
     for (const { payload } of pending) {
+      // A sweep outlives the runtime that started it only until disposal: a
+      // later handoff must not start against a retained composer. The
+      // operations it never reached keep their pending receipts.
+      if (cancellation?.cancelled) return;
       await this.handoff(payload.operation.lease.key, payload.operation.operationId);
     }
     // A committed append whose completion went unobserved answers applied on
@@ -1293,6 +1309,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const handled = new Set(pending.map(({ payload }) => payload.operation.operationId));
     for (const record of [...this.#uncertainAppends.values()]) {
       if (handled.has(record.operationId)) continue;
+      if (cancellation?.cancelled) return;
       await this.handoff(record.key, record.operationId);
     }
   }
@@ -1301,8 +1318,17 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // completed read-only snapshot of the persisted operation receipts reports
   // whether any handoff is still pending. The read-only observation never emits
   // onStorageSuccess; the underlying pass keeps its own producer boundaries.
-  retryPendingWithOutcome(reason: AnnotationRetryReason): Promise<BrowserAnnotationRetryOutcome> {
-    return retryBrowserAnnotationsWithOutcome(this, this.#connection, reason, () => this.#uncertainAppends.size > 0);
+  retryPendingWithOutcome(
+    reason: AnnotationRetryReason,
+    cancellation?: AnnotationRetryCancellation,
+  ): Promise<BrowserAnnotationRetryOutcome> {
+    return retryBrowserAnnotationsWithOutcome(
+      this,
+      this.#connection,
+      reason,
+      () => this.#uncertainAppends.size > 0,
+      cancellation,
+    );
   }
 
   // Reset rotates ONE browser namespace's annotation incarnation and removes only
@@ -1724,7 +1750,7 @@ export function issuedReadTicketsForTests(
 // recovery. Applied/cancelled receipts are not pending; open/read/completion
 // failures reject and keep the caller's retry-needed state.
 export async function retryBrowserAnnotationsWithOutcome(
-  repository: DocumentAnnotationRepository,
+  repository: BrowserDocumentAnnotationRepository,
   connection: IDBConnection,
   reason: AnnotationRetryReason,
   // Outstanding reconciliation work for appends whose completion went
@@ -1732,8 +1758,9 @@ export async function retryBrowserAnnotationsWithOutcome(
   // scan below, but a faulted reconciliation read leaves the live composer
   // stale and must keep the runtime's shared retry intent alive.
   hasRetainedReconciliation: () => boolean = () => false,
+  cancellation?: AnnotationRetryCancellation,
 ): Promise<BrowserAnnotationRetryOutcome> {
-  await repository.retryPending(reason);
+  await repository.retryPending(reason, cancellation);
   const database = await connection.open();
   const transaction = database.transaction(ANNOTATION_OPERATIONS_STORE, "readonly");
   const completed = transactionCompletion(transaction);

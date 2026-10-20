@@ -16,6 +16,7 @@ import type {
   SaveReceipt,
 } from "@evener/appwire-client";
 import {
+  type AnnotationRetryCancellation,
   type AnnotationSaveCancellation,
   annotationDocumentKey,
   annotationOperationKey,
@@ -58,6 +59,15 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
   let retryNeeded = false;
   let pendingDuringPass = false;
   let alive = true;
+  // The pass hands off through the repository's own sweep, so disposal must be
+  // observable between those handoffs and not only at this pass's outer
+  // boundaries: a disposed runtime leaves the sweep's unreached operations
+  // pending instead of appending to a retained composer.
+  const retryCancellation: AnnotationRetryCancellation = {
+    get cancelled() {
+      return !alive;
+    },
+  };
   // Handoffs serialize: the composer source's preparation machinery is
   // single-flight, so two concurrent handoffs to one composer can deadlock
   // one another, and even when they interleave harmlessly the second
@@ -152,7 +162,7 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
         }
         if (alive)
           try {
-            const outcome = await repo.retryPendingWithOutcome(reason);
+            const outcome = await repo.retryPendingWithOutcome(reason, retryCancellation);
             if (alive) retryNeeded = failed.size > 0 || outcome.pending || pendingDuringPass;
           } catch {
             needRetry();

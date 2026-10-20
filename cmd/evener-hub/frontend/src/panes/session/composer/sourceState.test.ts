@@ -1188,6 +1188,7 @@ test.each(["turn", "note"] as const)(
       recoveryKind: "rejected",
       recoveryReason: "refused",
       transferredSessionToken: (await requireRow(independent, fixture.key)).token,
+      transferredSessionKey: serializeSessionKey(fixture.key),
     });
     // This is the FIRST source. No fixture draft or helper pre-transfer hid the
     // background writer's migration boundary.
@@ -4770,6 +4771,87 @@ test("a recovery activation adopts its own failed send's recorded transfer basel
   const after = await requireRow(fixture.repository, fixture.key);
   expect(after.token.sessionRevision).toBe(transferred.token.sessionRevision + 1);
   expect(after).toMatchObject({ text: "", skillNames: [] });
+});
+
+// RoboRev review 43186: a transfer baseline names a revision of the session key
+// whose own write produced it. Refs keep independent revision counters, so a
+// retargeted recovery row carries a number that says nothing about the resumed
+// ref. A peer's edit under that ref can reach the same number, and a stale
+// editor that adopts it resends with the peer's authority, deleting the peer's
+// newer recovery content.
+test("a retargeted transfer baseline cannot adopt a destination revision a peer produced", async () => {
+  const fixture = sourceFixture("retargeted-transfer-baseline");
+  const fromRef = "root";
+  const toRef = "resumed";
+  const destinationKey = browserDraftKey(toRef);
+  await fixture.repository.seedDraft(fixture.key, { text: "source ordinary", skillNames: [] });
+  await fixture.repository.seedDraft(destinationKey, { text: "peer base", skillNames: [] });
+  // The stale editor opens at the destination's first revision, before the
+  // peer's edit advances it.
+  const stale = fixture.track(
+    createComposerSourceState(toRef, { repository: fixture.repository, key: destinationKey, outbox: fixture.outbox }),
+  );
+  await stale.ready();
+  const ownLineage = await requireRow(fixture.repository, destinationKey);
+  expect(ownLineage.token.sessionRevision).toBe(1);
+
+  // This tab's failed send under the SOURCE ref transfers to recovery: the
+  // transfer's own session write records the source row's completed revision.
+  const sent = await fixture.outbox.enqueueIntent({
+    targetRef: fromRef,
+    method: "turn/start",
+    payload: { ref: fromRef, input: [{ type: "text", text: "stale recovery", mentions: [] }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "stale recovery", mentions: [] }] },
+    composerText: "stale recovery",
+  });
+  const recovery = await fixture.outbox.transferToRecovery(sent.clientMutationId, "rejected", "refused");
+  const sourceRow = await requireRow(fixture.repository, fixture.key);
+  expect(sourceRow.token.sessionRevision).toBe(2);
+  expect(recovery?.transferredSessionToken).toEqual(sourceRow.token);
+
+  // The pane resumes under a different ref and the rejected row follows it.
+  const moved = await fixture.outbox.retargetOutbox(fromRef, toRef, { threadId: "thread-1" });
+  expect(moved.recovery.map(({ clientMutationId }) => clientMutationId)).toEqual([sent.clientMutationId]);
+
+  // A peer under the RESUMED ref edits the moved record. Its guarded write
+  // advances the destination's independent counter to the same number the
+  // moved baseline carries, the coincidence it must not vouch for.
+  const peerUpdate = await fixture.outbox.updateRecoveryInput(
+    sent.clientMutationId,
+    [{ type: "text", text: "peer newer recovery", mentions: [] }],
+    [],
+    "peer newer recovery",
+    [],
+    { key: destinationKey, token: ownLineage.token, stillAuthorized: () => true },
+  );
+  if (!peerUpdate) throw new Error("expected the peer's recovery edit to commit");
+  const destinationRow = await requireRow(fixture.repository, destinationKey);
+  expect(destinationRow.token).toEqual(recovery?.transferredSessionToken);
+
+  const submitted = await stale.submissionDraft({ text: "stale recovery", skillNames: [], mentions: [] });
+  const guard = submitted.settlementGuard;
+  if (!guard) throw new Error("expected a captured submission guard");
+  // The stale editor keeps its own lineage: the destination revision came from
+  // the peer's edit, not from the retargeted transfer.
+  expect(guard.token).toEqual(ownLineage.token);
+
+  const resent = await fixture.outbox.resendRecovery(
+    sent.clientMutationId,
+    {
+      targetRef: toRef,
+      method: "turn/start",
+      payload: { ref: toRef, input: [{ type: "text", text: "stale recovery", mentions: [] }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "stale recovery", mentions: [] }] },
+      composerText: "stale recovery",
+    },
+    stale.recoveryWriteGuard(submitted),
+  );
+  expect(resent).toBeUndefined();
+  expect(await fixture.outbox.getRecovery(sent.clientMutationId)).toMatchObject({
+    composerText: "peer newer recovery",
+  });
 });
 
 // Issue #4366: Chrome exposes crypto.randomUUID only in secure contexts, and
