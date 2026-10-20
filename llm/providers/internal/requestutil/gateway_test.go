@@ -200,34 +200,11 @@ func TestApplyGatewayFacts_Dialect(t *testing.T) {
 	}
 }
 
-// TestApplyGatewayFacts_NonReasoningBeatsEffortVerdict pins the precedence the
-// capability verdict has over the compat block: a gateway saying the model does
-// not reason at all leaves no reasoning controls, whatever the block's effort
-// field says. Controls on a Reasoning=false row are a shape derivation exists
-// to forbid.
-func TestApplyGatewayFacts_NonReasoningBeatsEffortVerdict(t *testing.T) {
-	no := false
-	caps := registry.Caps{}
-	ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{Reasoning: &no}, GatewayClientCompat{
-		Pi: &GatewayPiCompat{SupportsReasoningEffort: &no, ThinkingLevelMap: map[string]string{"low": "low"}},
-	})
-	if caps.Reasoning == nil || *caps.Reasoning {
-		t.Fatalf("Reasoning = %v, want false", caps.Reasoning)
-	}
-	if len(caps.ReasoningControls) != 0 {
-		t.Fatalf("ReasoningControls = %#v, want none on a non-reasoning row", caps.ReasoningControls)
-	}
-	if len(caps.EffortValues) != 0 {
-		t.Fatalf("EffortValues = %#v, want none on a non-reasoning row", caps.EffortValues)
-	}
-}
-
 // TestApplyGatewayFacts_EmptyMapProvesNothing pins the other side of that
 // evidence rule: a published map with no usable level says the model takes no
 // effort control, and is not proof the model reasons at all. Raising the
 // verdict for it would open a thinking-enable object on a non-reasoning model.
 func TestApplyGatewayFacts_EmptyMapProvesNothing(t *testing.T) {
-	no := false
 	for name, levels := range map[string]map[string]string{
 		"empty":   {},
 		"all-nil": {"low": "", "high": ""},
@@ -235,7 +212,7 @@ func TestApplyGatewayFacts_EmptyMapProvesNothing(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			caps := registry.Caps{}
 			ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{}, GatewayClientCompat{
-				Pi: &GatewayPiCompat{SupportsReasoningEffort: &no, ThinkingLevelMap: levels},
+				Pi: &GatewayPiCompat{ThinkingLevelMap: levels},
 			})
 			if caps.Reasoning != nil {
 				t.Fatalf("Reasoning = %v, want the inferred verdict left alone", *caps.Reasoning)

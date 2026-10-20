@@ -36,9 +36,6 @@ type GatewayPiCompat struct {
 	ThinkingFormat string `json:"thinkingFormat"`
 	// MaxTokensField is the output-limit spelling this model takes.
 	MaxTokensField string `json:"maxTokensField"`
-	// SupportsReasoningEffort says whether the model takes an effort
-	// parameter at all. Nil means the gateway states nothing.
-	SupportsReasoningEffort *bool `json:"supportsReasoningEffort"`
 }
 
 // ApplyGatewayFacts folds a row's own per-model facts (lunaroute's shape) into
