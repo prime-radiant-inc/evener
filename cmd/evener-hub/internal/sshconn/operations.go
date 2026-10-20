@@ -96,6 +96,13 @@ func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, fa
 	}
 	restartCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
 	defer cancel()
+	m.applyResolvedTarget(&host)
+	// Attachment proves the running hub's protocol, not the executable that
+	// will replace it. Re-read that target before stopping a usable process.
+	facts, err := m.reReadLaunchContract(restartCtx, host, facts)
+	if err != nil {
+		return "", err
+	}
 	running, _ := m.probeRunningHub(restartCtx, host)
 	version, pin := expectedServedBuild(facts, m.opts.controllerVersion())
 	if pending := m.pendingRestart(host.Name); pending.active() {

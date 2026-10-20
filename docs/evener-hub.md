@@ -403,6 +403,10 @@ restart command. A confirmed deploy-only operation remains deploy-only on retry.
 An unacknowledged write is retried before recovery can settle, since equal build
 labels such as `dev` do not prove the requested executable was installed.
 An explicit Restart also finishes any pending deployment write before restarting.
+Before stopping the live hub, Restart re-reads the selected executable's startup
+contract. An incompatible protocol, missing required flag or unreadable contract
+refuses the restart and preserves the live connection. Fix the executable, then
+retry Restart.
 If the first health probe missed the predecessor, a later probe can identify it
 before the first restart command runs; an issued command retains its original
 predecessor identity across retries.

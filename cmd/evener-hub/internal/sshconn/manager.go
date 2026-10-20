@@ -2121,13 +2121,8 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// host that still speaks another appwire protocol cannot be attached, and when
 	// no deploy was possible that is terminal — the outcome the old "always deploy"
 	// path deferred by failing as a retryable ErrDeploy instead.
-	if facts.LaunchCheckKnown && facts.Protocol != appwire.ProtocolVersion {
-		return nil, fmt.Errorf("%w: host %q protocol %q, want %q", ErrProtocolIncompatible, host.Name, facts.Protocol, appwire.ProtocolVersion)
-	}
-	// The terminal launch-contract refusal fires only now: the deploy path has
-	// had its chance, and this judges the build that will actually serve.
-	if !slices.Contains(facts.LaunchFlags, requiredLaunchFlag) {
-		return nil, fmt.Errorf("%w: host %q launch_flags %v missing %q", ErrLaunchContract, host.Name, facts.LaunchFlags, requiredLaunchFlag)
+	if err := validateStartupContract(host.Name, facts); err != nil {
+		return nil, err
 	}
 	// Launch-check establishes whether the installed executable can be started;
 	// Initialize then verifies the process serving the connection. Build labels
@@ -2278,8 +2273,20 @@ func (m *Manager) hubIsPresent(ctx context.Context, host hostreg.Host, facts Pre
 	return !cleared, nil
 }
 
-// refreshLaunchContract re-reads the on-disk launch contract after a deploy or
-// restart and refuses a still-incompatible protocol. The pre-restart facts
+// validateStartupContract checks the executable that will serve the next hub.
+// A usable live connection does not imply its on-disk replacement is usable.
+func validateStartupContract(hostName string, facts Preflight) error {
+	if facts.LaunchCheckKnown && facts.Protocol != appwire.ProtocolVersion {
+		return fmt.Errorf("%w: host %q protocol %q, want %q", ErrProtocolIncompatible, hostName, facts.Protocol, appwire.ProtocolVersion)
+	}
+	if !slices.Contains(facts.LaunchFlags, requiredLaunchFlag) {
+		return fmt.Errorf("%w: host %q launch_flags %v missing %q", ErrLaunchContract, hostName, facts.LaunchFlags, requiredLaunchFlag)
+	}
+	return nil
+}
+
+// refreshLaunchContract re-reads the on-disk launch contract around a deploy or
+// restart and refuses an incompatible startup contract. The pre-restart facts
 // describe the build the restart replaced, so judging the launch contract on
 // them would let a host predating a required flag, or speaking an older
 // protocol, never be accepted even after a successful upgrade.
@@ -2287,9 +2294,6 @@ func (m *Manager) refreshLaunchContract(ctx context.Context, host hostreg.Host, 
 	refreshed, err := m.probeLaunchCheck(ctx, host)
 	if err != nil {
 		return facts, err
-	}
-	if refreshed.Protocol != appwire.ProtocolVersion {
-		return facts, fmt.Errorf("%w: host %q protocol %q, want %q after deploy/restart", ErrProtocolIncompatible, host.Name, refreshed.Protocol, appwire.ProtocolVersion)
 	}
 	facts.LaunchCheckKnown = true
 	facts.Protocol = refreshed.Protocol
@@ -2301,7 +2305,7 @@ func (m *Manager) refreshLaunchContract(ctx context.Context, host hostreg.Host, 
 	// not observe. A difference here is what ensureOnce's post-deploy gate
 	// refuses on: a deploy that leaves it cannot be retried into converging.
 	facts.Version = refreshed.Version
-	return facts, nil
+	return facts, validateStartupContract(host.Name, facts)
 }
 
 // reReadLaunchContract re-reads the on-disk launch contract under the deploy

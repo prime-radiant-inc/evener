@@ -128,6 +128,13 @@ func TestRestartHubPinsSnapshotBuildFromBuildChannel(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	newManager := func(body string) *Manager {
 		fr, _ := supervisorRestartRunner(nil, func(int) ([]byte, error) { return []byte(body), nil })
+		run := fr.runFn
+		fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+			if strings.Contains(strings.Join(argv, " "), "launch-check") {
+				return launchContract("newsha"), nil
+			}
+			return run(ctx, argv, stdin)
+		}
 		return newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "newsha",
 			sleep:                     func(context.Context, time.Duration) error { return nil },
