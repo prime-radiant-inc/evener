@@ -250,7 +250,17 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
     // top - so page from the gap above it even though the marker cannot be
     // seen. Without this, the wheel that reached the boundary strands the
     // reader until an unrelated scroll reveals the marker again.
-    if (gapIndex < 0 && previous !== null && !following && byte !== undefined && byte < previous.byteOffset) {
+    // Only a glyph capture that moved before the previous one counts as
+    // backward: a wrapped row's start sits above its first visible glyph, so
+    // comparing the row start would page older output while the reader moves
+    // forward inside that row.
+    if (
+      gapIndex < 0 &&
+      previous !== null &&
+      !following &&
+      capture !== null &&
+      capture.byteOffset < previous.byteOffset
+    ) {
       const boundary = gaps.find(({ row, index }) => {
         const next = rows[index + 1];
         if (next?.kind !== "output" || next.row.offsetBytes !== row.endBytes) return false;

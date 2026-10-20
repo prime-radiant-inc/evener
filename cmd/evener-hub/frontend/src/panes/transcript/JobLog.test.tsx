@@ -504,6 +504,40 @@ test("backward gap paging requests the live-adjacent bytes and keeps its indepen
   expect(unloaded?.getAttribute("data-source-end")).toBe("917504");
 });
 
+test("a forward move inside a wrapped row does not page older output from the loaded boundary", async () => {
+  mountJob();
+  await respond(textPage(65536, largePage("WRAPPED"), 131072));
+  const pane = workspaceStore.getState().panes[0];
+  if (!pane) throw new Error("job output pane is missing");
+  const reader = retainedJobLogReader(conversationPaneLifetime(pane), "ref_root", "job_x");
+  const scroller = port();
+  // The loaded window's start sits just above the viewport: the unloaded
+  // marker and the first loaded row are both measured off-screen.
+  scroller.scrollTop = 40;
+  act(() => reader.capture({ byteOffset: 65610, pixelOffset: 0, following: false }));
+  // A wrapped row crossing the viewport top: its start byte stays above every
+  // glyph inside it, so one line of forward movement lands well past it.
+  const measure = HTMLElement.prototype.getBoundingClientRect;
+  Object.defineProperty(Range.prototype, "getBoundingClientRect", {
+    configurable: true,
+    value(this: Range) {
+      const element = this.startContainer.parentElement;
+      if (!element) throw new Error("job output range has no rendered parent");
+      if (element.closest('[data-joblog-kind="output"]') === null) return measure.call(element);
+      const rect = measure.call(element);
+      const top = rect.top - 8 + Math.floor(this.startOffset / 10) * 4;
+      return { x: 0, y: top, top, bottom: top + 4, left: 0, right: 500, width: 500, height: 4, toJSON() {} } as DOMRect;
+    },
+  });
+  // A stationary re-inspect: the reader moved forward within one wrapped row,
+  // so the current glyph is past the previous one even though the row start
+  // is before the previous glyph.
+  await act(async () => scroll(scroller, 40));
+  expect(peer.requests("evener/jobs/output")).toHaveLength(1);
+  expect(scroller.scrollTop).toBe(40);
+  expect(reader.getSnapshot().scrollCapture?.byteOffset).toBe(65620);
+});
+
 test("a real inactive DockHost tab remounts the later-page byte row at the same pixel", async () => {
   vi.stubGlobal("ResizeObserver", StubResizeObserver);
   await import("../welcome");
