@@ -1497,7 +1497,10 @@ test("a failed turn's Retry action submits continuation in the real Session tree
   // The diagnostic end-cap renders either way; the recovery button renders
   // ONLY once the session ref threads through to TurnFailureEndCap.
   expect(await screen.findByTestId("turn-failure")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  const retry = screen.getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+  // Retry stays inactive until its pending-state owner has read this ref.
+  await waitFor(() => expect(retry.disabled).toBe(false));
+  fireEvent.click(retry);
   await waitFor(() => expect(inputs).toHaveLength(1));
   expect(inputs).toMatchInlineSnapshot(`
     [
@@ -1509,6 +1512,114 @@ test("a failed turn's Retry action submits continuation in the real Session tree
       ],
     ]
   `);
+});
+
+test("a newer completed turn removes Retry from the older failure in the real Session tree", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      status: { type: "idle" },
+      turns: [
+        {
+          id: "turn_1",
+          status: "failed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "failed", status: "completed" }],
+          error: { message: "the provider exploded" },
+        },
+        {
+          id: "turn_2",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_2", turnId: "turn_2", type: "agentMessage", text: "recovered", status: "completed" }],
+        },
+      ],
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  expect(await screen.findByTestId("turn-failure")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+});
+
+test("a newer running turn with zero display items removes Retry from the older failure", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      status: { type: "active" },
+      evener: {
+        ref: "ref_a",
+        capabilities: testThread("ref_a").evener.capabilities,
+        queue: { revision: 0 },
+        activeTurnId: "turn_2",
+      },
+      turns: [
+        {
+          id: "turn_1",
+          status: "failed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "failed", status: "completed" }],
+          error: { message: "the provider exploded" },
+        },
+        { id: "turn_2", status: "inProgress", itemsView: "full", items: [] },
+      ],
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  expect(await screen.findByTestId("turn-failure")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+});
+
+test("loading older history gives neither failure a Retry except the live tail", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({
+    thread: testThread("ref_a", {
+      status: { type: "idle" },
+      turns: [
+        {
+          id: "turn_2",
+          status: "failed",
+          itemsView: "full",
+          items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "latest failure", status: "completed" }],
+          error: { message: "the provider exploded" },
+        },
+      ],
+    }),
+    olderCursor: "cursor_1",
+  }));
+  fake.on("thread/turns/list", () => ({
+    data: [
+      {
+        id: "turn_1",
+        status: "failed",
+        itemsView: "full",
+        items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "older history", status: "completed" }],
+        error: { message: "older provider exploded" },
+      },
+    ],
+    nextCursor: undefined,
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  expect(await screen.findByText("older history")).toBeTruthy();
+  await waitFor(() => expect(screen.getAllByTestId("turn-failure")).toHaveLength(2));
+  expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
 });
 
 test("ensureThread fires exactly once when the client is already ready at mount time", async () => {

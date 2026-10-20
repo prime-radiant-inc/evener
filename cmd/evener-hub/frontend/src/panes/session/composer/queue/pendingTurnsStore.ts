@@ -8,6 +8,7 @@ import {
   type MutationPersistenceSnapshot,
   type MutationProjectionRefresh,
   outboxEntriesByState,
+  ownPendingTurnInput,
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
   recoveryEntries,
@@ -15,6 +16,7 @@ import {
 } from "@evener/appwire-client/state/mutation";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 import { isOwnMutationRecord } from "../../../../stores/mutationClientIdentity";
 import type {
   MutationAttachment,
@@ -27,6 +29,7 @@ import {
   discardRecoveryMutation,
   type InputAttachment,
   installResumeOnlyProjection,
+  installRetryPendingProjection,
   notifyReadyForMutationDispatch,
   readMutationPersistence,
   resendRecoveryMutation,
@@ -63,6 +66,26 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   draft: draftPort,
   identity: { isOwnMutationRecord },
 });
+
+// A ref's pending state is UNKNOWN until its own durable read answers: the
+// projection's maps are empty for a ref whether or not rows exist, so an empty
+// answer is only evidence once this store has read and published it. The
+// framework-free projection store deliberately holds records, not readiness -
+// the web's durable-read ownership is this module's - so the reactive view of
+// `loadedRefs` lives here, beside the entries it qualifies.
+interface PendingReadinessState {
+  loaded: ReadonlySet<string>;
+}
+
+const pendingReadinessStore = createStore<PendingReadinessState>(() => ({ loaded: new Set() }));
+
+function publishPendingReadiness(): void {
+  pendingReadinessStore.setState({ loaded: new Set(loadedRefs) });
+}
+
+export function usePendingTurnReadiness(ref: string): boolean {
+  return useStore(pendingReadinessStore, (state) => state.loaded.has(ref));
+}
 
 // The refs whose durable outbox this projection has actually read and
 // published. The resume-only predicate (threads.ts's hasBlockedUnknown /
@@ -104,6 +127,16 @@ installResumeOnlyProjection({
     ),
 });
 
+// Retry admission's owner-scoped pending facts: the same projection and the
+// same readiness this module renders from. Admission asks these live at the
+// press, after the owner lock is taken, so a stale view cannot act on an
+// unloaded or already-pending ref.
+installRetryPendingProjection({
+  isLoaded: (ref) => loadedRefs.has(ref),
+  hasOwnPendingTurnInput: (ref) => ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref)),
+  load: (ref) => void refreshPendingTurnsProjection(ref),
+});
+
 // The durable-read fence a refresh's targets are decided through, and the
 // port it reads them from: readMutationPersistence is already shaped to
 // MutationPersistencePort, so no adapter object is needed beyond naming it.
@@ -131,9 +164,11 @@ export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
 function invalidateProjectionLoaded(ref?: string): void {
   if (ref !== undefined) {
     loadedRefs.delete(ref);
+    publishPendingReadiness();
     return;
   }
   for (const target of threadsStore.getState().threads.keys()) loadedRefs.delete(target);
+  publishPendingReadiness();
 }
 
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
@@ -162,6 +197,7 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   // read "loaded, no uncertainty" from a projection the winner has not filled
   // in yet and fold a resume ahead of blocked or queued rows.
   const loaded = markProjectionLoaded(accepted, ref, targets, snapshot);
+  if (loaded.length > 0) publishPendingReadiness();
   // A read that just established readiness may be exactly what a parked
   // dispatch was waiting for: a resume-only ref's head send parks while its
   // ref's durable outbox read is in flight (the fail-closed readiness the
@@ -535,6 +571,7 @@ export function resetPendingTurnsStoreForTests(): void {
   // test's storage, so it is not this test's projection work to wait for.
   clearProjectionWorkForTests();
   loadedRefs.clear();
+  publishPendingReadiness();
   pendingTurnsStore.setState({
     outbox: new Map(),
     optimistic: new Map(),

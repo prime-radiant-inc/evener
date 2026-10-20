@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse, TurnModel } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
@@ -350,6 +350,31 @@ async function mountComposer(
   options: { focused?: boolean; holdMountProjection?: boolean } = {},
 ): Promise<FakeClient> {
   return (await mountComposerWithHandle(ref, overrides, options)).fake;
+}
+
+// Publishes `turn` as the canonical latest turn for ref, so a separately
+// rendered TurnBlock's failure end-cap is retryable against the same owner the
+// real Session tree reads. The mount's own thread is idle; clearing the
+// running identity keeps the tail coherent.
+function publishLatestFailure(ref: string, turn: TurnModel): void {
+  const model = threadsStore.getState().threads.get(ref);
+  if (!model) throw new Error("thread was not loaded");
+  act(() => {
+    threadsStore.setState({
+      threads: new Map(threadsStore.getState().threads).set(ref, {
+        ...model,
+        runningTurnId: undefined,
+        status: { type: "idle" },
+        turns: [turn],
+      }),
+    });
+  });
+}
+
+async function clickEnabledRetry(container: HTMLElement): Promise<void> {
+  const retry = within(container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+  await waitFor(() => expect(retry.disabled).toBe(false));
+  fireEvent.click(retry);
 }
 
 function deferred<T>() {
@@ -3137,11 +3162,12 @@ test.each(["", "  ", "occupied draft"])(
       error: { message: "provider failure" },
       items: [{ id: "original", turnId: "failed_turn", type: "userMessage" as const, text: "original request" }],
     };
+    publishLatestFailure("ref_a", turn);
     view.fake.on("turn/start", ({ clientMutationId }) => {
       throw notAcceptedError(clientMutationId);
     });
     const cap = render(<TurnBlock turn={turn} sessionRef="ref_a" />);
-    fireEvent.click(within(cap.container).getByRole("button", { name: "Retry" }));
+    await clickEnabledRetry(cap.container);
     await flushPendingTurnsProjectionForTests();
     expect(await storage.listRecovery("ref_a")).toHaveLength(1);
     expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
@@ -3198,10 +3224,10 @@ test.each([false, true])("failed-turn Retry preserves a selected and attached dr
       turn: { id: "continued", status: "inProgress", itemsView: "" },
     };
   });
-  const cap = render(
-    <TurnBlock turn={{ id: "failed", status: "failed", error: { message: "failed" }, items: [] }} sessionRef="ref_a" />,
-  );
-  fireEvent.click(within(cap.container).getByRole("button", { name: "Retry" }));
+  const turn: TurnModel = { id: "failed", status: "failed", error: { message: "failed" }, items: [] };
+  publishLatestFailure("ref_a", turn);
+  const cap = render(<TurnBlock turn={turn} sessionRef="ref_a" />);
+  await clickEnabledRetry(cap.container);
   await flushPendingTurnsProjectionForTests();
   expect(view.fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   if (rejected) expect(await storage.listRecovery("ref_a")).toHaveLength(1);

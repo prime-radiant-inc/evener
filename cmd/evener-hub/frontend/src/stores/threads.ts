@@ -43,6 +43,7 @@ import {
   hydrateThread,
   type InputAttachment,
   invalidateHistory,
+  isLatestRetryTurn,
   isStaleCursorError,
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
@@ -355,7 +356,7 @@ export interface ThreadsStoreState {
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
   ): Promise<void>;
-  continueTurn(ref: string): Promise<void>;
+  continueTurn(ref: string, failedTurnId: string): Promise<void>;
   steer(
     ref: string,
     text: string,
@@ -4062,6 +4063,48 @@ export function installResumeOnlyProjection(projection: ResumeOnlyProjection): v
   resumeOnlyProjection = projection;
 }
 
+// Failed-turn Retry's pending facts, published by the web pending-turns
+// projection (composer/queue/pendingTurnsStore.ts). `isLoaded` separates an
+// empty answer from an unread one: a ref whose own durable read has not
+// answered has UNKNOWN pending state, which is not the empty state Retry may
+// act on. `hasOwnPendingTurnInput` is the shared own send/queue rule over the
+// projection's current entries, so a stale rendered view cannot authorize a
+// second continuation.
+interface RetryPendingProjection {
+  isLoaded(ref: string): boolean;
+  hasOwnPendingTurnInput(ref: string): boolean;
+  // Starts the ref's durable pending read. An activation that finds readiness
+  // unknown asks the owner to load it and creates no mutation; the action
+  // becomes available when that read publishes an empty state.
+  load(ref: string): void;
+}
+let retryPendingProjection: RetryPendingProjection | null = null;
+
+export function installRetryPendingProjection(projection: RetryPendingProjection): void {
+  retryPendingProjection = projection;
+}
+
+// The owner-scoped admission mutex for Retry: the rendered disabled state
+// cannot be the only protection because two mounted views (or two presses in
+// one view) can both pass their render-time checks before either durable row
+// is visible to the projection. The first caller takes this synchronously,
+// before its first await; the second sees it and sends nothing. The guard
+// releases once the durable enqueue call settles, by which point the commit
+// feed has published the row and the pending projection owns the block.
+const continuationAdmissions = new Set<string>();
+
+// Whether `failedTurnId` may be retried from ref RIGHT NOW, read from the
+// canonical owners: the latest-turn rule over the live thread model, then the
+// pending projection's readiness and own-unsettled input. A missing model, a
+// conversation that has advanced, an unread pending state, and any unresolved
+// send or queue of this client's all refuse.
+function retryAdmissionCurrent(ref: string, failedTurnId: string): boolean {
+  const model = threadsStore.getState().threads.get(ref);
+  if (!model || !isLatestRetryTurn(model, failedTurnId)) return false;
+  if (retryPendingProjection === null || !retryPendingProjection.isLoaded(ref)) return false;
+  return !retryPendingProjection.hasOwnPendingTurnInput(ref);
+}
+
 // Whether ref's durable outbox holds delivery-uncertain (blockedUnknown) rows,
 // as the pending-turns projection last published them. True when no projection
 // is installed OR the ref's own durable outbox has not loaded yet (failing
@@ -7479,11 +7522,30 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async continueTurn(ref) {
-    await sendMutationIntent({
-      ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
-      preserveComposer: true,
-    });
+  async continueTurn(ref, failedTurnId) {
+    // Admission is synchronous on purpose: the eligibility facts are read at
+    // the activation, before any await, so a callback captured for a failure
+    // the conversation has since left cannot submit. Unknown pending state and
+    // an already-pending continuation both refuse here, and the owner mutex
+    // closes the pre-persistence window between two views' presses.
+    if (continuationAdmissions.has(ref) || retryPendingProjection === null) return;
+    if (!retryPendingProjection.isLoaded(ref)) {
+      retryPendingProjection.load(ref);
+      return;
+    }
+    if (!retryAdmissionCurrent(ref, failedTurnId)) return;
+    continuationAdmissions.add(ref);
+    try {
+      // Re-read after taking the lock: the first caller in this same task may
+      // have committed the durable row between the two checks.
+      if (!retryAdmissionCurrent(ref, failedTurnId)) return;
+      await sendMutationIntent({
+        ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
+        preserveComposer: true,
+      });
+    } finally {
+      continuationAdmissions.delete(ref);
+    }
   },
 
   async steer(ref, text, attachments, skillNames, commandNames, mentions) {
@@ -8445,6 +8507,7 @@ export function resetThreadsStoreForTests(): void {
   activeStops.clear();
   shutdownDispatchGates.clear();
   inFlightResumes.clear();
+  continuationAdmissions.clear();
   resumeSwapTargets.clear();
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
