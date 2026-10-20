@@ -294,6 +294,29 @@ func TestApplyThinkingFormat_CatalogToggleKeepsOpenRouterEffort(t *testing.T) {
 	}
 }
 
+// TestApplyThinkingFormat_ToggleOnlyZaiKeepsThinkingObject pins the wire half
+// of the vision-route rule: a toggle-only row carries a requested effort so the
+// dialect opens its thinking object, and the adapter withholds the level name
+// the row cannot take. Suppressing the effort at the call site instead would
+// leave thinking off entirely.
+func TestApplyThinkingFormat_ToggleOnlyZaiKeepsThinkingObject(t *testing.T) {
+	high, on := "high", true
+	format := "zai"
+	body := map[string]any{}
+	applyThinkingFormat(body, llm.Request{ReasoningEffort: &high}, registry.Caps{
+		Reasoning:         &on,
+		ReasoningControls: []string{"toggle"},
+		ThinkingFormat:    &format,
+	})
+	thinking, _ := body["thinking"].(map[string]any)
+	if thinking == nil || thinking["type"] != "enabled" {
+		t.Fatalf("thinking = %v, want the enable object on a toggle-only zai row", body["thinking"])
+	}
+	if _, has := body["reasoning_effort"]; has {
+		t.Fatalf("body carries reasoning_effort = %v, want no level on a toggle-only row", body["reasoning_effort"])
+	}
+}
+
 // TestListModelsPrefersContextLengthOverContextWindow keeps OpenRouter's
 // ordering: context_length wins when both spellings are present.
 func TestListModelsPrefersContextLengthOverContextWindow(t *testing.T) {

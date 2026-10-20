@@ -430,12 +430,12 @@ func (s *Session) visionRouteReasoning(profile *provider.Profile, providerName, 
 	if err != nil {
 		return false, nil
 	}
-	// The question here is "does this route reason", so a numeric budget can be
-	// sized and the thinking toggle still applies — not "may I spell a level".
-	// A row that states the no-effort verdict still reasons; the adapters drop
-	// the level name, and EffortCapable would take the effort away from the
-	// budget path too.
-	return res.Caps.RequestEffortCapable(), res.Caps.EffortValues
+	// The question here is "does this route reason", the same one the session
+	// branch above answers — not "may I spell a level". Whether a level reaches
+	// the wire is the adapters' call: a toggle-only row needs the effort set so
+	// its thinking object still opens, and a budget-shaped row needs it to size
+	// a numeric budget, while each adapter withholds the name it cannot send.
+	return res.Caps.ReasoningEnabled(), res.Caps.EffortValues
 }
 
 // sessionChainSeesToolResultMedia reports whether every model that could
