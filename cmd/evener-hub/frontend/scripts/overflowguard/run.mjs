@@ -33,6 +33,11 @@
 //   npm run overflowguard              # the default width sweep
 //   node scripts/overflowguard/run.mjs 390 1400
 //   node scripts/overflowguard/run.mjs --footer-only 390 1400
+//   node scripts/overflowguard/run.mjs --composer-only 390 1400
+//   node scripts/overflowguard/run.mjs --composer-delay-only
+// composer-only runs Send geometry, draft slots, exact content widths and trusted gestures.
+// Default and composer-only also run delayed touch390/mouse1400 regressions.
+// composer-delay-only runs just those two cases, footer-only stays footer-only.
 //
 // STATUS: a local pre-merge check and part of `make test-web-browser` in CI,
 // not wired into `make lint`, because it costs a Vite boot and a Chrome
@@ -54,6 +59,7 @@ import {
 } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard, waitForBrowserReady } from "../browserGuardProcess.mjs";
 import { diagnoseRealizedViewport } from "../layoutguard/viewport.mjs";
+import { measureComposerPlacement, typeComposerDraft, verifyComposerGesture } from "./composer.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -62,12 +68,6 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // escape at the right edge shows up. A width sweep that skipped the wide end
 // would have missed the original bug entirely.
 const DEFAULT_WIDTHS = [320, 390, 700, 899, 900, 1024, 1400];
-// Pane widths that bracket the composer card's phone-width container
-// threshold - COMPOSER_PHONE_MAX_WIDTH, 399, exported by
-// src/panes/session/composer/narrowComposer.ts, where the narrow layout
-// relocates the verbs into the session menu: the container is the pane
-// minus its footer padding. Swept only by the verb-cluster check.
-const VERB_WRAP_WIDTHS = [399, 400, 420, 480, 600, 699];
 const GEOMETRY_TOLERANCE = 0.5;
 const COMPOSER_SEND_STATES = [
   { theme: "dark", fontSize: "m" },
@@ -91,10 +91,7 @@ const BOOT = {
   bootLabel: "the overflowharness entry global window.settled",
 };
 
-// lite: window.measure() only, for a check that reads one geometry off the
-// settled page (the verb cluster) and needs none of the disclosure exception
-// probe, the Verbosity detail inspection or the trusted-focus pass.
-async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
+async function measureAt(cdpEndpoint, url, width) {
   const page = await connectOnlyPage(cdpEndpoint);
   const { send } = page;
   try {
@@ -139,17 +136,6 @@ async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
     // after the tree settles, because document.fonts.ready re-arms for each new
     // face and only a mounted tree has asked for the ones being measured.
     await waitForFonts(send);
-
-    if (lite) {
-      const measurement = JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
-      // The relocated-verb probe opens the real session menu, and the menu's
-      // open lands on the next animation frame (measured live; the harness's
-      // measureMenuVerbs awaits it) - so it is awaited here, on the lite
-      // pass the verb-cluster sweep runs, not folded into the synchronous
-      // window.measure() the full pass shares with every other check.
-      const menuVerbs = await evaluate(send, "window.measureMenuVerbs()\n");
-      return { ...measurement, menuVerbs, viewport: { ...viewport, mobile: realizedLayout.mobile } };
-    }
 
     const exceptionSafety = await evaluate(
       send,
@@ -313,6 +299,7 @@ async function measureComposerSend(cdpEndpoint, url, width) {
     await evaluate(send, "window.settled");
     await waitForFonts(send);
 
+    await typeComposerDraft(send);
     const measurements = [];
     const states =
       width <= 390
@@ -829,76 +816,6 @@ function assertFieldsets(detail, label) {
   return failures;
 }
 
-// measureVerbCluster reads the harness's compose-controls measurement (the
-// verb cluster's geometry plus each control's containment) for one width and
-// one fixture (steer advertised or not) off a lite measurement, plus the
-// awaited menu-verb probe (measureMenuVerbs) the lite path runs.
-async function measureVerbCluster(cdpEndpoint, vitePort, width, steer) {
-  const result = await measureAt(
-    cdpEndpoint,
-    `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}${steer ? "&steer=1" : ""}`,
-    width,
-    { lite: true },
-  );
-  return { ...result.currentWork, menuVerbs: result.menuVerbs };
-}
-
-function verbClusterWrapped(cluster) {
-  return cluster.top !== null && cluster.statusRowBottom !== null && cluster.top >= cluster.statusRowBottom - 1;
-}
-
-// assertVerbCluster: the narrow verb layout, plus the containment the main pass
-// asserts for the no-steer fixture. The row NEVER wraps: at the phone-width
-// boundary or below the narrow layout holds Send alone beside the status row
-// and relocates Stop and Steer into the session menu (Jesse's 2026-09-28
-// ruling, which replaced issue #1339's provisional wrap rule); above that
-// boundary the verbs sit in the row beside the status row and the menu
-// carries none. The narrow verdict is the harness's own gate (narrowComposer,
-// reported in the payload), so the runner never re-derives the boundary; the
-// verb count is the fixture's own (expectedVerbs, from its capabilities
-// and the container width). Every expected in-row control is present, inside
-// the card and the pane, no two overlap, and the current-work strip and the
-// card share the pane without horizontal overflow.
-function assertVerbCluster(work, steer) {
-  const cluster = work.verbCluster;
-  if (!Number.isFinite(cluster.containerWidth)) {
-    return [`card container width unmeasured (${cluster.containerWidth})`];
-  }
-  const failures = [];
-  const narrow = cluster.narrowComposer;
-  if (cluster.controls !== cluster.expectedVerbs) {
-    failures.push(`expected ${cluster.expectedVerbs} in-row verbs, got ${cluster.controls}`);
-  }
-  if (verbClusterWrapped(cluster)) {
-    failures.push(
-      `the verb cluster wrapped below the status row (top=${cluster.top} against status bottom=${cluster.statusRowBottom}); ` +
-        `the narrow layout relocates verbs into the session menu instead of wrapping`,
-    );
-  }
-  if (!work.menuVerbs.open) {
-    failures.push("the session menu could not be opened for the relocated-verb probe");
-  } else {
-    const expectSteerInMenu = narrow && steer;
-    if (work.menuVerbs.stop !== narrow) {
-      failures.push(
-        `menu Stop ${work.menuVerbs.stop ? "present" : "absent"}, expected ${narrow ? "present" : "absent"}`,
-      );
-    }
-    if (work.menuVerbs.steer !== expectSteerInMenu) {
-      failures.push(
-        `menu Steer ${work.menuVerbs.steer ? "present" : "absent"}, expected ${narrow && steer ? "present" : "absent"}`,
-      );
-    }
-  }
-  if (!work.controlsFound || !work.controlsContained || !work.controlsDoNotOverlap || !work.sharedPaneWithoutOverflow) {
-    failures.push(
-      `compose controls geometry: found=${work.controlsFound} contained=${work.controlsContained} ` +
-        `noOverlap=${work.controlsDoNotOverlap} sharedPane=${work.sharedPaneWithoutOverflow} ${JSON.stringify(work.controls)}`,
-    );
-  }
-  return failures;
-}
-
 function assertDetail(result, width) {
   const failures = [];
   failures.push(...assertEditors(result, width, "live"));
@@ -1348,6 +1265,10 @@ function assertSettings(result, width) {
 
 async function main() {
   const footerOnly = process.argv.includes("--footer-only");
+  const composerOnly = process.argv.includes("--composer-only");
+  const composerDelayOnly = process.argv.includes("--composer-delay-only");
+  if ([footerOnly, composerOnly, composerDelayOnly].filter(Boolean).length > 1)
+    throw new Error("choose one focused mode");
   const widths = process.argv.slice(2).map(Number).filter(Boolean);
   const sweep = widths.length > 0 ? widths : DEFAULT_WIDTHS;
 
@@ -1386,38 +1307,66 @@ async function main() {
     }
     cdpEndpoint = await waitForBrowserReady(guard);
 
-    const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
-    if (!protocolResponse.ok) throw new Error(`browser protocol HTTP ${protocolResponse.status}`);
-    const protocol = await protocolResponse.json();
-    const safeAreaSupported =
-      protocol.domains
-        .find((domain) => domain.domain === "Emulation")
-        ?.commands.some((command) => command.name === "setSafeAreaInsetsOverride") ?? false;
-    if (!safeAreaSupported)
-      console.log(
-        "composer footer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped",
-      );
-    for (const width of [...new Set([320, 390, 430, 899, 900, 1400, ...sweep])]) {
-      const measurements = await measureComposerFooter(
-        cdpEndpoint,
-        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
-        width,
-        safeAreaSupported,
-      );
-      for (const measurement of measurements) {
-        const failures = assertComposerFooter(measurement, width);
-        const label = `${width}px composer footer safe-area=${measurement.safeArea} keyboard=${measurement.keyboard}`;
-        if (failures.length > 0) {
+    const delayedComposer = async () => {
+      // One adversarial transport case per input type, not another theme matrix.
+      for (const width of [390, 1400]) {
+        const label = `composer delayed double-tap dark ${width}px`;
+        try {
+          const result = await verifyComposerGesture(
+            cdpEndpoint,
+            `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&theme=dark`,
+            width,
+            "double-tap",
+            { driverDelayMs: 650 },
+          );
+          console.log(`${label} ... PASS - ${JSON.stringify(result)}`);
+        } catch (error) {
           failed++;
-          console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
-        } else {
-          console.log(`${label} ... PASS - gap=${measurement.gap}px, desktop metadata=${measurement.metadataVisible}`);
+          console.log(`${label} ... FAIL - ${error.message}`);
         }
       }
+    };
+    if (composerDelayOnly) {
+      await delayedComposer();
+      return failed > 0 ? 1 : 0;
     }
-    if (footerOnly) return failed > 0 ? 1 : 0;
 
-    for (const width of sweep.filter((candidate) => candidate < 900 || candidate === 900)) {
+    if (!composerOnly) {
+      const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
+      if (!protocolResponse.ok) throw new Error(`browser protocol HTTP ${protocolResponse.status}`);
+      const protocol = await protocolResponse.json();
+      const safeAreaSupported =
+        protocol.domains
+          .find((domain) => domain.domain === "Emulation")
+          ?.commands.some((command) => command.name === "setSafeAreaInsetsOverride") ?? false;
+      if (!safeAreaSupported)
+        console.log(
+          "composer footer ... LIMITATION - Chrome has no real safe-area override, nonzero safe-area cases skipped",
+        );
+      for (const width of [...new Set([320, 390, 430, 899, 900, 1400, ...sweep])]) {
+        const measurements = await measureComposerFooter(
+          cdpEndpoint,
+          `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
+          width,
+          safeAreaSupported,
+        );
+        for (const measurement of measurements) {
+          const failures = assertComposerFooter(measurement, width);
+          const label = `${width}px composer footer safe-area=${measurement.safeArea} keyboard=${measurement.keyboard}`;
+          if (failures.length > 0) {
+            failed++;
+            console.log(`${label} ... FAIL - ${failures.join("; ")}; ${JSON.stringify(measurement)}`);
+          } else {
+            console.log(
+              `${label} ... PASS - gap=${measurement.gap}px, desktop metadata=${measurement.metadataVisible}`,
+            );
+          }
+        }
+      }
+      if (footerOnly) return failed > 0 ? 1 : 0;
+    }
+
+    for (const width of [...new Set([...sweep.filter((candidate) => candidate <= 900), 900])]) {
       const sendMeasurements = await measureComposerSend(
         cdpEndpoint,
         `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
@@ -1472,6 +1421,49 @@ async function main() {
       }
     }
 
+    for (const theme of ["dark", "light"]) {
+      for (const steer of [false, true]) {
+        const cases = [
+          ...sweep.map((viewportWidth) => ({ viewportWidth })),
+          ...[399, 400, 420, 480, 600, 699].map((contentWidth) => ({ viewportWidth: 800, contentWidth })),
+          { viewportWidth: 1400, contentWidth: 399 },
+        ];
+        for (const scenario of cases) {
+          const label = `composer slots ${theme} steer=${steer} ${JSON.stringify(scenario)}`;
+          try {
+            const result = await measureComposerPlacement(
+              cdpEndpoint,
+              `http://127.0.0.1:${vitePort}/overflowharness.html?w=${scenario.viewportWidth}&theme=${theme}${steer ? "&steer=1" : ""}`,
+              { ...scenario, steer },
+            );
+            console.log(`${label} ... PASS - ${JSON.stringify(result)}`);
+          } catch (error) {
+            failed++;
+            console.log(`${label} ... FAIL - ${error.message}`);
+          }
+        }
+      }
+      for (const width of sweep) {
+        for (const gesture of ["double-tap", "split-press"]) {
+          const label = `composer ${gesture} ${theme} ${width}px`;
+          try {
+            const result = await verifyComposerGesture(
+              cdpEndpoint,
+              `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&theme=${theme}`,
+              width,
+              gesture,
+            );
+            console.log(`${label} ... PASS - ${JSON.stringify(result)}`);
+          } catch (error) {
+            failed++;
+            console.log(`${label} ... FAIL - ${error.message}`);
+          }
+        }
+      }
+    }
+    await delayedComposer();
+    if (composerOnly) return failed > 0 ? 1 : 0;
+
     const paging = await verifyItemPaging(cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?paging=1`);
     if (
       paging.duplicateItemIds.length !== 0 ||
@@ -1494,8 +1486,10 @@ async function main() {
       shortMenuFailures.push(`realized viewport=${shortMenu.viewportWidth}x${shortMenu.viewportHeight}`);
     }
     const expectedMenuLabels = ["Overview", "Verbosity…", "Rename", "Pin this session…", "Archive", "Shut down"];
-    if (shortMenu.itemCount !== 6) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 6`);
-    const menuLabels = shortMenu.itemLabels.map((label) => label.replace(/^Overview · .+$/, "Overview"));
+    if (shortMenu.itemCount !== 7) shortMenuFailures.push(`items=${shortMenu.itemCount}, expected 7`);
+    const menuLabels = shortMenu.itemLabels
+      .filter((label) => label !== "Stop")
+      .map((label) => label.replace(/^Overview · .+$/, "Overview"));
     if (JSON.stringify(menuLabels) !== JSON.stringify(expectedMenuLabels)) {
       shortMenuFailures.push(
         `labels=${JSON.stringify(shortMenu.itemLabels)}, expected ${JSON.stringify(expectedMenuLabels)}`,
@@ -1787,35 +1781,8 @@ async function main() {
       }
     }
 
-    // The verb cluster (Stop, Send, Steer against the status row) on its own
-    // lite pass, for both fixtures the harness can draw: without the steer
-    // capability (Stop + Send, the cluster the status row's narrow-pane budget
-    // was measured against) and with it (Stop + Send + Steer, every busy
-    // session on a harness that can steer). Every swept width plus the widths
-    // that bracket the card's phone-width threshold (COMPOSER_PHONE_MAX_WIDTH,
-    // 399, from narrowComposer.ts), where the narrow layout
-    // relocates the verbs into the session menu instead of drawing them in
-    // the row (Jesse's 2026-09-28 ruling, replacing the old wrap).
-    for (const steer of [false, true]) {
-      for (const width of [...sweep, ...VERB_WRAP_WIDTHS]) {
-        const label = `${width}px${steer ? " steer" : ""} verbs`;
-        const work = await measureVerbCluster(cdpEndpoint, vitePort, width, steer);
-        const cluster = work.verbCluster;
-        const failures = assertVerbCluster(work, steer);
-        if (failures.length > 0) {
-          failed++;
-          console.log(`${label} ... FAIL - ${failures.join("; ")}`);
-        } else {
-          console.log(
-            `${label} ... PASS - ${cluster.controls} verbs beside the status row, ` +
-              `menu ${work.menuVerbs.stop || work.menuVerbs.steer ? "carries the relocated verbs" : "carries none"} ` +
-              `(card container ${cluster.containerWidth}px)`,
-          );
-        }
-      }
-    }
     // The settings page has no composer, so it is measured once per width,
-    // outside the steer sweep above.
+    // independently of the composer sweep above.
     for (const width of sweep) {
       const settings = await measureAt(
         cdpEndpoint,

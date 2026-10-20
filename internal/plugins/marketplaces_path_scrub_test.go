@@ -730,11 +730,9 @@ func TestEditMarketplaceAsideMoveFailureNamesNoPath(t *testing.T) {
 	}
 }
 
-// A rename's forward step can be refused on its own: the clone moves, the
-// cache rename is refused, and the clone move's own undo puts it back. The
-// store is unchanged, but the cache rename's *fs.PathError names the cache
-// path, so the failure must still be scrubbed (#1854).
-func TestEditMarketplaceCacheRenameFailureNamesNoPath(t *testing.T) {
+// A clone rename can fail before any store write. Its filesystem error must
+// stay out of the client-facing message while the published cache stays fixed.
+func TestEditMarketplaceCloneRenameFailureNamesNoPath(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
@@ -749,12 +747,12 @@ func TestEditMarketplaceCacheRenameFailureNamesNoPath(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 
-	cache := filepath.Join(m.cacheDir(), name)
+	clone := m.marketplaceDir(name)
 	orig := marketplaceRename
 	t.Cleanup(func() { marketplaceRename = orig })
 	marketplaceRename = func(from, to string) error {
-		if from == cache {
-			return &fs.PathError{Op: "rename", Path: cache, Err: errors.New("permission denied")}
+		if from == clone {
+			return &fs.PathError{Op: "rename", Path: clone, Err: errors.New("permission denied")}
 		}
 		return orig(from, to)
 	}
@@ -762,9 +760,9 @@ func TestEditMarketplaceCacheRenameFailureNamesNoPath(t *testing.T) {
 	_, err := m.EditMarketplace(ctx, name, "beta", nil)
 	marketplaceRename = orig
 	if err == nil {
-		t.Fatal("expected the cache rename to fail")
+		t.Fatal("expected the clone rename to fail")
 	}
-	if strings.Contains(err.Error(), cache) || strings.Contains(err.Error(), m.marketplaceDir("beta")) {
+	if strings.Contains(err.Error(), clone) || strings.Contains(err.Error(), m.marketplaceDir("beta")) {
 		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
 	}
 	if !strings.Contains(err.Error(), name) {

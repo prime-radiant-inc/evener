@@ -2,6 +2,8 @@ package hub
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -25,6 +27,15 @@ func mustSessionID(tb testing.TB) string {
 // navigation build cost (past sessions x roster size).
 func navigationScalingFixture(tb testing.TB, daemons, pastSessions int) *WebServer {
 	tb.Helper()
+	return navigationScalingFixtureWithWorkingDir(tb, daemons, pastSessions, func(i int) string {
+		return fmt.Sprintf("/nonexistent/project-%d", i%60)
+	})
+}
+
+// navigationScalingFixtureWithWorkingDir builds the scaling fixture with the
+// session working directories chosen by workingDir.
+func navigationScalingFixtureWithWorkingDir(tb testing.TB, daemons, pastSessions int, workingDir func(i int) string) *WebServer {
+	tb.Helper()
 	runDir := tb.TempDir()
 	peer := protocolMismatchPeer(tb)
 	for i := range daemons {
@@ -40,7 +51,7 @@ func navigationScalingFixture(tb testing.TB, daemons, pastSessions int) *WebServ
 	for i := range pastSessions {
 		id := mustSessionID(tb)
 		meta := schema.SessionMeta{ID: id, CreatedAt: now.Add(-time.Duration(i+1) * time.Minute), UpdatedAt: now.Add(-time.Duration(i) * time.Minute)}
-		meta.EnvInfo.WorkingDir = fmt.Sprintf("/nonexistent/project-%d", i%60)
+		meta.EnvInfo.WorkingDir = workingDir(i)
 		// Every third session forks the one before it, so ancestry walks have depth.
 		if i%3 != 0 && previous != "" {
 			meta.ParentSessionID = previous
@@ -55,6 +66,27 @@ func navigationScalingFixture(tb testing.TB, daemons, pastSessions int) *WebServ
 
 func BenchmarkNavigationSnapshotInputs(b *testing.B) {
 	web := navigationScalingFixture(b, 150, 5000)
+	b.ResetTimer()
+	for range b.N {
+		web.navigationSnapshotInputs(b.Context())
+	}
+}
+
+// BenchmarkNavigationSnapshotInputsExistingDirectories is the paired
+// successful-directory variant of BenchmarkNavigationSnapshotInputs: the same
+// fixture shape with real working directories instead of missing paths.
+func BenchmarkNavigationSnapshotInputsExistingDirectories(b *testing.B) {
+	root := b.TempDir()
+	dirs := make([]string, 60)
+	for i := range dirs {
+		dirs[i] = filepath.Join(root, fmt.Sprintf("project-%d", i))
+		if err := os.MkdirAll(dirs[i], 0o755); err != nil {
+			b.Fatal(err)
+		}
+	}
+	web := navigationScalingFixtureWithWorkingDir(b, 150, 5000, func(i int) string {
+		return dirs[i%len(dirs)]
+	})
 	b.ResetTimer()
 	for range b.N {
 		web.navigationSnapshotInputs(b.Context())

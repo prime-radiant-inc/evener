@@ -1464,8 +1464,16 @@ test("derives the live thread projection once per model revision", async ({ onTe
 // actually LIVE in the real Session tree - without `sessionRef={ref}` on the
 // TurnBlock render, the diagnostic still renders but the recovery button is
 // dark (a shipped, tested feature silently non-functional).
-test("a failed turn's Retry action renders in the real Session tree (sessionRef wired through)", async () => {
+test("a failed turn's Retry action submits continuation in the real Session tree", async () => {
   const fake = connectFakeClient();
+  const inputs: unknown[] = [];
+  fake.on("turn/start", ({ input, clientMutationId }) => {
+    inputs.push(input);
+    return {
+      receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+      turn: { id: "turn_next", status: "inProgress", itemsView: "" },
+    };
+  });
   fake.on("thread/read", () =>
     readResponse("ref_a", {
       turns: [
@@ -1489,7 +1497,18 @@ test("a failed turn's Retry action renders in the real Session tree (sessionRef 
   // The diagnostic end-cap renders either way; the recovery button renders
   // ONLY once the session ref threads through to TurnFailureEndCap.
   expect(await screen.findByTestId("turn-failure")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(inputs).toHaveLength(1));
+  expect(inputs).toMatchInlineSnapshot(`
+    [
+      [
+        {
+          "text": "continue",
+          "type": "text",
+        },
+      ],
+    ]
+  `);
 });
 
 test("ensureThread fires exactly once when the client is already ready at mount time", async () => {

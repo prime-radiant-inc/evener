@@ -1,11 +1,14 @@
-import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { originatingInput, translateAttachmentMarkers } from "@evener/appwire-client";
+import type { ItemModel, MethodTypes, TurnModel } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, expect, test, vi } from "vitest";
 import { accessibleName } from "../../../accessibleNameTestUtils";
-import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
-import { Toast } from "../../../widgets";
+import { connectionStore } from "../../../stores/connection";
+import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { readResponse } from "./messages/testing/heldSteerTestUtils";
 import { TurnBlock } from "./TurnBlock";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 
@@ -17,12 +20,6 @@ beforeEach(() => {
 // The hint disclosure's toggle, or null when the end-cap has no hint.
 function hintSummary(): HTMLElement | null {
   return screen.getByTestId("turn-failure").querySelector("summary");
-}
-
-// How many attached images the re-attach note says are unavailable, or null
-// when there is no note.
-function reattachCount(): string | null | undefined {
-  return screen.queryByTestId("turn-failure-reattach")?.getAttribute("data-count");
 }
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
@@ -40,7 +37,7 @@ function failedTurn(overrides: Partial<TurnModel> = {}): TurnModel {
 }
 
 test("renders the taxonomy badge and the error message", () => {
-  render(<TurnFailureEndCap error={{ message: "the provider exploded" }} turn={failedTurn()} sessionRef="ref_a" />);
+  render(<TurnFailureEndCap error={{ message: "the provider exploded" }} sessionRef="ref_a" />);
   expect(screen.getByTestId("turn-failure")).toBeTruthy();
   expect(screen.getByText("error")).toBeTruthy(); // no source/cause -> generic badge
   expect(screen.getByText("the provider exploded")).toBeTruthy();
@@ -50,7 +47,6 @@ test("a provider failure shows a provider-status badge and a Retry action", () =
   render(
     <TurnFailureEndCap
       error={{ message: "429 rate limited", cause: { kind: "provider", status: 429 } }}
-      turn={failedTurn()}
       sessionRef="ref_a"
     />,
   );
@@ -61,34 +57,20 @@ test("a provider failure shows a provider-status badge and a Retry action", () =
 });
 
 test("a connection failure offers a Reconnect & retry action", () => {
-  render(
-    <TurnFailureEndCap
-      error={{ message: "local daemon unavailable", source: "hub" }}
-      turn={failedTurn()}
-      sessionRef="ref_a"
-    />,
-  );
+  render(<TurnFailureEndCap error={{ message: "local daemon unavailable", source: "hub" }} sessionRef="ref_a" />);
   expect(screen.getByText("connection")).toBeTruthy();
   expect(screen.getByRole("button", { name: "Reconnect & retry" })).toBeTruthy();
 });
 
 test("the hint renders when present", () => {
-  render(
-    <TurnFailureEndCap
-      error={{ message: "boom", hint: "check your API key" }}
-      turn={failedTurn()}
-      sessionRef="ref_a"
-    />,
-  );
+  render(<TurnFailureEndCap error={{ message: "boom", hint: "check your API key" }} sessionRef="ref_a" />);
   // The toggle names itself to a screen reader.
   expect(accessibleName(hintSummary() as HTMLElement).trim()).not.toBe("");
   expect(screen.queryByText("check your API key")).toBeNull();
 });
 
 test("hint sits behind a disclosure; retry is inline in the head row", () => {
-  render(
-    <TurnFailureEndCap error={{ message: "boom", hint: "check your API key" }} turn={failedTurn()} sessionRef="s1" />,
-  );
+  render(<TurnFailureEndCap error={{ message: "boom", hint: "check your API key" }} sessionRef="s1" />);
   const cap = screen.getByTestId("turn-failure");
   const head = cap.firstElementChild as HTMLElement;
   expect(head.contains(screen.getByRole("button", { name: /retry/i }))).toBe(true);
@@ -98,9 +80,7 @@ test("hint sits behind a disclosure; retry is inline in the head row", () => {
 });
 
 test("the hint toggle is a disclosure summary with a chevron affordance", () => {
-  render(
-    <TurnFailureEndCap error={{ message: "boom", hint: "check your API key" }} turn={failedTurn()} sessionRef="s1" />,
-  );
+  render(<TurnFailureEndCap error={{ message: "boom", hint: "check your API key" }} sessionRef="s1" />);
   const summary = hintSummary();
   expect(summary).not.toBeNull();
   expect(summary?.querySelector("svg")).not.toBeNull();
@@ -110,966 +90,11 @@ test("the hint toggle is a disclosure summary with a chevron affordance", () => 
   expect(screen.queryByText("check your API key")).toBeNull();
 });
 
-test("clicking retry re-issues the turn's user input via threadsStore.send", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={failedTurn()} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "do the thing", undefined));
-});
-
-test("clicking retry re-sends the originating input's image attachments", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const turn = failedTurn({
-    items: [item({ images: [{ src: "data:image/png;base64,aGVsbG8=", name: "pic.png" }] })],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "do the thing", [
-      { marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
-    ]),
-  );
-});
-
-test("retry pairs each image with its translated marker number", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const turn = failedTurn({
-    items: [
-      item({
-        text: "(attached image 7: seven.png) then (attached image 3)",
-        images: [
-          { src: "data:image/png;base64,c2V2ZW4=", name: "seven.png" },
-          { src: "data:image/jpeg;base64,dGhyZWU=" },
-        ],
-      }),
-    ],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 7] then [image 3]", [
-      { marker: 7, mediaType: "image/png", data: "c2V2ZW4=", name: "seven.png" },
-      { marker: 3, mediaType: "image/jpeg", data: "dGhyZWU=" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(
-    "(attached image 7: seven.png) then (attached image 3)",
-  );
-});
-
-test("retry warns instead of silently resending text when image bytes are unavailable", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const turn = failedTurn({
-    items: [item({ text: "look at this", images: [{ src: "/s/sess_1/images/abc", name: "shot.png" }] })],
-  });
-  render(
-    <>
-      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
-      <Toast />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "look at this", undefined));
-  expect(await screen.findByText(/Retried without an attached image/)).toBeTruthy();
-  expect(getToasts().map((toast) => toast.kind)).toEqual(["warning"]);
-});
-
 test("without a session ref the diagnostic still renders but the recovery action is withheld", () => {
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={failedTurn()} sessionRef={undefined} />);
+  render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef={undefined} />);
   expect(screen.getByTestId("turn-failure")).toBeTruthy();
   expect(screen.getByText("boom")).toBeTruthy();
   expect(screen.queryByRole("button")).toBe(null);
-});
-
-test("a failed turn with no user-input item to retry withholds the action even with a ref", () => {
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={failedTurn({ items: [] })} sessionRef="ref_a" />);
-  expect(screen.queryByRole("button")).toBe(null);
-});
-
-// --- a reloaded failure offers the same recovery a live one does (kata 0wb6)
-// One persisted transcript entry is one turn, so a RELOADED failure is a turn
-// of its own carrying only the failure item - the input that opened the
-// exchange sits in an earlier turn. Retry was therefore offered live and
-// withheld after reload, for the same failure.
-
-function seedThread(ref: string, turns: TurnModel[]): void {
-  threadsStore.setState({ threads: new Map([[ref, { ref, turns } as unknown as ThreadModel]]) });
-}
-
-const RELOADED_FAILURE: TurnModel = {
-  id: "turn_2",
-  status: "failed",
-  items: [{ id: "item_turn_failure_2", turnId: "turn_2", type: "systemMessage", text: "boom", eventKind: "error" }],
-  error: { message: "boom" },
-};
-
-function reloadedThread(): TurnModel[] {
-  return [
-    { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "explain parser.go" })] },
-    RELOADED_FAILURE,
-  ];
-}
-
-test("a reloaded failure offers Retry, sourced from the input that opened the exchange", () => {
-  seedThread("ref_a", reloadedThread());
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
-});
-
-test("retrying a reloaded failure re-issues that earlier input", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  seedThread("ref_a", reloadedThread());
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "explain parser.go", undefined));
-});
-
-test("the lookback stops at the failed turn, never re-issuing an input sent after it", () => {
-  seedThread("ref_a", [
-    ...reloadedThread(),
-    { id: "turn_3", status: "completed", items: [item({ turnId: "turn_3", text: "a later, unrelated prompt" })] },
-  ]);
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
-  expect(screen.queryByText("a later, unrelated prompt")).toBe(null);
-  expect(originatingInput(threadsStore.getState().threads.get("ref_a")?.turns ?? [], "turn_2")).toEqual({
-    kind: "retry",
-    input: { text: "explain parser.go", sourceImageCount: 0 },
-  });
-});
-
-test("a thread whose turns hold no user input at all still withholds the action", () => {
-  seedThread("ref_a", [RELOADED_FAILURE]);
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  expect(screen.queryByRole("button")).toBe(null);
-});
-
-test("retrying a reloaded input with unresolvable bytes warns from the originating item", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  seedThread("ref_a", [
-    {
-      id: "turn_1",
-      status: "completed",
-      items: [
-        item({
-          turnId: "turn_1",
-          text: "look at this",
-          images: [{ src: "/s/sess_1/images/abc", name: "shot.png" }],
-        }),
-      ],
-    },
-    RELOADED_FAILURE,
-  ]);
-  render(
-    <>
-      <TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />
-      <Toast />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "look at this", undefined));
-  expect(await screen.findByText(/Retried without an attached image/)).toBeTruthy();
-  expect(getToasts().map((toast) => toast.kind)).toEqual(["warning"]);
-});
-
-test("an image-only input is retryable even with empty text", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const turn = failedTurn({
-    items: [item({ text: "   ", images: [{ src: "data:image/png;base64,aGVsbG8=", name: "pic.png" }] })],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "", [
-      { marker: 1, mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
-    ]),
-  );
-});
-
-test("repeated copies of one marker over one attachment stay safe", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1: a.png) and again (attached image 1: a.png)";
-  const turn = failedTurn({
-    items: [item({ text, images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a.png" }] })],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1] and again (attached image 1: a.png)", [
-      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYQ==", name: "a.png" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
-});
-
-test("one marker matching several attachments refuses the images", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1: same.png) and (attached image 1: same.png)";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [
-          { src: "data:image/png;base64,Ynl0ZXMtMQ==", name: "same.png" },
-          { src: "data:image/png;base64,Ynl0ZXMtMg==", name: "same.png" },
-        ],
-      }),
-    ],
-  });
-  render(
-    <>
-      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
-      <Toast />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
-  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
-});
-
-test("a fallback marker avoids markers the prose already uses", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const turn = failedTurn({
-    items: [
-      item({
-        text: "(attached image 2: b.png) plus stray",
-        images: [
-          { src: "data:image/png;base64,Ynl0ZXMtYg==", name: "b.png" },
-          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a.png" },
-        ],
-      }),
-    ],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 2] plus stray", [
-      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtYg==", name: "b.png" },
-      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYQ==", name: "a.png" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe("(attached image 2: b.png) plus stray");
-});
-
-test("a fallback marker avoids raw anchors the user typed literally", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 2: b.png) plus [image 1] typed";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [
-          { src: "data:image/png;base64,Ynl0ZXMtYg==", name: "b.png" },
-          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a.png" },
-        ],
-      }),
-    ],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 2] plus [image 1] typed", [
-      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtYg==", name: "b.png" },
-      { marker: 3, mediaType: "image/png", data: "Ynl0ZXMtYQ==", name: "a.png" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
-});
-
-test("duplicate markers across unnamed attachments refuse the images", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1) and (attached image 1)";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }, { src: "data:image/png;base64,Ynl0ZXMtYg==" }],
-      }),
-    ],
-  });
-  render(
-    <>
-      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
-      <Toast />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
-  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
-});
-
-test("a repeated unnamed marker over one attachment retries with the image", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1) and (attached image 1)";
-  const turn = failedTurn({
-    items: [item({ text, images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }] })],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1] and (attached image 1)", [
-      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYQ==" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
-});
-
-test("the re-attach note pluralizes for several unavailable images", () => {
-  seedThread("ref_a", [
-    {
-      id: "turn_1",
-      status: "completed",
-      items: [
-        item({
-          turnId: "turn_1",
-          text: "",
-          images: [{ src: "/s/sess_1/images/abc" }, { src: "/s/sess_1/images/def" }],
-        }),
-      ],
-    },
-    RELOADED_FAILURE,
-  ]);
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
-  expect(screen.getByText("Attached images unavailable — re-attach 2 images to retry.")).toBeTruthy();
-});
-
-test("duplicate attachment names refuse the images instead of guessing", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1: dup.png) and (attached image 2: dup.png)";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [
-          { src: "data:image/png;base64,Ynl0ZXMtMQ==", name: "dup.png" },
-          { src: "data:image/png;base64,Ynl0ZXMtMg==", name: "dup.png" },
-        ],
-      }),
-    ],
-  });
-  render(
-    <>
-      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
-      <Toast />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
-  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
-});
-
-test("duplicate names with no prose mentions still retry - there are no markers to misassign", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  seedThread("ref_a", [
-    {
-      id: "turn_1",
-      status: "completed",
-      items: [
-        item({
-          turnId: "turn_1",
-          text: "",
-          images: [
-            { src: "data:image/png;base64,Ynl0ZXMtMQ==", name: "dup.png" },
-            { src: "data:image/png;base64,Ynl0ZXMtMg==", name: "dup.png" },
-          ],
-        }),
-      ],
-    },
-    RELOADED_FAILURE,
-  ]);
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "", [
-      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtMQ==", name: "dup.png" },
-      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtMg==", name: "dup.png" },
-    ]),
-  );
-});
-
-test("a filename containing a paren pairs by full name and round-trips", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1: plot).png) describe it";
-  const turn = failedTurn({
-    items: [item({ text, images: [{ src: "data:image/png;base64,cGxvdA==", name: "plot).png" }] })],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1] describe it", [
-      { marker: 1, mediaType: "image/png", data: "cGxvdA==", name: "plot).png" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
-});
-
-test("prose naming an image that was never attached stays verbatim", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 9: ghost) hi";
-  const turn = failedTurn({
-    items: [item({ text, images: [{ src: "data:image/png;base64,cmVhbA==", name: "real.png" }] })],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", text, [
-      { marker: 1, mediaType: "image/png", data: "cmVhbA==", name: "real.png" },
-    ]),
-  );
-});
-
-test("an image-only input with unavailable bytes stops the lookback instead of retrying an older prompt", () => {
-  const turns: TurnModel[] = [
-    { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "an older, unrelated prompt" })] },
-    {
-      id: "turn_2",
-      status: "completed",
-      items: [
-        item({
-          turnId: "turn_2",
-          id: "item_img",
-          text: "",
-          images: [{ src: "/s/sess_1/images/abc", name: "shot.png" }],
-        }),
-      ],
-    },
-    RELOADED_FAILURE,
-  ];
-  expect(originatingInput(turns, "turn_2")).toEqual({ kind: "images-unavailable", sourceImageCount: 1 });
-});
-
-test("an image-only input with unavailable bytes shows a re-attach note instead of Retry", () => {
-  seedThread("ref_a", [
-    {
-      id: "turn_1",
-      status: "completed",
-      items: [item({ turnId: "turn_1", text: "", images: [{ src: "/s/sess_1/images/abc", name: "shot.png" }] })],
-    },
-    RELOADED_FAILURE,
-  ]);
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
-  expect(reattachCount()).toBe("1");
-});
-
-test("retry sends composer-style anchors so a failed retry recovers its image tiles", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  seedThread("ref_a", [
-    {
-      id: "turn_1",
-      status: "completed",
-      items: [
-        item({
-          turnId: "turn_1",
-          text: "(attached image 2: diagram.png)explain this",
-          images: [{ src: "data:image/png;base64,ZGlhZ3JhbQ==", name: "diagram.png" }],
-        }),
-      ],
-    },
-    RELOADED_FAILURE,
-  ]);
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 2]explain this", [
-      { marker: 2, mediaType: "image/png", data: "ZGlhZ3JhbQ==", name: "diagram.png" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe("(attached image 2: diagram.png)explain this");
-});
-
-test("retry pairs markers by attachment name when the prose order diverges from send order", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const turn = failedTurn({
-    items: [
-      item({
-        text: "(attached image 2: b.png) then (attached image 1: a.png)",
-        images: [
-          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a.png" },
-          { src: "data:image/png;base64,Ynl0ZXMtYg==", name: "b.png" },
-        ],
-      }),
-    ],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 2] then [image 1]", [
-      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYQ==", name: "a.png" },
-      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtYg==", name: "b.png" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(
-    "(attached image 2: b.png) then (attached image 1: a.png)",
-  );
-});
-
-test("extra unnamed mentions refuse the images instead of relabeling", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1) then (attached image 2) then (attached image 3)";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }, { src: "data:image/png;base64,Ynl0ZXMtYg==" }],
-      }),
-    ],
-  });
-  render(
-    <>
-      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
-      <Toast />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
-  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
-});
-
-test("prose that is only a translated marker counts as image-only for unavailable bytes", () => {
-  seedThread("ref_a", [
-    {
-      id: "turn_1",
-      status: "completed",
-      items: [
-        item({
-          turnId: "turn_1",
-          text: "(attached image 1: shot.png)",
-          images: [{ src: "/s/sess_1/images/abc", name: "shot.png" }],
-        }),
-      ],
-    },
-    RELOADED_FAILURE,
-  ]);
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
-  expect(reattachCount()).toBe("1");
-});
-
-test("a subset of unnamed markers refuses the images instead of misassigning", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 2) describe it";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }, { src: "data:image/png;base64,Ynl0ZXMtYg==" }],
-      }),
-    ],
-  });
-  render(
-    <>
-      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
-      <Toast />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
-  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
-});
-
-test("foreign prose beside an unnamed image refuses the images instead of misassigning", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 5: ghost.png) and (attached image 1)";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [{ src: "data:image/png;base64,cmVhbA==" }],
-      }),
-    ],
-  });
-  render(
-    <>
-      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
-      <Toast />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
-  expect(await screen.findByText(/Retried without an attached image/)).toBeTruthy();
-});
-
-test("an unmentioned named image keeps a fallback marker beside an exact unnamed pairing", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1) describe it";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [
-          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a.png" },
-          { src: "data:image/png;base64,Ynl0ZXMtYg==" },
-        ],
-      }),
-    ],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1] describe it", [
-      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtYQ==", name: "a.png" },
-      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYg==" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
-});
-
-test("foreign prose beside an unmentioned unnamed image keeps the image on a fallback marker", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 9: ghost) hi";
-  const turn = failedTurn({
-    items: [item({ text, images: [{ src: "data:image/png;base64,cmVhbA==" }] })],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", text, [{ marker: 1, mediaType: "image/png", data: "cmVhbA==" }]),
-  );
-});
-
-test("prefix-colliding filenames refuse the images instead of guessing", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1: a)) describe it";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [
-          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a" },
-          { src: "data:image/png;base64,Ynl0ZXMtYg==", name: "a)" },
-        ],
-      }),
-    ],
-  });
-  render(
-    <>
-      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
-      <Toast />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
-  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
-});
-
-test("a lone prefix filename still pairs when only it fits", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1: a) describe it";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [
-          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a" },
-          { src: "data:image/png;base64,Ynl0ZXMtYg==", name: "a)" },
-        ],
-      }),
-    ],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1] describe it", [
-      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYQ==", name: "a" },
-      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtYg==", name: "a)" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
-});
-
-test("a reloaded marker-only input with a paren in the lost filename shows re-attach instead of Retry", () => {
-  seedThread("ref_a", [
-    {
-      id: "turn_1",
-      status: "completed",
-      items: [
-        item({
-          turnId: "turn_1",
-          text: "(attached image 1: plot).png)",
-          images: [{ src: "/s/sess_1/images/abc" }],
-        }),
-      ],
-    },
-    RELOADED_FAILURE,
-  ]);
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
-  expect(reattachCount()).toBe("1");
-});
-
-test("an image-only input whose filename holds a paren retries on a rebuilt anchor", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1: plot).png)";
-  const turn = failedTurn({
-    items: [item({ text, images: [{ src: "data:image/png;base64,cGxvdA==", name: "plot).png" }] })],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1]", [
-      { marker: 1, mediaType: "image/png", data: "cGxvdA==", name: "plot).png" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
-});
-
-test("reloaded marker-only inputs with dotless or dashed tails show re-attach", () => {
-  for (const text of ["(attached image 1: plot)draft)", "(attached image 1: plot)-draft.png)"]) {
-    resetThreadsStoreForTests();
-    resetToastStoreForTests();
-    seedThread("ref_a", [
-      {
-        id: "turn_1",
-        status: "completed",
-        items: [
-          item({
-            turnId: "turn_1",
-            text,
-            images: [{ src: "/s/sess_1/images/abc" }],
-          }),
-        ],
-      },
-      RELOADED_FAILURE,
-    ]);
-    render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-    expect(screen.queryByRole("button", { name: "Retry" }), text).toBe(null);
-    expect(reattachCount(), text).toBe("1");
-    cleanup();
-  }
-});
-
-test("a shifted reloaded marker still retries its trailing prose as text", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  seedThread("ref_a", [
-    {
-      id: "turn_1",
-      status: "completed",
-      items: [
-        item({
-          turnId: "turn_1",
-          text: "(attached image 9: ghost.png)explain (the plot)",
-          images: [{ src: "/s/sess_1/images/abc" }],
-        }),
-      ],
-    },
-    RELOADED_FAILURE,
-  ]);
-  render(
-    <>
-      <TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />
-      <Toast />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "(attached image 9: ghost.png)explain (the plot)", undefined),
-  );
-  expect(await screen.findByText(/Retried without an attached image/)).toBeTruthy();
-});
-
-test("a reloaded marker-only input whose lost filename ends with a paren shows re-attach", () => {
-  seedThread("ref_a", [
-    {
-      id: "turn_1",
-      status: "completed",
-      items: [
-        item({
-          turnId: "turn_1",
-          text: "(attached image 1: plot))",
-          images: [{ src: "/s/sess_1/images/abc" }],
-        }),
-      ],
-    },
-    RELOADED_FAILURE,
-  ]);
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
-  expect(reattachCount()).toBe("1");
-});
-
-test("a reloaded marker-only input whose lost filename holds ') ' shows re-attach", () => {
-  seedThread("ref_a", [
-    {
-      id: "turn_1",
-      status: "completed",
-      items: [
-        item({
-          turnId: "turn_1",
-          text: "(attached image 1: plot) draft.png)",
-          images: [{ src: "/s/sess_1/images/abc" }],
-        }),
-      ],
-    },
-    RELOADED_FAILURE,
-  ]);
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
-  expect(screen.queryByRole("button", { name: "Retry" })).toBe(null);
-  expect(reattachCount()).toBe("1");
-});
-
-test("glued user text after an unnamed marker is preserved, not swallowed", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1)foo) describe it";
-  const turn = failedTurn({
-    items: [item({ text, images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }] })],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1]foo) describe it", [
-      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYQ==" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
-});
-
-test("foreign prose occupying the pairing slot still refuses the images", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1: ghost.png) then (attached image 1) then (attached image 2)";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }, { src: "data:image/png;base64,Ynl0ZXMtYg==" }],
-      }),
-    ],
-  });
-  render(
-    <>
-      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
-      <Toast />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
-  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
-});
-
-test("a repeated named mention plus an unmentioned image keeps both attachments", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 1: a.png) and again (attached image 1: a.png)";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [
-          { src: "data:image/png;base64,Ynl0ZXMtYQ==", name: "a.png" },
-          { src: "data:image/png;base64,Ynl0ZXMtYg==", name: "b.png" },
-        ],
-      }),
-    ],
-  });
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() =>
-    expect(sendSpy).toHaveBeenCalledWith("ref_a", "[image 1] and again (attached image 1: a.png)", [
-      { marker: 1, mediaType: "image/png", data: "Ynl0ZXMtYQ==", name: "a.png" },
-      { marker: 2, mediaType: "image/png", data: "Ynl0ZXMtYg==", name: "b.png" },
-    ]),
-  );
-  const sentCall = sendSpy.mock.calls[0];
-  if (!sentCall) throw new Error("send was not called");
-  const [, sentText, sentAttachments] = sentCall;
-  expect(translateAttachmentMarkers(sentText, sentAttachments)).toBe(text);
-});
-
-test("out-of-order unnamed markers refuse the images instead of misassigning bytes", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  const text = "(attached image 2) then (attached image 1)";
-  const turn = failedTurn({
-    items: [
-      item({
-        text,
-        images: [{ src: "data:image/png;base64,Ynl0ZXMtYQ==" }, { src: "data:image/png;base64,Ynl0ZXMtYg==" }],
-      }),
-    ],
-  });
-  render(
-    <>
-      <TurnFailureEndCap error={{ message: "boom" }} turn={turn} sessionRef="ref_a" />
-      <Toast />
-    </>,
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", text, undefined));
-  expect(await screen.findByText(/Retried without 2 attached images/)).toBeTruthy();
-});
-
-test("a blank input on the failed turn falls back to the earlier usable input", async () => {
-  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
-  seedThread("ref_a", [
-    { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "real work" })] },
-    { id: "turn_2", status: "failed", items: [item({ turnId: "turn_2", id: "item_blank", text: "   " })] },
-  ]);
-  const blankFailure: TurnModel = {
-    id: "turn_2",
-    status: "failed",
-    items: [item({ turnId: "turn_2", id: "item_blank", text: "   " })],
-    error: { message: "boom" },
-  };
-  render(<TurnFailureEndCap error={{ message: "boom" }} turn={blankFailure} sessionRef="ref_a" />);
-  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "real work", undefined));
-});
-
-test("originatingInput skips a whitespace-only input rather than re-issuing nothing", () => {
-  const turns: TurnModel[] = [
-    { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "real work" })] },
-    { id: "turn_2", status: "completed", items: [item({ turnId: "turn_2", id: "item_blank", text: "   " })] },
-    RELOADED_FAILURE,
-  ];
-  expect(originatingInput(turns, "turn_2")).toEqual({
-    kind: "retry",
-    input: { text: "real work", sourceImageCount: 0 },
-  });
-});
-
-test("originatingInput takes the LAST input at or before the failed turn", () => {
-  const turns: TurnModel[] = [
-    { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "first" })] },
-    { id: "turn_2", status: "completed", items: [item({ turnId: "turn_2", id: "item_u2", text: "second" })] },
-    RELOADED_FAILURE,
-  ];
-  expect(originatingInput(turns, "turn_2")).toEqual({ kind: "retry", input: { text: "second", sourceImageCount: 0 } });
 });
 
 // --- TurnBlock integration: the end-cap is driven by turn.error presence ----
@@ -1082,4 +107,54 @@ test("TurnBlock renders the failure end-cap for a failed turn (turn.error presen
 test("TurnBlock renders NO end-cap for a clean turn (no error)", () => {
   render(<TurnBlock turn={{ id: "turn_2", status: "completed", items: [item()] }} sessionRef="ref_a" />);
   expect(screen.queryByTestId("turn-failure")).toBe(null);
+});
+
+test.each([
+  ["text", [item()]],
+  ["attached image", [item({ images: [{ src: "data:image/png;base64,AQID", name: "old.png" }] })]],
+  ["unavailable image-only", [item({ text: "", images: [{ src: "sha:missing", name: "old.png" }] })]],
+  ["no loaded input", []],
+] as const)("Retry submits continuation for %s and preserves the transcript", async (_case, items) => {
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = new FakeClient("ready");
+  const turn = failedTurn({ items: [...items] });
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" }, turns: [] }));
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "turn_next", status: "inProgress", itemsView: "" },
+  }));
+  connectionStore.getState().connect(fake);
+  try {
+    await threadsStore.getState().ensureThread("ref_a");
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("thread was not loaded");
+    threadsStore.setState({ threads: new Map([["ref_a", { ...model, turns: [turn] }]]) });
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" />);
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+    const start = fake.calls.find((call) => call.method === "turn/start");
+    const params = start?.params as MethodTypes["turn/start"]["params"];
+    expect(params.input).toMatchInlineSnapshot(`
+      [
+        {
+          "text": "continue",
+          "type": "text",
+        },
+      ]
+    `);
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.find((entry) => entry.id === turn.id),
+    ).toEqual(turn);
+    expect(getToasts()).toEqual([]);
+  } finally {
+    cleanup();
+    connectionStore.setState({ client: null, state: "idle" });
+    resetThreadsStoreForTests();
+    storage.close();
+  }
 });

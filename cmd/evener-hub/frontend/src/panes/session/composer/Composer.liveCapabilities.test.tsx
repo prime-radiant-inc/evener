@@ -32,7 +32,7 @@
 
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -232,6 +232,13 @@ function submitButton(): HTMLButtonElement {
   return screen.getByTestId("composer-submit") as HTMLButtonElement;
 }
 
+function expectMenuStop(): void {
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Stop" }).getAttribute("aria-disabled")).not.toBe("true");
+  fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+}
+
 async function type(text: string): Promise<void> {
   await userEvent.type(screen.getByRole("textbox", { name: /^message$/i }), text);
 }
@@ -271,7 +278,7 @@ test("a resumed cold session's controls follow the turn it is running", async ()
     status: "active",
     runningTurnId: "turn_5",
   });
-  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+  expectMenuStop();
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
   expect(submitButton().disabled).toBe(false);
 });
@@ -292,7 +299,7 @@ test("a live idle session's controls follow the turn its own send starts", async
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
 
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
-  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+  expectMenuStop();
   expect(submitButton().disabled).toBe(false);
 });
 
@@ -455,7 +462,7 @@ test("a status change with no capabilities leaves the advertised set alone", asy
 
   expect(threadsStore.getState().threads.get(REF)?.capabilities).toEqual(daemonCapabilities(true));
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
-  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+  expectMenuStop();
   expect(submitButton().disabled).toBe(false);
 });
 
@@ -568,7 +575,7 @@ function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnI
       fake.emitNotification(frame);
     });
     expect(screen.queryByTestId("composer-steer"), `Steer after ${step}`).not.toBeNull();
-    expect(screen.queryByTestId("composer-stop"), `Stop after ${step}`).not.toBeNull();
+    expectMenuStop();
   }
 }
 
@@ -615,7 +622,7 @@ test("a failed turn takes Stop and Steer off and gives Send back", async () => {
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
   await type("hi");
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
-  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+  expectMenuStop();
 
   act(() => {
     fake.emitNotification({
@@ -655,6 +662,6 @@ test("Steer and Stop stay on screen across an inline turn boundary delivered one
 
   emitInlineTurnBoundary(fake, "turn_5", "turn_6");
 
-  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+  expectMenuStop();
   expect(threadsStore.getState().threads.get(REF)?.runningTurnId).toBe("turn_6");
 });

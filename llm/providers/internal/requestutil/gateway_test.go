@@ -3,6 +3,8 @@ package requestutil
 import (
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestGatewayInputModalities(t *testing.T) {
@@ -48,6 +50,201 @@ func TestDedupStrings(t *testing.T) {
 			got := DedupStrings(tc.in)
 			if !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
 				t.Fatalf("DedupStrings(%#v) = %#v, want %#v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGatewayEffortLadder(t *testing.T) {
+	levels := func(m map[string]string) GatewayClientCompat {
+		return GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}
+	}
+	cases := []struct {
+		name      string
+		compat    GatewayClientCompat
+		want      []string
+		published bool
+	}{
+		{
+			name: "map levels come back in rank order",
+			compat: levels(map[string]string{
+				"max": "max", "high": "high", "low": "low",
+				"medium": "medium", "xhigh": "xhigh", "minimal": "", "off": "",
+			}),
+			want:      []string{"low", "medium", "high", "xhigh", "max"},
+			published: true,
+		},
+		{
+			name: "an explicit off level leads the ladder",
+			compat: levels(map[string]string{
+				"off": "none", "low": "low", "high": "high",
+			}),
+			want:      []string{"none", "low", "high"},
+			published: true,
+		},
+		{
+			name: "an off level spelled as another tier is not an off",
+			compat: levels(map[string]string{
+				"off": "low", "low": "low", "high": "high",
+			}),
+			want:      []string{"low", "high"},
+			published: true,
+		},
+		{
+			// glm maps medium→high, minimal→low and xhigh→max: the menu offers
+			// the wire values the gateway accepts, once each.
+			name: "aliases collapse to their wire values",
+			compat: levels(map[string]string{
+				"minimal": "low", "low": "low", "medium": "high",
+				"high": "high", "xhigh": "max", "max": "max", "off": "none",
+			}),
+			want:      []string{"none", "low", "high", "max"},
+			published: true,
+		},
+		{
+			name: "a level spelled outside the vocabulary is dropped",
+			compat: levels(map[string]string{
+				"low": "low", "high": "turbo",
+			}),
+			want:      []string{"low"},
+			published: true,
+		},
+		{
+			name:   "a compat block without pi states no ladder",
+			compat: GatewayClientCompat{},
+			want:   nil,
+		},
+		{
+			// A Pi block carrying other compat fields publishes no map: that is
+			// silence about effort, not the model refusing every level, so the
+			// caller must keep whatever ladder it inherited.
+			name:   "a pi block without a map states no ladder",
+			compat: GatewayClientCompat{Pi: &GatewayPiCompat{}},
+			want:   nil,
+		},
+		{
+			// A published map with every level null is the gateway stating that
+			// the model takes no effort control. That is not the same as an
+			// absent map: inheriting a curated ladder would send levels the
+			// gateway marks unsupported.
+			name:      "an all-null map states an empty ladder",
+			compat:    levels(map[string]string{"low": "", "high": ""}),
+			want:      []string{},
+			published: true,
+		},
+		{
+			name:      "an empty map states an empty ladder",
+			compat:    levels(map[string]string{}),
+			want:      []string{},
+			published: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, published := GatewayEffortLadder(tc.compat)
+			if published != tc.published {
+				t.Fatalf("published = %v, want %v", published, tc.published)
+			}
+			if !slices.Equal(got, tc.want) || (!published && got != nil) {
+				t.Fatalf("GatewayEffortLadder = %#v, want %#v (published %v)", got, tc.want, published)
+			}
+		})
+	}
+}
+
+func TestApplyGatewayReasoning(t *testing.T) {
+	yes, no := true, false
+	levels := func(m map[string]string) GatewayClientCompat {
+		return GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}
+	}
+	ladder := map[string]string{"low": "low", "high": "high", "max": "max"}
+	cases := []struct {
+		name         string
+		capsFacts    GatewayCapabilities
+		compat       GatewayClientCompat
+		before       []string
+		beforeReason *bool
+		wantReason   *bool
+		wantLadder   []string
+	}{
+		{
+			name:       "a verdict and map fill both facts",
+			capsFacts:  GatewayCapabilities{Reasoning: &yes},
+			compat:     levels(ladder),
+			wantReason: &yes,
+			wantLadder: []string{"low", "high", "max"},
+		},
+		{
+			name:       "a non-reasoning verdict keeps no ladder",
+			capsFacts:  GatewayCapabilities{Reasoning: &no},
+			compat:     levels(ladder),
+			wantReason: &no,
+			wantLadder: nil,
+		},
+		{
+			// A listing that publishes both supported_efforts and a
+			// non-reasoning verdict must not leave the raw live row carrying a
+			// ladder: it reaches ApplyLive before derivation clears one.
+			name:       "a non-reasoning verdict clears an advertised ladder",
+			capsFacts:  GatewayCapabilities{Reasoning: &no},
+			before:     []string{"low", "high"},
+			wantReason: &no,
+			wantLadder: nil,
+		},
+		{
+			name:       "no verdict still takes the map",
+			compat:     levels(ladder),
+			wantReason: &yes,
+			wantLadder: []string{"low", "high", "max"},
+		},
+		{
+			// A usable ladder is itself evidence the model tunes effort, even
+			// when the row arrived with a false verdict inferred from a
+			// provider-wide parameter list or the catalog.
+			name:         "a usable ladder raises an inherited false verdict",
+			compat:       levels(ladder),
+			beforeReason: &no,
+			wantReason:   &yes,
+			wantLadder:   []string{"low", "high", "max"},
+		},
+		{
+			// A published map with no usable level is the gateway saying the
+			// model has no effort control: it must not inherit a curated
+			// ladder, and it does not imply reasoning.
+			name:       "a published empty map clears an inherited ladder",
+			compat:     levels(map[string]string{"low": "", "high": ""}),
+			before:     []string{"low", "medium", "high"},
+			wantLadder: []string{},
+		},
+		{
+			name:       "a verdict without a map states no ladder",
+			capsFacts:  GatewayCapabilities{Reasoning: &yes},
+			wantReason: &yes,
+		},
+		{
+			name: "facts the listing does not state stay unset",
+		},
+		{
+			// A Pi block with only other compat fields carries no effort
+			// verdict: an inherited ladder must survive.
+			name:       "a pi block without a map keeps an inherited ladder",
+			compat:     GatewayClientCompat{Pi: &GatewayPiCompat{}},
+			before:     []string{"low", "medium", "high"},
+			wantLadder: []string{"low", "medium", "high"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := registry.Caps{EffortValues: tc.before, Reasoning: tc.beforeReason}
+			ApplyGatewayReasoning(&caps, tc.capsFacts, tc.compat)
+			if (caps.Reasoning == nil) != (tc.wantReason == nil) || (caps.Reasoning != nil && *caps.Reasoning != *tc.wantReason) {
+				t.Fatalf("Reasoning = %v, want %v", caps.Reasoning, tc.wantReason)
+			}
+			if !slices.Equal(caps.EffortValues, tc.wantLadder) {
+				t.Fatalf("EffortValues = %v, want %v", caps.EffortValues, tc.wantLadder)
+			}
+			if tc.wantLadder == nil && caps.EffortValues != nil && len(caps.EffortValues) == 0 && tc.compat.Pi == nil {
+				t.Fatalf("an absent map must leave the ladder unset, got %#v", caps.EffortValues)
 			}
 		})
 	}
