@@ -26,7 +26,7 @@ func TestHubKnowsRefDoesNotScanSavedTranscript(t *testing.T) {
 	}
 	defer func() { pastDerivedTotalsScan = original }()
 
-	if !hubKnowsRef(cfg, "local:"+entry.Meta.ID) {
+	if !hubKnowsRef(cfg, localAppRef(entry.Meta.ID)) {
 		t.Fatal("known session rejected")
 	}
 	if scanCalls != 0 {
@@ -34,10 +34,11 @@ func TestHubKnowsRefDoesNotScanSavedTranscript(t *testing.T) {
 	}
 }
 
-// TestHubKnowsRefKeepsKnownSessionWithoutTranscript pins that existence is
-// independent of transcript availability: once the past index has indexed a
-// session, removing its transcript must not make the retry gate reject it. A
-// knownness check that hydrates would depend on the file and on its size.
+// TestHubKnowsRefKeepsKnownSessionWithoutTranscript pins that existence does
+// not depend on transcript availability or size: once the past index has
+// indexed a session, removing its transcript must not make the retry gate
+// reject it. The pre-change hydration path already ignored transcript errors
+// and reported the session known, so this is answer parity, not a RED proof.
 func TestHubKnowsRefKeepsKnownSessionWithoutTranscript(t *testing.T) {
 	t.Run("small", func(t *testing.T) {
 		cfg, entry, path := seedIndexedPastSession(t, completedExecution("turn_known"))
@@ -47,7 +48,7 @@ func TestHubKnowsRefKeepsKnownSessionWithoutTranscript(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("fixture transcript still present: %v", err)
 		}
-		if !hubKnowsRef(cfg, "local:"+entry.Meta.ID) {
+		if !hubKnowsRef(cfg, localAppRef(entry.Meta.ID)) {
 			t.Fatal("known session with no transcript rejected")
 		}
 	})
@@ -71,7 +72,7 @@ func TestHubKnowsRefKeepsKnownSessionWithoutTranscript(t *testing.T) {
 // the answer is about this hub's saved local past, not about any ref shape.
 func TestHubKnowsRefRejectsUnknownReferences(t *testing.T) {
 	cfg, entry, _ := seedIndexedPastSession(t, completedExecution("turn_known"))
-	ref := "local:" + entry.Meta.ID
+	ref := localAppRef(entry.Meta.ID)
 	if !hubKnowsRef(cfg, ref) {
 		t.Fatalf("known local reference %q rejected", ref)
 	}
@@ -82,7 +83,7 @@ func TestHubKnowsRefRejectsUnknownReferences(t *testing.T) {
 		ref  string
 	}{
 		{name: "nil past", cfg: hubcore.WebConfig{}, ref: ref},
-		{name: "missing local id", cfg: cfg, ref: "local:02wMz5Txv47YP64RR3B9YJ"},
+		{name: "missing local id", cfg: cfg, ref: localAppRef("02wMz5Txv47YP64RR3B9YJ")},
 		{name: "remote ref with existing local id", cfg: cfg, ref: "remote:" + entry.Meta.ID},
 		{name: "malformed ref", cfg: cfg, ref: "not-a-ref"},
 		{name: "empty ref", cfg: cfg, ref: ""},

@@ -28,7 +28,7 @@ func TestHubKnowsRefDoesNotOpenTranscript(t *testing.T) {
 		t.Fatalf("inotify add watch on %s: %v", filepath.Base(path), err)
 	}
 
-	if !hubKnowsRef(cfg, "local:"+entry.Meta.ID) {
+	if !hubKnowsRef(cfg, localAppRef(entry.Meta.ID)) {
 		t.Fatal("known session rejected")
 	}
 
