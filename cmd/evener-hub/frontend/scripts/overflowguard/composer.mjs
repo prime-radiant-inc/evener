@@ -146,18 +146,18 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
         send,
         `(() => {
       const pane = document.getElementById('oh-pane');
-      const measured = window.measure().currentWork.verbCluster.containerWidth;
+      const measured = window.measureComposerContentWidth();
       pane.style.width = (pane.getBoundingClientRect().width + ${contentWidth} - measured) + 'px';
     })()`,
       );
-      await until(send, `window.measure().currentWork.verbCluster.containerWidth === ${contentWidth}`);
+      await until(send, `window.measureComposerContentWidth() === ${contentWidth}`);
       await evaluate(send, "new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
       assert.ok(
         (await evaluate(send, "document.getElementById('oh-pane').getBoundingClientRect().width")) < viewportWidth,
         "boundary fixture is a narrow pane within the requested viewport",
       );
     }
-    contentWidth ??= await evaluate(send, "window.measure().currentWork.verbCluster.containerWidth");
+    contentWidth ??= await evaluate(send, "window.measureComposerContentWidth()");
     const inlineSteer = steer && contentWidth > 399;
     const menuSteer = steer && contentWidth <= 399;
     const results = [];

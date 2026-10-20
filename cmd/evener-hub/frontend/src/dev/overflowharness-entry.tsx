@@ -1569,6 +1569,25 @@ async function inspectHeldSteerColumn(): Promise<HeldSteerColumnMeasurement> {
   };
 }
 
+// Report observed geometry only. The runner owns the placement oracle.
+function measureComposerContentWidth(): number | null {
+  const pane = document.getElementById("oh-pane");
+  const composerCard = pane?.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
+  let container = composerCard?.parentElement ?? null;
+  while (container && !getComputedStyle(container).containerType.includes("inline-size")) {
+    container = container.parentElement;
+  }
+  if (!container) return null;
+  const style = getComputedStyle(container);
+  return (
+    container.getBoundingClientRect().width -
+    [style.paddingLeft, style.paddingRight, style.borderLeftWidth, style.borderRightWidth].reduce(
+      (sum, value) => sum + (Number.parseFloat(value) || 0),
+      0,
+    )
+  );
+}
+
 function measure() {
   if (settingsMode) return measureSettings();
   const pane = document.getElementById("oh-pane");
@@ -1660,23 +1679,7 @@ function measure() {
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
   const currentWork = pane.querySelector<HTMLElement>('[data-testid="current-work"]');
   const composerCard = pane.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
-  // Report observed geometry only. The runner owns the placement oracle.
-  let verbContainer = composerCard?.parentElement ?? null;
-  while (verbContainer && !getComputedStyle(verbContainer).containerType.includes("inline-size")) {
-    verbContainer = verbContainer.parentElement;
-  }
-  const composerContainerWidth = verbContainer
-    ? (() => {
-        const style = getComputedStyle(verbContainer);
-        return (
-          verbContainer.getBoundingClientRect().width -
-          [style.paddingLeft, style.paddingRight, style.borderLeftWidth, style.borderRightWidth].reduce(
-            (sum, value) => sum + (Number.parseFloat(value) || 0),
-            0,
-          )
-        );
-      })()
-    : null;
+  const composerContainerWidth = measureComposerContentWidth();
   const controlTestIds = ["composer-attach", "composer-stop", "composer-submit", "composer-steer"];
   const composeControls = controlTestIds.map((testId) => ({
     testId,
@@ -1990,6 +1993,7 @@ declare global {
   interface Window {
     composerRequests: typeof composerRequests;
     measure: typeof measure;
+    measureComposerContentWidth: typeof measureComposerContentWidth;
     dump: typeof dump;
     inspectDetail: typeof inspectDetail;
     inspectChatFocus: typeof inspectChatFocus;
@@ -2001,6 +2005,7 @@ declare global {
   }
 }
 window.measure = measure;
+window.measureComposerContentWidth = measureComposerContentWidth;
 window.dump = dump;
 window.inspectDetail = inspectDetail;
 window.inspectChatFocus = inspectChatFocus;
