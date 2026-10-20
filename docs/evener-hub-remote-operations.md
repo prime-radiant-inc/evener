@@ -134,7 +134,7 @@ The first three checks do not validate model generation. See [upgrades and migra
 | Settings saved on wrong machine | Host selector and file paths, not browser storage |
 | Session disappeared after restart | Effective `run_dir`, `state_glob`, XDG paths, and daemon health |
 
-Keep logs private: startup output contains authorization URLs. For a report, include sanitized host labels, build identities, timestamps, and the exact failure—not tokens, full environments, or whole rendezvous records. [Troubleshooting](troubleshooting.md) gives read-only diagnostic commands.
+Keep logs private. Redirected and supervisor startup logs contain a safe browser address, not a private authorization URL. Interactive terminal startup can print the private link; retrieve it explicitly with `evener hub login-url [--config PATH]` using the same selected host configuration. Treat that link as a password, not diagnostic output. For a report, include sanitized host labels, build identities, timestamps, and the exact failure—not tokens, full environments, or whole rendezvous records. [Troubleshooting](troubleshooting.md) gives read-only diagnostic commands.
 
 ## Managed SSH attachment
 

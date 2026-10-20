@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"go/build"
 	"io"
 	"os"
 	"os/exec"
@@ -123,7 +124,7 @@ awk() {
 							args = append([]string{"sh"}, args...)
 						}
 						cmd := exec.CommandContext(ctx, shell, args...)
-						cmd.Env = []string{"PATH=/usr/bin:/bin", "fixture=" + dir}
+						cmd.Env = append(selectedLockToolEnv(t), "PATH=/usr/bin:/bin", "fixture="+dir)
 						return cmd.Output()
 					}}
 					m := newTestManager(t, testRegistry(t), fr, Options{})
@@ -208,38 +209,88 @@ func TestRemoteSelectedLockTransportAndCancellation(t *testing.T) {
 
 // Real kernel locks and real tools, not canned proc rows. The helper only holds
 // a disposable FLOCK while stdin remains open, then exits without a signal.
+// Global /proc/locks can omit or duplicate evidence during ambient churn, so
+// even the static success control needs explicit opt-in, not just our churn.
 func TestRemoteSelectedLockRealTools(t *testing.T) {
+	if testing.Short() || os.Getenv("EVENER_SSH_E2E") != "1" || os.Getenv("EVENER_SSH_E2E_CONTAINER") != "1" {
+		t.Skip("actual kernel observations require EVENER_SSH_E2E=1 and EVENER_SSH_E2E_CONTAINER=1; Alpine also needs the cached image")
+	}
 	binary := buildSelectedLockHelper(t)
 	t.Run("host", func(t *testing.T) {
 		testSelectedLockRealTools(t, binary, "", t.TempDir())
 	})
 	t.Run("alpine", func(t *testing.T) {
-		if testing.Short() || os.Getenv("EVENER_SSH_E2E") != "1" || os.Getenv("EVENER_SSH_E2E_CONTAINER") != "1" {
-			t.Skip("requires EVENER_SSH_E2E=1 and EVENER_SSH_E2E_CONTAINER=1, cached actual Alpine image")
+		env := selectedLockToolEnv(t)
+		docker := func(ctx context.Context, args ...string) *exec.Cmd {
+			cmd := exec.CommandContext(ctx, "docker", args...)
+			cmd.Env = env
+			return cmd
 		}
-		t.Setenv("EVENER_SSH_E2E_HOST", "")
 		name := fmt.Sprintf("evener-lock-proof-%d-%d", os.Getpid(), time.Now().UnixNano())
 		t.Logf("owned disposable container=%s", name)
 		t.Cleanup(func() {
-			out, err := exec.Command("docker", "rm", "-f", name).CombinedOutput()
-			if err != nil && !strings.Contains(string(out), "No such container") {
-				t.Errorf("remove owned container: %v: %s", err, out)
+			out, removeErr := docker(context.Background(), "rm", "-f", name).CombinedOutput()
+			remaining, listErr := docker(context.Background(), "container", "ls", "--all", "--filter", "name=^/"+name+"$", "--format", "{{.ID}}").Output()
+			if listErr != nil || len(bytes.TrimSpace(remaining)) != 0 {
+				t.Errorf("owned container absence not established: remove=%v output=%s list=%v remaining IDs=%q", removeErr, out, listErr, remaining)
 			}
 		})
-		out, err := exec.CommandContext(t.Context(), "docker", "run", "--pull=never", "--rm", "-d", "--network", "none", "--name", name, "--entrypoint", "/bin/sh", "evener-e2e-ssh:local", "-c", "sleep 120").CombinedOutput()
+		args := []string{"run", "--pull=never", "--rm", "-d", "--network", "none", "--name", name, "--entrypoint", "/usr/bin/env", "evener-e2e-ssh:local"}
+		args = append(args, selectedLockContainerEnv()...)
+		args = append(args, "/bin/sh", "-c", "umask 077; mkdir -p /tmp/lock-proof/home /tmp/lock-proof/config /tmp/lock-proof/state /tmp/lock-proof/cache /tmp/lock-proof/run /tmp/lock-proof/tmp && exec sleep 120")
+		out, err := docker(t.Context(), args...).CombinedOutput()
 		if err != nil {
 			t.Fatalf("start cached Alpine: %v: %s", err, out)
 		}
-		if out, err := exec.CommandContext(t.Context(), "docker", "cp", binary, name+":/tmp/lock-helper").CombinedOutput(); err != nil {
+		if out, err := docker(t.Context(), "cp", binary, name+":/tmp/lock-helper").CombinedOutput(); err != nil {
 			t.Fatalf("upload lock holder: %v: %s", err, out)
 		}
-		if out, err := exec.CommandContext(t.Context(), "docker", "exec", name, "/bin/sh", "-c", "cat /etc/alpine-release; /bin/busybox | head -n 1").CombinedOutput(); err != nil {
+		inspect := append([]string{"exec", name, "/usr/bin/env"}, selectedLockContainerEnv()...)
+		inspect = append(inspect, "/bin/sh", "-c", "cat /etc/alpine-release; /bin/busybox | head -n 1")
+		if out, err := docker(t.Context(), inspect...).CombinedOutput(); err != nil {
 			t.Fatalf("read unchanged Alpine capability: %v: %s", err, out)
 		} else {
 			t.Logf("actual unchanged container tools: %s", out)
 		}
 		testSelectedLockRealTools(t, "/tmp/lock-helper", name, "/tmp/selected-lock-proof")
 	})
+}
+
+// Unlike hubtestenv.Redirect, this leaves the parent test environment alone.
+// An allowlist scrubs every Evener override (and shell/Docker startup override).
+// Resolve Go's usual cache defaults before replacing HOME/XDG, as the shared
+// test environment helpers do, so builds keep the machine's warm caches.
+func selectedLockToolEnv(t *testing.T) []string {
+	t.Helper()
+	cache := os.Getenv("GOCACHE")
+	if cache == "" {
+		base, err := os.UserCacheDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cache = filepath.Join(base, "go-build")
+	}
+	modules := os.Getenv("GOMODCACHE")
+	if modules == "" {
+		modules = filepath.Join(filepath.SplitList(build.Default.GOPATH)[0], "pkg", "mod")
+	}
+	root := t.TempDir()
+	env := []string{"PATH=" + os.Getenv("PATH"), "GOCACHE=" + cache, "GOMODCACHE=" + modules, "GOPATH=" + build.Default.GOPATH}
+	for _, item := range []struct{ key, dir string }{
+		{"HOME", "home"}, {"XDG_CONFIG_HOME", "config"}, {"XDG_STATE_HOME", "state"},
+		{"XDG_CACHE_HOME", "cache"}, {"XDG_RUNTIME_DIR", "run"}, {"TMPDIR", "tmp"},
+	} {
+		dir := filepath.Join(root, item.dir)
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		env = append(env, item.key+"="+dir)
+	}
+	return env
+}
+
+func selectedLockContainerEnv() []string {
+	return []string{"-i", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/tmp/lock-proof/home", "XDG_CONFIG_HOME=/tmp/lock-proof/config", "XDG_STATE_HOME=/tmp/lock-proof/state", "XDG_CACHE_HOME=/tmp/lock-proof/cache", "XDG_RUNTIME_DIR=/tmp/lock-proof/run", "TMPDIR=/tmp/lock-proof/tmp"}
 }
 
 func buildSelectedLockHelper(t *testing.T) string {
@@ -268,7 +319,7 @@ func main(){
 		t.Fatal(err)
 	}
 	cmd := exec.CommandContext(t.Context(), "go", "build", "-o", binary, src)
-	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	cmd.Env = append(selectedLockToolEnv(t), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build real kernel lock holder: %v: %s", err, out)
 	}
@@ -277,11 +328,17 @@ func main(){
 
 func testSelectedLockRealTools(t *testing.T, binary, container, root string) {
 	t.Helper()
+	env := selectedLockToolEnv(t)
 	command := func(ctx context.Context, argv ...string) *exec.Cmd {
+		var cmd *exec.Cmd
 		if container != "" {
-			return exec.CommandContext(ctx, "docker", append([]string{"exec", "-i", container}, argv...)...)
+			args := append([]string{"exec", "-i", container, "/usr/bin/env"}, selectedLockContainerEnv()...)
+			cmd = exec.CommandContext(ctx, "docker", append(args, argv...)...)
+		} else {
+			cmd = exec.CommandContext(ctx, argv[0], argv[1:]...)
 		}
-		return exec.CommandContext(ctx, argv[0], argv[1:]...)
+		cmd.Env = env
+		return cmd
 	}
 	var selectedFD string
 	start := func(dir, mode string) string {

@@ -267,10 +267,13 @@ evener hub --config "$hub_config" 2>&1 | tee -a "$log_file"
 
 The hub listens on `127.0.0.1:9180` unless a top-level `addr` in `hub.toml`,
 `EVENER_HUB_LISTEN_ADDR`, or `evener hub --addr` overrides it, in that order.
-The hub logs the authorization URL described under Trust Boundary on
-every start. That URL contains the bearer credential: protect supervisor
-stdout/stderr and this log as secrets, and do not paste them into tickets or
-chat.
+The hub reports a safe browser address on every start. A private sign-in link
+is printed only when startup output goes directly to an interactive terminal,
+not through `tee` or into supervisor logs. To retrieve it explicitly, set
+`hub_config` to the same path in another terminal, then run
+`evener hub login-url --config "$hub_config"`. That URL contains the bearer
+credential: treat it as a password and do not paste it into logs, tickets, or chat. Keep logs private too;
+diagnostics can contain other sensitive data.
 
 If you manage credentials via environment variables rather than
 `${XDG_CONFIG_HOME:-$HOME/.config}/evener/credentials.toml`, source your env file
@@ -284,7 +287,8 @@ This Bash recipe uses `pipefail` so a hub failure is not hidden by `tee`.
 Production deployments should preferably execute `evener hub --config
 "$hub_config"` directly under a supervisor and let it capture stdout/stderr.
 The hub logs config errors, past-index rebuild errors, roster watch errors,
-child-process launch diagnostics, and the auth URL there.
+child-process launch diagnostics, and the safe browser address there, not the
+private sign-in link.
 
 On macOS, [`scripts/ops/deploy-hub.sh`](../scripts/ops/deploy-hub.sh) builds
 while the old hub remains running, kickstarts its launchd job to replace it,

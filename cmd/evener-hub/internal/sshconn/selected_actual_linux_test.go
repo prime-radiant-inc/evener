@@ -50,7 +50,7 @@ func TestRemoteRestartActualDisposableHub(t *testing.T) {
 	}
 	// This is deliberately a supervisorless private PATH, not a stub systemctl.
 	// Every executable that exists here is the host's actual command.
-	for _, tool := range []string{"awk", "stat", "cat", "readlink", "ps", "id", "dirname", "basename", "realpath", "nohup", "lsof", "sed", "cksum", "sort", "grep", "uname", "env"} {
+	for _, tool := range []string{"awk", "stat", "cat", "readlink", "ps", "id", "dirname", "basename", "realpath", "nohup", "lsof", "sed", "cksum", "sort", "grep", "uname", "env", "od"} {
 		target, err := exec.LookPath(tool)
 		if err != nil {
 			if tool == "lsof" {
