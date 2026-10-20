@@ -551,6 +551,85 @@ async function seedRejectedRecovery(
   return recovered;
 }
 
+// Parks EVERY durable draft read before it issues until release(), so a test
+// can see what the composer decides while an ordinary draft's hydration is
+// still in flight and no row has been published.
+function holdDraftLoadsBeforeRead(repository: ReturnType<typeof getBrowserDraftRepository>) {
+  const real = repository.load.bind(repository);
+  let releaseGate: () => void = () => undefined;
+  let reachedGate: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve;
+  });
+  const reached = new Promise<void>((resolve) => {
+    reachedGate = resolve;
+  });
+  let released = false;
+  const spy = vi.spyOn(repository, "load").mockImplementation(async (key) => {
+    if (!released) {
+      reachedGate();
+      await gate;
+    }
+    return real(key);
+  });
+  let restored = false;
+  return {
+    reached,
+    release(): void {
+      released = true;
+      releaseGate();
+      if (!restored) {
+        restored = true;
+        spy.mockRestore();
+      }
+    },
+  };
+}
+
+// RoboRev review 43144 medium: after a reload an IndexedDB-only ordinary draft
+// appears empty until its durable read settles. When the recovery projection
+// finishes first, automatic activation claims the empty composer; the
+// activation changes the runtime backing, and hydration's backing guard then
+// suppresses the user's saved draft, hiding it behind the recovery. Emptiness
+// is only known once the ordinary draft's hydration has decided it.
+test("automatic recovery activation waits for the ordinary draft's hydration before claiming an empty composer", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const repository = getBrowserDraftRepository();
+  const ordinary = await repository.seedDraft(browserDraftKey("ref_a"), {
+    text: "the ordinary saved draft",
+    skillNames: [],
+  });
+  if (ordinary.state !== "committed") throw new Error("failed to seed the ordinary draft");
+  await seedRejectedRecovery(storage, "ref_a", "recover this literal /same");
+  const hold = holdDraftLoadsBeforeRead(repository);
+  try {
+    // The held read registers as projection work, so the mount's own flush
+    // would wait for it; wait on the recovery refresh's own signal instead.
+    const { source } = await mountComposerWithHandle(
+      "ref_a",
+      { status: { type: "idle" } },
+      {
+        holdMountProjection: true,
+      },
+    );
+    await hold.reached;
+    // The recovery projection settles while the ordinary draft's read is held.
+    await waitFor(() => expect(source.getSnapshot().freshRecoveryRef).toBe("ref_a"));
+    hold.release();
+    await act(async () => {
+      await source.ready();
+      await source.whenSettled();
+    });
+    await flushPendingTurnsProjectionForTests();
+
+    expect(textarea().textContent).toBe("the ordinary saved draft");
+    expect(source.getSnapshot().activeRecoveryId).toBeNull();
+  } finally {
+    hold.release();
+  }
+});
+
 test("automatic recovery activation publishes the real source without a second legacy clear", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

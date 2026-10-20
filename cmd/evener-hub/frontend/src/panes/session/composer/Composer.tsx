@@ -534,38 +534,55 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   ]);
 
   useEffect(() => {
-    if (
-      freshRecoveryRef !== ref ||
-      activeRecoveryId !== null ||
-      textRef.current.trim() !== "" ||
-      attachmentItemsRef.current.length > 0 ||
-      skillNamesRef.current.length > 0 ||
-      selectionMetaRef.current.commandNames.length > 0
-    ) {
-      return;
-    }
-    // An interrupt is not a draft. It carries no input, so activating one
-    // loads an empty composer and then resends the user's next keystrokes as a
-    // turn/start -- a Stop becoming a message. QueueStrip renders it as a
-    // failure with its reason instead.
-    const record = recoveryEntries.find(
-      (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt",
+    // The ordinary draft's durable hydration must decide emptiness before a
+    // recovery can claim this composer. After a reload an IndexedDB-only draft
+    // is momentarily empty; activating a recovery then changes the runtime
+    // backing, and hydration's own backing guard suppresses the saved draft,
+    // leaving the user's work hidden behind the recovery. A hydration fault
+    // leaves emptiness UNKNOWN: do nothing, and a later user action that reruns
+    // ready() plus a later refreshRecovery re-fires this effect.
+    let cancelled = false;
+    void source.ready().then(
+      () => {
+        if (cancelled) return;
+        if (
+          freshRecoveryRef !== ref ||
+          activeRecoveryId !== null ||
+          textRef.current.trim() !== "" ||
+          attachmentItemsRef.current.length > 0 ||
+          skillNamesRef.current.length > 0 ||
+          selectionMetaRef.current.commandNames.length > 0
+        ) {
+          return;
+        }
+        // An interrupt is not a draft. It carries no input, so activating one
+        // loads an empty composer and then resends the user's next keystrokes as a
+        // turn/start -- a Stop becoming a message. QueueStrip renders it as a
+        // failure with its reason instead.
+        const record = recoveryEntries.find(
+          (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt",
+        );
+        if (!record) return;
+        const recovered = recoveryComposerDraft(record);
+        const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
+        Object.assign(recovered, visible);
+        recoveryOwnsLocalDraftRef.current = false;
+        setActiveRecoveryId(record.clientMutationId);
+        // Restoration replaces this mount's local owner without editing the
+        // shared recovery draft that an earlier mount may still be submitting.
+        draftEditRevisionRef.current += 1;
+        markRestore();
+        updateText(recovered.text);
+        updateSkillNames(restoredSkillNames(recovered));
+        updateSelectionMeta(recovered);
+        attachments.replaceWithSettled(recovered.attachments);
+        scheduleCursorRestore(recovered.text.length);
+      },
+      () => undefined,
     );
-    if (!record) return;
-    const recovered = recoveryComposerDraft(record);
-    const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
-    Object.assign(recovered, visible);
-    recoveryOwnsLocalDraftRef.current = false;
-    setActiveRecoveryId(record.clientMutationId);
-    // Restoration replaces this mount's local owner without editing the
-    // shared recovery draft that an earlier mount may still be submitting.
-    draftEditRevisionRef.current += 1;
-    markRestore();
-    updateText(recovered.text);
-    updateSkillNames(restoredSkillNames(recovered));
-    updateSelectionMeta(recovered);
-    attachments.replaceWithSettled(recovered.attachments);
-    scheduleCursorRestore(recovered.text.length);
+    return () => {
+      cancelled = true;
+    };
   }, [
     activeRecoveryId,
     attachments.replaceWithSettled,
@@ -579,6 +596,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     setActiveRecoveryId,
     skillNamesRef,
     selectionMetaRef,
+    source,
     textRef,
     updateText,
     updateSkillNames,
