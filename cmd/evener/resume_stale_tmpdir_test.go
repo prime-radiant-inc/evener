@@ -44,6 +44,11 @@ func TestRunResumeSucceedsWhenInheritedTMPDIRIsGone(t *testing.T) {
 	deps.stdinMode = func() (os.FileMode, error) { return os.ModeCharDevice, nil }
 	exitCode := -1
 	deps.exit = func(code int) { exitCode = code }
+	// The production entry point is runWithScratchReclaim, whose sweep bases on
+	// the process temp dir. The repair under test clears the rig's private
+	// TMPDIR, so that sweep would walk the host's real /tmp and could reclaim
+	// other sessions' containers. This test is about resume, not the sweep.
+	deps.run = run
 
 	mainWithDeps(deps)
 	if exitCode != -1 {
