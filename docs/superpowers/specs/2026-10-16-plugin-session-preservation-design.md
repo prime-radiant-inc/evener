@@ -89,14 +89,24 @@ proof of completed migration. Preserve every surviving original tree when
 recovering an older partially moved operation. No symlink alias, new journal
 format or cross-marketplace recovery shim is proposed.
 
+Explicit marketplace rename follows the same stationary-cache rule: rekey logical
+ownership without moving or overwriting any published package or changing an
+`InstallPath`. Rename-back and cache-only destination name reuse must succeed
+without deleting or adopting retained packages. Live marketplace names, leftover
+clones and orphan registry entries remain collisions. Keep automatic migration's
+existing collision guards separate. Subsequent Install/Upgrade uses immutable
+fresh publication, including same-revision differing-byte collisions. Retain
+source-safe clone movement, save/rollback errors and recovery without introducing
+historical ownership heuristics, new schema, copying, aliases or cache sweeps.
+
 Retain the existing separate marketplace-clone cleanup and owned-staging cleanup,
 with their source-protection tests. Doctor and CLI documentation must describe
 retained revisions truthfully, rather than recommending GC to remove them.
 
 **Cost and boundary:** superseded published revisions accumulate. This proposal
 trades disk reclamation for the stated preservation guarantee and needs Jesse's
-review before implementation. It does not change explicit uninstall or user-requested
-marketplace rename/removal semantics, preserve externally edited directory sources,
+review before implementation. It does not change explicit uninstall or marketplace
+removal semantics, preserve externally edited directory sources,
 or recover files already deleted. Automatic migration is in scope, even when an
 ordinary upgrade or GC triggers it. Those boundaries must be disclosed.
 

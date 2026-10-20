@@ -115,9 +115,15 @@ Same-source alias merges follow that rule too. Recovery of an older interrupted
 migration keeps surviving old paths, and reconciles a missing recorded path only
 when its existing marker and physical ownership prove an already-moved destination.
 New revisions may use the new marketplace namespace.
-Explicit marketplace rename still moves paths. Explicit plugin uninstall and
-marketplace removal retain their deletion semantics; externally edited directory
-sources remain live directories, not managed snapshots. `evener plugin marketplace remove
+Explicit marketplace rename also preserves every published package path while
+changing logical ownership. Rename-back and reuse of a name with only retained
+cache packages are allowed without deleting or adopting those packages. Live
+marketplace names, leftover clones and orphan installed-registry entries still
+block a rename. Subsequent installs and upgrades publish fresh immutable paths,
+including when the reused name has an occupied revision path. Marketplace clone
+moves keep their existing source protection and rollback behavior.
+Explicit plugin uninstall and marketplace removal retain their deletion semantics.
+Externally edited directory sources remain live directories, not managed snapshots. `evener plugin marketplace remove
 MARKETPLACE` removes a marketplace explicitly. Deleted selections are not
 recovered by this retention rule.
 

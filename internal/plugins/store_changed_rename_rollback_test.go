@@ -95,46 +95,39 @@ func TestEditWhoseUndoFailedReportsTheStoreChanged(t *testing.T) {
 	}
 }
 
-// The rename moves the plugin cache as well as the clone, and each has its own
-// undo step. This pins the cache's step on its own: the clone is put back
-// cleanly, but the cache cannot be, so the installs installed_plugins.json
-// records are left under the new name and the hook must report Plugins — not
-// Marketplaces, whose file the cache move never touched.
-func TestAnIncompleteCacheRenameRollbackReportsTheStoreChanged(t *testing.T) {
+// Explicit rename has no cache undo. A failed first save with successful clone
+// rollback changes neither store file, emits no change, and preserves packages.
+func TestExplicitRenameSaveFailureLeavesCacheAndStoreUnchanged(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
-	plantLegacyMarketplace(t, m, "market-a", "widget")
+	trees := plantMigrationRevisions(t, m, "market-a", "widget")
+	mkBefore, regBefore := readStoreFile(t, m.marketplacesFile()), readStoreFile(t, m.registryPath())
 	reports := recordStoreChanges(m)
-
-	originalSave := installSaveRegistry
-	originalRename := marketplaceRename
-	t.Cleanup(func() {
-		installSaveRegistry = originalSave
-		marketplaceRename = originalRename
-	})
-	// The rename's first save fails, so nothing has written installed_plugins.json
-	// and the only source of a Plugins mark is the cache's own undo below.
-	installSaveRegistry = func(string, Registry) error {
-		return errors.New("the registry file could not be written")
-	}
-	// The cache's own undo restores newCache back to the old name; refuse only
-	// that, so the clone's undo still succeeds and the failure is the cache's.
-	newCache := filepath.Join(m.cacheDir(), "market-b")
+	originalSave, originalRename := installSaveRegistry, marketplaceRename
+	t.Cleanup(func() { installSaveRegistry, marketplaceRename = originalSave, originalRename })
+	installSaveRegistry = func(string, Registry) error { return os.ErrPermission }
+	cacheMoves := 0
 	marketplaceRename = func(from, to string) error {
-		if from == newCache {
-			return errors.New("cache restore refused")
+		if pathWithinDir(m.cacheDir(), from) || pathWithinDir(m.cacheDir(), to) {
+			cacheMoves++
+			return os.ErrPermission
 		}
 		return originalRename(from, to)
 	}
-
 	if _, err := m.EditMarketplace(context.Background(), "market-a", "market-b", nil); err == nil {
-		t.Fatal("EditMarketplace = nil, want the failed save reported")
+		t.Fatal("expected failed registry save")
 	}
-	if len(*reports) != 1 {
-		t.Fatalf("OnStoreChanged fired %d times, want 1: %+v", len(*reports), *reports)
+	if cacheMoves != 0 || len(*reports) != 0 {
+		t.Fatalf("cache moves=%d, unexpected changes=%+v", cacheMoves, *reports)
 	}
-	if got := (*reports)[0]; !got.Plugins || got.Marketplaces {
-		t.Errorf("reported %+v, want {Plugins:true Marketplaces:false}: a failed cache restore leaves installed_plugins.json stale, not known_marketplaces.json", got)
+	if readStoreFile(t, m.marketplacesFile()) != mkBefore || readStoreFile(t, m.registryPath()) != regBefore {
+		t.Fatal("failed save changed store")
+	}
+	if _, err := os.Stat(m.marketplaceDir("market-a")); err != nil {
+		t.Fatal(err)
+	}
+	for _, tree := range trees {
+		assertMigrationTree(t, tree)
 	}
 }
 

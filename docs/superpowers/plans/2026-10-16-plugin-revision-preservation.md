@@ -4,7 +4,7 @@
 
 **Goal:** upgrades and cache GC leave the whole selected revision available to live and resumable sessions.
 
-**Architecture:** retain published revisions conservatively and publish validated installs without replacing existing directories. Automatic marketplace migration rekeys logical ownership without moving published paths. Keep staging cleanup separate from published-content ownership. Do not implement selective GC in this fix.
+**Architecture:** retain published revisions conservatively and publish validated installs without replacing existing directories. Automatic marketplace migration and explicit marketplace rename rekey logical ownership without moving published paths. Keep staging cleanup separate from published-content ownership. Do not implement selective GC in this fix.
 
 **Tech Stack:** Go, local filesystem, existing plugin-store flock and local Git fixtures.
 
@@ -94,7 +94,7 @@ if bytesReadFromCompanion != originalCompanion { t.Fatal("restored session lost 
 ### Task 3: preserve physical paths through automatic marketplace migration
 
 **Files:**
-- Modify: `internal/plugins/marketplace_migration.go`; use existing helpers in `internal/plugins/marketplaces.go` without changing explicit `EditMarketplace` rename semantics.
+- Modify: `internal/plugins/marketplace_migration.go`; use existing helpers in `internal/plugins/marketplaces.go`. Explicit `EditMarketplace` also preserves cache paths under the scope amendment below.
 - Test: new `internal/plugins/migration_preservation_test.go` and affected existing `internal/plugins/marketplace_migration_test.go` cases.
 - Extend: `agent/plugin_revision_preservation_test.go` and preservation docs from Task 2.
 
@@ -107,9 +107,27 @@ if bytesReadFromCompanion != originalCompanion { t.Fatal("restored session lost 
 
 - [ ] Add `TestAutomaticMigrationPreservesPublishedPaths`, `TestAutomaticMigrationAliasPreservesPublishedPaths`, and `TestAutomaticMigrationRecoveryPreservesPublishedPaths`. Fixtures include an invalid recorded marketplace name, two superseded revisions, same-source aliases, a different-source collision, and interruption between the registry and marketplace writes. Assert original directory identity and bytes, valid rekeyed registry keys, retained physical `InstallPath`, and idempotent second acquisition.
 - [ ] Run `go test ./internal/plugins -run '^TestAutomaticMigration' -count=1` before changing the migration. Observe old-path disappearance under `Install`, `Upgrade` or `Gc` through the real `lockStore` call.
-- [ ] Implement logical-only cache migration and marker/alias recovery under the existing lock. Preserve the existing source guards, journal recovery and explicit-edit behavior. Do not replace old paths with symlinks or copy entire caches as a workaround.
+- [ ] Implement logical-only cache migration and marker/alias recovery under the existing lock. Preserve the existing source guards and journal recovery. Explicit edits follow the stationary-cache amendment below. Do not replace old paths with symlinks or copy entire caches as a workaround.
 - [ ] Rerun the new tests and `go test ./internal/plugins -run 'Test.*(Migrat|Marked|Alias|EditMarketplace)' -count=1`. Extend the real saved-session test so its exact-source skill and companion hook remain usable after automatic migration plus restart, not only ordinary A→B upgrade.
 - [ ] Update docs, stage exact touched paths, inspect the staged diff, commit `fix(plugins): preserve session paths during automatic migration`, then run task reviews and the whole-fix review. The preservation fix is complete only after all three tasks pass.
+
+### Explicit-rename scope amendment
+
+- Explicit rename never moves or overwrites a published cache directory. Rekey
+  registry ownership with unchanged `InstallPath` values, removing the superseded
+  current-registry-only cache-retention guard rather than adding ownership history.
+- Permit rename-back and destination cache-only residue without deleting, adopting
+  or mutating retained packages. Preserve live-name, clone and orphan-registry
+  collision checks, including install-free renames. Never relabel orphan entries.
+  Keep automatic migration's combined collision checks unchanged.
+- Retain source-safe clone moves/sweeps, transaction/save/rollback error identity
+  and recovery. Direct plugin uninstall and marketplace removal remain unchanged.
+- Verify ordinary rename with selected and superseded complete packages, A→B→A
+  with retained packages on both sides, cache-only name reuse, and real subsequent
+  Install/Upgrade publication including same-SHA differing-byte collisions. Convert
+  stale cache-move tests to stationary-path assertions while retaining clone,
+  source-safety, collision and save-failure coverage. No provenance ledger, schema,
+  copies, aliases or selective cache sweeps.
 
 ## Completion
 
