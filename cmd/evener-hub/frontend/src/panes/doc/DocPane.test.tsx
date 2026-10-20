@@ -2354,6 +2354,115 @@ test("a saved annotation awaiting handoff cannot append behind a change only the
   expect(work.lease).not.toBeNull();
 });
 
+// RoboRev medium: the reader's frozen evidence gate consulted only the FIRST
+// retained record. A capture saved from a metadata-less truncated read carries
+// no whole revision, so an unchanged prefix never proves a change against it.
+// A later accepted reread enriches the observation with revision A in
+// work.displayed, and a faulted reread that returns the SAME prefix under
+// revision B is a definite change only that later record can prove. The saved
+// capture must not mask it: the epoch has to expire so the pending handoff
+// cannot append its obsolete reference behind the changed source.
+test("a metadata-enriched displayed reread proves a change a faulted beginRead must expire behind a revision-less saved capture", async ({
+  onTestFinished,
+}) => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
+  let failAppend = false;
+  const f = await fixture(
+    "reader-saved-handoff-metadata-enrichment",
+    {
+      beforeAbortableCompletion: () => {
+        if (failAppend) throw new Error("append boundary");
+      },
+    },
+    true,
+  );
+  await settleBaseline(f);
+  const { ports } = annotationRuntimePorts(f);
+  const client = connectFakeClient();
+  const held: Array<(content: DocFileContent) => void> = [];
+  mockRead.mockImplementation(
+    () =>
+      new Promise<DocFileContent>((resolve) => {
+        held.push(resolve);
+      }),
+  );
+  mountAnnotated(f, ports, client, "doc-saved-handoff-metadata");
+  const work = documentReaderWork("doc-saved-handoff-metadata", f.document, ports);
+  await settleFakeReadCycle();
+  // The first read observes the truncated prefix WITHOUT revision metadata, so
+  // the passage capture the user saves carries no whole revision either.
+  await act(async () => {
+    held[0]?.(docContent(SOURCE, undefined, true));
+  });
+  await settleFakeReadCycle();
+  expect(work.lease).not.toBeNull();
+  // A synchronous selection: the suite's fake clocks freeze waitFor's polling,
+  // and the rendered prefix is already present.
+  const paragraph = screen.getByText("First occurrence: same");
+  fireEvent.pointerDown(paragraph, PRIMARY_POINTER);
+  const node = paragraph.firstChild;
+  if (!node || node.nodeType !== Node.TEXT_NODE) throw new Error("missing source text node");
+  const range = document.createRange();
+  range.setStart(node, 18);
+  range.setEnd(node, 22);
+  const selection = document.getSelection();
+  if (!selection) throw new Error("missing selection");
+  selection.removeAllRanges();
+  selection.addRange(range);
+  fireEvent.pointerUp(paragraph, PRIMARY_POINTER);
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Keep this scope." } });
+  failAppend = true;
+  await act(async () => {
+    await saveReaderAnnotation(work, f.destination);
+  });
+  await settleFakeReadCycle();
+  const saved = (await f.repo.listAnnotations(f.document)).find((entry) => entry.handoff.state === "pending");
+  if (!saved) throw new Error("handoff did not stay pending across the faulted append");
+  const baselineText = (await f.drafts.load(f.key))?.text;
+  if (!baselineText) throw new Error("baseline draft missing");
+  if (!work.saved) throw new Error("save did not settle onto the retained work");
+  expect(work.saved.capture.evidence.wholeRevision).toBeUndefined();
+  expect(work.attempted).toBeNull();
+
+  // A later accepted reread enriches the SAME epoch's observation with revision
+  // A while the displayed prefix is unchanged.
+  const epoch = work.lease?.epoch;
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  fireEvent(document, new Event("visibilitychange"));
+  await settleFakeReadCycle();
+  await act(async () => {
+    held[1]?.(docContent(SOURCE, "rev-A", true));
+  });
+  await settleFakeReadCycle();
+  expect(work.lease?.epoch).toBe(epoch);
+  expect(work.displayed?.evidence.wholeRevision).toBe("rev-A");
+
+  // The faulted reread returns that unchanged prefix under revision B. The
+  // displayed observation proves the change; the revision-less saved capture
+  // does not, and must not be the only record consulted.
+  const fault = { value: true };
+  faultBeginReadTransaction(fault);
+  fireEvent(document, new Event("visibilitychange"));
+  await settleFakeReadCycle();
+  await act(async () => {
+    held[2]?.(docContent(SOURCE, "rev-B", true));
+  });
+  await settleFakeReadCycle();
+  expect(work.phase).toBe("expiry-pending");
+
+  // Inside the recovery window the composer-open retry must not append the
+  // saved operation's obsolete reference behind the changed source.
+  failAppend = false;
+  await act(async () => {
+    await retryDocumentReaders("composer-open");
+  });
+  await settleFakeReadCycle();
+  expect((await f.drafts.load(f.key))?.text).toBe(baselineText);
+});
+
 // RoboRev round 35 low, pane wiring: the retained reader work keeps the note
 // text across a host swap, and the same work now keeps the textarea's caret
 // selection - so a remounted pane restores the range and its direction instead

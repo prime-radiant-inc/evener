@@ -253,6 +253,31 @@ function displayedEvidenceFor(work: DocumentReaderWork): CapturedPassage["eviden
   return displayed.evidence;
 }
 
+// Every retained evidence record that describes the current authority, in the
+// order this reader's own observations outrank the adopted display. A capture
+// can be legitimately incomplete: one saved from a metadata-less truncated
+// read bears no whole revision, so an unchanged prefix never proves a change
+// against it. A later accepted reread enriches the SAME epoch's observation
+// with a revision in `displayed`, and a faulted read returning that prefix
+// under a different revision is definite proof there. Consulting only the
+// first retained record let the incomplete capture mask the richer one and
+// kept the epoch retry-eligible, so a pending handoff could append its
+// obsolete reference behind a changed source. Any record proving the change
+// is enough; uncertainty from the rest never weakens that proof.
+function retainedEvidenceFor(work: DocumentReaderWork): CapturedPassage["evidence"][] {
+  const evidence = [
+    work.attempted?.capture.evidence,
+    work.comment.capture?.evidence,
+    savedEvidenceFor(work),
+    displayedEvidenceFor(work),
+  ];
+  return evidence.filter((candidate): candidate is CapturedPassage["evidence"] => candidate !== undefined);
+}
+
+function retainedEvidenceProvesChange(content: DocFileContent, work: DocumentReaderWork): boolean {
+  return retainedEvidenceFor(work).some((evidence) => evidenceProvesChange(content, evidence));
+}
+
 // The status the pane-level indicator and the comment box share. `saved` and
 // `saved, pending draft` come from ACTUAL annotation views; a retained attempt
 // or a newer unsaved comment keeps the honest `unsaved` state. A preserved
@@ -650,12 +675,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // identity. The discard runs FIRST and its own fault falls back to the
         // interim retention below - work, capture and durable row retire
         // together or not at all.
-        const evidence =
-          work.attempted?.capture.evidence ??
-          work.comment.capture?.evidence ??
-          savedEvidenceFor(work) ??
-          displayedEvidenceFor(work);
-        if (evidence && evidenceProvesChange(content, evidence)) {
+        if (retainedEvidenceProvesChange(content, work)) {
           const attempted = work.attempted;
           // The proven change fences the WHOLE epoch before any discard is
           // attempted. The suppression is an in-memory map write and cannot
@@ -713,12 +733,7 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         accepted = await ports.repository.acceptRead(ticket, content);
       } catch {
         if (!attempt.isCurrent()) return "success";
-        const evidence =
-          work.attempted?.capture.evidence ??
-          work.comment.capture?.evidence ??
-          savedEvidenceFor(work) ??
-          displayedEvidenceFor(work);
-        if (evidence && evidenceProvesChange(content, evidence)) {
+        if (retainedEvidenceProvesChange(content, work)) {
           // The ticket this acceptance held is gone with the throw, so no
           // fence can ever record this expiry: retiring the in-memory attempt
           // alone would leave the durable pending-operation row reappliable by
