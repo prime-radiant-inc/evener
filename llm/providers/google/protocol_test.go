@@ -47,6 +47,26 @@ func TestProtocolPrunablePathsMatchRegistry(t *testing.T) {
 	}
 }
 
+// A row stating the no-effort verdict takes no effort parameter, so the level
+// shape must spell no thinkingLevel even when the ladder is empty. The budget
+// shape is unaffected: a numeric budget is not an effort name.
+func TestBuildBody_NoEffortVerdictSendsNoLevel(t *testing.T) {
+	unsupported := true
+	levelShape := func(c *registry.Caps) {
+		c.ThinkingShape = new("level")
+		c.EffortValues = []string{}
+		c.ReasoningControls = []string{"toggle"}
+		c.EffortParameterUnsupported = &unsupported
+	}
+	body := protoBuild(t, protoReq("high"), protoRes(levelShape))
+	gen, _ := body["generationConfig"].(map[string]any)
+	if gen != nil {
+		if cfg, has := gen["thinkingConfig"]; has {
+			t.Fatalf("thinkingConfig = %v, want no level on a no-effort row", cfg)
+		}
+	}
+}
+
 func TestProtocolBuildBody(t *testing.T) {
 	req := protoReq("high")
 	req.WebSearch = true
