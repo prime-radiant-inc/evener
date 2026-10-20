@@ -40,9 +40,12 @@ const CLASS = {
  * the one click a lifted long press still sends is swallowed. */
 export function HoverCard({ label, children, focusTarget, longPressEnabled, sideAnchor }: HoverCardProps) {
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const longPressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const longPressStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
   const swallowClickRef = useRef(false);
   const swallowBackstopRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // The gesture's window cancellation pair, disposer stored so it is taken down
+  // exactly once, by whichever path ends the gesture first.
+  const gestureListenersRef = useRef<(() => void) | null>(null);
   const {
     visible,
     wrapperRef,
@@ -55,11 +58,19 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
     dismiss,
   } = useFloatingBubble(focusTarget, sideAnchor);
 
+  const disposeGestureListeners = useCallback(() => {
+    const dispose = gestureListenersRef.current;
+    if (dispose === null) return;
+    gestureListenersRef.current = null;
+    dispose();
+  }, []);
+
   const cancelLongPress = useCallback(() => {
     clearTimeout(longPressTimerRef.current);
     longPressTimerRef.current = undefined;
     longPressStartRef.current = null;
-  }, []);
+    disposeGestureListeners();
+  }, [disposeGestureListeners]);
 
   const clearSwallowBackstop = useCallback(() => {
     clearTimeout(swallowBackstopRef.current);
@@ -95,16 +106,24 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
     swallowClickRef.current = false;
   }, [cancelLongPress, clearSwallowBackstop]);
 
-  // This timer belongs to HoverCard, not the shared hover-delay lifecycle.
-  // Listen while enabled, even when no label is visible or hover is pending.
-  useEffect(() => {
-    if (!longPressEnabled) return;
+  // A scroll anywhere (capture-phase, so a scrollable ancestor's own scroll
+  // counts) or a viewport resize cancels the press before its timer fires. The
+  // pair exists only for as long as the gesture does: an idle trigger owns none,
+  // so the count does not grow with the number of mounted cards. The
+  // pending/visible floating-label dismissal is the shared hook's own pair.
+  const armGestureListeners = useCallback(() => {
+    if (gestureListenersRef.current !== null) return;
     window.addEventListener("scroll", abortPress, true);
     window.addEventListener("resize", abortPress);
-    return () => {
+    gestureListenersRef.current = () => {
       window.removeEventListener("scroll", abortPress, true);
       window.removeEventListener("resize", abortPress);
     };
+  }, [abortPress]);
+
+  // Turning long-press mode off mid-gesture clears the press and its listeners.
+  useEffect(() => {
+    if (!longPressEnabled) abortPress();
   }, [abortPress, longPressEnabled]);
 
   useEffect(() => {
@@ -128,6 +147,11 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
   const describedChild =
     typeof children === "function" ? children({ describedBy }) : describeChild(children, describedBy);
 
+  const ownsGesture = (event: { pointerId: number }) => {
+    const start = longPressStartRef.current;
+    return start !== null && start.pointerId === event.pointerId;
+  };
+
   return (
     // longPressEnabled delegates a hoverless *long press* to the semantic child; a
     // tap falls through to that child's own control. Keyboard and assistive-tech
@@ -139,10 +163,14 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
       {...triggerProps}
       onPointerDown={(event) => {
         if (!longPressEnabled || !isHoverless() || event.button !== 0) return;
+        // A second pointer must not take over the active gesture: not its start
+        // record, timer, listener pair or the click suppression it holds.
+        if (longPressStartRef.current !== null) return;
         swallowClickRef.current = false;
         clearSwallowBackstop();
-        longPressStartRef.current = { x: event.clientX, y: event.clientY };
+        longPressStartRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
         clearTimeout(longPressTimerRef.current);
+        armGestureListeners();
         longPressTimerRef.current = setTimeout(() => {
           longPressTimerRef.current = undefined;
           swallowClickRef.current = true;
@@ -151,14 +179,24 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
       }}
       onPointerMove={(event) => {
         const start = longPressStartRef.current;
-        if (longPressTimerRef.current === undefined || start === null) return;
+        if (start === null || start.pointerId !== event.pointerId) return;
+        if (longPressTimerRef.current === undefined) return;
         if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > LONG_PRESS_SLOP_PX) cancelLongPress();
       }}
-      onPointerUp={endPress}
-      onPointerCancel={abortPress}
+      onPointerUp={(event) => {
+        if (!ownsGesture(event)) return;
+        endPress();
+      }}
+      onPointerCancel={(event) => {
+        if (!ownsGesture(event)) return;
+        abortPress();
+      }}
       // Leaving the trigger can end the gesture without a pointerup here, so
       // this bounds an armed swallow the same way a lift does.
-      onPointerLeave={endPress}
+      onPointerLeave={(event) => {
+        if (!ownsGesture(event)) return;
+        endPress();
+      }}
       onClickCapture={(event) => {
         if (!longPressEnabled || !isHoverless()) return;
         if (!swallowClickRef.current) {
