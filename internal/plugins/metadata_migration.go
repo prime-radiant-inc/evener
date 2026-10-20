@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/envvars/userdirs"
 )
 
 // migrationBundledLockWait bounds the migration's wait for the bundled lock.
@@ -201,18 +203,9 @@ func (m *Manager) targetIsMixedManagedContent(target string) bool {
 // normalizeDataVolumeAlias collapses macOS's APFS data-volume firmlink spelling
 // onto the plain one. EvalSymlinks does not collapse a firmlink, so a store
 // reached by one spelling would otherwise look unrelated to a target named by
-// the other. This mirrors agent/sandbox.StripDataVolumeAlias; the plugin store
-// must not import the sandbox package for it.
+// the other.
 func normalizeDataVolumeAlias(path string) string {
-	const prefix = "/System/Volumes/Data"
-	clean := filepath.Clean(path)
-	if clean == prefix {
-		return "/"
-	}
-	if rest, ok := strings.CutPrefix(clean, prefix+"/"); ok {
-		return filepath.Clean("/" + rest)
-	}
-	return clean
+	return userdirs.StripDataVolumeAlias(path)
 }
 
 func pathDepth(path string) int {
