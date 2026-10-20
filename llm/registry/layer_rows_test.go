@@ -1,7 +1,6 @@
 package registry
 
 import (
-	"os"
 	"reflect"
 	"slices"
 	"testing"
@@ -96,9 +95,7 @@ func TestFold_SharesCapabilityRows(t *testing.T) {
 
 				// Mutating the merged head must not reach the borrowed source
 				// rows: foldModel copies the row's own data into head.Models.
-				merged := rec.head.Models["alpha"]
-				merged.Headers["X-Alpha"] = "changed"
-				rec.head.Models["alpha"] = merged
+				rec.head.Models["alpha"].Headers["X-Alpha"] = "changed"
 				delete(rec.head.Models, "beta")
 				if got := src.Models["alpha"].Headers["X-Alpha"]; got != "alpha" {
 					t.Fatalf("source alpha header changed to %q", got)
@@ -113,7 +110,7 @@ func TestFold_SharesCapabilityRows(t *testing.T) {
 
 func TestFold_SharedRowsSurviveInheritance(t *testing.T) {
 	src := foldFixtureProvider()
-	before := cloneProviderView(src)
+	before := foldFixtureProvider()
 
 	base := &record{name: "base", head: Provider{ID: "base", Models: map[string]Model{}}}
 	if err := base.fold(src, LayerSnapshot, nil); err != nil {
@@ -183,10 +180,7 @@ func TestFold_SharedRowsSurviveInheritance(t *testing.T) {
 func TestLoad_SharedRowsPreserveResolution(t *testing.T) {
 	check := func(t *testing.T, r *Registry) {
 		t.Helper()
-		res, err := r.Resolve("openai/gpt-5.6")
-		if err != nil {
-			t.Fatalf("Resolve: %v", err)
-		}
+		res := mustResolve(t, r, "openai/gpt-5.6")
 		if res.ProviderID != "openai" || res.Protocol != ProtocolOpenAIResponses || res.ModelID != "gpt-5.6" {
 			t.Fatalf("resolved = provider %q protocol %q model %q, want openai/openai-responses/gpt-5.6", res.ProviderID, res.Protocol, res.ModelID)
 		}
@@ -212,12 +206,8 @@ func TestLoad_SharedRowsPreserveResolution(t *testing.T) {
 }
 
 func TestLoad_RowWithAbsentTransportPresetFails(t *testing.T) {
-	data, err := os.ReadFile("testdata/models.dev.sample.json")
-	if err != nil {
-		t.Fatal(err)
-	}
 	r, err := Load(
-		WithSnapshot(data),
+		WithSnapshot(fixtureBytes(t)),
 		WithOverlay(overlayWith("[providers.openai.models.\"absent-preset\"]\ntransport = \"does-not-exist\"\n")),
 		WithEnv(mapEnv(nil)),
 		WithNoUserLayer(),
@@ -261,16 +251,7 @@ func BenchmarkLoadEmbeddedWarm(b *testing.B) {
 }
 
 func BenchmarkCatalogLookupAndList(b *testing.B) {
-	registry, err := Load(
-		WithStateRoot(b.TempDir()),
-		WithEnv(mapEnv(nil)),
-		WithNoUserLayer(),
-		WithOffline(true),
-		WithoutCache(),
-	)
-	if err != nil {
-		b.Fatal(err)
-	}
+	registry := embeddedLoad(b)
 	b.Run("resolve", func(b *testing.B) {
 		for b.Loop() {
 			res, err := registry.Resolve("openai/gpt-5.6")
