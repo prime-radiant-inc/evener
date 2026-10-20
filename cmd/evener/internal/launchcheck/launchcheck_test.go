@@ -912,10 +912,74 @@ default_model = "chosen"
 			t.Fatalf("diagnostics = %+v, want the failed listing", diagnostics)
 		}
 	})
+}
 
-	t.Run("hidden non-chat default", func(t *testing.T) {
-		srv := launchCheckModelServer(t, "first", "text-embedding-3-small")
-		launchCheckRegistry(t, `
+// A default that names a genuinely hidden chat model is excluded by the
+// registry's hidden policy (distinct from the non-chat identity filter): the
+// hidden row is absent while its visible companion stays listed, and neither
+// carries the marker.
+func TestLaunchCheckModelsLeavesHiddenDefaultUnmarked(t *testing.T) {
+	const (
+		hiddenDefault = "amazon.nova-pro-v1:0"
+		companion     = "anthropic.claude-opus-5"
+	)
+	srv := launchCheckModelServer(t, hiddenDefault, companion)
+	launchCheckRegistry(t, `
+[providers.bed]
+base = "amazon-bedrock"
+base_url = "`+srv.URL+`/v1"
+models_endpoint = "/models"
+api_key = "test-key"
+default_model = "`+hiddenDefault+`"
+`)
+
+	// The fixture's precondition: a chat model the resolved catalog marks
+	// Hidden, beside a visible chat companion.
+	client, err := launchCheckLoadClient("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hidden, err := client.Registry().ResolveInstanceModelFacts("bed", hiddenDefault)
+	if err != nil {
+		t.Fatalf("resolve hidden fixture: %v", err)
+	}
+	if !hidden.Model.Hidden || !registry.IsChatModelID(hiddenDefault) {
+		t.Fatalf("fixture precondition: %q must be a hidden chat model (hidden=%v)", hiddenDefault, hidden.Model.Hidden)
+	}
+	visible, err := client.Registry().ResolveInstanceModelFacts("bed", companion)
+	if err != nil {
+		t.Fatalf("resolve companion fixture: %v", err)
+	}
+	if visible.Model.Hidden || !registry.IsChatModelID(companion) {
+		t.Fatalf("fixture precondition: %q must be a visible chat model (hidden=%v)", companion, visible.Model.Hidden)
+	}
+
+	rows, _, err := launchCheckModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	listed := map[string]bool{}
+	for _, row := range rows {
+		if row.Provider == "bed" {
+			listed[row.Model] = true
+		}
+	}
+	if !listed[companion] {
+		t.Fatalf("visible companion was not listed: %+v", rows)
+	}
+	if listed[hiddenDefault] {
+		t.Fatalf("hidden default was listed: %+v", rows)
+	}
+	if marked := markedInstanceDefaults(rows); len(marked) != 0 {
+		t.Fatalf("instance defaults = %v, want none when the default is hidden (rows: %+v)", marked, rows)
+	}
+}
+
+// A default that names a non-chat row is excluded by the identity filter, not
+// by the hidden policy: it stays absent and unmarked.
+func TestLaunchCheckModelsLeavesNonChatDefaultUnmarked(t *testing.T) {
+	srv := launchCheckModelServer(t, "first", "text-embedding-3-small")
+	launchCheckRegistry(t, `
 [providers.embed]
 base = "openai-compatible"
 base_url = "`+srv.URL+`/v1"
@@ -923,12 +987,11 @@ api_key = "test-key"
 default_model = "text-embedding-3-small"
 `)
 
-		rows, _, err := launchCheckModels()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if marked := markedInstanceDefaults(rows); len(marked) != 0 {
-			t.Fatalf("instance defaults = %v, want none for a hidden non-chat default (rows: %+v)", marked, rows)
-		}
-	})
+	rows, _, err := launchCheckModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marked := markedInstanceDefaults(rows); len(marked) != 0 {
+		t.Fatalf("instance defaults = %v, want none for a non-chat default (rows: %+v)", marked, rows)
+	}
 }
