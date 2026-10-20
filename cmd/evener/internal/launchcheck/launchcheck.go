@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/hubendpoint"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -76,7 +77,7 @@ func RunLaunchCheck(args []string, stdout, stderr io.Writer) error {
 	}
 
 	resp := launchCheckResponse{
-		HubEndpointSchema: 1,
+		HubEndpointSchema: hubendpoint.SchemaVersion,
 		LaunchFlags:       supportedLaunchFlags,
 		Version:           buildinfo.Version(),
 		Protocol:          appwire.ProtocolVersion,

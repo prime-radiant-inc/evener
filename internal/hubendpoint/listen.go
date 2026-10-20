@@ -69,14 +69,6 @@ func containsControlOrSpace(value string) bool {
 }
 
 func parsePort(raw string, allowZero bool) (uint16, bool) {
-	if raw == "" {
-		return 0, false
-	}
-	for _, r := range raw {
-		if r < '0' || r > '9' {
-			return 0, false
-		}
-	}
 	value, err := strconv.ParseUint(raw, 10, 16)
 	if err != nil || (!allowZero && value == 0) {
 		return 0, false

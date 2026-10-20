@@ -38,8 +38,9 @@ func HTTPClientWithBearer(base *http.Client, token string, origin Origin, local 
 		if err != nil || pinned.Port() != origin.Port() {
 			return nil, errors.New("local bearer destination does not match listener")
 		}
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		if settings, ok := inner.(*http.Transport); ok {
+		defaults := http.DefaultTransport.(*http.Transport)
+		transport := defaults.Clone()
+		if settings, ok := inner.(*http.Transport); ok && settings != defaults {
 			transport = settings.Clone()
 		}
 		transport.Proxy = nil

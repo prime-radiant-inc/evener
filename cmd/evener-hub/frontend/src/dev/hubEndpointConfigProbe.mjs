@@ -208,8 +208,12 @@ async function cleanup() {
   };
 }
 
-console.log(
-  JSON.stringify(
-    process.argv[2] === "cleanup" ? await cleanup() : process.argv[2].startsWith("proxy") ? await proxy() : config(),
-  ),
-);
+let result;
+if (process.argv[2] === "cleanup") {
+  result = await cleanup();
+} else if (process.argv[2].startsWith("proxy")) {
+  result = await proxy();
+} else {
+  result = config();
+}
+console.log(JSON.stringify(result));

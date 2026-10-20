@@ -29,18 +29,8 @@ function destination(invitation: DevicePairingInvitation) {
   const url = new URL(parseHubOrigin(invitation.origin));
   const tls = url.protocol === "https:";
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (
-    !["http:", "https:"].includes(url.protocol) ||
-    url.username ||
-    url.password ||
-    url.search ||
-    url.hash ||
-    url.pathname !== "/" ||
-    !/^[a-z0-9.:-]{1,255}$/.test(host)
-  )
-    throw new Error("Invalid pairing Hub address.");
+  if (!/^[a-z0-9.:-]{1,255}$/.test(host)) throw new Error("Invalid pairing Hub address.");
   const port = Number(url.port || (tls ? 443 : 80));
-  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid pairing port.");
   return {
     host,
     port,

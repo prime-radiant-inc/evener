@@ -319,7 +319,7 @@ func (m *Manager) probeDarwinImage(ctx context.Context, host hostreg.Host, pid s
 	if err != nil || !bytes.Equal(again, []byte(strings.Join(fields, " ")+"\n")) {
 		return errOwnerEvidence
 	}
-	if contract.HubEndpointSchema != 1 {
+	if contract.HubEndpointSchema != hubendpoint.SchemaVersion {
 		return endpointMigration(host)
 	}
 	return ctx.Err()

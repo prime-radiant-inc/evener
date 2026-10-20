@@ -79,22 +79,22 @@ func TestRemoteRestartDarwinRetainedWitness(t *testing.T) {
 }
 
 func TestRemoteOwnerDarwinImageAssociation(t *testing.T) {
-	for _, capable := range []bool{true, false} {
-		name := "capable"
-		if !capable {
-			name = "old"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		capability string
+		capable    bool
+	}{
+		{name: "capable", capability: goodLaunchCheck, capable: true},
+		{name: "old", capability: `{"protocol":"old","version":"old"}`},
+		{name: "unsupported schema", capability: `{"protocol":"old","version":"old","hub_endpoint_schema":2}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			host, _ := ownerCommands(t)
 			commands := darwinOwnerCommands(t, true, false)
 			last := commands[len(commands)-1]
 			commands = commands[:len(commands)-1]
-			capability := goodLaunchCheck
-			if !capable {
-				capability = `{"protocol":"old","version":"old"}`
-			}
-			commands = append(commands, ownerCommand{"canonical", "/opt/evener\n"}, ownerCommand{"stat -f '%d %i' /opt/evener", "16777234 12345\n"}, ownerCommand{"lsof -a -p 4242 -d txt -F Di", "p4242\nftxt\nD0x1000012\ni12345\n"}, ownerCommand{"/opt/evener launch-check --json", capability}, ownerCommand{"stat -f '%d %i' /opt/evener", "16777234 12345\n"})
-			if capable {
+			commands = append(commands, ownerCommand{"canonical", "/opt/evener\n"}, ownerCommand{"stat -f '%d %i' /opt/evener", "16777234 12345\n"}, ownerCommand{"lsof -a -p 4242 -d txt -F Di", "p4242\nftxt\nD0x1000012\ni12345\n"}, ownerCommand{"/opt/evener launch-check --json", tc.capability}, ownerCommand{"stat -f '%d %i' /opt/evener", "16777234 12345\n"})
+			if tc.capable {
 				commands = append(commands, last)
 			}
 			fr, index := ownerRunner(t, commands)
@@ -102,7 +102,7 @@ func TestRemoteOwnerDarwinImageAssociation(t *testing.T) {
 			facts := selectedRestartFacts()
 			facts.OS, facts.UID = "darwin", "1000"
 			_, err := m.resolveOwnedEndpoint(t.Context(), host, facts)
-			if capable && err != nil || !capable && !errors.Is(err, ErrEndpointMigration) {
+			if tc.capable && err != nil || !tc.capable && !errors.Is(err, ErrEndpointMigration) {
 				t.Fatalf("image evidence=%v", err)
 			}
 			if *index != len(commands) || m.pendingRestart(host.Name).selected != nil {

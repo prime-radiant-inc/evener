@@ -269,3 +269,83 @@ func TestHubBearerExplicitScopeAndNoToken(t *testing.T) {
 		t.Fatal("mutated caller request")
 	}
 }
+
+func TestHubBearerLocalTransportSettings(t *testing.T) {
+	// Not parallel: each subtest replaces the process-wide DefaultTransport.
+	defaults := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		ResponseHeaderTimeout: 11 * time.Second,
+		MaxIdleConns:          7,
+		DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("unused default TLS dialer")
+		},
+	}
+	custom := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		ResponseHeaderTimeout: 17 * time.Second,
+		MaxIdleConns:          19,
+		DialTLSContext: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("unused custom TLS dialer")
+		},
+	}
+	other := http.NewFileTransport(http.Dir(t.TempDir()))
+	var typedNil *http.Transport
+	for _, tc := range []struct {
+		name      string
+		defaults  http.RoundTripper
+		supplied  http.RoundTripper
+		timeout   time.Duration
+		idleConns int
+		panics    bool
+	}{
+		{name: "nil supplied", defaults: defaults, timeout: 11 * time.Second, idleConns: 7},
+		{name: "explicit default", defaults: defaults, supplied: defaults, timeout: 11 * time.Second, idleConns: 7},
+		{name: "distinct transport", defaults: defaults, supplied: custom, timeout: 17 * time.Second, idleConns: 19},
+		{name: "custom round tripper", defaults: defaults, supplied: other, timeout: 11 * time.Second, idleConns: 7},
+		{name: "typed nil supplied", defaults: defaults, supplied: typedNil, panics: true},
+		{name: "typed nil default with custom transport", defaults: typedNil, supplied: custom, panics: true},
+		{name: "typed nil default with nil supplied", defaults: typedNil, panics: true},
+		{name: "nontransport default with custom transport", defaults: other, supplied: custom, panics: true},
+		{name: "nil default with custom transport", supplied: custom, panics: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			original := http.DefaultTransport
+			http.DefaultTransport = tc.defaults
+			t.Cleanup(func() { http.DefaultTransport = original })
+			record := testRecord(t.TempDir())
+			origin, err := ParseOrigin("http://127.0.0.1:8181")
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := &http.Client{Transport: tc.supplied}
+			if tc.panics {
+				defer func() {
+					if recover() == nil {
+						t.Error("construction did not panic")
+					}
+				}()
+				_, _ = HTTPClientWithBearer(base, "transport-sentinel", origin, &record)
+				return
+			}
+			client, err := HTTPClientWithBearer(base, "transport-sentinel", origin, &record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			transport := client.Transport.(*originBearerTransport).base.(*http.Transport)
+			defer transport.CloseIdleConnections()
+			if transport == defaults || transport == custom || base.Transport != tc.supplied {
+				t.Fatal("construction reused or replaced supplied transport")
+			}
+			if transport.ResponseHeaderTimeout != tc.timeout || transport.MaxIdleConns != tc.idleConns {
+				t.Fatalf("transport settings = (%v, %d), want (%v, %d)", transport.ResponseHeaderTimeout, transport.MaxIdleConns, tc.timeout, tc.idleConns)
+			}
+			if transport.Proxy != nil || transport.DialTLSContext != nil || transport.DialContext == nil {
+				t.Fatal("local transport did not replace proxy and dial settings")
+			}
+			if defaults.Proxy == nil || defaults.DialTLSContext == nil || defaults.ResponseHeaderTimeout != 11*time.Second || defaults.MaxIdleConns != 7 ||
+				custom.Proxy == nil || custom.DialTLSContext == nil || custom.ResponseHeaderTimeout != 17*time.Second || custom.MaxIdleConns != 19 {
+				t.Fatal("construction mutated source settings")
+			}
+		})
+	}
+}

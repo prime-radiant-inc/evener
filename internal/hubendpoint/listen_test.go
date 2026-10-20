@@ -63,3 +63,45 @@ func TestParseListenAddr(t *testing.T) {
 		})
 	}
 }
+
+func TestParsePortGrammar(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		raw         string
+		port        uint16
+		withZero    bool
+		withoutZero bool
+	}{
+		{raw: ""},
+		{raw: "+1"},
+		{raw: "-1"},
+		{raw: "1_0"},
+		{raw: " 1"},
+		{raw: "1 "},
+		{raw: "1\t0"},
+		{raw: "١"},
+		{raw: "１"},
+		{raw: "65536"},
+		{raw: "18446744073709551616"},
+		{raw: "65535", port: 65535, withZero: true, withoutZero: true},
+		{raw: "1", port: 1, withZero: true, withoutZero: true},
+		{raw: "00080", port: 80, withZero: true, withoutZero: true},
+		{raw: "0", withZero: true},
+		{raw: "000", withZero: true},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			t.Parallel()
+			for _, allowZero := range []bool{false, true} {
+				wantOK := tc.withoutZero
+				if allowZero {
+					wantOK = tc.withZero
+				}
+				got, ok := parsePort(tc.raw, allowZero)
+				if got != tc.port || ok != wantOK {
+					t.Fatalf("parsePort(%q, %v) = (%d, %v), want (%d, %v)", tc.raw, allowZero, got, ok, tc.port, wantOK)
+				}
+			}
+		})
+	}
+}

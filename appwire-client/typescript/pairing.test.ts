@@ -38,8 +38,45 @@ describe("device pairing invitations", () => {
     bad[4] = 4;
     expect(() => decodeInvitation(bad)).toThrow();
   });
+  it.each([
+    { origin: "http://hub.test.", host: "hub.test.", tailnet: true, flags: 1, portBytes: [0, 80] },
+    { origin: "https://[2001:db8::1]", host: "2001:db8::1", tailnet: false, flags: 2, portBytes: [1, 187] },
+    { origin: "https://hub.test:443", host: "hub.test", tailnet: true, flags: 3, portBytes: [1, 187] },
+    { origin: "http://hub.test:1", host: "hub.test", tailnet: true, flags: 1, portBytes: [0, 1] },
+    {
+      origin: `https://${"a".repeat(255)}:65535`,
+      host: "a".repeat(255),
+      tailnet: true,
+      flags: 3,
+      portBytes: [255, 255],
+    },
+  ])("preserves pairing bytes for $origin", ({ origin, host, tailnet, flags, portBytes }) => {
+    const value = { ...invitation, origin, tailnet };
+    const expected = new Uint8Array([
+      69,
+      86,
+      73,
+      49,
+      flags,
+      ...portBytes,
+      host.length,
+      4,
+      ...new Uint8Array(24).fill(1),
+      ...new TextEncoder().encode(`${host}/rpc`),
+    ]);
+    expect(encodeInvitation(value)).toEqual(expected);
+    expect(invitationText(value)).toBe(
+      `EVENER-INVITE1:${Array.from(expected, (byte) => byte.toString(16).padStart(2, "0")).join("")}`,
+    );
+    expect(decodeInvitation(expected)).toEqual({
+      ...value,
+      origin: origin === "https://hub.test:443" ? "https://hub.test" : origin,
+    });
+  });
   it("rejects ambiguous destinations without changing the pairing wire restrictions", () => {
     for (const origin of [
+      "",
+      "ftp://hub.test",
       "https://hub.test/a/..",
       "https://hub.test?",
       "https://hub.test#",
@@ -49,6 +86,8 @@ describe("device pairing invitations", () => {
       "http://hub.test\\evil",
       "http://hub.test\n",
       "https://agent:secret-value@hub.test",
+      "https://hub_name.test",
+      `https://${"a".repeat(256)}`,
     ]) {
       expect(() => encodeInvitation({ ...invitation, origin })).toThrow();
     }
