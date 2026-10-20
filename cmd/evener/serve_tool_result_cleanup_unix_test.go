@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -425,6 +426,59 @@ func terminateOwnedProcessTree(shellPID int, shellIdentity string, descendantPID
 	return signaled
 }
 
+// foregroundShellCleanupGrace bounds every step of the registered fixture
+// cleanup: the shell's own graceful path after its gate is released, and each
+// escalation wait. No step in the cleanup is allowed to block indefinitely.
+const foregroundShellCleanupGrace = 2 * time.Second
+
+// foregroundShellCleanup returns an idempotent cleanup for a fixture shell
+// started as cmd. It is safe to register immediately after cmd.Start, before
+// any PID or identity has been captured: it first releases the shell's gate so
+// the shell's own path kills and waits its child, then waits bounded for the
+// shell to exit (waited closes when cmd.Wait returns). If the graceful path
+// stalls it escalates with terminateOwnedProcessTree, which signals only a
+// non-empty, matching identity: the shell is this process's direct cmd.Process
+// child, and the descendant is read from childPIDPath and verified by reading
+// its current identity. Nothing is ever signaled by name or process group, and
+// cleanup never fails the test.
+func foregroundShellCleanup(cmd *exec.Cmd, waited <-chan struct{}, gatePath, childPIDPath string) func() {
+	shellPID := 0
+	shellIdentity := ""
+	if cmd.Process != nil {
+		shellPID = cmd.Process.Pid
+		shellIdentity, _ = ownedProcessIdentity(shellPID)
+	}
+	return sync.OnceFunc(func() {
+		// Best-effort and independent of PID/identity capture: releasing the gate
+		// is what lets the shell take its normal kill-and-wait path.
+		_ = os.WriteFile(gatePath, []byte("release"), 0o600)
+		if waitForClosedChannel(waited, foregroundShellCleanupGrace) {
+			return
+		}
+		descendantPID := 0
+		descendantIdentity := ""
+		if pid, ok := readForegroundShellPID(childPIDPath); ok {
+			if identity, ok := ownedProcessIdentity(pid); ok {
+				descendantPID, descendantIdentity = pid, identity
+			}
+		}
+		terminateOwnedProcessTree(shellPID, shellIdentity, descendantPID, descendantIdentity, foregroundShellCleanupGrace)
+		waitForClosedChannel(waited, foregroundShellCleanupGrace)
+	})
+}
+
+// waitForClosedChannel waits bounded for ch to close and reports whether it did.
+func waitForClosedChannel(ch <-chan struct{}, timeout time.Duration) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ch:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 type foregroundCleanupSentinel struct{ process *os.Process }
 
 func startForegroundCleanupSentinel(t *testing.T) *foregroundCleanupSentinel {
@@ -585,10 +639,7 @@ func TestTerminateOwnedProcessTreeReapsDescendant(t *testing.T) {
 		_, _ = cmd.Process.Wait()
 		close(waited)
 	}()
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		<-waited
-	})
+	t.Cleanup(foregroundShellCleanup(cmd, waited, gatePath, childPIDPath))
 
 	shellPIDData, ok := waitForFileContent(shellPIDPath, 10*time.Second)
 	if !ok {
@@ -637,5 +688,101 @@ func TestTerminateOwnedProcessTreeReapsDescendant(t *testing.T) {
 	}
 	if _, _, ok := processSnapshot(childPID); ok {
 		t.Fatalf("terminating shell child %d still exists after termination; a reaper was removed first", childPID)
+	}
+}
+
+// TestForegroundShellCleanupReapsDescendantBeforeCapture drives the cleanup
+// the regression test registers on an early failure that happens BEFORE any PID
+// or identity capture and WITHOUT calling terminateOwnedProcessTree. The shell
+// and its child are real, the gate is still held when cleanup is invoked, and
+// cleanup must release the gate so the shell's own path kills and waits the
+// child. Both must be gone (not zombies) and the shell's wait must have joined
+// within the bound. This fails against the old parent-only SIGKILL cleanup,
+// which orphans the child.
+func TestForegroundShellCleanupReapsDescendantBeforeCapture(t *testing.T) {
+	dir := t.TempDir()
+	shellPIDPath := filepath.Join(dir, "shell.pid")
+	childPIDPath := filepath.Join(dir, "child.pid")
+	gatePath := filepath.Join(dir, "gate")
+	trapMarkerPath := filepath.Join(dir, "trap-ran")
+	script := fmt.Sprintf(
+		"sleep 600 & child=$!; "+
+			"trap 'printf ran > %s; kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 0' TERM; "+
+			"printf '%%s' \"$child\" > %s; printf '%%s' $$ > %s; "+
+			"while [ ! -f %s ]; do sleep 0.01; done; "+
+			"kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null",
+		strconv.Quote(trapMarkerPath), strconv.Quote(childPIDPath), strconv.Quote(shellPIDPath), strconv.Quote(gatePath))
+	cmd := exec.Command("sh", "-c", script)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start fixture shell: %v", err)
+	}
+	waited := make(chan struct{})
+	go func() {
+		_, _ = cmd.Process.Wait()
+		close(waited)
+	}()
+
+	// The exact cleanup the regression test registers, with only the direct
+	// child handle and paths: no PID or identity from the fixture's files.
+	cleanup := foregroundShellCleanup(cmd, waited, gatePath, childPIDPath)
+	t.Cleanup(cleanup)
+
+	// Wait for the fixtures to publish their PIDs, then capture only what the
+	// assertions need. The cleanup above was already registered without them.
+	shellPIDData, ok := waitForFileContent(shellPIDPath, 10*time.Second)
+	if !ok {
+		t.Fatalf("fixture shell never wrote its PID file %s", shellPIDPath)
+	}
+	if pid, err := strconv.Atoi(strings.TrimSpace(shellPIDData)); err != nil || pid != cmd.Process.Pid {
+		t.Fatalf("shell PID file %q does not match the started shell %d", shellPIDData, cmd.Process.Pid)
+	}
+	childPIDData, ok := waitForFileContent(childPIDPath, 10*time.Second)
+	if !ok {
+		t.Fatalf("fixture shell never wrote its child PID file %s", childPIDPath)
+	}
+	childPID, err := strconv.Atoi(strings.TrimSpace(childPIDData))
+	if err != nil || childPID <= 0 {
+		t.Fatalf("parse fixture shell child PID %q: %v", childPIDData, err)
+	}
+	shellIdentity, ok := ownedProcessIdentity(cmd.Process.Pid)
+	if !ok {
+		t.Fatalf("could not read the fixture shell identity for %d", cmd.Process.Pid)
+	}
+	childIdentity, ok := ownedProcessIdentity(childPID)
+	if !ok {
+		t.Fatalf("could not read the fixture shell child identity for %d", childPID)
+	}
+	// A red run against the old cleanup leaks the child; remove it on the way
+	// out, by verified identity only.
+	t.Cleanup(func() {
+		if !killOwnedProcess(childPID, childIdentity) {
+			return
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) && ownedProcessExistsWithIdentity(childPID, childIdentity) {
+			time.Sleep(25 * time.Millisecond)
+		}
+	})
+	if !ownedProcessExistsWithIdentity(cmd.Process.Pid, shellIdentity) ||
+		!ownedProcessExistsWithIdentity(childPID, childIdentity) {
+		t.Fatal("fixture shell and child were not both alive before cleanup")
+	}
+
+	cleanup()
+	cleanup() // idempotent: a second invocation must be a no-op
+
+	select {
+	case <-waited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("registered cleanup did not join the fixture shell within the bound")
+	}
+	if ownedProcessExistsWithIdentity(cmd.Process.Pid, shellIdentity) {
+		t.Fatalf("fixture shell %d still exists after the registered cleanup (zombie or live)", cmd.Process.Pid)
+	}
+	if ownedProcessExistsWithIdentity(childPID, childIdentity) {
+		t.Fatalf("fixture shell child %d still exists after the registered cleanup (zombie or live)", childPID)
+	}
+	if _, err := os.Stat(trapMarkerPath); err == nil {
+		t.Fatal("cleanup used SIGTERM on the shell instead of the shell's normal gate path")
 	}
 }
