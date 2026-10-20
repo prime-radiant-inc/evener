@@ -996,3 +996,81 @@ func TestDoctorRetainedNestedLegacyRevisions(t *testing.T) {
 		assertMigrationTree(t, tree)
 	}
 }
+
+// A published root is a package with either supported manifest. Its own
+// bundled packages are resources, not separate retained cache revisions.
+func TestDoctorRetainedSupportedManifestFormats(t *testing.T) {
+	for _, layout := range []struct {
+		name        string
+		marketplace string
+	}{
+		{name: "ordinary", marketplace: "acme"},
+		{name: "nested", marketplace: filepath.Join("a", "b")},
+	} {
+		for _, format := range []struct {
+			name      string
+			manifest  string
+			companion string
+		}{
+			{name: "codex", manifest: ".codex-plugin", companion: ".claude-plugin"},
+			{name: "claude", manifest: ".claude-plugin", companion: ".codex-plugin"},
+		} {
+			t.Run(layout.name+"/"+format.name, func(t *testing.T) {
+				m := NewManager(t.TempDir())
+				m.Stderr = io.Discard
+				parent := filepath.Join(m.cacheDir(), layout.marketplace, "widget")
+				retained := filepath.Join(parent, "superseded")
+				selected := filepath.Join(parent, "current")
+				writeManifest := func(dir, flavor string) {
+					t.Helper()
+					manifestDir := filepath.Join(dir, flavor)
+					if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), []byte(`{"name":"widget","version":"1.0.0"}`), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				writeManifest(retained, format.manifest)
+				writeManifest(selected, format.manifest)
+				companion := filepath.Join(retained, "resources", "companion")
+				writeManifest(companion, format.companion)
+				wantPaths := map[string]bool{retained: true}
+				if format.name == "codex" {
+					codexOnly := filepath.Join(parent, "codex-only")
+					writeManifest(codexOnly, ".codex-plugin")
+					wantPaths[codexOnly] = true
+				}
+				if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
+					"widget@acme": {{InstallPath: selected, Version: "1.0.0", Enabled: true, Source: Source{Kind: SourceDirectory, Path: selected}}},
+				}}); err != nil {
+					t.Fatal(err)
+				}
+
+				findings, err := m.Doctor()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var retainedFindings []DoctorFinding
+				for _, finding := range findings {
+					if finding.Check == checkRetainedCacheRevision {
+						retainedFindings = append(retainedFindings, finding)
+					}
+				}
+				if len(retainedFindings) != len(wantPaths) {
+					t.Fatalf("retained revisions = %+v, want paths %v", retainedFindings, wantPaths)
+				}
+				for _, got := range retainedFindings {
+					if !wantPaths[got.Path] || got.Level != LevelOK || got.Category != catRegistry ||
+						got.Check != checkRetainedCacheRevision || got.Remediation != "" {
+						t.Fatalf("retained finding = %+v, want paths %v with OK registry check and no remediation", got, wantPaths)
+					}
+					delete(wantPaths, got.Path)
+				}
+				if len(wantPaths) != 0 {
+					t.Fatalf("missing retained paths: %v", wantPaths)
+				}
+			})
+		}
+	}
+}

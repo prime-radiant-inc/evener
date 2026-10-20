@@ -302,15 +302,17 @@ func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 		// A package manifest, not a fixed depth, identifies a revision root.
 		// Stop there so companion directories are never mistaken for revisions.
 		if depth >= 3 {
-			manifest, err := doctorStat(filepath.Join(path, ".claude-plugin", "plugin.json"))
-			if err == nil && !manifest.IsDir() {
-				if !referenced[filepath.Clean(path)] {
-					findings = append(findings, DoctorFinding{
-						Level: LevelOK, Category: catRegistry, Check: checkRetainedCacheRevision, Path: path,
-						Message: fmt.Sprintf("retained plugin revision %s is not the current registry selection; sessions may still use it", path),
-					})
+			for _, flavor := range []string{".claude-plugin", ".codex-plugin"} {
+				manifest, err := doctorStat(filepath.Join(path, flavor, "plugin.json"))
+				if err == nil && !manifest.IsDir() {
+					if !referenced[filepath.Clean(path)] {
+						findings = append(findings, DoctorFinding{
+							Level: LevelOK, Category: catRegistry, Check: checkRetainedCacheRevision, Path: path,
+							Message: fmt.Sprintf("retained plugin revision %s is not the current registry selection; sessions may still use it", path),
+						})
+					}
+					return
 				}
-				return
 			}
 		}
 		entries, err := doctorReadDir(path)
