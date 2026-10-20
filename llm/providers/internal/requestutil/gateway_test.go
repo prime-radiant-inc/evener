@@ -141,6 +141,7 @@ func TestApplyGatewayReasoning(t *testing.T) {
 		name       string
 		capsFacts  GatewayCapabilities
 		compat     GatewayClientCompat
+		before     []string
 		wantReason *bool
 		wantLadder []string
 	}{
@@ -155,6 +156,16 @@ func TestApplyGatewayReasoning(t *testing.T) {
 			name:       "a non-reasoning verdict keeps no ladder",
 			capsFacts:  GatewayCapabilities{Reasoning: &no},
 			compat:     levels(ladder),
+			wantReason: &no,
+			wantLadder: nil,
+		},
+		{
+			// A listing that publishes both supported_efforts and a
+			// non-reasoning verdict must not leave the raw live row carrying a
+			// ladder: it reaches ApplyLive before derivation clears one.
+			name:       "a non-reasoning verdict clears an advertised ladder",
+			capsFacts:  GatewayCapabilities{Reasoning: &no},
+			before:     []string{"low", "high"},
 			wantReason: &no,
 			wantLadder: nil,
 		},
@@ -174,7 +185,7 @@ func TestApplyGatewayReasoning(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			caps := registry.Caps{}
+			caps := registry.Caps{EffortValues: tc.before}
 			ApplyGatewayReasoning(&caps, tc.capsFacts, tc.compat)
 			if (caps.Reasoning == nil) != (tc.wantReason == nil) || (caps.Reasoning != nil && *caps.Reasoning != *tc.wantReason) {
 				t.Fatalf("Reasoning = %v, want %v", caps.Reasoning, tc.wantReason)

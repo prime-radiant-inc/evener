@@ -41,13 +41,16 @@ type GatewayPiCompat struct {
 // provider-wide parameters only infer, and a fact it does not state leaves what
 // the caller inferred in place.
 //
-// A row the gateway marks non-reasoning states no ladder: the model has no
-// effort control, and a stale map beside the verdict must not survive
-// derivation's clean-up as a ladder the picker offers.
+// A row the gateway marks non-reasoning carries no ladder. Clearing it here,
+// rather than merely skipping the write, is what keeps the raw live row
+// honest: a listing that also publishes supported_efforts has already set one,
+// and the row reaches ApplyLive, the live snapshot, and standalone listings
+// before derivation would clear it.
 func ApplyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
 	if capsFacts.Reasoning != nil {
 		caps.Reasoning = capsFacts.Reasoning
 		if !*capsFacts.Reasoning {
+			caps.EffortValues = nil
 			return
 		}
 	}
