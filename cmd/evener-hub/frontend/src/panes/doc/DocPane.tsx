@@ -657,39 +657,34 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
           displayedEvidenceFor(work);
         if (evidence && evidenceProvesChange(content, evidence)) {
           const attempted = work.attempted;
+          // The proven change fences the WHOLE epoch before any discard is
+          // attempted. The suppression is an in-memory map write and cannot
+          // fault, while the discard is durable work under the same flaky
+          // storage that faulted the metadata read: a discard that faults - or
+          // one that succeeds - must not decide whether the epoch's other
+          // pending annotations stay handoff-eligible, because a paced retry
+          // would append their obsolete references behind the changed source
+          // and the later expiry leaves that applied draft text intact.
+          // Suppressing the epoch closes its copyable-reference window too:
+          // the source text those references point at no longer exists,
+          // proven against this reader's own retained evidence.
+          if (work.saved) ports.repository.suppressEpochForExpiry(work.saved.lease);
+          const displayedLease = work.displayed?.lease ?? null;
+          if (displayedLease) ports.repository.suppressEpochForExpiry(displayedLease);
           if (attempted) {
             try {
               await ports.repository.discardPendingOperation(attempted.lease.key, attempted.operationId);
             } catch {
-              // The discard is durable work under the same flaky storage that
-              // faulted the metadata read; keep the exact retained work and
-              // let the paced retry attempt the whole retirement again.
+              // Keep the exact retained work and let the paced retry attempt
+              // the whole retirement again; the epoch is already suppressed
+              // above, so the retained attempt cannot append behind the
+              // changed source in the meantime.
               if (!attempt.isCurrent()) return "success";
               displayContent(content);
               suspendAuthority(true);
               return "transient";
             }
             if (!attempt.isCurrent()) return "success";
-          }
-          // A SAVED annotation awaiting handoff kept no in-memory attempt to
-          // retire: its durable row is the expiry machinery's to delete, but
-          // its pending handoff must not append an obsolete reference behind
-          // the changed source, so suppress the saved epoch until the expiry
-          // completes. The recovery acceptance's own changed read then
-          // installs the durable fence.
-          if (work.saved) ports.repository.suppressEpochForExpiry(work.saved.lease);
-          // The DISPLAYED lease fences the same way, but only when this
-          // branch retired no attempt of its own: a discarded attempt's
-          // pending row went terminal (cancelled), so its annotation keeps
-          // its copyable-reference window until the expiry machinery deletes
-          // the payload. A reader with no attempt - a reopened reader showing
-          // accepted content and another reader's persisted pending
-          // annotations - still has appendable pending work behind the
-          // changed source, and the displayed lease is the only authority a
-          // proven change can retire for it.
-          if (!attempted) {
-            const displayedLease = work.displayed?.lease ?? null;
-            if (displayedLease) ports.repository.suppressEpochForExpiry(displayedLease);
           }
           // No ticket was issued, so no fence recorded and no repository
           // expiry work exists to ever wake this reader: the outcome must
@@ -729,9 +724,16 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
           // alone would leave the durable pending-operation row reappliable by
           // the runtime's next retry pass - and the throw releases the
           // acceptance's provisional suppression, so that retry WOULD re-apply
-          // the expired operation behind the changed source. The discard runs
-          // FIRST and its own fault falls back to the interim retention below -
-          // work, capture and durable row retire together or not at all.
+          // the expired operation behind the changed source. The proven epoch
+          // is suppressed FIRST - an in-memory write that cannot fault - so
+          // neither a discard that faults nor one that succeeds can leave the
+          // epoch's other pending annotations handoff-eligible behind the
+          // changed source; the discard then retires the attempt, and its own
+          // fault falls back to the interim retention below - work, capture
+          // and durable row retire together or not at all.
+          if (work.saved) ports.repository.suppressEpochForExpiry(work.saved.lease);
+          const displayedLease = work.displayed?.lease ?? null;
+          if (displayedLease) ports.repository.suppressEpochForExpiry(displayedLease);
           const attempted = work.attempted;
           if (attempted) {
             try {
@@ -739,31 +741,14 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
             } catch {
               // The discard is durable work under the same storage that
               // faulted the acceptance; keep the exact retained work and let
-              // the paced retry attempt the whole retirement again.
+              // the paced retry attempt the whole retirement again. The epoch
+              // is already suppressed above, so the retained attempt cannot
+              // append behind the changed source in the meantime.
               if (!attempt.isCurrent()) return "success";
               displayContent(content);
               suspendAuthority(true);
               return "transient";
             }
-          }
-          // The same saved-annotation completion as the beginRead-fault branch:
-          // the durable row survives for the expiry machinery, the epoch's
-          // pending handoff must not append behind the changed source, and
-          // the recovery acceptance's own changed read installs the durable
-          // fence.
-          if (work.saved) ports.repository.suppressEpochForExpiry(work.saved.lease);
-          // The DISPLAYED lease fences the same way, but only when this
-          // branch retired no attempt of its own: a discarded attempt's
-          // pending row went terminal (cancelled), so its annotation keeps
-          // its copyable-reference window until the expiry machinery deletes
-          // the payload. A reader with no attempt - a reopened reader showing
-          // accepted content and another reader's persisted pending
-          // annotations - still has appendable pending work behind the
-          // changed source, and the displayed lease is the only authority a
-          // proven change can retire for it.
-          if (!attempted) {
-            const displayedLease = work.displayed?.lease ?? null;
-            if (displayedLease) ports.repository.suppressEpochForExpiry(displayedLease);
           }
           // A DEFINITE change to the annotated source is confirmed expiry even
           // though acceptance threw: retire the stale capture/attempt into the

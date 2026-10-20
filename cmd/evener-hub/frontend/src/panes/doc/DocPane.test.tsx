@@ -4171,7 +4171,11 @@ test("a beginRead fault behind a proven source change discards the durable pendi
     await settleReaderRefreshes(listReads);
   });
   expect((await operationRowsFor(f, original.operationId))[0]?.state).toBe("cancelled");
-  expect((await f.repo.listAnnotations(f.document)).map((view) => view.receipt.operationId)).toEqual(["op-1"]);
+  // The proven change fences the WHOLE epoch from listing, the applied
+  // baseline annotation included: every annotation in the epoch references
+  // text that no longer exists, and no annotation in it can save, append or
+  // hand off behind the changed source while the expiry completes.
+  expect((await f.repo.listAnnotations(f.document)).map((view) => view.receipt.operationId)).toEqual([]);
   expect(await f.drafts.load(f.key)).toEqual(baseline);
 
   // Recover through a real acceptance once the storage heals: the proven
