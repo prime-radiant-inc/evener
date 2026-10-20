@@ -124,6 +124,9 @@ func FuzzResponsesStreamMetamorphic(f *testing.F) {
 		// A failure delivered in-band on a 200 stream: the flat "error"
 		// event, whose typed error ends the stream.
 		"event: error\n" + `data: {"type":"error","message":"slow down","code":429}` + "\n\n",
+		// A gateway's wrapped upstream rejection: an error object on a frame
+		// with no event type at all.
+		`data: {"error":{"message":"upstream returned status 400","type":"server_error"}}` + "\n\n",
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))
