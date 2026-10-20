@@ -150,7 +150,7 @@ func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string
 		}
 		final = reserved
 	}
-	if err := installRename(staging, final); err != nil {
+	if err := publishStaged(staging, final, installRename); err != nil {
 		_ = installRemoveAll(staging)
 		return "", err
 	}

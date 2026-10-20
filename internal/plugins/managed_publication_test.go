@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -63,6 +64,55 @@ func TestCopiedSourceAllowsOrdinaryLinkUnderGitNamespace(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(dest, "guide-link")); err != nil || string(got) != "guide" {
 		t.Fatalf("ordinary link under a .git namespace = %q, %v", got, err)
+	}
+}
+
+func TestCopiedSourceAllowsLinkUnderSymlinkedGitNamespace(t *testing.T) {
+	realParent := filepath.Join(t.TempDir(), ".git", "revision")
+	if err := os.MkdirAll(realParent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkParent := filepath.Join(t.TempDir(), "linked")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(linkParent, "plugin")
+	writeTestFile(t, filepath.Join(src, "docs", "guide.md"), "guide")
+	if err := os.Symlink("docs/guide.md", filepath.Join(src, "guide-link")); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "staging")
+	if _, err := fetchPluginSource(context.Background(), Source{Kind: SourceDirectory, Path: src}, "", dest); err != nil {
+		t.Fatalf("ordinary link under a symlinked .git namespace was rejected: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dest, "guide-link")); err != nil || string(got) != "guide" {
+		t.Fatalf("ordinary link under a symlinked .git namespace = %q, %v", got, err)
+	}
+}
+
+func TestPublicationFallsBackAcrossFilesystems(t *testing.T) {
+	m := NewManager(t.TempDir())
+	staging := filepath.Join(t.TempDir(), "staging")
+	writeTestFile(t, filepath.Join(staging, "README.md"), "content")
+	oldRename := installRename
+	t.Cleanup(func() { installRename = oldRename })
+	calls := 0
+	installRename = func(from, to string) error {
+		calls++
+		if calls == 1 {
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+		}
+		return oldRename(from, to)
+	}
+	final, err := m.commitStaged("acme", "widget", staging, "sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls < 2 {
+		t.Fatalf("cross-device rename did not fall back: %d calls", calls)
+	}
+	if got, err := os.ReadFile(filepath.Join(final, "README.md")); err != nil || string(got) != "content" {
+		t.Fatalf("cross-device publication = %q, %v", got, err)
 	}
 }
 

@@ -3,6 +3,7 @@ package plugins
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -55,12 +56,19 @@ func auditPluginContent(dir string) error {
 			if targetTouchesGit(dir, lexical) {
 				return fmt.Errorf("plugin content link %s reaches Git metadata", relForDiagnostic(dir, path))
 			}
-			if resolved, err := filepath.EvalSymlinks(path); err == nil && targetTouchesGit(dir, resolved) {
+			if resolved, err := filepath.EvalSymlinks(path); err == nil && targetTouchesGit(resolvedOrSelf(dir), resolved) {
 				return fmt.Errorf("plugin content link %s reaches Git metadata", relForDiagnostic(dir, path))
 			}
 		}
 		return nil
 	})
+}
+
+func resolvedOrSelf(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
 
 // targetTouchesGit reports whether target reaches a .git entry relative to the
@@ -129,4 +137,74 @@ func moveNoReplace(src, dst string) error {
 		}
 		candidate = fmt.Sprintf("%s-%d", dst, i)
 	}
+}
+
+// publishStaged renames an audited staging tree into place. When staging and
+// the destination are on different filesystems, it copies the tree into a
+// temporary sibling of the destination first, so the final rename stays
+// atomic. The staged content is already audited, so nothing reachable from the
+// destination filesystem before the rename contains Git metadata.
+func publishStaged(staging, final string, rename func(string, string) error) error {
+	err := rename(staging, final)
+	if err == nil {
+		return nil
+	}
+	if !isCrossDevice(err) {
+		return err
+	}
+	tmp, err := os.MkdirTemp(filepath.Dir(final), ".publish-")
+	if err != nil {
+		return err
+	}
+	if err := copyTreeExact(staging, tmp); err != nil {
+		_ = os.RemoveAll(tmp)
+		return err
+	}
+	if err := rename(tmp, final); err != nil {
+		_ = os.RemoveAll(tmp)
+		return err
+	}
+	return nil
+}
+
+// copyTreeExact copies a prepared tree preserving directory modes, file modes,
+// and symlinks. It is used only after the source has passed the content audit.
+func copyTreeExact(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		switch {
+		case info.IsDir():
+			return os.MkdirAll(target, info.Mode().Perm())
+		case info.Mode()&os.ModeSymlink != 0:
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		case info.Mode().IsRegular():
+			in, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = in.Close() }()
+			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+			if err != nil {
+				return err
+			}
+			_, err = io.Copy(out, in)
+			if closeErr := out.Close(); err == nil {
+				err = closeErr
+			}
+			return err
+		default:
+			return fmt.Errorf("prepared content %s is not a regular file, directory, or symlink", relForDiagnostic(src, path))
+		}
+	})
 }

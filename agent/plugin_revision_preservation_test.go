@@ -141,7 +141,7 @@ func TestPluginRevisionSurvivesUpgradeGcAndRestore(t *testing.T) {
 		t.Fatal("GC removed a selected revision")
 	}
 	for _, dir := range []string{oldPath, second.InstallPath} {
-		if _, err := os.Stat(filepath.Join(dir, "resources/companion.bin")); err != nil {
+		if _, err := os.Stat(filepath.Join(dir, "resources", "companion.bin")); err != nil {
 			t.Fatalf("revision %s lost companion: %v", dir, err)
 		}
 	}
@@ -192,7 +192,7 @@ func TestPluginRevisionSurvivesUpgradeGcAndRestore(t *testing.T) {
 	if !slices.Equal(childCfg.PluginDirs, []string{oldPath}) {
 		t.Fatalf("frozen child selection = %v, want A", childCfg.PluginDirs)
 	}
-	if bytesReadFromCompanion, err := os.ReadFile(filepath.Join(childCfg.PluginDirs[0], "resources/companion.bin")); err != nil || string(bytesReadFromCompanion) != originalCompanion {
+	if bytesReadFromCompanion, err := os.ReadFile(filepath.Join(childCfg.PluginDirs[0], "resources", "companion.bin")); err != nil || string(bytesReadFromCompanion) != originalCompanion {
 		t.Fatalf("cold delegate companion = %q, err = %v", bytesReadFromCompanion, err)
 	}
 	reservation, err := rootDelegate.delegateController.ReserveStart(rootDelegateActor(rootDelegate.id), frozen.delegateID)

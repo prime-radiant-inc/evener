@@ -83,7 +83,7 @@ func TestRestoredSessionKeepsMigratedPluginRevisionAndCleanPolicy(t *testing.T) 
 	if _, err := os.Lstat(filepath.Join(first.InstallPath, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("migration left metadata on the saved revision: %v", err)
 	}
-	if body, err := os.ReadFile(filepath.Join(first.InstallPath, "resources/companion.bin")); err != nil || string(body) != "A-COMPANION" {
+	if body, err := os.ReadFile(filepath.Join(first.InstallPath, "resources", "companion.bin")); err != nil || string(body) != "A-COMPANION" {
 		t.Fatalf("migration changed saved revision bytes: %q, %v", body, err)
 	}
 	marker, err := os.ReadFile(filepath.Join(store.Root, "store-format.json"))

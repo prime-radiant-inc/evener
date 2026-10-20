@@ -237,8 +237,8 @@ func fuzzGCDoctorEdges(t *testing.T) {
 	if err := os.WriteFile(m.cacheDir(), []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Gc(context.Background()); err == nil {
-		t.Fatal("gc cache file succeeded")
+	if _, err := m.Gc(context.Background()); err != nil {
+		t.Fatalf("gc no longer sweeps cache revisions: %v", err)
 	}
 	findings := m.doctorOrphanCacheDirs()
 	if len(findings) != 1 || findings[0].Level != LevelFail {

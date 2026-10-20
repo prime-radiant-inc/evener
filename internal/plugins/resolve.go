@@ -505,7 +505,7 @@ func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (st
 	if err := auditBundledPayload(staging.payload); err != nil {
 		return failed(warnings, fmt.Errorf("materialize bundled plugin %s: %w", name, err))
 	}
-	if err := os.Rename(staging.payload, dest); err != nil {
+	if err := publishStaged(staging.payload, dest, os.Rename); err != nil {
 		// The cache's lock keeps every other publisher out, so a destination
 		// that filled since it was classified was filled by something outside
 		// this package. An identical copy is adopted; anything else is set
@@ -527,7 +527,7 @@ func (m *Manager) materializeBundledPlugin(ctx context.Context, name string) (st
 			return failed(warnings, asideErr)
 		}
 		setAside = true
-		if err := os.Rename(staging.payload, dest); err != nil {
+		if err := publishStaged(staging.payload, dest, os.Rename); err != nil {
 			return failed(warnings, fmt.Errorf("publish bundled plugin %s: %w", name, err))
 		}
 	}

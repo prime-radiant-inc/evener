@@ -224,7 +224,7 @@ func refuseGitSymlink(src, path string) error {
 	if targetTouchesGit(src, lexical) {
 		return gitSymlinkError(src, path)
 	}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil && targetTouchesGit(src, resolved) {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil && targetTouchesGit(resolvedOrSelf(src), resolved) {
 		return gitSymlinkError(src, path)
 	}
 	return nil
