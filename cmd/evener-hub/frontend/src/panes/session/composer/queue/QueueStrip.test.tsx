@@ -847,6 +847,122 @@ test("consecutive recovery dismissals each present current durable authority", a
   if (failures.length > 1) throw new AggregateError(failures, "strip dismiss checkpoint failed");
 });
 
+test("dismissing a refused Stop never spends a peer's edit to the selected recovery on the next resend", async () => {
+  const factory = new IDBFactory();
+  const databaseName = "strip-dismiss-peer-recovery-edit";
+  const key = browserDraftKey("ref_a");
+  const repository = createBrowserDraftRepository({ indexedDB: factory, databaseName });
+  const storage = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+  const observerStorage = new MutationOutboxIndexedDB({ indexedDB: factory, databaseName });
+  const failures: unknown[] = [];
+  const attempt = async (check: () => void | Promise<void>) => {
+    try {
+      await check();
+    } catch (error) {
+      failures.push(error);
+    }
+  };
+  let source: ComposerSourceState | undefined;
+  let unmount: (() => void) | undefined;
+  try {
+    setMutationStorageForTests(storage);
+    await repository.seedDraft(key, { text: "ordinary", skillNames: [], mentions: [] });
+    const staleInput = [{ type: "text" as const, text: "recovery stale" }];
+    const selected = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: staleInput },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: staleInput },
+      composerText: "recovery stale",
+    });
+    await storage.transferToRecovery(selected.clientMutationId, "rejected", "turn refused");
+    const stop = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a", turnId: "turn_1" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.transferToRecovery(stop.clientMutationId, "rejected", "stop refused");
+    await act(async () => {
+      source = createComposerSourceState("ref_a", { repository, key, outbox: storage });
+      await source.ready();
+    });
+    const mountedSource = source as ComposerSourceState;
+    mountedSource.setActiveRecoveryId(selected.clientMutationId);
+    const preparation = await mountedSource.prepareAnnotation();
+    if (!preparation) throw new Error("expected the selected recovery to restore");
+    expect(mountedSource.getSnapshot().text).toBe("recovery stale");
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    const view = renderStrip(defaultProps({ source: mountedSource }));
+    unmount = view.unmount;
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+
+    // A peer tab edits the SELECTED recovery record; its content and revision
+    // are newer than the stale text this editor still holds.
+    await observerStorage.updateRecoveryInput(
+      selected.clientMutationId,
+      [{ type: "text" as const, text: "peer recovery edit" }],
+      [],
+      "peer recovery edit",
+      [],
+    );
+    const stopRow = await findRow("refused-stop");
+
+    // Dismiss the SEPARATE refused Stop. Its press establishes current durable
+    // authority, but that advance came from the peer's edit to a different
+    // record and must not become this editor's own editing authority.
+    await act(async () => {
+      fireEvent.click(within(stopRow).getByRole("button", { name: "Dismiss" }));
+    });
+    await flushPendingTurnsProjectionForTests();
+    await attempt(async () =>
+      waitFor(async () => expect(await observerStorage.getRecovery(stop.clientMutationId)).toBeUndefined()),
+    );
+
+    // The next resend still shows the stale text. Presenting the peer's
+    // revision would pass the recovery guard and delete the peer's edited
+    // record, so the guard must refuse and the peer's content must survive.
+    const submitted = await mountedSource.submissionDraft();
+    expect(submitted.text).toBe("recovery stale");
+    const resent = await storage.resendRecovery(
+      selected.clientMutationId,
+      {
+        targetRef: "ref_a",
+        method: "turn/start",
+        payload: { ref: "ref_a", input: staleInput },
+        attachments: [],
+        optimisticDisplay: { method: "turn/start", input: staleInput },
+        composerText: "recovery stale",
+      },
+      mountedSource.recoveryWriteGuard(submitted),
+    );
+    expect(resent).toBeUndefined();
+    expect(await observerStorage.getRecovery(selected.clientMutationId)).toMatchObject({
+      composerText: "peer recovery edit",
+    });
+  } catch (error) {
+    failures.push(error);
+  } finally {
+    await attempt(() => flushPendingTurnsProjectionForTests());
+    await attempt(async () => {
+      await act(async () => {
+        await source?.whenSettled();
+        unmount?.();
+        source?.dispose();
+      });
+    });
+    observerStorage.close();
+    storage.close();
+    repository.close();
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "strip dismiss peer-recovery checkpoint failed");
+});
+
 test("a refused dismiss leaves the next deliberate press with current durable authority", async () => {
   const factory = new IDBFactory();
   const databaseName = "strip-refused-dismiss-retry";
@@ -919,7 +1035,11 @@ test("a refused dismiss leaves the next deliberate press with current durable au
     await attempt(async () =>
       waitFor(async () => expect(await observerStorage.getRecovery(original.clientMutationId)).toBeUndefined()),
     );
-    await attempt(async () => waitFor(() => expect(mountedSource.getDraftToken().sessionRevision).toBe(4)));
+    // The press presented the competitor's revision, but this editor still
+    // shows its own stale value. That revision belongs to the competitor's
+    // content and must not become this source's editing authority, or a later
+    // send would spend it over the competitor's draft.
+    await attempt(async () => waitFor(() => expect(mountedSource.getDraftToken().sessionRevision).toBe(2)));
   } catch (error) {
     failures.push(error);
   } finally {

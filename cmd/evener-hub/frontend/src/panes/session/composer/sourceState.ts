@@ -151,6 +151,11 @@ export interface ComposerSourceState {
   /** Accepts one explicit full editor value as an immutable durable edit. */
   acceptEdit(value: SkillEditorValue): void;
   getDraftToken(): DraftSessionToken;
+  /**
+   * The durable authority a deliberate press presents. It is adopted into this
+   * source's editing lineage only while the durable backing still holds exactly
+   * the value this editor shows.
+   */
   currentDraftToken(): Promise<DraftSessionToken>;
   getLocalGeneration(): number;
   getRuntimeBacking(): DraftBackingIdentity;
@@ -691,27 +696,74 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
   }
   async function currentDraftToken(): Promise<DraftSessionToken> {
     // Guarded recovery actions present CURRENT durable authority: a previous
-    // dismissal advanced the session revision, and a background recovery
-    // transition can have advanced it since this source last loaded its
-    // token. Load the durable row and adopt its token when it is NEWER - the
-    // revision the durable state acknowledges - while never overwriting a
-    // newer local token (a concurrent edit this source has already taken).
+    // dismissal advanced the session revision, and a background transition or
+    // another tab's edit can have advanced it since this source last loaded
+    // its token. A press presents that token whether or not this source can
+    // prove it, so a refusal cannot strand a row forever.
+    //
+    // The source's EDITING lineage adopts it only with proof that the advance
+    // left this editor's backing unchanged: the selected recovery record, or
+    // the ordinary row when no recovery is selected, still holds exactly the
+    // value this editor shows. An advance this source cannot tie to its own
+    // content can belong to a competing tab - above all to a peer's edit of
+    // the selected recovery record. Adopting it would hand a stale editor the
+    // peer's revision, and its next resend would pass the recovery guard with
+    // the stale text and delete the peer's edited record (#4581's discipline,
+    // as adoptProvenTransferBaseline and establishRestoredAuthority keep it).
+    //
     // A namespace reset retires the epoch while preserving the revision, and
-    // revisions from different incarnations are not comparable authority, so
-    // a changed incarnation is adopted the same way: presenting the retired
-    // epoch would be refused by every later press too, stranding the row.
+    // revisions from different incarnations are not comparable authority. The
+    // reset row is adopted the same way - only while its content still matches
+    // - so the retired epoch is never presented for value this editor does not
+    // show, and a matching reset still lets the press through.
     const repositoryNow = repository;
     const keyNow = draftKey;
     if (!repositoryNow || !keyNow) return getDraftToken();
-    const row = await repositoryNow.load(keyNow).catch(() => null);
-    if (
-      row &&
-      !disposed &&
-      (draftToken === null ||
+    const recoveryId = activeRecoveryIdRef.current;
+    let row: StoredComposerDraft | null = null;
+    let backingUnchanged = false;
+    if (recoveryId === null) {
+      row = await repositoryNow.load(keyNow).catch(() => null);
+      backingUnchanged =
+        row !== null &&
+        textRef.current === row.text &&
+        sameSkillSelections(skillNamesRef.current, row.skillNames) &&
+        sameSkillSelections(selectionMetaRef.current.commandNames, row.commandNames ?? []) &&
+        sameMentions(selectionMetaRef.current.mentions, row.mentions);
+    } else {
+      // The row and the selected record are captured in ONE committed read:
+      // a peer edit committing between two reads could otherwise pair its
+      // newer record content with the row's older token and make the proof
+      // below vouch for value this editor does not show.
+      const pair = await repositoryNow.readRecoveryPair(keyNow, recoveryId).catch(() => null);
+      if (pair) {
+        row = pair.row;
+        const recovered = recoveryComposerDraft(pair.record);
+        backingUnchanged =
+          textRef.current === recovered.text &&
+          sameSkillSelections(skillNamesRef.current, recovered.skillNames) &&
+          sameSkillSelections(selectionMetaRef.current.commandNames, recovered.commandNames ?? []) &&
+          sameMentions(selectionMetaRef.current.mentions, recovered.mentions) &&
+          samePendingAttachments(operations.items, recovered.attachments);
+      } else {
+        // A record another surface already removed proves nothing about this
+        // editor's value, but the dismissal press still presents the row's
+        // current authority so the surviving row can leave.
+        row = await repositoryNow.load(keyNow).catch(() => null);
+      }
+    }
+    if (row && !disposed) {
+      const newer =
+        draftToken === null ||
         row.token.namespaceIncarnation !== draftToken.namespaceIncarnation ||
-        row.token.sessionRevision > draftToken.sessionRevision)
-    ) {
-      draftToken = { ...row.token };
+        row.token.sessionRevision > draftToken.sessionRevision;
+      if (newer) {
+        if (backingUnchanged) draftToken = { ...row.token };
+        // The press presents the row's current authority even when this
+        // source cannot adopt it; presenting the older local token would let
+        // the storage refuse a press the durable state already allows.
+        return { ...row.token };
+      }
     }
     return getDraftToken();
   }

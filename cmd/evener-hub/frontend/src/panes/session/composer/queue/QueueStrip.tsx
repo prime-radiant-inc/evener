@@ -476,9 +476,13 @@ export function QueueStrip({
       // previous refused press leaves the cached token at the revision the
       // storage already refused, and a background transition or another tab's
       // edit can have advanced the durable row since this source last loaded.
+      // That authority belongs to THIS press: the source adopts it as its own
+      // editing lineage only when the durable content still matches what the
+      // editor shows, so a peer's edit cannot become the stale editor's next
+      // resend authority.
       // The press's own guards still capture before the discard's yield and
       // never refresh after a competitor commits while the press is waiting.
-      await source.currentDraftToken();
+      const currentToken = await source.currentDraftToken();
       // Capture before any yield, never refresh destructive authority after a
       // competitor commits while the original press is waiting.
       const key = browserDraftKey(source.ref);
@@ -487,7 +491,7 @@ export function QueueStrip({
       const replacementEpoch = source.continuity.recoveryReplacementEpochRef.current;
       const guard = Object.freeze({
         key: Object.freeze({ namespace: Object.freeze({ ...key.namespace }), sessionRef: key.sessionRef }),
-        token: Object.freeze({ ...source.getDraftToken() }),
+        token: Object.freeze({ ...currentToken }),
         stillAuthorized: () => {
           const currentBacking = source.getRuntimeBacking();
           return (
@@ -509,9 +513,9 @@ export function QueueStrip({
         return;
       }
       // Our own successful discard advanced the durable session revision.
-      // Adopt current durable authority before releasing the row's lock, so
-      // the next dismissal presses with a current token instead of one the
-      // storage must refuse.
+      // Refresh the source's editing lineage before releasing the row's lock:
+      // the advance is adopted only while the visible value still matches the
+      // durable backing, so a peer's unrelated edit stays out of this editor.
       await source.currentDraftToken();
     } catch (error) {
       toasts.push("error", `Couldn't dismiss this row: ${errorText(error)}`);
