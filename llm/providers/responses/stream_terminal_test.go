@@ -134,3 +134,53 @@ func TestStreamTerminalErrorsSeparateTheFourEndings(t *testing.T) {
 		}
 	})
 }
+
+// A gateway can answer 200 OK with an error payload and no Responses event at
+// all: lunaroute wraps an upstream rejection as a bare data frame, and
+// OpenAI-compatible endpoints send the flat or nested envelope under an
+// "error" event. Each of those is the provider reporting a failure, not
+// evidence about which protocol the model speaks, so it must classify as a
+// retryable stream error. Reading it as the endpoint sentinel makes a
+// transient upstream failure permanent and the turn gets no retry.
+func TestStreamTerminalErrorsDecodeInBandErrorFrames(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "bare data frame",
+			body: "data: {\"error\":{\"code\":null,\"message\":\"upstream returned status 400\",\"type\":\"server_error\"}}\n\n",
+		},
+		{
+			name: "error event with flat envelope",
+			body: "event: error\ndata: {\"message\":\"upstream returned status 400\",\"type\":\"server_error\"}\n\n",
+		},
+		{
+			name: "error event with error envelope",
+			body: "event: error\ndata: {\"error\":{\"message\":\"upstream returned status 400\",\"type\":\"server_error\"}}\n\n",
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			srv, _ := server(t, 200, testCase.body)
+			err := streamTerminalError(t, srv, userReq("hi"))
+			if err == nil {
+				t.Fatal("a stream carrying an error payload must report it")
+			}
+			if isUnsupportedEndpoint(err) {
+				t.Fatalf("an error payload is not evidence about endpoint support: %v", err)
+			}
+			if got := llm.Classify(err); got != llm.ErrorClassRetryable {
+				t.Fatalf("Classify(%v) = %v, want Retryable so the retry chain runs", err, got)
+			}
+			var le llm.Error
+			if !errors.As(err, &le) {
+				t.Fatalf("in-band error %T does not implement llm.Error", err)
+			}
+			if le.Provider() != "oai-prod" {
+				t.Fatalf("provider = %q, want the resolved instance", le.Provider())
+			}
+		})
+	}
+}
