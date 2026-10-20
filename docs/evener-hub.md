@@ -60,7 +60,8 @@ unset, the corresponding defaults are under `$HOME/.local/state` and
 - `${XDG_STATE_HOME:-$HOME/.local/state}/evener/projects/*` is durable per-project
   Evener state and saved transcripts.
 - `${XDG_STATE_HOME:-$HOME/.local/state}/evener/index.db` is the hub's SQLite
-  search index.
+  past-session index, including user archive/favorite/pin/seen state. It is not
+  the disposable full-text `search.db` under `hub_state_root`.
 - `${XDG_STATE_HOME:-$HOME/.local/state}/evener/auth-token` is the hub's
   capability token (see Trust Boundary).
 - `${XDG_CONFIG_HOME:-$HOME/.config}/evener/skills` and
@@ -75,6 +76,14 @@ unset, the corresponding defaults are under `$HOME/.local/state` and
   cannot make Settings and sessions disagree about the file.
 
 Extension discovery and enablement have separate rules. Use [Extensions](extensions.md) to choose a source; `skills_dirs` and `plugin_dirs` add explicit launch sources, while installed plugins have their own enabled-by-default state.
+
+`hub_state_root` requires local storage, enforced by best-effort OS filesystem
+classification. Unknown Linux filesystem types are admitted, not certified.
+Changing this root does not relocate the independently resolved `run_dir`,
+`state_glob`, `past_index_db` or credentials/config stores. Preserve durable
+state and the token before changing it. See [local hub state and manual
+relocation](evener-hub-state.md) for refusal/recovery, the selective offline
+copy procedure, coordinated upgrades and detection/proof limits.
 
 ## Hub config
 

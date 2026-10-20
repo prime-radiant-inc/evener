@@ -176,6 +176,8 @@ type hubOptions struct {
 }
 
 type mainDeps struct {
+	// inspectFilesystem is the external fstatfs boundary, nil uses the OS.
+	inspectFilesystem hostlock.FilesystemInspector
 	// loadConfig loads the path the flag layer resolved; the bool is true when
 	// the operator named it with --config, which makes a missing file a startup
 	// refusal instead of a silent DefaultConfig() fallback.
@@ -289,6 +291,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
 		return err
 	}
+	if err := hostlock.CheckStorage(cfg.HubStateRoot, deps.inspectFilesystem); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
 	// Stamp the build User-Agent once: previously every registry-client
 	// construction rewrote this process global per request, racing
 	// in-flight Codex requests. Fetch paths now bind scoped
@@ -299,10 +305,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		return err
 	}
 
-	// flock to ensure single hub per host. hub.lock lives beside the other
-	// hub-level state (auth-token, index.db, deletions/) under HubStateRoot,
-	// not a raw home-dir join, so a configured hub_state_root override moves
-	// the lock too.
+	// Ownership is per selected root. hub.lock lives beside auth-token and
+	// deletions/ under HubStateRoot, not a raw home-dir join. The independently
+	// selected past index does not move with a hub_state_root override.
 	lockPath := filepath.Join(cfg.HubStateRoot, "hub.lock")
 	release, err := deps.acquireLock(lockPath)
 	if err != nil {
@@ -378,10 +383,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
-	// hubStateRoot holds hub-level machine state: the auth token, the
-	// deletion-fence store, hub.lock (above), and index.db (below). Provider
-	// config (providers.toml/credentials.toml) is user-editable and lives
-	// under the config root instead — see cmdutil.DefaultConfigRoot.
+	// hubStateRoot holds durable hub credentials, fences and preferences plus
+	// coordination artifacts. The past index, daemon and project paths resolve
+	// independently. Provider config remains under cmdutil.DefaultConfigRoot.
 	hubStateRoot := cfg.HubStateRoot
 	authToken, err := deps.loadAuthToken(hubStateRoot)
 	if err != nil {

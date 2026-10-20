@@ -242,7 +242,6 @@ func startPublicationHub(t *testing.T, path, state string, stderr io.Writer) (hu
 
 func startPublicationHubWithWeb(t *testing.T, path, state string, stderr io.Writer, webOut **WebServer) (hubendpoint.Report, func()) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
 	deps := defaultMainDeps()
 	deps.ensureDirs = func() error { return nil }
 	deps.loadRegistry = hermeticRegistryLoader
@@ -259,6 +258,13 @@ func startPublicationHubWithWeb(t *testing.T, path, state string, stderr io.Writ
 	if webOut != nil {
 		deps.afterWeb = func(web *WebServer) { *webOut = web }
 	}
+	return startPublicationHubWithDeps(t, path, stderr, deps)
+}
+
+func startPublicationHubWithDeps(t *testing.T, path string, stderr io.Writer, deps mainDeps) (hubendpoint.Report, func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	deps.notifyContext = func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) { return ctx, func() {} }
 	served := make(chan struct{})
 	deps.serve = func(ctx context.Context, srv hubHTTPServer) error { close(served); return serveHub(ctx, srv) }

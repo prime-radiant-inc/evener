@@ -1,5 +1,4 @@
-// Package hostlock provides a host-level exclusive lock so at most one
-// evener-hub process runs per machine.
+// Package hostlock provides an exclusive lock for each selected hub state root.
 package hostlock
 
 import (
@@ -9,19 +8,26 @@ import (
 	"path/filepath"
 )
 
-// AcquireLock takes an exclusive non-blocking flock on path. The returned
-// release function closes the file (which drops the lock).
+// AcquireLock takes exclusive nonblocking ownership on path. Linux retains
+// flock for remote PID evidence and adds an OFD marker for non-owning queries.
+// The returned release closes the sole descriptor, dropping all ownership.
 //
-// Two hub processes on the same host must never run simultaneously: the
-// rendezvous directory and the bind port would race. AcquireLock is the
-// guard.
+// Two owners of the same state root must never run simultaneously. Separate
+// roots also need independently selected rendezvous directories and listeners.
 func AcquireLock(path string) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir lock parent: %w", err)
 	}
+	if err := CheckStorage(filepath.Dir(path), nil); err != nil {
+		return nil, err
+	}
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open lock: %w", err)
+	}
+	if err := checkStorageFile(f, path, nil); err != nil {
+		_ = f.Close()
+		return nil, err
 	}
 	if err := flockExclusiveNonBlocking(f); err != nil {
 		_ = f.Close()
@@ -31,8 +37,11 @@ func AcquireLock(path string) (func(), error) {
 		// starts from knowing which lock file this was.
 		return nil, fmt.Errorf("flock %s: %w (another evener-hub may already be running; a disposable hub needs its own HOME)", path, err)
 	}
+	if err := lockMarker(f); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("hub lock marker %s: %w", path, err)
+	}
 	return func() {
-		_ = flockUnlock(f)
 		_ = f.Close()
 	}, nil
 }
@@ -64,6 +73,9 @@ func IsHeld(path string) (bool, error) {
 	}
 	if !os.SameFile(before, opened) || !lockOwnedByCurrentUser(opened) {
 		return false, fmt.Errorf("hub lock changed while opening: %s", path)
+	}
+	if err := checkStorageFile(file, path, nil); err != nil {
+		return false, err
 	}
 	held, err := flockIsHeld(file)
 	if err != nil {

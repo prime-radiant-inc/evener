@@ -23,6 +23,17 @@ For a one-off server override, use `evener hub --addr 127.0.0.1:0`. For a persis
 
 The hub publishes `<hub_state_root>/hub-endpoint.json` with mode `0600` after binding the listener and constructing the HTTP handler, immediately before serving. The file contains its `boot_id`, PID, health start time, selected config path and state root, requested listener and source, **actual** bound address, local origin, optional literal-loopback origin, and optional advertised public origin. It contains no token. The hub keeps `hub.lock` on the same inode while it serves, replaces stale endpoint metadata only while holding that lock, and retires only its own published generation before releasing the lock. An edit to `hub.toml` can change the report's configured listener while `running` still describes the original live listener. Changing `hub_state_root` selects a different owner; it does not search other roots.
 
+The selected hub root must use local storage. Best-effort OS classification
+refuses recognized nonlocal storage before credentials or mutation, including
+for endpoint inspection. Refusal exits with an error, not a `stopped` result or
+bootstrap authorization. A missing admitted root stays missing on inspection.
+Linux ownership combines exclusive flock with an OFD marker on the same
+descriptor, while discovery uses a non-owning `F_GETLK` query. Darwin queries
+its flock without the Linux marker. Coordinate upgrades of all owners and
+inspectors, do not mix flock-only Linux owners with the new query. See
+[local state and manual relocation](evener-hub-state.md) for preservation,
+recovery and the limits of detection and platform evidence.
+
 On startup, human diagnostics identify the configured listener and source, actual bound listener, advertised connection/public origin and locally usable origin. A credential-bearing browser link goes only to the actual stderr descriptor when it is a terminal. Files, pipes and service logs receive the plain origin and a retrieval hint, not the token. The hub never opens another terminal to bypass redirection.
 
 `evener hub login-url [--config PATH]` deliberately writes one browser login link and a newline to stdout, including if you redirect it. Treat that link as a **password**: anyone with it can log in. The command selects a verified running instance, reads its existing `<hub_state_root>/auth-token`, and uses that instance's published `public_url` or actual bound address; edited but un-restarted TOML cannot change the link. It does not start a hub, make a token, open a browser or edit config. If the hub is stopped, unavailable or its token is unreadable, it returns an error without a link.

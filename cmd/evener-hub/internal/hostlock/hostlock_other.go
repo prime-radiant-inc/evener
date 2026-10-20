@@ -21,6 +21,8 @@ func flockExclusiveNonBlocking(f *os.File) error {
 	return errors.New("host lock is unsupported on this platform")
 }
 
-func flockUnlock(f *os.File) error {
+func lockMarker(*os.File) error {
 	return nil
 }
+
+func openStorageDirectory(path string) (*os.File, error) { return os.Open(path) }

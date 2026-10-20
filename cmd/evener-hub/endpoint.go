@@ -75,12 +75,18 @@ func resolveHubEndpoint(ctx context.Context, opts endpointOptions, deps mainDeps
 	if err != nil {
 		return hubendpoint.Report{}, err
 	}
+	if err := hostlock.CheckStorage(cfg.HubStateRoot, deps.inspectFilesystem); err != nil {
+		return hubendpoint.Report{}, err
+	}
 	report := hubendpoint.Report{SchemaVersion: hubendpoint.SchemaVersion, ConfigPath: opts.configPath, ConfigExists: endpoint.ConfigExists, HubStateRoot: cfg.HubStateRoot, ConfiguredListenAddr: endpoint.ListenAddr.String(), ListenSource: endpoint.ListenSource, State: "stopped"}
 	if endpoint.PublicURL != nil {
 		report.PublicURL = endpoint.PublicURL.String()
 	}
 	lockPath := filepath.Join(cfg.HubStateRoot, "hub.lock")
 	held, err := hostlock.IsHeld(lockPath)
+	if errors.Is(err, hostlock.ErrNonlocalStorage) {
+		return hubendpoint.Report{}, err
+	}
 	if err != nil {
 		return unavailableEndpoint(report, "lock_unavailable")
 	}
@@ -137,6 +143,9 @@ func resolveHubEndpoint(ctx context.Context, opts endpointOptions, deps mainDeps
 		return unavailableEndpoint(report, "record_changed")
 	}
 	held, err = hostlock.IsHeld(lockPath)
+	if errors.Is(err, hostlock.ErrNonlocalStorage) {
+		return hubendpoint.Report{}, err
+	}
 	if err != nil || !held {
 		return unavailableEndpoint(report, "lock_changed")
 	}

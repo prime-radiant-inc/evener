@@ -34,5 +34,5 @@ jobs:
           uname -a
           sw_vers
 
-      - name: Prove flock visibility and non-contending queries
-        run: go test -v -count=1 -timeout=60s ./cmd/evener-hub/internal/hostlock -run '^TestDarwinFlockQuery'
+      - name: Prove production lock queries and storage checks
+        run: go test -v -count=1 -timeout=60s ./cmd/evener-hub/internal/hostlock
