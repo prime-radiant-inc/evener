@@ -719,6 +719,11 @@ func ResolveProjectMapStrict(metas []schema.SessionMeta, live []LiveEntry) (map[
 
 func resolveProjectMap(metas []schema.SessionMeta, live []LiveEntry, strict bool) (map[string]identifier.Project, error) {
 	projects := make(map[string]identifier.Project)
+	// attempted records the paths whose filesystem resolution was already tried
+	// in this call, so a missing path repeated across many entries costs one
+	// resolution attempt. It lives here, not in a package-level cache, so a
+	// directory recreated between captures resolves on the next capture.
+	attempted := make(map[string]struct{})
 	for _, m := range metas {
 		path := EffectiveWorkingDir(m)
 		if path == "" {
@@ -727,6 +732,10 @@ func resolveProjectMap(metas []schema.SessionMeta, live []LiveEntry, strict bool
 		if _, ok := projects[path]; ok {
 			continue
 		}
+		if _, ok := attempted[path]; ok {
+			continue
+		}
+		attempted[path] = struct{}{}
 		project, err := identifier.ResolveProject(path)
 		if err != nil {
 			if strict {
@@ -748,6 +757,10 @@ func resolveProjectMap(metas []schema.SessionMeta, live []LiveEntry, strict bool
 			projects[path] = le.Project
 			continue
 		}
+		if _, ok := attempted[path]; ok {
+			continue
+		}
+		attempted[path] = struct{}{}
 		project, err := identifier.ResolveProject(path)
 		if err != nil {
 			if strict {
