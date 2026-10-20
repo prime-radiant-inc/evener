@@ -64,6 +64,7 @@ export type {
 export { createMutationProjectionFence, replaceTargetRecords } from "./projection";
 export type { MutationProjectionWorkPorts, MutationProjectionWorkTracker } from "./projectionWork";
 export { createMutationProjectionWorkTracker } from "./projectionWork";
+export { canEditQueuedMessage, canRemoveQueuedMessage } from "./queuedMessages";
 export type {
   ClientIdentity,
   ClientIdentityStorage,

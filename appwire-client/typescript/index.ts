@@ -132,6 +132,12 @@ export type {
 export { createCommandCatalog, createSessionCommandCatalog, sessionPluginNames } from "./commandCatalog";
 export type { ComposerMention, InputAttachment } from "./composerInput";
 export { buildComposerInput, buildInput, canonicalSkillNames, formatQuoteBlock, mergeDraftText } from "./composerInput";
+export type { ComposerComposition, RecoveredComposition } from "./composerRecovery";
+export {
+  mergeComposerCompositions,
+  nextComposerImageMarker,
+  recoverMutationComposition,
+} from "./composerRecovery";
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
 export {
   activeSourceLabel,

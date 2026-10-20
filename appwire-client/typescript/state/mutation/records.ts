@@ -39,7 +39,7 @@ export interface MutationAttachmentRef {
 // the daemon. Only an explicit user Retry releases it; no scan, reopen, or
 // reclassification path may move it.
 export type MutationOutboxState = "submitting" | "blockedUnknown" | "canceled";
-export type MutationRecoveryKind = "rejected" | "orphaned";
+export type MutationRecoveryKind = "rejected" | "orphaned" | "editing";
 
 // One submission as the client made it. The attachment type is a parameter so
 // a host can carry its own bytes (the web's Blob) on the same record shape
