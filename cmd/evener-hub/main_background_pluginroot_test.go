@@ -10,6 +10,7 @@ package hub
 // ~/.config/evener/plugins the caller deliberately contained.
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -96,7 +97,7 @@ func TestHubStartupPluginGcPreservesPublishedRevision(t *testing.T) {
 		t.Fatal("disabled auto-upgrade started")
 	})
 	got, err := os.ReadFile(companion)
-	if err != nil || string(got) != string(data) {
+	if err != nil || !bytes.Equal(got, data) {
 		t.Fatalf("startup GC changed selected companion: %q, %v", got, err)
 	}
 	if _, err := os.Stat(clone); !os.IsNotExist(err) {

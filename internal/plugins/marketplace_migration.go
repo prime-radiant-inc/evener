@@ -271,12 +271,10 @@ func (m *Manager) recoverMarkedRename() error {
 				ref.InstallLocation = clone
 			}
 		}
-	} else {
+	} else if ref.Source.Kind != SourceDirectory {
 		// Another record owns the derived directories. Leave them alone and
 		// leave a git-backed entry unfetched under its new logical name.
-		if ref.Source.Kind != SourceDirectory {
-			ref.InstallLocation = ""
-		}
+		ref.InstallLocation = ""
 	}
 	reg, err = m.reconcileMigrationPaths(mk, reg, owners, *marker)
 	if err != nil {

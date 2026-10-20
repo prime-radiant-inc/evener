@@ -25,9 +25,7 @@ var (
 	marketplaceGitFetch        = gitFetch
 	marketplaceGitFastForward  = gitFastForward
 	marketplaceRemoveAll       = os.RemoveAll
-	marketplaceRemove          = os.Remove
 	marketplaceRename          = os.Rename
-	marketplaceMkdirAll        = os.MkdirAll
 	marketplaceAcquireLock     = acquireLock
 	marketplaceStat            = os.Stat
 	marketplaceLstat           = os.Lstat

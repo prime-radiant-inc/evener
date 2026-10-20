@@ -2703,8 +2703,7 @@ func TestMarketplaceNameMigration_AFailedCloneRollbackKeepsTheMarker(t *testing.
 	if strings.Contains(err.Error(), renameMarkerFile(m)) {
 		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
-	var scrubbed *pathFreeError
-	if !errors.As(err, &scrubbed) {
+	if _, ok := errors.AsType[*pathFreeError](err); !ok {
 		t.Fatalf("error type = %T, want path-free failure", err)
 	}
 	if saveFailures != 1 || rollbackFailures != 1 {

@@ -220,7 +220,7 @@ func TestAutomaticMigrationRecoveryPreservesPublishedPaths(t *testing.T) {
 				}
 			}
 			if scenario.moveCache {
-				if err := os.Rename(filepath.Join(m.cacheDir(), "a/b"), filepath.Join(m.cacheDir(), "a-b")); err != nil {
+				if err := os.Rename(filepath.Join(m.cacheDir(), "a", "b"), filepath.Join(m.cacheDir(), "a-b")); err != nil {
 					t.Fatal(err)
 				}
 				for i := range trees {
@@ -575,7 +575,7 @@ func TestAutomaticMigrationRecoveryRetainsUnreadableOwnership(t *testing.T) {
 			if err := os.Rename(m.marketplaceDir("a/b"), m.marketplaceDir("a-b")); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Rename(filepath.Join(m.cacheDir(), "a/b"), filepath.Join(m.cacheDir(), "a-b")); err != nil {
+			if err := os.Rename(filepath.Join(m.cacheDir(), "a", "b"), filepath.Join(m.cacheDir(), "a-b")); err != nil {
 				t.Fatal(err)
 			}
 			mustNotExist(t, old)
