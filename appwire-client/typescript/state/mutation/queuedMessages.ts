@@ -1,5 +1,36 @@
 import type { InputItem } from "../../types.gen";
-import type { MutationOutboxRecord } from "./records";
+import type { MutationStopBarrier } from "./outbox";
+import type { MutationAttachmentRef, MutationIntent, MutationOutboxRecord, MutationRecoveryRecord } from "./records";
+
+// Optional composition ownership actions, separate from the dispatcher's port.
+// Lost claims resolve absent/false. Storage failures reject, never enqueue a fallback.
+export interface QueuedMessageStorage<A extends MutationAttachmentRef = MutationAttachmentRef> {
+  getOutboxWithStopEpoch(id: string): Promise<{ record: MutationOutboxRecord<A> | undefined; stopEpoch: number }>;
+  editQueuedMessage(
+    expected: MutationOutboxRecord<A>,
+    barrier: MutationStopBarrier,
+  ): Promise<MutationRecoveryRecord<A> | undefined>;
+  removeQueuedMessage(expected: MutationOutboxRecord<A>, barrier: MutationStopBarrier): Promise<boolean>;
+  resendRecovery(
+    sourceIds: string | readonly string[],
+    intent: MutationIntent<A>,
+    barrier?: MutationStopBarrier,
+  ): Promise<MutationOutboxRecord<A> | undefined>;
+}
+
+// Called only on a durable read inside the host's write transaction. The
+// policy is checked separately against that same row, never the rendered copy.
+export function matchesQueuedMessageSnapshot(record: MutationOutboxRecord, expected: MutationOutboxRecord): boolean {
+  return (
+    record.clientMutationId === expected.clientMutationId &&
+    record.targetRef === expected.targetRef &&
+    record.instanceId === expected.instanceId &&
+    record.threadId === expected.threadId &&
+    record.method === expected.method &&
+    record.state === expected.state &&
+    record.intentSequence === expected.intentSequence
+  );
+}
 
 const REMOVABLE_MESSAGE_METHODS = new Set([
   "turn/start",

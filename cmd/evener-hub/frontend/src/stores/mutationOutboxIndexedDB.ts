@@ -1,4 +1,10 @@
 import type { ComposerMention, InputItem } from "@evener/appwire-client";
+import {
+  canEditQueuedMessage,
+  canRemoveQueuedMessage,
+  matchesQueuedMessageSnapshot,
+  type QueuedMessageStorage,
+} from "@evener/appwire-client/state/mutation";
 import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
 import { ownClientId } from "./mutationClientIdentity";
 import type {
@@ -28,6 +34,8 @@ type MutationOutboxOperation =
   | "updateRecoveryInput"
   | "discardRecovery"
   | "resendRecovery"
+  | "editQueuedMessage"
+  | "removeQueuedMessage"
   | "retargetOutbox";
 
 // What retargetOutbox moved to the resumed ref, by store: the caller drives its
@@ -177,7 +185,7 @@ function isCancelableByStop(record: MutationOutboxRecord): boolean {
 // MutationOutboxIndexedDB serializes sequence allocation with each durable
 // transition. Cross-tab correctness comes from IndexedDB readwrite transaction
 // ordering rather than a browser lease or leader election.
-export class MutationOutboxIndexedDB {
+export class MutationOutboxIndexedDB implements QueuedMessageStorage<MutationAttachment> {
   readonly #connection: IDBConnection;
   readonly #databaseName: string;
   readonly #createMutationId: () => string;
@@ -883,6 +891,33 @@ export class MutationOutboxIndexedDB {
     });
   }
 
+  async editQueuedMessage(
+    expected: MutationOutboxRecord,
+    barrier: MutationStopBarrier,
+  ): Promise<MutationRecoveryRecord | undefined> {
+    return this.#write([OUTBOX_STORE, RECOVERY_STORE, SEQUENCE_STORE], "editQueuedMessage", async (transaction) => {
+      const outbox = transaction.objectStore(OUTBOX_STORE);
+      const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
+      if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canEditQueuedMessage(record)) return undefined;
+      if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return undefined;
+      const recovery: MutationRecoveryRecord = { ...record, recoveryKind: "editing" };
+      await requestResult(transaction.objectStore(RECOVERY_STORE).put(recovery));
+      await requestResult(outbox.delete(record.clientMutationId));
+      return recovery;
+    });
+  }
+
+  async removeQueuedMessage(expected: MutationOutboxRecord, barrier: MutationStopBarrier): Promise<boolean> {
+    return this.#write([OUTBOX_STORE, SEQUENCE_STORE], "removeQueuedMessage", async (transaction) => {
+      const outbox = transaction.objectStore(OUTBOX_STORE);
+      const record = await requestResult<MutationOutboxRecord | undefined>(outbox.get(expected.clientMutationId));
+      if (!record || !matchesQueuedMessageSnapshot(record, expected) || !canRemoveQueuedMessage(record)) return false;
+      if ((await this.#stopEpochOf(transaction, record.targetRef)) !== barrier.stopEpoch) return false;
+      await requestResult(outbox.delete(record.clientMutationId));
+      return true;
+    });
+  }
+
   async getRecovery(clientMutationId: string): Promise<MutationRecoveryRecord | undefined> {
     return this.#read(RECOVERY_STORE, async (transaction) => {
       return requestResult<MutationRecoveryRecord | undefined>(
@@ -906,11 +941,17 @@ export class MutationOutboxIndexedDB {
     attachments?: MutationAttachment[],
     composerText?: string,
     composerMentions?: readonly ComposerMention[],
+    consumeRecoveryIds?: readonly string[],
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(RECOVERY_STORE, "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
       const record = await requestResult<MutationRecoveryRecord | undefined>(store.get(clientMutationId));
       if (!record) return undefined;
+      const sources = [...new Set(consumeRecoveryIds)].filter((id) => id !== clientMutationId);
+      for (const id of sources) {
+        const source = await requestResult<MutationRecoveryRecord | undefined>(store.get(id));
+        if (!source || source.targetRef !== record.targetRef) return undefined;
+      }
       const next: MutationRecoveryRecord = {
         ...record,
         payload: { ...record.payload, input },
@@ -925,6 +966,7 @@ export class MutationOutboxIndexedDB {
         composerMentions: composerText === undefined ? (composerMentions ?? record.composerMentions) : composerMentions,
       };
       await requestResult(store.put(next));
+      for (const id of sources) await requestResult(store.delete(id));
       return next;
     });
   }
@@ -943,12 +985,20 @@ export class MutationOutboxIndexedDB {
     });
   }
 
-  async resendRecovery(clientMutationId: string, intent: MutationIntent): Promise<MutationOutboxRecord | undefined> {
+  async resendRecovery(
+    sourceIds: string | readonly string[],
+    intent: MutationIntent,
+    barrier?: MutationStopBarrier,
+  ): Promise<MutationOutboxRecord | undefined> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
     return this.#write(ENQUEUE_STORES, "resendRecovery", async (transaction) => {
       const recoveryStore = transaction.objectStore(RECOVERY_STORE);
-      const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(clientMutationId));
-      if (!recovery) return undefined;
+      const ids = [...new Set(typeof sourceIds === "string" ? [sourceIds] : sourceIds)];
+      if (ids.length === 0) return undefined;
+      for (const id of ids) {
+        const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(id));
+        if (!recovery || recovery.targetRef !== intent.targetRef) return undefined;
+      }
       const intentSequence = await this.#allocateSequence(transaction, intent.targetRef);
       const nextMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, nextMutationId);
@@ -972,12 +1022,12 @@ export class MutationOutboxIndexedDB {
         originClientId: ownClientId(),
         intentSequence,
         createdAt: this.#now(),
-        state: "submitting",
+        state: barrier !== undefined && stopEpoch > barrier.stopEpoch ? "canceled" : "submitting",
         attempted: false,
         stopEpochAtEnqueue: stopEpoch,
       };
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
-      await requestResult(recoveryStore.delete(clientMutationId));
+      for (const id of ids) await requestResult(recoveryStore.delete(id));
       return record;
     });
   }

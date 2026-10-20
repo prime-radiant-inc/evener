@@ -83,3 +83,11 @@ test("queuedMessageActionsRespectOwnership", () => {
   expect(canEditQueuedMessage(contentDrain)).toBe(true);
   expect(canRemoveQueuedMessage(contentDrain)).toBe(true);
 });
+
+test.each(["turn/start", "turn/steer"])("allows unattempted and canceled %s compositions", (method) => {
+  for (const state of ["submitting", "canceled"] as const) {
+    const record = queuedRecord(method, { state });
+    expect(canEditQueuedMessage(record)).toBe(true);
+    expect(canRemoveQueuedMessage(record)).toBe(true);
+  }
+});
