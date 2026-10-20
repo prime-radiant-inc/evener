@@ -163,6 +163,7 @@ func unstampedRefusal(t *testing.T, opts Options) error {
 	if opts.BuildBinary == nil {
 		opts.BuildBinary = writeStageBinary
 	}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, opts)
 	testDeployRecorder(t, m)
 	testRestartRecorder(t, m)

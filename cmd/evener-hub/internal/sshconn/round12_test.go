@@ -150,42 +150,20 @@ func TestRound12PreflightProbesInstallerDefaultWithoutADeploy(t *testing.T) {
 	}
 }
 
-// TestRound12DirtyVersionIsNotAVersionIdentity pins the round-twelve Medium that
-// only empty and "dev" versions were treated as unverifiable, while a dirty
-// build's "<sha>-dirty" is equally not a content identity: two dirty checkouts at
-// the same commit carry different code and report the same version, so a host
-// running one of them compared equal to the controller's own build and skipped
-// the deploy. A dirty controller version therefore deploys its own build once per
-// Manager (like "dev"), and a clean SHA still matches literally.
-func TestRound12DirtyVersionIsNotAVersionIdentity(t *testing.T) {
-	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+// Build equality is irrelevant to ordinary startup eligibility, including dev
+// and dirty identities. Protocol and launch capabilities still govern startup.
+func TestRound12BuildLabelsDoNotRequireDeployment(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	m := newTestManager(t, testRegistry(t, host), &fakeRunner{}, Options{BuildBinary: writeStageBinary})
-
-	const dirty = "abc1234-dirty"
-	facts := Preflight{
-		Host:             host.Name,
-		LaunchCheckKnown: true,
-		Protocol:         appwire.ProtocolVersion,
-		Version:          dirty,
-		LaunchFlags:      []string{requiredLaunchFlag},
-	}
-	if !m.deployRequired(host.Name, facts, dirty) {
-		t.Fatal("a dirty controller's version matched the host's identical version, so a different dirty checkout would have been trusted without deploying")
-	}
-	// Once this Manager has installed its own build, the identity question is
-	// settled for its lifetime (the dev rule), so reconnects do not rebuild.
-	m.markDevDeployed(host.Name)
-	if m.deployRequired(host.Name, facts, dirty) {
-		t.Fatal("a dirty controller re-deploys on every Ensure instead of trusting the build it installed")
-	}
-
-	// A clean version is still an identity: the same SHA on both sides is a match.
-	facts.Version = "abc1234"
-	if m.deployRequired(host.Name, facts, "abc1234") {
-		t.Fatal("a clean stamped version was treated as unverifiable")
-	}
-	if !m.deployRequired(host.Name, facts, "othersha") {
-		t.Fatal("a differing clean version did not require a deploy")
+	for _, version := range []string{"abc1234-dirty", "dev", "abc1234", "other"} {
+		facts := Preflight{LaunchCheckKnown: true, Protocol: appwire.ProtocolVersion, Version: version, LaunchFlags: []string{requiredLaunchFlag}}
+		if m.deployRequired(host.Name, facts, "controller") {
+			t.Fatalf("build %q required deployment", version)
+		}
+		facts.LaunchFlags = nil
+		if !m.deployRequired(host.Name, facts, "controller") {
+			t.Fatal("missing startup capability did not require repair")
+		}
 	}
 }
 
@@ -240,6 +218,7 @@ func TestRound12PendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "dev",
 		BuildBinary:               writeStageBinary,
@@ -262,9 +241,7 @@ func TestRound12PendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 	if restarts != 2 {
 		t.Fatalf("systemctl restarts after Ensure 2 = %d, want 2 (the pending restart must be retried)", restarts)
 	}
-	if got := len(fr.recordedStarts()); got != 0 {
-		t.Fatalf("bridge Start calls = %d, want 0 (never attach to a process of unknown identity)", got)
-	}
+	requireNoAttach(t, fr)
 }
 
 // restartBareScript scripts the standard ad-hoc restart sequence for a hub at pid

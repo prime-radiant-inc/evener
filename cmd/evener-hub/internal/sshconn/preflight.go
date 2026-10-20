@@ -193,129 +193,98 @@ func parseLaunchCheck(out []byte) (launchCheck, error) {
 	return lc, nil
 }
 
-// preflight probes host non-interactively and returns its facts. Every failure
-// is a named error class: an unreachable host surfaces the retryable
-// ErrSSHStart, while a contract violation surfaces a terminal class.
+// preflight preserves the explicit deployment planner's launch-contract gate.
 func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, error) {
+	result, err := m.collectPreflight(ctx, host)
+	if err != nil {
+		return result.facts, err
+	}
+	if result.launchErr != nil && !m.canDeploy() {
+		return result.facts, result.launchErr
+	}
+	return result.facts, nil
+}
+
+type preflightResult struct {
+	facts     Preflight
+	launchErr error
+}
+
+// collectPreflight separates host/environment failure from an unusable disk
+// launch contract. A running hub's initialize, not its disk executable, decides
+// whether an existing connection is usable.
+func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (preflightResult, error) {
 	pf := Preflight{Host: host.Name}
 
 	unameS, err := m.runRemote(ctx, host, "uname -s")
 	if err != nil {
-		return pf, err
+		return preflightResult{facts: pf}, err
 	}
 	pf.UnameOS = strings.TrimSpace(string(unameS))
 	goos, ok := mapOS(pf.UnameOS)
 	if !ok {
-		return pf, fmt.Errorf("%w: host %q uname -s %q", ErrUnsupportedHost, host.Name, pf.UnameOS)
+		return preflightResult{facts: pf}, fmt.Errorf("%w: host %q uname -s %q", ErrUnsupportedHost, host.Name, pf.UnameOS)
 	}
 	pf.OS = goos
 
 	unameM, err := m.runRemote(ctx, host, "uname -m")
 	if err != nil {
-		return pf, err
+		return preflightResult{facts: pf}, err
 	}
 	pf.UnameMachine = strings.TrimSpace(string(unameM))
 	goarch, ok := mapArch(pf.UnameMachine)
 	if !ok {
-		return pf, fmt.Errorf("%w: host %q uname -m %q", ErrUnsupportedHost, host.Name, pf.UnameMachine)
+		return preflightResult{facts: pf}, fmt.Errorf("%w: host %q uname -m %q", ErrUnsupportedHost, host.Name, pf.UnameMachine)
 	}
 	pf.Arch = goarch
 
 	if !targetSupported(goos, goarch) {
-		return pf, fmt.Errorf("%w: host %q has no build for %s/%s", ErrUnsupportedHost, host.Name, goos, goarch)
+		return preflightResult{facts: pf}, fmt.Errorf("%w: host %q has no build for %s/%s", ErrUnsupportedHost, host.Name, goos, goarch)
 	}
 
 	envOut, err := m.runRemote(ctx, host, envProbeScript)
 	if err != nil {
-		return pf, err
+		return preflightResult{facts: pf}, err
 	}
 	env, err := parseEnvProbe(envOut)
 	if err != nil {
-		return pf, err
+		return preflightResult{facts: pf}, err
 	}
 	pf.Home = env["HOME"]
 	pf.ConfigRoot, pf.StateRoot = resolveRoots(goos, env)
 
 	uidOut, err := m.runRemote(ctx, host, "id -u")
 	if err != nil {
-		return pf, err
+		return preflightResult{facts: pf}, err
 	}
 	pf.UID = parseEffectiveUID(uidOut)
 
-	// Address the executable this Manager already resolved for the host (a deploy
-	// target, or a discovered install) when the registry has no evener_path, so
-	// version auto-match probes the binary the host actually runs rather than a
-	// bare `evener` the non-interactive PATH may not carry.
 	probeHost := host
-	if strings.TrimSpace(probeHost.EvenerPath) == "" {
-		probeHost.EvenerPath = m.resolvedTarget(host.Name)
-	}
+	m.applyResolvedTarget(&probeHost)
 	lc, err := m.probeLaunchCheck(ctx, probeHost)
+	if errors.Is(err, errExecutableMissing) {
+		if target, ok := m.probeInstallerDefaultExecutable(ctx, host); ok {
+			// Discovery proves the bridge exists even if launch-check refuses.
+			m.setResolvedTarget(host.Name, target)
+			probeHost.EvenerPath = target
+			lc, err = m.probeLaunchCheck(ctx, probeHost)
+		}
+	}
 	if err != nil {
-		missing := errors.Is(err, errExecutableMissing)
-		if missing {
-			// The executable is absent from the non-interactive PATH, but the
-			// binary may still exist at the installer's default location
-			// deployTarget falls back to. Probe it before recording the contract
-			// as unknown, so a host that already runs the controller's build at
-			// ~/.local/bin/evener is recognized instead of being re-deployed on
-			// every reconnect. This runs whether or not a deploy is configured:
-			// discovering an already-installed binary is the same probe either
-			// way, and gating it on canDeploy made a controller with no build
-			// source (or an unpublishable installer ref) fail to attach to a
-			// perfectly good host whose binary is simply off the non-interactive
-			// PATH. Only the deploy decision below is gated on canDeploy.
-			if p, ok := m.probeInstallerDefaultExecutable(ctx, host); ok {
-				probeHost.EvenerPath = p
-				if lc2, err2 := m.probeLaunchCheck(ctx, probeHost); err2 == nil {
-					m.setResolvedTarget(host.Name, p)
-					pf.LaunchCheckKnown = true
-					pf.Protocol = lc2.Protocol
-					pf.Version = lc2.Version
-					pf.LaunchFlags = append([]string(nil), lc2.LaunchFlags...)
-					return pf, nil
-				}
-			}
-			// The dedicated probe verified that the resolved run target is not
-			// executable there, and the installer default did not hold a binary
-			// either: record the verified fact.
-			pf.ExecutableMissing = true
+		pf.ExecutableMissing = errors.Is(err, errExecutableMissing)
+		if pf.ExecutableMissing {
+			err = fmt.Errorf("%w: %s", err, m.deployHelp())
 		}
-		if m.canDeploy() && (errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrPreflightDecode) || missing) {
-			// The on-disk binary either refused the controller's appwire protocol
-			// outright, returned a contract that cannot be read, or is not there at
-			// all. Each is a fact about the binary, not a fatal preflight: ensureOnce
-			// must be able to deploy a matching build over ssh (which uses neither
-			// appwire nor the contract) before any refusal is made terminal. The
-			// absent-executable case is why this matters for the installer fallback,
-			// whose default target ~/.local/bin/evener is not on the non-interactive
-			// PATH: without it, a host that simply has no evener installed could
-			// never be deployed to. Record the contract as unknown and let the
-			// decision ladder choose the deploy path. With no deploy configured
-			// there is nothing to install, so the failure stays terminal rather than
-			// being deferred to a deploy that can never run.
-			return pf, nil
+		if pf.ExecutableMissing || errors.Is(err, ErrProtocolIncompatible) || errors.Is(err, ErrPreflightDecode) {
+			return preflightResult{facts: pf, launchErr: err}, nil
 		}
-		if missing {
-			// The host has no evener at the resolved path and no deploy path is
-			// configured (the branch above defers the same error when one is), so
-			// nothing can install the binary. Call it terminally with the remedy this
-			// refusal carries: the hub's flags when it supplied Options.DeployHelp,
-			// else the library's own field.
-			return pf, fmt.Errorf("%w: %s", err, m.deployHelp())
-		}
-		return pf, err
+		return preflightResult{facts: pf}, err
 	}
 	pf.LaunchCheckKnown = true
 	pf.Protocol = lc.Protocol
 	pf.Version = lc.Version
 	pf.LaunchFlags = append([]string(nil), lc.LaunchFlags...)
-	// Neither the protocol nor the launch-flag contract is refused here. Both are
-	// judged by ensureOnce *after* the deploy path has had its chance: a 04a-era
-	// host binary missing a required flag, or speaking an older appwire protocol,
-	// must be upgradable by the version-match deploy before it is refused.
-	// Otherwise it is permanently rejected and no deploy can ever fix it.
-	return pf, nil
+	return preflightResult{facts: pf}, nil
 }
 
 // probeLaunchCheck runs `evener launch-check` on the host and returns its parsed

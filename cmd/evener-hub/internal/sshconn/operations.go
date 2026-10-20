@@ -46,9 +46,6 @@ func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, fac
 		host.EvenerPath = target
 		m.setResolvedTarget(host.Name, target)
 	}
-	// The controller's own build is installed now; the dev-identity question is
-	// settled for this Manager's lifetime (the same mark ensureOnce sets).
-	m.markDevDeployed(host.Name)
 	after, err := m.reReadLaunchContract(deployCtx, host, facts)
 	if err != nil {
 		return "", facts, err

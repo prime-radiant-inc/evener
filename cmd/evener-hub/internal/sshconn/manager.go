@@ -2,6 +2,7 @@ package sshconn
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -435,11 +436,6 @@ type Manager struct {
 	announced map[string]*Channel
 	locks     map[string]*hostLockEntry
 	chans     map[string]*Channel
-	// devDeployed records hosts this Manager has installed its own
-	// identity-less build on — "dev", or a dirty "<sha>-dirty" build whose
-	// version cannot prove the code matches (see UnverifiableVersion) — so the
-	// deploy happens at most once per process rather than on every reconnect.
-	devDeployed map[string]bool
 	// resolvedTargets records, per host, the executable path this Manager
 	// resolved for the host — a deploy target, or a discovered install — so it
 	// can be reused when the registry's evener_path is empty. Without it a host
@@ -518,7 +514,6 @@ func New(reg *hostreg.Registry, opts Options) *Manager {
 		closeDone:       make(chan struct{}),
 		locks:           map[string]*hostLockEntry{},
 		chans:           map[string]*Channel{},
-		devDeployed:     map[string]bool{},
 		resolvedTargets: map[string]string{},
 		pendingRestarts: map[string]pendingRestartState{},
 		supervisors:     map[string]map[*supervisorLoop]struct{}{},
@@ -1822,7 +1817,6 @@ func (m *Manager) UpdateHostUnderGate(entry hostreg.Host, holder hostops.Holder,
 func (m *Manager) clearHostCaches(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.devDeployed, name)
 	delete(m.resolvedTargets, name)
 	delete(m.pendingRestarts, name)
 }
@@ -1861,11 +1855,12 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// Bound only the preflight here: deploy/restart below get deployLimit, and
 	// attach bounds its own handshake (initTimeout).
 	preflightCtx, cancelPreflight := context.WithTimeout(ctx, m.opts.attemptLimit())
-	facts, err := m.preflight(preflightCtx, host)
+	preflight, err := m.collectPreflight(preflightCtx, host)
 	cancelPreflight()
 	if err != nil {
 		return nil, err
 	}
+	facts := preflight.facts
 	// Preflight may have discovered the executable during THIS attempt (the
 	// installer default ~/.local/bin/evener, off the non-interactive PATH) and
 	// recorded it. Re-apply it before anything addresses the binary again: the
@@ -1914,13 +1909,38 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		m.clearPendingRestart(host.Name)
 	}
 
+	// Pending effects must settle before a usable old process can satisfy
+	// Connect. Otherwise the live handshake is the connection authority: disk
+	// build labels and optional startup flags do not justify replacing it.
+	liveIncompatible := false
+	if m.pendingRestart(host.Name).command == "" && !facts.ExecutableMissing {
+		stopped := false
+		if !runningKnown {
+			probeCtx, cancel := context.WithTimeout(ctx, m.opts.attemptLimit())
+			listeners, probeErr := m.probeListeners(probeCtx, host, hubPort(m.hostAddr(host)))
+			cancel()
+			stopped = probeErr == nil && !listeners.present && len(listeners.pids) == 0
+		}
+		if !stopped {
+			m.stateEvent(host.Name, StateAttaching)
+			channel, attachErr := m.attach(ctx, host, facts)
+			if attachErr == nil {
+				return channel, nil
+			}
+			if !errors.Is(attachErr, ErrProtocolIncompatible) || !m.canDeploy() {
+				return nil, attachErr
+			}
+			liveIncompatible = true
+		}
+	}
+
 	// A deploy replaces a hub only when one is present. The health probe is the
 	// cheap half of that question; when nothing answered but a deploy is on the
 	// table, ask whether a supervisor unit or a listener owns the hub port before
 	// deciding. This probe runs only for a deploy with no answering hub, so the
 	// common attach path pays nothing extra.
 	hubPresent := runningKnown
-	if !hubPresent && m.deployRequired(host.Name, facts, expected) {
+	if !hubPresent && (liveIncompatible || m.deployRequired(host.Name, facts, expected)) {
 		// Bound the hub-presence probe like every other phase: hubIsPresent issues
 		// real ssh commands (systemctl list-units / launchctl list, then the port
 		// probe — lsof, ss, or the host's TCP tables) and otherwise inherits the
@@ -1939,6 +1959,13 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	}
 
 	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown, hubPresent)
+	if liveIncompatible {
+		deploy = true
+		restart = hubPresent || m.pendingRestart(host.Name).command != ""
+	}
+	if !deploy && preflight.launchErr != nil {
+		return nil, preflight.launchErr
+	}
 	// A deploy-only attempt finishes at the end of its deploy block; a planned
 	// restart leg runs under the same durable record, and a restart-only attempt
 	// mints its own record below.
@@ -1982,9 +2009,6 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			// re-deploying.
 			m.setResolvedTarget(host.Name, resolvedTarget)
 		}
-		// The controller's own build is installed now; the dev-identity question
-		// is settled for this Manager's lifetime.
-		m.markDevDeployed(host.Name)
 		// Judge the build just installed on the fresh on-disk facts BEFORE the
 		// restart path. A wrong operator-supplied artifact is a permanent cause:
 		// the restart onto it fails retryably in waitHealthy (the process never
@@ -2199,79 +2223,18 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 	return nil
 }
 
-// deployRequired reports whether the on-disk build must be replaced before the
-// host can attach: its launch-check version differs from the controller's, its
-// appwire protocol is incompatible, its launch flags are missing the required
-// one, or its contract could not be read at all. ensureOnce calls it before the
-// hub-presence probe, which is why it is a separate function from ensureDecision
-// rather than a private detail of it.
-func (m *Manager) deployRequired(name string, facts Preflight, expected string) bool {
-	protocolOK := facts.LaunchCheckKnown && facts.Protocol == appwire.ProtocolVersion
-	flagsOK := slices.Contains(facts.LaunchFlags, requiredLaunchFlag)
-	versionDiffers := hostBuildDiffers(facts, expected)
-	deployNeeded := versionDiffers || !protocolOK || !flagsOK
-
-	// "dev" is not an identity: an unstamped controller and an unstamped host
-	// both report it, so equality cannot prove they are the same code. The same
-	// is true of a dirty version, which names a commit plus an uncommitted-changes
-	// marker rather than the code that was compiled: a different dirty checkout at
-	// the controller's commit reports the identical "<sha>-dirty" version. When a
-	// deploy is configured the controller installs its own build once per Manager
-	// and then trusts the host for this process's lifetime; with no deploy
-	// configured there is nothing to install and the literal comparison stands.
-	// A DIRTY controller whose deploy source is anything but its own executable
-	// cannot install anything (deploy refuses it terminally: see errControllerDirty),
-	// so the force below is what keeps it from attaching to a host whose code
-	// equality cannot prove; that refusal is terminal rather than a retryable
-	// ErrDeploy, so the same forced deploy cannot become an endless cross-compile.
-	// The controller's own executable (Options.OwnExecutable) is installable, and
-	// once installed it settles the question for this Manager's lifetime like any
-	// other deploy.
-	deployPossible := m.canDeploy()
-	devUnverified := UnverifiableVersion(expected) && deployPossible && !m.isDevDeployed(name)
-
-	// A deploy is only a decision when there is something to deploy. With no
-	// BuildSource/BuildBinary configured, attempting one fails at
-	// verifyBuildSource with ErrDeploy, which is non-terminal: the supervisor
-	// retried it forever and the cause was discarded. With nothing to deploy a
-	// version difference is left to the attach path, which accepts the host's own
-	// build; ensureOnce refuses terminally only the cases no deploy could fix — a
-	// protocol or launch-contract failure.
-	return (deployNeeded && deployPossible) || devUnverified
+// deployRequired reports whether a stopped installation lacks its startup
+// contract. A running hub is judged by initialize before this gate is used.
+func (m *Manager) deployRequired(_ string, facts Preflight, _ string) bool {
+	return m.canDeploy() && (!facts.LaunchCheckKnown || facts.Protocol != appwire.ProtocolVersion ||
+		!slices.Contains(facts.LaunchFlags, requiredLaunchFlag))
 }
 
-// ensureDecision is the one decision table for ensureOnce. Everything it needs
-// comes from a single preflight, a single /api/health probe, and the one
-// hub-presence probe ensureOnce runs when a deploy is on the table:
-//
-//   - deploy when the on-disk binary is not the build this controller requires:
-//     its launch-check version differs, its appwire protocol is incompatible,
-//     its launch flags are missing the required one, or its contract could not
-//     be read at all. The deploy runs over ssh, not appwire, so even a
-//     protocol-broken host is upgradable.
-//   - restart when a deploy replaces a hub that is actually present, a running
-//     hub answers with a build other than the expected one, or a previous
-//     restart left the host without a listener (a pending relaunch). A deploy
-//     that finds no hub present (hubPresent false) is a fresh install, not a
-//     restart: it must fall through to the explicit-attach bootstrap, and a
-//     reconnect must never turn it into a hub start.
-//   - attach otherwise.
-//
-// No terminal refusal is decided here: the protocol and launch-contract gates
-// are judged by ensureOnce only after a deploy/restart has run.
-func (m *Manager) ensureDecision(name string, facts Preflight, expected string, running hubIdentity, runningKnown, hubPresent bool) (deploy, restart bool) {
+// ensureDecision preserves recorded effects and repairs unusable installations.
+// Build labels alone never request deployment or process replacement.
+func (m *Manager) ensureDecision(name string, facts Preflight, expected string, _ hubIdentity, _, hubPresent bool) (deploy, restart bool) {
 	deploy = m.deployRequired(name, facts, expected)
-	versionDiffers := hostBuildDiffers(facts, expected)
-	// Replace the RUNNING hub only when the binary a restart would launch (the
-	// on-disk one) already matches the controller. A restart cannot give the
-	// on-disk binary a version it does not carry, so an on-disk mismatch needs the
-	// deploy above and never a restart; requiring this is what stops a host with no
-	// build source from retrying a restart that can never succeed. Replacing a
-	// stale *process* whose on-disk binary already matches is exactly the case this
-	// covers. A deploy restarts only a hub that is present; with nothing present
-	// there is nothing to replace.
-	runningStale := runningKnown && running.version != expected && !versionDiffers
-	restart = (deploy && hubPresent) || runningStale || m.pendingRestart(name).command != ""
+	restart = (deploy && hubPresent) || m.pendingRestart(name).command != ""
 	return deploy, restart
 }
 
@@ -2364,6 +2327,24 @@ func (m *Manager) deployedBuildNotStamped(hostName string, facts Preflight, expe
 		errDeployUnstamped, hostName, facts.Version, expected, m.unstampedRemedy())
 }
 
+// positiveProtocolMismatch accepts only explicit protocol evidence. A missing
+// protocol field and generic JSON-RPC errors remain transport/response failures.
+func positiveProtocolMismatch(err error) bool {
+	if mismatch, ok := errors.AsType[appwire.ProtocolVersionMismatchError](err); ok {
+		return strings.TrimSpace(mismatch.Got) != ""
+	}
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		return false
+	}
+	raw, err := json.Marshal(wire.Data)
+	if err != nil {
+		return false
+	}
+	var data appwire.ErrorData
+	return json.Unmarshal(raw, &data) == nil && data.EvenerErrorInfo == appwire.ErrorUpgradeRequired
+}
+
 // attach spawns the bridge, wraps its stdio in a StreamTransport, and
 // initializes the AppWire client.
 func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight) (*Channel, error) {
@@ -2422,7 +2403,7 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 			// context, not a transport fault, is why this channel is unusable.
 			return nil, ErrManagerClosed
 		}
-		if _, isMismatch := errors.AsType[appwire.ProtocolVersionMismatchError](err); isMismatch {
+		if positiveProtocolMismatch(err) {
 			return nil, fmt.Errorf("%w: host %q: %w", ErrProtocolIncompatible, host.Name, err)
 		}
 		// A started ssh ran a remote command, so neither its stderr (which the
@@ -3450,20 +3431,6 @@ func (m *Manager) installerRemedy() string {
 // field they cannot act on.
 func (m *Manager) unstampedRemedy() string {
 	return m.deployRemedy("supply an artifact built from this controller's tree, or a build source")
-}
-
-// isDevDeployed reports whether this Manager has installed its own dev build on
-// name. See ensureDecision.
-func (m *Manager) isDevDeployed(name string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.devDeployed[name]
-}
-
-func (m *Manager) markDevDeployed(name string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.devDeployed[name] = true
 }
 
 // resolvedTarget returns the executable path this Manager resolved for name on
