@@ -400,3 +400,126 @@ func TestAutomaticMigrationUnreadablePath(t *testing.T) {
 		assertMigrationTree(t, tree)
 	}
 }
+
+// A new alias merge writes a journal for its own logical metadata change. That
+// journal is not evidence that an older writer moved a missing installation.
+func TestAutomaticMigrationFreshAliasKeepsMissingPath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "a/./b", "widget")
+	if _, err := m.Gc(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := mk["a-b"]
+	alias.InstallLocation = m.marketplaceDir("a/b")
+	mk["a/b"] = alias
+	if err := m.saveMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	missing := m.pluginCacheDir("a/b", "gadget", "sha1")
+	reg, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg.Plugins["gadget@a/b"] = []InstallEntry{{InstallPath: missing, Version: "1.0.0", Enabled: true, Source: Source{Kind: SourceGitHub, Repo: "o/gadget"}}}
+	if err := m.saveRegistry(reg); err != nil {
+		t.Fatal(err)
+	}
+	// This directory was independently published, never moved from the old
+	// namespace. Its matching suffix cannot authorize recovery of missing.
+	destination := m.pluginCacheDir("a-b", "gadget", "sha1")
+	writePlugin(t, destination, "gadget", nil)
+	tree := snapshotMigrationTree(t, destination)
+	mustNotExist(t, missing)
+	mustNotExist(t, renameMarkerFile(m))
+	if _, err := m.Gc(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	reg, err = m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := installedAt(t, reg, "gadget@a-b").InstallPath; got != missing {
+		t.Fatalf("fresh alias adopted independently published destination: got %s, want missing recorded path %s", got, missing)
+	}
+	assertMigrationTree(t, tree)
+	assertMigrationIdempotent(t, m)
+}
+
+func TestAutomaticMigrationRecoveryRetainsUnreadableOwnership(t *testing.T) {
+	for _, failure := range []string{"destination", "directory-source"} {
+		t.Run(failure, func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			m.Stderr = io.Discard
+			old := plantLegacyMarketplace(t, m, "a/b", "widget")
+			destination := m.pluginCacheDir("a-b", "widget", "sha1")
+			if err := os.Rename(m.marketplaceDir("a/b"), m.marketplaceDir("a-b")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(filepath.Join(m.cacheDir(), "a/b"), filepath.Join(m.cacheDir(), "a-b")); err != nil {
+				t.Fatal(err)
+			}
+			mustNotExist(t, old)
+			tree := snapshotMigrationTree(t, destination)
+			plantRenameMarker(t, m, "a/b", "a-b")
+			unreadable := filepath.Join(m.cacheDir(), "a-b")
+			if failure == "directory-source" {
+				unreadable = t.TempDir()
+				mk, err := m.loadMarketplaces()
+				if err != nil {
+					t.Fatal(err)
+				}
+				mk["external"] = MarketplaceRef{Source: Source{Kind: SourceDirectory, Path: unreadable}, InstallLocation: unreadable}
+				if err := m.saveMarketplaces(mk); err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeReg := readStoreFile(t, m.registryPath())
+			beforeMarker := readStoreFile(t, renameMarkerFile(m))
+			original := marketplaceLstat
+			t.Cleanup(func() { marketplaceLstat = original })
+			failures := 0
+			marketplaceLstat = func(path string) (os.FileInfo, error) {
+				if path == unreadable {
+					failures++
+					return nil, os.ErrPermission
+				}
+				return original(path)
+			}
+			_, err := m.Gc(context.Background())
+			marketplaceLstat = original
+			if failures == 0 {
+				t.Fatal("ownership inspection did not reach injected failure")
+			}
+			if err == nil {
+				t.Error("unreadable ownership authorized successful recovery")
+			}
+			if got := readStoreFile(t, m.registryPath()); got != beforeReg {
+				t.Error("unreadable ownership changed registry bytes")
+			}
+			if got, err := os.ReadFile(renameMarkerFile(m)); err != nil || string(got) != beforeMarker {
+				t.Errorf("unreadable ownership lost or changed recovery marker: %v", err)
+			}
+			assertMigrationTree(t, tree)
+			// Once inspection works again, the retained marker completes the
+			// exact old move rather than leaving the store permanently blocked.
+			if _, err := m.Gc(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			reg, err := m.loadRegistry()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if installedAt(t, reg, "widget@a-b").InstallPath != destination {
+				t.Fatal("recovered ownership did not reconcile the proven move")
+			}
+			mustNotExist(t, renameMarkerFile(m))
+			assertMigrationTree(t, tree)
+			assertMigrationIdempotent(t, m)
+		})
+	}
+}

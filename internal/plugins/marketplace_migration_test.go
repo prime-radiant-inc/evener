@@ -2297,8 +2297,8 @@ func TestMarketplaceNameMigration_TwoSourcesDerivingOnePairKeepTheirOwnAliases(t
 }
 
 // A marketplace's aliases can be spread across runs: "a/./b" migrates in one,
-// and "a/b" — deriving the same directories, which the first run already took
-// with the rename — is only recorded later. The run that migrated the first has
+// and "a/b" — deriving the same clone and retained cache family — is recorded
+// only later. The run that migrated the first has
 // to leave something naming the family, or the second aliases the existing
 // record and takes a numbered name whose installs point at a cache nobody made.
 func TestMarketplaceNameMigration_AnAliasRecordedInALaterRunMergesIntoTheMigratedRecord(t *testing.T) {
@@ -2331,9 +2331,10 @@ func TestMarketplaceNameMigration_AnAliasRecordedInALaterRunMergesIntoTheMigrate
 	if err := second.saveMarketplaces(mk); err != nil {
 		t.Fatal(err)
 	}
-	// A plugin only the second name records, whose cache stood inside the
-	// directory the first run moved.
-	writePlugin(t, second.pluginCacheDir("a-b", "gadget", "sha1"), "gadget", nil)
+	// A plugin only the second name records remains in the retained old cache.
+	gadget := second.pluginCacheDir("a/b", "gadget", "sha1")
+	writePlugin(t, gadget, "gadget", nil)
+	tree := snapshotMigrationTree(t, gadget)
 	reg, err := second.loadRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -2362,6 +2363,7 @@ func TestMarketplaceNameMigration_AnAliasRecordedInALaterRunMergesIntoTheMigrate
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertMigrationTree(t, tree)
 	for key, entries := range reg.Plugins {
 		for _, entry := range entries {
 			if _, err := os.Stat(entry.InstallPath); err != nil {
@@ -2509,7 +2511,7 @@ func TestMarketplaceNameMigration_ACacheSymlinkDoesNotLetARenameTakeAnotherKeysP
 }
 
 // A refused name can reach the migrated record's directories through symlinks,
-// and those symlinks outlive the rename that moves what is under them. The
+// and those symlinks outlive the clone rename while caches remain in place. The
 // recorded family has to hold the directories the rename resolved, not ones
 // resolved again from a name whose directories have since moved.
 func TestMarketplaceNameMigration_ALaterAliasThroughASymlinkMergesIntoTheMigratedRecord(t *testing.T) {
@@ -2554,9 +2556,10 @@ func TestMarketplaceNameMigration_ALaterAliasThroughASymlinkMergesIntoTheMigrate
 	if err := second.saveMarketplaces(mk); err != nil {
 		t.Fatal(err)
 	}
-	// A plugin only the second name records, whose cache the first run moved
-	// with the directory it stood in.
-	writePlugin(t, second.pluginCacheDir("link-x", "gadget", "sha1"), "gadget", nil)
+	// The later alias keeps its physical path through the retained old cache.
+	gadget := second.pluginCacheDir("real/x", "gadget", "sha1")
+	writePlugin(t, gadget, "gadget", nil)
+	tree := snapshotMigrationTree(t, gadget)
 	reg, err := second.loadRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -2585,6 +2588,7 @@ func TestMarketplaceNameMigration_ALaterAliasThroughASymlinkMergesIntoTheMigrate
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertMigrationTree(t, tree)
 	for key, entries := range reg.Plugins {
 		for _, entry := range entries {
 			if _, err := os.Stat(entry.InstallPath); err != nil {
@@ -3989,8 +3993,8 @@ func TestMarketplaceNameMigration_DropsAMarkerWhoseDestinationCannotBeADirectory
 }
 
 // The same holds when the later alias reaches those directories through another
-// symlink: the record kept the directories as they were, and a path whose leaf
-// has moved still resolves through the symlinks above it.
+// symlink: the record kept the physical family, and the retained published
+// path still resolves through the symlinks above it.
 func TestMarketplaceNameMigration_ALaterAliasThroughAnotherSymlinkMergesIntoTheMigratedRecord(t *testing.T) {
 	root := t.TempDir()
 	first := NewManager(root)
@@ -4036,7 +4040,9 @@ func TestMarketplaceNameMigration_ALaterAliasThroughAnotherSymlinkMergesIntoTheM
 	if err := second.saveMarketplaces(mk); err != nil {
 		t.Fatal(err)
 	}
-	writePlugin(t, second.pluginCacheDir("link-x", "gadget", "sha1"), "gadget", nil)
+	gadget := second.pluginCacheDir("link2/x", "gadget", "sha1")
+	writePlugin(t, gadget, "gadget", nil)
+	tree := snapshotMigrationTree(t, gadget)
 	reg, err := second.loadRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -4065,6 +4071,7 @@ func TestMarketplaceNameMigration_ALaterAliasThroughAnotherSymlinkMergesIntoTheM
 	if err != nil {
 		t.Fatal(err)
 	}
+	assertMigrationTree(t, tree)
 	for key, entries := range reg.Plugins {
 		for _, entry := range entries {
 			if _, err := os.Stat(entry.InstallPath); err != nil {
@@ -4175,7 +4182,7 @@ func TestMergeIntoMigrated_DoesNotResurrectAKeyALongerNameOwns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := m.mergeIntoMigrated(mk, registryKeyOwners(reg, mk), reg, "x@a-b", "a-b")
+	got, err := m.mergeIntoMigrated(mk, registryKeyOwners(reg, mk), reg, "x@a-b", "a-b", false)
 	if err != nil {
 		t.Fatalf("mergeIntoMigrated: %v", err)
 	}

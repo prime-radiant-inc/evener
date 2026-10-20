@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,6 +64,7 @@ func testPluginRevisionPreservation(t *testing.T, migrate bool) {
 		t.Fatal(err)
 	}
 	store := plugins.NewManager(filepath.Join(root, "plugin-store"))
+	store.Stderr = io.Discard
 	pluginRepo := filepath.Join(root, "source")
 	revisionFile(t, pluginRepo, ".claude-plugin/plugin.json", []byte(`{"name":"widget","version":"1.0.0"}`), 0o644)
 	revisionFile(t, pluginRepo, "skills/probe/SKILL.md", []byte("---\nname: probe\ndescription: revision fixture\n---\nA-SKILL\n"), 0o644)
@@ -193,6 +195,7 @@ func testPluginRevisionPreservation(t *testing.T, migrate bool) {
 	// Restart the store owner before GC and session restore. No in-memory
 	// migration state may be needed to keep A's exact source useful.
 	store = plugins.NewManager(store.Root)
+	store.Stderr = io.Discard
 	removed, err := store.Gc(ctx)
 	if err != nil {
 		t.Fatal(err)

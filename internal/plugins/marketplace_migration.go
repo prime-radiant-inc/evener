@@ -166,7 +166,7 @@ func (m *Manager) migrateMarketplaceNames() error {
 			// The family records the actual logical destination, including any
 			// collision suffix. Retained caches still occupy their old paths.
 			into := recordedThisRun[key]
-			if reg, err = m.mergeIntoMigrated(mk, owners, reg, name, into); err != nil {
+			if reg, err = m.mergeIntoMigrated(mk, owners, reg, name, into, false); err != nil {
 				return fmt.Errorf("merging marketplace %q, recorded under a name the store no longer accepts, into %q: %w", name, into, err)
 			}
 			_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was recorded under a name the store no longer accepts, and names the same marketplace as %q; merged its plugins into that record and dropped the duplicate\n", name, into)
@@ -332,7 +332,7 @@ func (m *Manager) finishMarkedMerge(mk Marketplaces, marker renameMarker) error 
 	owners := registryKeyOwners(reg, mk)
 	// The merge names itself in the marker again and drops it once both files
 	// record it, so what is left to say here is that it was finished.
-	if _, err := m.mergeIntoMigrated(mk, owners, reg, marker.From, marker.To); err != nil {
+	if _, err := m.mergeIntoMigrated(mk, owners, reg, marker.From, marker.To, true); err != nil {
 		return fail(err)
 	}
 	_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was being merged into %q when an earlier run stopped; finished the merge\n", marker.From, marker.To)
@@ -344,9 +344,6 @@ func (m *Manager) finishMarkedMerge(mk Marketplaces, marker renameMarker) error 
 // Existing paths always win, even when both namespaces contain files. Neither
 // missing files nor a new logical name authorize moving or replacing a tree.
 func (m *Manager) reconcileMigrationPaths(mk Marketplaces, reg Registry, owners map[string]string, marker renameMarker) (Registry, error) {
-	if marker.Merge && mk[marker.From].Source != mk[marker.To].Source {
-		return Registry{}, fmt.Errorf("marketplaces %q and %q name different sources: %w", marker.From, marker.To, ErrMarketplaceExists)
-	}
 	itsOwn, _, err := m.marketplaceDirsAreItsOwn(mk, reg, marker.From)
 	if err != nil {
 		return Registry{}, err
@@ -384,11 +381,20 @@ func (m *Manager) reconcileMigrationPaths(mk Marketplaces, reg Registry, owners 
 				return "", false, nil
 			}
 		}
-		if _, protect := m.sweepDestroysSource(marketplaceProtectionPaths(mk), newCache); protect {
-			return "", false, nil
+		// Cleanup treats inspection errors as protection and continues. Recovery
+		// must retain its marker and fail instead of committing unknown ownership.
+		present, err := pathPresentNoFollow(newCache)
+		if err != nil || !present {
+			return "", false, err
+		}
+		for _, source := range marketplaceProtectionPaths(mk) {
+			protect, err := m.sourceTouchesPath(source, newCache)
+			if err != nil || protect {
+				return "", false, err
+			}
 		}
 		destination := filepath.Join(newCache, rel)
-		present, err := pathPresent(destination)
+		present, err = pathPresent(destination)
 		if err == nil && present && !pathWithinDir(resolveBestEffort(newCache), resolveBestEffort(destination)) {
 			return "", false, nil
 		}
@@ -937,9 +943,20 @@ func (m *Manager) migratedUnderAnAlias(dirs marketplaceDirs, ref MarketplaceRef,
 
 // mergeIntoMigrated folds an alias into its recorded family's marketplace.
 // Only logical ownership changes. Existing InstallPaths stay, including paths
-// in the retained original cache; missing paths may follow a proven old move.
-func (m *Manager) mergeIntoMigrated(mk Marketplaces, owners map[string]string, reg Registry, name, recorded string) (Registry, error) {
+// in the retained original cache. Only finishMarkedMerge sets recovering: its
+// marker existed on acquisition, unlike the journal a fresh merge creates.
+func (m *Manager) mergeIntoMigrated(mk Marketplaces, owners map[string]string, reg Registry, name, recorded string, recovering bool) (Registry, error) {
 	registryAsFound := reg
+	if mk[name].Source != mk[recorded].Source {
+		return registryAsFound, fmt.Errorf("marketplaces %q and %q name different sources: %w", name, recorded, ErrMarketplaceExists)
+	}
+	if recovering {
+		var err error
+		reg, err = m.reconcileMigrationPaths(mk, reg, owners, renameMarker{From: name, To: recorded, Merge: true})
+		if err != nil {
+			return registryAsFound, err
+		}
+	}
 	// The marker names this merge before any of it happens, for the reason a
 	// rename's does: the two writes below can be interrupted between, and the
 	// keys the first of them moves are what a run with no marker to read takes
@@ -947,16 +964,11 @@ func (m *Manager) mergeIntoMigrated(mk Marketplaces, owners map[string]string, r
 	if err := m.writeRenameMarker(renameMarker{From: name, To: recorded, Merge: true}); err != nil {
 		return registryAsFound, err
 	}
-	var err error
-	reg, err = m.reconcileMigrationPaths(mk, reg, owners, renameMarker{From: name, To: recorded, Merge: true})
-	if err != nil {
-		return registryAsFound, err
-	}
-	reconciled := reg
+	existing := reg
 	reg = rekeyRegistry(reg, owners, name, recorded, "", "")
 	// Keep the existing installed selection when both aliases name the same
 	// plugin. Both physical trees remain available to existing sessions.
-	for key, entries := range reconciled.Plugins {
+	for key, entries := range existing.Plugins {
 		if owner, ok := owners[key]; ok && owner == recorded {
 			reg.Plugins[key] = entries
 		}
