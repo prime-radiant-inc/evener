@@ -54,9 +54,9 @@ type Preflight struct {
 	Protocol    string
 	LaunchFlags []string
 	// LaunchCheckKnown is true when the on-disk binary answered
-	// `launch-check --json` with a contract. It is false when the binary refused
-	// the controller's appwire protocol outright, in which case Protocol,
-	// Version, and LaunchFlags carry no information and must be read as unknown.
+	// `launch-check --json` with a decoded contract. A protocol refusal alone
+	// leaves it false: Protocol, Version, and LaunchFlags remain unknown until
+	// the executable successfully describes its own contract.
 	LaunchCheckKnown bool
 	// ExecutableMissing records the verified result of the dedicated executable
 	// probe (`test -x <run_path>`, or `command -v <run_path>` for a bare name):
@@ -270,6 +270,17 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 			lc, err = m.probeLaunchCheck(ctx, probeHost)
 		}
 	}
+	if errors.Is(err, ErrProtocolIncompatible) {
+		// The CLI rejects an imposed protocol before emitting JSON. Ask the same
+		// executable for its own contract: refusal prose alone cannot authorize
+		// replacing a stopped installation or reconcile an interrupted write.
+		out, describeErr := m.runner.Run(ctx, evenerCommandArgv(m.opts, probeHost, "launch-check", "--json"), nil)
+		if describeErr != nil {
+			// Unreadable disk metadata must not prevent a compatible live attach.
+			return preflightResult{facts: pf, launchErr: sshRunFailure(host.Name, "launch-check", describeErr, tail(out))}, nil
+		}
+		lc, err = parseLaunchCheck(out)
+	}
 	if err != nil {
 		pf.ExecutableMissing = errors.Is(err, errExecutableMissing)
 		if pf.ExecutableMissing {
@@ -287,10 +298,9 @@ func (m *Manager) collectPreflight(ctx context.Context, host hostreg.Host) (pref
 	return preflightResult{facts: pf}, nil
 }
 
-// probeLaunchCheck runs `evener launch-check` on the host and returns its parsed
-// contract. It is the one place the invocation and its protocol-refusal and
-// decode classification live, so preflight and the post-deploy re-probe in
-// ensureOnce cannot drift apart.
+// probeLaunchCheck requires the controller's protocol when reading the launch
+// contract. Post-deploy probes keep this strict gate; only collectPreflight may
+// follow a protocol refusal with a read of the executable's own contract.
 func (m *Manager) probeLaunchCheck(ctx context.Context, host hostreg.Host) (launchCheck, error) {
 	out, err := m.runner.Run(ctx, evenerCommandArgv(m.opts, host, "launch-check", "--protocol", appwire.ProtocolVersion, "--json"), nil)
 	if err != nil {
