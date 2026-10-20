@@ -1507,7 +1507,10 @@ it.each([
   // resolve to expiry-pending, never be swallowed as success.
   const joinedState = expectResolvedRead(changedOutcome).state;
   expect(joinedState).toBe("expiry-pending");
-  expect(handedOff.state).toBe("cancelled");
+  // The suppression the append hit is still provisional: the validating read
+  // may prove itself stale and release it, so the durable pending receipt must
+  // keep the retryable outcome instead of the terminal cancellation.
+  expect(handedOff).toEqual({ state: "pending", reason: "owner-unavailable" });
   expect(await f.drafts.load(f.key)).toEqual(ordinary); // includes unchanged session revision
   expect(await f.outbox.getRecovery("rec-1")).toEqual(recovery);
   expect(f.source.getSnapshot()).toEqual(snapshot);
@@ -3376,7 +3379,10 @@ it.each([
 
     // Soft assertions so the unchanged backing/source evidence is still reported
     // when the boundary guard is absent and the append wrongly commits.
-    expect.soft(handedOff.state).toBe("cancelled");
+    // The changed read's suppression is provisional at the append's last guard:
+    // it may still release as a stale validation, so the handoff stays
+    // retryable rather than terminal.
+    expect.soft(handedOff).toEqual({ state: "pending", reason: "owner-unavailable" });
     expect.soft(changedResult.state).toBe("expiry-pending");
     expect.soft(await f.drafts.load(f.key)).toEqual(ordinary);
     expect.soft((await f.drafts.load(f.key))?.token.sessionRevision).toBe(ordinary?.token.sessionRevision);

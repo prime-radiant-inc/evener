@@ -2,7 +2,12 @@
 // bounded outcome govern retry health across the real annotation adapter, using
 // the same retained runtime for the first Send and every retry. The regression
 // that exercises the adapter alone lives in documentAnnotationIndexedDB.test.ts.
-import { displayedFingerprint, type PreparedAnnotation, type SaveReceipt } from "@evener/appwire-client";
+import {
+  displayedFingerprint,
+  type PreparedAnnotation,
+  type ReadTicket,
+  type SaveReceipt,
+} from "@evener/appwire-client";
 import { IDBObjectStore } from "fake-indexeddb";
 import { expect, it, vi } from "vitest";
 import { REFERENCE, SOURCE } from "../panes/doc/testing/annotationFixtures";
@@ -365,6 +370,69 @@ it("retries a handoff refused while the composer was typing once that edit's dra
   ).find((row) => row.operationId === "op-2");
   expect(applied).toMatchObject({ state: "applied" });
   expect(f.source.getSnapshot().text).toBe(`${typedText}\n\n${secondReference}`);
+});
+
+// RoboRev review 43208: a provisional suppression is a local comparison awaiting
+// durable validation, not a proven source change. Answering the overlapping
+// handoff with the terminal cancelled outcome dropped the runtime's retry intent
+// even though the durable receipt stayed pending, so a later storage success had
+// nothing to recover once the stale read released the suppression.
+it("retains retry intent through a provisional suppression and completes the handoff once it releases", async () => {
+  let runtime: DocumentAnnotationRuntime | undefined;
+  let staleTicket: ReadTicket | undefined;
+  let staleRead: Promise<unknown> | undefined;
+  let startStaleRead = false;
+  const f = await fixture("provisional-suppression-retry", {
+    onAppendReadsIssued: () => {
+      if (!startStaleRead) return;
+      startStaleRead = false;
+      if (!staleTicket) throw new Error("missing stale ticket");
+      // acceptRead installs its provisional suppression synchronously, before
+      // its first await, and that durable validation proves the ticket stale.
+      staleRead = f.repo.acceptRead(staleTicket, docContent(SOURCE, "rev-B"));
+    },
+    onStorageSuccess: () => runtime?.storageSucceeded(),
+  });
+  const second = createDocumentAnnotationRepository({
+    indexedDB: f.factory,
+    databaseName: f.databaseName,
+    drafts: f.drafts,
+    targetFor: () => null,
+  });
+  cleanupAfterTest(() => second.close());
+  // This adapter remembers a ticket; another adapter's issuance advances the
+  // durable read generation, so the remembered ticket can only validate stale.
+  staleTicket = await f.repo.beginRead(f.document);
+  await second.beginRead(f.document);
+  runtime = createDocumentAnnotationRuntime(f.repo);
+  const retainedRuntime = runtime;
+  cleanupAfterTest(async () => {
+    try {
+      await retainedRuntime.whenIdle();
+    } finally {
+      retainedRuntime.dispose();
+    }
+  });
+  const appends = vi.spyOn(f.drafts, "appendAnnotation");
+  startStaleRead = true;
+  await expect(retainedRuntime.handoff(f.document, "op-1")).resolves.toEqual({
+    state: "pending",
+    reason: "owner-unavailable",
+  });
+  if (!staleRead) throw new Error("the overlapping stale read never started");
+  await expect(staleRead).resolves.toEqual({ state: "stale-ticket" });
+  // Only a real storage success follows - no reader-open, composer-open,
+  // foreground return or annotation gesture drives the recovery.
+  await f.repo.beginRead({ ...f.document, path: "UNRELATED-STORAGE-SUCCESS.md" });
+  await retainedRuntime.whenIdle();
+  const applied = (
+    await rowsForTests<AnnotationOperationRow>(f.factory, f.databaseName, ANNOTATION_OPERATIONS_STORE)
+  ).find((row) => row.operationId === "op-1");
+  expect(applied).toMatchObject({ state: "applied" });
+  expect((await f.drafts.load(f.key))?.text).toBe(`ordinary /same\n\n${REFERENCE}`);
+  // One append was refused by the provisional suppression, and the retry
+  // appended the reference exactly once.
+  expect(appends.mock.calls.filter(([input]) => input.operationKey === f.operationKey)).toHaveLength(2);
 });
 
 it("disposal preserves the composer while handoffs are queued behind an in-flight one", async () => {

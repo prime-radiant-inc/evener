@@ -2295,6 +2295,40 @@ test("a resend settlement vetoed by a newer edit releases its consumed recovery 
   expect(source.getRuntimeBacking()).toEqual({ kind: "draft" });
 });
 
+test("a newer edit typed after a resend's final guard survives the next annotation preparation", async () => {
+  const { fixture, source, original, intent, preparation, submitted } = await arrangeSelectedRecovery(
+    "source-state-resend-veto-preparation",
+  );
+  const guard = {
+    key: preparation.key,
+    token: preparation.token,
+    stillAuthorized: () => source.ownsPreparation(preparation),
+  };
+  const resent = await fixture.outbox.resendRecovery(original.clientMutationId, intent, guard);
+  if (!resent) throw new Error("expected the guarded resend to consume the record");
+  // The user keeps typing after the resend's final guard; the settlement then
+  // releases the consumed recovery backing onto the ordinary draft path.
+  source.editor.write("typed after the final guard", 25);
+  await source.whenSettled();
+  expect(submitted.stillOwnsEdit?.()).toBe(false);
+  expect(await source.settleDraft(submitted)).toMatchObject({ cleared: false, persistence: "committed" });
+  expect(source.getRuntimeBacking()).toEqual({ kind: "draft" });
+  // While the ordinary draft write cannot reconcile, the next annotation
+  // handoff must refuse instead of publishing the older durable row over the
+  // visible typing.
+  const faulting = vi.spyOn(fixture.repository, "commitEdit").mockResolvedValue({ state: "unavailable" });
+  expect(await source.prepareAnnotation()).toBeNull();
+  expect(source.getSnapshot().text).toBe("typed after the final guard");
+  expect((await requireRow(fixture.repository, fixture.key)).text).toBe("ordinary");
+  // Once storage accepts the preserved work, the durable row carries the typed
+  // value and a preparation may publish it without losing anything.
+  faulting.mockRestore();
+  await source.whenSettled();
+  expect((await requireRow(fixture.repository, fixture.key)).text).toBe("typed after the final guard");
+  await source.prepareAnnotation();
+  expect(source.getSnapshot().text).toBe("typed after the final guard");
+});
+
 test("a recovery resend refuses a submission whose capture predates an acknowledged append", async () => {
   const fixture = sourceFixture("source-state-append-during-preparation");
   setMutationStorageForTests(fixture.outbox);

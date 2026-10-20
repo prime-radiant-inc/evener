@@ -1518,8 +1518,31 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // operation; any suppression of that old epoch (provisional or confirmed)
     // cancels it, and the capture is never refreshed.
     const originalLease = structuredClone(payload.operation.lease);
-    const documentStillEligible = () => !this.#suppressedEpochs.has(epochIdentity(originalLease));
-    if (!documentStillEligible()) return { state: "cancelled" };
+    const suppression = () => this.#suppressedEpochs.get(epochIdentity(originalLease));
+    // An unconfirmed suppression is a LOCAL comparison awaiting durable
+    // validation: it can still release as a stale read, which leaves this
+    // operation's pending receipt eligible again. Only a confirmed suppression -
+    // a source change the reader proved - is the terminal cancelled outcome.
+    // Reporting the provisional state as cancelled dropped the runtime's retry
+    // intent, so a later storage success could never complete the still-pending
+    // handoff once the validation released the suppression.
+    const suppressedOutcome = (): HandoffResult | null => {
+      const entry = suppression();
+      if (!entry) return null;
+      return entry.confirmed ? { state: "cancelled" } : { state: "pending", reason: "owner-unavailable" };
+    };
+    let provisionalSuppressionAtGuard = false;
+    const documentStillEligible = () => {
+      // The append's last guard asks this after its reads. Record a provisional
+      // answer so the cancellation it causes stays retryable: the validation the
+      // entry awaits may still prove its read stale and release the suppression.
+      const entry = suppression();
+      if (!entry) return true;
+      if (!entry.confirmed) provisionalSuppressionAtGuard = true;
+      return false;
+    };
+    const suppressed = suppressedOutcome();
+    if (suppressed) return suppressed;
     // A permanently unresolvable recipient settles its receipt terminal here
     // instead of answering the retryable pending outcome forever: the saved
     // annotation and its copyable reference stay listed exactly as before,
@@ -1545,7 +1568,8 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       return { state: "pending", reason: "owner-unavailable" };
     }
     if (!preparation) return { state: "pending", reason: "owner-unavailable" };
-    if (!documentStillEligible()) return { state: "cancelled" };
+    const suppressedAfterPreparation = suppressedOutcome();
+    if (suppressedAfterPreparation) return suppressedAfterPreparation;
     let result: AppendAnnotationResult;
     try {
       result = await this.#options.drafts.appendAnnotation({
@@ -1582,6 +1606,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // The append committed; wake matching readers (and peers) after commit.
       this.#publishDocumentWake(annotationDocumentKey(key));
       return { state: "applied", draftRevision: result.draftRevision };
+    }
+    // The append's own last guard can be the first place an overlapping read's
+    // provisional suppression is observed. The durable operation was not
+    // cancelled, so answer the retryable pending outcome and let a later
+    // storage success finish the handoff once the suppression resolves.
+    if (result.state === "cancelled" && provisionalSuppressionAtGuard) {
+      return { state: "pending", reason: "owner-unavailable" };
     }
     return result;
   }

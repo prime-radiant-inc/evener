@@ -1193,6 +1193,15 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       ) {
         recoveryOwnsLocalDraftRef.current = false;
         setActiveRecoveryId(null);
+        // The release moves this editor onto the ordinary draft row, but work
+        // typed after the resend's final guard arrived on the recovery lineage
+        // and belongs to no ordinary queue entry. Preparation gates only on
+        // queued ordinary edits, so without this the next handoff publishes
+        // the older ordinary row over that text. Keep the newer value as
+        // ordinary work: preparation refuses until the drain rebases it onto
+        // the row's current authority, and a storage fault leaves it queued
+        // instead of restoring the stale row.
+        if (!sameSubmittedFullValue(submitted)) acceptEdit(currentValue());
       }
       return { cleared: false, draftUnchanged: false, persistence: "committed" };
     }
