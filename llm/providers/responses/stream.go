@@ -235,7 +235,8 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 // responsesInbandError decodes a Responses-API failure event delivered on an
 // HTTP 200 stream into a typed error, or returns nil when the event carries no
 // error payload. The flat "error" event holds the error fields at the top
-// level; "response.failed" nests them under response.error. The error's
+// level; "response.failed" nests them under response.error; and gateways such
+// as lunaroute wrap an upstream rejection as {"error": {...}}. The error's
 // provider starts as "openai" (matching the non-streaming classifier's
 // convention for this wire shape) and decodeStream rewrites it to the
 // instance's own name before it reaches the caller.
@@ -243,6 +244,7 @@ func responsesInbandError(data []byte) error {
 	var event struct {
 		Message  string          `json:"message"`
 		Code     json.RawMessage `json:"code"`
+		Error    json.RawMessage `json:"error"`
 		Response struct {
 			Error *openaichat.InbandError `json:"error"`
 		} `json:"response"`
@@ -251,6 +253,16 @@ func responsesInbandError(data []byte) error {
 		return nil //nolint:nilerr // an undecodable event keeps the raw-passthrough path
 	}
 	inband := event.Response.Error
+	if inband == nil && len(event.Error) > 0 {
+		// Only an object that actually names a failure counts; a provider that
+		// sends "error": "some string" has told us nothing the typed error can
+		// carry, and must not turn a healthy frame into a failure.
+		var nested openaichat.InbandError
+		if err := json.Unmarshal(event.Error, &nested); err == nil &&
+			(nested.Message != "" || nested.Type != "" || len(nested.Code) > 0) {
+			inband = &nested
+		}
+	}
 	if inband == nil {
 		if strings.TrimSpace(event.Message) == "" && len(event.Code) == 0 {
 			return nil
@@ -368,6 +380,13 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				// Completions fallback in this transport, so this is permanent
 				// by construction — the retry chain short-circuits on it and
 				// the caller routes to its next model.
+				//
+				// An error envelope never reaches here: OnEvent turns a frame
+				// that names a failure into a FatalStreamError, which the
+				// runner reports before consulting this hook. A gateway's
+				// wrapped upstream rejection is a transient provider failure,
+				// and calling it a protocol mismatch would skip the retry
+				// chain the failure earns.
 				return llm.NewUnsupportedEndpointError(res.Instance, "responses stream closed with no events", nil)
 			default:
 				// The endpoint served real Responses events and then closed
@@ -516,6 +535,23 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 			default:
+				// A failure frame can miss the switch above two ways: a gateway
+				// can wrap an upstream rejection as {"error": {...}} with no
+				// event type at all (lunaroute does), and a flat envelope's own
+				// "type" ("server_error") displaces the SSE event name, so an
+				// "error" frame lands here as an unrecognized type. Either one
+				// is the provider reporting a failure, not silence about what
+				// the endpoint serves — and without this it falls through to the
+				// empty-stream sentinel, which calls a transient upstream
+				// failure a permanent protocol mismatch and skips the retry
+				// chain.
+				_, carriesError := payload["error"]
+				failureFrame := ev.Event == "error" || typ == "error" || carriesError
+				if failureFrame {
+					if inband := responsesInbandError(ev.Data); inband != nil {
+						return &transport.FatalStreamError{Err: llm.RewriteErrorProvider(inband, res.Instance)}
+					}
+				}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 			}
 			return nil
