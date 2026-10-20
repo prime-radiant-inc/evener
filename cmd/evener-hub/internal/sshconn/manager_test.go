@@ -1832,11 +1832,7 @@ func TestEnsureTerminalFailureReleasesHostOwnership(t *testing.T) {
 			starts++
 			refuse := mismatch
 			mu.Unlock()
-			protocol := appwire.ProtocolVersion
-			if refuse {
-				protocol = "evener-appwire-v4"
-			}
-			return newFakeBridge(protocol).stdio, nil
+			return protocolMismatchBridge(refuse), nil
 		},
 	}
 	events := make(chan Event, 128)
@@ -2111,11 +2107,7 @@ func TestTerminalFailureStopsTheReconnectLoop(t *testing.T) {
 			mu.Lock()
 			refuse := mismatch
 			mu.Unlock()
-			protocol := appwire.ProtocolVersion
-			if refuse {
-				protocol = "evener-appwire-v4"
-			}
-			return newFakeBridge(protocol).stdio, nil
+			return protocolMismatchBridge(refuse), nil
 		},
 	}
 	events := make(chan Event, 256)
@@ -2208,11 +2200,7 @@ func TestReplacementAttachDoesNotLeakTheOlderSupervisor(t *testing.T) {
 			mu.Lock()
 			refuse := mismatch
 			mu.Unlock()
-			protocol := appwire.ProtocolVersion
-			if refuse {
-				protocol = "evener-appwire-v4"
-			}
-			return newFakeBridge(protocol).stdio, nil
+			return protocolMismatchBridge(refuse), nil
 		},
 	}
 	events := make(chan Event, 256)
@@ -2347,11 +2335,7 @@ func TestSupersededSupervisorDoesNotEmitDisconnectedAfterReplacement(t *testing.
 					mu.Lock()
 					refuse := mismatch
 					mu.Unlock()
-					protocol := appwire.ProtocolVersion
-					if refuse {
-						protocol = "evener-appwire-v4"
-					}
-					return newFakeBridge(protocol).stdio, nil
+					return protocolMismatchBridge(refuse), nil
 				},
 			}
 

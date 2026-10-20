@@ -1933,7 +1933,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// deciding. This probe runs only for a deploy with no answering hub, so the
 	// common attach path pays nothing extra.
 	hubPresent := runningKnown
-	if !hubPresent && (liveIncompatible || m.deployRequired(host.Name, facts, expected)) {
+	if !hubPresent && (liveIncompatible || m.deployRequired(facts)) {
 		// Bound the hub-presence probe like every other phase: hubIsPresent issues
 		// real ssh commands (systemctl list-units / launchctl list, then the port
 		// probe — lsof, ss, or the host's TCP tables) and otherwise inherits the
@@ -1951,11 +1951,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		hubPresent = present
 	}
 
-	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown, hubPresent)
-	if liveIncompatible {
-		deploy = true
-		restart = hubPresent || m.pendingRestart(host.Name).command != ""
-	}
+	deploy, restart := m.ensureDecision(host.Name, facts, liveIncompatible, hubPresent)
 	if !deploy && preflight.launchErr != nil {
 		return nil, preflight.launchErr
 	}
@@ -2214,15 +2210,15 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 
 // deployRequired reports whether a stopped installation lacks its startup
 // contract. A running hub is judged by initialize before this gate is used.
-func (m *Manager) deployRequired(_ string, facts Preflight, _ string) bool {
+func (m *Manager) deployRequired(facts Preflight) bool {
 	return m.canDeploy() && (!facts.LaunchCheckKnown || facts.Protocol != appwire.ProtocolVersion ||
 		!slices.Contains(facts.LaunchFlags, requiredLaunchFlag))
 }
 
 // ensureDecision preserves recorded effects and repairs unusable installations.
 // Build labels alone never request deployment or process replacement.
-func (m *Manager) ensureDecision(name string, facts Preflight, expected string, _ hubIdentity, _, hubPresent bool) (deploy, restart bool) {
-	deploy = m.deployRequired(name, facts, expected)
+func (m *Manager) ensureDecision(name string, facts Preflight, liveIncompatible, hubPresent bool) (deploy, restart bool) {
+	deploy = liveIncompatible || m.deployRequired(facts)
 	restart = (deploy && hubPresent) || m.pendingRestart(name).command != ""
 	return deploy, restart
 }

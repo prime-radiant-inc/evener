@@ -489,7 +489,7 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 	if m.canDeploy() {
 		t.Fatal("DeployDisabled left canDeploy true, so the installer fallback could still write to a host")
 	}
-	if m.deployRequired(host.Name, facts, "controller-sha") {
+	if m.deployRequired(facts) {
 		t.Fatal("DeployDisabled still required a deploy this controller has turned off")
 	}
 

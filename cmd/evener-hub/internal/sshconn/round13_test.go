@@ -55,13 +55,13 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	testRestartRecorder(t, m)
 
 	// An incompatible protocol still requires deployment, regardless of build labels.
-	if !m.deployRequired(host.Name, Preflight{
+	if !m.deployRequired(Preflight{
 		Host:             host.Name,
 		LaunchCheckKnown: true,
 		Protocol:         "evener-appwire-v5",
 		Version:          dirty,
 		LaunchFlags:      []string{requiredLaunchFlag},
-	}, dirty) {
+	}) {
 		t.Fatal("an incompatible protocol did not require deployment")
 	}
 

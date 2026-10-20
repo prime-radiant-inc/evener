@@ -148,6 +148,14 @@ func newFakeBridge(initProtocol string) *fakeBridge {
 	return b
 }
 
+func protocolMismatchBridge(mismatch bool) Stdio {
+	protocol := appwire.ProtocolVersion
+	if mismatch {
+		protocol = "evener-appwire-v4"
+	}
+	return newFakeBridge(protocol).stdio
+}
+
 // newSilentBridge models a hub whose AppWire handshake never answers: it drains
 // the framed request stream and never writes a response, so a client's
 // Initialize can only end at its own deadline.

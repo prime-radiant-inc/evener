@@ -1624,7 +1624,7 @@ func TestDevControllerPreservesCompatibleBuildButExplicitDeployWorks(t *testing.
 
 	// No deploy path: there is nothing to install, so no deploy is decided.
 	none := newTestManager(t, testRegistry(t, host), &fakeRunner{}, Options{controllerVersionOverride: "dev"})
-	if none.deployRequired(host.Name, facts, "dev") {
+	if none.deployRequired(facts) {
 		t.Fatal("a dev controller with no deploy path required a deploy it cannot perform")
 	}
 
@@ -1654,7 +1654,7 @@ func TestDevControllerPreservesCompatibleBuildButExplicitDeployWorks(t *testing.
 			return os.WriteFile(out, []byte("dev-build"), 0o755)
 		},
 	})
-	if m.deployRequired(host.Name, facts, "dev") {
+	if m.deployRequired(facts) {
 		t.Fatal("a compatible startup contract required deployment")
 	}
 	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {

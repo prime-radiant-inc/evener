@@ -157,11 +157,11 @@ func TestRound12BuildLabelsDoNotRequireDeployment(t *testing.T) {
 	m := newTestManager(t, testRegistry(t, host), &fakeRunner{}, Options{BuildBinary: writeStageBinary})
 	for _, version := range []string{"abc1234-dirty", "dev", "abc1234", "other"} {
 		facts := Preflight{LaunchCheckKnown: true, Protocol: appwire.ProtocolVersion, Version: version, LaunchFlags: []string{requiredLaunchFlag}}
-		if m.deployRequired(host.Name, facts, "controller") {
+		if m.deployRequired(facts) {
 			t.Fatalf("build %q required deployment", version)
 		}
 		facts.LaunchFlags = nil
-		if !m.deployRequired(host.Name, facts, "controller") {
+		if !m.deployRequired(facts) {
 			t.Fatal("missing startup capability did not require repair")
 		}
 	}

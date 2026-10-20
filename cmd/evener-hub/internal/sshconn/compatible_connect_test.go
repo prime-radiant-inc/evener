@@ -265,5 +265,5 @@ func initializeReplyBridge(reply func(appwire.Request) appwire.Message) *fakeStd
 }
 
 func launchContract(version string) []byte {
-	return []byte(fmt.Sprintf(`{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, version))
+	return []byte(launchCheckJSON(version))
 }
