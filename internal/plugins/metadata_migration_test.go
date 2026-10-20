@@ -225,6 +225,13 @@ func TestManagedMetadataMigrationResolvesPointerThroughASymlinkedRoot(t *testing
 	if err := os.WriteFile(pointer, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	linkPointer := filepath.Join(linkedRoot, "cache", "acme", "widget", "ccc", ".git")
+	if err := os.MkdirAll(filepath.Dir(linkPointer), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(metadata, linkPointer); err != nil {
+		t.Fatal(err)
+	}
 	m.ensureManagedContentMigrated(context.Background())
 	if m.managedContentClean() {
 		t.Fatal("a resolved-spelling pointer into mixed managed content was called clean")
@@ -232,11 +239,41 @@ func TestManagedMetadataMigrationResolvesPointerThroughASymlinkedRoot(t *testing
 	if _, err := os.Lstat(pointer); err != nil {
 		t.Fatalf("resolved-spelling pointer was moved: %v", err)
 	}
+	if _, err := os.Lstat(linkPointer); err != nil {
+		t.Fatalf("resolved-spelling .git symlink was moved: %v", err)
+	}
 	if err := os.Remove(pointer); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(linkPointer); err != nil {
 		t.Fatal(err)
 	}
 	m.ensureManagedContentMigrated(context.Background())
 	if !m.managedContentClean() {
 		t.Fatal("retry after removing the resolved-spelling pointer did not complete")
+	}
+}
+
+func TestManagedMetadataMigrationPreservesGitNamespaceDirectories(t *testing.T) {
+	m := NewManager(t.TempDir())
+	marketplace := filepath.Join(m.cacheDir(), ".git", "acme", "rev")
+	plugin := filepath.Join(m.cacheDir(), "acme", ".git", "rev")
+	writeTestFile(t, filepath.Join(marketplace, "README.md"), "marketplace content")
+	writeTestFile(t, filepath.Join(plugin, "README.md"), "plugin content")
+
+	m.ensureManagedContentMigrated(context.Background())
+	if m.managedContentClean() {
+		t.Fatal("a store with namespace directories named .git was called clean")
+	}
+	for path, want := range map[string]string{
+		filepath.Join(marketplace, "README.md"): "marketplace content",
+		filepath.Join(plugin, "README.md"):      "plugin content",
+	} {
+		if got, err := os.ReadFile(path); err != nil || string(got) != want {
+			t.Fatalf("namespace content %s = %q, %v", path, got, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(m.Root, managedGitArchiveDirName, "cache", ".git")); !os.IsNotExist(err) {
+		t.Fatalf("a cache namespace directory was archived: %v", err)
 	}
 }

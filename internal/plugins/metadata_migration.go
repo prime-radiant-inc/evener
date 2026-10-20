@@ -40,6 +40,10 @@ func (m *Manager) migrateManagedGitMetadata() []string {
 			if isUnderMoved(entry, moved) {
 				continue
 			}
+			if preservesManagedNamespace(root, entry) {
+				problems = append(problems, "left a namespace directory named .git in place at "+rootRelative(root.path, entry))
+				continue
+			}
 			if m.unsafeGitEntry(entry) {
 				problems = append(problems, "left an ancestor-pointer .git entry in place at "+rootRelative(root.path, entry))
 				continue
@@ -57,6 +61,22 @@ func (m *Manager) migrateManagedGitMetadata() []string {
 		}
 	}
 	return problems
+}
+
+// preservesManagedNamespace reports whether entry names a cache marketplace or
+// plugin directory rather than Git metadata inside a revision. A marketplace
+// or plugin name is a valid path component, so `.git` can be a real namespace
+// there; archiving it would remove published content a registry entry and a
+// saved session still name. Such a store stays unverified instead.
+func preservesManagedNamespace(root managedRoot, entry string) bool {
+	if root.name != cacheDirName {
+		return false
+	}
+	rel, err := filepath.Rel(root.path, entry)
+	if err != nil {
+		return true
+	}
+	return len(strings.Split(rel, string(filepath.Separator))) <= 2
 }
 
 // collectGitEntries returns every entry named .git under root without following

@@ -73,6 +73,11 @@ Move rule (bounded metadata only):
 - An entry named `.git` (any case), directory or file or symlink, moves whole
   to `<root>/managed-git-archive/<cache|bundled>/<relative-path>`, with a
   numeric suffix if that slot is taken.
+- A `.git` entry in a cache marketplace or plugin **namespace** position is
+  preserved and the store stays unverified: a marketplace or plugin may
+  legitimately be named `.git`, and archiving it would remove published
+  content a registry entry and saved session still name. Only revision
+  payloads and known legacy scratch trees yield metadata.
 - A `.git` symlink moves the link itself when its target is outside the
   managed roots or is itself Git metadata. A link whose target lies inside a
   managed root without a `.git` component is left in place and the store stays
