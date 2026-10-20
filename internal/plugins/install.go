@@ -97,7 +97,13 @@ func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, r
 			return cp.Source.Path, "", false, nil
 		}
 	}
-	staging := m.pluginCacheDir(marketplace, plugin, ".staging")
+	// Preparation happens under the store's private publishing area, never in
+	// the content root: a fetch's Git directory must not exist where a session
+	// can be granted it, even for the moment before publication.
+	staging := filepath.Join(m.publishingDir(marketplace, plugin), ".staging")
+	if err := installMkdirAll(filepath.Dir(staging), 0o700); err != nil {
+		return "", "", false, err
+	}
 	_ = installRemoveAll(staging)
 	sha, err = installFetchSource(ctx, cp.Source, m.catalogRoot(ref), staging)
 	if err != nil {
@@ -110,6 +116,10 @@ func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, r
 // commitStaged publishes an already validated staging dir. It never replaces a
 // published revision, even when the source revisits an older SHA.
 func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string, error) {
+	if err := auditPluginContent(staging); err != nil {
+		_ = installRemoveAll(staging)
+		return "", err
+	}
 	parent := filepath.Join(m.cacheDir(), marketplace, plugin)
 	if err := installMkdirAll(parent, 0o755); err != nil {
 		_ = installRemoveAll(staging)

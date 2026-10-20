@@ -148,6 +148,17 @@ type ResolvedPolicy struct {
 	// exposes that content and nothing the credential denylist protects.
 	UnmaskedRoots []string
 
+	// ManagedContentRoots are the installed-plugin content roots among
+	// UnmaskedRoots. ManagedContentClean says the store completed a full audit
+	// with no Git metadata there, so both backends grant these roots without
+	// walking them for .git. User skills are never in this set.
+	ManagedContentRoots []string
+	ManagedContentClean bool
+	// managedContentRootsResolved holds each managed root's resolved spelling,
+	// so a symlinked config or store directory still matches the path a backend
+	// actually binds.
+	managedContentRootsResolved []string
+
 	// carveOutAt records where each of the UnmaskedRoots that existed at
 	// resolution resolved to (CarveOutResolvesTo holds it to that location).
 	carveOutAt map[string]string
@@ -467,17 +478,19 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	worktree := layout.WorktreeRoot
 
 	rp := ResolvedPolicy{
-		Mode:          policy.Mode,
-		WriteBlocked:  policy.WriteBlocked,
-		Network:       netOn,
-		Backend:       backend,
-		CacheStrategy: cacheStrategyFor(policy.Mode, backend, host),
-		CacheRoots:    cacheRootsFor(policy.Mode, host, layout.WorktreeRoot),
-		SessionTmp:    true,
-		MaskedPaths:   masked,
-		Git:           layout,
-		resolveInputs: policy,
-		resolveHost:   host,
+		Mode:                policy.Mode,
+		WriteBlocked:        policy.WriteBlocked,
+		Network:             netOn,
+		Backend:             backend,
+		CacheStrategy:       cacheStrategyFor(policy.Mode, backend, host),
+		CacheRoots:          cacheRootsFor(policy.Mode, host, layout.WorktreeRoot),
+		SessionTmp:          true,
+		MaskedPaths:         masked,
+		Git:                 layout,
+		ManagedContentRoots: host.EvenerManagedContentRoots,
+		ManagedContentClean: host.EvenerManagedContentClean,
+		resolveInputs:       policy,
+		resolveHost:         host,
 	}
 	rp.FileTool, rp.Spawned = scopesFor(policy, host, layout, worktree)
 	rp.configMasks = configMasks
@@ -493,6 +506,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 	}
 	rp.UnmaskedRoots, rp.carveOutAt = unmaskedContentRoots(host.EvenerContentRoots, masked, configMasks,
 		slices.Concat(rp.FileTool.WriteRoots, rp.Spawned.WriteRoots), host.Home, worktree, host.OS == "darwin")
+	rp.managedContentRootsResolved = resolveRootSpellings(rp.ManagedContentRoots)
 
 	// Fail-closed invariant: never grant a root that is at or under a masked path.
 	// Read roots are filtered against the whole mask, carve-outs included: a
@@ -517,6 +531,40 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 
 	rp.ToolchainBinDir = toolchainBinDir(host, rp, worktree)
 	return rp, nil
+}
+
+// ManagedWalkExempt reports whether path is exactly one of the managed content
+// roots, in either its lexical or resolved spelling, whose completed audit
+// allows the per-spawn .git walk to be skipped. Identity is compared rather
+// than a prefix so a user-skills root whose target happens to sit inside a
+// managed subtree keeps its own walk.
+func (rp ResolvedPolicy) ManagedWalkExempt(path string) bool {
+	if !rp.ManagedContentClean {
+		return false
+	}
+	path = filepath.Clean(path)
+	for _, root := range slices.Concat(rp.ManagedContentRoots, rp.managedContentRootsResolved) {
+		if root != "" && filepath.Clean(root) == path {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveRootSpellings returns each existing root's symlink-resolved spelling,
+// skipping roots that cannot be resolved. It is what lets a backend that binds
+// the real path match the managed root it came from.
+func resolveRootSpellings(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+			out = append(out, resolved)
+		}
+	}
+	return out
 }
 
 // toolchainBinDir decides whether the probed developer-toolchain bin directory

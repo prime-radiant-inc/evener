@@ -401,10 +401,17 @@ registries and the marketplace clones), which records marketplace URLs that may
 carry a token. Inside the carve-out any `.git` stays masked too (in any letter
 case): a plugin installed by cloning keeps its remote URL, which may carry a
 token, in its installed copy's `.git/config`, and skills and hooks never need
-it. Seatbelt denies `.git` there by pattern; bubblewrap masks the `.git` entries it finds, at any depth, at each spawn,
-so a copy cloned during a running command is masked from the next spawn on, and
-a carve-out it cannot inspect fully at spawn (over 50,000 entries, or with a
-directory it cannot list) stays masked for spawned processes. The
+it. For a managed plugin store whose completed audit recorded no Git metadata,
+both backends grant `cache` and `bundled` without walking them at spawn:
+publication is the authority for those roots, and the file tools still refuse
+any `.git` component there by name. Until that audit completes, or after an
+unsupported writer or external edit leaves the store unverified, the old walk
+runs unchanged. Seatbelt keeps its path-free `.git` name rule either way. The
+user skills directory is always walked. Bubblewrap masks the `.git` entries it
+finds, at any depth, at each spawn, so a copy cloned during a running command is
+masked from the next spawn on, and a carve-out it cannot inspect fully at spawn
+(over 50,000 entries, or with a directory it cannot list) stays masked for
+spawned processes. The
 carve-out never writes and never touches the pseudo-filesystem floor. It is cut
 only from Evener's own config mask, and a directory is left masked when it
 contains a masked path or sits under another one (so your own denylist entries,

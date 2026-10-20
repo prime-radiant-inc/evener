@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 var (
@@ -125,7 +128,16 @@ func fetchPluginSource(ctx context.Context, src Source, marketplaceRoot, destDir
 		if err := sourceGitClone(ctx, gitRemoteURL(src), destDir, src.Ref, src.Sha); err != nil {
 			return "", err
 		}
-		return sourceGitHeadSHA(ctx, destDir)
+		sha, err := sourceGitHeadSHA(ctx, destDir)
+		if err != nil {
+			return "", err
+		}
+		// The clone lives in private staging. Its work tree is what gets
+		// published, so the Git directory is removed once the commit is known.
+		if err := removeGitMetadata(destDir); err != nil {
+			return "", err
+		}
+		return sha, nil
 	case src.Kind == SourceGitSubdir:
 		clone := destDir + ".clone"
 		defer func() { _ = sourceRemoveAll(clone) }()
@@ -143,6 +155,8 @@ func fetchPluginSource(ctx context.Context, src Source, marketplaceRoot, destDir
 
 // copyTree recursively copies src to dst (files, dirs, and symlink targets as
 // regular files), creating directories as needed and overwriting existing files.
+// Every entry named .git is skipped, and a symlink reaching Git metadata is
+// refused: those bytes must never enter a published plugin tree (#4768).
 func copyTree(src, dst string) error {
 	info, err := sourceStat(src)
 	if err != nil {
@@ -154,6 +168,17 @@ func copyTree(src, dst string) error {
 	return sourceWalk(src, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		if path != src && isGitName(fi.Name()) {
+			if fi.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			if err := refuseGitSymlink(src, path); err != nil {
+				return err
+			}
 		}
 		rel, err := sourceRel(src, path)
 		if err != nil {
@@ -181,4 +206,61 @@ func copyTree(src, dst string) error {
 		}
 		return err
 	})
+}
+
+// refuseGitSymlink refuses a source symlink whose lexical or resolved target
+// names a .git component. Ordinary links keep copyTree's existing dereference
+// behavior; only links into Git metadata are refused.
+func refuseGitSymlink(src, path string) error {
+	target, err := os.Readlink(path)
+	if err != nil {
+		return err
+	}
+	lexical := target
+	if !filepath.IsAbs(lexical) {
+		lexical = filepath.Join(filepath.Dir(path), lexical)
+	}
+	if hasGitComponent(lexical) {
+		return gitSymlinkError(src, path)
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil && hasGitComponent(resolved) {
+		return gitSymlinkError(src, path)
+	}
+	return nil
+}
+
+func gitSymlinkError(src, path string) error {
+	rel, err := filepath.Rel(src, path)
+	if err != nil {
+		rel = path
+	}
+	return fmt.Errorf("plugin source link %q reaches Git metadata", rel)
+}
+
+// hasGitComponent reports whether any path component names .git, in any case.
+func hasGitComponent(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		if isGitName(part) {
+			return true
+		}
+	}
+	return false
+}
+
+// removeGitMetadata removes a work tree's .git entry without following a
+// symlink. A link is unlinked, a file removed, and a directory removed whole;
+// the target of an external link is never touched.
+func removeGitMetadata(dir string) error {
+	path := filepath.Join(dir, ".git")
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return os.RemoveAll(path)
+	}
+	return os.Remove(path)
 }

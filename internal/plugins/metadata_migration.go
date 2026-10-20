@@ -1,0 +1,202 @@
+package plugins
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+// migrationBundledLockWait bounds the migration's wait for the bundled lock.
+// Failing it is a retryable recovery state, not a reason to block a plugin
+// operation: the old scan stays in force.
+const migrationBundledLockWait = 2 * time.Second
+
+var migrationMove = moveNoReplace
+
+// maxGitPointerBytes bounds the .git pointer file the migration reads. A
+// larger file is not a pointer this migration can classify, so it is left in
+// place and the store stays unverified rather than reading it whole.
+const maxGitPointerBytes = 64 << 10
+
+// migrateManagedGitMetadata moves only entries named .git out of the managed
+// content roots. It never moves a pointer's target, an ordinary symlink
+// target, or any other content path. A .git file whose gitdir target lies
+// inside a managed root without a .git component is left in place and
+// reported, which keeps the store unverified and the old scan active.
+func (m *Manager) migrateManagedGitMetadata() []string {
+	var problems []string
+	for _, root := range m.managedRoots() {
+		entries, readProblems := collectGitEntries(root.path)
+		problems = append(problems, readProblems...)
+		sort.Slice(entries, func(i, j int) bool {
+			return pathDepth(entries[i]) > pathDepth(entries[j])
+		})
+		var moved []string
+		for _, entry := range entries {
+			if isUnderMoved(entry, moved) {
+				continue
+			}
+			if m.unsafeGitEntry(entry) {
+				problems = append(problems, "left an ancestor-pointer .git entry in place at "+rootRelative(root.path, entry))
+				continue
+			}
+			rel, err := filepath.Rel(root.path, entry)
+			if err != nil {
+				problems = append(problems, "could not locate a .git entry in "+root.name)
+				continue
+			}
+			if err := migrationMove(entry, m.managedGitArchiveDir(root.name, rel)); err != nil {
+				problems = append(problems, "moving "+rootRelative(root.path, entry)+": "+err.Error())
+				continue
+			}
+			moved = append(moved, entry)
+		}
+	}
+	return problems
+}
+
+// collectGitEntries returns every entry named .git under root without following
+// symlinks or descending into a .git entry. Read failures are reported, not
+// ignored: a tree whose metadata cannot be inventoried is not clean.
+func collectGitEntries(root string) ([]string, []string) {
+	var entries, problems []string
+	var walk func(dir string)
+	walk = func(dir string) {
+		items, err := os.ReadDir(dir)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				problems = append(problems, fmt.Sprintf("reading a managed content directory: %v", err))
+			}
+			return
+		}
+		for _, item := range items {
+			path := filepath.Join(dir, item.Name())
+			if isGitName(item.Name()) {
+				entries = append(entries, path)
+				continue
+			}
+			// Info rather than IsDir: a filesystem that reports DT_UNKNOWN makes
+			// IsDir false for a real directory, which would hide a nested .git
+			// and let a store be called clean without inventorying it.
+			info, err := item.Info()
+			if err != nil {
+				problems = append(problems, fmt.Sprintf("reading a managed content entry: %v", err))
+				continue
+			}
+			if info.IsDir() {
+				walk(path)
+			}
+		}
+	}
+	walk(root)
+	return entries, problems
+}
+
+// unsafeGitEntry reports whether a .git file or symlink names a target inside
+// a managed content root at a path that is not itself Git metadata. Such a
+// target may be an ancestor or mixed-content directory, so the entry is left
+// in place and the store stays unverified rather than moving content.
+func (m *Manager) unsafeGitEntry(entry string) bool {
+	info, err := os.Lstat(entry)
+	if err != nil {
+		return true
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(entry)
+		if err != nil {
+			return true
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(entry), target)
+		}
+		if m.targetIsMixedManagedContent(filepath.Clean(target)) {
+			return true
+		}
+		resolved, err := filepath.EvalSymlinks(entry)
+		return err == nil && m.targetIsMixedManagedContent(resolved)
+	}
+	if !info.Mode().IsRegular() {
+		return false
+	}
+	if info.Size() > maxGitPointerBytes {
+		return true
+	}
+	file, err := os.Open(entry)
+	if err != nil {
+		return true
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, maxGitPointerBytes+1))
+	if err != nil || len(data) > maxGitPointerBytes {
+		return true
+	}
+	line, _, _ := strings.Cut(string(data), "\n")
+	const prefix = "gitdir:"
+	if !strings.HasPrefix(line, prefix) {
+		return false
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	if target == "" {
+		return false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(entry), target)
+	}
+	target = filepath.Clean(target)
+	return m.targetIsMixedManagedContent(target)
+}
+
+// targetIsMixedManagedContent reports whether target lies under any managed
+// content root at a path that is not itself inside a .git entry.
+func (m *Manager) targetIsMixedManagedContent(target string) bool {
+	for _, root := range m.managedRoots() {
+		rel, err := filepath.Rel(root.path, target)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		return !hasGitComponent(rel)
+	}
+	return false
+}
+
+func pathDepth(path string) int {
+	return strings.Count(filepath.Clean(path), string(filepath.Separator))
+}
+
+func isUnderMoved(path string, moved []string) bool {
+	for _, parent := range moved {
+		if _, under := pathUnder(parent, path); under && path != parent {
+			return true
+		}
+		if path == parent {
+			return true
+		}
+	}
+	return false
+}
+
+func rootRelative(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return filepath.Base(path)
+	}
+	return rel
+}
+
+// auditManagedContentRoots re-walks both entire roots after the move. Clean
+// means no .git name and no read failure remains.
+func (m *Manager) auditManagedContentRoots() (bool, []string) {
+	var problems []string
+	for _, root := range m.managedRoots() {
+		entries, readProblems := collectGitEntries(root.path)
+		problems = append(problems, readProblems...)
+		for _, entry := range entries {
+			problems = append(problems, "Git metadata remains at "+rootRelative(root.path, entry))
+		}
+	}
+	return len(problems) == 0, problems
+}
