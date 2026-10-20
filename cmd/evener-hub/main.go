@@ -894,9 +894,8 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// marketplace, then upgrades every installed, git-backed plugin with
 	// autoUpgrade enabled. Runs once immediately and then on
 	// cfg.PluginAutoUpgradeInterval; gated by cfg.PluginAutoUpgrade (on by
-	// default — see config.go). Never deletes; superseded dirs are reclaimed
-	// separately by `evener plugin gc` (also run once here, before any session
-	// exists, per §12).
+	// default — see config.go). Published revisions remain available after
+	// upgrade and after startup's separate marketplace-clone GC below.
 	startHubPluginMaintenance(ctx, cfg, web, startBackground)
 	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
 	// walks every configured remote source's ListThreads, a synchronous

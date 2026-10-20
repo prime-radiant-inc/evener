@@ -55,7 +55,7 @@ const (
 	checkOrphanScanSkipped            = "orphan_scan_skipped"
 	checkOrphanScanRegistryUnreadable = "orphan_scan_registry_unreadable"
 	checkCacheUnreadable              = "cache_unreadable"
-	checkOrphanCacheDir               = "orphan_cache_dir"
+	checkRetainedCacheRevision        = "retained_cache_revision"
 	checkMarketplacePendingRename     = "marketplace_pending_rename"
 	checkMarketplaceUnfetched         = "marketplace_unfetched"
 	checkMarketplaceMissing           = "marketplace_missing"
@@ -247,18 +247,16 @@ func usedInPlace(src Source, marketplace MarketplaceRef) bool {
 	return sourceCannotUpgrade(src) || (src.Rel && marketplace.Source.Kind == SourceDirectory)
 }
 
-// doctorOrphanCacheDirs walks cache/<marketplace>/<plugin>/<sha> and flags any
-// sha-dir that no registry entry's InstallPath points at — left behind by a
-// crash mid-install/upgrade, or a superseded dir awaiting the gc sweep (§12).
+// doctorOrphanCacheDirs walks cache/<marketplace>/<plugin>/<revision> and
+// reports published directories not named by the registry as retained. They
+// can still belong to a stopped or cold session in any state root.
 //
 // Alone among Doctor's checks this one draws its conclusion from two pieces of
 // store state, so a writer caught between them invents it: a materialize
-// creates the sha-dir before it records the entry, and gc drops the entry
-// before it removes the dir, and either window makes a live plugin look
-// orphaned. Reading the registry and the cache under the store lock — the lock
-// both of those writers hold — is what makes "has no registry entry" true
-// rather than merely momentary. The registry Doctor's other checks read is the
-// one from before the lock, so this reads its own.
+// creates the revision dir before it records the entry. Reading the registry
+// and cache under the store lock keeps that comparison coherent. The registry
+// Doctor's other checks read is the one from before the lock, so this reads
+// its own.
 func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 	// A store with no cache directory has no orphans to report and no writer
 	// to wait for, so it is answered without going near the lock at all.
@@ -324,9 +322,8 @@ func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 					continue
 				}
 				findings = append(findings, DoctorFinding{
-					Level: LevelWarn, Category: catRegistry, Check: checkOrphanCacheDir,
-					Message:     fmt.Sprintf("orphaned cache directory %s has no registry entry", shaPath),
-					Remediation: "run `evener plugin gc` to reclaim disk space",
+					Level: LevelOK, Category: catRegistry, Check: checkRetainedCacheRevision,
+					Message: fmt.Sprintf("retained plugin revision %s is not the current registry selection; sessions may still use it", shaPath),
 				})
 			}
 		}

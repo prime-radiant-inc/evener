@@ -213,10 +213,10 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 }
 
 // Upgrade re-resolves plugin from its marketplace. If the sha changed it
-// materializes a NEW sha-dir, validates, and repoints the registry — never
-// deleting the old dir (the gc sweep reclaims it) so live sessions keep working.
+// validates in staging, publishes a new immutable directory, and repoints the
+// registry. GC retains the prior directory for live and resumable sessions.
 // If the sha is unchanged (or the source is an in-place directory) it is a true
-// no-op: the staging clone is discarded and the live dir is never touched.
+// no-op: the staging clone is discarded and the published dir is never touched.
 //
 // Upgrade always upgrades once called, regardless of the plugin's AutoUpgrade
 // flag: it is the explicit-consent path (`evener plugin upgrade`, UpdateAll).
