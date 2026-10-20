@@ -354,7 +354,7 @@ export function TurnBlock({
         data-turn-status={displayStatus}
       >
         {renderedEntries}
-        {failure && <TurnFailureEndCap error={failure} turn={sourceTurn} sessionRef={sessionRef} />}
+        {failure && <TurnFailureEndCap error={failure} sessionRef={sessionRef} />}
         {showTurnSeparator && <TurnSeparator turn={sourceTurn} />}
       </div>
     </>

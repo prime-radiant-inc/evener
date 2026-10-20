@@ -82,6 +82,14 @@ jobs:
       - name: Build and browser guards
         run: make test-web-browser
 
+      - name: Install native and shared journey dependencies
+        run: |
+          npm ci --prefix mobile-native
+          npm ci --prefix appwire-client/typescript
+
+      - name: Failed-turn continuation in both clients
+        run: go test -tags browserguard ./cmd/evener-hub -run '^TestRetryContinuation' -count=1 -v
+
       - uses: ./.github/actions/go-cache-save
 
       # The skill guard keeps its driver log, screenshots and helper logs under

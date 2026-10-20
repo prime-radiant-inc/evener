@@ -81,6 +81,15 @@ The submit button still says **Send** while the agent is busy; it does not becom
 
 For a queued message, use **Remove from queue** to withdraw it before it runs, **Edit message** to bring it back for revision, or **Steer now** to send it into the current work. These controls appear only when the session supports them and may be disabled during recovery. Confirm that removal succeeded; an error means you must not assume the request was withdrawn. Removing a queued message cannot undo work the agent has already started. If a row says **Delivery uncertain**, let the session recover before submitting a duplicate.
 
+On a failed turn, **Retry** sends a new `continue` message in the same
+conversation in both the browser and native app. The earlier prompt, images,
+transcript and completed work stay in place. Retry leaves your current draft
+and staged images alone, including when delivery is refused. A refused
+continuation stays available through the existing message-recovery controls;
+it does not replace an empty draft. Native keeps Resume and Sign in ahead of
+Retry when those actions are needed. Queued-message and delivery-uncertain
+retries keep their own recovery behavior.
+
 A useful steering message is specific:
 
 ```text
