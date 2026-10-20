@@ -131,6 +131,15 @@ interface RetryReflection {
   // the existing explicit refusal path, which restores a usable Retry.
   recoveryBaseline: ReadonlySet<string>;
   refreshStarted: boolean;
+  // The ref's authoritative-publication counter when this marker's own
+  // refresh started. Only a publication newer than it can settle the marker:
+  // a refresh promise can resolve after its read was discarded for superseded
+  // hydration ownership, and that completion is not state evidence.
+  publishedHydrations: number | undefined;
+  // The marker's own read resolved without publishing (it lost ownership).
+  // The winning read owns the next answer, so reconciliation waits for its
+  // publication instead of starting another read over it.
+  handedOff: boolean;
 }
 
 const retryReflections = new Map<string, RetryReflection>();
@@ -164,6 +173,8 @@ function markRetrySubmitted(ref: string, failedTurnId: string): void {
       recoveryEntries(pendingTurnsStore.getState().recovery, ref).map((r) => r.clientMutationId),
     ),
     refreshStarted: false,
+    publishedHydrations: undefined,
+    handedOff: false,
   });
   publishRetryReflections();
   reconcileRetryReflection(ref);
@@ -172,20 +183,36 @@ function markRetrySubmitted(ref: string, failedTurnId: string): void {
 function waitForRetryReflection(ref: string, marker: RetryReflection): void {
   if (marker.refreshStarted) return;
   marker.refreshStarted = true;
+  // Snapshot the publication count before the read starts. A completion at
+  // this count or below published nothing for this read (it was superseded,
+  // joined an existing read, or never began), so it cannot settle the marker.
+  const publishedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
+  marker.publishedHydrations = publishedHydrations;
   void threadsStore
     .getState()
     .refreshThread(ref)
     .then(() => {
       if (retryReflections.get(ref) !== marker) return;
-      // A successful authoritative read is current-conversation evidence: if
-      // it still names this failure as the tail and no unresolved input or
-      // new recovery stands, the existing eligibility rule may act again.
-      clearRetryReflection(ref);
+      marker.refreshStarted = false;
+      if ((threadsStore.getState().hydrations.get(ref) ?? 0) > publishedHydrations) {
+        // This read published the current-owner state: current-conversation
+        // evidence, so the ordinary eligibility rule may act again.
+        clearRetryReflection(ref);
+        return;
+      }
+      // The promise resolved but its response was discarded for superseded
+      // hydration ownership. Hand the wait to the winning read: its
+      // authoritative publication is what the store subscription below sees.
+      marker.handedOff = true;
     })
     .catch(() => {
       // A failed read proves nothing, so the marker stays; a later
       // notification, reconnect or remount drives another attempt.
+      if (retryReflections.get(ref) !== marker) return;
       marker.refreshStarted = false;
+      // The owner's hydration-retry lifecycle owns the next read after a
+      // transport failure; its publication settles this marker.
+      marker.handedOff = true;
     });
 }
 
@@ -205,6 +232,20 @@ function reconcileRetryReflection(ref: string): void {
     return;
   }
   if (ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref))) return;
+  // A publication newer than this marker's own read is the authoritative
+  // current-owner answer, whichever refresh produced it (including the read
+  // that superseded ours).
+  if (
+    marker.publishedHydrations !== undefined &&
+    (threadsStore.getState().hydrations.get(ref) ?? 0) > marker.publishedHydrations
+  ) {
+    clearRetryReflection(ref);
+    return;
+  }
+  // A handed-off marker waits for the winning read's publication. Starting a
+  // read here would supersede that winner and discard the only answer in
+  // flight; remounting the action explicitly asks again below.
+  if (marker.handedOff) return;
   waitForRetryReflection(ref, marker);
 }
 
@@ -216,6 +257,10 @@ export function useRetryAwaitingReflection(ref: string, turnId: string): boolean
 // remount after a failed reconciliation read gets another authoritative
 // attempt instead of leaving the action permanently inactive.
 export function ensureRetryReflectionResolved(ref: string): void {
+  const marker = retryReflections.get(ref);
+  // A remount is an explicit new probe: past a lost or failed read it asks
+  // the owner again rather than leaving the action inactive.
+  if (marker) marker.handedOff = false;
   reconcileRetryReflection(ref);
 }
 
@@ -281,7 +326,10 @@ pendingTurnsStore.subscribe(() => {
   for (const ref of [...retryReflections.keys()]) reconcileRetryReflection(ref);
 });
 threadsStore.subscribe((state, previous) => {
-  if (state.threads === previous.threads) return;
+  // Publication is two store steps: the model, then the per-ref publication
+  // count. Watch both so a winning read that names the same tail still
+  // settles the marker.
+  if (state.threads === previous.threads && state.hydrations === previous.hydrations) return;
   for (const ref of [...retryReflections.keys()]) reconcileRetryReflection(ref);
 });
 
