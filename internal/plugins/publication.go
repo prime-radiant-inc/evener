@@ -142,11 +142,62 @@ func moveNoReplace(src, dst string) error {
 	candidate := dst
 	for i := 1; ; i++ {
 		if _, err := os.Lstat(candidate); errors.Is(err, fs.ErrNotExist) {
-			return os.Rename(src, candidate)
+			return moveEntry(src, candidate)
 		} else if err != nil {
 			return err
 		}
 		candidate = fmt.Sprintf("%s-%d", dst, i)
+	}
+}
+
+var moveRename = os.Rename
+
+func moveEntry(src, dst string) error {
+	err := moveRename(src, dst)
+	if err == nil || !isCrossDevice(err) {
+		return err
+	}
+	if err := copyEntryExact(src, dst); err != nil {
+		_ = os.RemoveAll(dst)
+		return err
+	}
+	// The archive copy is complete before the content root copy goes away.
+	return os.RemoveAll(src)
+}
+
+// copyEntryExact copies one directory, file, or symlink for a cross-filesystem
+// archive move.
+func copyEntryExact(src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	switch {
+	case info.IsDir():
+		return copyTreeExact(src, dst)
+	case info.Mode()&os.ModeSymlink != 0:
+		link, err := os.Readlink(src)
+		if err != nil {
+			return err
+		}
+		return os.Symlink(link, dst)
+	case info.Mode().IsRegular():
+		in, err := os.Open(src)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = in.Close() }()
+		out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(out, in)
+		if closeErr := out.Close(); err == nil {
+			err = closeErr
+		}
+		return err
+	default:
+		return fmt.Errorf("archivable metadata %s is not a regular file, directory, or symlink", filepath.Base(src))
 	}
 }
 
@@ -174,13 +225,15 @@ func publishStaged(staging, final string, rename func(string, string) error) err
 		return err
 	}
 	if err := copyTreeExact(staging, tmp); err != nil {
-		_ = os.RemoveAll(tmp)
-		_ = os.Remove(marker)
+		if removeErr := os.RemoveAll(tmp); removeErr == nil {
+			_ = os.Remove(marker)
+		}
 		return err
 	}
 	if err := rename(tmp, final); err != nil {
-		_ = os.RemoveAll(tmp)
-		_ = os.Remove(marker)
+		if removeErr := os.RemoveAll(tmp); removeErr == nil {
+			_ = os.Remove(marker)
+		}
 		return err
 	}
 	_ = os.Remove(marker)
@@ -219,8 +272,9 @@ func reclaimPublishScratch(parent string) {
 		if info, err := entry.Info(); err != nil || now.Sub(info.ModTime()) < abandonedPublishScratch {
 			continue
 		}
-		_ = os.RemoveAll(path)
-		_ = os.Remove(marker)
+		if err := os.RemoveAll(path); err == nil {
+			_ = os.Remove(marker)
+		}
 	}
 }
 

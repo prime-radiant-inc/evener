@@ -153,6 +153,52 @@ func TestPublishReclaimsAbandonedCrossFilesystemScratch(t *testing.T) {
 	}
 }
 
+func TestMetadataArchiveFallsBackAcrossFilesystems(t *testing.T) {
+	src := filepath.Join(t.TempDir(), ".git")
+	writeTestFile(t, filepath.Join(src, "config"), "token")
+	if err := os.Symlink("config", filepath.Join(src, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "archive", ".git")
+	oldRename := moveRename
+	t.Cleanup(func() { moveRename = oldRename })
+	calls := 0
+	moveRename = func(from, to string) error {
+		calls++
+		if calls == 1 {
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+		}
+		return oldRename(from, to)
+	}
+	if err := moveNoReplace(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Fatalf("archived source survived: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "config")); err != nil || string(got) != "token" {
+		t.Fatalf("archive bytes = %q, %v", got, err)
+	}
+	if link, err := os.Readlink(filepath.Join(dst, "alias")); err != nil || link != "config" {
+		t.Fatalf("archive symlink = %q, %v", link, err)
+	}
+}
+
+func TestPublishingGitNamespaceInvalidatesCleanState(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if err := m.writeManagedContentState(managedContentClean); err != nil {
+		t.Fatal(err)
+	}
+	staging := filepath.Join(t.TempDir(), "staging")
+	writeTestFile(t, filepath.Join(staging, "README.md"), "content")
+	if _, err := m.commitStaged("acme", ".git", staging, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	if m.managedContentClean() {
+		t.Fatal("a published .git namespace left the store claimed clean")
+	}
+}
+
 func TestManagedInstallPublishesWithoutGitMetadata(t *testing.T) {
 	f := newPublishedRevisionFixture(t, false)
 	if _, err := os.Lstat(filepath.Join(f.entry.InstallPath, ".git")); !os.IsNotExist(err) {

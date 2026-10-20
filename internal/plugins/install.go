@@ -154,6 +154,14 @@ func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string
 		_ = installRemoveAll(staging)
 		return "", err
 	}
+	if isGitName(marketplace) || isGitName(plugin) {
+		// A marketplace or plugin legitimately named .git is a namespace the
+		// whole-store audit treats as unverified. Do not let a clean marker
+		// outlive that publication.
+		if err := m.writeManagedContentState(managedContentUnverified); err != nil {
+			_, _ = fmt.Fprintf(m.stderr(), "warning: recording managed plugin content state failed: %v\n", err)
+		}
+	}
 	return final, nil
 }
 
