@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -63,11 +63,25 @@ function runDailyBlock(t, { collision, failGit = false, resume = false } = {}) {
   });
   if (collision === 'unwritable') chmodSync(caller, 0o555);
   const run = resume ? continuation : block;
+  const credentials = collision === 'unwritable' && process.getuid() === 0 ? { uid: 65534, gid: 65534 } : {};
+  if (credentials.uid !== undefined) {
+    const check = spawnSync('/bin/sh', ['-c', 'id -u && mkdir -p .'], { cwd: caller, env, encoding: 'utf8', ...credentials });
+    assert.ifError(check.error);
+    assert.equal(check.status, 0, check.stderr);
+    assert.equal(check.stdout.trim(), '65534');
+  }
   // Capture the block's status before recording the caller's CWD; do not put the block
   // in an if condition, which would disable errexit in its subshell.
-  const result = spawnSync('/bin/sh', ['-c', `${run}\nblock_status=$?\nprintf '%s' "$PWD" > "$CALLER_AFTER"\nexit "$block_status"`], {
-    cwd: caller, env, encoding: 'utf8',
-  });
+  // FD 3 remains writable after a privileged runner drops to an unprivileged uid.
+  const after = openSync(env.CALLER_AFTER, 'w');
+  let result;
+  try {
+    result = spawnSync('/bin/sh', ['-c', `${run}\nblock_status=$?\nprintf '%s' "$PWD" >&3\nexit "$block_status"`], {
+      cwd: caller, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe', after], ...credentials,
+    });
+  } finally {
+    closeSync(after);
+  }
   assert.ifError(result.error);
   const agentCalls = existsSync(calls) ? readFileSync(calls, 'utf8').trimEnd().split('\n').map((line) => {
     const [cwd, firstArg] = line.split('\t');
@@ -76,7 +90,7 @@ function runDailyBlock(t, { collision, failGit = false, resume = false } = {}) {
   const gitRoots = [];
   const realGitEnv = { ...env, PATH: process.env.PATH };
   for (const directory of [caller, workspace]) {
-    if (!existsSync(directory) || !lstatSync(directory).isDirectory()) continue;
+    if (!existsSync(directory)) continue;
     const top = spawnSync('git', ['-C', directory, 'rev-parse', '--show-toplevel'], { env: realGitEnv, encoding: 'utf8' });
     assert.ifError(top.error);
     if (top.status !== 0) continue;
