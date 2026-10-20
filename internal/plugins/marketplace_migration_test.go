@@ -3693,13 +3693,8 @@ func TestMarketplaceNameMigration_ADirectorySourceClaimsNoResidue(t *testing.T) 
 	}
 }
 
-// The merge is two file writes too, and a run can stop between them: the
-// registry write moves the duplicate's keys under the record it folds into,
-// and a later run — a new run, which has migrated nothing yet — reads those
-// keys as a removed marketplace's residue and gives the duplicate a numbered
-// name of its own. So the merge marks itself before that write, saying it is
-// a merge and which record it folds into, and drops the marker once the
-// marketplaces file records the removal.
+// A fresh merge is logical and retryable through its exact-source family.
+// It must not write the older physical-move marker at either registry save.
 func TestMarketplaceNameMigration_MarksTheMergeItMakes(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
@@ -3725,7 +3720,7 @@ func TestMarketplaceNameMigration_MarksTheMergeItMakes(t *testing.T) {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
 	installSaveRegistry = orig
-	want := []renameMarker{{From: "a/./b", To: "a-b"}, {From: "a/b", To: "a-b", Merge: true}}
+	want := []renameMarker{{From: "a/./b", To: "a-b"}, {}}
 	if !slices.Equal(marked, want) {
 		t.Fatalf("marker on disk at each registry save = %+v, want %+v", marked, want)
 	}

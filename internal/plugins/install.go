@@ -86,7 +86,7 @@ func (m *Manager) catalogPlugin(ctx context.Context, marketplace, plugin string)
 // stagePlugin resolves a plugin's source. For a directory-marketplace it returns
 // the in-place dir (staged=false, empty sha, no copy). Otherwise it fetches into
 // a staging dir (staged=true) and returns that dir + the resolved sha; the caller
-// must either commitStaged it or remove it.
+// must either commitStaged it or remove it, then remove its owned parent.
 func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, ref MarketplaceRef, cp CatalogPlugin) (dir, sha string, staged bool, err error) {
 	if ref.Source.Kind == SourceDirectory {
 		root := ref.InstallLocation
@@ -97,11 +97,21 @@ func (m *Manager) stagePlugin(ctx context.Context, marketplace, plugin string, r
 			return cp.Source.Path, "", false, nil
 		}
 	}
-	staging := m.pluginCacheDir(marketplace, plugin, ".staging")
-	_ = installRemoveAll(staging)
+	parent := filepath.Join(m.cacheDir(), marketplace, plugin)
+	if err := installMkdirAll(parent, 0o755); err != nil {
+		return "", "", false, err
+	}
+	// A legacy marketplace may have published beneath any fixed scratch
+	// name. Reserve a fresh container, including fetchPluginSource's sibling
+	// clone scratch, and remove only this invocation's container.
+	owned, err := os.MkdirTemp(parent, ".staging-")
+	if err != nil {
+		return "", "", false, err
+	}
+	staging := filepath.Join(owned, "payload")
 	sha, err = installFetchSource(ctx, cp.Source, m.catalogRoot(ref), staging)
 	if err != nil {
-		_ = installRemoveAll(staging)
+		_ = installRemoveAll(owned)
 		return "", "", false, err
 	}
 	return staging, sha, true, nil
@@ -172,7 +182,7 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 	}
 	if staged {
 		staging := dir
-		defer func() { _ = installRemoveAll(staging) }()
+		defer func() { _ = installRemoveAll(filepath.Dir(staging)) }()
 	}
 	note, err := installManifestFallback(dir, staged, cp)
 	if err != nil {
@@ -281,7 +291,7 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 		return InstallEntry{}, false, false, err
 	}
 	if staged {
-		defer func() { _ = installRemoveAll(staging) }()
+		defer func() { _ = installRemoveAll(filepath.Dir(staging)) }()
 	}
 	if !staged || sha == prev.GitCommitSha {
 		return prev, false, false, nil

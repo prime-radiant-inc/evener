@@ -29,10 +29,9 @@ import (
 // rename had a clone of its own to move or only the two files to write,
 // and without one there is no rename in flight, so a removed marketplace's
 // residue under the same derived name is never mistaken for one. The merge
-// that folds a second record of one marketplace into the first writes the
-// same marker, saying that is what it names: it writes two files too, and the
-// keys its first write moves look exactly like that residue to a run with no
-// marker to read.
+// that folds an alias into its family's existing record needs no new marker:
+// the recorded exact-source family and the refused alias survive until both
+// logical writes finish. Older merge markers still recover physical moves.
 
 // loadMigratedMarketplaces reads the marketplaces file without the store lock
 // and hands back what a lock holder would see. A name the store refuses, or a
@@ -330,8 +329,8 @@ func (m *Manager) finishMarkedMerge(mk Marketplaces, marker renameMarker) error 
 		return fail(err)
 	}
 	owners := registryKeyOwners(reg, mk)
-	// The merge names itself in the marker again and drops it once both files
-	// record it, so what is left to say here is that it was finished.
+	// Keep this existing recovery marker until both logical files record the
+	// merge. Fresh merges never create one.
 	if _, err := m.mergeIntoMigrated(mk, owners, reg, marker.From, marker.To, true); err != nil {
 		return fail(err)
 	}
@@ -353,6 +352,15 @@ func (m *Manager) reconcileMigrationPaths(mk Marketplaces, reg Registry, owners 
 	// When another marketplace owns the derived directories, the older writer
 	// moved only plugin directories owned exclusively by this record.
 	moves := m.pluginCacheMoves(reg, marker.From, marker.To, owners)
+	// Only these registry/source lists are immutable. Filesystem ownership
+	// evidence is still checked in its original order for every candidate.
+	var foreignEntries [][]InstallEntry
+	for key, entries := range reg.Plugins {
+		if owners[key] != marker.From && owners[key] != marker.To {
+			foreignEntries = append(foreignEntries, entries)
+		}
+	}
+	protectionPaths := marketplaceProtectionPaths(mk)
 	canReconcile := func(path string) (string, bool, error) {
 		rel, under := pathUnder(oldCache, path)
 		if !under || !nameCanHaveDirectories(marker.From) {
@@ -376,8 +384,8 @@ func (m *Manager) reconcileMigrationPaths(mk Marketplaces, reg Registry, owners 
 				return "", false, err
 			}
 		}
-		for key, entries := range reg.Plugins {
-			if owners[key] != marker.From && owners[key] != marker.To && installedUnder(newCache, entries) {
+		for _, entries := range foreignEntries {
+			if installedUnder(newCache, entries) {
 				return "", false, nil
 			}
 		}
@@ -387,7 +395,7 @@ func (m *Manager) reconcileMigrationPaths(mk Marketplaces, reg Registry, owners 
 		if err != nil || !present {
 			return "", false, err
 		}
-		for _, source := range marketplaceProtectionPaths(mk) {
+		for _, source := range protectionPaths {
 			protect, err := m.sourceTouchesPath(source, newCache)
 			if err != nil || protect {
 				return "", false, err
@@ -426,21 +434,11 @@ func (m *Manager) reconcileMigrationPaths(mk Marketplaces, reg Registry, owners 
 	return out, nil
 }
 
-// renameMarker names the operation the migration has in flight: the rename of
-// a marketplace to a name the store accepts, or the merge of a second record
-// of that one marketplace into the record the rename made (Merge). Both write
-// it before they change anything and remove it once both store files record
-// the result, and the rename removes it once a failed save has put the store
-// back at one of the two names — which the merge cannot do, having no
-// directories to put back and so no rollback to judge, so its marker stays
-// until the merge is finished. A marker on disk therefore means an operation
-// that got somewhere in between, and recoverMarkedRename finishes it. Which
-// of the two it names decides how: a rename may have directories of its own
-// to move and refuses a destination another marketplace took, while a merge
-// moves nothing and folds into a record that is there by design. The rename
-// an edit makes writes none: it refuses the leftovers a stopped run left
-// under the new name and says so, and the user retrying it is there to read
-// that.
+// renameMarker names an automatic rename in flight, or an older interrupted
+// alias merge (Merge). Fresh merges use idempotent logical writes without a
+// marker, so they cannot manufacture physical-move recovery evidence. Rename
+// and old-marker recovery retain their existing clone rollback and journal
+// rules. Explicit edits write none and refuse interrupted-operation leftovers.
 type renameMarker struct {
 	From  string `json:"from"`
 	To    string `json:"to"`
@@ -943,8 +941,10 @@ func (m *Manager) migratedUnderAnAlias(dirs marketplaceDirs, ref MarketplaceRef,
 
 // mergeIntoMigrated folds an alias into its recorded family's marketplace.
 // Only logical ownership changes. Existing InstallPaths stay, including paths
-// in the retained original cache. Only finishMarkedMerge sets recovering: its
-// marker existed on acquisition, unlike the journal a fresh merge creates.
+// in the retained original cache. Only finishMarkedMerge sets recovering: an
+// older physical-move marker may reconcile missing paths. Fresh merges write
+// no marker: the existing alias-family record and refused source name make
+// registry-first logical writes idempotent, including a split-write retry.
 func (m *Manager) mergeIntoMigrated(mk Marketplaces, owners map[string]string, reg Registry, name, recorded string, recovering bool) (Registry, error) {
 	registryAsFound := reg
 	if mk[name].Source != mk[recorded].Source {
@@ -957,13 +957,11 @@ func (m *Manager) mergeIntoMigrated(mk Marketplaces, owners map[string]string, r
 			return registryAsFound, err
 		}
 	}
-	// The marker names this merge before any of it happens, for the reason a
-	// rename's does: the two writes below can be interrupted between, and the
-	// keys the first of them moves are what a run with no marker to read takes
-	// for a removed marketplace's residue.
-	if err := m.writeRenameMarker(renameMarker{From: name, To: recorded, Merge: true}); err != nil {
-		return registryAsFound, err
-	}
+	// A fresh logical merge must not create evidence of an older cache move.
+	// Until the final marketplaces write, the refused alias remains recorded
+	// and its exact source/family identifies the same destination on retry.
+	// Re-keying again preserves InstallPaths, even if the first registry
+	// write succeeded. An existing recovery marker stays until both writes do.
 	existing := reg
 	reg = rekeyRegistry(reg, owners, name, recorded, "", "")
 	// Keep the existing installed selection when both aliases name the same
@@ -976,11 +974,10 @@ func (m *Manager) mergeIntoMigrated(mk Marketplaces, owners map[string]string, r
 	// The recorded marketplace is written back as it stands, so what this
 	// save records is the duplicate's removal and the keys that moved.
 	if err := m.saveRename(mk, name, recorded, mk[recorded], reg, registryAsFound); err != nil {
-		// A merge moves nothing, so there is no undo to judge and nothing to
-		// tell a save that reached neither file from one that reached both:
-		// the marker stays, and the next lock holder makes the merge from
-		// whatever this left.
-		return registryAsFound, m.migrationFailed(name, recorded, errors.Join(err, m.markerLeftForRecovery("merge")))
+		if recovering {
+			return registryAsFound, m.migrationFailed(name, recorded, errors.Join(err, m.markerLeftForRecovery("merge")))
+		}
+		return registryAsFound, m.migrationFailed(name, recorded, err)
 	}
 	m.removeRenameMarker()
 	return reg, nil

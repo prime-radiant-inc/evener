@@ -88,6 +88,7 @@ type DoctorFinding struct {
 	Level       string `json:"level"`
 	Category    string `json:"category"`
 	Check       string `json:"check"`
+	Path        string `json:"path,omitempty"`
 	Message     string `json:"message"`
 	Remediation string `json:"remediation,omitempty"`
 }
@@ -295,37 +296,36 @@ func (m *Manager) doctorOrphanCacheDirs() []DoctorFinding {
 	}
 
 	var findings []DoctorFinding
-	for _, mktEnt := range marketplaceEnts {
-		if !mktEnt.IsDir() {
-			continue
+	var visit func(string, int)
+	visit = func(path string, depth int) {
+		// Retained legacy marketplace names can add arbitrary path levels.
+		// A package manifest, not a fixed depth, identifies a revision root.
+		// Stop there so companion directories are never mistaken for revisions.
+		if depth >= 3 {
+			manifest, err := doctorStat(filepath.Join(path, ".claude-plugin", "plugin.json"))
+			if err == nil && !manifest.IsDir() {
+				if !referenced[filepath.Clean(path)] {
+					findings = append(findings, DoctorFinding{
+						Level: LevelOK, Category: catRegistry, Check: checkRetainedCacheRevision, Path: path,
+						Message: fmt.Sprintf("retained plugin revision %s is not the current registry selection; sessions may still use it", path),
+					})
+				}
+				return
+			}
 		}
-		mktPath := filepath.Join(m.cacheDir(), mktEnt.Name())
-		pluginEnts, err := doctorReadDir(mktPath)
+		entries, err := doctorReadDir(path)
 		if err != nil {
-			continue
+			return
 		}
-		for _, plugEnt := range pluginEnts {
-			if !plugEnt.IsDir() {
-				continue
+		for _, entry := range entries {
+			if entry.IsDir() {
+				visit(filepath.Join(path, entry.Name()), depth+1)
 			}
-			plugPath := filepath.Join(mktPath, plugEnt.Name())
-			shaEnts, err := doctorReadDir(plugPath)
-			if err != nil {
-				continue
-			}
-			for _, shaEnt := range shaEnts {
-				if !shaEnt.IsDir() {
-					continue
-				}
-				shaPath := filepath.Join(plugPath, shaEnt.Name())
-				if referenced[filepath.Clean(shaPath)] {
-					continue
-				}
-				findings = append(findings, DoctorFinding{
-					Level: LevelOK, Category: catRegistry, Check: checkRetainedCacheRevision,
-					Message: fmt.Sprintf("retained plugin revision %s is not the current registry selection; sessions may still use it", shaPath),
-				})
-			}
+		}
+	}
+	for _, entry := range marketplaceEnts {
+		if entry.IsDir() {
+			visit(filepath.Join(m.cacheDir(), entry.Name()), 1)
 		}
 	}
 	return findings

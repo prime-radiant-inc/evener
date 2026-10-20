@@ -17,8 +17,7 @@ type publishedRevisionFixture struct {
 	manager *Manager
 	source  string
 	entry   InstallEntry
-	info    os.FileInfo
-	files   map[string][]byte
+	tree    migrationTree
 }
 
 func newPublishedRevisionFixture(t *testing.T, unversioned bool) publishedRevisionFixture {
@@ -58,32 +57,12 @@ func newPublishedRevisionFixture(t *testing.T, unversioned bool) publishedRevisi
 	if err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(entry.InstallPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	files := make(map[string][]byte)
-	for _, rel := range []string{".claude-plugin/plugin.json", "hooks/hooks.json", "scripts/start.sh", "resource.txt"} {
-		files[rel], err = os.ReadFile(filepath.Join(entry.InstallPath, rel))
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	return publishedRevisionFixture{manager: m, source: pluginRepo, entry: entry, info: info, files: files}
+	return publishedRevisionFixture{manager: m, source: pluginRepo, entry: entry, tree: snapshotMigrationTree(t, entry.InstallPath)}
 }
 
 func (f publishedRevisionFixture) assertIntact(t *testing.T) {
 	t.Helper()
-	after, err := os.Stat(f.entry.InstallPath)
-	if err != nil || !os.SameFile(f.info, after) {
-		t.Fatalf("published identity changed: %v", err)
-	}
-	for rel, before := range f.files {
-		got, err := os.ReadFile(filepath.Join(f.entry.InstallPath, rel))
-		if err != nil || !bytes.Equal(got, before) {
-			t.Fatalf("published %s changed: %v, got %q, want %q", rel, err, got, before)
-		}
-	}
+	assertMigrationTree(t, f.tree)
 }
 
 func (f publishedRevisionFixture) assertRegistryTarget(t *testing.T, target InstallEntry) {
@@ -112,6 +91,7 @@ func TestPublishedRevisionSurvivesRevisit(t *testing.T) {
 	if middle.InstallPath == f.entry.InstallPath || middle.GitCommitSha == oldSHA {
 		t.Fatalf("upgrade did not advance: %+v", middle)
 	}
+	middleTree := snapshotMigrationTree(t, middle.InstallPath)
 	gitIn(t, f.source, "reset", "--hard", oldSHA)
 	revisit, err := f.manager.Upgrade(context.Background(), "widget", "acme")
 	if err != nil {
@@ -121,8 +101,9 @@ func TestPublishedRevisionSurvivesRevisit(t *testing.T) {
 		t.Fatalf("revisit reused a published destination: %+v", revisit)
 	}
 	f.assertIntact(t)
+	assertMigrationTree(t, middleTree)
 	newBytes, err := os.ReadFile(filepath.Join(revisit.InstallPath, "resource.txt"))
-	if err != nil || !bytes.Equal(newBytes, f.files["resource.txt"]) {
+	if err != nil || !bytes.Equal(newBytes, f.tree.files["resource.txt"]) {
 		t.Fatalf("revisit did not publish original resource: %v, %q", err, newBytes)
 	}
 	reg, err := LoadRegistry(f.manager.registryPath())
@@ -228,8 +209,9 @@ func TestPublishedRevisionSurvivesPublicationFailure(t *testing.T) {
 				}
 				f.assertIntact(t)
 				f.assertRegistryTarget(t, target)
-				if _, statErr := os.Stat(f.manager.pluginCacheDir("acme", "widget", ".staging")); !os.IsNotExist(statErr) {
-					t.Fatalf("owned staging remains after failed publication: %v", statErr)
+				staging, globErr := filepath.Glob(filepath.Join(filepath.Dir(f.entry.InstallPath), ".staging-*"))
+				if globErr != nil || len(staging) != 0 {
+					t.Fatalf("owned staging remains after failed publication: %v, %v", staging, globErr)
 				}
 				if fault.name != "registry ENOSPC" {
 					dirs, readErr := os.ReadDir(filepath.Dir(f.entry.InstallPath))
@@ -246,5 +228,40 @@ func TestPublishedRevisionSurvivesPublicationFailure(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestPublishedRevisionNestedLegacyStagingSurvives(t *testing.T) {
+	for _, operation := range []string{"install", "upgrade", "unchanged-upgrade"} {
+		t.Run(operation, func(t *testing.T) {
+			f := newPublishedRevisionFixture(t, false)
+			f.manager.Stderr = io.Discard
+			trees := plantMigrationRevisions(t, f.manager, "acme/widget/.staging", "gadget")
+			unregistered := f.manager.pluginCacheDir("acme/widget/.staging", "unregistered", "old")
+			writePlugin(t, unregistered, "unregistered", map[string]string{"companion.bin": "unregistered old bytes"})
+			trees = append(trees, snapshotMigrationTree(t, unregistered))
+			if _, err := f.manager.ListMarketplaces(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			for _, tree := range trees {
+				assertMigrationTree(t, tree)
+			}
+			if operation != "unchanged-upgrade" {
+				advanceGitRepo(t, f.source, "resource.txt", "new companion resource")
+			}
+			var err error
+			if operation == "install" {
+				_, err = f.manager.Install(context.Background(), "widget", "acme")
+			} else {
+				_, err = f.manager.Upgrade(context.Background(), "widget", "acme")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tree := range trees {
+				assertMigrationTree(t, tree)
+			}
+			f.assertIntact(t)
+		})
 	}
 }

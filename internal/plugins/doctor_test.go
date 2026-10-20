@@ -961,3 +961,38 @@ func TestUpgrade_RelSourceInADirectoryMarketplaceIsANoOp(t *testing.T) {
 		t.Fatalf("UpdateAutoUpgrade = %+v (%v), want a no-op", upgraded, err)
 	}
 }
+
+func TestDoctorRetainedNestedLegacyRevisions(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	trees := plantMigrationRevisions(t, m, "a/b", "widget")
+	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retained []DoctorFinding
+	for _, finding := range findings {
+		if finding.Check == checkRetainedCacheRevision {
+			if finding.Level != LevelOK || finding.Category != catRegistry || finding.Remediation != "" {
+				t.Fatalf("retained finding = %+v", finding)
+			}
+			retained = append(retained, finding)
+		}
+	}
+	if len(retained) != 2 {
+		t.Fatalf("retained revision count = %d, want 2 superseded siblings, findings: %+v", len(retained), retained)
+	}
+	paths := map[string]bool{}
+	for _, finding := range retained {
+		paths[finding.Path] = true
+	}
+	if !paths[trees[0].path] || !paths[trees[1].path] || paths[trees[2].path] {
+		t.Fatalf("retained paths = %v, want only superseded siblings", paths)
+	}
+	for _, tree := range trees {
+		assertMigrationTree(t, tree)
+	}
+}

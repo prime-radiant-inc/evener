@@ -3,12 +3,14 @@ package plugins
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 // These snapshots are independent of registry rekeying: superseded revisions
@@ -17,6 +19,7 @@ type migrationTree struct {
 	path     string
 	identity os.FileInfo
 	files    map[string][]byte
+	nodes    map[string]os.FileInfo
 }
 
 func snapshotMigrationTree(t *testing.T, path string) migrationTree {
@@ -25,17 +28,22 @@ func snapshotMigrationTree(t *testing.T, path string) migrationTree {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tree := migrationTree{path: path, identity: info, files: map[string][]byte{}}
+	tree := migrationTree{path: path, identity: info, files: map[string][]byte{}, nodes: map[string]os.FileInfo{}}
 	err = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
-			return nil
-		}
 		rel, err := filepath.Rel(path, p)
 		if err != nil {
 			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		tree.nodes[rel] = info
+		if d.IsDir() {
+			return nil
 		}
 		data, err := os.ReadFile(p)
 		if err != nil {
@@ -58,6 +66,15 @@ func assertMigrationTree(t *testing.T, tree migrationTree) {
 	}
 	if !reflect.DeepEqual(tree.files, got.files) {
 		t.Fatalf("published bytes changed: %s", tree.path)
+	}
+	if len(tree.nodes) != len(got.nodes) {
+		t.Fatalf("published tree size changed: %s", tree.path)
+	}
+	for rel, before := range tree.nodes {
+		after, present := got.nodes[rel]
+		if !present || !os.SameFile(before, after) || before.Mode() != after.Mode() {
+			t.Fatalf("published node identity or mode changed: %s", filepath.Join(tree.path, rel))
+		}
 	}
 }
 
@@ -176,20 +193,33 @@ func TestAutomaticMigrationAliasPreservesPublishedPaths(t *testing.T) {
 }
 
 func TestAutomaticMigrationRecoveryPreservesPublishedPaths(t *testing.T) {
-	for _, stage := range []string{"marker", "clone-moved", "cache-moved", "registry-written", "surviving-old", "both-paths", "merge", "merge-moved", "merge-registry-written"} {
-		t.Run(stage, func(t *testing.T) {
+	scenarios := []struct {
+		name                                                                string
+		moveClone, moveCache, writeRegistry, merge, survivingOld, bothPaths bool
+	}{
+		{name: "marker"},
+		{name: "clone-moved", moveClone: true},
+		{name: "cache-moved", moveClone: true, moveCache: true},
+		{name: "registry-written", writeRegistry: true},
+		{name: "surviving-old", moveClone: true, moveCache: true, survivingOld: true},
+		{name: "both-paths", moveClone: true, bothPaths: true},
+		{name: "merge", moveClone: true, merge: true},
+		{name: "merge-moved", moveClone: true, moveCache: true, merge: true},
+		{name: "merge-registry-written", moveClone: true, moveCache: true, writeRegistry: true, merge: true},
+	}
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
 			m := NewManager(t.TempDir())
 			m.Stderr = io.Discard
 			trees := plantMigrationRevisions(t, m, "a/b", "widget")
 			oldPath := trees[2].path
 			plantRenameMarker(t, m, "a/b", "a-b")
-			moved := stage == "cache-moved" || stage == "surviving-old" || stage == "merge-moved" || stage == "merge-registry-written"
-			if stage != "marker" && stage != "registry-written" {
+			if scenario.moveClone {
 				if err := os.Rename(m.marketplaceDir("a/b"), m.marketplaceDir("a-b")); err != nil {
 					t.Fatal(err)
 				}
 			}
-			if moved {
+			if scenario.moveCache {
 				if err := os.Rename(filepath.Join(m.cacheDir(), "a/b"), filepath.Join(m.cacheDir(), "a-b")); err != nil {
 					t.Fatal(err)
 				}
@@ -197,7 +227,7 @@ func TestAutomaticMigrationRecoveryPreservesPublishedPaths(t *testing.T) {
 					trees[i].path = m.pluginCacheDir("a-b", "widget", filepath.Base(trees[i].path))
 				}
 			}
-			if stage == "surviving-old" {
+			if scenario.survivingOld {
 				// An original superseded tree survives at the old path, while
 				// the current revision already moved. Keep both identities.
 				dir := filepath.Join(filepath.Dir(oldPath), "superseded-a")
@@ -209,14 +239,14 @@ func TestAutomaticMigrationRecoveryPreservesPublishedPaths(t *testing.T) {
 				}
 				trees[0].path = dir
 			}
-			if stage == "both-paths" {
+			if scenario.bothPaths {
 				// A valid old InstallPath takes precedence over an occupied
 				// destination. Migration must neither overwrite nor adopt it.
 				dir := m.pluginCacheDir("a-b", "widget", "sha1")
 				writePlugin(t, dir, "destination", nil)
 				trees = append(trees, snapshotMigrationTree(t, dir))
 			}
-			if stage == "registry-written" || stage == "merge-registry-written" {
+			if scenario.writeRegistry {
 				reg, err := m.loadRegistry()
 				if err != nil {
 					t.Fatal(err)
@@ -227,7 +257,7 @@ func TestAutomaticMigrationRecoveryPreservesPublishedPaths(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if stage == "merge" || stage == "merge-moved" || stage == "merge-registry-written" {
+			if scenario.merge {
 				mk, err := m.loadMarketplaces()
 				if err != nil {
 					t.Fatal(err)
@@ -249,7 +279,7 @@ func TestAutomaticMigrationRecoveryPreservesPublishedPaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := oldPath
-			if moved {
+			if scenario.moveCache {
 				want = m.pluginCacheDir("a-b", "widget", "sha1")
 			}
 			if got := installedAt(t, reg, "widget@a-b").InstallPath; got != want {
@@ -276,11 +306,15 @@ func TestAutomaticMigrationWriteInterruptionPreservesPublishedPaths(t *testing.T
 			failed := false
 			marketplaceAtomicWriteFile = func(path string, data []byte, mode os.FileMode) error {
 				if filepath.Base(path) == marketplacesFileName {
-					marker, err := m.loadRenameMarker()
-					if err != nil {
+					var next Marketplaces
+					if err := json.Unmarshal(data, &next); err != nil {
 						t.Fatal(err)
 					}
-					if marker != nil && marker.Merge == merge {
+					from := "a/./b"
+					if merge {
+						from = "a/b"
+					}
+					if _, remains := next[from]; !remains {
 						failed = true
 						return os.ErrPermission
 					}
@@ -297,7 +331,18 @@ func TestAutomaticMigrationWriteInterruptionPreservesPublishedPaths(t *testing.T
 				t.Fatalf("interrupted save = %v, want between-names state", err)
 			}
 			marketplaceAtomicWriteFile, installSaveRegistry = write, save
-			mustExist(t, renameMarkerFile(m))
+			if merge {
+				mustNotExist(t, renameMarkerFile(m))
+				mk, err := m.loadMarketplaces()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, remains := mk["a/b"]; !remains {
+					t.Fatal("interrupted logical merge lost its retry source")
+				}
+			} else {
+				mustExist(t, renameMarkerFile(m))
+			}
 			reg, err := m.loadRegistry()
 			if err != nil {
 				t.Fatal(err)
@@ -401,53 +446,123 @@ func TestAutomaticMigrationUnreadablePath(t *testing.T) {
 	}
 }
 
-// A new alias merge writes a journal for its own logical metadata change. That
-// journal is not evidence that an older writer moved a missing installation.
+// A fresh logical alias merge must never leave a physical-move marker, even
+// after a failed first write or an interruption between its two store writes.
 func TestAutomaticMigrationFreshAliasKeepsMissingPath(t *testing.T) {
-	m := NewManager(t.TempDir())
-	m.Stderr = io.Discard
-	plantLegacyMarketplace(t, m, "a/./b", "widget")
-	if _, err := m.Gc(context.Background()); err != nil {
-		t.Fatal(err)
+	for _, boundary := range []string{"success", "first-registry-failure", "split-write"} {
+		t.Run(boundary, func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			m.Stderr = io.Discard
+			plantLegacyMarketplace(t, m, "a/./b", "widget")
+			if _, err := m.Gc(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			mk, err := m.loadMarketplaces()
+			if err != nil {
+				t.Fatal(err)
+			}
+			alias := mk["a-b"]
+			alias.InstallLocation = m.marketplaceDir("a/b")
+			mk["a/b"] = alias
+			if err := m.saveMarketplaces(mk); err != nil {
+				t.Fatal(err)
+			}
+			missing := m.pluginCacheDir("a/b", "gadget", "sha1")
+			reg, err := m.loadRegistry()
+			if err != nil {
+				t.Fatal(err)
+			}
+			reg.Plugins["gadget@a/b"] = []InstallEntry{{InstallPath: missing, Version: "1.0.0", Enabled: true, Source: Source{Kind: SourceGitHub, Repo: "o/gadget"}}}
+			if err := m.saveRegistry(reg); err != nil {
+				t.Fatal(err)
+			}
+			// This directory was independently published, never moved from the old
+			// namespace. Its matching suffix cannot authorize recovery of missing.
+			destination := m.pluginCacheDir("a-b", "gadget", "sha1")
+			writePlugin(t, destination, "gadget", nil)
+			tree := snapshotMigrationTree(t, destination)
+			mustNotExist(t, missing)
+			mustNotExist(t, renameMarkerFile(m))
+			write, save := marketplaceAtomicWriteFile, installSaveRegistry
+			t.Cleanup(func() { marketplaceAtomicWriteFile, installSaveRegistry = write, save })
+			interrupted := false
+			crash := new(int)
+			installSaveRegistry = func(path string, reg Registry) error {
+				if boundary == "first-registry-failure" && !interrupted {
+					interrupted = true
+					return os.ErrPermission
+				}
+				return save(path, reg)
+			}
+			marketplaceAtomicWriteFile = func(path string, data []byte, mode os.FileMode) error {
+				if filepath.Base(path) == marketplacesFileName && boundary == "split-write" {
+					interrupted = true
+					panic(crash) // registry persisted, marketplaces not written, no rollback
+				}
+				return write(path, data, mode)
+			}
+			func() {
+				defer func() {
+					if got := recover(); got != nil && got != crash {
+						panic(got)
+					}
+				}()
+				release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release() // model process exit releasing its lock after panic
+				err = m.migrateMarketplaceNames()
+				if boundary == "first-registry-failure" {
+					if err == nil {
+						t.Fatalf("first write = %v", err)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			}()
+			marketplaceAtomicWriteFile, installSaveRegistry = write, save
+			if boundary != "success" && !interrupted {
+				t.Fatal("fault boundary was not reached")
+			}
+			beforeRetry, err := m.loadRegistry()
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := "gadget@a-b"
+			if boundary == "first-registry-failure" {
+				key = "gadget@a/b"
+			}
+			if got := installedAt(t, beforeRetry, key).InstallPath; got != missing {
+				t.Fatalf("first attempt changed recorded path: %s", got)
+			}
+			if boundary != "success" {
+				mk, err := m.loadMarketplaces()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, remains := mk["a/b"]; !remains {
+					t.Fatal("retry alias disappeared before marketplaces commit")
+				}
+			}
+			mustNotExist(t, renameMarkerFile(m))
+			assertMigrationTree(t, tree)
+			m = NewManager(m.Root)
+			m.Stderr = io.Discard
+			if _, err := m.Gc(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			reg, err = m.loadRegistry()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := installedAt(t, reg, "gadget@a-b").InstallPath; got != missing {
+				t.Fatalf("fresh alias adopted independently published destination: got %s, want missing recorded path %s", got, missing)
+			}
+			assertMigrationTree(t, tree)
+			assertMigrationIdempotent(t, m)
+		})
 	}
-	mk, err := m.loadMarketplaces()
-	if err != nil {
-		t.Fatal(err)
-	}
-	alias := mk["a-b"]
-	alias.InstallLocation = m.marketplaceDir("a/b")
-	mk["a/b"] = alias
-	if err := m.saveMarketplaces(mk); err != nil {
-		t.Fatal(err)
-	}
-	missing := m.pluginCacheDir("a/b", "gadget", "sha1")
-	reg, err := m.loadRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
-	reg.Plugins["gadget@a/b"] = []InstallEntry{{InstallPath: missing, Version: "1.0.0", Enabled: true, Source: Source{Kind: SourceGitHub, Repo: "o/gadget"}}}
-	if err := m.saveRegistry(reg); err != nil {
-		t.Fatal(err)
-	}
-	// This directory was independently published, never moved from the old
-	// namespace. Its matching suffix cannot authorize recovery of missing.
-	destination := m.pluginCacheDir("a-b", "gadget", "sha1")
-	writePlugin(t, destination, "gadget", nil)
-	tree := snapshotMigrationTree(t, destination)
-	mustNotExist(t, missing)
-	mustNotExist(t, renameMarkerFile(m))
-	if _, err := m.Gc(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	reg, err = m.loadRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := installedAt(t, reg, "gadget@a-b").InstallPath; got != missing {
-		t.Fatalf("fresh alias adopted independently published destination: got %s, want missing recorded path %s", got, missing)
-	}
-	assertMigrationTree(t, tree)
-	assertMigrationIdempotent(t, m)
 }
 
 func TestAutomaticMigrationRecoveryRetainsUnreadableOwnership(t *testing.T) {
@@ -522,4 +637,68 @@ func TestAutomaticMigrationRecoveryRetainsUnreadableOwnership(t *testing.T) {
 			assertMigrationIdempotent(t, m)
 		})
 	}
+}
+
+func TestAutomaticMigrationFreshRenameSplitWriteKeepsMissingPath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	missing := plantLegacyMarketplace(t, m, "a/b", "widget")
+	if err := os.RemoveAll(missing); err != nil {
+		t.Fatal(err)
+	}
+	write := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = write })
+	crash := new(int)
+	destination := m.pluginCacheDir("a-b", "widget", "sha1")
+	var tree migrationTree
+	interrupted := false
+	marketplaceAtomicWriteFile = func(path string, data []byte, mode os.FileMode) error {
+		if filepath.Base(path) == marketplacesFileName {
+			writePlugin(t, destination, "widget", map[string]string{"companion.bin": "independent bytes"})
+			tree = snapshotMigrationTree(t, destination)
+			interrupted = true
+			panic(crash)
+		}
+		return write(path, data, mode)
+	}
+	func() {
+		defer func() {
+			if got := recover(); got != nil && got != crash {
+				panic(got)
+			}
+		}()
+		release, err := acquireLock(context.Background(), m.lockPath(), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer release() // model process exit releasing its lock after panic
+		if err := m.migrateMarketplaceNames(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	marketplaceAtomicWriteFile = write
+	if !interrupted {
+		t.Fatal("split-write boundary was not reached")
+	}
+	reg, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := installedAt(t, reg, "widget@a-b").InstallPath; got != missing {
+		t.Fatalf("first write retargeted path: %s", got)
+	}
+	m = NewManager(m.Root)
+	m.Stderr = io.Discard
+	if _, err := m.Gc(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	reg, err = m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := installedAt(t, reg, "widget@a-b").InstallPath; got != missing {
+		t.Fatalf("retry adopted independently published bytes: %s", got)
+	}
+	assertMigrationTree(t, tree)
+	assertMigrationIdempotent(t, m)
 }
