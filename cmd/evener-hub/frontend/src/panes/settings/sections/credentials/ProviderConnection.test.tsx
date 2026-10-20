@@ -262,6 +262,64 @@ test("device authorization survives its own delayed listing refresh and proceeds
   ]);
 });
 
+test("redirect authorization survives its own delayed listing refresh and proceeds to a real check", async () => {
+  const { user, client, connected } = setup();
+  await choose(user, "OpenAI Codex");
+  client.on("evener/auth/device/start", () => ({
+    provider: "openai-codex",
+    fallback: true,
+    flowId: "redirect",
+    userCode: "",
+    verificationUrl: "",
+    intervalSeconds: 5,
+  }));
+  client.on("evener/auth/login/start", () => ({
+    provider: "openai-codex",
+    flowId: "redirect",
+    url: "https://auth.example/authorize",
+  }));
+  client.on("evener/auth/login/complete", () => ({
+    status: {
+      provider: "openai-codex",
+      supported: true,
+      signedIn: true,
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+    },
+  }));
+  vi.spyOn(window, "open").mockReturnValue(null);
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  const refresh = deferred<InstanceListResponse>();
+  let reads = 0;
+  client.on("evener/instance/list", () => {
+    reads += 1;
+    return reads === 1
+      ? refresh.promise
+      : savedList("openai-codex", { activeSource: "oauth", hasStoredOAuth: true, configRevision: "rev-oauth" });
+  });
+  await enterText(user, screen.getByLabelText("Redirect URL"), "https://auth.example/callback?code=1");
+  await user.click(screen.getByRole("button", { name: "Finish" }));
+  expect(reads).toBe(1);
+
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  await act(async () => {
+    refresh.resolve(
+      savedList("openai-codex", { activeSource: "oauth", hasStoredOAuth: true, configRevision: "rev-oauth" }),
+    );
+    await refresh.promise;
+  });
+
+  await checkConfirmed();
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
+    {
+      method: "evener/auth/test",
+      params: { provider: "openai-codex", expectedEndpointFingerprint: "fp-openai-codex" },
+    },
+  ]);
+  await user.click(screen.getByRole("button", { name: "Choose model" }));
+  expect(connected).toHaveBeenCalledWith("openai-codex");
+});
+
 test("changing base in the full form continues with the actual created provider rather than old vendor help", async () => {
   const { user, client } = setup();
   await choose(user, "Azure");
@@ -953,7 +1011,7 @@ test("cancel immediately invalidates a late check even before the owner unmounts
   expect(connected).not.toHaveBeenCalled();
   expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
 });
-test("a notification refresh invalidates a pending check and a completed result", async () => {
+test("a notification refresh of an unchanged target preserves a pending check and a completed result", async () => {
   const { user, client } = setup();
   scriptSave(client);
   const pending = deferred<{ provider: string; status: string; message: string }>();
@@ -968,18 +1026,114 @@ test("a notification refresh invalidates a pending check and a completed result"
     await vi.runOnlyPendingTimersAsync();
   });
   vi.useRealTimers();
+  expect(reasonShown("changed")).toBe(false);
   await act(async () => {
     pending.resolve({ provider: "anthropic", status: "success", message: "" });
     await pending.promise;
   });
-  expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
-  expect(screen.getByRole("alert")).toBeTruthy();
-  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
-  await user.click(screen.getByRole("button", { name: "Retry check" }));
   expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
+  expect(reasonShown("changed")).toBe(false);
   await act(async () => {
     await credentialsStore.getState().fetch();
   });
+  expect(screen.getByRole("button", { name: "Choose model" })).toBeTruthy();
+  expect(reasonShown("changed")).toBe(false);
+});
+
+// A check is evidence about the one target it named, not about the listing as a
+// whole. Another provider's update schedules a real refetch, and the fresh rows
+// replace every array even when this target did not move - that replacement
+// must not retract the in-flight check or its confirmed result.
+test("an unchanged target survives another provider's refresh during its check", async () => {
+  const { user, client } = setup(savedList("anthropic", { configRevision: "rev-1" }));
+  const pending = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => pending.promise);
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Retry check" }));
+  expect(screen.getByRole("button", { name: "Checking model list…" })).toHaveProperty("disabled", true);
+
+  const other: InstanceEntry = {
+    ...catalogue[1]!.setup!,
+    name: "openai-team",
+    implicit: false,
+    activeSource: "store",
+  };
+  const refreshed = savedList("anthropic", { configRevision: "rev-1" });
+  refreshed.instances = [...refreshed.instances, other];
+  vi.useFakeTimers();
+  await act(async () => {
+    client.on("evener/instance/list", () => structuredClone(refreshed));
+    client.emitNotification({ method: "evener/auth/updated", params: { provider: "openai" } });
+    await vi.runOnlyPendingTimersAsync();
+  });
+  vi.useRealTimers();
+  expect(credentialsStore.getState().instances).toHaveLength(2);
+  expect(reasonShown("changed")).toBe(false);
+
+  await act(async () => {
+    pending.resolve({ provider: "anthropic", status: "success", message: "" });
+    await pending.promise;
+  });
+  await checkConfirmed();
+  expect(reasonShown("changed")).toBe(false);
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+});
+
+// The same refetch that is unrelated when the target stands still is a real
+// change when the target's own access identity moves. The check's result was
+// taken against the old row and must never confirm the new one.
+test.each([
+  ["configRevision", { configRevision: "rev-2" }],
+  ["query-only endpoint fingerprint", { endpointFingerprint: "fp-moved" }],
+])("a foreign target %s change retires a pending check and its late result", async (_label, change) => {
+  const { user, client } = setup(savedList("anthropic", { configRevision: "rev-1" }));
+  const pending = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => pending.promise);
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Retry check" }));
+  expect(screen.getByRole("button", { name: "Checking model list…" })).toHaveProperty("disabled", true);
+
+  vi.useFakeTimers();
+  await act(async () => {
+    client.on("evener/instance/list", () => savedList("anthropic", { configRevision: "rev-1", ...change }));
+    client.emitNotification({ method: "evener/auth/updated", params: { provider: "openai" } });
+    await vi.runOnlyPendingTimersAsync();
+  });
+  vi.useRealTimers();
+  expect(await alertReason()).toBe("changed");
+
+  await act(async () => {
+    pending.resolve({ provider: "anthropic", status: "success", message: "" });
+    await pending.promise;
+  });
+  expect(document.querySelector('[role="status"][data-state="success"]')).toBeNull();
+  expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+});
+
+// A delayed acquisition refresh is self-marked, so it is not a "foreign"
+// transition by the store's definition. When it carries a different target
+// revision than the one the check anchored on, it is still stale evidence: the
+// old check must not confirm the target that refresh installed.
+test("a self-marked refresh that moves the checked target cannot confirm its old result", async () => {
+  const { user, client } = setup(savedList("anthropic", { configRevision: "rev-1" }));
+  const pending = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => pending.promise);
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Retry check" }));
+  expect(screen.getByRole("button", { name: "Checking model list…" })).toHaveProperty("disabled", true);
+
+  await act(async () => {
+    client.on("evener/instance/list", () => savedList("anthropic", { configRevision: "rev-2" }));
+    await credentialsStore.getState().fetchSelf();
+  });
+  expect(await alertReason()).toBe("changed");
+
+  await act(async () => {
+    pending.resolve({ provider: "anthropic", status: "success", message: "" });
+    await pending.promise;
+  });
+  expect(document.querySelector('[role="status"][data-state="success"]')).toBeNull();
   expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
 });
 test("the originating client's own auth-update echo does not invalidate its save and check", async () => {

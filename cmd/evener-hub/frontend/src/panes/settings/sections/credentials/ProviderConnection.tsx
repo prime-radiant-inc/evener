@@ -112,12 +112,17 @@ const HELP: Record<string, { label: string; keyUrl: string; billing: string }> =
   },
 };
 
-function findSetup(name: string): InstanceEntry | undefined {
-  const store = credentialsStore.getState();
+function findSetupIn(
+  listing: { instances: InstanceEntry[]; availableProviders: ProviderDescriptor[] },
+  name: string,
+): InstanceEntry | undefined {
   return (
-    store.instances.find((row) => row.name === name) ??
-    store.availableProviders.find((row) => row.setup?.name === name)?.setup
+    listing.instances.find((row) => row.name === name) ??
+    listing.availableProviders.find((row) => row.setup?.name === name)?.setup
   );
+}
+function findSetup(name: string): InstanceEntry | undefined {
+  return findSetupIn(credentialsStore.getState(), name);
 }
 function destination(row: InstanceEntry | undefined): string {
   if (!row) return "";
@@ -140,6 +145,27 @@ function destination(row: InstanceEntry | undefined): string {
     row.credentialHeader,
     row.hidden,
   ]);
+}
+/** accessIdentity is the selected row's effective access, separate from its
+ * destination: which credential source resolves, the revision of that
+ * configuration, and the stored/account facts that say what access is there.
+ * A listing refresh that replaces the row without moving any of these - new
+ * models, warnings, or another provider's entirely separate row - has not
+ * changed the evidence a check is about. */
+function accessIdentity(row: InstanceEntry | undefined): string {
+  if (!row) return "";
+  return JSON.stringify([
+    row.activeSource,
+    row.configRevision,
+    row.hasStoredFile,
+    row.hasStoredOAuth,
+    row.storedEmail,
+    row.envVar,
+    row.shadowedEnvVar,
+  ]);
+}
+function selectionIdentity(row: InstanceEntry | undefined): string {
+  return `${destination(row)}\n${accessIdentity(row)}`;
 }
 function needsConfiguration(row: InstanceEntry | undefined): boolean {
   return !row || !!row.hidden || !row.baseUrl || /[{}]/.test(row.baseUrl);
@@ -338,6 +364,12 @@ function SelectedConnection({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const errorRef = useRef<HTMLDivElement>(null);
   const operation = useRef(0);
+  // What the in-flight (or completed) check was taken against: the selected
+  // row's destination and access identity at the moment check() began. An
+  // acquisition's own confirmed revision becomes that anchor; a later listing
+  // transition that moves it retires the check, whichever mark its read
+  // carries.
+  const checkAnchor = useRef<string | null>(null);
   const active = useEditorLifetime();
   const modes = row?.authModes ?? effectiveProvider.authModes ?? [];
   const json = modes.includes("credentialJson");
@@ -382,24 +414,36 @@ function SelectedConnection({
       }
     });
     const unsubscribeStore = credentialsStore.subscribe((current, previous) => {
-      // The store schedules its own listing refresh the moment this client's
-      // auth mutation succeeds; that refresh is this flow's own change, not an
-      // unrelated one, and it lands while the flow sits in checking/result.
-      // foreignListingChange excludes it and names every other change
-      // (another client's edit, a reconnect's restore, a failed read's error
-      // field); which phases of this flow it invalidates stays the flow's rule.
+      const selected = findSetupIn(current, name);
+      // A check is evidence about the one row it anchored on, not about the
+      // listing as a whole. Another provider's update - or any read that only
+      // replaces arrays - must not retract it. The comparison deliberately
+      // ignores list loading/error flags and row fields that do not describe
+      // this target's access. It runs on self-marked transitions too: a
+      // delayed acquisition refresh that carries a different revision is stale
+      // evidence even though foreignListingChange would not report it.
+      if (phaseRef.current === "checking" || phaseRef.current === "result") {
+        if (selectionIdentity(selected) !== checkAnchor.current) invalidate();
+        return;
+      }
+      // The review names the row it showed. It survives the same unrelated
+      // replacements and retires when that row itself moves.
+      if (phaseRef.current === "review") {
+        if (selectionIdentity(selected) !== selectionIdentity(review ?? undefined)) invalidate();
+        return;
+      }
       if (!foreignListingChange(current, previous)) return;
-      if (
-        ["saving", "checking", "result", "review"].includes(phaseRef.current) ||
-        (oauth && destination(findSetup(name)) !== destination(baseline))
-      )
-        invalidate();
+      // A mutation or sign-in start has no check to anchor on yet; a foreign
+      // read can still change the connection it is about to write to. An open
+      // OAuth editor is kept across an acquisition's own source change (the
+      // destination is what it showed) and retired when the destination moves.
+      if (phaseRef.current === "saving" || (oauth && destination(selected) !== destination(baseline))) invalidate();
     });
     return () => {
       unsubscribeConnection();
       unsubscribeStore();
     };
-  }, [invalidate, oauth, name, baseline]);
+  }, [invalidate, oauth, name, baseline, review]);
   const errorMessage = error?.message;
   useEffect(() => {
     if (errorMessage) errorRef.current?.focus();
@@ -433,6 +477,7 @@ function SelectedConnection({
       setError({ reason: "check-fingerprint-unavailable", message: FINGERPRINT_UNAVAILABLE_TEST_MESSAGE });
       return;
     }
+    checkAnchor.current = selectionIdentity(target);
     setPhase("checking");
     setError(null);
     setReview(null);
