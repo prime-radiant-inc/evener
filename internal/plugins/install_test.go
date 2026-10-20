@@ -92,8 +92,8 @@ func TestInstall_AcceptsAPluginNameThatCarriesAnAt(t *testing.T) {
 // The store's scratch directories are the marketplaces directory's own
 // children, so a plugin can carry one of their names without colliding with
 // anything: its cache directory is cache/<marketplace>/.old, and the staging
-// an install fetches into is cache/<marketplace>/.old/.staging, a level
-// deeper. A catalog is free to name a plugin that, and refusing it would
+// an install fetches into has a fresh owned container below that cache
+// directory. A catalog is free to name a plugin that, and refusing it would
 // leave that plugin uninstallable.
 func TestInstall_AcceptsAPluginNamedForAScratchDirectory(t *testing.T) {
 	if !gitAvailable() {
