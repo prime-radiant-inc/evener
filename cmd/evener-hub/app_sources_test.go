@@ -37,8 +37,8 @@ func TestHubKnowsRefDoesNotScanSavedTranscript(t *testing.T) {
 // TestHubKnowsRefKeepsKnownSessionWithoutTranscript pins that existence does
 // not depend on transcript availability or size: once the past index has
 // indexed a session, removing its transcript must not make the retry gate
-// reject it. The pre-change hydration path already ignored transcript errors
-// and reported the session known, so this is answer parity, not a RED proof.
+// reject it. A known entry remains known even when its transcript cannot be
+// read.
 func TestHubKnowsRefKeepsKnownSessionWithoutTranscript(t *testing.T) {
 	t.Run("small", func(t *testing.T) {
 		cfg, entry, path := seedIndexedPastSession(t, completedExecution("turn_known"))
@@ -99,9 +99,7 @@ func TestHubKnowsRefRejectsUnknownReferences(t *testing.T) {
 
 // BenchmarkHubKnowsRef times saved-session existence across transcript sizes
 // with a warm past index. The saved transcripts are empty, small and large;
-// every iteration asserts the known session is accepted. Before saved-session
-// existence was metadata-only, each iteration hydrated the transcript and
-// scanned it for derived totals.
+// every iteration asserts the known session is accepted.
 func BenchmarkHubKnowsRef(b *testing.B) {
 	cases := []struct {
 		name   string
