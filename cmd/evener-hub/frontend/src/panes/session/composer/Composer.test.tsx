@@ -3142,8 +3142,8 @@ test.each(["", "  ", "occupied draft"])(
     });
     const cap = render(<TurnBlock turn={turn} sessionRef="ref_a" />);
     fireEvent.click(within(cap.container).getByRole("button", { name: "Retry" }));
-    await waitFor(async () => expect(await storage.listRecovery("ref_a")).toHaveLength(1));
     await flushPendingTurnsProjectionForTests();
+    expect(await storage.listRecovery("ref_a")).toHaveLength(1);
     expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
     expect(textarea().textContent).toBe(text);
     view.unmount();
@@ -3202,9 +3202,9 @@ test.each([false, true])("failed-turn Retry preserves a selected and attached dr
     <TurnBlock turn={{ id: "failed", status: "failed", error: { message: "failed" }, items: [] }} sessionRef="ref_a" />,
   );
   fireEvent.click(within(cap.container).getByRole("button", { name: "Retry" }));
-  await waitFor(() => expect(view.fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
-  if (rejected) await waitFor(async () => expect(await storage.listRecovery("ref_a")).toHaveLength(1));
   await flushPendingTurnsProjectionForTests();
+  expect(view.fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  if (rejected) expect(await storage.listRecovery("ref_a")).toHaveLength(1);
   const request = view.fake.calls.find((call) => call.method === "turn/start");
   expect((request?.params as { input: InputItem[] } | undefined)?.input).toMatchInlineSnapshot(`
     [

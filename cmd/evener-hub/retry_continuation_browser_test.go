@@ -93,13 +93,13 @@ func TestRetryContinuationJourney(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				driver := exec.CommandContext(ctx, "node", "frontend/scripts/retryguard/run.mjs")
+				driver := retryContinuationDriverCommand(ctx, "frontend/scripts/retryguard/run.mjs")
 				if surface == "native" {
 					fixturePath := filepath.Join(dir, "connection.json")
 					if err := os.WriteFile(fixturePath, data, 0600); err != nil {
 						t.Fatal(err)
 					}
-					driver = exec.CommandContext(ctx, "node", "node_modules/vitest/vitest.mjs", "run", "--maxWorkers=1", "src/ConversationScreen.retryJourney.test.tsx")
+					driver = retryContinuationDriverCommand(ctx, "node_modules/vitest/vitest.mjs", "run", "--maxWorkers=1", "src/ConversationScreen.retryJourney.test.tsx")
 					driver.Dir = "../../mobile-native"
 					driver.Env = append(os.Environ(), "EVENER_RETRY_JOURNEY="+fixturePath)
 				} else {
@@ -149,4 +149,12 @@ func TestRetryContinuationJourney(t *testing.T) {
 			})
 		}
 	}
+}
+
+func retryContinuationDriverCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "node", args...)
+	// Let the driver's lifecycle reap its detached browser and remove its
+	// profile before the existing bounded forced-stop policy takes over.
+	configureBackgroundDriverCommand(cmd)
+	return cmd
 }

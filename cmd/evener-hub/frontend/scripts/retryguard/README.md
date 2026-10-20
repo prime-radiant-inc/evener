@@ -13,12 +13,15 @@ dependencies installed:
 
 ```sh
 make build-web
-go test -tags browserguard ./cmd/evener-hub -run '^TestRetryContinuationJourney$' -count=1 -v
+go test -tags browserguard ./cmd/evener-hub -run '^TestRetryContinuation' -count=1 -v
 ```
 
 Chrome must be available through the existing browser-guard setup. Missing
 prerequisites fail the test. CI runs the journey after `make test-web-browser`.
-To isolate a client, add `/browser` or `/native` to the Go test name.
+To isolate a client, use `^TestRetryContinuationJourney$/browser` or
+`^TestRetryContinuationJourney$/native`. On Linux, the driver controls also
+verify cancellation cleanup, preserved exit errors and bounded forced stop
+with real Node processes and the browser lifecycle.
 
 The browser uses the production bundle. Native uses the actual conversation
 screen, connection provider, shared conversation service, durable mutation

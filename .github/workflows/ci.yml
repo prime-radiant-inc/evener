@@ -88,7 +88,7 @@ jobs:
           npm ci --prefix appwire-client/typescript
 
       - name: Failed-turn continuation in both clients
-        run: go test -tags browserguard ./cmd/evener-hub -run '^TestRetryContinuationJourney$' -count=1 -v
+        run: go test -tags browserguard ./cmd/evener-hub -run '^TestRetryContinuation' -count=1 -v
 
       - uses: ./.github/actions/go-cache-save
 
