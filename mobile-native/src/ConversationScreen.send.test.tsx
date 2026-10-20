@@ -19,7 +19,7 @@ import {
 } from "@evener/appwire-client";
 import { findBar, findMatches, findShows } from "./findBarTestUtils";
 import { hasTestID, markers } from "./markerTestUtils";
-import { nativeDrafts } from "./nativeDrafts";
+import { drafts, nativeDrafts } from "./nativeDrafts";
 import { getNativeMutationRuntime, nativeMutationTargetKey } from "./nativeMutationRuntime";
 import {
 	flatListCalls,
@@ -2569,30 +2569,53 @@ it("doesn't page older history while the hub is away", async () => {
 	expect(hub.requests.filter((request) => request.method === "thread/turns/list")).toEqual([]);
 });
 
-it("retries a failed turn by re-sending its own input, and leaves your draft alone", async () => {
-	const served = thread("ref-retry-turn", "idle");
-	(served as unknown as { turns: unknown[] }).turns = [
-		{
-			id: "turn_1",
-			status: "failed",
-			itemsView: "default",
-			error: { message: "go test exited 1" },
-			items: [{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "my original question" }],
-		},
-	];
-	const { tree, hub } = await mount(served);
-	await type(tree, "keep this");
-	playedHaptics.length = 0;
-	await press(tree, "Retry");
-	expect(hub.mutations()).toEqual(["turn/start"]);
-	// Spec 16.6: a light impact on send, a retry's included.
-	expect(playedHaptics).toEqual(["impact:light"]);
-	const start = hub.requests.find((request) => request.method === "turn/start");
-	expect(start?.params.input).toEqual([{ type: "text", text: "my original question" }]);
-	expect(field(tree)?.props.value).toBe("keep this");
-});
+it.each(["idle", "active"] as const)(
+	"retries a failed turn with continuation while %s, leaving the draft alone",
+	async (status) => {
+		const ref = `ref-retry-turn-${status}`;
+		const served = thread(ref, status);
+		(served as unknown as { turns: unknown[] }).turns = [
+			{
+				id: "turn_1",
+				status: "failed",
+				itemsView: "default",
+				error: { message: "go test exited 1" },
+				items: [
+					{ id: "u-1", turnId: "turn_1", type: "userMessage", status: "completed", text: "my original question" },
+				],
+			},
+		];
+		const { tree, hub } = await mount(served);
+		await type(tree, "keep this");
+		const destination = { hubId: "hub-1", sessionRef: ref };
+		const document = drafts.open(destination);
+		act(() =>
+			document.addImage({ id: "draft-image", marker: 1, mediaType: "image/png", name: "draft.png", data: "AQID" }),
+		);
+		const before = document.getSnapshot().record;
+		const imagesBefore = nativeDrafts().imageInputs(destination, before.images ?? []);
+		playedHaptics.length = 0;
+		await press(tree, "Retry");
+		const method = status === "idle" ? "turn/start" : "turn/queue";
+		expect(hub.mutations()).toEqual([method]);
+		// Spec 16.6: a light impact on send, a retry's included.
+		expect(playedHaptics).toEqual(["impact:light"]);
+		const start = hub.requests.find((request) => request.method === method);
+		expect(start?.params.input).toMatchInlineSnapshot(`
+		[
+		  {
+		    "text": "continue",
+		    "type": "text",
+		  },
+		]
+	`);
+		expect(field(tree)?.props.value).toBe(before.draft);
+		expect(document.getSnapshot().record).toEqual(before);
+		expect(nativeDrafts().imageInputs(destination, document.getSnapshot().record.images ?? [])).toEqual(imagesBefore);
+	},
+);
 
-it("re-sends the failed turn's images with its text on Retry", async () => {
+it("Retry continues without re-sending the failed turn's images", async () => {
 	const served = thread("ref-retry-images", "idle");
 	(served as unknown as { turns: unknown[] }).turns = [
 		{
@@ -2616,16 +2639,17 @@ it("re-sends the failed turn's images with its text on Retry", async () => {
 	await press(tree, "Retry");
 	expect(hub.mutations()).toEqual(["turn/start"]);
 	const start = hub.requests.find((request) => request.method === "turn/start");
-	// The anchor re-translates to the same marker prose at the submit boundary,
-	// and the image rides its own wire item with its bytes — exactly the input
-	// that opened the failed turn.
-	expect(start?.params.input).toEqual([
-		{ type: "text", text: "(attached image 1: plot.png) my original question" },
-		{ type: "image", mediaType: "image/png", data: "image-bytes", name: "plot.png" },
-	]);
+	expect(start?.params.input).toMatchInlineSnapshot(`
+		[
+		  {
+		    "text": "continue",
+		    "type": "text",
+		  },
+		]
+	`);
 });
 
-it("says when a Retry went out without images it could not re-send", async () => {
+it("Retry continues an image-only turn even when its bytes are unavailable", async () => {
 	const served = thread("ref-retry-dropped", "idle");
 	(served as unknown as { turns: unknown[] }).turns = [
 		{
@@ -2639,10 +2663,7 @@ it("says when a Retry went out without images it could not re-send", async () =>
 					turnId: "turn_1",
 					type: "userMessage",
 					status: "completed",
-					// A reloaded turn: the image's src is a sha reference the
-					// phone cannot turn back into bytes, so the retry can send
-					// the text but must drop the image — and say so.
-					text: "(attached image 1: plot.png) my original question",
+					text: "(attached image 1: plot.png)",
 					images: [{ src: "sha:abc123", name: "plot.png" }],
 				},
 			],
@@ -2652,15 +2673,18 @@ it("says when a Retry went out without images it could not re-send", async () =>
 	await press(tree, "Retry");
 	expect(hub.mutations()).toEqual(["turn/start"]);
 	const start = hub.requests.find((request) => request.method === "turn/start");
-	// The text goes out alone; the toast says an image stayed behind.
-	expect(start?.params.input).toEqual([{ type: "text", text: "(attached image 1: plot.png) my original question" }]);
-	const toastText = tree.root
-		.findAll((node) => String(node.type) === "Text")
-		.find((node) => typeof node.props.children === "string" && node.props.children.includes("attached image"));
-	expect(toastText).toBeDefined();
+	expect(start?.params.input).toMatchInlineSnapshot(`
+		[
+		  {
+		    "text": "continue",
+		    "type": "text",
+		  },
+		]
+	`);
+	expect(toasts(tree)).toEqual([]);
 });
 
-it("offers no Retry when the failed turn's own input cannot be re-sent", async () => {
+it("Retry continues when the original input is outside loaded history", async () => {
 	const served = thread("ref-retry-none", "idle");
 	(served as unknown as { turns: unknown[] }).turns = [
 		{
@@ -2673,14 +2697,65 @@ it("offers no Retry when the failed turn's own input cannot be re-sent", async (
 		},
 	];
 	const { tree, hub } = await mount(served);
-	expect(pressable(tree, "Retry")).toBeUndefined();
-	// Nothing went out: no canned sentence stands in for the person's words.
-	expect(hub.mutations()).toEqual([]);
+	await press(tree, "Retry");
+	expect(hub.mutations()).toEqual(["turn/start"]);
+	expect(hub.requests.find((request) => request.method === "turn/start")?.params.input).toMatchInlineSnapshot(`
+		[
+		  {
+		    "text": "continue",
+		    "type": "text",
+		  },
+		]
+	`);
 });
 
 // Retry shows only while a press would send, which a session control going
 // pending (a compact) changes without changing the rows: the row still
 // follows it.
+it.each(["", "  ", "unsent work"])("a refused Retry keeps native draft %j and remains recoverable", async (text) => {
+	const ref = `ref-retry-refusal-${text.length}`;
+	const { tree, hub } = await mount(failedTurn(ref, "provider failure"));
+	await type(tree, text);
+	const document = drafts.open({ hubId: "hub-1", sessionRef: ref });
+	const before = document.getSnapshot().record;
+	const request = hub.client.request;
+	let refuse = true;
+	vi.spyOn(hub.client, "request").mockImplementation(async (method, params) => {
+		if (method === "turn/start" && refuse) {
+			hub.requests.push({ method, params });
+			throw new WireError("refused", -32602, {
+				clientMutationId: params.clientMutationId,
+				mutationOutcome: "notAccepted",
+				retryDisposition: "none",
+			});
+		}
+		return request(method, params);
+	});
+	await press(tree, "Retry");
+	expect(ghostStates(tree)).toContain("refused");
+	expect(document.getSnapshot().record).toEqual(before);
+	expect(field(tree)?.props.value).toBe(text);
+	const runtime = getNativeMutationRuntime();
+	const target = nativeMutationTargetKey("hub-1", ref);
+	expect(await runtime.storage.listRecovery(target)).toHaveLength(1);
+	if (text === "") {
+		refuse = false;
+		await press(tree, "Edit");
+		await press(tree, "Send");
+		await press(tree, "Discard");
+		expect(await runtime.storage.listRecovery(target)).toHaveLength(0);
+		expect(hub.mutations()).toEqual(["turn/start", "turn/start"]);
+		expect(hub.requests.filter((entry) => entry.method === "turn/start")[1]?.params.input).toMatchInlineSnapshot(`
+			[
+			  {
+			    "text": "continue",
+			    "type": "text",
+			  },
+			]
+		`);
+	}
+});
+
 it("hides Retry while a session control is pending, and brings it back once it settles", async () => {
 	const served = thread("ref-retry-pending", "idle");
 	served.evener = { ...served.evener, capabilities: { ...served.evener.capabilities, compact: true } };
@@ -2967,7 +3042,7 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 	});
 });
 
-it("re-sends an image-only failed turn's images on Retry", async () => {
+it("Retry continues an image-only failed turn without reattaching it", async () => {
 	const served = thread("ref-retry-image-only", "idle");
 	(served as unknown as { turns: unknown[] }).turns = [
 		{
@@ -2992,15 +3067,14 @@ it("re-sends an image-only failed turn's images on Retry", async () => {
 	await press(tree, "Retry");
 	expect(hub.mutations()).toEqual(["turn/start"]);
 	const start = hub.requests.find((request) => request.method === "turn/start");
-	// Marker-only text carries no words of the user's own: only the image
-	// rides, exactly as the original image-only send did.
-	// The recorded original is the marker prose with the image (that is how an
-	// image-only submission is stored), so the re-issue carries exactly that —
-	// no invented sentence, and the send actually goes out.
-	expect(start?.params.input).toEqual([
-		{ type: "text", text: "(attached image 1: plot.png)" },
-		{ type: "image", mediaType: "image/png", data: "image-bytes", name: "plot.png" },
-	]);
+	expect(start?.params.input).toMatchInlineSnapshot(`
+		[
+		  {
+		    "text": "continue",
+		    "type": "text",
+		  },
+		]
+	`);
 });
 
 it("opens sign-in from an error that says a sign-in failed", async () => {
