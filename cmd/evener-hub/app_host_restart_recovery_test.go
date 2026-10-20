@@ -41,15 +41,20 @@ func TestHostRestartReconcilesDistinctBuildDeployment(t *testing.T) {
 		probeVersion    string
 		probeStart      string
 		delayBridgeExit bool
+		emptyPath       bool
 		want            hostops.State
 	}{
 		{name: "requested-build-replaces-predecessor", want: hostops.StateComplete},
 		{name: "replacement-before-bridge-exit", delayBridgeExit: true, want: hostops.StateComplete},
+		{name: "resolved-path-before-bridge-exit", emptyPath: true, delayBridgeExit: true, want: hostops.StateComplete},
 		{name: "wrong-build", probeVersion: restartBuildA, want: hostops.StateFailed},
 		{name: "wrong-process", probeStart: restartStartA, want: hostops.StateFailed},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			host := deployTestHost()
+			if scenario.emptyPath {
+				host.EvenerPath = ""
+			}
 			registry, err := hostreg.New([]hostreg.Host{host})
 			if err != nil {
 				t.Fatal(err)
@@ -90,6 +95,13 @@ func TestHostRestartReconcilesDistinctBuildDeployment(t *testing.T) {
 			}
 			m.cfg.opsWG.Wait()
 			assertRestartRecoveryRecord(t, store, deploy.ID, hostops.StateFailed)
+			runner.mu.Lock()
+			initialWrites := runner.writes
+			runner.mu.Unlock()
+			if initialWrites != 1 {
+				record, _ := store.Record(deploy.ID)
+				t.Fatalf("deployment did not reach its interrupted write: writes=%d result=%+v", initialWrites, record.Result)
+			}
 			host, _ = registry.Get(host.Name)
 			restart, err := m.Restart(t.Context(), appwire.HostRestartParams{
 				Name: host.Name, Generation: host.Generation, IncarnationID: host.IncarnationID,
@@ -227,6 +239,8 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 		return fmt.Appendf(nil, `{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, r.diskVersion), nil
 	case strings.Contains(command, "test -d /opt/evener/bin"):
 		return nil, nil
+	case strings.Contains(command, "command -v evener"):
+		return []byte("/opt/evener/bin/evener\n"), nil
 	case strings.Contains(command, "evener_resolve"):
 		return []byte("/opt/evener/bin/evener\n"), nil
 	case strings.Contains(command, "list-units"):

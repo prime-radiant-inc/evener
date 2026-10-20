@@ -83,23 +83,26 @@ func (m *Manager) deployForOperation(ctx context.Context, host hostreg.Host, fac
 // restart completes a pending deployment. The target is captured before the
 // restart, never inferred from the replacement's health response.
 func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
-	if pending := m.pendingRestart(host.Name); pending.needsDeployment(facts) {
-		// This explicit Restart authorizes replacement even when the unfinished
-		// deployment was deploy-only. Finish its write before replacing its marker.
-		pending.restart = true
-		_, after, err := m.deployForOperation(ctx, host, facts, pending)
-		if err != nil {
-			return "", err
-		}
-		facts = after
-		m.applyResolvedTarget(&host)
-	}
 	restartCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
 	defer cancel()
+	registration := host
 	m.applyResolvedTarget(&host)
 	// Attachment proves the running hub's protocol, not the executable that
-	// will replace it. Re-read that target before stopping a usable process.
+	// will replace it. Cached facts cannot settle a pending installation either.
 	facts, err := m.reReadLaunchContract(restartCtx, host, facts)
+	if pending := m.pendingRestart(host.Name); pending.deployment && (err != nil || pending.needsDeployment(facts)) {
+		// This explicit Restart authorizes replacement even when the unfinished
+		// deployment was deploy-only. Finish its write before replacing its marker.
+		// An unusable contract must not block this already-authorized repair;
+		// deployForOperation validates both the installed contract and exact build.
+		pending.restart = true
+		cancel()
+		_, facts, err = m.deployForOperation(ctx, host, facts, pending)
+		m.applyResolvedTarget(&host)
+		// Deployment and the ensuing restart retain their separate phase budgets.
+		restartCtx, cancel = context.WithTimeout(ctx, m.opts.deployLimit())
+		defer cancel()
+	}
 	if err != nil {
 		return "", err
 	}
@@ -114,7 +117,7 @@ func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, fa
 	}
 	// Health has proved the replacement. The predecessor's SSH reader may not
 	// have observed EOF yet, so make reattach replace its channel immediately.
-	if ch := m.currentChannel(host.Name); ch != nil && ch.MatchesRegistration(host) {
+	if ch := m.currentChannel(host.Name); ch != nil && ch.MatchesRegistration(registration) {
 		ch.markLost()
 	}
 	return version, nil
