@@ -1214,10 +1214,117 @@ test("a reopened reader's faulted reread fences another reader's pending handoff
   // reader's pending handoff can no longer append its obsolete reference.
   expect(work2.phase).toBe("expiry-pending");
   failAppend = false;
-  const handoff = await f.repo.handoff(f.document, saved.operationId);
+  // The handoff and the draft read can publish into the still-mounted
+  // reader: act-wrapped awaits, so a loaded run cannot observe the update
+  // outside act (the #4707 class's escape point).
+  let handoff: Awaited<ReturnType<typeof f.repo.handoff>> | undefined;
+  let draftText: string | undefined;
+  await act(async () => {
+    handoff = await f.repo.handoff(f.document, saved.operationId);
+    const loaded = await f.drafts.load(f.key);
+    draftText = loaded?.text;
+  });
+  if (!handoff) throw new Error("expected a handoff result");
   expect(handoff.state).toBe("cancelled");
-  const draft = await f.drafts.load(f.key);
-  expect(draft?.text).not.toContain("Reader 1 note");
+  expect(draftText).not.toContain("Reader 1 note");
+  host2b.unmount();
+});
+
+test("a retained attempt's proven change still fences the epoch's other pending handoff", async () => {
+  let failSave = false;
+  let failAppend = false;
+  const f = await fixture("authority-retained-attempt-fence", {
+    beforeCommit: (operation) => {
+      if (operation === "save" && failSave) throw new Error("reader-2 save fault");
+    },
+    beforeAbortableCompletion: () => {
+      if (failAppend) throw new Error("append storage fault");
+    },
+  });
+  await settleBaseline(f);
+  const { ports } = annotationPorts(f);
+  const client = connectFakeClient();
+  const changedSource = `${SOURCE}\nCHANGED`;
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const listReads = observeListAnnotations(f.repo);
+
+  // Reader 1 saves an annotation whose handoff stays pending: the append
+  // faults at the real completion boundary, so the durable pending row and
+  // its receipt outlive the reader that saved them.
+  failAppend = true;
+  const host1 = mountAnnotated(f, ports, client, "doc-retained-a");
+  const work1 = documentReaderWork("doc-retained-a", f.document, ports);
+  await waitForCurrentBoundMap(work1, maps);
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Reader 1 note." } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  const saved = await waitFor(() => {
+    if (!work1.saved) throw new Error("reader-1 save never settled");
+    return work1.saved;
+  });
+  const savedEpoch = saved.lease.epoch;
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  const pending = (await f.repo.listAnnotations(f.document)).find(
+    (view) => view.operation.operationId === saved.operationId,
+  );
+  expect(pending?.handoff.state).toBe("pending");
+  host1.unmount();
+
+  // Reader 2 opens the same document and its first Send FAULTS: a retained
+  // attempt in the same epoch, no saved work of its own.
+  const host2 = mountAnnotated(f, ports, client, "doc-retained-b");
+  const work2 = documentReaderWork("doc-retained-b", f.document, ports);
+  await waitForCurrentBoundMap(work2, maps);
+  expect(work2.lease?.epoch).toBe(savedEpoch);
+  await selectFirstPassage();
+  fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Reader 2 attempt." } });
+  failSave = true;
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(work2.phase).toBe("unsaved"));
+  expect(work2.attempted).not.toBeNull();
+  failSave = false;
+  host2.unmount();
+
+  // The source changes, and reader 2's reread faults at the beginRead
+  // boundary while the raw fetch of the changed source succeeds: the
+  // proven-change branch runs with a retained attempt and a successful
+  // discard.
+  mockRead.mockResolvedValue(docContent(changedSource, "rev-B"));
+  const armed = { value: true };
+  faultBeginReadTransaction(armed);
+  cleanupAfterTest(() => {
+    armed.value = false;
+  });
+  const host2b = mountAnnotated(f, ports, client, "doc-retained-b");
+  await within(host2b.container).findByText("CHANGED");
+  await act(async () => {
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+
+  // The proven change fences the WHOLE epoch: reader 1's persisted pending
+  // handoff must not append its obsolete reference just because reader 2
+  // holds, or successfully discards, a retained attempt of its own.
+  expect(work2.phase).toBe("expiry-pending");
+  failAppend = false;
+  // The handoff publishes into the still-mounted reader: an act-wrapped await,
+  // the same boundary the reopened-reader fence test needs in loaded runs.
+  let handoff: Awaited<ReturnType<typeof f.repo.handoff>> | undefined;
+  await act(async () => {
+    handoff = await f.repo.handoff(f.document, saved.operationId);
+  });
+  if (!handoff) throw new Error("expected a handoff result");
+  expect(handoff.state).toBe("cancelled");
+  let draftText: string | undefined;
+  await act(async () => {
+    const loaded = await f.drafts.load(f.key);
+    draftText = loaded?.text;
+  });
+  expect(draftText).not.toContain("Reader 1 note");
   host2b.unmount();
 });
 
