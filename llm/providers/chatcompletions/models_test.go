@@ -215,6 +215,35 @@ func TestListModelsGatewayPiWithoutMapStatesNoLadder(t *testing.T) {
 	}
 }
 
+// TestListModelsReadsGatewayDialect pins the two wire-shaping compat fields a
+// gateway publishes per model. A lunaroute glm row says zai; without reading
+// it the row spells the openai dialect and the thinking object never opens.
+func TestListModelsReadsGatewayDialect(t *testing.T) {
+	c := listRow(t, `{"id":"glm-5.3","capabilities":{"reasoning":true},"client_compat":{"pi":{"thinkingFormat":"zai","maxTokensField":"max_tokens","supportsReasoningEffort":true,"thinkingLevelMap":{"low":"low","high":"high"}}}}`)
+	if got := registry.StringValue(c.ThinkingFormat); got != "zai" {
+		t.Fatalf("ThinkingFormat = %q, want zai", got)
+	}
+	if got := registry.StringValue(c.MaxTokensField); got != "max_tokens" {
+		t.Fatalf("MaxTokensField = %q, want max_tokens", got)
+	}
+}
+
+// TestListModelsGatewayEffortUnsupportedIsToggleOnly pins a model the gateway
+// says takes no effort parameter: the row is reasoning-capable but has no
+// effort control, so derivation cannot infer one and requests spell no level.
+func TestListModelsGatewayEffortUnsupportedIsToggleOnly(t *testing.T) {
+	c := listRow(t, `{"id":"toggle-model","supported_parameters":["reasoning"],"client_compat":{"pi":{"supportsReasoningEffort":false,"thinkingLevelMap":{"low":"low","high":"high"}}}}`)
+	if !slices.Equal(c.ReasoningControls, []string{"toggle"}) {
+		t.Fatalf("ReasoningControls = %#v, want toggle-only", c.ReasoningControls)
+	}
+	if c.EffortCapable() || len(c.EffortValues) != 0 {
+		t.Fatalf("effort must be unavailable: capable=%v ladder=%#v", c.EffortCapable(), c.EffortValues)
+	}
+	if c.Reasoning == nil || !*c.Reasoning {
+		t.Fatalf("Reasoning = %v, want true", c.Reasoning)
+	}
+}
+
 // TestListModelsPrefersContextLengthOverContextWindow keeps OpenRouter's
 // ordering: context_length wins when both spellings are present.
 func TestListModelsPrefersContextLengthOverContextWindow(t *testing.T) {

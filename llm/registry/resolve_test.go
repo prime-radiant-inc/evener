@@ -1329,6 +1329,25 @@ func TestResolve_LiveInputModalitiesReachCaps(t *testing.T) {
 	}
 }
 
+// A gateway's per-model dialect and token spelling reach the resolved row
+// through the live layer, so an uncatalogued gateway model is spelled the way
+// its gateway accepts instead of falling back to the protocol default.
+func TestResolve_LiveWireFactsReachCaps(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	r.ApplyLive("openrouter", []Model{{
+		ID:   "qwen/qwen3-coder",
+		Caps: Caps{ThinkingFormat: new("qwen"), MaxTokensField: new("max_tokens")},
+	}})
+	res := mustResolve(t, r, "openrouter/qwen/qwen3-coder")
+	if registry := res.Caps; registry.ThinkingFormat == nil || *registry.ThinkingFormat != "qwen" ||
+		registry.MaxTokensField == nil || *registry.MaxTokensField != "max_tokens" {
+		t.Fatalf("live wire facts must reach Caps: %+v", res.Caps)
+	}
+	if res.Provenance["ThinkingFormat"] != "live" || res.Provenance["MaxTokensField"] != "live" {
+		t.Fatalf("provenance = %+v, want the live layer", res.Provenance)
+	}
+}
+
 var provRe = regexp.MustCompile(`^((snapshot|cache|overlay|config)/(provider|row|glob:.+)|live|alias|derived)$`)
 
 func TestResolve_ProvenanceNamesRealLayers(t *testing.T) {
