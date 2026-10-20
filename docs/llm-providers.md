@@ -80,6 +80,75 @@ The registry supplies the instance, model facts, protocol, and surface. The prof
 `resp.Provider` and error labels are stamped back to the instance name
 centrally, in `llm.Client`, not by each protocol package.
 
+## Image recovery
+
+The [Chat Completions adapter](../llm/providers/chatcompletions/image_recovery.go)
+owns JPEG normalization recovery for browser, native, CLI and tool images using
+that protocol. [S15](product/subsystems.md#capabilities-and-configuration) owns this
+shared behavior, not a client-side resubmission loop. Ordinary accepted requests
+are unchanged.
+
+```mermaid
+flowchart TD
+  Original[Send original request] --> Rejected{HTTP 400 or 422 image normalization rejection}
+  Rejected -->|No| Existing[Existing success or failure handling]
+  Rejected -->|Yes| Repair[Build private sRGB PNG copy or safe ICC-only JPEG fallback]
+  Repair -->|Changed| Retry[Retry same endpoint and model]
+  Repair -->|Unchanged| Existing
+  Retry -->|Accepted| Continue[Continue same turn]
+  Retry -->|Managed image rejected again or expanded PNG gets 413| Final[Try distinct profile-free JPEG from original]
+  Retry -->|Other failure| Existing
+  Final -->|Changed and smaller when required| Last[One final same-model attempt]
+  Final -->|No usable change| Existing
+  Last -->|Accepted| Continue
+  Last -->|Rejected| Existing
+```
+
+Both `Complete` and `Stream` repair only a definite HTTP rejection before a stream
+is exposed. There are at most **two repair resends**, on the same endpoint and
+model, and no identical-body resend. A started stream is never replayed. Each HTTP
+exchange retains API-attempt accounting; cancellation stops new attempts and image
+work, including expiration of the active attempt's configured request deadline.
+An attempt timeout remains eligible for configured retries while the caller's
+context is live; an expired caller deadline ends the retry chain.
+If an expanded PNG gets HTTP 413 and there is no distinct smaller fallback,
+the adapter returns the **original image rejection**, not that repair-only 413.
+Existing configured model fallback can then run without forced history compaction.
+
+The [portable repair helper](../llm/internal/imagerepair/icc.go) supports a bounded
+**ICC v4 input/display RGB matrix/TRC subset with XYZ D50 PCS**, including supported
+Display P3 and sRGB profiles. It accepts validated `curv` curves (identity, gamma or
+monotone sampled tables) and `para` types 0–4. It does not select transforms by
+profile name. Conversion uses relative colorimetry, without black-point
+compensation or perceptual LUTs, and clips out-of-sRGB-gamut colors. Untagged RGB
+JPEGs use conventional sRGB interpretation. Clean PNG output applies all eight EXIF
+orientations and keeps visual dimensions, without resizing. No CGO, new dependency,
+Python, ImageMagick or system color library is required at runtime.
+
+Unsupported profiles, including ICC v2, LUT-based and non-RGB profiles, and
+contradictory or malformed profiles can take the safe ICC-only fallback. This
+removes only ICC APP2 segments, retaining compressed image data, EXIF and unrelated
+metadata. It is **not color conversion**. The adapter places a fixed color-fidelity
+caveat beside each unmanaged image and returns `image_color_unmanaged` in
+`llm.Response.Warnings` on success. After successful model settlement the session
+publishes that code with provider source through existing `events.WarningData`
+diagnostics for all clients. These are live notices, not durable transcript warning
+entries, and do not require user action.
+
+Recovery limits are **32 MiB encoded JPEG**, **16 million decoded pixels per
+image**, **1 MiB aggregate ICC per image**, and **64 MiB encoded PNG**, with an
+aggregate **32 million decoded pixels per repair attempt**. Exhausting a decode
+budget still permits safe metadata-only repair. These bounds limit repair, not
+acceptance of the original request.
+
+Repairs affect only disposable copies of final provider-bound messages, after
+overlays and transport preparation. Original attachments, input/history, caller
+objects, registry options, text, tools and image order remain intact. Subsequent
+calls start from the original images again. MPF/multipicture and concatenated JPEGs
+remain byte-for-byte unchanged in both paths. There is no image deletion, remote
+URL fetching, new filesystem read or persistent repair cache. Other protocols,
+remote image URLs and unsupported image formats keep their existing behavior.
+
 ## Request timeouts
 
 Each request carries an `llm.AdapterTimeout`. `AdapterTimeout.Request` is the

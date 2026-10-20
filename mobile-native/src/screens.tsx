@@ -128,7 +128,7 @@ import {
 } from "./readerPosition";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { type ErrorAction, errorAction } from "./session/errorAction";
-import { originatingInput } from "./session/turnRetryInput";
+import { TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 import {
 	type Ghost,
 	type GhostAction,
@@ -2568,40 +2568,18 @@ export function ConversationScreen({
 		},
 		[store],
 	);
-	// An error row's Retry re-sends the input that opened the failed turn
-	// through Send's own path (ruling 26): your words and images again, never a
-	// sentence invented for you, and whatever you were typing stays alone.
-	const toastShow = useToast().show;
+	// Continuation uses Send's routing without consuming the current draft.
 	const retryFailedTurn = useCallback(async () => {
 		const kind = liveSendKind();
 		if (!service || kind === null) return;
-		const live = store.getState();
-		const latest = live.conversation?.turns[live.conversation.turns.length - 1];
-		const origin = latest ? originatingInput(live.conversation.turns, latest.id) : undefined;
-		if (origin?.kind !== "retry") return;
 		setActionError(null);
-		// Images whose bytes did not survive (a reloaded turn's sha-routed
-		// sources) stay behind: the request goes out with the text it can
-		// re-send, and the person is told what to re-attach, as on the web.
-		const dropped = origin.input.sourceImageCount - (origin.input.attachments?.length ?? 0);
 		try {
-			await document.submitText(
-				origin.input.text,
-				async (text, images) => deliver(service, kind, text, images),
-				origin.input.attachments,
-			);
-			if (dropped > 0)
-				toastShow({
-					text:
-						dropped === 1
-							? "Retried without an attached image. Re-attach it to ask about it again."
-							: `Retried without ${dropped} attached images. Re-attach them to ask about them again.`,
-					kind: "retry:dropped-images",
-				});
+			await document.submitText(TURN_CONTINUATION_TEXT, async (text, images) => deliver(service, kind, text, images));
 		} catch {
 			// As with Send, a refusal leaves the unconfirmed ghost to say so.
 		}
-	}, [liveSendKind, service, document, deliver, store, toastShow]);
+	}, [liveSendKind, service, document, deliver]);
+
 	const runErrorAction = useCallback(
 		(errorAction: ErrorAction) => {
 			if (errorAction === "resume") void controls?.resume();

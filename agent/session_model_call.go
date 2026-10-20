@@ -1415,6 +1415,17 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
 	attempt.Protocol = group.Protocol()
 	group.SettleResult(callCtx, nil)
+	for _, warning := range modelResp.Response.Warnings {
+		if warning.Code == llm.WarningCodeImageColorUnmanaged {
+			s.emit(events.EventWarning, events.WarningData{
+				Code:    warning.Code,
+				Source:  string(diagnostic.SourceProvider),
+				Message: warning.Message,
+				Title:   "Image recovered with reduced color fidelity",
+				Hint:    "The turn continued automatically. Exact colors may be inaccurate; the original attachment is unchanged.",
+			})
+		}
+	}
 	return withPreviews(modelResp), req, attempt, usedProfile, nil
 }
 
