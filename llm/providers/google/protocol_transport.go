@@ -21,7 +21,7 @@ func (p *Protocol) call(operation, family, method, u string, body map[string]any
 
 func (p *Protocol) completionCall(operation, family, method, u string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
 	call := p.call(operation, family, method, u, body, req, res)
-	call.FinalizeBody = func(finalBody map[string]any) error {
+	call.FinalizeBody = func(_ context.Context, finalBody map[string]any) error {
 		return reconcileOutputField(finalBody, req.MaxTokens, res.Caps.MaxOutputTokens)
 	}
 	return call
