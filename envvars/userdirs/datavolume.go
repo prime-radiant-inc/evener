@@ -21,7 +21,7 @@ func StripDataVolumeAlias(p string) string {
 		return "/"
 	}
 	if rest, ok := strings.CutPrefix(c, dataVolumePrefix+"/"); ok {
-		return filepath.Clean("/" + rest)
+		return "/" + rest
 	}
 	return c
 }
