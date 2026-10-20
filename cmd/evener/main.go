@@ -165,6 +165,17 @@ func exitCodeForSignal(sig os.Signal) int {
 }
 
 func mainWithDeps(deps mainDeps) {
+	// A TMPDIR inherited from an enclosing evener session names that session's
+	// temp container, and the container is deleted when the session ends. By
+	// the time a process started from that session runs, the value can already
+	// name nothing, and every os.MkdirTemp("") below it fails. Dropping only a
+	// value that is already dead here is safe and leaves the rest untouched; a
+	// value that dies while this process is up is what the artifact store's
+	// degraded path covers.
+	if !cmdutil.TempDirExists(envvars.TmpDir.Getenv()) {
+		_ = envvars.TmpDir.Unsetenv()
+	}
+
 	// Report the evener build version in agent session metadata. The provider
 	// User-Agent is stamped by cmdutil.NewRegistryClient when the client loads.
 	agent.BuildVersion = buildinfo.Version()

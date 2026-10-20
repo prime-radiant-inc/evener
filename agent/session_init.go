@@ -357,15 +357,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if profileTimeout := profile.DefaultCommandTimeoutMS(); profileTimeout > 0 && cfg.DefaultCommandTimeoutMS == 10_000 {
 		cfg.DefaultCommandTimeoutMS = profileTimeout
 	}
-	store := cfg.artifactStore
-	ownsArtifactStore := false
-	if store == nil {
-		store, err = newSessionArtifactStore()
-		if err != nil {
-			return nil, fmt.Errorf("create artifact store: %w", err)
-		}
-		ownsArtifactStore = true
-	}
+	store, ownsArtifactStore, artifactStoreErr := resolveArtifactStore(cfg.artifactStore)
 
 	owner := cfg.LifetimeContext
 	if owner == nil {
@@ -457,6 +449,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
 	}
+	s.bufferArtifactStoreWarning(artifactStoreErr)
 	// Publish the first committed notes cut before anything can read one: a
 	// fresh session's live store is empty, and its mutation store may already
 	// carry a canonical human note for a reserved session id.
@@ -966,16 +959,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.ForceRealIO = restoreCfg.ForceRealIO
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
-	store := cfg.artifactStore
-	ownsArtifactStore := false
-	if store == nil {
-		var storeErr error
-		store, storeErr = newSessionArtifactStore()
-		if storeErr != nil {
-			return nil, fmt.Errorf("create artifact store: %w", storeErr)
-		}
-		ownsArtifactStore = true
-	}
+	store, ownsArtifactStore, artifactStoreErr := resolveArtifactStore(cfg.artifactStore)
 	defer func() {
 		if !restoreComplete && ownsArtifactStore {
 			_ = store.Close()
@@ -1186,6 +1170,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		ownsArtifactStore:           ownsArtifactStore,
 		subscriberCountFn:           cfg.spawn.subscriberCount,
 	}
+	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
 	s.initEnvContext(meta.EnvContext)
 	// The environment turn is durable before meta.EnvContext is checkpointed.

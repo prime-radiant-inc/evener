@@ -881,7 +881,12 @@ type Session struct {
 	// these are genuine, model-facing warnings — unlike the other three, which
 	// are config diagnostics that must not fire the Notification hook.
 	pendingTranscriptWarnings []events.WarningData
-	hookRunner                *hooks.Runner
+	// pendingArtifactStoreWarnings holds the notice that full-output retention
+	// is unavailable because the artifact store could not be created. Buffered
+	// like the other construction-time diagnostics: SESSION_START is the
+	// stream's first event, and this is discovered while the session is built.
+	pendingArtifactStoreWarnings []events.WarningData
+	hookRunner                   *hooks.Runner
 	// pluginCommands is the union of every loaded plugin's slash commands
 	// (namespaced "plugin-name:command-name") and all evener-wide commands
 	// (bare-name keys from .evener/commands and the user-global config dir).
