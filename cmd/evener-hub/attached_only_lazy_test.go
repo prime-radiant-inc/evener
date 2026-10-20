@@ -436,16 +436,16 @@ func TestRemoteHostFactsAndHandshakeUseTheProbesGeneration(t *testing.T) {
 	probeClient := &appwire.Client{}
 	installed := stubAttachedChannel{
 		client:    probeClient,
-		preflight: sshconn.Preflight{Protocol: "v4", OS: "linux", Arch: "amd64"},
-		handshake: appwire.InitializeResponse{ProtocolVersion: "v4", SourceID: "local"},
+		preflight: sshconn.Preflight{Protocol: "disk-v3", OS: "linux", Arch: "amd64"},
+		handshake: appwire.InitializeResponse{ProtocolVersion: "v4", SourceID: "local", ServerInfo: appwire.ServerInfo{BuildVersion: "generation-build"}},
 	}
 
 	facts, err := remoteHostFactsForChannel(installed, "alpha", probeClient)
 	if err != nil {
 		t.Fatalf("facts: %v", err)
 	}
-	if facts.ProtocolVersion != "v4" || facts.OS != "linux" || facts.Arch != "amd64" {
-		t.Fatalf("facts = %+v, want the installed channel's preflight", facts)
+	if facts.ProtocolVersion != "v4" || facts.HubVersion != "generation-build" || facts.OS != "linux" || facts.Arch != "amd64" {
+		t.Fatalf("facts = %+v, want the installed channel's system and live identity", facts)
 	}
 
 	hs, ok := remoteHostHandshakeForChannel(installed, probeClient)
