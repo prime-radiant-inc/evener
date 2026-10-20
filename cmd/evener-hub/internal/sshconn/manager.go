@@ -273,9 +273,8 @@ func (o Options) clientVersion() string {
 	return buildinfo.Version()
 }
 
-// controllerVersion is the build the controller expects the host to run: the
-// in-process buildinfo.Version() unless a test overrides it. Version auto-match
-// compares this with the host's launch-check version.
+// controllerVersion is this controller's build identity, used when verifying
+// a deployment and reporting build differences. It does not gate Connect.
 func (o Options) controllerVersion() string {
 	if o.controllerVersionOverride != "" {
 		return o.controllerVersionOverride
@@ -1843,9 +1842,8 @@ func (m *Manager) clearHostCaches(name string) {
 func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bool) (*Channel, error) {
 	// Address the executable this Manager already resolved for the host when the
 	// registry has no evener_path: a deploy target from an earlier attempt (or a
-	// discovered install) is the binary the host actually runs, and probing the
-	// bare `evener` instead made version auto-match fail and re-deploy on every
-	// reconnect.
+	// discovered install) is the intended run target. Probing bare `evener`
+	// could judge another installation's launch contract instead.
 	m.applyResolvedTarget(&host)
 	// Refuse an unusable hub address before any ssh command runs: the probe and
 	// restart paths below would otherwise address (and possibly kill) whatever
@@ -2112,23 +2110,10 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	if !slices.Contains(facts.LaunchFlags, requiredLaunchFlag) {
 		return nil, fmt.Errorf("%w: host %q launch_flags %v missing %q", ErrLaunchContract, host.Name, facts.LaunchFlags, requiredLaunchFlag)
 	}
-	// A differing build VERSION is not a gate on the attach. A host that answered
-	// the launch-check speaks this controller's appwire protocol — launch-check
-	// refuses any protocol but its own (launchcheck.go:72-74), so a known contract
-	// is itself the compatibility proof — and the wire layer enforces the same rule
-	// again at Initialize (appwire.ProtocolVersionMismatchError). Gating on the
-	// version label instead refused working hosts: an unstamped "dev" host against
-	// a stamped controller, or a host built from another checkout, were told to
-	// configure a deploy path they did not need, for a difference the protocol
-	// already tolerates.
-	//
-	// Version auto-match still converges a host that can be converged: with a deploy
-	// path configured, deployRequired above installs this controller's build and the
-	// judgement right after the write (above) proves the result, while the installer
-	// path keeps its own terminal ErrVersionMismatch for a moved channel. What
-	// is left here attaches on the host's own build, and reports the difference
-	// where it accepts it — at the attach, so a passed-over bootstrap cannot leave a
-	// notice for an attach that never happened.
+	// Launch-check establishes whether the installed executable can be started;
+	// Initialize then verifies the process serving the connection. Build labels
+	// do not gate ordinary attachment. A deployment above has its own strict
+	// installed-build verification before reaching this point.
 	// First attach to a stopped host must be able to start the hub. The probe
 	// above only restarts a hub that is already answering, and the bridge is a
 	// client that must not start one, so a configured host whose hub is not
@@ -2308,8 +2293,8 @@ func (m *Manager) reReadLaunchContract(ctx context.Context, host hostreg.Host, f
 // operator-supplied artifact built from another tree: it targets the right
 // platform and carries a foreign identity, so the pre-push check passes and this
 // disagreement is what remains. Attaching anyway would serve a host on a build the
-// controller did not stamp, the version auto-match guarantee this component exists
-// for; retrying re-pushes the same artifact, so the refusal is terminal rather
+// controller did not stamp, violating the deployment's identity guarantee;
+// retrying re-pushes the same artifact, so the refusal is terminal rather
 // than the retryable ErrDeploy (the same reason errControllerDirty is).
 //
 // It is judged only where a deploy ran. A pass that merely started or restarted the

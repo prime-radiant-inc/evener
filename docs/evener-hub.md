@@ -330,10 +330,32 @@ daemon and resume the saved session to move it to the new build.
 
 ### Deploying to remote hosts
 
-Attaching a remote host can overwrite its Evener installation and restart its
-hub. By default, the controller deploys its own executable when the host needs
-a build or reports a different build. Choose the deployment policy before
-attaching; use `--no-deploy` to prohibit both pushes and installer fallback.
+Connect first verifies the running remote hub's AppWire handshake. A compatible
+hub stays on its existing build and process, even when the controller has a
+different version, is a development or dirty build, or cannot supply an artifact
+for the host's platform. Optional capabilities control the features available on
+that connection; their absence does not trigger deployment.
+
+```mermaid
+flowchart TD
+    A[Connect] --> B{Running hub handshake}
+    B -->|Compatible| C[Use existing channel and build]
+    B -->|Proven incompatible| D[Install suitable build and verify replacement]
+    B -->|Authentication, transport or malformed response| E[Report connection failure]
+    B -->|No hub listening| F{Installed launch contract usable}
+    F -->|Yes| G[Start installed build and verify connection]
+    F -->|No| D
+```
+
+Connect can still install software on a fresh or incompatible host. A stopped
+compatible installation is started without replacement on an explicit Connect;
+background reconnect does not start a stopped hub. An unclassified handshake
+failure is a connection error, not permission to overwrite the installation.
+Use `--no-deploy` to prohibit both pushes and installer fallback. Explicit Deploy
+retains its plan, confirmation and requested-build checks.
+
+The source rules below apply **when installation is required**, not on every
+Connect:
 
 | Hub invocation or condition | Binary source | Overwrite or refusal behavior |
 |---|---|---|
@@ -342,13 +364,17 @@ attaching; use `--no-deploy` to prohibit both pushes and installer fallback.
 | `evener hub --deploy-binary <path>` | Named pre-built Evener executable | Needs no Go toolchain or source. Refuses a non-Evener binary or wrong OS/architecture before pushing. A dirty controller refuses this source. After installation, a build mismatch refuses attachment. |
 | `evener hub --build-source <path>` | Cross-compiled checkout on the controller | Needs Go, the Evener module root, and a built web UI. A stamped controller requires the same commit, a clean checkout, and no ignored untracked Go files. A dirty controller refuses this source. An unstamped dev controller skips revision checks. |
 | `evener hub --no-deploy` | None | Writes no build, including through the installer. Keeps an existing compatible host build; refuses a host that needs installation or a protocol/launch-contract upgrade. |
-| No flags, but the controller cannot adopt its executable as an Evener binary | Published artifact if available | Uses the release/snapshot installer when possible. Otherwise keeps a compatible host build and logs the difference; refuses a host that needs a build. |
+| No flags, but the controller cannot adopt its executable as an Evener binary | Published artifact if available | Uses the release/snapshot installer when installation is required; refuses if no suitable artifact is available. |
 
 `--no-deploy` wins over both source flags; `--deploy-binary` wins over
 `--build-source`. Named paths are still validated at startup even when another
 flag takes precedence. The startup log records the effective source and any
-ignored flags. Read attach failures in the host's Settings row; when attachment
-keeps a different compatible build, the hub log records that difference.
+ignored flags. Read attach failures and the connected host's build in host
+details in the web or native client. The live handshake's optional
+`serverInfo.buildVersion` reports that remote process's build; absent metadata
+stays unknown. `serverInfo.version` is the protocol package version and is not a
+substitute for the remote build. Launch-check describes the installed executable,
+which can differ from the process still running.
 
 **Installation target.** Deployment uses the host entry's `evener_path`, then
 the running host hub's executable, then `command -v evener`, then
@@ -365,6 +391,12 @@ installation is not proof of successful attachment. In particular, installer
 verification happens **after the binary is written**: a moved snapshot channel
 can replace the host binary and then fail the version check. Prefer a push source
 when the published snapshot has moved beyond the controller's commit.
+
+**Interrupted deployment.** A compatible connection cannot settle an unfinished
+build replacement or restart. Recovery retains the requested build identity and
+the predecessor process identity, verifies the replacement, and reconciles the
+recorded effect before ordinary attachment resumes. It does not reinterpret the
+operation from a newly observed executable or hide a deployment failure.
 
 **Own-executable limit.** The default reads the executable file at deploy time,
 not a copy of the running process. Replacing that file while the controller runs

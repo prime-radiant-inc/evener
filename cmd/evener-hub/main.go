@@ -147,12 +147,11 @@ type hubOptions struct {
 	addr           string
 	evenerBinary   string
 	appwireTrace   string
-	// deployBinary and buildSource describe how a missed host gets the
+	// deployBinary and buildSource describe how a host needing installation gets the
 	// controller's build pushed to it. With neither set, deployBinary defaults to
 	// this hub's own executable (deployDefault records that), so a host that
-	// needs the controller's build is provisioned by default; -no-deploy disables
-	// the default and both flags, leaving a local-only controller with no deploy
-	// path at all.
+	// needs installation is provisioned by default; -no-deploy disables the
+	// default and both flags while preserving compatible remote connections.
 	deployBinary string
 	buildSource  string
 	// noDeploy is the explicit opt-out: the hub wires no deploy source (not even

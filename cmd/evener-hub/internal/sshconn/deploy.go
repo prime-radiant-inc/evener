@@ -43,8 +43,8 @@ const deployTempSuffix = ".tmp."
 // Unlike every runtime build target, it does not inherit build-web as a
 // prerequisite (make/building.mk:32,124), so it verifies the embedded SPA was
 // actually built before compiling: otherwise the deployed binary would embed the
-// tracked placeholder and serve the documented 503, and version auto-match could
-// not detect it because it compares only buildinfo.GitSHA.
+// tracked placeholder and serve the documented 503, which build identity
+// verification cannot detect.
 func localBuild(ctx context.Context, source, goos, goarch, out string) error {
 	root, err := verifyBuildSource(source)
 	if err != nil {
@@ -169,8 +169,8 @@ func ValidateBuildSource(source string) (string, error) {
 // verifyBuildRevision makes the deployed binary's version stamp honest. The
 // builder stamps this process's own buildinfo into whatever the source checkout
 // compiles, so a checkout at a different revision would install code that reports
-// the controller's version while running something else — version auto-match
-// would then accept it. When this process carries a GitSHA, the source checkout's
+// the controller's version while running something else, passing deployment
+// identity checks. When this process carries a GitSHA, the source checkout's
 // HEAD must resolve to that same commit; otherwise the build is refused. An
 // unstamped (dev) controller has no revision to match and is skipped.
 func verifyBuildRevision(root string) error {
@@ -183,7 +183,7 @@ func verifyBuildRevision(root string) error {
 	// exactly the controller's version ("<sha>-dirty") while the source tree it
 	// compiled may carry a different set of uncommitted changes. HEAD equality
 	// below cannot see that difference, so refuse rather than install code that
-	// version auto-match cannot verify.
+	// deployment identity checks cannot verify.
 	if strings.TrimSpace(buildinfo.GitDirty) == "true" {
 		return fmt.Errorf("this controller was built from a dirty tree (version %q); the build source %q cannot be verified to match it, so refusing to deploy", buildinfo.Version(), root)
 	}
@@ -200,8 +200,8 @@ func verifyBuildRevision(root string) error {
 	}
 	// HEAD equality does not pin the code: the builder compiles the working tree,
 	// so a modified or untracked file at that same commit produces a different
-	// binary that still reports this controller's clean version, and version
-	// auto-match would accept it. Require a clean worktree.
+	// binary that still reports this controller's clean version and passes
+	// deployment identity checks. Require a clean worktree.
 	status, err := gitStatus(root)
 	if err != nil {
 		return fmt.Errorf("build source %q: cannot read its working-tree status to check it against this controller's build %q: %w", root, want, err)
@@ -282,7 +282,7 @@ func declaresEvenerModule(dir string) bool {
 // executable. Such a build has no reproducible identity: the push path refuses
 // to compile a tree it cannot prove matches this process (verifyBuildRevision),
 // the installer fallback has no published artifact to pin (installerRefFor), and
-// version auto-match cannot tell an operator-named artifact built from another
+// build labels cannot tell an operator-named artifact built from another
 // dirty tree at the same commit apart from this controller's build — "<sha>-dirty"
 // is not an identity. Only a source whose bytes ARE this controller's build
 // (Options.OwnExecutable: the hub's own executable, the file this process was
@@ -302,8 +302,8 @@ var errControllerDirty = errors.New("sshconn: controller build is a dirty tree")
 // build's identity. The refusal is terminal rather than ErrDeploy: retrying
 // re-pushes the same artifact, so the supervisor would loop forever while the host
 // was never attached (the same mistake round thirteen records for the
-// dirty-controller refusal). Attaching instead would serve a build version
-// auto-match exists to prevent.
+// dirty-controller refusal). Attaching instead would claim success for a
+// deployment that did not install the requested build.
 //
 // It is judged only where a deploy ran. A pass that merely started or restarted
 // the hub launched the build already on disk, and the host is allowed to keep that
@@ -327,16 +327,15 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 		return "", fmt.Errorf("%w: host %q: this controller was started with deploying disabled, so it will not install a build on any host; %s",
 			errDeployDisabled, host.Name, m.deployHelp())
 	}
-	// A dirty controller cannot install a build it cannot reproduce. deployRequired
-	// forces this deploy for an unverifiable version (a dirty "<sha>-dirty" is not
-	// an identity: another dirty checkout at the same commit reports it too), and
-	// attaching instead of deploying would silently serve a build version
-	// auto-match cannot verify.
+	// A dirty controller cannot install a build it cannot reproduce. A dirty
+	// "<sha>-dirty" label is not an identity: another dirty checkout at the same
+	// commit reports it too. This gate applies only when installation is needed
+	// or explicitly requested; compatible Connect does not reach it.
 	//
 	// Only the controller's own executable (Options.OwnExecutable) is exempt, and
 	// it is exempt on identity, not convenience: those bytes ARE the build this
 	// controller runs, so installing them needs no reproduction proof and leaves
-	// nothing for version auto-match to prove. Every other source is refused:
+	// nothing for a reproducibility check to prove. Every other source is refused:
 	// compiling a checkout requires proving it reproduces the running "<sha>-dirty"
 	// tree, which cannot be done; the installer fallback has no published artifact
 	// to pin; and an operator-named artifact cannot be told apart from a foreign

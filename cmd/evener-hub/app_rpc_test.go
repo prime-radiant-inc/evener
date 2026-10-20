@@ -55,20 +55,19 @@ func TestHubInitializeReportsBuildVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var response struct {
-		ServerInfo struct {
-			Version      string `json:"version"`
-			BuildVersion string `json:"buildVersion"`
-		} `json:"serverInfo"`
-	}
+	var response map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &response); err != nil {
 		t.Fatal(err)
 	}
-	if got := response.ServerInfo.BuildVersion; got == "" || got != buildinfo.Version() {
+	var serverInfo map[string]string
+	if err := json.Unmarshal(response["serverInfo"], &serverInfo); err != nil {
+		t.Fatal(err)
+	}
+	if got := serverInfo["buildVersion"]; got == "" || got != buildinfo.Version() {
 		t.Fatalf("live build = %q, want %q", got, buildinfo.Version())
 	}
-	if response.ServerInfo.Version != Version {
-		t.Fatalf("package version = %q, want %q", response.ServerInfo.Version, Version)
+	if got := serverInfo["version"]; got != Version {
+		t.Fatalf("package version = %q, want %q", got, Version)
 	}
 }
 
