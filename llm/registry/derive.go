@@ -210,6 +210,26 @@ func (c Caps) EffortCapable() bool {
 	return len(c.ReasoningControls) == 0 && c.Reasoning == nil
 }
 
+// ReasoningEnabled reports whether a row reasons at all, which is a different
+// question from whether its wire accepts an effort name: a toggle-only row and
+// a row stating EffortParameterUnsupported both reason without taking a level.
+func (c Caps) ReasoningEnabled() bool {
+	return c.Reasoning == nil || *c.Reasoning
+}
+
+// RequestEffortCapable reports whether a caller may put an effort on the
+// request for this row. That is broader than EffortCapable: a budget-shaped row
+// sizes its numeric budget from the effort even though no effort name reaches
+// the wire, so a caller that wants the budget still needs to set one. A row
+// that only toggles reasoning does not qualify, because nothing consumes the
+// level.
+func (c Caps) RequestEffortCapable() bool {
+	if !c.ReasoningEnabled() {
+		return false
+	}
+	return c.EffortCapable() || slices.Contains(c.ReasoningControls, "budget_tokens")
+}
+
 // AcceptsModality reports whether the row declares an input modality. The
 // catalog vocabulary is lowercase ("text", "image", "pdf", ...), matching what
 // every layer writes; an unknown row with no InputModalities declares none.

@@ -698,6 +698,15 @@ func TestDescribeImage_PinnedRouteEffortFollowsTheRegistry(t *testing.T) {
 			row:   &registry.Model{Caps: registry.Caps{Reasoning: new(true), ReasoningControls: []string{"toggle"}}},
 		},
 		{
+			// A no-effort verdict suppresses the level name, not reasoning
+			// itself: a budget-shaped row still needs its request effort to
+			// size a numeric budget, and the vision cap still applies.
+			name:       "a budget row stating the no-effort verdict keeps the cap",
+			model:      "budget-no-effort",
+			row:        &registry.Model{Caps: registry.Caps{Reasoning: new(true), ReasoningControls: []string{"budget_tokens"}, EffortParameterUnsupported: new(true)}},
+			wantEffort: visionReasoningEffort,
+		},
+		{
 			name:       "an unknown model on the instance passes the cap through",
 			model:      "brand-new-model",
 			wantEffort: visionReasoningEffort,
