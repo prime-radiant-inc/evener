@@ -43,6 +43,7 @@ import {
   hydrateThread,
   type InputAttachment,
   invalidateHistory,
+  isLatestRetryTurn,
   isStaleCursorError,
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
@@ -355,7 +356,7 @@ export interface ThreadsStoreState {
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
   ): Promise<void>;
-  continueTurn(ref: string): Promise<void>;
+  continueTurn(ref: string, failedTurnId: string): Promise<void>;
   steer(
     ref: string,
     text: string,
@@ -3847,7 +3848,7 @@ const COMPOSER_ROUTE_METHODS: Record<ComposerMutationRoute, string> = {
   drain: "turn/drainAsSteer",
 };
 
-async function sendMutationIntent(intent: MutationIntent): Promise<void> {
+async function sendMutationIntent(intent: MutationIntent, beforeDurableWrite?: () => void): Promise<void> {
   // The recovery fence is enforced at the shared admission every durable
   // action funnels through (enqueueMutationIntent's central check), so the
   // alternate send paths - the palette's slash fallthrough, the ask dock's
@@ -3861,7 +3862,7 @@ async function sendMutationIntent(intent: MutationIntent): Promise<void> {
   // is read AFTER the write: a hydration that landed while the write was in
   // flight is the snapshot the admission saw, and re-reading here keeps the
   // drive from being skipped (or spuriously started) across that window.
-  await enqueueMutationIntent(intent);
+  await enqueueMutationIntent(intent, undefined, "enqueue", beforeDurableWrite);
   if (sendResumesLocalModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
 }
 
@@ -4060,6 +4061,71 @@ let resumeOnlyProjection: ResumeOnlyProjection | null = null;
 
 export function installResumeOnlyProjection(projection: ResumeOnlyProjection): void {
   resumeOnlyProjection = projection;
+}
+
+// Failed-turn Retry's pending facts, published by the web pending-turns
+// projection (composer/queue/pendingTurnsStore.ts). `isLoaded` separates an
+// empty answer from an unread one: a ref whose own durable read has not
+// answered has UNKNOWN pending state, which is not the empty state Retry may
+// act on. `hasOwnPendingTurnInput` is the shared own send/queue rule over the
+// projection's current entries, so a stale rendered view cannot authorize a
+// second continuation.
+interface RetryPendingProjection {
+  isLoaded(ref: string): boolean;
+  hasOwnPendingTurnInput(ref: string): boolean;
+  // Starts the ref's durable pending read. An activation that finds readiness
+  // unknown asks the owner to load it and creates no mutation; the action
+  // becomes available when that read publishes an empty state.
+  load(ref: string): void;
+  // The owner-scoped in-flight admission: the reactive fact the visible action
+  // disables on, from the press until the durable enqueue settles. begin is
+  // atomic and returns false when a press already owns the ref.
+  begin(ref: string): boolean;
+  end(ref: string): void;
+  isInFlight(ref: string): boolean;
+  // An accepted Retry the client has not yet observed in the conversation.
+  // Admission stays closed until the owner's model or an authoritative read
+  // establishes the current tail.
+  markSubmitted(ref: string, failedTurnId: string): void;
+  awaitingReflection(ref: string, failedTurnId: string): boolean;
+}
+let retryPendingProjection: RetryPendingProjection | null = null;
+
+export function installRetryPendingProjection(projection: RetryPendingProjection): void {
+  retryPendingProjection = projection;
+}
+
+// A Retry whose source stopped being the live tail while a prerequisite read
+// or a retry delay was in flight. The enqueue funnel throws it before creating
+// any durable row, and continueTurn swallows it: this is a stale activation,
+// not a failure to report.
+class RetryAdmissionLostError extends Error {
+  constructor() {
+    super("Retry source is no longer the live tail");
+    this.name = "RetryAdmissionLostError";
+  }
+}
+
+// The last safe admission boundary before a durable Retry write: the source
+// identity is re-read from the live model after the enqueue funnel's awaited
+// prerequisites (runtime start, the Stop-barrier read, a storage-timeout retry
+// delay) and immediately before the row is written.
+function assertRetrySourceCurrent(ref: string, failedTurnId: string): void {
+  const model = threadsStore.getState().threads.get(ref);
+  if (!model || !isLatestRetryTurn(model, failedTurnId)) throw new RetryAdmissionLostError();
+}
+
+// Whether `failedTurnId` may be retried from ref RIGHT NOW, read from the
+// canonical owners: the latest-turn rule over the live thread model, then the
+// pending projection's readiness and own-unsettled input. A missing model, a
+// conversation that has advanced, an unread pending state, and any unresolved
+// send or queue of this client's all refuse.
+function retryAdmissionCurrent(ref: string, failedTurnId: string): boolean {
+  const model = threadsStore.getState().threads.get(ref);
+  if (!model || !isLatestRetryTurn(model, failedTurnId)) return false;
+  if (retryPendingProjection === null || !retryPendingProjection.isLoaded(ref)) return false;
+  if (retryPendingProjection.awaitingReflection(ref, failedTurnId)) return false;
+  return !retryPendingProjection.hasOwnPendingTurnInput(ref);
 }
 
 // Whether ref's durable outbox holds delivery-uncertain (blockedUnknown) rows,
@@ -4356,6 +4422,7 @@ async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
   durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
+  beforeDurableWrite?: () => void,
 ): Promise<MutationOutboxRecord | undefined> {
   const ref = intent.targetRef;
   // The recovery fence, enforced at the one funnel every durable action
@@ -4403,6 +4470,7 @@ async function enqueueMutationIntent(
     if (dispatchClient === null) {
       throw new Error(INDEXEDDB_UNAVAILABLE);
     }
+    beforeDurableWrite?.();
     await dispatchMutationDirectly(dispatchClient, intent);
     return undefined;
   }
@@ -4440,7 +4508,7 @@ async function enqueueMutationIntent(
     // The click-time capture, awaited at the write it fences, and the durable
     // enqueue behind it, retried once on a storage timeout (see
     // enqueueDurableMutation).
-    record = await enqueueDurableMutation(runtime, intent, onCommitted, durableWrite, barrierRead);
+    record = await enqueueDurableMutation(runtime, intent, onCommitted, durableWrite, barrierRead, beforeDurableWrite);
   } catch (error) {
     // This click's write has settled; only OTHER enqueues remain counted.
     releaseInflightDurableEnqueue(ref);
@@ -4528,6 +4596,9 @@ async function enqueueMutationIntent(
       disarmQuiescedMutationArm(ref);
       throw error;
     }
+    // The storage-failure fallback is the send's only remaining transport, so
+    // the same last-boundary source check runs before it goes out.
+    beforeDurableWrite?.();
     // The admission above proved the ref has no undelivered work and no enqueue
     // in flight, so it is idle: drop the arm - see disarmQuiescedMutationArm.
     disarmQuiescedMutationArm(ref);
@@ -4592,10 +4663,15 @@ async function enqueueDurableMutation(
   onCommitted: ((record: MutationOutboxRecord) => void) | undefined,
   durableWrite: "enqueue" | "interruptAndCancel",
   barrierRead: Promise<number> | undefined,
+  beforeDurableWrite?: () => void,
 ): Promise<MutationOutboxRecord> {
   const barrier: MutationStopBarrier | undefined =
     barrierRead === undefined ? undefined : { stopEpoch: await barrierRead };
   for (let attempt = 1; ; attempt += 1) {
+    // Re-decide the caller's admission after the awaited prerequisites: the
+    // Stop-barrier read above and any storage-timeout retry delay below are
+    // real windows in which the conversation can advance.
+    beforeDurableWrite?.();
     try {
       return durableWrite === "interruptAndCancel"
         ? await runtime.outbox.enqueueInterruptAndCancel(intent, onCommitted)
@@ -7479,11 +7555,40 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
   },
 
-  async continueTurn(ref) {
-    await sendMutationIntent({
-      ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
-      preserveComposer: true,
-    });
+  async continueTurn(ref, failedTurnId) {
+    // Admission is synchronous on purpose: the eligibility facts are read at
+    // the activation, before any await, so a callback captured for a failure
+    // the conversation has since left cannot submit. Unknown pending state and
+    // an already-pending continuation both refuse here, and the owner's
+    // reactive admission closes the pre-persistence window between two views'
+    // presses.
+    const admission = retryPendingProjection;
+    if (admission === null || admission.isInFlight(ref)) return;
+    if (!admission.isLoaded(ref)) {
+      admission.load(ref);
+      return;
+    }
+    if (!retryAdmissionCurrent(ref, failedTurnId)) return;
+    if (!admission.begin(ref)) return;
+    try {
+      // Re-read after taking the lock: the first caller in this same task may
+      // have committed the durable row between the two checks.
+      if (!retryAdmissionCurrent(ref, failedTurnId)) return;
+      try {
+        await sendMutationIntent(
+          {
+            ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
+            preserveComposer: true,
+          },
+          () => assertRetrySourceCurrent(ref, failedTurnId),
+        );
+        admission.markSubmitted(ref, failedTurnId);
+      } catch (error) {
+        if (!(error instanceof RetryAdmissionLostError)) throw error;
+      }
+    } finally {
+      admission.end(ref);
+    }
   },
 
   async steer(ref, text, attachments, skillNames, commandNames, mentions) {

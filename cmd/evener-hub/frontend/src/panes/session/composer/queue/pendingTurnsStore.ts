@@ -8,6 +8,7 @@ import {
   type MutationPersistenceSnapshot,
   type MutationProjectionRefresh,
   outboxEntriesByState,
+  ownPendingTurnInput,
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
   recoveryEntries,
@@ -15,6 +16,7 @@ import {
 } from "@evener/appwire-client/state/mutation";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 import { isOwnMutationRecord } from "../../../../stores/mutationClientIdentity";
 import type {
   MutationAttachment,
@@ -27,6 +29,7 @@ import {
   discardRecoveryMutation,
   type InputAttachment,
   installResumeOnlyProjection,
+  installRetryPendingProjection,
   notifyReadyForMutationDispatch,
   readMutationPersistence,
   resendRecoveryMutation,
@@ -63,6 +66,203 @@ const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
   draft: draftPort,
   identity: { isOwnMutationRecord },
 });
+
+// A ref's pending state is UNKNOWN until its own durable read answers: the
+// projection's maps are empty for a ref whether or not rows exist, so an empty
+// answer is only evidence once this store has read and published it. The
+// framework-free projection store deliberately holds records, not readiness -
+// the web's durable-read ownership is this module's - so the reactive view of
+// `loadedRefs` lives here, beside the entries it qualifies.
+interface PendingReadinessState {
+  loaded: ReadonlySet<string>;
+}
+
+const pendingReadinessStore = createStore<PendingReadinessState>(() => ({ loaded: new Set() }));
+
+function publishPendingReadiness(): void {
+  pendingReadinessStore.setState({ loaded: new Set(loadedRefs) });
+}
+
+export function usePendingTurnReadiness(ref: string): boolean {
+  return useStore(pendingReadinessStore, (state) => state.loaded.has(ref));
+}
+
+// Retry's owner-scoped in-flight admission, reactive so every mounted view
+// disables the action at the press rather than only after the durable row is
+// visible. It is page-lifetime bookkeeping, not durable state: the pending
+// projection owns the block once the record exists.
+interface RetryAdmissionState {
+  refs: ReadonlySet<string>;
+}
+
+const retryAdmissionStore = createStore<RetryAdmissionState>(() => ({ refs: new Set() }));
+const retryAdmissions = new Set<string>();
+
+function publishRetryAdmissions(): void {
+  retryAdmissionStore.setState({ refs: new Set(retryAdmissions) });
+}
+
+function beginRetryAdmission(ref: string): boolean {
+  if (retryAdmissions.has(ref)) return false;
+  retryAdmissions.add(ref);
+  publishRetryAdmissions();
+  return true;
+}
+
+function endRetryAdmission(ref: string): void {
+  if (!retryAdmissions.delete(ref)) return;
+  publishRetryAdmissions();
+}
+
+export function useRetryAdmissionInFlight(ref: string): boolean {
+  return useStore(retryAdmissionStore, (state) => state.refs.has(ref));
+}
+
+// An accepted Retry whose result the client has not observed yet. A
+// projectionState:"reflected" receipt settles the durable row, but the
+// conversation only proves the accepted turn when its own model advances (or
+// an authoritative read says otherwise). Until then the old failure is not
+// retryable: server-side reflection is not proof this client knows the tail.
+// The marker is page-lifetime bookkeeping tied to the existing mutation and
+// recovery owners, never a durable Retry record.
+interface RetryReflection {
+  failedTurnId: string;
+  // Recovery rows already present when the Retry was submitted: a new one is
+  // the existing explicit refusal path, which restores a usable Retry.
+  recoveryBaseline: ReadonlySet<string>;
+  refreshStarted: boolean;
+  // The ref's authoritative-publication counter when this marker's own
+  // refresh started. Only a publication newer than it can settle the marker:
+  // a refresh promise can resolve after its read was discarded for superseded
+  // hydration ownership, and that completion is not state evidence.
+  publishedHydrations: number | undefined;
+  // The marker's own read resolved without publishing (it lost ownership).
+  // The winning read owns the next answer, so reconciliation waits for its
+  // publication instead of starting another read over it.
+  handedOff: boolean;
+}
+
+const retryReflections = new Map<string, RetryReflection>();
+const retryReflectionStore = createStore<{ byRef: ReadonlyMap<string, string> }>(() => ({ byRef: new Map() }));
+
+function publishRetryReflections(): void {
+  retryReflectionStore.setState({
+    byRef: new Map([...retryReflections].map(([ref, marker]) => [ref, marker.failedTurnId])),
+  });
+}
+
+function latestTurnId(model: { turns: readonly { id: string }[] } | undefined): string | undefined {
+  return model?.turns[model.turns.length - 1]?.id;
+}
+
+function clearRetryReflection(ref: string): void {
+  if (!retryReflections.delete(ref)) return;
+  publishRetryReflections();
+}
+
+function hasNewRecovery(ref: string, marker: RetryReflection): boolean {
+  return recoveryEntries(pendingTurnsStore.getState().recovery, ref).some(
+    (record) => !marker.recoveryBaseline.has(record.clientMutationId),
+  );
+}
+
+function markRetrySubmitted(ref: string, failedTurnId: string): void {
+  retryReflections.set(ref, {
+    failedTurnId,
+    recoveryBaseline: new Set(
+      recoveryEntries(pendingTurnsStore.getState().recovery, ref).map((r) => r.clientMutationId),
+    ),
+    refreshStarted: false,
+    publishedHydrations: undefined,
+    handedOff: false,
+  });
+  publishRetryReflections();
+  reconcileRetryReflection(ref);
+}
+
+function waitForRetryReflection(ref: string, marker: RetryReflection): void {
+  if (marker.refreshStarted) return;
+  marker.refreshStarted = true;
+  // Snapshot the publication count before the read starts. A completion at
+  // this count or below published nothing for this read (it was superseded,
+  // joined an existing read, or never began), so it cannot settle the marker.
+  const publishedHydrations = threadsStore.getState().hydrations.get(ref) ?? 0;
+  marker.publishedHydrations = publishedHydrations;
+  void threadsStore
+    .getState()
+    .refreshThread(ref)
+    .then(() => {
+      if (retryReflections.get(ref) !== marker) return;
+      marker.refreshStarted = false;
+      if ((threadsStore.getState().hydrations.get(ref) ?? 0) > publishedHydrations) {
+        // This read published the current-owner state: current-conversation
+        // evidence, so the ordinary eligibility rule may act again.
+        clearRetryReflection(ref);
+        return;
+      }
+      // The promise resolved but its response was discarded for superseded
+      // hydration ownership. Hand the wait to the winning read: its
+      // authoritative publication is what the store subscription below sees.
+      marker.handedOff = true;
+    })
+    .catch(() => {
+      // A failed read proves nothing, so the marker stays; a later
+      // notification, reconnect or remount drives another attempt.
+      if (retryReflections.get(ref) !== marker) return;
+      marker.refreshStarted = false;
+      // The owner's hydration-retry lifecycle owns the next read after a
+      // transport failure; its publication settles this marker.
+      marker.handedOff = true;
+    });
+}
+
+// Re-decide one marker from the owners as they are now. Advances clear it, a
+// new refusal recovery clears it, and an empty pending projection with no
+// conversation change asks the thread owner for the authoritative answer once.
+function reconcileRetryReflection(ref: string): void {
+  const marker = retryReflections.get(ref);
+  if (!marker) return;
+  const model = threadsStore.getState().threads.get(ref);
+  if (!model || latestTurnId(model) !== marker.failedTurnId) {
+    clearRetryReflection(ref);
+    return;
+  }
+  if (hasNewRecovery(ref, marker)) {
+    clearRetryReflection(ref);
+    return;
+  }
+  if (ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref))) return;
+  // A publication newer than this marker's own read is the authoritative
+  // current-owner answer, whichever refresh produced it (including the read
+  // that superseded ours).
+  if (
+    marker.publishedHydrations !== undefined &&
+    (threadsStore.getState().hydrations.get(ref) ?? 0) > marker.publishedHydrations
+  ) {
+    clearRetryReflection(ref);
+    return;
+  }
+  // A handed-off marker waits for the winning read's publication. Starting a
+  // read here would supersede that winner and discard the only answer in
+  // flight; remounting the action explicitly asks again below.
+  if (marker.handedOff) return;
+  waitForRetryReflection(ref, marker);
+}
+
+export function useRetryAwaitingReflection(ref: string, turnId: string): boolean {
+  return useStore(retryReflectionStore, (state) => state.byRef.get(ref) === turnId);
+}
+
+// A mounted action asks the owner to re-decide a still-open marker, so a
+// remount after a failed reconciliation read gets another authoritative
+// attempt instead of leaving the action permanently inactive.
+export function ensureRetryReflectionResolved(ref: string): void {
+  const marker = retryReflections.get(ref);
+  // A remount is an explicit new probe: past a lost or failed read it asks
+  // the owner again rather than leaving the action inactive.
+  if (marker) marker.handedOff = false;
+  reconcileRetryReflection(ref);
+}
 
 // The refs whose durable outbox this projection has actually read and
 // published. The resume-only predicate (threads.ts's hasBlockedUnknown /
@@ -104,6 +304,35 @@ installResumeOnlyProjection({
     ),
 });
 
+// Retry admission's owner-scoped pending facts: the same projection and the
+// same readiness this module renders from. Admission asks these live at the
+// press, after the owner lock is taken, so a stale view cannot act on an
+// unloaded or already-pending ref.
+installRetryPendingProjection({
+  isLoaded: (ref) => loadedRefs.has(ref),
+  hasOwnPendingTurnInput: (ref) => ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref)),
+  load: (ref) => void refreshPendingTurnsProjection(ref),
+  begin: beginRetryAdmission,
+  end: endRetryAdmission,
+  isInFlight: (ref) => retryAdmissions.has(ref),
+  markSubmitted: markRetrySubmitted,
+  awaitingReflection: (ref, failedTurnId) => retryReflections.get(ref)?.failedTurnId === failedTurnId,
+});
+
+// Settlement notifications and model changes are the two facts that can
+// resolve a reflection marker. Both subscriptions re-decide from current
+// owner state, so no marker outlives what proves it.
+pendingTurnsStore.subscribe(() => {
+  for (const ref of [...retryReflections.keys()]) reconcileRetryReflection(ref);
+});
+threadsStore.subscribe((state, previous) => {
+  // Publication is two store steps: the model, then the per-ref publication
+  // count. Watch both so a winning read that names the same tail still
+  // settles the marker.
+  if (state.threads === previous.threads && state.hydrations === previous.hydrations) return;
+  for (const ref of [...retryReflections.keys()]) reconcileRetryReflection(ref);
+});
+
 // The durable-read fence a refresh's targets are decided through, and the
 // port it reads them from: readMutationPersistence is already shaped to
 // MutationPersistencePort, so no adapter object is needed beyond naming it.
@@ -131,9 +360,11 @@ export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
 function invalidateProjectionLoaded(ref?: string): void {
   if (ref !== undefined) {
     loadedRefs.delete(ref);
+    publishPendingReadiness();
     return;
   }
   for (const target of threadsStore.getState().threads.keys()) loadedRefs.delete(target);
+  publishPendingReadiness();
 }
 
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
@@ -162,6 +393,7 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   // read "loaded, no uncertainty" from a projection the winner has not filled
   // in yet and fold a resume ahead of blocked or queued rows.
   const loaded = markProjectionLoaded(accepted, ref, targets, snapshot);
+  if (loaded.length > 0) publishPendingReadiness();
   // A read that just established readiness may be exactly what a parked
   // dispatch was waiting for: a resume-only ref's head send parks while its
   // ref's durable outbox read is in flight (the fail-closed readiness the
@@ -535,6 +767,11 @@ export function resetPendingTurnsStoreForTests(): void {
   // test's storage, so it is not this test's projection work to wait for.
   clearProjectionWorkForTests();
   loadedRefs.clear();
+  publishPendingReadiness();
+  retryAdmissions.clear();
+  publishRetryAdmissions();
+  retryReflections.clear();
+  publishRetryReflections();
   pendingTurnsStore.setState({
     outbox: new Map(),
     optimistic: new Map(),
