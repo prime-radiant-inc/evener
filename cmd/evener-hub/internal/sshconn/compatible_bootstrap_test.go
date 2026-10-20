@@ -234,10 +234,15 @@ func TestEnsureRecoversDeploymentBeforeRestartMarker(t *testing.T) {
 		buildinfo.Channel, buildinfo.ReleaseTag, buildinfo.GitDirty = savedChannel, savedTag, savedDirty
 	})
 	buildinfo.Channel, buildinfo.ReleaseTag, buildinfo.GitDirty = "release", "v0.9.1", "false"
-	for _, phase := range []string{"write-ack", "write-not-landed", "installer-write-ack", "launch-check", "supervisor", "deploy-only", "deploy-only-not-landed", "source-refusal"} {
+	for _, phase := range []string{"write-ack", "write-not-landed", "installer-write-ack", "launch-check", "supervisor", "deploy-only", "deploy-only-not-landed", "same-label-not-landed", "deploy-only-same-label-not-landed", "source-refusal"} {
 		t.Run(phase, func(t *testing.T) {
-			const requested = "v0.9.1"
+			requested := "v0.9.1"
 			disk, running, started := "old-build", "old-build", "2026-01-01T00:00:00Z"
+			if strings.Contains(phase, "same-label") {
+				requested, disk, running = "dev", "dev", "dev"
+			}
+			initialRunning := running
+			requestedInstalled := false
 			interrupted := errors.New("injected transport interruption")
 			inject := true
 			writes, restarts := 0, 0
@@ -255,10 +260,11 @@ func TestEnsureRecoversDeploymentBeforeRestartMarker(t *testing.T) {
 				switch {
 				case strings.Contains(command, "cat >"), strings.Contains(command, "evener-install.XXXXXX"):
 					writes++
-					if inject && (phase == "write-not-landed" || phase == "deploy-only-not-landed") {
+					if inject && strings.HasSuffix(phase, "not-landed") {
 						return nil, interrupted
 					}
 					disk = requested // The atomic rename landed before the acknowledgement was lost.
+					requestedInstalled = true
 					if inject && (phase == "write-ack" || phase == "installer-write-ack" || phase == "deploy-only") {
 						return nil, interrupted
 					}
@@ -304,13 +310,14 @@ func TestEnsureRecoversDeploymentBeforeRestartMarker(t *testing.T) {
 			ch, err := m.Ensure(t.Context(), host.Name)
 			wantRunning, wantRestarts := requested, 1
 			if strings.HasPrefix(phase, "deploy-only") || phase == "source-refusal" {
-				wantRunning, wantRestarts = "old-build", 0
+				wantRunning, wantRestarts = initialRunning, 0
 			}
-			if phase == "write-not-landed" || phase == "deploy-only-not-landed" {
+			if strings.HasSuffix(phase, "not-landed") || phase == "write-ack" || phase == "installer-write-ack" || phase == "deploy-only" {
 				wantWrites++
 			}
-			if err != nil || ch == nil || running != wantRunning || restarts != wantRestarts || writes != wantWrites || m.pendingRestart(host.Name).active() {
-				t.Fatalf("recovery: channel=%v err=%v running=%q writes=%d restarts=%d", ch, err, running, writes, restarts)
+			wantInstalled := phase != "source-refusal"
+			if err != nil || ch == nil || running != wantRunning || restarts != wantRestarts || writes != wantWrites || requestedInstalled != wantInstalled || m.pendingRestart(host.Name).active() {
+				t.Fatalf("recovery: channel=%v err=%v running=%q writes=%d restarts=%d requestedInstalled=%v", ch, err, running, writes, restarts, requestedInstalled)
 			}
 		})
 	}

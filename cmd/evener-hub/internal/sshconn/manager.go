@@ -494,8 +494,9 @@ type pendingRestartState struct {
 	expectedGitSHA  string
 	// deployment retains a write whose installed build has not yet been
 	// reconciled, including the interval before a restart command is known.
-	deployment bool
-	restart    bool
+	deployment        bool
+	writeAcknowledged bool
+	restart           bool
 	// start records that this command STARTS a hub where none was serving (the
 	// bootstrap path, which refuses to run while a listener holds the address)
 	// rather than replacing a process. A recovered start has no predecessor to
@@ -1885,16 +1886,16 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		if preflight.launchErr != nil && !facts.ExecutableMissing {
 			return nil, preflight.launchErr
 		}
-		if !facts.ExecutableMissing && facts.Version == pending.expectedVersion && !pending.restart {
+		if !pending.needsDeployment(facts) && !pending.restart {
 			m.clearPendingRestart(host.Name)
-		} else if (facts.ExecutableMissing || facts.Version != pending.expectedVersion) && !m.canDeploy() {
+		} else if pending.needsDeployment(facts) && !m.canDeploy() {
 			return nil, errDeployDisabled
 		}
 	}
 	// Settle against the intent recorded before the effect, never later disk
 	// facts. A changed file must not turn a failed deployment into a success.
 	if pending := m.pendingRestart(host.Name); pending.active() && runningKnown && running.version == pending.expectedVersion &&
-		(!pending.deployment || (!facts.ExecutableMissing && facts.Version == pending.expectedVersion)) &&
+		!pending.needsDeployment(facts) &&
 		hubBuildSHAMatches(running.gitSHA, pending.expectedGitSHA) &&
 		(pending.start || running.differentProcessFrom(pending.replaced)) {
 		// A hub already serving exactly the expected build resolves whatever an
@@ -1999,6 +2000,9 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		}
 		resolvedTarget, err := m.deploy(deployCtx, host, facts, m.deploymentRecorder(host.Name, intent))
 		cancelDeploy()
+		if err == nil {
+			m.acknowledgeDeployment(host.Name)
+		}
 		if err != nil {
 			if finishEnsureOp != nil {
 				finishEnsureOp(err)
@@ -2238,8 +2242,7 @@ func (m *Manager) deployRequired(facts Preflight) bool {
 // Build labels alone never request deployment or process replacement.
 func (m *Manager) ensureDecision(name string, facts Preflight, liveIncompatible, hubPresent bool) (deploy, restart bool) {
 	pending := m.pendingRestart(name)
-	deploy = liveIncompatible || m.deployRequired(facts) || (pending.deployment &&
-		(facts.ExecutableMissing || facts.Version != pending.expectedVersion))
+	deploy = liveIncompatible || m.deployRequired(facts) || pending.needsDeployment(facts)
 	restart = (deploy && hubPresent) || pending.command != ""
 	if pending.deployment {
 		restart = pending.restart
@@ -3496,6 +3499,12 @@ func (p pendingRestartState) active() bool {
 	return p.command != "" || p.deployment
 }
 
+// Equal build labels do not prove an interrupted write installed its bytes.
+// Replay an unacknowledged write before settling or restarting its deployment.
+func (p pendingRestartState) needsDeployment(facts Preflight) bool {
+	return p.deployment && (!p.writeAcknowledged || facts.ExecutableMissing || facts.Version != p.expectedVersion)
+}
+
 func (m *Manager) deploymentIntent(restart bool, replaced hubIdentity) pendingRestartState {
 	return pendingRestartState{deployment: true, restart: restart, replaced: replaced,
 		expectedVersion: m.opts.controllerVersion(), expectedGitSHA: snapshotPinGitSHA()}
@@ -3507,9 +3516,18 @@ func (m *Manager) deploymentRecorder(name string, intent pendingRestartState) fu
 	return func(target string) {
 		m.mu.Lock()
 		defer m.mu.Unlock()
+		intent.writeAcknowledged = false
 		m.resolvedTargets[name] = target
 		m.pendingRestarts[name] = intent
 	}
+}
+
+func (m *Manager) acknowledgeDeployment(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pending := m.pendingRestarts[name]
+	pending.writeAcknowledged = true
+	m.pendingRestarts[name] = pending
 }
 
 func (m *Manager) setPendingRestart(name, remote, expectedVersion, expectedGitSHA string, replaced hubIdentity) {

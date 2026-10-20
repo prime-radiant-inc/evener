@@ -49,6 +49,7 @@ func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, fac
 	if err != nil {
 		return "", facts, err
 	}
+	m.acknowledgeDeployment(host.Name)
 	if target != "" {
 		host.EvenerPath = target
 		m.setResolvedTarget(host.Name, target)
