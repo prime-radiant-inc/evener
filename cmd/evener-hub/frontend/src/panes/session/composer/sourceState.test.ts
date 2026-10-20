@@ -2719,24 +2719,70 @@ test("a recovery settlement cannot publish empty over work that lands during its
   };
   const resent = await fixture.outbox.resendRecovery(original.clientMutationId, intent, guard);
   if (!resent) throw new Error("expected the guarded resend to create an accepted outbox record");
+  const attachment: PendingAttachment = {
+    marker: 1,
+    name: "typed-during-settlement.png",
+    mediaType: "image/png",
+    data: "AQID",
+    pending: false,
+  };
   const held = holdNextRead(fixture.repository);
   try {
     const settling = source.settleDraft(submitted);
     await held.reached;
     source.editText("typed during pending settlement");
+    source.attachments.setState((state) => ({ ...state, items: [attachment], nextMarkerRef: { current: 1 } }));
     held.release();
-    expect(await settling).toMatchObject({ persistence: "committed" });
-    // The accepted resend's local transition may not wipe the newer recovery
-    // edit, and it must not resurrect the deleted recovery record.
+    // The accepted resend consumed its record before settlement; the resend's
+    // local transition was vetoed by the newer work, so it is not a clear, and
+    // the consumed backing cannot stay live: every later edit would target a
+    // deleted recovery record and the next send would reconcile it away.
+    expect(await settling).toMatchObject({ cleared: false, persistence: "committed" });
     expect(source.getSnapshot()).toMatchObject({
-      activeRecoveryId: original.clientMutationId,
+      activeRecoveryId: null,
       text: "typed during pending settlement",
     });
-    expect(source.getRuntimeBacking()).toEqual({ kind: "recovery", recoveryId: original.clientMutationId });
+    expect(source.getRuntimeBacking()).toEqual({ kind: "draft" });
     expect(await fixture.outbox.getRecovery(original.clientMutationId)).toBeUndefined();
+    // The newer value and its staged attachment survive on writable draft
+    // backing: the queued ordinary write persists, and the next send captures
+    // the same value instead of reaching the missing-recovery reconciliation
+    // that would clear the editor.
+    await source.whenSettled();
+    expect(await requireRow(fixture.repository, fixture.key)).toMatchObject({
+      text: "typed during pending settlement",
+    });
+    expect(source.attachments.getState().items).toEqual([attachment]);
+    const next = await source.submissionDraft();
+    expect(next.text).toBe("typed during pending settlement");
+    expect(next.settlementGuard?.backing).toEqual({ kind: "draft" });
+    expect(await source.reconcileMissingRecovery(next, source.attachments.getState().items)).toBe(false);
+    expect(source.getSnapshot()).toMatchObject({ text: "typed during pending settlement" });
+    expect(source.attachments.getState().items).toEqual([attachment]);
   } finally {
     held.release();
   }
+});
+
+test("a committed clear keeps its settlement when its reconciliation read fails", async () => {
+  const fixture = sourceFixture("source-state-clear-then-read-fault");
+  await fixture.repository.seedDraft(fixture.key, { text: "sent message", skillNames: [] });
+  const source = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  await source.ready();
+  const submitted = await source.submissionDraft();
+  // The durable clear commits on its own transaction; the read that follows it
+  // fails. The committed settlement must survive that fault, and the unchanged
+  // local capture must leave the editor: stale sent text with no registered
+  // cleanup is a duplicate-submission window.
+  const failing = vi.spyOn(fixture.repository, "load").mockRejectedValueOnce(new Error("storage unavailable"));
+  const settlement = await source.settleDraft(submitted);
+  failing.mockRestore();
+  expect(settlement).toMatchObject({ cleared: true, draftUnchanged: true, persistence: "committed" });
+  expect((await requireRow(fixture.repository, fixture.key)).text).toBe("");
+  expect(source.getSnapshot()).toMatchObject({ text: "", skillNames: [] });
+  expect((await source.submissionDraft()).text).toBe("");
 });
 
 // --- Remaining writer cutover (RED checkpoint on source 10b5a068) -----------
@@ -3735,14 +3781,36 @@ test.each(["sender mention edit", "sender replacement attachment", "other source
       });
       expect.soft(committed.mock.calls[0]?.[5]?.submitted).toBe(captured);
       expect.soft(captured?.settlementGuard).toEqual(capturedGuard);
-      expect.soft(retained.getSnapshot()).toMatchObject({ ...localValue, activeRecoveryId: original.clientMutationId });
+      // Only the source whose own settlement ran was vetoed; the peer variant
+      // keeps its untouched recovery selection.
+      const released = change !== "other source replacement attachment";
+      const persistsValue = change === "sender mention edit";
+      expect.soft(retained.getSnapshot()).toMatchObject({
+        ...localValue,
+        activeRecoveryId: released ? null : original.clientMutationId,
+      });
       expect.soft(retained.attachments.getState().items).toHaveLength(1);
       expect.soft(retained.attachments.getState().items[0]).toBe(liveAttachment);
-      expect.soft(retained.getRuntimeBacking()).toEqual(originalBacking);
-      expect.soft(retained.getDraftToken()).toEqual(originalToken);
-      expect.soft(retained.getLocalGeneration()).toBe(generation);
+      // The resend consumed the record before this settlement, so the newer
+      // work cannot stay on that deleted backing. It is released onto the
+      // ordinary draft path: the mention edit is queued there and persists,
+      // while a replaced attachment stays staged for the next send's payload.
+      expect.soft(retained.getRuntimeBacking()).toEqual(released ? { kind: "draft" } : originalBacking);
+      expect.soft(retained.getLocalGeneration()).toBe(generation + (persistsValue ? 1 : 0));
       expect.soft(editor.held()).toEqual(cursor);
-      expect.soft(await observer.load(fixture.key)).toEqual(accepted);
+      const settled = await observer.load(fixture.key);
+      if (persistsValue) {
+        expect.soft(settled).toMatchObject({
+          text: "recovery edited /same",
+          skillNames: [],
+          commandNames: ["same"],
+          mentions: [],
+        });
+        expect.soft(retained.getDraftToken()).toEqual(settled?.token);
+      } else {
+        expect.soft(settled).toEqual(accepted);
+        expect.soft(retained.getDraftToken()).toEqual(originalToken);
+      }
       expect.soft(await recoveryObserver.getRecovery(original.clientMutationId)).toBeUndefined();
       expect
         .soft(await recoveryObserver.listOutbox("root"))

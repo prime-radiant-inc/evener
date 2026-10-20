@@ -3613,12 +3613,11 @@ test("a builtin preparation storage failure sends no command, keeps the draft an
   if (errors.length > 1) throw new AggregateError(errors, "builtin preparation storage-failure test cleanup failed");
 });
 
-// Finding 3b (source-review turn2212): after an ACCEPTED builtin, settleDraft's
-// post-clear repository.load can reject; busy does clear, but the rejection
-// still escapes the fire-and-forget handleBuiltinSubmit. The accepted command
-// must not be resent, the durable clear must be real, and the failure must be
-// reported honestly. The escaping rejection stays a suite-level RED (vitest's
-// exit/Errors output is the established oracle for an uncaught rejection).
+// Finding 3b (source-review turn2212, reshaped by review 43232): after an
+// ACCEPTED builtin, settleDraft's post-clear repository.load can reject. The
+// committed clear survives that failed reconciliation: the accepted command is
+// not resent, the durable row is empty, the sent text leaves the editor, and
+// busy clears without inventing a failure to report.
 test("a builtin settlement storage failure after acceptance does not resend the command or leave busy set", async () => {
   const factory = new IDBFactory();
   const ref = "ref_builtin_settle_fail";
@@ -3668,7 +3667,11 @@ test("a builtin settlement storage failure after acceptance does not resend the 
     await flushPendingTurnsProjectionForTests();
     // The accepted command ran exactly once and is never resent by the failure.
     expect(rpcCount).toBe(1);
-    expect(sendButton().disabled).toBe(false);
+    // The committed clear also takes the unchanged local capture out of the
+    // editor, so there is nothing left to send twice. Send is disabled here for
+    // that empty content, not by a stuck busy action.
+    expect(editor.textContent).toBe("");
+    expect(sendButton().disabled).toBe(true);
     // The durable clear committed before the failing read: an independent read
     // proves the row is actually empty.
     const reopened = createBrowserDraftRepository({ indexedDB: factory, databaseName: "builtin-settle-fail" });
@@ -3677,8 +3680,12 @@ test("a builtin settlement storage failure after acceptance does not resend the 
     } finally {
       reopened.close();
     }
-    // Honest user-visible failure feedback from the existing toast convention.
-    expect(getToasts().some((toast) => toast.kind === "error")).toBe(true);
+    // Busy was released, not stuck: the composer accepts the next draft.
+    await user.type(editor, "next draft");
+    expect(sendButton().disabled).toBe(false);
+    // The clear committed, so there is no pending cleanup and nothing to report:
+    // the failed reconciliation read must not surface as an error toast.
+    expect(getToasts().filter((toast) => toast.kind === "error")).toEqual([]);
   } catch (error) {
     errors.push(error);
   }

@@ -1282,6 +1282,26 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
         clearLocalEditor();
         runtimeBacking = { kind: "draft" };
       }
+      // The accepted resend consumed its record before this settlement, yet the
+      // snapshot proof above ran only after a durable read: work the user typed
+      // while that read was in flight vetoes the transition. The record is
+      // gone, so leaving it as the live backing strands the newer value - every
+      // edit would target a deleted record, and the next send's missing-
+      // recovery reconciliation would clear the text and attachments. Release
+      // the consumed backing onto the ordinary draft path and keep the newer
+      // value queued there, exactly as an entry-time veto does. A built-in
+      // command consumed nothing, so its record survives and keeps the work.
+      else if (
+        opts?.command !== true &&
+        isOwnCapture(submitted) &&
+        recoveryReplacementEpochRef.current === ownedCaptureGuards.get(guard)?.replacementEpoch &&
+        activeRecoveryIdRef.current === guard.backing.recoveryId
+      ) {
+        recoveryOwnsLocalDraftRef.current = false;
+        setActiveRecoveryId(null);
+        if (!sameSubmittedFullValue(submitted)) acceptEdit(currentValue());
+        return { cleared: false, draftUnchanged: false, persistence: "committed" };
+      }
       return { cleared: true, draftUnchanged: true, persistence: "committed" };
     }
     if (!r || !k) return { cleared: false, draftUnchanged: false, persistence: "committed" };
@@ -1298,7 +1318,14 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
     }
     const settlement = await r.clearSubmitted(k, submitted);
     if (settlement.cleared) {
-      const row = await r.load(k);
+      // The durable clear already committed; a failed reconciliation read must
+      // not discard that fact. Letting it reject aborts the settlement after
+      // the clear, the wrapper reports cleanup pending, and the sent text stays
+      // in the editor with no retry registered - a second Send would duplicate
+      // it. The row is unknowable here, so no token is adopted; the unchanged
+      // local capture is cleared under the same ownership guard, and the next
+      // write reconciles the token.
+      const row = await r.load(k).catch(() => null);
       if (stillOwnsLocally()) {
         // The clear's own durable write advanced the row from the guard's
         // captured token by exactly one, and only that advance is adopted: a
