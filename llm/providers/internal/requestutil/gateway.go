@@ -91,6 +91,25 @@ func applyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, c
 			return
 		}
 	}
+	// A model the gateway says takes no effort parameter records that verdict
+	// and publishes an empty ladder, so the live layer replaces a curated one
+	// instead of inheriting it. The controls themselves are derivation's call:
+	// it removes the effort control while preserving a numeric budget, which a
+	// wholesale write here would destroy before derivation ever saw it.
+	if pi := compat.Pi; pi != nil && pi.SupportsReasoningEffort != nil && !*pi.SupportsReasoningEffort {
+		caps.EffortParameterUnsupported = new(true)
+		caps.EffortValues = []string{}
+		// The map still proves the model reasons, even though its ladder is
+		// not published. Without this, a row whose verdict was inferred false
+		// from a provider-wide parameter list loses the controls derivation
+		// just installed, and request shaping drops reasoning entirely. A
+		// published map with no usable level proves nothing, though: it says
+		// the model takes no effort, not that it reasons.
+		if hasUsableLevel(pi.ThinkingLevelMap) {
+			caps.Reasoning = new(true)
+		}
+		return
+	}
 	ladder, published := gatewayEffortLadder(compat)
 	if len(ladder) > 0 {
 		caps.Reasoning = new(true)
@@ -136,6 +155,18 @@ func gatewayEffortLadder(compat GatewayClientCompat) (ladder []string, published
 		ladder = []string{}
 	}
 	return ladder, true
+}
+
+// hasUsableLevel reports whether a thinking-level map names at least one level
+// evener can rank. It is the evidence that the model reasons, separate from
+// whether its ladder is publishable.
+func hasUsableLevel(levels map[string]string) bool {
+	for _, wire := range levels {
+		if llm.ReasoningEffortRank(wire) != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // gatewayInputModalities is the input modality list a /models row advertises:
