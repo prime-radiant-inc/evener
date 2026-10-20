@@ -1164,7 +1164,9 @@ for (const reason of RETRY_REASONS) {
       // reconciliation it depends on, so no repository/reader update escapes
       // React's act scope during this tail.
       await act(async () => {
-        expect(retries).toHaveBeenCalledWith(reason);
+        // The retry pass now carries the runtime's disposal cancellation next
+        // to its reason, so the spy's argument pin expects both.
+        expect(retries).toHaveBeenCalledWith(reason, expect.anything());
         expect(saves.mock.calls.every(([operation]) => JSON.stringify(operation) === JSON.stringify(original))).toBe(
           true,
         );
