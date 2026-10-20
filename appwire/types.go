@@ -3351,6 +3351,11 @@ type ModelDescriptor struct {
 	// model under a regional Vertex location) so the model picker can flag a
 	// row the resolver itself warns about.
 	Warnings []string `json:"warnings,omitempty"`
+	// InstanceDefault marks the row as its instance's configured default in
+	// the instance's own usable current listing. It is not the global default
+	// and not proof of generation access; an absent marker authorizes no
+	// automatic selection.
+	InstanceDefault bool `json:"instanceDefault,omitempty"`
 }
 
 type ModelListDiagnostic struct {

@@ -2270,6 +2270,13 @@ export interface ModelDescriptor {
    * row the resolver itself warns about.
    */
   warnings?: string[];
+  /**
+   * InstanceDefault marks the row as its instance's configured default in
+   * the instance's own usable current listing. It is not the global default
+   * and not proof of generation access; an absent marker authorizes no
+   * automatic selection.
+   */
+  instanceDefault?: boolean;
 }
 
 export interface ModelListDiagnostic {

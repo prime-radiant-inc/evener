@@ -2591,6 +2591,7 @@ Underlying Go kind: `string` (no struct fields).
 | `outputCostPerMillion` | \*float64 | yes |  |
 | `reasoningEffortLevels` | []string | yes |  |
 | `warnings` | []string | yes |  |
+| `instanceDefault` | bool | yes |  |
 
 
 ### `ModelListDiagnostic`

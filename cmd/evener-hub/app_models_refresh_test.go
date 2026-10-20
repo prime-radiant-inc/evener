@@ -70,7 +70,7 @@ func TestModelListExplicitRefreshRecoversProvider(t *testing.T) {
 			creds := filepath.Join(t.TempDir(), "credentials.toml")
 			t.Setenv("EVENER_PROVIDERS_CONFIG", config)
 			t.Setenv("EVENER_CREDENTIALS_CONFIG", creds)
-			if err := os.WriteFile(config, []byte(fmt.Sprintf("[providers.refreshfixture]\nbase = \"openai-compatible\"\nbase_url = %q\n", provider.URL+"/v1")), 0600); err != nil {
+			if err := os.WriteFile(config, []byte(fmt.Sprintf("[providers.refreshfixture]\nbase = \"openai-compatible\"\nbase_url = %q\ndefault_model = \"refresh-model-sentinel\"\n", provider.URL+"/v1")), 0600); err != nil {
 				t.Fatal(err)
 			}
 			store, err := credentials.LoadStore(creds)
@@ -122,6 +122,9 @@ func TestModelListExplicitRefreshRecoversProvider(t *testing.T) {
 			for _, model := range fresh.Data {
 				if model.Provider == "refreshfixture" && model.Model == "refresh-model-sentinel" {
 					found = true
+					if !model.InstanceDefault {
+						t.Fatalf("refreshed model/list dropped the instance-default marker: %+v", model)
+					}
 				}
 			}
 			if !found || calls.Load() <= prior {
@@ -130,6 +133,11 @@ func TestModelListExplicitRefreshRecoversProvider(t *testing.T) {
 			after := calls.Load()
 			if len(list(false).Data) != len(fresh.Data) || calls.Load() != after {
 				t.Fatal("refresh did not populate normal cached reads")
+			}
+			for _, model := range list(false).Data {
+				if model.Provider == "refreshfixture" && model.Model == "refresh-model-sentinel" && !model.InstanceDefault {
+					t.Fatalf("cached model/list dropped the instance-default marker: %+v", model)
+				}
 			}
 		})
 	}
