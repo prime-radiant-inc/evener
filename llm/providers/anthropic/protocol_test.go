@@ -165,7 +165,7 @@ func TestProtocolBuildBody_CapsAndRequestFields(t *testing.T) {
 	if sys := body["system"].([]map[string]any)[0]["cache_control"].(map[string]any); sys["ttl"] != "1h" {
 		t.Fatalf("system marker: %v", sys)
 	}
-	if got := registry.Prune(body, res.Caps); !reflect.DeepEqual(got, []string{"metadata", "service_tier"}) {
+	if got := registry.Prune(body, res.Caps, res.Protocol); !reflect.DeepEqual(got, []string{"metadata", "service_tier"}) {
 		t.Fatalf("baseline prunes metadata and service_tier: %v", got)
 	}
 
