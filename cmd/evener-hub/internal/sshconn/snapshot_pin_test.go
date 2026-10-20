@@ -134,7 +134,7 @@ func TestRestartHubPinsSnapshotBuildFromBuildChannel(t *testing.T) {
 		})
 	}
 
-	err := newManager(`{"version":"newsha","backend_git_sha":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`).
+	_, err := newManager(`{"version":"newsha","backend_git_sha":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`).
 		RestartForOperation(context.Background(), host, Preflight{OS: "linux"})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart (the version matched but the commit did not)", err)
@@ -143,7 +143,7 @@ func TestRestartHubPinsSnapshotBuildFromBuildChannel(t *testing.T) {
 		t.Fatalf("error does not name the mismatched build identity: %v", err)
 	}
 
-	if err := newManager(`{"version":"newsha","backend_git_sha":"expectedsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`).
+	if _, err := newManager(`{"version":"newsha","backend_git_sha":"expectedsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`).
 		RestartForOperation(context.Background(), host, Preflight{OS: "linux"}); err != nil {
 		t.Fatalf("restartHub: %v (a matching snapshot commit must verify)", err)
 	}

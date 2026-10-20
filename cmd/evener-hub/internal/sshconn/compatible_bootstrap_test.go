@@ -297,7 +297,7 @@ func TestEnsureRecoversDeploymentBeforeRestartMarker(t *testing.T) {
 			}
 			_, after, err := m.DeployForOperation(t.Context(), host, facts, !strings.HasPrefix(phase, "deploy-only"))
 			if phase == "supervisor" && err == nil {
-				err = m.RestartForOperation(t.Context(), host, after)
+				_, err = m.RestartForOperation(t.Context(), host, after)
 			}
 			wantWrites := 1
 			if phase == "source-refusal" {
