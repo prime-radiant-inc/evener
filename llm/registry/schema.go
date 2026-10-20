@@ -470,3 +470,15 @@ func vocabList(m map[string]bool) string {
 	sort.Strings(keys)
 	return strings.Join(keys, " | ")
 }
+
+// ValidThinkingFormat reports whether format is a reasoning dialect the chat
+// builders spell. It is the load-time vocabulary, exported so a live listing
+// that states a dialect per model admits the same set the config layer does:
+// a value outside it writes no reasoning control at all, so a gateway value
+// this rejects must be dropped rather than carried.
+func ValidThinkingFormat(format string) bool { return thinkingFormats[format] }
+
+// ValidMaxTokensField reports whether field is an output-limit spelling a
+// request can carry. See ValidThinkingFormat for why a live listing shares
+// this vocabulary instead of restating it.
+func ValidMaxTokensField(field string) bool { return maxTokensFields[field] }

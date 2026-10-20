@@ -41,22 +41,39 @@ type GatewayPiCompat struct {
 	SupportsReasoningEffort *bool `json:"supportsReasoningEffort"`
 }
 
-// thinkingFormats and maxTokensFields restate the registry's load-time
-// vocabularies (llm/registry/schema.go). A gateway value outside them is
-// dropped: the chat builders write no reasoning control for an unknown
-// dialect, and an unknown output spelling reaches no field at all, so carrying
-// one would silently switch that behavior off for the row.
-var (
-	thinkingFormats = map[string]bool{"openai": true, "openrouter": true, "zai": true, "deepseek": true, "together": true, "qwen": true, "qwen-chat-template": true, "chat-template": true, "string-thinking": true}
-	maxTokensFields = map[string]bool{"max_tokens": true, "max_completion_tokens": true}
-)
-
 // ApplyGatewayFacts folds a row's own per-model facts (lunaroute's shape) into
 // caps: the reasoning verdict and effort ladder, then the wire-shaping dialect
 // and output-limit spelling the gateway states for that model. Both /models
 // readers share it so they cannot disagree about the precedence — the gateway
 // knows per model what a listing's provider-wide parameters only infer, and a
 // fact it does not state leaves what the caller inferred in place.
+func ApplyGatewayFacts(caps *registry.Caps, arch GatewayArchitecture, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
+	applyGatewayReasoning(caps, capsFacts, compat)
+	if pi := compat.Pi; pi != nil {
+		// A value outside the registry's vocabulary is dropped rather than
+		// carried: an unknown dialect writes no reasoning control at all, and
+		// an unknown output spelling reaches no field, so carrying one would
+		// silently switch that behavior off for the row.
+		if registry.ValidThinkingFormat(pi.ThinkingFormat) {
+			caps.ThinkingFormat = new(pi.ThinkingFormat)
+		}
+		if registry.ValidMaxTokensField(pi.MaxTokensField) {
+			caps.MaxTokensField = new(pi.MaxTokensField)
+		}
+		// A model the gateway says takes no effort parameter is toggle-only:
+		// dropping "effort" from the controls is what keeps derivation from
+		// inferring it back and the request builder from spelling a level the
+		// gateway ignores. The ladder is an empty non-nil list, not nil, so the
+		// live layer replaces a curated one instead of inheriting it.
+		if pi.SupportsReasoningEffort != nil && !*pi.SupportsReasoningEffort {
+			caps.ReasoningControls = []string{"toggle"}
+			caps.EffortValues = []string{}
+		}
+	}
+	caps.InputModalities = GatewayInputModalities(arch, capsFacts)
+}
+
+// applyGatewayReasoning is ApplyGatewayFacts' reasoning half.
 //
 // A usable ladder is itself evidence the model tunes effort, so it raises a
 // verdict inferred elsewhere (a provider-wide parameter list, the catalog) to
@@ -70,28 +87,6 @@ var (
 // before derivation would clear it. A published map with no usable level is the
 // gateway saying the same thing, so it too clears any inherited ladder rather
 // than letting the replay keep one the gateway marks unsupported.
-func ApplyGatewayFacts(caps *registry.Caps, arch GatewayArchitecture, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
-	applyGatewayReasoning(caps, capsFacts, compat)
-	if pi := compat.Pi; pi != nil {
-		if thinkingFormats[pi.ThinkingFormat] {
-			caps.ThinkingFormat = new(pi.ThinkingFormat)
-		}
-		if maxTokensFields[pi.MaxTokensField] {
-			caps.MaxTokensField = new(pi.MaxTokensField)
-		}
-		// A model the gateway says takes no effort parameter is toggle-only:
-		// dropping "effort" from the controls is what keeps derivation from
-		// inferring it back and the request builder from spelling a level the
-		// gateway ignores.
-		if pi.SupportsReasoningEffort != nil && !*pi.SupportsReasoningEffort {
-			caps.ReasoningControls = []string{"toggle"}
-			caps.EffortValues = nil
-		}
-	}
-	caps.InputModalities = GatewayInputModalities(arch, capsFacts)
-}
-
-// applyGatewayReasoning is ApplyGatewayFacts' reasoning half.
 func applyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
 	ladder, published := GatewayEffortLadder(compat)
 	if capsFacts.Reasoning != nil {

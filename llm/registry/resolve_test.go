@@ -1348,6 +1348,30 @@ func TestResolve_LiveWireFactsReachCaps(t *testing.T) {
 	}
 }
 
+// A live row the gateway marks toggle-only must not inherit a curated effort
+// ladder. The ladder reaches the row through the catalog layer, and derivation
+// re-adds the effort control whenever a non-empty ladder sits beside controls
+// that lack it, so the live layer can only clear it with a non-nil empty list:
+// a nil slice means "inherit" to mergeCaps and the gateway's verdict is undone.
+func TestResolve_LiveToggleOnlyOverridesACuratedLadder(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
+[providers.openrouter.models."toggle/test-model"]
+reasoning = true
+effort_values = ["low", "high"]
+`)))
+	r.ApplyLive("openrouter", []Model{{
+		ID:   "toggle/test-model",
+		Caps: Caps{Reasoning: new(true), ReasoningControls: []string{"toggle"}, EffortValues: []string{}},
+	}})
+	res := mustResolve(t, r, "openrouter/toggle/test-model")
+	if res.Caps.EffortCapable() {
+		t.Fatalf("a toggle-only live row must not be effort-capable: controls=%v ladder=%v", res.Caps.ReasoningControls, res.Caps.EffortValues)
+	}
+	if len(res.Caps.EffortValues) != 0 {
+		t.Fatalf("EffortValues = %v, want the live row's empty ladder rather than the curated one", res.Caps.EffortValues)
+	}
+}
+
 var provRe = regexp.MustCompile(`^((snapshot|cache|overlay|config)/(provider|row|glob:.+)|live|alias|derived)$`)
 
 func TestResolve_ProvenanceNamesRealLayers(t *testing.T) {

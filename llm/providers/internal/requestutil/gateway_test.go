@@ -181,6 +181,7 @@ func TestApplyGatewayFacts_Dialect(t *testing.T) {
 			wantFormat: "openai",
 		},
 		{
+			// Both fields stay unset, so a curated row's own dialect survives.
 			name:   "an absent block states no dialect",
 			compat: GatewayClientCompat{},
 		},
@@ -234,11 +235,16 @@ func TestApplyGatewayFacts_EffortUnsupported(t *testing.T) {
 			if caps.EffortCapable() {
 				t.Fatal("a toggle-only row must not be effort-capable")
 			}
+			// Non-nil, or mergeCaps inherits a curated ladder and derivation
+			// re-adds the effort control the gateway just said not to use.
+			if caps.EffortValues == nil {
+				t.Fatal("a toggle-only row must publish an empty ladder, not a nil one")
+			}
 		})
 	}
 }
 
-func TestApplyGatewayReasoning(t *testing.T) {
+func TestApplyGatewayFacts_Reasoning(t *testing.T) {
 	yes, no := true, false
 	levels := func(m map[string]string) GatewayClientCompat {
 		return GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}
