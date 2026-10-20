@@ -30,7 +30,7 @@ func (p *Protocol) call(operation, method, url string, body map[string]any, req 
 
 func (p *Protocol) completionCall(operation, method, url string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
 	call := p.call(operation, method, url, body, req, res)
-	call.FinalizeBody = func(finalBody map[string]any) error {
+	call.FinalizeBody = func(_ context.Context, finalBody map[string]any) error {
 		reconcilePreparedOutput(finalBody, req, res.Caps)
 		return nil
 	}
@@ -42,25 +42,21 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	if protocolhttp.RequiresStreamingComplete(res) {
 		return protocolhttp.CompleteViaStream(ctx, res.Instance, func(ctx context.Context) (llm.Stream, error) { return p.Stream(ctx, req, res) })
 	}
-	body, err := buildBody(req, res, false)
-	if err != nil {
-		return llm.Response{}, err
-	}
-	call := p.completionCall("chat.completions", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
-	return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
-		return fromChatCompletionResponse(raw, res.Caps.FinishReasonMap)
+	return runImageRecovery(ctx, p, req, res, false, func(call *protocolhttp.Call, recovery *imageRecovery) (llm.Response, error) {
+		return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
+			resp, err := fromChatCompletionResponse(raw, res.Caps.FinishReasonMap)
+			resp.Warnings = append(resp.Warnings, recovery.warnings...)
+			return resp, err
+		})
 	})
 }
 
 // Stream implements llm.Protocol.
 func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Resolved) (llm.Stream, error) {
-	body, err := buildBody(req, res, true)
-	if err != nil {
-		return nil, err
-	}
-	call := p.completionCall("chat.completions(stream)", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
-	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
-		decodeStream(sctx, cancel, resp, s, req, res, r, attempt)
+	return runImageRecovery(ctx, p, req, res, true, func(call *protocolhttp.Call, recovery *imageRecovery) (llm.Stream, error) {
+		return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
+			decodeStream(sctx, cancel, resp, s, req, res, r, attempt, recovery.warnings)
+		})
 	})
 }
 
