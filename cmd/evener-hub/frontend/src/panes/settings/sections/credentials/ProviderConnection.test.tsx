@@ -1408,6 +1408,34 @@ test.each([{ activeSource: "api_key" }, { baseUrl: "https://changed.example/v1" 
     await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   },
 );
+test("manual retry after accepting reviewed access keeps the accepted source", async () => {
+  const endpoint = catalogue.find((row) => row.id === "ollama")!.setup!;
+  const environmentRow: InstanceEntry = {
+    ...endpoint,
+    activeSource: "env:OLLAMA_API_KEY",
+    hasStoredFile: false,
+  };
+  const { user, client, connected } = setup({ instances: [environmentRow], availableProviders: catalogue });
+  await choose(user, "Local endpoint");
+  const storedRow: InstanceEntry = { ...environmentRow, activeSource: "store", hasStoredFile: true };
+  client.on("evener/instance/list", () => ({
+    instances: [structuredClone(storedRow)],
+    availableProviders: catalogue,
+  }));
+  let probes = 0;
+  client.on("evener/auth/test", ({ provider }) => {
+    probes += 1;
+    return { provider, status: probes === 1 ? "endpoint_failure" : "success", message: "" };
+  });
+  await user.click(screen.getByRole("button", { name: "Check connection" }));
+  await user.click(await screen.findByRole("button", { name: "Use reviewed access and check" }));
+  expect(await alertReason()).toBe("check-failed");
+  await user.click(screen.getByRole("button", { name: "Retry check" }));
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("ollama"));
+  expect(screen.queryByTestId("access-review")).toBeNull();
+  expect(probes).toBe(2);
+  expect(client.calls.filter((call) => call.method.includes("/set") || call.method.includes("/clear"))).toEqual([]);
+});
 test("failed refresh is not proof of fresh access and does not check stale metadata", async () => {
   const { user, client, connected } = setup();
   await choose(user);

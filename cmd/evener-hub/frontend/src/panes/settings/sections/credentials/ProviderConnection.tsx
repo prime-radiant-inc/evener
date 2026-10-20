@@ -1109,6 +1109,7 @@ function SelectedConnection({
                   <Button
                     disabled={unavailable}
                     onClick={() => {
+                      acquisitionSource.current = review.activeSource;
                       setBaseline(review);
                       void check(++operation.current, review);
                     }}
