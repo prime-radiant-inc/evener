@@ -70,3 +70,31 @@ func TestArtifactStoreCreationFailureWarnsAfterSessionStart(t *testing.T) {
 		t.Fatalf("warning (index %d) arrived before SESSION_START (index %d)", warningIdx, sessionStartIdx)
 	}
 }
+
+// A delegate must share its tree's store, including when the tree has none: a
+// delegate that minted its own would hand back artifact refs its root cannot
+// read, and its close would delete them while the root is still live.
+func TestDelegateInheritsADegradedRootsMissingStore(t *testing.T) {
+	installArtifactStoreFactory(t, func() (artifactStore, error) {
+		return nil, errors.New("temp dir is gone")
+	})
+	root := newArtifactTestRoot(t)
+	if root.artifactStore != nil {
+		t.Fatal("root unexpectedly got a store")
+	}
+	// Storage recovers before the delegate starts; the delegate must still not
+	// take ownership of a store of its own.
+	installArtifactStoreFactory(t, func() (artifactStore, error) {
+		return newFakeArtifactStore(), nil
+	})
+
+	childID := spawnRuntimeAgent(t, root, "child task", "", 1, "", "", nil)
+	child := root.getSub(childID)
+	if child == nil || child.sess == nil {
+		t.Fatal("production child was not tracked")
+	}
+	if child.sess.artifactStore != nil {
+		t.Fatal("delegate minted its own store under a degraded root")
+	}
+	root.Close()
+}

@@ -57,8 +57,10 @@ var sessionArtifactStoreFactory = func() (artifactStore, error) {
 // when a Put fails — so a store that cannot be created leaves the session
 // running without one, with the cause returned for its session-start warning.
 // The live cause is a TMPDIR that outlived the directory it named.
-func resolveArtifactStore(inherited artifactStore) (store artifactStore, owns bool, err error) {
-	if inherited != nil {
+func resolveArtifactStore(inherited artifactStore, inheritedSet bool) (store artifactStore, owns bool, err error) {
+	if inheritedSet {
+		// The parent runtime handed this session its store, possibly nil when
+		// the tree's retention is degraded. Either way the tree owns it.
 		return inherited, false, nil
 	}
 	created, err := newSessionArtifactStore()
