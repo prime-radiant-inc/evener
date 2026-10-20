@@ -137,6 +137,26 @@ for base, dirs, names in os.walk(root):
             files.append({'path': os.path.relpath(p, root), 'sha256': digest})
 with open(out, 'w') as f: json.dump(sorted(files, key=lambda r: r['path']), f, indent=2)
 PY
+    # The restore phase's provenance receipt: the probe source, the workflow
+    # script itself, and the built executable and JS bundle the retained
+    # baseline reinstalls. Layout is the only phase holding both the checkout
+    # and the freshly built app, so it records exactly what restore verifies.
+    /usr/bin/python3 - "$checkout" "$sha" "$source_artifacts/retained-baseline-digests.json" <<'PY'
+import hashlib, json, os, sys
+root, sha, out = sys.argv[1:]
+pinned = [
+    'annotation-derived-data/Build/Products/Release-iphonesimulator/Evener.app/Evener',
+    'annotation-derived-data/Build/Products/Release-iphonesimulator/Evener.app/main.jsbundle',
+    'mobile-native/e2e/document-annotations-mac.sh',
+    'mobile-native/e2e/document-annotations-probe.tsx',
+]
+receipt = {'sourceSHA': sha, 'files': {}}
+for relative in pinned:
+    with open(os.path.join(root, relative), 'rb') as f: digest = hashlib.sha256(f.read()).hexdigest()
+    receipt['files'][relative] = digest
+with open(out, 'w') as f: json.dump(receipt, f, indent=2)
+print('Recorded retained baseline provenance: ' + ', '.join(pinned))
+PY
     shasum -a 256 "$source_artifacts/app-inventory.json" "$app/Evener" "$app/main.jsbundle"
     xcrun simctl install "$sim_id" "$app"
     installed=$(xcrun simctl get_app_container "$sim_id" com.primeradiant.evener.native app)
@@ -152,7 +172,7 @@ receipt = json.load(open(path)); assert receipt['sourceSHA'] == sha
 for relative, expected in receipt['files'].items():
     with open(os.path.join(root, relative), 'rb') as f: actual = hashlib.sha256(f.read()).hexdigest()
     assert actual == expected, relative
-print('Retained baseline probe, native executable, JS and compiled XCTest driver digests verified')
+print('Retained baseline probe, workflow, native executable and JS digests verified')
 PY
     app="$checkout/annotation-derived-data/Build/Products/Release-iphonesimulator/Evener.app"
     /usr/bin/python3 - "$app" "$source_artifacts/app-inventory.json" <<'PY'
