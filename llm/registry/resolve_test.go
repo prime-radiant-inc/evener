@@ -1392,6 +1392,29 @@ alias_of = "target-model"
 	}
 }
 
+// A configured row stating the no-effort verdict must lose effort capability
+// the same way a live gateway row does. The flag alone leaves the inherited
+// ladder and the derived effort control in place, so every protocol but
+// OpenRouter would still spell an effort the row says is rejected.
+func TestResolve_ConfiguredNoEffortVerdictRemovesEffortCapability(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
+[providers.openrouter.models."rejects-effort"]
+reasoning = true
+effort_values = ["low", "high"]
+effort_parameter_unsupported = true
+`)))
+	res := mustResolve(t, r, "openrouter/rejects-effort")
+	if res.Caps.EffortCapable() {
+		t.Fatalf("effort must be unavailable: controls=%v ladder=%v", res.Caps.ReasoningControls, res.Caps.EffortValues)
+	}
+	if len(res.Caps.EffortValues) != 0 {
+		t.Fatalf("EffortValues = %v, want the ladder cleared", res.Caps.EffortValues)
+	}
+	if !BoolValue(res.Caps.Reasoning) {
+		t.Fatalf("Reasoning = %v, want the row still reasoning", res.Caps.Reasoning)
+	}
+}
+
 var provRe = regexp.MustCompile(`^((snapshot|cache|overlay|config)/(provider|row|glob:.+)|live|alias|derived)$`)
 
 func TestResolve_ProvenanceNamesRealLayers(t *testing.T) {

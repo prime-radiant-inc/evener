@@ -40,6 +40,21 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 			prov["ReasoningControls"], prov["EffortValues"] = provDerived, provDerived
 		}
 	}
+	// A row that states the no-effort verdict takes no effort parameter,
+	// whichever layer stated it. The live layer already drops the ladder when
+	// it reads the verdict from a gateway; doing it here as well makes a
+	// configured row behave the same, so no protocol spells a level the row
+	// says is rejected. Toggle-only keeps the reasoning control itself.
+	if !reasoningOff && BoolValue(c.EffortParameterUnsupported) {
+		if !slices.Equal(c.ReasoningControls, []string{"toggle"}) {
+			c.ReasoningControls = []string{"toggle"}
+			prov["ReasoningControls"] = provDerived
+		}
+		if len(c.EffortValues) > 0 {
+			c.EffortValues = []string{}
+			prov["EffortValues"] = provDerived
+		}
+	}
 
 	// 1. Effort control pass-through. Capture the pre-augmentation state:
 	// the google shape check below must not mistake an effort control this
