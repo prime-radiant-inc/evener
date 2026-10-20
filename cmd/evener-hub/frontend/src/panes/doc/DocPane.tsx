@@ -778,24 +778,31 @@ function DocReader({ session, path, paneId, focused, origin, ports }: DocReaderP
         // pane's issuance alone; this read was honest work against a dead
         // ticket. A pane with something already rendered keeps its rendered
         // authority - its stale foreground rereads stay rendered and the next
-        // current acceptance adopts or retires them - so it never retries
-        // from here. A REMOUNTED pane can hold its retained lease with
-        // nothing yet displayed, and there the early return's justification
-        // does not hold: nothing is being kept, and a peer's successful
-        // acceptance emits no wake, so the return would strand the fresh
-        // mount on its loading skeleton forever. With nothing rendered, the
-        // same bounded recovery below applies. A SUSPENDED pane's retained
-        // lease is not the usable authority this return protects: the pane is
-        // waiting for the revalidation that only its own demand can run, and
-        // the winning peer's acceptance emits no wake - returning success here
-        // would strand the suspension forever. Suspended authority joins the
-        // same bounded paced recovery.
+        // current acceptance adopts or retires them. A REMOUNTED pane can hold
+        // its retained lease with nothing yet displayed, and there the early
+        // return's justification does not hold: nothing is being kept, and a
+        // peer's successful acceptance emits no wake, so the return would
+        // strand the fresh mount on its loading skeleton forever. With nothing
+        // rendered, the same bounded recovery below applies. A SUSPENDED
+        // pane's retained lease is not the usable authority this return
+        // protects: the pane is waiting for the revalidation that only its own
+        // demand can run, and the winning peer's acceptance emits no wake -
+        // returning success here would strand the suspension forever.
+        // Suspended authority joins the same bounded paced recovery.
         if (
           !authoritySuspendedRef.current &&
           (work.lease !== null || work.attempted !== null) &&
           renderedContentRef.current
         )
-          return "success";
+          // The superseding peer may have issued its ticket only to close
+          // before accepting: the issuance alone kills this ticket, and an
+          // abandoned peer publishes no wake and records no acceptance. A
+          // success here would discard the fetched update and end the series
+          // with the old document and annotation authority active
+          // indefinitely. The displayed content stays exactly as rendered, and
+          // the transient outcome arms the demand's paced reread, so a later
+          // cycle revalidates through a fresh ticket and a real acceptance.
+          return "transient";
         if (leaselessStaleRef.current === 0) {
           leaselessStaleRef.current = 1;
           readDemandRef.current?.refresh();

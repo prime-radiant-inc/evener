@@ -1571,3 +1571,85 @@ test("a remounted pane with retained lease authority recovers from its supersede
   await waitFor(() => expect(within(second.container).getByText("First occurrence: same")).toBeTruthy());
   expect(workB.lease).not.toBeNull();
 });
+
+test("an already-displayed reader schedules a paced reread when an abandoned peer supersedes its reload ticket", async () => {
+  const f = await fixture("reader-displayed-stale");
+  await settleBaseline(f);
+  const { ports } = annotationPorts(f);
+  const client = connectFakeClient();
+  mockRead.mockResolvedValue(docContent(SOURCE, "rev-A"));
+  const { maps } = observeBoundMaps();
+  const { beginReads, acceptances } = observeReadOwners(f.repo);
+  const listReads = observeListAnnotations(f.repo);
+
+  // Pane A reads and accepts first, so its work holds a lease and it renders
+  // the accepted snapshot.
+  const hostA = mountAnnotated(f, ports, client, "doc-displayed-a");
+  const workA = documentReaderWork("doc-displayed-a", f.document, ports);
+  await waitForCurrentBoundMap(workA, maps);
+  await waitFor(() => expect(within(hostA.container).getByText("First occurrence: same")).toBeTruthy());
+  const acceptedBaseline = acceptances.length;
+  expect(acceptances[acceptedBaseline - 1]?.state).toBe("accepted");
+
+  // A Reload starts a fresh ticket-before-fetch cycle whose raw read is held
+  // on a deferred, so a peer's issuance can supersede its ticket mid-flight.
+  let releaseA: (() => void) | undefined;
+  mockRead.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        releaseA = () => resolve(docContent(SOURCE, "rev-A"));
+      }),
+  );
+  fireEvent.click(within(hostA.container).getByText("Reload"));
+  await waitFor(() => expect(beginReads.length).toBe(2));
+
+  // The peer issues its own ticket - which supersedes A's - then closes
+  // without ever accepting it. The peer's raw read stays held so its
+  // abandoned ticket cannot settle.
+  let releasePeer: (() => void) | undefined;
+  mockRead.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        releasePeer = () => resolve(docContent(SOURCE, "rev-A"));
+      }),
+  );
+  const hostPeer = mountAnnotated(f, ports, client, "doc-displayed-peer");
+  await waitFor(() => expect(beginReads.length).toBe(3));
+  hostPeer.unmount();
+  await act(async () => {
+    releasePeer?.();
+    await Promise.resolve();
+  });
+
+  // A's acceptance runs against the superseded ticket and is discarded: the
+  // displayed snapshot survives and the peer never accepts, so nothing else
+  // will ever revalidate this reader.
+  await act(async () => {
+    releaseA?.();
+    await Promise.resolve();
+  });
+  await waitFor(() =>
+    expect(acceptances.slice(acceptedBaseline).some((result) => result.state === "stale-ticket")).toBe(true),
+  );
+  expect(within(hostA.container).getByText("First occurrence: same")).toBeTruthy();
+  expect(workA.lease).not.toBeNull();
+  expect(workA.phase).toBe("reading");
+  const staleBeginReads = beginReads.length;
+  expect(acceptances.slice(acceptedBaseline).some((result) => result.state === "accepted")).toBe(false);
+
+  // The discarded update must not end the series: the demand keeps its paced
+  // retry alive, and the next cycle issues a fresh ticket and accepts it, so
+  // the retained authority is revalidated without a reload or remount.
+  await act(async () => {
+    await ports.runtime.retryPending("storage-recovered");
+    await ports.runtime.whenIdle();
+    await settleReaderRefreshes(listReads);
+  });
+  await waitFor(() => expect(beginReads.length).toBeGreaterThan(staleBeginReads), { timeout: 2500 });
+  await waitFor(
+    () => expect(acceptances.slice(acceptedBaseline).some((result) => result.state === "accepted")).toBe(true),
+    { timeout: 2500 },
+  );
+  expect(workA.lease).not.toBeNull();
+  expect(within(hostA.container).getByText("First occurrence: same")).toBeTruthy();
+}, 15000);
