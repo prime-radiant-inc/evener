@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -105,17 +106,30 @@ func (e *LocalExecutionEnvironment) requireLiveSandboxRootForRelative(sfs *sandb
 	// canonical spelling.
 	candidates := []string{abs, resolveSymlinksBestEffort(abs)}
 	if rel != "" {
-		candidates = append(candidates, filepath.Clean(filepath.Join(root, rel)))
+		candidates = append(candidates,
+			filepath.Clean(filepath.Join(root, rel)),
+			// The selected root may be spelled through a symlink while the mask
+			// is spelled through that root's canonical location (RootDir=/alias
+			// -> /real/wt/extra, mask at /real/wt/extra/secret). Joining the
+			// CANONICAL root with the literal in-root tail — without resolving
+			// symlinks inside that tail — spells the mask too, so a canonically
+			// spelled mask is still found after the captured root is deleted and
+			// recreated (issue #4703, roborev 42975).
+			filepath.Clean(filepath.Join(resolveDanglingSymlinks(root), rel)),
+		)
 	} else {
 		candidates = append(candidates, filepath.Clean(filepath.Join(canonicalCwd, filepath.FromSlash(p))))
 	}
-	for _, cand := range candidates {
-		if sfs.underMaskedForWrite(cand) {
-			return sfs.deny(tool, p, denyReasonMasked)
-		}
-		if sfs.underProtected(cand) {
-			return sfs.deny(tool, p, denyReasonProtected)
-		}
+	// Masking is decided across EVERY spelling before git protection is: a
+	// candidate can resolve into a protected surface (secret -> .git/hooks)
+	// while a later candidate is the one that names the mask, and the protected
+	// denial is not sensitive, so testing the two reasons together would answer
+	// with the one that exposes the masked basename (issue #4703, roborev 43007).
+	if slices.ContainsFunc(candidates, sfs.underMaskedForWrite) {
+		return sfs.deny(tool, p, denyReasonMasked)
+	}
+	if slices.ContainsFunc(candidates, sfs.underProtected) {
+		return sfs.deny(tool, p, denyReasonProtected)
 	}
 	return errDeadWorkingDir(p, root)
 }
@@ -141,14 +155,27 @@ func (e *LocalExecutionEnvironment) sandboxAnchor(abs, canonicalCwd, p string, r
 			containRel[r] = rl
 		}
 	}
+	// opRoot is the root the subsequent file operation will resolve abs under
+	// (containingRoot: its first lexical match, then its real-ancestor match).
+	// Roots that canonicalize to the same directory cannot be ranked by
+	// specificity, so the tie is broken toward opRoot: the guard then checks the
+	// descriptor the operation will actually use, and a check through one
+	// equivalent spelling cannot disagree with a use through another (issue
+	// #4703, roborev 42975). A tie the operation does not resolve (no root
+	// contains abs) leaves the first considered root, which is harmless because
+	// the operation denies the same abs as outside every root.
+	opRoot, _, _ := containingRoot(roots, abs)
 	bestCanon := ""
 	consider := func(r string) {
 		// Specificity is judged on the CANONICAL root, not the raw spelling: a
 		// broader grant reached through a longer symlink alias must not outrank a
 		// shorter canonical workspace root beneath it.
 		canon := resolveDanglingSymlinks(r)
-		if root == "" || len(canon) > len(bestCanon) {
+		switch {
+		case root == "" || len(canon) > len(bestCanon):
 			root, rel, bestCanon = r, containRel[r], canon
+		case len(canon) == len(bestCanon) && r == opRoot:
+			root, rel = r, containRel[r]
 		}
 	}
 	for r := range containRel {
@@ -171,7 +198,14 @@ func (e *LocalExecutionEnvironment) sandboxAnchor(abs, canonicalCwd, p string, r
 // A work queue walks components in order; when a component is a symlink its
 // target's OWN components are pushed to the front, so a multi-component target
 // (middle/sub) is walked the same way and a link inside a link target is
-// resolved too. maxLinks bounds a cyclic chain. The result is then resolved
+// resolved too.
+//
+// A ".." is applied to the ALREADY-RESOLVED path: the queue holds a target's
+// components un-cleaned, so ".." is never collapsed lexically before the
+// components before it are resolved. For start -> middle/../wt with middle ->
+// /real/parent the real cwd is /real/wt, not the /base/wt a lexical clean would
+// derive, so the anchor is still found after the root is deleted (issue #4703,
+// roborev 42975). maxLinks bounds a cyclic chain. The result is then resolved
 // best-effort through its nearest existing ancestor.
 func resolveDanglingSymlinks(path string) string {
 	const maxLinks = 16
@@ -181,7 +215,11 @@ func resolveDanglingSymlinks(path string) string {
 	for len(pending) > 0 {
 		comp := pending[0]
 		pending = pending[1:]
-		if comp == "" || comp == "." {
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
 			continue
 		}
 		cur = filepath.Join(cur, comp)
@@ -193,19 +231,24 @@ func resolveDanglingSymlinks(path string) string {
 		if links > maxLinks {
 			continue
 		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(cur), target)
+		// Queue the target's components WITHOUT lexical cleaning and resolve them
+		// from the link's directory (or from "/" when absolute), so a ".." inside
+		// the target is applied after the components preceding it are resolved.
+		if filepath.IsAbs(target) {
+			cur = string(filepath.Separator)
+		} else {
+			cur = filepath.Dir(cur)
 		}
-		target = filepath.Clean(target)
-		cur = string(filepath.Separator)
 		pending = append(pathComponents(target), pending...)
 	}
 	return resolveSymlinksBestEffort(cur)
 }
 
-// pathComponents splits an absolute path into its non-root components.
+// pathComponents splits an absolute path into its components WITHOUT cleaning
+// it, so "." and ".." survive for resolveDanglingSymlinks to process in order
+// against the components already resolved before them.
 func pathComponents(path string) []string {
-	return strings.Split(strings.TrimPrefix(filepath.Clean(path), string(filepath.Separator)), string(filepath.Separator))
+	return strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator))
 }
 
 // ReadFileRaw returns the raw bytes of path subject to the active policy.
