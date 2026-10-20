@@ -137,7 +137,7 @@ the user config. It supplies `Tools`, `InputModalities`, `ContextWindow`,
 `MaxOutputTokens`, `EffortValues`, `DefaultEffort`, `Cost`, `Reasoning`, plus
 `ThinkingAlwaysOn` (only when OpenRouter's `reasoning.mandatory` is `true`)
 and, from a gateway's per-model compat block, `ReasoningControls`,
-`ThinkingFormat`, and `MaxTokensField`.
+`EffortParameterUnsupported`, `ThinkingFormat`, and `MaxTokensField`.
 `InputModalities` comes from OpenRouter's `architecture.input_modalities`, or,
 when that list carries no entry, from a gateway's `capabilities.vision` (an
 advertised vision capability is `["text", "image"]`); the Codex backend states
@@ -163,12 +163,18 @@ them: `thinkingFormat` becomes the row's `ThinkingFormat` dialect, and
 `maxTokensField` its `MaxTokensField` spelling. A value outside the load-time
 vocabulary is dropped rather than carried, because an unknown dialect writes no
 reasoning control at all and an unknown output spelling reaches no field. An
-explicit `capabilities.reasoning: false` wins over both. `supportsReasoningEffort:
-false` is not a separate cap: it makes the row toggle-only (`ReasoningControls
-= ["toggle"]`) and drops any ladder beside it, which is the existing way a row
-says "reasoning on or off, but no effort parameter". An explicit `true` is
-silence — derivation infers the effort control from the ladder, as it does for
-any reasoning row.
+explicit `capabilities.reasoning: false` wins over both.
+
+`supportsReasoningEffort: false` makes the row toggle-only (`ReasoningControls
+= ["toggle"]`, no ladder) and also sets `EffortParameterUnsupported`, which
+travels through the live layer and alias seeding like the other compat facts.
+The flag is separate from toggle-only controls on purpose: the catalog states
+toggle-only for models whose provider translates an effort level into a budget
+(many OpenRouter rows), and only the gateway's own verdict means the level
+itself would be rejected. Request builders suppress the effort on the flag, not
+on the controls — so a catalog toggle row keeps its provider's translation
+while a gateway-rejected one sends none. An explicit `true` is silence;
+derivation infers the effort control from the ladder, as for any reasoning row.
 
 The live layer overrides catalog and curated facts but **never a field the
 user layer (layer 4) set**. Beyond the facts listed above it touches no other

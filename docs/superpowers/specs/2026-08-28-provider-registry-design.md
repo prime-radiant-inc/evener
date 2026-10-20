@@ -447,8 +447,8 @@ supplies the model facts it explicitly advertises (`Tools`,
 `Cost`, `Reasoning`) plus the structural caps `ThinkingAlwaysOn`, set only
 when OpenRouter's `reasoning.mandatory` is `true` (today's rule,
 `openaicompat/models.go:118-120`; a listed `false` sets nothing), and the
-gateway's per-model `ReasoningControls`, `ThinkingFormat`, and
-`MaxTokensField` from its `client_compat` block, with
+gateway's per-model `ReasoningControls`, `EffortParameterUnsupported`,
+`ThinkingFormat`, and `MaxTokensField` from its `client_compat` block, with
 `Provenance = "live"`. Sitting after layer 3 and before layer 4, it
 overrides catalog and curated facts (today's rule that OpenRouter's
 `supported_parameters` is authoritative over the catalog,
