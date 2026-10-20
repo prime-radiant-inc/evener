@@ -693,7 +693,7 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
       receivedData = data;
       fake.panels = [
         { id: "p1", params: { paneType: "settings", paneParams: { section: "appearance" } } },
-        { id: "p2", params: { paneType: "doc", paneParams: { ref: "a", path: "x" } } },
+        { id: "p2", params: { paneType: "doc", paneParams: { session: "a", path: "x", kind: "file" } } },
       ];
       fake.activePanel = { id: "p2" };
     };
@@ -707,7 +707,7 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
       // Slots are re-derived from the restored grid order: the first panel is
       // the top-left (main) one, everything after it is in the group to its right.
       { id: "p1", type: "settings", params: { section: "appearance" }, slot: "main" },
-      { id: "p2", type: "doc", params: { ref: "a", path: "x" }, slot: "secondary" },
+      { id: "p2", type: "doc", params: { session: "a", path: "x", kind: "file" }, slot: "secondary" },
     ]);
     expect(workspaceStore.getState().focusedPaneId).toBe("p2");
   });
@@ -715,7 +715,7 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
   test("restoreLayout falls back to the first panel as focused when the api reports no active panel", () => {
     const fake = new FakeDockviewApi();
     fake.fromJSONBehavior = () => {
-      fake.panels = [{ id: "p1", params: { paneType: "doc", paneParams: {} } }];
+      fake.panels = [{ id: "p1", params: { paneType: "doc", paneParams: { session: "a", path: "x", kind: "file" } } }];
       fake.activePanel = undefined;
     };
     registerDockviewApi(asDockviewApi(fake));
@@ -760,7 +760,7 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     fake.fromJSONBehavior = () => {
       fake.panels = [
         { id: "p1", params: { paneType: "not-a-real-type", paneParams: {} } },
-        { id: "p2", params: { paneType: "doc", paneParams: { ref: "a" } } },
+        { id: "p2", params: { paneType: "doc", paneParams: { session: "a", path: "a.md", kind: "file" } } },
       ];
       fake.activePanel = { id: "p1" };
     };
@@ -770,7 +770,9 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
 
     expect(ok).toBe(true);
     expect(fake.cleared).toBe(false);
-    expect(workspaceStore.getState().panes).toEqual([{ id: "p2", type: "doc", params: { ref: "a" }, slot: "main" }]);
+    expect(workspaceStore.getState().panes).toEqual([
+      { id: "p2", type: "doc", params: { session: "a", path: "a.md", kind: "file" }, slot: "main" },
+    ]);
     // The skipped panel was the active one; focus falls to the first survivor.
     expect(workspaceStore.getState().focusedPaneId).toBe("p2");
     // The skipped panel must leave the LIVE api synchronously: the render
@@ -791,7 +793,7 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
       // guaranteed to stay unregistered whatever this file imports.
       fake.panels = [
         { id: "p1", params: { paneType: "not-a-real-pane-type", paneParams: { ref: "a" } } },
-        { id: "p2", params: { paneType: "doc", paneParams: { ref: "b" } } },
+        { id: "p2", params: { paneType: "doc", paneParams: { session: "b", path: "b.md", kind: "file" } } },
       ];
       fake.activePanel = { id: "p2" };
     };
@@ -801,7 +803,9 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
 
     expect(ok).toBe(true);
     expect(fake.cleared).toBe(false);
-    expect(workspaceStore.getState().panes).toEqual([{ id: "p2", type: "doc", params: { ref: "b" }, slot: "main" }]);
+    expect(workspaceStore.getState().panes).toEqual([
+      { id: "p2", type: "doc", params: { session: "b", path: "b.md", kind: "file" }, slot: "main" },
+    ]);
     expect(workspaceStore.getState().focusedPaneId).toBe("p2");
   });
 
@@ -810,7 +814,7 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     fake.fromJSONBehavior = () => {
       fake.panels = [
         { id: "p1", params: undefined },
-        { id: "p2", params: { paneType: "doc", paneParams: { ref: "a" } } },
+        { id: "p2", params: { paneType: "doc", paneParams: { session: "a", path: "a.md", kind: "file" } } },
       ];
       fake.activePanel = { id: "p2" };
     };
@@ -820,7 +824,9 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
 
     expect(ok).toBe(true);
     expect(fake.cleared).toBe(false);
-    expect(workspaceStore.getState().panes).toEqual([{ id: "p2", type: "doc", params: { ref: "a" }, slot: "main" }]);
+    expect(workspaceStore.getState().panes).toEqual([
+      { id: "p2", type: "doc", params: { session: "a", path: "a.md", kind: "file" }, slot: "main" },
+    ]);
     expect(workspaceStore.getState().focusedPaneId).toBe("p2");
   });
 
@@ -836,9 +842,9 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
       // notes sidebar pane); the cast simulates a layout persisted by a build
       // that still shipped it.
       fake.panels = [
-        { id: "p1", params: { paneType: "doc", paneParams: { ref: "a" } } },
+        { id: "p1", params: { paneType: "doc", paneParams: { session: "a", path: "a.md", kind: "file" } } },
         { id: "p2", params: { paneType: "sessionNotes" as never, paneParams: { ref: "a" } } },
-        { id: "p3", params: { paneType: "doc", paneParams: { ref: "b" } } },
+        { id: "p3", params: { paneType: "doc", paneParams: { session: "b", path: "b.md", kind: "file" } } },
       ];
       fake.activePanel = { id: "p2" };
     };
@@ -849,8 +855,8 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     expect(ok).toBe(true);
     expect(fake.cleared).toBe(false);
     expect(workspaceStore.getState().panes).toEqual([
-      { id: "p1", type: "doc", params: { ref: "a" }, slot: "main" },
-      { id: "p3", type: "doc", params: { ref: "b" }, slot: "secondary" },
+      { id: "p1", type: "doc", params: { session: "a", path: "a.md", kind: "file" }, slot: "main" },
+      { id: "p3", type: "doc", params: { session: "b", path: "b.md", kind: "file" }, slot: "secondary" },
     ]);
     // The active panel was the skipped one; focus falls to the first survivor.
     expect(workspaceStore.getState().focusedPaneId).toBe("p1");
@@ -871,8 +877,8 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     const fake = new FakeDockviewApi();
     fake.fromJSONBehavior = () => {
       fake.panels = [
-        { id: "pane_doc_1", params: { paneType: "doc", paneParams: { ref: "a" } } },
-        { id: "pane_doc_5", params: { paneType: "doc", paneParams: { ref: "b" } } },
+        { id: "pane_doc_1", params: { paneType: "doc", paneParams: { session: "a", path: "a.md", kind: "file" } } },
+        { id: "pane_doc_5", params: { paneType: "doc", paneParams: { session: "b", path: "b.md", kind: "file" } } },
       ];
       fake.activePanel = { id: "pane_doc_5" };
     };
@@ -1160,7 +1166,13 @@ describe("exact Open origin lifetime", () => {
         fake.panels = [
           {
             id: owner.id,
-            params: { paneType: shape === "reused identities" ? "doc" : owner.type, paneParams: owner.params },
+            params: {
+              paneType: shape === "reused identities" ? "doc" : owner.type,
+              paneParams:
+                shape === "reused identities"
+                  ? { session: "local:reused", path: "reused.md", kind: "file" }
+                  : owner.params,
+            },
           },
           { id: leaf.id, params: { paneType: leaf.type, paneParams: leaf.params } },
         ];

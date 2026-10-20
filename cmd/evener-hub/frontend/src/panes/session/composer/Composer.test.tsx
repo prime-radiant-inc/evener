@@ -34,7 +34,7 @@ import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { settleProjectionWorkForTests } from "../../../stores/projectionWork";
 import { sessionActivitySnapshot } from "../../../stores/sessionActivity";
-import { activitySummary, answerActivityRead } from "../../../stores/sessionActivityTestUtils";
+import { answerActivityRead } from "../../../stores/sessionActivityTestUtils";
 import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
@@ -59,7 +59,6 @@ import type { PendingAttachment } from "./attachments/useAttachments";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
 import { steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
-import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } from "./draft";
 import { composerDraftStorageKey, draftStorageKey, readComposerDraft, readDraft } from "./draft";
 import {
   publishOutboxRecordForTests,
@@ -77,7 +76,6 @@ import {
   resetQuoteInsertStoreForTests,
   useQuoteInsertRequest,
 } from "./quoteInsert";
-import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
 import * as composerSources from "./sourceState";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
 
@@ -2330,34 +2328,6 @@ test("text edited while the local outbox commit is pending survives that commit"
   expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
 });
 
-// #4194: with no IndexedDB at all the mutation runtime is never created, and a
-// send must still go out - the product rule every other local-persistence
-// failure follows. The failure this fake produces is the transport's (no
-// turn/start handler is scripted), and the composer must still keep the unsent
-// draft rather than clear it.
-test("with no IndexedDB the composer still attempts the send and keeps its draft when it fails", async () => {
-  // @ts-expect-error this test exercises the explicit unavailable-storage boundary
-  globalThis.indexedDB = undefined;
-  const user = userEvent.setup();
-  const fake = await act(async () => mountComposer("ref_a"));
-  await flushPendingTurnsProjectionForTests();
-
-    const editor = textarea();
-    await user.type(editor, "hello");
-    await user.click(submitButton());
-    await flushPendingTurnsProjectionForTests();
-
-  await waitFor(() => expect(toastKinds()).toEqual(["error"]));
-  expect(editor.textContent).toBe("hello");
-  // The send is attempted on the direct path even though no outbox row can be
-  // written. The transport fails, so the composer keeps the draft; every
-  // attempt reuses one clientMutationId, so a retry can only ever deliver once.
-  const attempts = fake.calls.filter((call) => call.method === "turn/start");
-  expect(attempts.length).toBeGreaterThan(0);
-  const ids = new Set(attempts.map((call) => (call.params as { clientMutationId?: string }).clientMutationId));
-  expect(ids.size).toBe(1);
-});
-
 test("a local outbox failure leaves the composer untouched and sends no RPC", async () => {
   // Keep ordinary draft preparation available, then fault the real outbox write.
   let failedEnqueues = 0;
@@ -2380,7 +2350,7 @@ test("a local outbox failure leaves the composer untouched and sends no RPC", as
     await user.click(submitButton());
     await flushPendingTurnsProjectionForTests();
 
-    await waitFor(() => expect(screen.getByText(/send failed/i)).toBeTruthy());
+    await waitFor(() => expect(toastKinds()).toEqual(["error"]));
     expect(editor.textContent).toBe("hello");
     expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
     expect(failedEnqueues).toBe(1);
@@ -2388,6 +2358,73 @@ test("a local outbox failure leaves the composer untouched and sends no RPC", as
     expect(await storage.listOptimistic("ref_a")).toEqual([]);
   } finally {
     storage.close();
+  }
+});
+
+// #4194: with no IndexedDB at all the mutation runtime is never created, and a
+// send must still go out - the product rule every other local-persistence
+// failure follows. The failure this fake produces is the transport's (no
+// turn/start handler is scripted), and the composer must still keep the unsent
+// draft rather than clear it.
+test("with no IndexedDB the composer still attempts the send and keeps its draft when it fails", async () => {
+  // @ts-expect-error this test exercises the explicit unavailable-storage boundary
+  globalThis.indexedDB = undefined;
+  const user = userEvent.setup();
+  const fake = await act(async () => mountComposer("ref_a"));
+  await flushPendingTurnsProjectionForTests();
+
+  const editor = textarea();
+  await user.type(editor, "hello");
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+
+  // The source reports its readiness fault honestly ("Couldn't load the
+  // draft") and the failed direct send reports its transport failure, so the
+  // no-storage world carries both truthful errors, not one.
+  await waitFor(() => expect(toastKinds()).toEqual(["error", "error"]));
+  expect(editor.textContent).toBe("hello");
+  // The send is attempted on the direct path even though no outbox row can be
+  // written. The transport fails, so the composer keeps the draft; every
+  // attempt reuses one clientMutationId, so a retry can only ever deliver once.
+  const attempts = fake.calls.filter((call) => call.method === "turn/start");
+  expect(attempts.length).toBeGreaterThan(0);
+  const ids = new Set(attempts.map((call) => (call.params as { clientMutationId?: string }).clientMutationId));
+  expect(ids.size).toBe(1);
+});
+
+// The other half of #4194: a storage platform that EXISTS but fails - every
+// repository open errors, the corrupted/quota shape - must not take the send
+// down with it. The submission's durable preparation (settle and metadata
+// load) is local persistence; the send still goes out from the captured
+// payload, the platform's failure reports honestly, and the draft is kept
+// when the transport fails on top of it.
+test("a repository whose opens fail still attempts the send and keeps the draft", async () => {
+  const factory = new IDBFactory();
+  vi.spyOn(factory, "open").mockImplementation(() => {
+    const request = new EventTarget() as unknown as IDBOpenDBRequest;
+    setTimeout(() => request.dispatchEvent(new Event("error")), 0);
+    return request;
+  });
+  vi.stubGlobal("indexedDB", factory);
+  resetBrowserDraftRepositoryForTests();
+  try {
+    const user = userEvent.setup();
+    const fake = await act(async () => mountComposer("ref_a"));
+
+    const editor = textarea();
+    if (editor === null) throw new Error("composer editor did not render");
+    await user.type(editor, "hello");
+    await user.click(submitButton());
+    await flushPendingTurnsProjectionForTests();
+
+    // The send still goes out on the direct path from the captured payload;
+    // the dead storage reports honestly and the failed transport keeps the
+    // draft, exactly as in the no-IndexedDB world.
+    const attempts = fake.calls.filter((call) => call.method === "turn/start");
+    expect(attempts.length).toBeGreaterThan(0);
+    expect(editor.textContent).toBe("hello");
+  } finally {
+    vi.unstubAllGlobals();
   }
 });
 

@@ -441,10 +441,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       waitMs: STORAGE_WAIT_MS,
       upgrade: registerLocalCompositionSchema,
       errors: {
-        open: "Unable to open document annotation repository",
-        superseded: "Document annotation repository connection was closed",
+        open: () => new Error("Unable to open document annotation repository"),
+        superseded: () => new Error("Document annotation repository connection was closed"),
         timeout: () => new Error("Document annotation repository open timed out"),
-        blocked: "Document annotation repository upgrade is blocked",
+        blocked: () => new Error("Document annotation repository upgrade is blocked"),
       },
       reportDiagnostic: () => undefined,
     });

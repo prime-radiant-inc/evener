@@ -1,5 +1,6 @@
 import { bindFilePath } from "@evener/appwire-client/docContent";
-import { beforeEach, expect, test } from "vitest";
+import { beforeEach, expect, test, vi } from "vitest";
+import * as paneActions from "../../shell/paneActions";
 import {
   documentPaneState,
   type OpenPaneRecord,
@@ -80,14 +81,19 @@ test.each(["session", "transcript"] as const)("openDocBeside retains the invalid
 });
 
 // The opener is the ONE delegation boundary every producer routes through, so a
-// captured opening origin must survive it unchanged: openDocBeside passes the
-// caller's params object through to openBeside without reshaping or dropping the
-// origin. Origin here is the real approved serialized shape, carrying a runtime
-// compositionOwnerId - never a durable owner field.
+// captured opening origin must survive it unchanged: openDocBeside threads the
+// caller's captured origin into the doc params it hands to openBeside, without
+// reshaping or dropping it. Origin here is the real approved serialized shape,
+// carrying a runtime compositionOwnerId - never a durable owner field.
 test("openDocBeside propagates a captured browser-origin into the open call unchanged", () => {
   const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
   const origin = { kind: "browser-origin" as const, paneId: "owner-pane", compositionOwnerId: "owner-A" };
-  openDocBeside({ session: "sess_3", path: "NOTES.md", kind: "file", origin });
+  openDocBeside({
+    session: "sess_3",
+    reference: { path: "NOTES.md", readTarget: "/work/NOTES.md", cwd: "/work", provenance: "relative" },
+    sourcePaneId: "owner-pane",
+    origin,
+  });
   expect(spy).toHaveBeenCalledWith({
     type: "doc",
     params: { session: "sess_3", path: "NOTES.md", kind: "file", origin },
@@ -97,7 +103,12 @@ test("openDocBeside propagates a captured browser-origin into the open call unch
 test("openDocBeside propagates an explicit browser-readonly-session origin unchanged", () => {
   const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
   const origin = { kind: "browser-readonly-session" as const, sourcePaneId: "source-pane" };
-  openDocBeside({ session: "sess_4", path: "NOTES.md", kind: "file", origin });
+  openDocBeside({
+    session: "sess_4",
+    reference: { path: "NOTES.md", readTarget: "/work/NOTES.md", cwd: "/work", provenance: "relative" },
+    sourcePaneId: "source-pane",
+    origin,
+  });
   expect(spy).toHaveBeenCalledWith({
     type: "doc",
     params: { session: "sess_4", path: "NOTES.md", kind: "file", origin },

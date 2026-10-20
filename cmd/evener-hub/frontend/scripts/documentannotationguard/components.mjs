@@ -43,7 +43,7 @@ import { fileURLToPath } from "node:url";
 import {
   applyViewport,
   clearViewportOverride,
-  connectPage,
+  connectOnlyPage,
   createStartupDeadline,
   cdpDrag,
   evaluate,
@@ -1273,7 +1273,7 @@ async function main() {
       viteDeadline.clear();
     }
     const cdpEndpoint = await waitForBrowserReady(guard);
-    page = await connectPage(cdpEndpoint);
+    page = await connectOnlyPage(cdpEndpoint);
     const { send } = page;
     try {
       await send("Page.enable");

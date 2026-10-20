@@ -323,15 +323,20 @@ test("a real Session file card and prose link carry the retained browser-origin 
   });
 });
 
-test("a real Transcript file card and prose link carry explicit browser-readonly-session", async () => {
+test("a legacy session-ref Transcript pane recovers as the live Session, so its file card and prose link carry the browser-origin", async () => {
   await mountTranscriptProducer("child", "transcript-pane");
+  const recovered = conversationPaneLifetime(
+    workspaceStore.getState().panes.find((pane) => pane.id === "transcript-pane") as OpenPaneRecord,
+  );
+  const owner = recovered.composer;
+  if (!owner) throw new Error("recovered conversation pane lacks its composer source");
   fireEvent.click(await screen.findByRole("button", { name: "Open beside: card.md" }));
   const cardOpen = docPanes().find((pane) => (pane.params as { path?: string }).path === "card.md");
   expect(cardOpen?.params).toMatchObject({
     session: "child",
     path: "card.md",
     kind: "file",
-    origin: { kind: "browser-readonly-session", sourcePaneId: "transcript-pane" },
+    origin: { kind: "browser-origin", paneId: "transcript-pane", compositionOwnerId: owner.sourceId },
   });
   fireEvent.click(await screen.findByRole("button", { name: "Open beside: link.md" }));
   const linkOpen = docPanes().find((pane) => (pane.params as { path?: string }).path === "link.md");
@@ -339,6 +344,6 @@ test("a real Transcript file card and prose link carry explicit browser-readonly
     session: "child",
     path: "link.md",
     kind: "file",
-    origin: { kind: "browser-readonly-session", sourcePaneId: "transcript-pane" },
+    origin: { kind: "browser-origin", paneId: "transcript-pane", compositionOwnerId: owner.sourceId },
   });
 });

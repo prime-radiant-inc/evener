@@ -114,6 +114,43 @@ describe("SkillEditor real ProseMirror view", () => {
     expect(restored.editor.querySelectorAll("[data-command-name]")).toHaveLength(0);
   });
 
+  it("keeps an external value's explicit mentions that the document re-derives", () => {
+    // A pinned mention array that only restates locations the document itself
+    // re-derives is still the caller's explicit array: the annotation handoff
+    // and carried drafts keep it verbatim, so the sync echo must not report
+    // the serializer's own canonicalization as an edit and strip it.
+    const ref = createRef<SkillEditorHandle>();
+    const changed = vi.fn();
+    let rendered: SkillEditorValue = { text: "", skillNames: [] };
+    let push: (next: SkillEditorValue) => void = () => {};
+    function Controlled() {
+      const [value, setValue] = useState<SkillEditorValue>({ text: "", skillNames: [] });
+      rendered = value;
+      push = (next) => setValue(next);
+      return (
+        <SkillEditor
+          ref={ref}
+          value={value}
+          aria-label="Message"
+          onChange={(next, cursor) => {
+            changed(next, cursor);
+            setValue(next);
+          }}
+        />
+      );
+    }
+    render(<Controlled />);
+    const pinned: SkillEditorValue = {
+      text: "Existing /plan draft",
+      skillNames: ["plan"],
+      mentions: [{ kind: "skill", name: "plan", offset: 9 }],
+    };
+    act(() => push(pinned));
+    expect(ref.current && document.querySelector('[data-skill-name="plan"]') !== null).toBe(true);
+    expect(changed).not.toHaveBeenCalled();
+    expect(rendered).toEqual(pinned);
+  });
+
   it("replaces a completion range with an inline atom and preserves controlled-echo cursor/focus", () => {
     const result = mount(
       { text: "Use /rev now", skillNames: [] },

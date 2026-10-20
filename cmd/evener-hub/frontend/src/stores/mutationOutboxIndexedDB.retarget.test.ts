@@ -1,5 +1,3 @@
-// @vitest-environment node
-
 import { IDBFactory } from "fake-indexeddb";
 import { beforeEach, describe, expect, test } from "vitest";
 import { setMutationClientIdentityForTests } from "./mutationClientIdentity";

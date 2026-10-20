@@ -24,6 +24,7 @@ import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosur
 import { getToasts, pushToast, resetToastStoreForTests } from "../../widgets/toast/store";
 import { useAttachments } from "../session/composer/attachments/useAttachments";
 import { readComposerDraft } from "../session/composer/draft";
+import { retainedConversationComposer } from "../session/composer/retainedComposer";
 import { installControlledImageEncoding } from "../session/testing/imageEncoding";
 import { enterAgentCascade } from "./actions";
 import { cascadeClient, cascadeContext, cascadeScope } from "./cascadeTestUtils";

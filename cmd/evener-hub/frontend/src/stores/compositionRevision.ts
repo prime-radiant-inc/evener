@@ -62,6 +62,10 @@ export function nextSessionRow(row: SessionRow, value?: SkillEditorValue): Sessi
     ...(ordinary.commandNames === undefined ? {} : { commandNames: [...ordinary.commandNames] }),
     ...(ordinary.mentions === undefined ? {} : { mentions: ordinary.mentions.map((mention) => ({ ...mention })) }),
     token: { namespaceIncarnation: row.token.namespaceIncarnation, sessionRevision: row.token.sessionRevision + 1 },
+    // The resume-carry ordering stamp survives every rewrite that does not
+    // itself stamp a fresh edit time; dropping it would silently demote a
+    // still-live draft to the oldest rank.
+    ...(row.editedAt === undefined ? {} : { editedAt: row.editedAt }),
   };
 }
 

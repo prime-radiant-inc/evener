@@ -25,6 +25,7 @@ import {
   resetBrowserDraftRepositoryForTests,
   type StoredComposerDraft,
 } from "./browserDraftRepository";
+import { serializeSessionKey } from "./compositionRevision";
 import {
   ANNOTATION_NAMESPACES_STORE,
   COMPOSER_DRAFTS_STORE,
@@ -508,6 +509,7 @@ test("commitEdit treats omitted and explicit empty mentions as distinct editor v
   );
   expect(explicitEmpty.token.sessionRevision).toBe(seeded.token.sessionRevision + 1);
   expect(explicitEmpty).toEqual({
+    editedAt: expect.any(Number),
     ...explicitEmptyValue,
     key: key("mentions"),
     token: explicitEmpty.token,
@@ -559,6 +561,7 @@ test("commitEdit preserves complete nonempty skill and command mention metadata"
 
   const edited = committed(await repository.commitEdit(key("mention-metadata"), seeded.token, value, () => true));
   expect(edited).toEqual({
+    editedAt: expect.any(Number),
     ...value,
     key: key("mention-metadata"),
     token: edited.token,
@@ -1071,7 +1074,7 @@ test("a namespace advance fences both the row and the expected token, and lazy l
     mentions: [{ kind: "skill" as const, name: "skill", offset: 0 }],
   };
   const seeded = committed(await repository.seedDraft(key("fenced"), value));
-  expect(seeded).toEqual({ ...value, key: key("fenced"), token: seeded.token });
+  expect(seeded).toEqual({ ...value, key: key("fenced"), token: seeded.token, editedAt: expect.any(Number) });
 
   // Advance the durable namespace FIRST, then test BOTH fences against the
   // still-OLD stored row before any lazy load.
@@ -1110,6 +1113,7 @@ test("a namespace advance fences both the row and the expected token, and lazy l
   const refreshed = await repository.load(key("fenced"));
   if (!refreshed) throw new Error("refreshed row missing");
   expect(refreshed).toEqual({
+    editedAt: expect.any(Number),
     ...value,
     key: key("fenced"),
     token: { namespaceIncarnation: "fixture-incarnation-2", sessionRevision: seeded.token.sessionRevision },
