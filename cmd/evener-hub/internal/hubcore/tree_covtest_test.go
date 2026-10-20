@@ -2,7 +2,6 @@ package hubcore
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -193,14 +192,8 @@ func TestResolveProjectMapRepeatedMissingPathsBoundAllocations(t *testing.T) {
 	repeatedMetas := make([]schema.SessionMeta, occurrences)
 	repeatedLive := make([]LiveEntry, occurrences)
 	for i := range repeatedMetas {
-		repeatedMetas[i] = schema.SessionMeta{
-			ID:      fmt.Sprintf("repeated-meta-%d", i),
-			EnvInfo: schema.EnvironmentInfo{WorkingDir: missing},
-		}
-		repeatedLive[i] = LiveEntry{
-			SessionID:  fmt.Sprintf("repeated-live-%d", i),
-			WorkingDir: missing,
-		}
+		repeatedMetas[i] = schema.SessionMeta{EnvInfo: schema.EnvironmentInfo{WorkingDir: missing}}
+		repeatedLive[i] = LiveEntry{WorkingDir: missing}
 	}
 	measure := func(metas []schema.SessionMeta, live []LiveEntry) float64 {
 		t.Helper()
