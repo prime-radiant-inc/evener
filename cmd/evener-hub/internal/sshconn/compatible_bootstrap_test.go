@@ -227,3 +227,123 @@ func TestEnsureCompatibleLiveHubDoesNotSettlePendingRestart(t *testing.T) {
 		})
 	}
 }
+
+func TestEnsureRecoversDeploymentBeforeRestartMarker(t *testing.T) {
+	savedChannel, savedTag, savedDirty := buildinfo.Channel, buildinfo.ReleaseTag, buildinfo.GitDirty
+	t.Cleanup(func() {
+		buildinfo.Channel, buildinfo.ReleaseTag, buildinfo.GitDirty = savedChannel, savedTag, savedDirty
+	})
+	buildinfo.Channel, buildinfo.ReleaseTag, buildinfo.GitDirty = "release", "v0.9.1", "false"
+	for _, phase := range []string{"write-ack", "write-not-landed", "installer-write-ack", "launch-check", "supervisor", "deploy-only", "deploy-only-not-landed", "source-refusal"} {
+		t.Run(phase, func(t *testing.T) {
+			const requested = "v0.9.1"
+			disk, running, started := "old-build", "old-build", "2026-01-01T00:00:00Z"
+			interrupted := errors.New("injected transport interruption")
+			inject := true
+			writes, restarts := 0, 0
+			fr := deployRunner(t, func(int) ([]byte, error) {
+				if inject && phase == "launch-check" && writes > 0 {
+					return nil, interrupted
+				}
+				return launchContract(disk), nil
+			}, func(int) ([]byte, error) {
+				return []byte(fmt.Sprintf(`{"version":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":%q}`, running, started)), nil
+			})
+			run := fr.runFn
+			fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+				command := strings.Join(argv, " ")
+				switch {
+				case strings.Contains(command, "cat >"), strings.Contains(command, "evener-install.XXXXXX"):
+					writes++
+					if inject && (phase == "write-not-landed" || phase == "deploy-only-not-landed") {
+						return nil, interrupted
+					}
+					disk = requested // The atomic rename landed before the acknowledgement was lost.
+					if inject && (phase == "write-ack" || phase == "installer-write-ack" || phase == "deploy-only") {
+						return nil, interrupted
+					}
+					if strings.Contains(command, "evener-install.XXXXXX") {
+						return nil, nil
+					}
+				case strings.Contains(command, "list-units"):
+					if inject && phase == "supervisor" {
+						return nil, interrupted
+					}
+				case strings.Contains(command, "systemctl restart"):
+					restarts++
+					running, started = disk, "2026-01-02T00:00:00Z"
+				}
+				return run(ctx, argv, stdin)
+			}
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+			opts := Options{controllerVersionOverride: requested, BuildBinary: writeStageBinary}
+			switch phase {
+			case "installer-write-ack":
+				opts.BuildBinary = nil
+			case "source-refusal":
+				opts.BuildBinary = func(context.Context, string, string, string) error { return interrupted }
+			}
+			m := newTestManager(t, testRegistry(t, host), fr, opts)
+			recordConnectionOperations(t, m)
+			facts, err := m.preflight(t.Context(), host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, after, err := m.DeployForOperation(t.Context(), host, facts, !strings.HasPrefix(phase, "deploy-only"))
+			if phase == "supervisor" && err == nil {
+				err = m.RestartForOperation(t.Context(), host, after)
+			}
+			wantWrites := 1
+			if phase == "source-refusal" {
+				wantWrites = 0
+			}
+			if err == nil || writes != wantWrites || restarts != 0 {
+				t.Fatalf("interrupted deployment: err=%v writes=%d restarts=%d", err, writes, restarts)
+			}
+			inject = false
+			ch, err := m.Ensure(t.Context(), host.Name)
+			wantRunning, wantRestarts := requested, 1
+			if strings.HasPrefix(phase, "deploy-only") || phase == "source-refusal" {
+				wantRunning, wantRestarts = "old-build", 0
+			}
+			if phase == "write-not-landed" || phase == "deploy-only-not-landed" {
+				wantWrites++
+			}
+			if err != nil || ch == nil || running != wantRunning || restarts != wantRestarts || writes != wantWrites || m.pendingRestart(host.Name).active() {
+				t.Fatalf("recovery: channel=%v err=%v running=%q writes=%d restarts=%d", ch, err, running, writes, restarts)
+			}
+		})
+	}
+}
+
+func TestEnsureStoppedMalformedContractDoesNotDeploy(t *testing.T) {
+	for _, body := range []string{`{`, `{"protocol":"evener-appwire-v7"}`, `{"version":"remote-build"}`} {
+		t.Run(body, func(t *testing.T) {
+			s := &stoppedInstallation{version: "remote-build", flags: []string{"api-log"}}
+			builds := 0
+			m := s.manager(t, Options{controllerVersionOverride: "controller-build", BuildBinary: func(ctx context.Context, goos, goarch, path string) error {
+				builds++
+				return writeStageBinary(ctx, goos, goarch, path)
+			}})
+			fr := m.runner.(*fakeRunner)
+			run := fr.runFn
+			fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+				command := strings.Join(argv, " ")
+				switch {
+				case strings.Contains(command, "launch-check"):
+					return []byte(body), nil
+				case strings.Contains(command, "test -d /opt/evener/bin"):
+					return nil, nil
+				case strings.Contains(command, "evener_resolve"):
+					return []byte("/opt/evener/bin/evener\n"), nil
+				}
+				return run(ctx, argv, stdin)
+			}
+			recordConnectionOperations(t, m)
+			ch, err := m.Ensure(t.Context(), "alpha")
+			if !errors.Is(err, ErrPreflightDecode) || ch != nil || builds != 0 || s.deploys != 0 || s.starts != 0 {
+				t.Fatalf("Connect: err=%v channel=%v builds=%d writes=%d starts=%d", err, ch, builds, s.deploys, s.starts)
+			}
+		})
+	}
+}

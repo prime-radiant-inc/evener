@@ -484,15 +484,18 @@ func (h hubIdentity) differentProcessFrom(other hubIdentity) bool {
 	return !h.startedAt.IsZero() && !other.startedAt.IsZero() && !h.startedAt.Equal(other.startedAt)
 }
 
-// pendingRestartState is a restart command recorded before it ran, together with
-// the identity of the hub process it replaces, so a later Ensure can tell whether
-// the restart actually produced a new process instead of trusting a version that
-// may not be unique.
+// pendingRestartState retains a deployment or restart before its first remote
+// write, together with the requested build and the process it must replace.
+// A deployment may not yet have resolved its restart command.
 type pendingRestartState struct {
 	command         string
 	replaced        hubIdentity
 	expectedVersion string
 	expectedGitSHA  string
+	// deployment retains a write whose installed build has not yet been
+	// reconciled, including the interval before a restart command is known.
+	deployment bool
+	restart    bool
 	// start records that this command STARTS a hub where none was serving (the
 	// bootstrap path, which refuses to run while a listener holds the address)
 	// rather than replacing a process. A recovered start has no predecessor to
@@ -1812,8 +1815,8 @@ func (m *Manager) UpdateHostUnderGate(entry hostreg.Host, holder hostops.Holder,
 }
 
 // clearHostCaches drops every per-host record that must not survive a detach or
-// removal: the at-most-once dev-deploy marker, the resolved executable path,
-// and any pending restart. A re-added host starts clean instead of inheriting
+// removal: the resolved executable path and any pending deployment or restart.
+// A re-added host starts clean instead of inheriting
 // the previous identity's dial and deploy decisions.
 func (m *Manager) clearHostCaches(name string) {
 	m.mu.Lock()
@@ -1878,9 +1881,20 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
 	running, runningKnown := m.probeRunningHub(probeCtx, host)
 	cancelProbe()
+	if pending := m.pendingRestart(host.Name); pending.deployment {
+		if preflight.launchErr != nil && !facts.ExecutableMissing {
+			return nil, preflight.launchErr
+		}
+		if !facts.ExecutableMissing && facts.Version == pending.expectedVersion && !pending.restart {
+			m.clearPendingRestart(host.Name)
+		} else if (facts.ExecutableMissing || facts.Version != pending.expectedVersion) && !m.canDeploy() {
+			return nil, errDeployDisabled
+		}
+	}
 	// Settle against the intent recorded before the effect, never later disk
 	// facts. A changed file must not turn a failed deployment into a success.
-	if pending := m.pendingRestart(host.Name); pending.command != "" && runningKnown && running.version == pending.expectedVersion &&
+	if pending := m.pendingRestart(host.Name); pending.active() && runningKnown && running.version == pending.expectedVersion &&
+		(!pending.deployment || (!facts.ExecutableMissing && facts.Version == pending.expectedVersion)) &&
 		hubBuildSHAMatches(running.gitSHA, pending.expectedGitSHA) &&
 		(pending.start || running.differentProcessFrom(pending.replaced)) {
 		// A hub already serving exactly the expected build resolves whatever an
@@ -1906,7 +1920,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// Connect. Otherwise the live handshake is the connection authority: disk
 	// build labels and optional startup flags do not justify replacing it.
 	liveIncompatible := false
-	if m.pendingRestart(host.Name).command == "" && !facts.ExecutableMissing {
+	if !m.pendingRestart(host.Name).active() && !facts.ExecutableMissing {
 		stopped := false
 		if !runningKnown {
 			probeCtx, cancel := context.WithTimeout(ctx, m.opts.attemptLimit())
@@ -1979,7 +1993,11 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		}
 		finishEnsureOp = finish
 		deployCtx, cancelDeploy := context.WithTimeout(ctx, m.opts.deployLimit())
-		resolvedTarget, err := m.deploy(deployCtx, host, facts)
+		intent := m.pendingRestart(host.Name)
+		if !intent.deployment {
+			intent = m.deploymentIntent(restart, running)
+		}
+		resolvedTarget, err := m.deploy(deployCtx, host, facts, m.deploymentRecorder(host.Name, intent))
 		cancelDeploy()
 		if err != nil {
 			if finishEnsureOp != nil {
@@ -2018,6 +2036,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			return nil, err
 		}
 		if !restart {
+			m.clearPendingRestart(host.Name)
 			// A deploy with no restart leg planned is over: finish where the
 			// deploy-only path always finished.
 			if finishEnsureOp != nil {
@@ -2059,7 +2078,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		} else {
 			version, pin := expectedServedBuild(facts, expected)
 			replaced := running
-			if pending.command != "" {
+			if pending.active() {
 				version, pin = pending.expectedVersion, pending.expectedGitSHA
 				if !pending.start {
 					replaced = pending.replaced
@@ -2211,15 +2230,20 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 // deployRequired reports whether a stopped installation lacks its startup
 // contract. A running hub is judged by initialize before this gate is used.
 func (m *Manager) deployRequired(facts Preflight) bool {
-	return m.canDeploy() && (!facts.LaunchCheckKnown || facts.Protocol != appwire.ProtocolVersion ||
-		!slices.Contains(facts.LaunchFlags, requiredLaunchFlag))
+	return m.canDeploy() && (facts.ExecutableMissing || (facts.LaunchCheckKnown &&
+		(facts.Protocol != appwire.ProtocolVersion || !slices.Contains(facts.LaunchFlags, requiredLaunchFlag))))
 }
 
 // ensureDecision preserves recorded effects and repairs unusable installations.
 // Build labels alone never request deployment or process replacement.
 func (m *Manager) ensureDecision(name string, facts Preflight, liveIncompatible, hubPresent bool) (deploy, restart bool) {
-	deploy = liveIncompatible || m.deployRequired(facts)
-	restart = (deploy && hubPresent) || m.pendingRestart(name).command != ""
+	pending := m.pendingRestart(name)
+	deploy = liveIncompatible || m.deployRequired(facts) || (pending.deployment &&
+		(facts.ExecutableMissing || facts.Version != pending.expectedVersion))
+	restart = (deploy && hubPresent) || pending.command != ""
+	if pending.deployment {
+		restart = pending.restart
+	}
 	return deploy, restart
 }
 
@@ -3466,6 +3490,26 @@ func (m *Manager) pendingRestart(name string) pendingRestartState {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.pendingRestarts[name]
+}
+
+func (p pendingRestartState) active() bool {
+	return p.command != "" || p.deployment
+}
+
+func (m *Manager) deploymentIntent(restart bool, replaced hubIdentity) pendingRestartState {
+	return pendingRestartState{deployment: true, restart: restart, replaced: replaced,
+		expectedVersion: m.opts.controllerVersion(), expectedGitSHA: snapshotPinGitSHA()}
+}
+
+// Record only once source validation has reached a remote write. Source refusal
+// cannot leave a compatible host waiting for an operation that never began.
+func (m *Manager) deploymentRecorder(name string, intent pendingRestartState) func(string) {
+	return func(target string) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.resolvedTargets[name] = target
+		m.pendingRestarts[name] = intent
+	}
 }
 
 func (m *Manager) setPendingRestart(name, remote, expectedVersion, expectedGitSHA string, replaced hubIdentity) {

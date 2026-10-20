@@ -201,7 +201,7 @@ type hostManagerConfig struct {
 	// production they are the sshconn Manager's DeployForOperation and
 	// RestartForOperation; a nil pair (tests, embedders) fails the operation's
 	// worker with the refusal the missing seam means.
-	deployHost  func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) (string, sshconn.Preflight, error)
+	deployHost  func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, restart bool) (string, sshconn.Preflight, error)
 	restartHost func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) error
 	// attachedFacts returns the attached channel's captured preflight facts —
 	// the deploy path's facts source, since deploy runs no fresh preflight of

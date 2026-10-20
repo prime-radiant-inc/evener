@@ -344,13 +344,15 @@ flowchart TD
     B -->|Authentication, transport or malformed response| E[Report connection failure]
     B -->|No hub listening| F{Installed launch contract usable}
     F -->|Yes| G[Start installed build and verify connection]
-    F -->|No| D
+    F -->|Verified missing or incompatible| D
+    F -->|Malformed or unknown| E
 ```
 
 Connect can still install software on a fresh or incompatible host. A stopped
 compatible installation is started without replacement on an explicit Connect;
 background reconnect does not start a stopped hub. An unclassified handshake
 failure is a connection error, not permission to overwrite the installation.
+The same rule applies to malformed or incomplete cold-start launch metadata.
 Use `--no-deploy` to prohibit both pushes and installer fallback. Explicit Deploy
 retains its plan, confirmation and requested-build checks.
 
@@ -394,9 +396,12 @@ when the published snapshot has moved beyond the controller's commit.
 
 **Interrupted deployment.** A compatible connection cannot settle an unfinished
 build replacement or restart. Recovery retains the requested build identity and
-the predecessor process identity, verifies the replacement, and reconciles the
-recorded effect before ordinary attachment resumes. It does not reinterpret the
-operation from a newly observed executable or hide a deployment failure.
+the predecessor process identity before the first remote write, including writes
+whose acknowledgement is lost. Reconnect verifies the installed build and finishes
+the recorded replacement even if the original attempt failed before choosing a
+restart command. A confirmed deploy-only operation remains deploy-only on retry.
+Source refusals before a write leave no recovery intent. Recovery does not
+reinterpret the operation from a newly observed executable or hide its failure.
 
 **Own-executable limit.** The default reads the executable file at deploy time,
 not a copy of the running process. Replacing that file while the controller runs

@@ -799,7 +799,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			return
 		}
 		m.recordProgress(id, "pushing the controller's build")
-		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts)
+		_, afterDeploy, err := m.cfg.deployHost(ctx, work.entry, facts, restartFollows)
 		if err != nil {
 			fail(err)
 			return

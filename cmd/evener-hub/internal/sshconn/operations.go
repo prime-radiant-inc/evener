@@ -35,10 +35,17 @@ import (
 //
 // The phase is bounded by the deploy limit, and the caller's context (the
 // operation worker's controller-lifetime context) cancels it.
-func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, facts Preflight) (string, Preflight, error) {
+func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, facts Preflight, restart bool) (string, Preflight, error) {
 	deployCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
 	defer cancel()
-	target, err := m.deploy(deployCtx, host, facts)
+	beforeWrite := func(target string) {
+		var running hubIdentity
+		if restart {
+			running, _ = m.probeRunningHub(deployCtx, host)
+		}
+		m.deploymentRecorder(host.Name, m.deploymentIntent(restart, running))(target)
+	}
+	target, err := m.deploy(deployCtx, host, facts, beforeWrite)
 	if err != nil {
 		return "", facts, err
 	}
@@ -52,6 +59,9 @@ func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, fac
 	}
 	if err := m.deployedBuildNotStamped(host.Name, after, m.opts.controllerVersion()); err != nil {
 		return "", facts, err
+	}
+	if !restart {
+		m.clearPendingRestart(host.Name)
 	}
 	return target, after, nil
 }
@@ -70,5 +80,8 @@ func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, fa
 	defer cancel()
 	running, _ := m.probeRunningHub(restartCtx, host)
 	version, pin := expectedServedBuild(facts, m.opts.controllerVersion())
+	if pending := m.pendingRestart(host.Name); pending.active() {
+		version, pin, running = pending.expectedVersion, pending.expectedGitSHA, pending.replaced
+	}
 	return m.restartHub(restartCtx, host, facts, version, pin, running)
 }

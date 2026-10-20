@@ -239,7 +239,9 @@ func deployTestHub(t *testing.T, configPath string, entries []hostreg.Host, seam
 		HubBootID:                  "test-boot",
 	}
 	m := newHubHostManager(nil, nil, cfg, configPath, registry, func(string, ...any) {})
-	m.cfg.deployHost = deploy
+	m.cfg.deployHost = func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, _ bool) (string, sshconn.Preflight, error) {
+		return deploy(ctx, host, facts)
+	}
 	m.cfg.restartHost = restart
 	m.cfg.attachedFacts = attached
 	m.cfg.remnantFence = seams.remnant
