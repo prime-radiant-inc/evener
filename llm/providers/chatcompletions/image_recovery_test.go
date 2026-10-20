@@ -315,6 +315,12 @@ func TestImageRecoveryFinalWirePreservation(t *testing.T) {
 				{"type": "image_url", "image_url": map[string]any{"url": jpegURI}},
 				{"type": "image_url", "image_url": map[string]any{"url": pngURI}},
 			}}}
+			messages = append(messages,
+				map[string]any{"role": "assistant", "content": []any{}, "tool_calls": []any{
+					map[string]any{"id": "call-sentinel", "type": "function", "function": map[string]any{"name": "lookup", "arguments": "{}"}},
+				}},
+				map[string]any{"role": "tool", "tool_call_id": "call-sentinel", "content": "result-sentinel"},
+			)
 			before, _ := json.Marshal(messages)
 			var bodies []map[string]any
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -357,7 +363,8 @@ func TestImageRecoveryFinalWirePreservation(t *testing.T) {
 			}
 			// Normalize only repaired URLs, then compare the entire wire bodies.
 			for _, raw := range bodies[1]["messages"].([]any) {
-				for _, partRaw := range raw.(map[string]any)["content"].([]any) {
+				parts, _ := raw.(map[string]any)["content"].([]any)
+				for _, partRaw := range parts {
 					part := partRaw.(map[string]any)
 					if imageURL, ok := part["image_url"].(map[string]any); ok && imageURL["url"] != remoteURI && imageURL["url"] != pngURI {
 						imageURL["url"] = jpegURI

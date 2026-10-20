@@ -150,7 +150,7 @@ func repairMessages(ctx context.Context, body map[string]any, mode imagerepair.M
 		if !ok {
 			continue
 		}
-		var repaired []any
+		repaired := make([]any, 0, len(parts))
 		for _, value := range parts {
 			part, _ := value.(map[string]any)
 			imageURL, _ := part["image_url"].(map[string]any)
