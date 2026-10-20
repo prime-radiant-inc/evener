@@ -109,6 +109,8 @@ is exposed. There are at most **two repair resends**, on the same endpoint and
 model, and no identical-body resend. A started stream is never replayed. Each HTTP
 exchange retains API-attempt accounting; cancellation stops new attempts and image
 work, including expiration of the active attempt's configured request deadline.
+An attempt timeout remains eligible for configured retries while the caller's
+context is live; an expired caller deadline ends the retry chain.
 If an expanded PNG gets HTTP 413 and there is no distinct smaller fallback,
 the adapter returns the **original image rejection**, not that repair-only 413.
 Existing configured model fallback can then run without forced history compaction.

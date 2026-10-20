@@ -92,18 +92,24 @@ func (p *deadlineImagePreparer) PrepareRequest(ctx context.Context, _ *http.Requ
 	return nil
 }
 
+func deadlineRecoveryRequest(t *testing.T) (llm.Request, registry.Resolved) {
+	t.Helper()
+	req := recoveryRequest(recoveryJPEG(t, nil))
+	req.AdapterTimeout = &llm.AdapterTimeout{Request: time.Second}
+	res := resolved(nil)
+	res.Transport.Auth = registry.AuthOAuthOpenAICodex
+	res.Transport.BaseURL = "https://provider.test"
+	res.Transport.StreamEndpoint = res.Transport.Endpoint
+	return req, res
+}
+
 func TestImageRecoveryAttemptDeadlineStopsRepair(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		t.Run(map[bool]string{false: "complete", true: "stream"}[stream], func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				preparer := &deadlineImagePreparer{}
 				ctx := llm.WithAuthenticatorOverride(t.Context(), preparer)
-				req := recoveryRequest(recoveryJPEG(t, nil))
-				req.AdapterTimeout = &llm.AdapterTimeout{Request: time.Second}
-				res := resolved(nil)
-				res.Transport.Auth = registry.AuthOAuthOpenAICodex
-				res.Transport.BaseURL = "https://provider.test"
-				res.Transport.StreamEndpoint = res.Transport.Endpoint
+				req, res := deadlineRecoveryRequest(t)
 				calls := 0
 				client := &http.Client{Transport: listingRoundTripper(func(r *http.Request) (*http.Response, error) {
 					calls++
@@ -124,6 +130,63 @@ func TestImageRecoveryAttemptDeadlineStopsRepair(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestImageRecoveryDeadlineRetryOwnership(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, callerDeadline := range []bool{false, true} {
+			name := map[bool]string{false: "complete", true: "stream"}[stream] + map[bool]string{false: "/attempt", true: "/caller"}[callerDeadline]
+			t.Run(name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					preparer := &deadlineImagePreparer{}
+					ctx := llm.WithAuthenticatorOverride(t.Context(), preparer)
+					if callerDeadline {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(ctx, time.Second/2)
+						defer cancel()
+					}
+					req, res := deadlineRecoveryRequest(t)
+					calls := 0
+					client := &http.Client{Transport: listingRoundTripper(func(r *http.Request) (*http.Response, error) {
+						calls++
+						if err := r.Context().Err(); err != nil {
+							return nil, err
+						}
+						w := httptest.NewRecorder()
+						if calls < 3 {
+							w.WriteHeader(http.StatusBadRequest)
+							_, _ = w.WriteString(imageRejection)
+						} else {
+							recoveryReply(w, stream)
+						}
+						return w.Result(), nil
+					})}
+					policy := llm.RetryPolicy{MaxRetries: 1}
+					var resp llm.Response
+					var err error
+					p := &Protocol{Client: client}
+					if stream {
+						err = llm.RetryStream(ctx, llm.RetryStreamOptions{Policy: policy}, func(ctx context.Context) (llm.AttemptReport, error) {
+							var attemptErr error
+							resp, attemptErr = recoveryCall(ctx, p, req, res, true)
+							return llm.AttemptReport{Phase: llm.PhaseOpen}, attemptErr
+						})
+					} else {
+						resp, err = llm.Retry(ctx, policy, nil, nil, func() (llm.Response, error) {
+							return recoveryCall(ctx, p, req, res, false)
+						})
+					}
+					if callerDeadline {
+						if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() == nil || calls != 1 || preparer.calls != 2 {
+							t.Fatalf("caller deadline: error=%v parent=%v sends=%d preparations=%d", err, ctx.Err(), calls, preparer.calls)
+						}
+					} else if err != nil || ctx.Err() != nil || calls != 3 || preparer.calls != 4 || len(resp.ToolCalls()) != 1 {
+						t.Fatalf("attempt retry: error=%v parent=%v sends=%d preparations=%d response=%+v", err, ctx.Err(), calls, preparer.calls, resp)
+					}
+				})
+			})
+		}
 	}
 }
 

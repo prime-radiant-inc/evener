@@ -55,7 +55,7 @@ func runImageRecovery[T any](ctx context.Context, p *Protocol, req llm.Request, 
 			if err := finalize(attemptCtx, body); err != nil {
 				return err
 			}
-			return recovery.prepare(attemptCtx, body)
+			return llm.WrapContextError(res.Instance, recovery.prepare(attemptCtx, body))
 		}
 		result, err := send(call, recovery)
 		if err == nil {
