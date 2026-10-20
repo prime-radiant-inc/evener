@@ -157,14 +157,15 @@ all keeps whatever ladder its curated row supplies, and an uncatalogued one
 resolves with none, so the request builder sends no effort name it cannot
 vouch for.
 
-The same per-model block states two wire-shaping facts, read on every protocol
-even where only the chat builders consume them: `thinkingFormat` becomes the
-row's `ThinkingFormat` dialect, and `maxTokensField` its `MaxTokensField`
-spelling. A value outside the load-time vocabulary is dropped rather than
-carried, because an unknown dialect writes no reasoning control at all and an
-unknown output spelling reaches no field. `supportsReasoningEffort: false` is
-not a separate cap: it makes the row toggle-only (`ReasoningControls =
-["toggle"]`) and drops any ladder beside it, which is the existing way a row
+The same per-model block states two wire-shaping facts, applied through the
+live layer on every protocol though only the two OpenAI-shaped listings report
+them: `thinkingFormat` becomes the row's `ThinkingFormat` dialect, and
+`maxTokensField` its `MaxTokensField` spelling. A value outside the load-time
+vocabulary is dropped rather than carried, because an unknown dialect writes no
+reasoning control at all and an unknown output spelling reaches no field. An
+explicit `capabilities.reasoning: false` wins over both. `supportsReasoningEffort:
+false` is not a separate cap: it makes the row toggle-only (`ReasoningControls
+= ["toggle"]`) and drops any ladder beside it, which is the existing way a row
 says "reasoning on or off, but no effort parameter". An explicit `true` is
 silence — derivation infers the effort control from the ladder, as it does for
 any reasoning row.

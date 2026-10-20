@@ -85,7 +85,7 @@ func FuzzAnthropicProtocolBuildBody(f *testing.F) {
 			t.Fatalf("request body is not valid JSON: %v\njson=%s", err, b)
 		}
 
-		registry.Prune(body, res.Caps) // must never panic
+		registry.Prune(body, res.Caps, res.Protocol) // must never panic
 
 		if thinking, ok := body["thinking"].(map[string]any); ok {
 			if budget, ok := thinking["budget_tokens"].(int); ok {

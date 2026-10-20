@@ -244,6 +244,28 @@ func TestApplyGatewayFacts_EffortUnsupported(t *testing.T) {
 	}
 }
 
+// TestApplyGatewayFacts_NonReasoningBeatsEffortVerdict pins the precedence the
+// capability verdict has over the compat block: a gateway saying the model does
+// not reason at all leaves no reasoning controls, whatever the block's effort
+// field says. Controls on a Reasoning=false row are a shape derivation exists
+// to forbid.
+func TestApplyGatewayFacts_NonReasoningBeatsEffortVerdict(t *testing.T) {
+	no := false
+	caps := registry.Caps{}
+	ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{Reasoning: &no}, GatewayClientCompat{
+		Pi: &GatewayPiCompat{SupportsReasoningEffort: &no, ThinkingLevelMap: map[string]string{"low": "low"}},
+	})
+	if caps.Reasoning == nil || *caps.Reasoning {
+		t.Fatalf("Reasoning = %v, want false", caps.Reasoning)
+	}
+	if len(caps.ReasoningControls) != 0 {
+		t.Fatalf("ReasoningControls = %#v, want none on a non-reasoning row", caps.ReasoningControls)
+	}
+	if len(caps.EffortValues) != 0 {
+		t.Fatalf("EffortValues = %#v, want none on a non-reasoning row", caps.EffortValues)
+	}
+}
+
 func TestApplyGatewayFacts_Reasoning(t *testing.T) {
 	yes, no := true, false
 	levels := func(m map[string]string) GatewayClientCompat {

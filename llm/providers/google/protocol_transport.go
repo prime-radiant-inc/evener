@@ -168,7 +168,7 @@ func (p *Protocol) CountTokens(ctx context.Context, req llm.Request, res registr
 	if err != nil {
 		return 0, err
 	}
-	registry.Prune(inner, res.Caps)
+	registry.Prune(inner, res.Caps, res.Protocol)
 	inner["model"] = "models/" + res.WireID
 	body := map[string]any{"generateContentRequest": inner}
 	var count int

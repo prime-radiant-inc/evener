@@ -65,7 +65,12 @@ func ApplyGatewayFacts(caps *registry.Caps, arch GatewayArchitecture, capsFacts 
 		// inferring it back and the request builder from spelling a level the
 		// gateway ignores. The ladder is an empty non-nil list, not nil, so the
 		// live layer replaces a curated one instead of inheriting it.
-		if pi.SupportsReasoningEffort != nil && !*pi.SupportsReasoningEffort {
+		//
+		// An explicit non-reasoning verdict wins over this: such a row has no
+		// reasoning controls at all, and derivation's clean-up is the only
+		// thing that would otherwise remove them.
+		nonReasoning := caps.Reasoning != nil && !*caps.Reasoning
+		if pi.SupportsReasoningEffort != nil && !*pi.SupportsReasoningEffort && !nonReasoning {
 			caps.ReasoningControls = []string{"toggle"}
 			caps.EffortValues = []string{}
 		}

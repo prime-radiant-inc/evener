@@ -31,13 +31,10 @@ func TestApplyThinkingFormatAndRegistryVocabularyAgree(t *testing.T) {
 	}
 	req := llm.Request{ReasoningEffort: &effort}
 	handled := map[string]bool{}
-	for _, format := range []string{"openai", "openrouter", "zai", "deepseek", "together", "qwen", "qwen-chat-template", "chat-template", "string-thinking"} {
+	for _, format := range registry.ThinkingFormats() {
 		body := map[string]any{}
 		applyThinkingFormat(body, req, caps(format))
 		handled[format] = len(body) > 0
-		if !registry.ValidThinkingFormat(format) {
-			t.Errorf("dialect %q is handled by applyThinkingFormat but the registry rejects it", format)
-		}
 	}
 	// The unset dialect is the documented default and writes reasoning_effort.
 	body := map[string]any{}
