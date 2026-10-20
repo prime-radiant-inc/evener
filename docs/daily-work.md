@@ -75,9 +75,9 @@ Choose the action that matches your intent:
 | **Steer** | New information should change the work already underway | The running agent receives your correction, but actions already completed remain |
 | **Stop** | You want the current work interrupted | Completed edits and external side effects remain |
 
-Busy sessions expose Stop and, when supported, Steer. Narrow layouts may put actions in the session menu rather than beside the composer. Read the pending-message or queue state before resending text, especially after a connection loss.
+Busy sessions expose Stop and, when supported, Steer. On the web, an empty draft puts Stop in Send's slot at every width; adding text, images or selected skills or commands restores Send. Stop also remains in Session actions. Steer stays beside wide composers and moves to the menu in narrow ones. After Send changes to Stop, the inline Stop waits 500 ms before accepting input to prevent accidental double-taps; menu Stop remains available. Read the pending-message or queue state before resending text, especially after a connection loss.
 
-The submit button still says **Send** while the agent is busy; it does not become a separate Queue button. Messages waiting for a later turn appear in **Queued messages** beside the composer. A **Sending** or **Retrying** indicator means delivery is still in progress, not that the agent has already acted on the message.
+With a draft, the submit button still says **Send** while the agent is busy; it does not become a separate Queue button. Messages waiting for a later turn appear in **Queued messages** beside the composer. A **Sending** or **Retrying** indicator means delivery is still in progress, not that the agent has already acted on the message.
 
 For a queued message, use **Remove from queue** to withdraw it before it runs, **Edit message** to bring it back for revision, or **Steer now** to send it into the current work. These controls appear only when the session supports them and may be disabled during recovery. Confirm that removal succeeded; an error means you must not assume the request was withdrawn. Removing a queued message cannot undo work the agent has already started. If a row says **Delivery uncertain**, let the session recover before submitting a duplicate.
 

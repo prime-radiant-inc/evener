@@ -6,19 +6,10 @@
 // "message this agent" and "start an agent" are the same object, so they are
 // one component with two sets of callers' buttons in it, not two lookalikes.
 //
-// The control row is state-responsive, never disabled-in-place: with a turn in
-// flight it reads Stop · Send · Steer (Steer primary - interrupt and redirect
-// now; Send quiet - queue until the agent stops), idle it is Send alone, and a
-// finished session keeps Send and shrinks only its empty editor to one line
-// at rest. Stop is pinned leftmost so it never trades places with the verbs
-// that come and go. Keyboard chords live in each control's Tooltip rather than
-// as boxed <kbd> runs inside the buttons.
-//
-// Below the phone-width boundary that cluster no longer fits beside the
-// session-status row, and the row that used to wrap it below (issue #1339's
-// provisional rule) reads badly - so per Jesse's 2026-09-28 design ruling the
-// narrow layout holds Send alone in the row and offers Stop and Steer through
-// the session menu instead (turnVerbs below; narrowComposer.ts owns the gate).
+// Stop takes Send's slot when the session can stop and the draft is empty,
+// at every width. A sendable draft restores Send, with Stop still available
+// in the session menu. Steer stays inline on wide composers and in the menu
+// on narrow ones (narrowComposer.ts owns that gate).
 //
 // T2 (this file): the skill editor, send-vs-steer-vs-queue-vs-drain routing via
 // protocol/sendQueueAvailability's deriveSendQueueAvailability +
@@ -133,6 +124,7 @@ import {
 } from "./skillDocument";
 import { type ComposerSourceState, restoredSkillNames } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
+import { useInlineStopReady } from "./useInlineStopReady";
 
 export interface ComposerProps {
   ref: string;
@@ -188,7 +180,7 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // restartRequired/resumeRequired) cannot be acted on at all until the explicit
 // Resume action clears the fence.
 
-// The wide layout's turnVerbs offering: one frozen object, because a fresh
+// The missing model's turnVerbs offering: one frozen object, because a fresh
 // {} on every recompute would defeat MemoizedSessionChrome's
 // shallow-equality bailout for a value that carries no information.
 const NO_TURN_VERBS: SessionMenuTurnVerbs = Object.freeze({});
@@ -267,10 +259,8 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   const [followUpFocused, setFollowUpFocused] = useState(false);
   const followUpFocusSequenceRef = useRef(0);
 
-  // Jesse's 2026-09-28 ruling on the #1339 phone-width verb wrap: below the
-  // phone-width boundary the verb cluster leaves this row for the session
-  // menu instead of wrapping below the status row. narrowComposer.ts says
-  // why the gate reads a ResizeObserver rather than the viewport or CSS.
+  // Steer moves into the menu below the phone-width boundary.
+  // narrowComposer.ts measures the pane, not the viewport.
   const [narrow, composerRootRef] = useNarrowComposer();
 
   // The session menu's turn-verb items press the same handlers the row
@@ -289,7 +279,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   interruptClickRef.current = handleInterruptClick;
   steerClickRef.current = handleSteerClick;
 
-  // The narrow layout's turn-verb offerings. Identity-stable across draft
+  // The menu's turn-verb offerings. Identity-stable across draft
   // keystrokes - the deps are the model, the gate, and our own in-flight
   // request, none of which a keystroke moves - so the memoized chrome sees a
   // new prop only when the offering actually changed. Presence mirrors the
@@ -299,7 +289,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // re-reads the fence live and toasts the reason (kata 2f41), which a
   // disabled menu item cannot explain.
   const turnVerbs = useMemo<SessionMenuTurnVerbs>(() => {
-    if (!narrow || !model) return NO_TURN_VERBS;
+    if (!model) return NO_TURN_VERBS;
     const available = controlsFor(model);
     const items: SessionMenuTurnVerbs = {};
     if (available.stop) {
@@ -310,7 +300,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
         disabled: actionPending,
       };
     }
-    if (available.steer) {
+    if (available.steer && narrow) {
       items.steer = {
         onSelect: () => steerClickRef.current(),
         disabled: actionPending,
@@ -658,6 +648,12 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // focused at mount (see useMountAutofocus for the full rationale).
   useMountAutofocus(editorRef, focused);
 
+  const hasText = text.trim() !== "";
+  const hasAttachments = attachments.items.length > 0;
+  const hasContent = hasText || hasAttachments || skillNames.length > 0 || selectionMeta.commandNames.length > 0;
+  const inlineStop = !!model && controlsFor(model).stop && !hasContent;
+  const inlineStopReady = useInlineStopReady(ref, !model || askPending ? null : inlineStop ? "stop" : "send");
+
   if (!model) return null; // Session.tsx only mounts this once its own model is hydrated; defensive only.
 
   // Captured as plain consts (not read as `model.xyz` again below): a
@@ -771,9 +767,6 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
       : tableAvailability;
   }
   const availability = availabilityFor(model, hasPendingSend, recoveryRequired, resumeOnlySignals);
-  const hasText = text.trim() !== "";
-  const hasAttachments = attachments.items.length > 0;
-  const hasContent = hasText || hasAttachments || skillNames.length > 0 || selectionMeta.commandNames.length > 0;
   const showStop = controls.stop;
   const showSteer = controls.steer;
   // The Steer control's own reading of the recovery fence (see
@@ -1620,71 +1613,60 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
                 }
                 actions={
                   <>
-                    {/* Stop leads the cluster, always in the same place: it is
-                          the one control here whose misfire cannot be undone, so
-                          it must never trade positions with Send or Steer as
-                          those come and go. The word, not a glyph - "Stop" is
-                          chrome, and chrome speaks. Below the phone-width
-                          boundary the row cannot hold the cluster beside the
-                          status row, so the narrow layout offers it through the
-                          session menu instead (turnVerbs above). */}
-                    {showStop && !narrow && (
-                      <Tooltip label="Stop the current turn">
+                    {/* Distinct keys replace the actual button, so a press
+                        begun on Send cannot finish on Stop. */}
+                    {inlineStop ? (
+                      <Tooltip key="stop" label="Stop the current turn">
                         <Button
                           variant="dangerQuiet"
                           size="xs"
                           type="button"
                           data-testid="composer-stop"
                           onClick={() => void handleInterruptClick()}
-                          // busy + the interrupt capability are already what
-                          // makes this render at all, so only an in-flight
-                          // request of our own is left to gate on.
-                          disabled={actionPending}
+                          // Keep pending gates after the brief swap guard ends.
+                          disabled={actionPending || !inlineStopReady}
                         >
                           Stop
                         </Button>
                       </Tooltip>
+                    ) : (
+                      <Tooltip key="send" label={submitTooltip}>
+                        <Button
+                          ref={submitButtonRef}
+                          type="submit"
+                          variant={showSteer ? "quiet" : "primary"}
+                          size="xs"
+                          data-testid="composer-submit"
+                          aria-label="Send"
+                          icon={<SendIcon />}
+                          // canCompose comes from the availability table, which
+                          // reports both-false for an idle finished session: it
+                          // answers "can this turn be sent to right now", and a
+                          // follow-up to a finished session resumes it first
+                          // (only once that resume is in flight does the table
+                          // have an answer of its own). The capability is
+                          // the authority there, the same way it is for whether
+                          // this card renders at all - otherwise a session the hub
+                          // will happily resume shows a permanently dead Send.
+                          // The capability alone does not lift the recovery fence:
+                          // availabilityFor refuses every fenced status, so a
+                          // fenced session whose snapshot still
+                          // advertises send:true (the hub stamps it on closed
+                          // frames too) renders a disabled Send, not a refusal
+                          // toast.
+                          disabled={
+                            actionPending ||
+                            !hasContent ||
+                            !(ended
+                              ? (canSendWhenEnded || fence.sendDriven) && canCompose && !fence.stillFenced
+                              : canCompose)
+                          }
+                        >
+                          <span className={CLASS.submitLabel}>Send</span>
+                        </Button>
+                      </Tooltip>
                     )}
-                    {/* Send is quiet while a turn runs and primary when
-                        nothing does: with a turn in flight the immediate
-                        action is Steer, and Send's job is the patient one. */}
-                    <Tooltip label={submitTooltip}>
-                      <Button
-                        ref={submitButtonRef}
-                        type="submit"
-                        variant={showSteer ? "quiet" : "primary"}
-                        size="xs"
-                        data-testid="composer-submit"
-                        aria-label="Send"
-                        icon={<SendIcon />}
-                        // canCompose comes from the availability table, which
-                        // reports both-false for an idle finished session: it
-                        // answers "can this turn be sent to right now", and a
-                        // follow-up to a finished session resumes it first
-                        // (only once that resume is in flight does the table
-                        // have an answer of its own). The capability is
-                        // the authority there, the same way it is for whether
-                        // this card renders at all - otherwise a session the hub
-                        // will happily resume shows a permanently dead Send.
-                        // The capability alone does not lift the recovery fence:
-                        // availabilityFor refuses every fenced status, so a
-                        // fenced session whose snapshot still
-                        // advertises send:true (the hub stamps it on closed
-                        // frames too) renders a disabled Send, not a refusal
-                        // toast.
-                        disabled={
-                          actionPending ||
-                          !hasContent ||
-                          !(ended
-                            ? (canSendWhenEnded || fence.sendDriven) && canCompose && !fence.stillFenced
-                            : canCompose)
-                        }
-                      >
-                        <span className={CLASS.submitLabel}>Send</span>
-                      </Button>
-                    </Tooltip>
-                    {/* Same narrow-layout gate as Stop above: the Steer the
-                          row cannot fit rides in the session menu (turnVerbs). */}
+                    {/* Steer rides in the menu when the row cannot fit it. */}
                     {showSteer && !narrow && (
                       <Tooltip label={steerTooltipLabel({ recoveryFenced: steerRecoveryFenced, enterToSend })}>
                         <Button

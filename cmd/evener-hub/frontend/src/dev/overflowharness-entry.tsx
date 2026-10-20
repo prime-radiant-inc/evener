@@ -20,7 +20,6 @@ import { ActivitySidebar } from "../shell/activitybar/ActivitySidebar";
 import { activityContext, activitySummary } from "../stores/sessionActivityTestUtils";
 import { isElementVisible } from "./guardVisibility";
 import "../panes/session";
-import { COMPOSER_PHONE_MAX_WIDTH } from "../panes/session/composer/narrowComposer";
 import { refreshPendingTurnsProjection } from "../panes/session/composer/queue/pendingTurnsStore";
 import Session from "../panes/session/Session";
 import Settings from "../panes/settings/Settings";
@@ -64,10 +63,7 @@ const intentTailMode = params.get("intenttail") === "1";
 // ?heldtail=1: the trailing held-steer ghost fixture for the stack's column
 // alignment (see inspectHeldSteerColumn below).
 const heldTailMode = params.get("heldtail") === "1";
-// steer=1 advertises the steer capability, so the busy fixture draws Stop +
-// Send + Steer (every busy session on a harness that can steer); without it
-// the cluster is Stop + Send, the one the status row's narrow-pane budget was
-// measured against (statusrow.module.css). The guard sweeps both.
+// The guard sweeps busy sessions with and without advertised Steer.
 const steerMode = params.get("steer") === "1";
 
 // The width a container query or a flex line resolves against: the element's
@@ -422,6 +418,21 @@ fake.on("thread/turns/list", (request: ThreadTurnsListParams): ThreadTurnsListRe
   };
 });
 fake.on("thread/unsubscribe", () => ({}));
+const composerRequests: { method: string; at: number; params: unknown }[] = [];
+for (const method of ["turn/queue", "turn/interrupt"] as const) {
+  fake.on(method, (request) => {
+    composerRequests.push({ method, at: performance.now(), params: request });
+    return {
+      receipt: {
+        clientMutationId: request.clientMutationId,
+        disposition: "applied",
+        threadId: activeSnapshot.thread.id,
+        projectionState: "reflected",
+      },
+    };
+  });
+}
+
 fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
   ...activitySummary(ref, scope),
   context: { ...activityContext(ref), sessionId: activeSnapshot.thread.sessionId },
@@ -1558,6 +1569,25 @@ async function inspectHeldSteerColumn(): Promise<HeldSteerColumnMeasurement> {
   };
 }
 
+// Report observed geometry only. The runner owns the placement oracle.
+function measureComposerContentWidth(): number | null {
+  const pane = document.getElementById("oh-pane");
+  const composerCard = pane?.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
+  let container = composerCard?.parentElement ?? null;
+  while (container && !getComputedStyle(container).containerType.includes("inline-size")) {
+    container = container.parentElement;
+  }
+  if (!container) return null;
+  const style = getComputedStyle(container);
+  return (
+    container.getBoundingClientRect().width -
+    [style.paddingLeft, style.paddingRight, style.borderLeftWidth, style.borderRightWidth].reduce(
+      (sum, value) => sum + (Number.parseFloat(value) || 0),
+      0,
+    )
+  );
+}
+
 function measure() {
   if (settingsMode) return measureSettings();
   const pane = document.getElementById("oh-pane");
@@ -1649,24 +1679,10 @@ function measure() {
   const model = pane.querySelector<HTMLElement>('[data-testid="model-switch-value"]');
   const currentWork = pane.querySelector<HTMLElement>('[data-testid="current-work"]');
   const composerCard = pane.querySelector<HTMLElement>('[data-testid="composer-input-card"]');
-  // The composer container its narrow layout keys on: the same walk the
-  // verb cluster's measurement below performs, hoisted here because the
-  // controls' own expectations now depend on it. Below 399px the narrow
-  // layout relocates Stop and Steer into the session menu (Jesse's
-  // 2026-09-28 ruling on the #1339 phone-width wrap), so their buttons are
-  // expected ABSENT from the row there and present above it.
-  let verbContainer = composerCard?.parentElement ?? null;
-  while (verbContainer && !getComputedStyle(verbContainer).containerType.includes("inline-size")) {
-    verbContainer = verbContainer.parentElement;
-  }
-  const composerContainerWidth = verbContainer ? contentBoxWidth(verbContainer) : null;
-  const narrowComposer = composerContainerWidth !== null && composerContainerWidth <= COMPOSER_PHONE_MAX_WIDTH;
+  const composerContainerWidth = measureComposerContentWidth();
   const controlTestIds = ["composer-attach", "composer-stop", "composer-submit", "composer-steer"];
   const composeControls = controlTestIds.map((testId) => ({
     testId,
-    expected:
-      (testId !== "composer-steer" || steerMode) &&
-      !(narrowComposer && (testId === "composer-stop" || testId === "composer-steer")),
     element: pane.querySelector<HTMLElement>(`[data-testid="${testId}"]`),
   }));
   const subagentCard = pane.querySelector<HTMLElement>('[data-testid="subagent-row"]');
@@ -1696,11 +1712,10 @@ function measure() {
     box.right <= composerCardBox.right + 1 &&
     box.top >= composerCardBox.top - 1 &&
     box.bottom <= composerCardBox.bottom + 1;
-  const controls = composeControls.map(({ testId, expected, element }) => {
+  const controls = composeControls.map(({ testId, element }) => {
     const box = element?.getBoundingClientRect();
     return {
       testId,
-      expected,
       present: visible(element),
       containedInCard: containedInCard(box),
       containedInPane: containedInPane(box),
@@ -1709,7 +1724,7 @@ function measure() {
   });
   const controlsDoNotOverlap = controls.every((control, index) =>
     controls.slice(index + 1).every((other) => {
-      if (!control.expected || !other.expected) return true;
+      if (!control.present || !other.present) return true;
       if (!control.box || !other.box) return false;
       return (
         control.box.right <= other.box.left + 1 ||
@@ -1778,38 +1793,24 @@ function measure() {
     currentWork: {
       found: visible(currentWork),
       composerCardFound: visible(composerCard),
-      controlsFound: controls.every((control) => control.present === control.expected),
+      controlsFound:
+        controls.some((control) => control.testId === "composer-attach" && control.present) &&
+        controls.some((control) => control.testId !== "composer-attach" && control.present),
       controlsContained: controls.every(
-        (control) => !control.expected || (control.containedInCard && control.containedInPane),
+        (control) => !control.present || (control.containedInCard && control.containedInPane),
       ),
       controlsDoNotOverlap,
       controls: controls.map(({ box: _box, ...control }) => control),
-      // The verb cluster (Stop, Send, Steer) against the status row it shares
-      // the control row with: the retired wrap rule used to drop a three-verb
-      // cluster below the row at phone width; the narrow layout now relocates
-      // those verbs into the session menu instead, so the guard asserts the
-      // row NEVER wraps - whatever verbs remain sit beside the status row -
-      // and window.measureMenuVerbs (awaited by the runner's lite pass, not
-      // readable synchronously here) reports what the menu carries.
+      // Observed primary and secondary controls beside the status row.
       verbCluster: (() => {
         const verbs = controls.filter(
           (control) => control.testId !== "composer-attach" && control.present && control.box,
         );
         return {
           controls: verbs.length,
-          // Counted from the compose controls' own expected flags, which
-          // already encode the fixture's rule: Send always, Stop with the
-          // interrupt capability, Steer with the steer capability - each
-          // minus the narrow layout's relocation into the session menu.
-          expectedVerbs: composeControls.filter((control) => control.expected && control.testId !== "composer-attach")
-            .length,
           top: verbs.length > 0 ? Math.min(...verbs.map((control) => (control.box as DOMRect).top)) : null,
           statusRowBottom: statusBox?.bottom ?? null,
           containerWidth: composerContainerWidth,
-          // The page's own narrow gate (narrowComposer.ts), so the runner
-          // asserts the same verdict the layout answered to instead of
-          // re-deriving the boundary in Node.
-          narrowComposer,
         };
       })(),
       sharedPaneWithoutOverflow:
@@ -1967,8 +1968,8 @@ async function verifyItemPaging(): Promise<{
 // trigger's click() and all of them exist on the first frame after it. So
 // this probe awaits twoPaintedFrames - the file's one settle point - rather
 // than reading in place, opens the menu, and reads Stop/Steer presence. It
-// deliberately leaves the menu open: every measurement navigates a fresh
-// page (run.mjs's measureAt), so toggling it closed again buys nothing.
+// leaves the menu open; the runner closes it with trusted Escape before
+// changing the draft for its next placement measurement.
 async function measureMenuVerbs(): Promise<{ open: boolean; stop: boolean; steer: boolean }> {
   const pane = document.getElementById("oh-pane");
   if (!pane) return { open: false, stop: false, steer: false };
@@ -1990,7 +1991,9 @@ async function measureMenuVerbs(): Promise<{ open: boolean; stop: boolean; steer
 
 declare global {
   interface Window {
+    composerRequests: typeof composerRequests;
     measure: typeof measure;
+    measureComposerContentWidth: typeof measureComposerContentWidth;
     dump: typeof dump;
     inspectDetail: typeof inspectDetail;
     inspectChatFocus: typeof inspectChatFocus;
@@ -2002,6 +2005,7 @@ declare global {
   }
 }
 window.measure = measure;
+window.measureComposerContentWidth = measureComposerContentWidth;
 window.dump = dump;
 window.inspectDetail = inspectDetail;
 window.inspectChatFocus = inspectChatFocus;
@@ -2010,3 +2014,5 @@ window.inspectHeldSteerColumn = inspectHeldSteerColumn;
 window.measureMenuVerbs = measureMenuVerbs;
 window.settled = settled;
 window.verifyItemPaging = verifyItemPaging;
+
+window.composerRequests = composerRequests;

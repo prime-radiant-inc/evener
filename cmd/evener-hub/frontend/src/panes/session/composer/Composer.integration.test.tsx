@@ -204,6 +204,7 @@ afterEach(() => {
   resetMobileViewportForTests();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 function installMobileViewport(): void {
@@ -278,6 +279,71 @@ function selectImageFile(file: File): void {
   if (!picker) throw new Error("Composer has no image picker");
   fireEvent.change(picker, { target: { files: [file] } });
 }
+
+function installComposerWidth(width: number): void {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class implements ResizeObserver {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      observe(target: Element): void {
+        if (target.querySelector('[data-testid="composer-input-card"]')) {
+          this.callback([{ contentRect: { width } } as ResizeObserverEntry], this);
+        }
+      }
+      unobserve(): void {}
+      disconnect(): void {}
+    },
+  );
+}
+
+test.each([399, 400])("restored skill-only and command-only drafts keep Send at width %s", async (width) => {
+  installComposerWidth(width);
+  let fake: FakeClient | undefined;
+  for (const kind of ["skill", "command"] as const) {
+    writeComposerDraft("root", {
+      text: "/selected",
+      skillNames: kind === "skill" ? ["selected"] : [],
+      commandNames: kind === "command" ? ["selected"] : [],
+      mentions: [{ kind, name: "selected", offset: 0 }],
+    });
+    const source = createTestComposerSource("root");
+    fake = await mountComposer("root", {}, source);
+    expect(screen.getByRole("textbox", { name: "Message" }).querySelectorAll(`[data-${kind}-name]`)).toHaveLength(1);
+    expect(screen.queryByTestId("composer-stop")).toBeNull();
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
+    cleanup();
+    render(<Composer ref="root" source={source} focused={false} />);
+    await flushPendingTurnsProjectionForTests();
+    expect(screen.queryByTestId("composer-stop")).toBeNull();
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
+    cleanup();
+  }
+  expect(fake?.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
+});
+
+test.each([399, 400])("pending and restored image-only drafts keep Send until removal at width %s", async (width) => {
+  installComposerWidth(width);
+  const source = createTestComposerSource("root");
+  await mountComposer("root", {}, source);
+  const encoding = installControlledImageEncoding();
+  selectImageFile(new File([new Uint8Array([1, 2, 3])], "source.png", { type: "image/png" }));
+  act(() => replaceEditorText(screen.getByRole("textbox", { name: "Message" }), ""));
+  expect(source.getSnapshot().text).toBe("");
+  expect(source.attachments.getState().items[0]?.pending).toBe(true);
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+  cleanup();
+  render(<Composer ref="root" source={source} focused={false} />);
+  await flushPendingTurnsProjectionForTests();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+  await act(async () => encoding.resolve());
+  await screen.findByRole("button", { name: "View source.png" });
+  expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Remove source.png" }));
+  expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+  expect((screen.getByRole("button", { name: "Stop" }) as HTMLButtonElement).disabled).toBe(true);
+});
 
 test("source text survives a view remount without sending", async () => {
   const source = createTestComposerSource("root");
@@ -893,8 +959,8 @@ test.each(["pointer", "keyboard"] as const)(
     acceptFocusSubmission(fake, "turn/queue");
     const user = userEvent.setup();
     const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
-    const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
     await user.type(message, "qf");
+    const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
     expect(send.disabled).toBe(false);
     if (activation === "pointer") {
       await user.click(send);
@@ -919,7 +985,8 @@ test.each(["pointer", "keyboard"] as const)(
     expect(message.textContent).toBe("");
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
     expect(message.getAttribute("contenteditable")).toBe("true");
-    expect(send.disabled).toBe(true);
+    expect(send.isConnected).toBe(false);
+    expect(screen.getByTestId("composer-stop")).not.toBe(send);
     await waitFor(() => expect(document.activeElement).toBe(message));
   },
 );
@@ -1935,7 +2002,8 @@ test("the composer's Stop button cancels the row a mid-swap resume moved to the 
     expect(moved).toHaveLength(1);
     const movedId = moved[0]?.clientMutationId;
     // Press Stop on the still-visible old ref, in the held drain window.
-    await user.click(screen.getByTestId("composer-stop"));
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Stop" }));
     await flushPendingTurnsProjectionForTests();
     // The press reached interrupt: its own turn/interrupt row parks under the
     // fenced old ref. The sweep is the only thing that can reach toRef now.
@@ -2224,15 +2292,26 @@ function idleNoTurnOverrides(): Partial<Thread> {
   };
 }
 
-test("a pending ask hides the composer's input row, which un-hides once the ask resolves through the normal send path", async () => {
+test.each([
+  { width: 399, draft: "" },
+  { width: 400, draft: "" },
+  { width: 399, draft: "preserved draft" },
+  { width: 400, draft: "preserved draft" },
+])("a pending ask restores the slot at width $width with draft '$draft'", async ({ width, draft }) => {
+  installComposerWidth(width);
   const fake = await mountComposer("ref_a", idleNoTurnOverrides());
   expect(textarea()).toBeTruthy(); // sanity: visible before any ask arrives
+  act(() => replaceEditorText(screen.getByRole("textbox", { name: "Message" }), draft));
   let observeTurnStart!: (params: MethodTypes["turn/start"]["params"]) => void;
   const turnStarted = new Promise<MethodTypes["turn/start"]["params"]>((resolve) => {
     observeTurnStart = resolve;
   });
   fake.on("turn/start", (params) => {
     observeTurnStart(params);
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" }, askPending: false },
+    });
     return {
       receipt: {
         clientMutationId: params.clientMutationId,
@@ -2255,6 +2334,9 @@ test("a pending ask hides the composer's input row, which un-hides once the ask 
   // a stronger, more meaningful signal than probing the `inert` IDL
   // property directly, and it also proves the textarea can't be tabbed to.
   await waitFor(() => expect(textarea()).toBeNull());
+  expect(screen.queryByRole("button", { name: /session actions/i })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
   // Nothing ask-shaped renders here: the answering surface is the
   // transcript's trailing row (Session.tsx passes AskDock as TranscriptBody's
   // trailingRow; AskDock.test.tsx and Session.test.tsx prove that half).
@@ -2263,6 +2345,7 @@ test("a pending ask hides the composer's input row, which un-hides once the ask 
   const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
   if (batchId === undefined) throw new Error("pending ask batch did not reconcile");
 
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   await act(async () => {
     await askDockStore.sendBatch("ref_a", batchId);
     await turnStarted;
@@ -2272,7 +2355,19 @@ test("a pending ask hides the composer's input row, which un-hides once the ask 
   await expect(turnStarted).resolves.toMatchObject({
     input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
   });
-  expect(await screen.findByRole("textbox", { name: /message/i })).toBeTruthy(); // composer un-hides again
+  expect(screen.getByRole("textbox", { name: /message/i })).toBeTruthy(); // composer un-hides again
+  expect(textarea()?.textContent).toBe(draft);
+  if (draft) {
+    expect(screen.queryByRole("button", { name: "Stop" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
+  } else {
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+    // Durable answer acceptance restores Send while still awaiting. The
+    // resumed turn's active frame then swaps it to Stop and earns the guard.
+    expect((screen.getByRole("button", { name: "Stop" }) as HTMLButtonElement).disabled).toBe(true);
+    act(() => vi.advanceTimersByTime(500));
+    expect((screen.getByRole("button", { name: "Stop" }) as HTMLButtonElement).disabled).toBe(false);
+  }
 });
 
 // AskDock's own anchor (askDock/AskDock.tsx) announces entering ask-pending
