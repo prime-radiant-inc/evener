@@ -10,6 +10,10 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-20-retry-eligibility-design.md`
 
+## Delivery amendment
+
+Jesse approved shipping browser first, then returning immediately to native on 2026-10-20. The first delivery contains Task 0, Task 1, and the browser portion of Task 3. Native changes stay in their existing isolated lane and are not part of that PR. Keep #4792 and #4793 open until native acceptance is also verified. Native requirements remain unchanged; review its ownership design before another repair attempt.
+
 ## Global Constraints
 
 - Preserve `continue` input, transcript history, draft text, selections, and attachments.
@@ -97,7 +101,7 @@ Export `ownPendingTurnInput(entries: readonly PendingTurnEntry[] | null | undefi
 
 ## Task 3: Integrated recovery journeys and product contracts
 
-**Owner:** DeepSeek journey implementer after both client commits are integrated and reviewed.
+**Owner:** DeepSeek journey implementer after the relevant client commits are integrated and reviewed. Under the delivery amendment, verify and document browser first, leaving native journey edits for the native delivery.
 
 **Files:**
 - `cmd/evener-hub/frontend/scripts/retryguard/run.mjs` and its `README.md`.
@@ -120,4 +124,4 @@ Export `ownPendingTurnInput(entries: readonly PendingTurnEntry[] | null | undefi
 
 The coordinator reviews each task against the approved spec and verifies its tests. Integrate and review Task 0 before starting the clients. Browser and native writers may then run in parallel only in distinct worktrees with the ownership above. Stop before expanding a task into the other writer's files or changing the shared interface.
 
-After independent implementation PAR, resolve legitimate findings red-first, run simplify-code, then push one combined PR closing #4792 and #4793. Use one CI/review wait per push. Merge the current base before final approval, settle every finding under repository policy, admin squash merge only after checks pass, verify GitHub's merged content, then remove only owned worktrees and scratch. Do not deploy.
+For each delivery, run independent implementation PAR, resolve legitimate findings red-first, run simplify-code, then push one PR. The browser PR references #4792 and #4793 without closing them; the native delivery closes them after its remaining acceptance checks pass. Use one CI/review wait per push. Merge the current base before final approval, settle every finding under repository policy, admin squash merge only after checks pass, and verify GitHub's merged content. Preserve the native lane and its evidence during browser cleanup, then return immediately to native work. Remove only owned disposable worktrees and scratch. Do not deploy.
