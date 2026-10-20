@@ -406,7 +406,11 @@ An explicit Restart also finishes any pending deployment write before restarting
 Before stopping the live hub, Restart re-reads the selected executable's startup
 contract. An incompatible protocol, missing required flag or unreadable contract
 refuses the restart and preserves the live connection. Fix the executable, then
-retry Restart.
+retry Restart. Connect and reconnect also validate the executable before retrying
+a pending restart, whether the predecessor is still running or has stopped.
+Refusal retains the pending intent so recovery can finish after the repair.
+A verified restart retires the predecessor's bridge before reattaching and
+checking the replacement, even if the old SSH connection has not reported EOF.
 If the first health probe missed the predecessor, a later probe can identify it
 before the first restart command runs; an issued command retains its original
 predecessor identity across retries.

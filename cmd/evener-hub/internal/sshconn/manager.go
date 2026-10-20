@@ -2048,6 +2048,12 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			}
 		}
 	}
+	// Deployment gets its chance to repair the executable first. Every start or
+	// restart, including recovery of a recorded command, requires a usable target
+	// before it can replace a live predecessor or consume the pending intent.
+	if err := validateStartupContract(host.Name, facts); err != nil {
+		return nil, err
+	}
 	if restart && !deploy {
 		// A restart-only attempt (a stale running build, or a recorded
 		// pendingRestart) is its own durable operation (§6: "a reconnect with
@@ -2115,14 +2121,6 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		if err != nil {
 			return nil, err
 		}
-	}
-	// The terminal protocol refusal fires only now, after the deploy has had its
-	// chance and a restart has brought up the build that will actually serve. A
-	// host that still speaks another appwire protocol cannot be attached, and when
-	// no deploy was possible that is terminal — the outcome the old "always deploy"
-	// path deferred by failing as a retryable ErrDeploy instead.
-	if err := validateStartupContract(host.Name, facts); err != nil {
-		return nil, err
 	}
 	// Launch-check establishes whether the installed executable can be started;
 	// Initialize then verifies the process serving the connection. Build labels

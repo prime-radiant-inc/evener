@@ -37,12 +37,14 @@ func TestHostRestartReconcilesDistinctBuildDeployment(t *testing.T) {
 	buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = restartBuildB, "", ""
 
 	for _, scenario := range []struct {
-		name         string
-		probeVersion string
-		probeStart   string
-		want         hostops.State
+		name            string
+		probeVersion    string
+		probeStart      string
+		delayBridgeExit bool
+		want            hostops.State
 	}{
 		{name: "requested-build-replaces-predecessor", want: hostops.StateComplete},
+		{name: "replacement-before-bridge-exit", delayBridgeExit: true, want: hostops.StateComplete},
 		{name: "wrong-build", probeVersion: restartBuildA, want: hostops.StateFailed},
 		{name: "wrong-process", probeStart: restartStartA, want: hostops.StateFailed},
 	} {
@@ -59,6 +61,7 @@ func TestHostRestartReconcilesDistinctBuildDeployment(t *testing.T) {
 			runner := &restartRecoveryRunner{
 				diskVersion: restartBuildA, runningVersion: restartBuildA, startedAt: restartStartA,
 				probeVersion: scenario.probeVersion, probeStart: scenario.probeStart,
+				delayBridgeExit: scenario.delayBridgeExit,
 			}
 			manager := sshconn.New(registry, sshconn.Options{
 				Runner: runner, Stderr: io.Discard,
@@ -99,7 +102,11 @@ func TestHostRestartReconcilesDistinctBuildDeployment(t *testing.T) {
 			runner.mu.Lock()
 			writes, restarts, probes := runner.writes, runner.restarts, runner.afterProbes
 			diskVersion, runningVersion := runner.diskVersion, runner.runningVersion
+			bridges := len(runner.streams)
 			runner.mu.Unlock()
+			if bridges != 2 {
+				t.Fatalf("restart reused predecessor bridge: opened=%d, want 2", bridges)
+			}
 			if writes != 2 || restarts != 1 || probes != 1 || diskVersion != restartBuildB || runningVersion != restartBuildB {
 				t.Fatalf("recovery: writes=%d restarts=%d post-restart probes=%d disk=%q running=%q", writes, restarts, probes, diskVersion, runningVersion)
 			}
@@ -195,6 +202,7 @@ type restartRecoveryRunner struct {
 	startedAt                     string
 	probeVersion, probeStart      string
 	launchResponse                []byte
+	delayBridgeExit               bool
 	writes, restarts, afterProbes int
 	streams                       []*probeFakeStdio
 }
@@ -226,8 +234,12 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 	case strings.Contains(command, "systemctl restart"):
 		r.restarts++
 		r.runningVersion, r.startedAt = r.diskVersion, restartStartB
-		for _, stream := range r.streams {
-			_ = stream.Kill()
+		// A remote replacement can be confirmed before the local SSH reader
+		// observes EOF. Keep that boundary open to exercise the ordering.
+		if !r.delayBridgeExit {
+			for _, stream := range r.streams {
+				_ = stream.Kill()
+			}
 		}
 		return nil, nil
 	case strings.Contains(command, "api/health"):

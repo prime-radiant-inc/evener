@@ -109,5 +109,13 @@ func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, fa
 		version, pin = pending.expectedVersion, pending.expectedGitSHA
 		running = pending.restartPredecessor(running)
 	}
-	return version, m.restartHub(restartCtx, host, facts, version, pin, running)
+	if err := m.restartHub(restartCtx, host, facts, version, pin, running); err != nil {
+		return version, err
+	}
+	// Health has proved the replacement. The predecessor's SSH reader may not
+	// have observed EOF yet, so make reattach replace its channel immediately.
+	if ch := m.currentChannel(host.Name); ch != nil && ch.MatchesRegistration(host) {
+		ch.markLost()
+	}
+	return version, nil
 }
