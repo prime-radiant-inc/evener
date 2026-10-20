@@ -221,10 +221,10 @@ func refuseGitSymlink(src, path string) error {
 	if !filepath.IsAbs(lexical) {
 		lexical = filepath.Join(filepath.Dir(path), lexical)
 	}
-	if hasGitComponent(lexical) {
+	if targetTouchesGit(src, lexical) {
 		return gitSymlinkError(src, path)
 	}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil && hasGitComponent(resolved) {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil && targetTouchesGit(src, resolved) {
 		return gitSymlinkError(src, path)
 	}
 	return nil

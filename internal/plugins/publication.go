@@ -52,15 +52,43 @@ func auditPluginContent(dir string) error {
 			if !filepath.IsAbs(lexical) {
 				lexical = filepath.Join(filepath.Dir(path), lexical)
 			}
-			if hasGitComponent(lexical) {
+			if targetTouchesGit(dir, lexical) {
 				return fmt.Errorf("plugin content link %s reaches Git metadata", relForDiagnostic(dir, path))
 			}
-			if resolved, err := filepath.EvalSymlinks(path); err == nil && hasGitComponent(resolved) {
+			if resolved, err := filepath.EvalSymlinks(path); err == nil && targetTouchesGit(dir, resolved) {
 				return fmt.Errorf("plugin content link %s reaches Git metadata", relForDiagnostic(dir, path))
 			}
 		}
 		return nil
 	})
+}
+
+// targetTouchesGit reports whether target reaches a .git entry relative to the
+// content root. Components shared with sourceRoot are namespace, not metadata:
+// a marketplace or plugin may legitimately be named .git, and an ordinary link
+// inside it must not be refused because of that ancestor.
+func targetTouchesGit(sourceRoot, target string) bool {
+	root := filepath.Clean(sourceRoot)
+	target = filepath.Clean(target)
+	if rel, err := filepath.Rel(root, target); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return hasGitComponent(rel)
+	}
+	rootParts := pathComponents(root)
+	targetParts := pathComponents(target)
+	common := 0
+	for common < len(rootParts) && common < len(targetParts) && rootParts[common] == targetParts[common] {
+		common++
+	}
+	if common >= len(targetParts) {
+		return false
+	}
+	return hasGitComponent(strings.Join(targetParts[common:], "/"))
+}
+
+func pathComponents(path string) []string {
+	volume := filepath.VolumeName(path)
+	rest := strings.TrimPrefix(filepath.Clean(path), volume)
+	return append([]string{volume}, strings.Split(strings.Trim(rest, string(filepath.Separator)), string(filepath.Separator))...)
 }
 
 // auditBundledPayload refuses an embedded payload carrying Git metadata before

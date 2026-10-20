@@ -48,6 +48,24 @@ func TestCopyTreeSkipsGitAndRefusesGitAlias(t *testing.T) {
 	}
 }
 
+func TestCopiedSourceAllowsOrdinaryLinkUnderGitNamespace(t *testing.T) {
+	src := filepath.Join(t.TempDir(), ".git", "acme", "revision")
+	writeTestFile(t, filepath.Join(src, "docs", "guide.md"), "guide")
+	if err := os.Symlink("docs/guide.md", filepath.Join(src, "guide-link")); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "staging")
+	if _, err := fetchPluginSource(context.Background(), Source{Kind: SourceDirectory, Path: src}, "", dest); err != nil {
+		t.Fatalf("legitimate .git namespace ancestor rejected: %v", err)
+	}
+	if err := auditPluginContent(dest); err != nil {
+		t.Fatalf("prepared content under a .git namespace failed audit: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dest, "guide-link")); err != nil || string(got) != "guide" {
+		t.Fatalf("ordinary link under a .git namespace = %q, %v", got, err)
+	}
+}
+
 func TestManagedInstallPublishesWithoutGitMetadata(t *testing.T) {
 	f := newPublishedRevisionFixture(t, false)
 	if _, err := os.Lstat(filepath.Join(f.entry.InstallPath, ".git")); !os.IsNotExist(err) {
