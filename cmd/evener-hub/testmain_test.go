@@ -28,6 +28,23 @@ var testEnv *hubtestenv.Env
 
 const detachHelperRunDirEnv = "EVENER_HUB_DETACH_HELPER_RUN_DIR"
 
+// isTestChildProcess reports whether this process is a test re-invoked as a
+// child helper rather than the suite's own run. Each child case runs one
+// focused test in a controlled environment and starts no live stack, so
+// TestMain's warm builds would only be duplicated work.
+func isTestChildProcess() bool {
+	for _, key := range []string{
+		hostDeployEnvironmentChildEnv,
+		detachHelperRunDirEnv,
+		hostSafetyChildCaseEnv,
+	} {
+		if os.Getenv(key) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func TestMain(m *testing.M) {
 	// The remote startup probe must observe its supplied environment before
 	// the suite redirects HOME and XDG roots.
@@ -76,17 +93,23 @@ func TestMain(m *testing.M) {
 	}
 	// Build the live-stack binaries before any test runs. liveStackBinaries
 	// guards the build with a sync.Once, so without this the first test that
-	// starts a stack pays for it: prebuildLiveStackBinaries reported 1.77s of
-	// one test's 2.50s here, and the same build on a contended CI runner is
-	// what pushed
+	// starts a stack pays for it: 1.77s of one test's 2.50s here, and on a
+	// contended CI runner that build is what pushed
 	// TestE2E_RetireOverlappedByAnotherOwnershipAction over its strict
 	// per-test ceiling. That test builds a stack per subtest, so the cost
 	// landed entirely on its first one.
-	if err := prebuildLiveStackBinaries(repoRootForTestMain()); err != nil {
-		fmt.Fprintf(os.Stderr, "evener-hub TestMain: warm live-stack binaries: %v\n", err)
-		testEnv.Discard()
-		_ = hostTemp.Discard()
-		os.Exit(1)
+	//
+	// Only the parent process warms them. Tests that re-invoke this binary as
+	// a child helper (TestHostDeployFilesystemSafety runs 16 of them) must not
+	// each pay for the build: that would turn one build into seventeen. A
+	// child starts no live stack, so it needs nothing here.
+	if !isTestChildProcess() {
+		if err := prebuildLiveStackBinaries(repoRootForTestMain()); err != nil {
+			fmt.Fprintf(os.Stderr, "evener-hub TestMain: warm live-stack binaries: %v\n", err)
+			testEnv.Discard()
+			_ = hostTemp.Discard()
+			os.Exit(1)
+		}
 	}
 
 	code := m.Run()
