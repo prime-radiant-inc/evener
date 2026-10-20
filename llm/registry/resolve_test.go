@@ -1464,6 +1464,28 @@ reasoning_controls = ["budget_tokens"]
 	}
 }
 
+// Rejecting an effort parameter says nothing about supporting budget thinking.
+// An effort-only Claude row must keep its adaptive shape, or the anthropic
+// builder sends type "enabled" with a budget_tokens object instead of the
+// adaptive body the model takes.
+func TestResolve_NoEffortVerdictKeepsAdaptiveShape(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
+[providers.anthropic.models."claude-effort-only"]
+family = "claude-opus"
+reasoning = true
+reasoning_controls = ["effort"]
+effort_values = ["low", "high"]
+effort_parameter_unsupported = true
+`)))
+	res := mustResolve(t, r, "anthropic/claude-effort-only")
+	if res.Caps.ThinkingShape == nil || *res.Caps.ThinkingShape != "adaptive" {
+		t.Fatalf("ThinkingShape = %v, want adaptive preserved", res.Caps.ThinkingShape)
+	}
+	if res.Caps.EffortCapable() {
+		t.Fatal("EffortCapable must answer false on a row that rejects effort")
+	}
+}
+
 var provRe = regexp.MustCompile(`^((snapshot|cache|overlay|config)/(provider|row|glob:.+)|live|alias|derived)$`)
 
 func TestResolve_ProvenanceNamesRealLayers(t *testing.T) {

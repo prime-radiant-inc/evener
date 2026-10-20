@@ -41,28 +41,12 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 		}
 	}
 	// A row that states the no-effort verdict takes no effort parameter,
-	// whichever layer stated it. The live layer already drops the ladder when
-	// it reads the verdict from a gateway; doing it here as well makes a
-	// configured row behave the same, so no protocol spells a level the row
-	// says is rejected.
-	//
-	// Only the effort control goes. A budget-shaped row keeps budget_tokens,
-	// which is a numeric ceiling rather than an effort name, and a toggle
-	// control keeps reasoning itself intact.
+	// whichever layer stated it, so it publishes no ladder. The controls are
+	// deliberately left alone: they are the evidence the thinking-shape
+	// derivation below reads, and rejecting an effort parameter says nothing
+	// about supporting budget thinking. EffortCapable answers the request-side
+	// question instead.
 	if !reasoningOff && BoolValue(c.EffortParameterUnsupported) {
-		if slices.Contains(c.ReasoningControls, "effort") || len(c.ReasoningControls) == 0 {
-			kept := make([]string, 0, len(c.ReasoningControls))
-			for _, control := range c.ReasoningControls {
-				if control != "effort" {
-					kept = append(kept, control)
-				}
-			}
-			if len(kept) == 0 {
-				kept = []string{"toggle"}
-			}
-			c.ReasoningControls = kept
-			prov["ReasoningControls"] = provDerived
-		}
 		if len(c.EffortValues) > 0 {
 			c.EffortValues = []string{}
 			prov["EffortValues"] = provDerived
@@ -213,6 +197,13 @@ func (c Caps) EffortOffCapable() bool {
 // registry; the protocol builder then writes it only for a level an
 // EffortValues ladder vouches for (llm.VouchedEffort).
 func (c Caps) EffortCapable() bool {
+	// A row that states the no-effort verdict takes no effort parameter,
+	// whatever its controls say: the controls are capability evidence that
+	// thinking-shape derivation still needs, not a promise the wire accepts a
+	// level.
+	if BoolValue(c.EffortParameterUnsupported) {
+		return false
+	}
 	if slices.Contains(c.ReasoningControls, "effort") {
 		return true
 	}
