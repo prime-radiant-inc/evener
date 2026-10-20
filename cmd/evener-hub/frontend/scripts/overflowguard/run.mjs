@@ -34,8 +34,10 @@
 //   node scripts/overflowguard/run.mjs 390 1400
 //   node scripts/overflowguard/run.mjs --footer-only 390 1400
 //   node scripts/overflowguard/run.mjs --composer-only 390 1400
+//   node scripts/overflowguard/run.mjs --composer-delay-only
 // composer-only runs Send geometry, draft slots, exact content widths and trusted gestures.
-// The default CI run includes the same composer proof, footer-only stays footer-only.
+// Default and composer-only also run delayed touch390/mouse1400 regressions.
+// composer-delay-only runs just those two cases, footer-only stays footer-only.
 //
 // STATUS: a local pre-merge check and part of `make test-web-browser` in CI,
 // not wired into `make lint`, because it costs a Vite boot and a Chrome
@@ -1264,7 +1266,9 @@ function assertSettings(result, width) {
 async function main() {
   const footerOnly = process.argv.includes("--footer-only");
   const composerOnly = process.argv.includes("--composer-only");
-  if (footerOnly && composerOnly) throw new Error("choose one focused mode");
+  const composerDelayOnly = process.argv.includes("--composer-delay-only");
+  if ([footerOnly, composerOnly, composerDelayOnly].filter(Boolean).length > 1)
+    throw new Error("choose one focused mode");
   const widths = process.argv.slice(2).map(Number).filter(Boolean);
   const sweep = widths.length > 0 ? widths : DEFAULT_WIDTHS;
 
@@ -1302,6 +1306,30 @@ async function main() {
       viteDeadline.clear();
     }
     cdpEndpoint = await waitForBrowserReady(guard);
+
+    const delayedComposer = async () => {
+      // One adversarial transport case per input type, not another theme matrix.
+      for (const width of [390, 1400]) {
+        const label = `composer delayed double-tap dark ${width}px`;
+        try {
+          const result = await verifyComposerGesture(
+            cdpEndpoint,
+            `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&theme=dark`,
+            width,
+            "double-tap",
+            { driverDelayMs: 650 },
+          );
+          console.log(`${label} ... PASS - ${JSON.stringify(result)}`);
+        } catch (error) {
+          failed++;
+          console.log(`${label} ... FAIL - ${error.message}`);
+        }
+      }
+    };
+    if (composerDelayOnly) {
+      await delayedComposer();
+      return failed > 0 ? 1 : 0;
+    }
 
     if (!composerOnly) {
       const protocolResponse = await fetch(devtoolsHttpURL(cdpEndpoint, "/json/protocol"));
@@ -1433,6 +1461,7 @@ async function main() {
         }
       }
     }
+    await delayedComposer();
     if (composerOnly) return failed > 0 ? 1 : 0;
 
     const paging = await verifyItemPaging(cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?paging=1`);

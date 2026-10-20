@@ -1,31 +1,38 @@
 import assert from "node:assert/strict";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   applyViewport,
   assertGuardOrigin,
   clearViewportOverride,
+  connectBrowser,
   connectOnlyPage,
+  connectPage,
   evaluate,
   navigateTo,
   realizedViewport,
   waitForFonts,
 } from "../browserGuardCdp.mjs";
+import { installTimeoutClock } from "./timeoutClock.mjs";
 
 const BOOT = { bootExpression: "typeof window.settled !== 'undefined'", bootLabel: "overflow harness" };
 const editor = '[role="textbox"][contenteditable="true"]';
 const control = (id) => `[data-testid="composer-${id}"]`;
 
-// Condition waits are bounded tripwires, not timing sleeps. The real timer and
-// durable dispatch run in the browser, with only AppWire replies faked.
+// Condition waits are native-walltime tripwires, not timing sleeps. Gesture
+// pages flush due work without advancing their controlled timeout clock.
 async function until(send, expression) {
   return evaluate(
     send,
     `new Promise((resolve, reject) => {
     const deadline = performance.now() + 3000;
-    const check = () => {
-      const value = (${expression});
-      if (value) return resolve(true);
-      if (performance.now() > deadline) return reject(new Error('composer condition timed out: ' + ${JSON.stringify(expression)}));
-      requestAnimationFrame(check);
+    const check = async () => {
+      try {
+        if (window.composerClock) await window.composerClock.advanceTo(window.composerClock.now);
+        const value = (${expression});
+        if (value) return resolve(true);
+        if (performance.now() > deadline) throw new Error('composer condition timed out: ' + ${JSON.stringify(expression)});
+        requestAnimationFrame(check);
+      } catch (error) { reject(error); }
     };
     check();
   })`,
@@ -191,10 +198,36 @@ export async function measureComposerPlacement(endpoint, url, { viewportWidth, c
   }
 }
 
-export async function verifyComposerGesture(endpoint, url, width, gesture) {
-  const page = await connectOnlyPage(endpoint);
-  const { send } = page;
+// Component-browser proof: product callbacks run on a bounded JS timeout clock,
+// while trusted input, RAF and native timestamps remain real. Each case owns its
+// target, including failures during navigation or clock installation.
+export async function verifyComposerGesture(endpoint, url, width, gesture, { driverDelayMs = 0 } = {}) {
+  let browser, context, page;
   try {
+    browser = await connectBrowser(endpoint);
+    context = (await browser.send("Target.createBrowserContext")).result.browserContextId;
+    const target = (await browser.send("Target.createTarget", { url: "about:blank", browserContextId: context })).result
+      .targetId;
+    page = await connectPage(endpoint, target);
+    const { send } = page;
+    const driverDelays = [];
+    const delayedSend = async (method, params) => {
+      const requestedWallMs = performance.now();
+      if (driverDelayMs) await delay(driverDelayMs);
+      const sentWallMs = performance.now();
+      const reply = await send(method, params);
+      const acknowledgedWallMs = performance.now();
+      if (driverDelayMs) await delay(driverDelayMs);
+      if (driverDelayMs)
+        driverDelays.push({
+          method,
+          requestedWallMs,
+          sentWallMs,
+          acknowledgedWallMs,
+          receivedWallMs: performance.now(),
+        });
+      return reply;
+    };
     await applyViewport(send, { width, height: 900, mobile: width < 900, touch: width < 900 });
     await navigateTo(page, url, BOOT);
     await assertGuardOrigin(send, new URL(url).host);
@@ -205,28 +238,37 @@ export async function verifyComposerGesture(endpoint, url, width, gesture) {
     await evaluate(
       send,
       `(() => {
-      window.proof = { send: document.querySelector('${control("submit")}'), stopAt: null, events: [] };
-      new MutationObserver(() => {
-        if (window.proof.stopAt === null && document.querySelector('${control("stop")}')) window.proof.stopAt = performance.now();
-      }).observe(document.getElementById('oh-pane'), { childList: true, subtree: true });
-      for (const type of ['pointerdown', 'pointerup', 'keydown', 'click']) document.addEventListener(type, event => {
-        window.proof.events.push({ type, trusted: event.isTrusted, at: performance.now(), target: event.target.closest?.('[data-testid]')?.dataset.testid, x: event.clientX, y: event.clientY });
-      }, true);
+      window.composerClock = (${installTimeoutClock.toString()})();
+      window.proof = { send: document.querySelector('${control("submit")}'), stopLogicalMs: null, stopWallMs: null, ready: null, events: [], handlers: [] };
+      proof.observer = new MutationObserver(() => {
+        const stop = document.querySelector('${control("stop")}');
+        if (!stop) return;
+        if (proof.stopLogicalMs === null) {
+          proof.stopLogicalMs = composerClock.now;
+          proof.stopWallMs = performance.now();
+        }
+        if (!stop.disabled && proof.ready === null) proof.ready = { logicalMs: composerClock.now, wallMs: performance.now(), inputs: proof.events.length };
+      });
+      proof.observer.observe(document.getElementById('oh-pane'), { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled'] });
+      for (const type of ['pointerdown', 'pointerup', 'keydown', 'keyup', 'click']) {
+        const handler = event => proof.events.push({ type, trusted: event.isTrusted, logicalMs: composerClock.now, wallMs: performance.now(), timestamp: event.timeStamp, pointerType: event.pointerType, target: event.target.closest?.('[data-testid]')?.dataset.testid, x: event.clientX, y: event.clientY, disabled: document.querySelector('${control("stop")}')?.disabled ?? null });
+        proof.handlers.push([type, handler]);
+        document.addEventListener(type, handler, true);
+      }
     })()`,
     );
     if (gesture === "double-tap") {
       await tap(send, p, width < 900);
     } else {
-      // Start on Send, submit through the real editor shortcut while held,
-      // then release over the replacement AFTER its delay. Identity, not the
-      // disabled interval, must prevent this split press from stopping.
+      // Submit through the real editor shortcut while the mouse is held on
+      // Send, then release over the distinct Stop AFTER it becomes ready.
       await mouse(send, p, "mousePressed");
       await tabTo(send, editor);
       await key(send, "Enter", "Enter", 13, 2);
     }
     await until(
       send,
-      `window.composerRequests.some(r => r.method === 'turn/queue') && document.querySelector('${control("stop")}')`,
+      `window.composerRequests.some(r => r.method === 'turn/queue') && window.proof.stopLogicalMs !== null`,
     );
     const transition = await evaluate(
       send,
@@ -235,18 +277,46 @@ export async function verifyComposerGesture(endpoint, url, width, gesture) {
       distinct: window.proof.send !== document.querySelector('${control("stop")}'),
       focus: document.activeElement === document.querySelector('${editor}'),
       hit: document.querySelector('${control("stop")}').contains(document.elementFromPoint(${p.x}, ${p.y})),
-      elapsed: performance.now() - window.proof.stopAt
+      logicalMs: composerClock.now, inputs: proof.events.length
     })`,
     );
+    assert.equal(transition.logicalMs, 0);
+    assert.ok(transition.disabled, "Stop immediately visible but disabled at logical 0");
+    assert.ok(transition.distinct, "Send and Stop must have distinct DOM identities");
+    assert.ok(transition.focus, `replacement preserves editor focus: ${JSON.stringify(transition)}`);
     assert.ok(transition.hit, "captured Send coordinate must hit replacement Stop");
-    if (gesture === "double-tap") await tap(send, p, width < 900);
-    else {
-      await until(send, `!document.querySelector('${control("stop")}').disabled`);
-      await mouse(send, p, "mouseReleased");
-    }
+    // Independent DOM boundary oracle, not a hook-name/stack or scheduled-delay
+    // selector. Advancing invokes ALL due callbacks, including unrelated timers.
+    await evaluate(
+      send,
+      `(async () => {
+      await composerClock.advanceTo(499);
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    })()`,
+    );
+    const before = await evaluate(
+      send,
+      `({ disabled: document.querySelector('${control("stop")}').disabled, inputs: proof.events.length })`,
+    );
+    assert.equal(before.disabled, true, "Stop stays disabled through logical 499");
+    assert.equal(before.inputs, transition.inputs, "no input needed to reach the boundary");
+    if (gesture === "double-tap") await tap(delayedSend, p, width < 900);
+    const inputsAtExpiry = await evaluate(send, "proof.events.length");
+    assert.equal(
+      await evaluate(send, "composerRequests.filter(r => r.method === 'turn/interrupt').length"),
+      0,
+      "zero interrupts before expiry",
+    );
+    await evaluate(send, "composerClock.advanceTo(500)");
+    await until(send, `!document.querySelector('${control("stop")}').disabled && proof.ready !== null`);
+    const ready = await evaluate(send, "({ ...proof.ready, inputsNow: proof.events.length })");
+    assert.equal(ready.logicalMs, 500, "Stop enables at logical 500");
+    assert.equal(ready.inputs, inputsAtExpiry, "expiry needs no additional input");
+    assert.equal(ready.inputsNow, inputsAtExpiry);
+    if (gesture === "split-press") await mouse(delayedSend, p, "mouseReleased");
     const protectedState = await evaluate(
       send,
-      `({ requests: window.composerRequests, events: window.proof.events, stopAt: window.proof.stopAt, focus: document.activeElement === document.querySelector('${editor}') })`,
+      `({ requests: window.composerRequests, events: proof.events, stopLogicalMs: proof.stopLogicalMs, stopWallMs: proof.stopWallMs, focus: document.activeElement === document.querySelector('${editor}') })`,
     );
     assert.equal(
       protectedState.requests.filter((r) => r.method === "turn/queue").length,
@@ -263,9 +333,6 @@ export async function verifyComposerGesture(endpoint, url, width, gesture) {
       0,
       `accidental ${gesture} must not interrupt: ${JSON.stringify(protectedState)}`,
     );
-    assert.ok(transition.distinct, "Send and Stop must have distinct DOM identities");
-    assert.ok(transition.focus, `replacement preserves editor focus: ${JSON.stringify(transition)}`);
-    assert.ok(transition.disabled, "Stop immediately visible but disabled");
     const pointerUps = protectedState.events.filter((e) => e.type === "pointerup");
     assert.equal(pointerUps.length, gesture === "double-tap" ? 2 : 1);
     assert.ok(
@@ -274,29 +341,30 @@ export async function verifyComposerGesture(endpoint, url, width, gesture) {
     );
     const pointerDowns = protectedState.events.filter((e) => e.type === "pointerdown");
     assert.equal(pointerDowns[0]?.target, "composer-submit", "press starts on real Send");
+    const lastUp = pointerUps.at(-1);
     if (gesture === "double-tap") {
       assert.equal(pointerDowns.length, 2);
       assert.equal(pointerDowns[1].target, "composer-stop", "second tap reaches replacement Stop");
+      assert.equal(pointerDowns[1].pointerType, width < 900 ? "touch" : "mouse");
+      assert.equal(pointerDowns[1].disabled, true);
+      assert.equal(lastUp.target, "composer-stop");
+      assert.equal(lastUp.logicalMs, 499);
     }
-    const lastUp = pointerUps.at(-1);
-    const elapsed = lastUp.at - protectedState.stopAt;
+    const releaseLogicalMs = lastUp.logicalMs - protectedState.stopLogicalMs;
     assert.ok(
-      elapsed >= 0 && (gesture === "double-tap" ? elapsed < 500 : elapsed >= 500),
-      `release must straddle replacement at the intended time: ${elapsed}ms`,
+      releaseLogicalMs >= 0 && (gesture === "double-tap" ? releaseLogicalMs < 500 : releaseLogicalMs >= 500),
+      `logical release after replacement: ${releaseLogicalMs}ms`,
     );
     assert.ok(Math.abs(lastUp.x - p.x) < 1 && Math.abs(lastUp.y - p.y) < 1, "release uses captured Send coordinates");
-    await until(send, `!document.querySelector('${control("stop")}').disabled`);
-    const readyAt = await evaluate(send, "performance.now() - window.proof.stopAt");
-    assert.ok(readyAt >= 490, "inline delay must not be bypassed");
     assert.equal(
-      await evaluate(send, "window.composerRequests.filter(r => r.method === 'turn/interrupt').length"),
+      await evaluate(send, "composerRequests.filter(r => r.method === 'turn/interrupt').length"),
       0,
       "zero interrupts through automatic delay expiry",
     );
     // Tab navigation, not programmatic focus, must reach the replacement.
     await tabTo(send, control("stop"));
     assert.ok(await evaluate(send, `document.activeElement.matches(':focus-visible')`), "keyboard focus is visible");
-    const deliberateAt = await evaluate(send, "performance.now()");
+    const deliberateWallMs = await evaluate(send, "performance.now()");
     await key(send, "Enter", "Enter", 13);
     await until(send, "window.composerRequests.some(r => r.method === 'turn/interrupt')");
     const requests = await evaluate(send, "window.composerRequests");
@@ -307,15 +375,23 @@ export async function verifyComposerGesture(endpoint, url, width, gesture) {
       "deliberate keyboard Stop interrupts once",
     );
     assert.ok(
-      requests.find((r) => r.method === "turn/interrupt").at >= deliberateAt,
+      requests.find((r) => r.method === "turn/interrupt").at >= deliberateWallMs,
       "interrupt belongs to deliberate Stop",
     );
     return {
       gesture,
       width,
       coordinate: p,
-      releaseAfterSwapMs: elapsed,
-      readyAfterSwapMs: readyAt,
+      driverDelayMs,
+      driverDelays,
+      releaseAfterSwapLogicalMs: releaseLogicalMs,
+      releaseAfterSwapWallMs: lastUp.wallMs - protectedState.stopWallMs,
+      readyAfterSwapLogicalMs: ready.logicalMs - protectedState.stopLogicalMs,
+      readyAfterSwapWallMs: ready.wallMs - protectedState.stopWallMs,
+      observedTimeoutDelaysMs: await evaluate(
+        send,
+        "[...new Set(composerClock.snapshot().history.filter(e => e.type === 'scheduled').map(e => e.requested))]",
+      ),
       submissions: 1,
       accidentalInterrupts: 0,
       deliberateInterrupts: 1,
@@ -325,7 +401,28 @@ export async function verifyComposerGesture(endpoint, url, width, gesture) {
       trustedEvents: protectedState.events.length,
     };
   } finally {
-    await clearViewportOverride(send);
-    page.close();
+    try {
+      if (page) {
+        try {
+          const restored = await evaluate(
+            page.send,
+            `(() => {
+            window.proof?.observer?.disconnect();
+            for (const [type, handler] of window.proof?.handlers ?? []) document.removeEventListener(type, handler, true);
+            return window.composerClock?.dispose().restored;
+          })()`,
+          );
+          if (restored) assert.deepEqual(restored, { setTimeout: true, clearTimeout: true });
+        } finally {
+          page.close();
+        }
+      }
+    } finally {
+      try {
+        if (context) await browser.send("Target.disposeBrowserContext", { browserContextId: context });
+      } finally {
+        browser?.close();
+      }
+    }
   }
 }
