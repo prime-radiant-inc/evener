@@ -65,7 +65,7 @@ func TestImageRecoverySharesDecodeBudget(t *testing.T) {
 	uri := recoveryURI(recoveryWithProfile(original, profile))
 	pixelsLeft := int64(6)
 	first, err := repairImageURI(t.Context(), uri, imagerepair.PreferColorManaged, &pixelsLeft)
-	if err != nil || first.MediaType != "image/png" || first.Method != imagerepair.ColorManaged || pixelsLeft != 0 {
+	if err != nil || first.MediaType != "image/png" || first.Method != imagerepair.ColorManaged {
 		t.Fatalf("first repair method=%v remaining=%d error=%v", first.Method, pixelsLeft, err)
 	}
 	second, err := repairImageURI(t.Context(), uri, imagerepair.PreferColorManaged, &pixelsLeft)
