@@ -2835,11 +2835,7 @@ function SpawnForm({
                 </Dialog>
               }
             >
-              <ProviderDialog
-                completionLabel="Choose model"
-                onClose={closeProviderSetup}
-                onConnected={providerConnected}
-              />
+              <ProviderDialog onClose={closeProviderSetup} onConnected={providerConnected} />
             </Suspense>
           </ConnectProviderDialogBoundary>
         )}

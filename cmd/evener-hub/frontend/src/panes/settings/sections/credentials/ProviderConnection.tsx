@@ -68,7 +68,6 @@ type ConnectionErrorReason =
 export interface ProviderConnectionProps {
   onClose(): void;
   onConnected(name?: string): void;
-  completionLabel: string;
   /** Hands the user to the settings pane's credentials section, where the
    * instances this flow connects are listed, edited, tested and removed. The
    * hosting dialog owns the handoff - it closes itself and navigates there
@@ -321,11 +320,14 @@ export function ProviderConnection(props: ProviderConnectionProps) {
 }
 
 type Phase = "idle" | "saving" | "refreshing" | "checking" | "review" | "result";
+// Transient failures are retried while the dialog is open: one second, then
+// doubling to fifteen, and fifteen thereafter. The timer is the flow's own;
+// there is no separate retry store.
+const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000];
 function SelectedConnection({
   provider,
   onClose,
   onConnected,
-  completionLabel,
   onOpenSettings,
   onChange,
 }: ProviderConnectionProps & {
@@ -364,6 +366,16 @@ function SelectedConnection({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const errorRef = useRef<HTMLDivElement>(null);
   const operation = useRef(0);
+  // One retry timer owned by this flow. The attempt count paces it; both are
+  // cleared whenever the flow leaves, its target moves, or the outcome is
+  // terminal.
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryAttempt = useRef(0);
+  const retryRunRef = useRef<((token: number, expectedSource?: string) => Promise<void>) | null>(null);
+  // The callback the check completes through. A ref keeps a check that began
+  // under an earlier render from calling a stale owner callback.
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
   // What the in-flight (or completed) check was taken against: the selected
   // row's destination and access identity at the moment check() began. An
   // acquisition's own confirmed revision becomes that anchor; a later listing
@@ -371,6 +383,13 @@ function SelectedConnection({
   // carries.
   const checkAnchor = useRef<string | null>(null);
   const active = useEditorLifetime();
+  const clearRetry = useCallback(() => {
+    if (retryTimer.current !== null) {
+      clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
+  }, []);
+  useEffect(() => () => clearRetry(), [clearRetry]);
   const modes = row?.authModes ?? effectiveProvider.authModes ?? [];
   const json = modes.includes("credentialJson");
   const storedMode = json || modes.includes("apiKey");
@@ -391,7 +410,11 @@ function SelectedConnection({
     // any open OAuth flow - and is said out loud: it is never this draft's own
     // save or check, so the user has to check again rather than trust a result
     // that was taken against the connection that is gone.
-    () => {
+    (clearScheduled = true) => {
+      if (clearScheduled) {
+        clearRetry();
+        retryAttempt.current = 0;
+      }
       operation.current += 1;
       setPhase("idle");
       setResult(null);
@@ -399,12 +422,15 @@ function SelectedConnection({
       setOAuth(null);
       setError({ reason: "changed", message: CHANGED_ERROR });
     },
-    [setPhase],
+    [clearRetry, setPhase],
   );
   useEffect(() => {
     const unsubscribeConnection = connectionStore.subscribe((current, previous) => {
       if (current.client !== previous.client || current.state !== previous.state) {
-        invalidate();
+        // A reconnect or replacement is not a different target: a scheduled
+        // retry still re-anchors on the destination it named and reads through
+        // whichever client is current when it fires.
+        invalidate(false);
         setConfigure(false);
         if (current.client !== previous.client) {
           setSaved(false);
@@ -450,6 +476,8 @@ function SelectedConnection({
   }, [errorMessage]);
 
   function leave(callback: () => void) {
+    clearRetry();
+    retryAttempt.current = 0;
     operation.current += 1;
     callback();
   }
@@ -457,6 +485,8 @@ function SelectedConnection({
     return active.current && operation.current === token && connectionStore.getState().state === "ready";
   }
   function changeValue(next: string) {
+    clearRetry();
+    retryAttempt.current = 0;
     operation.current += 1;
     setDraft({ providerId: resolvedProviderId ?? effectiveProvider.id, value: next });
     setMissingCredential(false);
@@ -467,8 +497,31 @@ function SelectedConnection({
     setError(null);
   }
 
+  function scheduleRetry(expectedSource?: string) {
+    if (!active.current) return;
+    clearRetry();
+    const delay = RETRY_DELAYS_MS[Math.min(retryAttempt.current, RETRY_DELAYS_MS.length - 1)] ?? 15000;
+    retryAttempt.current += 1;
+    retryTimer.current = setTimeout(() => {
+      retryTimer.current = null;
+      if (!active.current) return;
+      // A retry that comes due during a reconnect waits for the recovered
+      // connection instead of spending its attempt on a request that cannot
+      // land; transport recovery is what re-anchors the next read.
+      if (connectionStore.getState().state !== "ready") {
+        scheduleRetry(expectedSource);
+        return;
+      }
+      // Every earlier attempt is obsolete, so the retry starts a fresh
+      // operation and re-reads the listing before it contacts the provider.
+      const next = ++operation.current;
+      void retryRunRef.current?.(next, expectedSource);
+    }, delay);
+  }
+
   async function check(token: number, target: InstanceEntry) {
     if (!current(token)) return;
+    clearRetry();
     // A row whose destination the listing could not fingerprint has no
     // assertion to carry, and an unasserted probe dials whatever the name
     // resolves to now: refuse it before the call.
@@ -491,9 +544,20 @@ function SelectedConnection({
         await credentialsStore.getState().testCredentials(target.name, target.endpointFingerprint),
       );
       if (!current(token)) return;
+      if (response.status === "success") {
+        // Retire the operation before telling the owner: whatever the owner
+        // does next - including a store notification - cannot complete twice.
+        operation.current += 1;
+        onConnectedRef.current(target.name);
+        return;
+      }
       setResult(response);
       setPhase("result");
-      if (response.status !== "success") setError({ reason: "check-failed", message: response.message });
+      setError({ reason: "check-failed", message: response.message });
+      // Only an unreachable endpoint is transient evidence. A rejected
+      // credential, a missing credential and broken configuration are answers
+      // about the connection, and retrying them cannot change that.
+      if (response.status === "endpoint_failure") scheduleRetry(target.activeSource);
     } catch (err) {
       if (!current(token)) return;
       // A refused assertion means the destination moved under the check, and a
@@ -519,6 +583,7 @@ function SelectedConnection({
       setResult(response);
       setPhase("result");
       setError({ reason: "check-failed", message: response.message });
+      scheduleRetry(target.activeSource);
     }
   }
 
@@ -546,6 +611,7 @@ function SelectedConnection({
 
   async function refreshAndCheck(token: number, expectedSource?: string) {
     setPhase("refreshing");
+    setError(null);
     // The listing this refresh waits for can be superseded by the debounced
     // refetch evener/auth/updated schedules (250ms after the save), and the
     // store drops a superseded response without applying it. The read's own
@@ -569,6 +635,7 @@ function SelectedConnection({
       if (!current(token)) return;
       setPhase("idle");
       setError({ reason: "refresh-failed", message: REFRESH_FAILED_ERROR });
+      scheduleRetry(expectedSource);
       return;
     }
     const fresh = credentialsStore.getState();
@@ -576,9 +643,12 @@ function SelectedConnection({
     if (!applied || fresh.loading || fresh.error) {
       setPhase("idle");
       setError({ reason: "refresh-failed", message: REFRESH_FAILED_ERROR });
+      scheduleRetry(expectedSource);
       return;
     }
     if (needsConfiguration(target)) {
+      clearRetry();
+      retryAttempt.current = 0;
       setPhase("idle");
       setError({
         reason: "needs-configuration",
@@ -592,6 +662,7 @@ function SelectedConnection({
     if (!target) {
       setPhase("idle");
       setError({ reason: "refresh-failed", message: REFRESH_FAILED_ERROR });
+      scheduleRetry(expectedSource);
       return;
     }
     if (
@@ -604,6 +675,9 @@ function SelectedConnection({
     }
     await check(token, target);
   }
+  // A retry re-runs the flow's own refresh-and-check, never the credential
+  // mutation: the value on screen was already saved by the attempt that failed.
+  retryRunRef.current = refreshAndCheck;
 
   async function submit() {
     if (busy || unavailable || needsConfiguration(row)) return;
@@ -612,6 +686,8 @@ function SelectedConnection({
       document.getElementById("provider-credential")?.focus();
       return;
     }
+    clearRetry();
+    retryAttempt.current = 0;
     const token = ++operation.current;
     setError(null);
     setResult(null);
@@ -678,6 +754,8 @@ function SelectedConnection({
   }
 
   async function signIn() {
+    clearRetry();
+    retryAttempt.current = 0;
     const token = ++operation.current;
     setPhase("saving");
     setError(null);
@@ -714,6 +792,11 @@ function SelectedConnection({
   }
   function signedIn() {
     setOAuth(null);
+    // A completed sign-in has stored access just as a saved key does; its
+    // dismissal wording and the retained access follow that fact even before
+    // the check returns.
+    setSaved(true);
+    setStoredAccess(true);
     const token = ++operation.current;
     void refreshAndCheck(token, "oauth");
   }
@@ -728,6 +811,8 @@ function SelectedConnection({
   // success claim: findSetup finds nothing, so the flow shows its not-ready
   // reload recovery instead of a working connection.
   function adoptCreated(createdName: string): void {
+    clearRetry();
+    retryAttempt.current = 0;
     operation.current += 1;
     const created = findSetup(createdName);
     setName(createdName);
@@ -763,6 +848,8 @@ function SelectedConnection({
   }
 
   async function reloadCreated() {
+    clearRetry();
+    retryAttempt.current = 0;
     const token = ++operation.current;
     setPhase("refreshing");
     setError(null);
@@ -934,7 +1021,7 @@ function SelectedConnection({
                 the Evener host.
               </p>
             )}
-            {modes.includes("oauth") && (
+            {modes.includes("oauth") && !busy && (
               <Button disabled={busy || unavailable} onClick={() => void signIn()}>
                 Sign in
               </Button>
@@ -958,13 +1045,6 @@ function SelectedConnection({
                   </Button>
                 </div>
               </Card>
-            ) : result?.status === "success" ? (
-              <>
-                <p role="status" data-state="success">
-                  Model list access confirmed. This does not verify generation access.
-                </p>
-                <Button onClick={() => leave(() => onConnected(name))}>{completionLabel}</Button>
-              </>
             ) : (
               <Button type="submit" disabled={busy || unavailable}>
                 {busy

@@ -3,6 +3,7 @@ import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { NEW_TAB_POLICY } from "../../../../shell/openInNewTab.testSupport";
 import { connectionStore } from "../../../../stores/connection";
@@ -17,8 +18,34 @@ import { ProviderConnection } from "./ProviderConnection";
 const alertReason = async (): Promise<string | null> => (await screen.findByRole("alert")).getAttribute("data-reason");
 const reasonShown = (reason: string): boolean =>
   document.querySelector(`[role="alert"][data-reason="${reason}"]`) !== null;
-const checkConfirmed = (): Promise<void> =>
-  waitFor(() => expect(document.querySelector('[role="status"][data-state="success"]')).not.toBeNull());
+// A current successful check retires the flow and calls onConnected once; the
+// owner (not the connector) is what removes it from the page. Tests wrap the
+// connector in this owner so the completion path is the production one.
+function Owner({
+  onConnected,
+  onClose,
+  onOpenSettings,
+}: {
+  onConnected(name?: string): void;
+  onClose(): void;
+  onOpenSettings(): void;
+}) {
+  const [open, setOpen] = useState(true);
+  if (!open) return null;
+  return (
+    <ProviderConnection
+      onClose={() => {
+        setOpen(false);
+        onClose();
+      }}
+      onConnected={(name) => {
+        onConnected(name);
+        setOpen(false);
+      }}
+      onOpenSettings={onOpenSettings}
+    />
+  );
+}
 const revealAllProviders = async (): Promise<HTMLElement> => {
   const summary = (await screen.findByTestId("show-all-providers")).querySelector("summary");
   if (!(summary instanceof HTMLElement)) throw new Error("Missing show-all-providers summary");
@@ -88,14 +115,7 @@ function setup(list: InstanceListResponse = { instances: [], availableProviders:
   const connected = vi.fn();
   const close = vi.fn();
   const openSettings = vi.fn();
-  const view = render(
-    <ProviderConnection
-      completionLabel="Choose model"
-      onClose={close}
-      onConnected={connected}
-      onOpenSettings={openSettings}
-    />,
-  );
+  const view = render(<Owner onClose={close} onConnected={connected} onOpenSettings={openSettings} />);
   return { client, connected, close, openSettings, ...view, user: userEvent.setup() };
 }
 beforeEach(() => {
@@ -252,8 +272,8 @@ test("device authorization survives its own delayed listing refresh and proceeds
     await pending.promise;
   });
   vi.useRealTimers();
-  await user.click(await screen.findByRole("button", { name: "Choose model" }));
-  expect(connected).toHaveBeenCalledWith("openai-codex");
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("openai-codex"));
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
     {
       method: "evener/auth/test",
@@ -309,15 +329,14 @@ test("redirect authorization survives its own delayed listing refresh and procee
     await refresh.promise;
   });
 
-  await checkConfirmed();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("openai-codex"));
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
     {
       method: "evener/auth/test",
       params: { provider: "openai-codex", expectedEndpointFingerprint: "fp-openai-codex" },
     },
   ]);
-  await user.click(screen.getByRole("button", { name: "Choose model" }));
-  expect(connected).toHaveBeenCalledWith("openai-codex");
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
 
 test("changing base in the full form continues with the actual created provider rather than old vendor help", async () => {
@@ -341,14 +360,7 @@ test("discovery load failure focuses recovery and retries the real listing", asy
     throw new Error("private-wire-body");
   });
   connectionStore.getState().connect(client);
-  render(
-    <ProviderConnection
-      completionLabel="Choose model"
-      onClose={() => {}}
-      onConnected={() => {}}
-      onOpenSettings={() => {}}
-    />,
-  );
+  render(<ProviderConnection onClose={() => {}} onConnected={() => {}} onOpenSettings={() => {}} />);
   const alert = await screen.findByRole("alert");
   expect(document.activeElement).toBe(alert);
   expect(screen.queryByText(/private-wire-body/)).toBeNull();
@@ -676,13 +688,13 @@ test("empty required key stays focused and does not mutate", async () => {
   expect(screen.getByRole("alert").id).toBe(screen.getByLabelText("API key").getAttribute("aria-describedby"));
   expect(client.calls.filter((c) => c.method !== "evener/instance/list")).toEqual([]);
 });
-test("saves directly to the real public ID then reloads and checks before explicit named continuation", async () => {
+test("saves directly to the real public ID then reloads and checks before completing with its name", async () => {
   const { user, client, connected } = setup();
   scriptSave(client);
   await choose(user);
   await enterText(user, screen.getByLabelText("API key"), "fixture-key");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  await checkConfirmed();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   expect(client.calls.slice(1)).toEqual([
     {
       method: "evener/auth/apiKey/set",
@@ -697,12 +709,10 @@ test("saves directly to the real public ID then reloads and checks before explic
     { method: "evener/auth/test", params: { provider: "anthropic", expectedEndpointFingerprint: "fp-anthropic" } },
   ]);
   expect(screen.queryByText("raw-provider-secret")).toBeNull();
-  expect(connected).not.toHaveBeenCalled();
-  await user.click(screen.getByRole("button", { name: "Choose model" }));
-  expect(connected).toHaveBeenCalledWith("anthropic");
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
 test("save failure retains the draft and retry saves once more without a premature check", async () => {
-  const { user, client } = setup();
+  const { user, client, connected } = setup();
   client.on("evener/auth/apiKey/set", () => {
     throw new Error("secret-failure-body");
   });
@@ -715,7 +725,7 @@ test("save failure retains the draft and retry saves once more without a prematu
   expect(client.calls.some((c) => c.method === "evener/auth/test")).toBe(false);
   scriptSave(client);
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  await checkConfirmed();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
 });
 test.each(["auth_rejected", "endpoint_failure", "configuration_failure", "unsupported"])(
   "%s keeps the saved connection and retries only the check",
@@ -736,10 +746,248 @@ test.each(["auth_rejected", "endpoint_failure", "configuration_failure", "unsupp
     }
     client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
     await user.click(screen.getByRole("button", { name: "Retry check" }));
-    await checkConfirmed();
+    await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
     expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set")).toHaveLength(1);
   },
 );
+test("a temporary endpoint failure retries on the paced schedule and completes once after one write", async () => {
+  const { user, client, connected } = setup();
+  scriptSave(client);
+  const pending = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => pending.promise);
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await screen.findByRole("button", { name: "Checking model list…" });
+  let attempts = 1;
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  await act(async () => {
+    pending.resolve({ provider: "anthropic", status: "endpoint_failure", message: "" });
+    await pending.promise;
+  });
+  expect(attempts).toBe(1);
+  expect(connected).not.toHaveBeenCalled();
+
+  // First retry is one second after the failed check, the next two seconds.
+  client.on("evener/auth/test", ({ provider }) => {
+    attempts += 1;
+    return { provider, status: attempts === 2 ? "endpoint_failure" : "success", message: "" };
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(999);
+  });
+  expect(attempts).toBe(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  expect(attempts).toBe(2);
+  expect(connected).not.toHaveBeenCalled();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1999);
+  });
+  expect(attempts).toBe(2);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1);
+  });
+  expect(attempts).toBe(3);
+  expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic");
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+  expect(client.calls.filter((call) => call.method === "thread/start")).toHaveLength(0);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+});
+
+test("a manual retry cancels the scheduled one so checks do not overlap", async () => {
+  const { user, client, connected } = setup();
+  scriptSave(client);
+  const first = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => first.promise);
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await screen.findByRole("button", { name: "Checking model list…" });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  await act(async () => {
+    first.resolve({ provider: "anthropic", status: "endpoint_failure", message: "" });
+    await first.promise;
+  });
+
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Retry check" }));
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic");
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(15000);
+  });
+  expect(connected).toHaveBeenCalledTimes(1);
+});
+
+test.each(["auth_rejected", "missing", "configuration_failure"])("%s stops automatic retry", async (status) => {
+  const { user, client, connected } = setup();
+  scriptSave(client);
+  const first = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => first.promise);
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await screen.findByRole("button", { name: "Checking model list…" });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  await act(async () => {
+    first.resolve({ provider: "anthropic", status, message: "" });
+    await first.promise;
+  });
+  expect(reasonShown("check-failed")).toBe(true);
+  const attempts = client.calls.filter((call) => call.method === "evener/auth/test").length;
+  expect(attempts).toBe(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60000);
+  });
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(attempts);
+  expect(connected).not.toHaveBeenCalled();
+});
+
+test("unmounting clears the scheduled retry", async () => {
+  const mounted = setup();
+  scriptSave(mounted.client);
+  const first = deferred<{ provider: string; status: string; message: string }>();
+  mounted.client.on("evener/auth/test", () => first.promise);
+  await choose(mounted.user);
+  await enterText(mounted.user, screen.getByLabelText("API key"), "fixture-key");
+  await mounted.user.click(screen.getByRole("button", { name: "Save and check" }));
+  await screen.findByRole("button", { name: "Checking model list…" });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  await act(async () => {
+    first.resolve({ provider: "anthropic", status: "endpoint_failure", message: "" });
+    await first.promise;
+  });
+  const attempts = mounted.client.calls.filter((call) => call.method === "evener/auth/test").length;
+  mounted.unmount();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60000);
+  });
+  expect(mounted.client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(attempts);
+});
+
+test("switching provider clears the scheduled retry belonging to the old target", async () => {
+  const { user, client, connected } = setup();
+  scriptSave(client);
+  const first = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => first.promise);
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await screen.findByRole("button", { name: "Checking model list…" });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  await act(async () => {
+    first.resolve({ provider: "anthropic", status: "endpoint_failure", message: "" });
+    await first.promise;
+  });
+  const attempts = client.calls.filter((call) => call.method === "evener/auth/test").length;
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Change provider" }));
+  });
+  client.on("evener/instance/list", () => ({ instances: [], availableProviders: structuredClone(catalogue) }));
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60000);
+  });
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(attempts);
+  expect(connected).not.toHaveBeenCalled();
+});
+
+test("a scheduled retry survives reconnect and re-anchors with the recovered client", async () => {
+  const { user, client, connected } = setup();
+  scriptSave(client);
+  const first = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => first.promise);
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await screen.findByRole("button", { name: "Checking model list…" });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  await act(async () => {
+    first.resolve({ provider: "anthropic", status: "endpoint_failure", message: "" });
+    await first.promise;
+  });
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  await act(async () => {
+    client.emitStateChange("reconnecting");
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  // The retry came due while the transport was down: it waits rather than
+  // spending its attempt on a request that cannot land.
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+  await act(async () => {
+    client.emitReady();
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(2);
+  expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic");
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+});
+
+test("a retry after the client is replaced re-anchors on the replacement, not the old listing", async () => {
+  const { user, client, connected } = setup();
+  scriptSave(client);
+  const first = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => first.promise);
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await screen.findByRole("button", { name: "Checking model list…" });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  await act(async () => {
+    first.resolve({ provider: "anthropic", status: "endpoint_failure", message: "" });
+    await first.promise;
+  });
+
+  const replacement = new FakeClient("ready");
+  replacement.on("evener/instance/list", () => structuredClone(savedList()));
+  replacement.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  await act(async () => {
+    connectionStore.getState().connect(replacement);
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  expect(replacement.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+  expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic");
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+  expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
+});
+
+test("a check shows one progress state instead of sign-in plus a competing check action", async () => {
+  const { user, client } = setup();
+  await choose(user, "OpenAI Codex");
+  const pending = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => pending.promise);
+  await user.click(screen.getByRole("button", { name: "Check connection" }));
+  expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Checking model list…" })).toHaveProperty("disabled", true);
+  await act(async () => {
+    pending.resolve({ provider: "openai-codex", status: "endpoint_failure", message: "" });
+    await pending.promise;
+  });
+  expect(await screen.findByRole("button", { name: "Retry check" })).toHaveProperty("disabled", false);
+});
+
+test("dismissal stays available while a check is in flight", async () => {
+  const { user, client, close } = setup();
+  scriptSave(client);
+  const pending = deferred<{ provider: string; status: string; message: string }>();
+  client.on("evener/auth/test", () => pending.promise);
+  await choose(user);
+  await enterText(user, screen.getByLabelText("API key"), "fixture-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await user.click(screen.getByRole("button", { name: /^Close, access stays saved$/i }));
+  expect(close).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    pending.resolve({ provider: "anthropic", status: "success", message: "" });
+    await pending.promise;
+  });
+});
 test("saved access survives a failed check and dismissal, then reopens without another save", async () => {
   const first = setup();
   scriptSave(first.client);
@@ -756,23 +1004,13 @@ test("saved access survives a failed check and dismissal, then reopens without a
 
   first.client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
   const connected = vi.fn();
-  const reopened = render(
-    <ProviderConnection
-      completionLabel="Choose model"
-      onClose={() => {}}
-      onConnected={connected}
-      onOpenSettings={() => {}}
-    />,
-  );
+  const reopened = render(<Owner onClose={() => {}} onConnected={connected} onOpenSettings={() => {}} />);
   const user = userEvent.setup();
   await choose(user);
   expect(screen.getByTestId("credential-saved")).toBeTruthy();
   expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
   await user.click(screen.getByRole("button", { name: "Retry check" }));
-  await checkConfirmed();
-  await user.click(screen.getByRole("button", { name: "Choose model" }));
-
-  expect(connected).toHaveBeenCalledWith("anthropic");
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   expect(first.client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
   reopened.unmount();
 });
@@ -804,7 +1042,7 @@ test("a failed stored-access replacement keeps the original access and truthful 
 test.each([{ activeSource: "api_key" }, { baseUrl: "https://changed.example/v1" }])(
   "requires explicit source/destination review after save: %j",
   async (change) => {
-    const { user, client } = setup();
+    const { user, client, connected } = setup();
     scriptSave(client, savedList("anthropic", change));
     await choose(user);
     await enterText(user, screen.getByLabelText("API key"), "fixture-key");
@@ -813,11 +1051,11 @@ test.each([{ activeSource: "api_key" }, { baseUrl: "https://changed.example/v1" 
     expect(screen.getByTestId("credential-saved")).toBeTruthy();
     expect(client.calls.some((c) => c.method === "evener/auth/test")).toBe(false);
     await user.click(screen.getByRole("button", { name: "Use reviewed access and check" }));
-    await checkConfirmed();
+    await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   },
 );
 test("failed refresh is not proof of fresh access and does not check stale metadata", async () => {
-  const { user, client } = setup();
+  const { user, client, connected } = setup();
   await choose(user);
   client.on("evener/auth/apiKey/set", () => {
     client.on("evener/instance/list", () => {
@@ -832,21 +1070,21 @@ test("failed refresh is not proof of fresh access and does not check stale metad
   scriptSave(client);
   client.on("evener/instance/list", () => savedList());
   await user.click(screen.getByRole("button", { name: "Retry check" }));
-  await checkConfirmed();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set")).toHaveLength(1);
 });
 test("optional local access checks the host without clearing or requiring a key", async () => {
-  const { user, client } = setup();
+  const { user, client, connected } = setup();
   await choose(user, "Local endpoint");
   expect(screen.getByLabelText("API key")).toHaveProperty("required", false);
   expect(screen.getByText("http://localhost:8080/v1")).toBeTruthy();
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
   await user.click(screen.getByRole("button", { name: "Check connection" }));
-  await checkConfirmed();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("ollama"));
   expect(client.calls.filter((c) => c.method.includes("/set") || c.method.includes("/clear"))).toEqual([]);
 });
 test("ADC JSON is masked and sent to the JSON route, not API-key auth", async () => {
-  const { user, client } = setup();
+  const { user, client, connected } = setup();
   await choose(user, "Google Vertex");
   const input = screen.getByLabelText("Credential JSON");
   expect(input).toHaveProperty("type", "password");
@@ -858,7 +1096,7 @@ test("ADC JSON is masked and sent to the JSON route, not API-key auth", async ()
   await user.click(input);
   await user.paste('{"type":"service_account"}');
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  await checkConfirmed();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("google-vertex"));
   expect(client.calls.find((c) => c.method === "evener/auth/credentialJson/set")?.params).toEqual({
     provider: "google-vertex",
     value: '{"type":"service_account"}',
@@ -936,8 +1174,7 @@ test("settings saved then key failed repairs the actual named connection without
   });
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  await user.click(await screen.findByRole("button", { name: "Choose model" }));
-  expect(connected).toHaveBeenCalledWith("azure-team");
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("azure-team"));
   expect(client.calls.filter((c) => c.method === "evener/instance/create")).toHaveLength(1);
   expect(client.calls.filter((c) => c.method === "evener/auth/apiKey/set").map((c) => c.params)).toEqual([
     {
@@ -991,7 +1228,6 @@ test.each(["save", "refresh", "check"])(
     await enterText(user, screen.getByLabelText("API key"), "new-draft");
     expect(connected).not.toHaveBeenCalled();
     expect(screen.getByLabelText("API key")).toHaveProperty("value", "new-draft");
-    expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
   },
 );
 test("cancel immediately invalidates a late check even before the owner unmounts", async () => {
@@ -1009,10 +1245,10 @@ test("cancel immediately invalidates a late check even before the owner unmounts
     await pending.promise;
   });
   expect(connected).not.toHaveBeenCalled();
-  expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
+  expect(screen.queryByRole("dialog")).toBeNull();
 });
-test("a notification refresh of an unchanged target preserves a pending check and a completed result", async () => {
-  const { user, client } = setup();
+test("a notification refresh of an unchanged target preserves a pending check", async () => {
+  const { user, client, connected } = setup();
   scriptSave(client);
   const pending = deferred<{ provider: string; status: string; message: string }>();
   client.on("evener/auth/test", () => pending.promise);
@@ -1031,12 +1267,8 @@ test("a notification refresh of an unchanged target preserves a pending check an
     pending.resolve({ provider: "anthropic", status: "success", message: "" });
     await pending.promise;
   });
-  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
-  expect(reasonShown("changed")).toBe(false);
-  await act(async () => {
-    await credentialsStore.getState().fetch();
-  });
-  expect(screen.getByRole("button", { name: "Choose model" })).toBeTruthy();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
+  expect(screen.queryByRole("dialog")).toBeNull();
   expect(reasonShown("changed")).toBe(false);
 });
 
@@ -1045,7 +1277,7 @@ test("a notification refresh of an unchanged target preserves a pending check an
 // replace every array even when this target did not move - that replacement
 // must not retract the in-flight check or its confirmed result.
 test("an unchanged target survives another provider's refresh during its check", async () => {
-  const { user, client } = setup(savedList("anthropic", { configRevision: "rev-1" }));
+  const { user, client, connected } = setup(savedList("anthropic", { configRevision: "rev-1" }));
   const pending = deferred<{ provider: string; status: string; message: string }>();
   client.on("evener/auth/test", () => pending.promise);
   await choose(user);
@@ -1074,7 +1306,7 @@ test("an unchanged target survives another provider's refresh during its check",
     pending.resolve({ provider: "anthropic", status: "success", message: "" });
     await pending.promise;
   });
-  await checkConfirmed();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   expect(reasonShown("changed")).toBe(false);
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
 });
@@ -1086,7 +1318,7 @@ test.each([
   ["configRevision", { configRevision: "rev-2" }],
   ["query-only endpoint fingerprint", { endpointFingerprint: "fp-moved" }],
 ])("a foreign target %s change retires a pending check and its late result", async (_label, change) => {
-  const { user, client } = setup(savedList("anthropic", { configRevision: "rev-1" }));
+  const { user, client, connected } = setup(savedList("anthropic", { configRevision: "rev-1" }));
   const pending = deferred<{ provider: string; status: string; message: string }>();
   client.on("evener/auth/test", () => pending.promise);
   await choose(user);
@@ -1106,8 +1338,7 @@ test.each([
     pending.resolve({ provider: "anthropic", status: "success", message: "" });
     await pending.promise;
   });
-  expect(document.querySelector('[role="status"][data-state="success"]')).toBeNull();
-  expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
+  expect(connected).not.toHaveBeenCalled();
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
 });
 
@@ -1116,7 +1347,7 @@ test.each([
 // revision than the one the check anchored on, it is still stale evidence: the
 // old check must not confirm the target that refresh installed.
 test("a self-marked refresh that moves the checked target cannot confirm its old result", async () => {
-  const { user, client } = setup(savedList("anthropic", { configRevision: "rev-1" }));
+  const { user, client, connected } = setup(savedList("anthropic", { configRevision: "rev-1" }));
   const pending = deferred<{ provider: string; status: string; message: string }>();
   client.on("evener/auth/test", () => pending.promise);
   await choose(user);
@@ -1133,11 +1364,10 @@ test("a self-marked refresh that moves the checked target cannot confirm its old
     pending.resolve({ provider: "anthropic", status: "success", message: "" });
     await pending.promise;
   });
-  expect(document.querySelector('[role="status"][data-state="success"]')).toBeNull();
-  expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
+  expect(connected).not.toHaveBeenCalled();
 });
 test("the originating client's own auth-update echo does not invalidate its save and check", async () => {
-  const { user, client } = setup();
+  const { user, client, connected } = setup();
   scriptSave(client);
   const pending = deferred<{ provider: string; status: string; message: string }>();
   client.on("evener/auth/test", () => pending.promise);
@@ -1161,10 +1391,10 @@ test("the originating client's own auth-update echo does not invalidate its save
     pending.resolve({ provider: "anthropic", status: "success", message: "" });
     await pending.promise;
   });
-  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   expect(reasonShown("changed")).toBe(false);
 });
-test("the store's own post-save refresh does not invalidate the completed check", async () => {
+test("the store's own post-save refresh does not prevent exactly-once completion", async () => {
   // The store schedules its own listing refresh the moment the save succeeds
   // (a 250ms debounce), while the flow sits in its result phase with Continue
   // showing. That refresh is this client's own change - it must not read as
@@ -1173,7 +1403,7 @@ test("the store's own post-save refresh does not invalidate the completed check"
   // under real timers, so the self-refresh is a timeout its fake clock never
   // owns. Here the clock is fake before the save, so the refresh is a timer
   // Testing Library's waitFor runs (through the stubbed `jest` global).
-  const { user, client } = setup();
+  const { user, client, connected } = setup();
   scriptSave(client);
   await choose(user);
   await user.type(screen.getByLabelText("API key"), "draft");
@@ -1182,7 +1412,7 @@ test("the store's own post-save refresh does not invalidate the completed check"
   // A plain click: `user` was set up on the real clock, and its delays would
   // wait on a timer nothing advances now.
   fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
-  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   const listReads = () => client.calls.filter((c) => c.method === "evener/instance/list").length;
   const reads = listReads();
   // The self-refresh has been issued and its answer has landed: the store
@@ -1191,7 +1421,7 @@ test("the store's own post-save refresh does not invalidate the completed check"
     expect(listReads()).toBe(reads + 1);
     expect(credentialsStore.getState().loading).toBe(false);
   });
-  expect(screen.getByRole("button", { name: "Choose model" })).toBeTruthy();
+  expect(connected).toHaveBeenCalledTimes(1);
   expect(reasonShown("changed")).toBe(false);
 });
 test("the store's own debounced post-save refresh does not invalidate an in-flight check", async () => {
@@ -1200,7 +1430,7 @@ test("the store's own debounced post-save refresh does not invalidate an in-flig
   // flight; read as foreign, it reset the flow, so the check's answer never
   // reached Continue. The sibling test above covers the completed-check phase;
   // this one holds the check pending so the in-flight window is pinned.
-  const { user, client } = setup();
+  const { user, client, connected } = setup();
   scriptSave(client);
   const pending = deferred<{ provider: string; status: string; message: string }>();
   client.on("evener/auth/test", () => pending.promise);
@@ -1227,10 +1457,10 @@ test("the store's own debounced post-save refresh does not invalidate an in-flig
     pending.resolve({ provider: "anthropic", status: "success", message: "" });
     await pending.promise;
   });
-  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   expect(reasonShown("changed")).toBe(false);
 });
-test("a slow save response extends the echo window so its late own echo keeps Continue", async () => {
+test("a slow save response extends the echo window and still completes exactly once", async () => {
   const { user, client, connected } = setup();
   const save = deferred<typeof saved>();
   client.on("evener/auth/apiKey/set", () => save.promise);
@@ -1264,10 +1494,8 @@ test("a slow save response extends the echo window so its late own echo keeps Co
   // Read as foreign (the fixed window alone), that same read resets the flow
   // to "Connection or configuration changed" and the user loses a save that
   // actually succeeded.
-  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   expect(reasonShown("changed")).toBe(false);
-  await user.click(screen.getByRole("button", { name: "Choose model" }));
-  expect(connected).toHaveBeenCalledWith("anthropic");
 });
 test("a superseding pending refresh cannot authorize a check from discarded metadata", async () => {
   const { user, client } = setup();
@@ -1306,14 +1534,7 @@ test("reconnect restores initial loading and invalidates late check callbacks", 
   client.on("evener/instance/list", () => initial.promise);
   connectionStore.getState().connect(client);
   const connected = vi.fn();
-  render(
-    <ProviderConnection
-      completionLabel="Choose model"
-      onClose={() => {}}
-      onConnected={connected}
-      onOpenSettings={() => {}}
-    />,
-  );
+  render(<ProviderConnection onClose={() => {}} onConnected={connected} onOpenSettings={() => {}} />);
   const user = userEvent.setup();
   await act(async () => {
     client.emitStateChange("reconnecting");
@@ -1334,7 +1555,6 @@ test("reconnect restores initial loading and invalidates late check callbacks", 
     await pending.promise;
     client.emitReady();
   });
-  expect(screen.queryByRole("button", { name: "Choose model" })).toBeNull();
   expect(connected).not.toHaveBeenCalled();
   expect(screen.getByLabelText("API key")).toHaveProperty("value", "draft");
 });
@@ -1347,15 +1567,15 @@ test("hidden setup is not a direct key/check route and settings refusal blocks c
   expect(client.calls.some((c) => c.method === "evener/auth/test")).toBe(false);
 });
 test("read-only provider settings do not disable an existing credential store write", async () => {
-  const { user, client } = setup({ instances: [], availableProviders: catalogue, writesRefused: true });
+  const { user, client, connected } = setup({ instances: [], availableProviders: catalogue, writesRefused: true });
   scriptSave(client);
   await choose(user);
   await user.type(screen.getByLabelText("API key"), "draft");
   await user.click(screen.getByRole("button", { name: "Save and check" }));
-  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
 });
 test("switching to existing host access does not send the new key or claim authentication is disabled", async () => {
-  const { user, client } = setup(
+  const { user, client, connected } = setup(
     savedList("anthropic", { activeSource: "env:ANTHROPIC_API_KEY", hasStoredFile: false }),
   );
   await choose(user);
@@ -1364,7 +1584,7 @@ test("switching to existing host access does not send the new key or claim authe
   await user.click(screen.getByRole("button", { name: "Use existing host access" }));
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
   await user.click(screen.getByRole("button", { name: "Check connection" }));
-  expect(await screen.findByRole("button", { name: "Choose model" })).toBeTruthy();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   expect(client.calls.some((c) => c.method === "evener/auth/apiKey/set" || c.method === "evener/auth/logout")).toBe(
     false,
   );
@@ -1777,7 +1997,7 @@ test("the hub's endpoint refusal re-anchors the flow instead of saving to the mo
 // above and the call could send the stored credential to an endpoint the user
 // never saw.
 test("the check asserts the reviewed endpoint", async () => {
-  const { user, client } = setup(fingerprintList("fp-reviewed"));
+  const { user, client, connected } = setup(fingerprintList("fp-reviewed"));
   await choose(user, "Anthropic");
   await enterText(user, screen.getByLabelText("API key"), "sk-ant-draft");
   // The post-save listing carries the same destination as the baseline, so the
@@ -1786,7 +2006,7 @@ test("the check asserts the reviewed endpoint", async () => {
 
   await user.click(screen.getByRole("button", { name: "Save and check" }));
 
-  await checkConfirmed();
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   expect(client.calls.find((call) => call.method === "evener/auth/test")?.params).toEqual({
     provider: "anthropic",
     expectedEndpointFingerprint: "fp-reviewed",
