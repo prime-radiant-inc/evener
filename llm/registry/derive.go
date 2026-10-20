@@ -44,10 +44,23 @@ func derive(c *Caps, m *Model, in deriveInput, prov map[string]string) {
 	// whichever layer stated it. The live layer already drops the ladder when
 	// it reads the verdict from a gateway; doing it here as well makes a
 	// configured row behave the same, so no protocol spells a level the row
-	// says is rejected. Toggle-only keeps the reasoning control itself.
+	// says is rejected.
+	//
+	// Only the effort control goes. A budget-shaped row keeps budget_tokens,
+	// which is a numeric ceiling rather than an effort name, and a toggle
+	// control keeps reasoning itself intact.
 	if !reasoningOff && BoolValue(c.EffortParameterUnsupported) {
-		if !slices.Equal(c.ReasoningControls, []string{"toggle"}) {
-			c.ReasoningControls = []string{"toggle"}
+		if slices.Contains(c.ReasoningControls, "effort") || len(c.ReasoningControls) == 0 {
+			kept := make([]string, 0, len(c.ReasoningControls))
+			for _, control := range c.ReasoningControls {
+				if control != "effort" {
+					kept = append(kept, control)
+				}
+			}
+			if len(kept) == 0 {
+				kept = []string{"toggle"}
+			}
+			c.ReasoningControls = kept
 			prov["ReasoningControls"] = provDerived
 		}
 		if len(c.EffortValues) > 0 {

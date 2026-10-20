@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -1412,6 +1413,28 @@ effort_parameter_unsupported = true
 	}
 	if !BoolValue(res.Caps.Reasoning) {
 		t.Fatalf("Reasoning = %v, want the row still reasoning", res.Caps.Reasoning)
+	}
+}
+
+// The verdict rejects named effort parameters, not numeric budgets. A
+// budget-shaped row keeps its budget_tokens control, so the provider's thinking
+// budget is still sized and derived rather than silently omitted.
+func TestResolve_NoEffortVerdictKeepsBudgetCapability(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
+[providers.google.models."budget-model"]
+reasoning = true
+reasoning_controls = ["budget_tokens"]
+effort_parameter_unsupported = true
+`)))
+	res := mustResolve(t, r, "google/budget-model")
+	if !slices.Contains(res.Caps.ReasoningControls, "budget_tokens") {
+		t.Fatalf("ReasoningControls = %v, want budget_tokens preserved", res.Caps.ReasoningControls)
+	}
+	if slices.Contains(res.Caps.ReasoningControls, "effort") {
+		t.Fatalf("ReasoningControls = %v, want no effort control", res.Caps.ReasoningControls)
+	}
+	if res.Caps.ThinkingShape == nil || *res.Caps.ThinkingShape != "budget" {
+		t.Fatalf("ThinkingShape = %v, want budget derived", res.Caps.ThinkingShape)
 	}
 }
 
