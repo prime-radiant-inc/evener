@@ -3657,9 +3657,8 @@ test("Send follows the returned identity through transcript and new sends", asyn
   expect(sentId).not.toBe("");
   expect(sentId).not.toBe(uncertain);
   expect(await mutationStorage.listOutbox(currentRef)).toEqual([]);
-  expect(await mutationStorage.listOutbox(stableRef)).toEqual([
-    expect.objectContaining({ clientMutationId: uncertain, state: "canceled" }),
-  ]);
+  expect(await mutationStorage.listOutbox(stableRef)).toEqual([]);
+  expect(await mutationStorage.getOutbox(uncertain)).toBeUndefined();
 });
 
 // R09 acceptance applies to EVERY resume trigger, not only the Send-resumes
