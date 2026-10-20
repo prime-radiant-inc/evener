@@ -123,8 +123,8 @@ export function HoverCard({ label, children, focusTarget, longPressEnabled, side
 
   // Turning long-press mode off mid-gesture clears the press and its listeners.
   useEffect(() => {
-    if (!longPressEnabled) cancelLongPress();
-  }, [cancelLongPress, longPressEnabled]);
+    if (!longPressEnabled) abortPress();
+  }, [abortPress, longPressEnabled]);
 
   useEffect(() => {
     if (!longPressEnabled || !visible || !isHoverless()) return;

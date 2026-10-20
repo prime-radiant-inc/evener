@@ -407,6 +407,75 @@ test("a cancelled long press does not leave the next click swallowed", () => {
   expect(activate).toHaveBeenCalledOnce();
 });
 
+function LongPressToggleFixture({
+  longPressEnabled,
+  onActivate,
+}: {
+  longPressEnabled: boolean;
+  onActivate: () => void;
+}) {
+  return (
+    <div>
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled={longPressEnabled}>
+        <button type="button" onClick={onActivate}>
+          Fix flaky test
+        </button>
+      </HoverCard>
+    </div>
+  );
+}
+
+function endPress(trigger: HTMLElement, endingEvent: string) {
+  if (endingEvent === "pointerup") fireEvent.pointerUp(trigger, { pointerId: 1, clientX: 10, clientY: 10 });
+  else fireEvent.pointerCancel(trigger, { pointerId: 1 });
+}
+
+test.each(["pointerup", "pointercancel"])(
+  "disabling long-press mode during a pending press does not swallow a later activation (%s ends it)",
+  (endingEvent) => {
+    vi.useFakeTimers();
+    installHoverlessMatchMedia();
+    const activate = vi.fn();
+    const view = render(<LongPressToggleFixture longPressEnabled onActivate={activate} />);
+    const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+    fireEvent.pointerDown(trigger, { pointerId: 1, button: 0, clientX: 10, clientY: 10 });
+    act(() => vi.advanceTimersByTime(100));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    view.rerender(<LongPressToggleFixture longPressEnabled={false} onActivate={activate} />);
+    endPress(trigger, endingEvent);
+    view.rerender(<LongPressToggleFixture longPressEnabled onActivate={activate} />);
+
+    // No further pointerdown resets the gesture: this is the control's own
+    // activation, the click a keyboard or assistive technology sends.
+    fireEvent.click(trigger);
+    expect(activate).toHaveBeenCalledOnce();
+  },
+);
+
+test.each(["pointerup", "pointercancel"])(
+  "disabling long-press mode after the card is revealed does not swallow a later activation (%s ends it)",
+  (endingEvent) => {
+    vi.useFakeTimers();
+    installHoverlessMatchMedia();
+    const activate = vi.fn();
+    const view = render(<LongPressToggleFixture longPressEnabled onActivate={activate} />);
+    const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+    fireEvent.pointerDown(trigger, { pointerId: 1, button: 0, clientX: 10, clientY: 10 });
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+
+    view.rerender(<LongPressToggleFixture longPressEnabled={false} onActivate={activate} />);
+    endPress(trigger, endingEvent);
+    view.rerender(<LongPressToggleFixture longPressEnabled onActivate={activate} />);
+
+    fireEvent.click(trigger);
+    expect(activate).toHaveBeenCalledOnce();
+  },
+);
+
 test("a press that leaves the trigger before the click does not swallow a later one", () => {
   vi.useFakeTimers();
   installHoverlessMatchMedia();
