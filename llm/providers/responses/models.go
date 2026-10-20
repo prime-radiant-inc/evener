@@ -43,15 +43,9 @@ func (m openAIModelListEntry) row() registry.Model {
 		caps.MaxOutputTokens = new(o)
 	}
 	// A gateway's own per-model facts (lunaroute's shape) fill the reasoning
-	// capability and effort ladder a bare OpenAI listing never states. The map
-	// is the ladder the picker offers and the request builder clamps to; with
-	// it absent, an uncatalogued gateway model resolves with no ladder at all.
-	if m.Capabilities.Reasoning != nil {
-		caps.Reasoning = new(*m.Capabilities.Reasoning)
-	}
-	if ladder := requestutil.GatewayEffortLadder(&m.ClientCompat); len(ladder) > 0 {
-		caps.EffortValues = ladder
-	}
+	// capability and effort ladder a bare OpenAI listing never states: without
+	// them an uncatalogued gateway model resolves with no ladder at all.
+	requestutil.ApplyGatewayReasoning(&caps, m.Capabilities, m.ClientCompat)
 	caps.InputModalities = requestutil.GatewayInputModalities(m.Architecture, m.Capabilities)
 	return registry.Model{ID: m.ID, Caps: caps}
 }

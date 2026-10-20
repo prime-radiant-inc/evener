@@ -147,12 +147,13 @@ ladder (lunaroute's shape), where a level mapped to a string is supported, a
 null is not, and levels sharing a wire value are advertised once. The ladder
 is ordered as the picker shows it, with an off level first when `off` maps to
 `none`. A model whose ladder the listing does not state keeps no ladder, so
-the request builder sends no effort name it cannot vouch for. It
-overrides catalog and curated facts but **never a field the user layer (layer
-4) set**, and it never touches any other wire-shaping cap. Live rows matching
-the non-chat pattern list (`embedding`, `whisper`, `tts`, `dall-e`,
-`moderation`, `audio`, `transcribe`, `image`, `realtime`, `davinci`, `babbage`,
-`sora`) are unusable for model selection and are dropped.
+the request builder sends no effort name it cannot vouch for.
+
+The live layer overrides catalog and curated facts but **never a field the
+user layer (layer 4) set**, and it never touches any other wire-shaping cap.
+Live rows matching the non-chat pattern list (`embedding`, `whisper`, `tts`,
+`dall-e`, `moderation`, `audio`, `transcribe`, `image`, `realtime`, `davinci`,
+`babbage`, `sora`) are unusable for model selection and are dropped.
 
 ## Instances
 

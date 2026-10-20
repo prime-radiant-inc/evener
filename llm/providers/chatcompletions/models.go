@@ -85,15 +85,7 @@ func (m modelEntry) row() registry.Model {
 		}
 		caps.EffortValues = requestutil.DedupStrings(m.Reasoning.SupportedEfforts)
 	}
-	// A gateway that states the model's own reasoning verdict and effort map
-	// is authoritative over the supported_parameters inference above: it knows
-	// per model what OpenRouter's parameter list only says provider-wide.
-	if m.Capabilities.Reasoning != nil {
-		caps.Reasoning = new(*m.Capabilities.Reasoning)
-	}
-	if ladder := requestutil.GatewayEffortLadder(&m.ClientCompat); len(ladder) > 0 {
-		caps.EffortValues = ladder
-	}
+	requestutil.ApplyGatewayReasoning(&caps, m.Capabilities, m.ClientCompat)
 	caps.InputModalities = requestutil.GatewayInputModalities(m.Architecture, m.Capabilities)
 	if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
 		if out, ok := perTokenCostToPerMillion(m.Pricing.Completion); ok {

@@ -3,6 +3,8 @@ package requestutil
 import (
 	"slices"
 	"testing"
+
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestGatewayInputModalities(t *testing.T) {
@@ -54,34 +56,33 @@ func TestDedupStrings(t *testing.T) {
 }
 
 func TestGatewayEffortLadder(t *testing.T) {
-	str := func(s string) *string { return &s }
-	levels := func(m map[string]*string) *GatewayClientCompat {
-		return &GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}
+	levels := func(m map[string]string) GatewayClientCompat {
+		return GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}
 	}
 	cases := []struct {
 		name   string
-		compat *GatewayClientCompat
+		compat GatewayClientCompat
 		want   []string
 	}{
 		{
 			name: "map levels come back in rank order",
-			compat: levels(map[string]*string{
-				"max": str("max"), "high": str("high"), "low": str("low"),
-				"medium": str("medium"), "xhigh": str("xhigh"), "minimal": nil, "off": nil,
+			compat: levels(map[string]string{
+				"max": "max", "high": "high", "low": "low",
+				"medium": "medium", "xhigh": "xhigh", "minimal": "", "off": "",
 			}),
 			want: []string{"low", "medium", "high", "xhigh", "max"},
 		},
 		{
 			name: "an explicit off level leads the ladder",
-			compat: levels(map[string]*string{
-				"off": str("none"), "low": str("low"), "high": str("high"),
+			compat: levels(map[string]string{
+				"off": "none", "low": "low", "high": "high",
 			}),
 			want: []string{"none", "low", "high"},
 		},
 		{
 			name: "an off level spelled as another tier is not an off",
-			compat: levels(map[string]*string{
-				"off": str("low"), "low": str("low"), "high": str("high"),
+			compat: levels(map[string]string{
+				"off": "low", "low": "low", "high": "high",
 			}),
 			want: []string{"low", "high"},
 		},
@@ -89,39 +90,34 @@ func TestGatewayEffortLadder(t *testing.T) {
 			// glm maps medium→high, minimal→low and xhigh→max: the menu offers
 			// the wire values the gateway accepts, once each.
 			name: "aliases collapse to their wire values",
-			compat: levels(map[string]*string{
-				"minimal": str("low"), "low": str("low"), "medium": str("high"),
-				"high": str("high"), "xhigh": str("max"), "max": str("max"), "off": str("none"),
+			compat: levels(map[string]string{
+				"minimal": "low", "low": "low", "medium": "high",
+				"high": "high", "xhigh": "max", "max": "max", "off": "none",
 			}),
 			want: []string{"none", "low", "high", "max"},
 		},
 		{
 			name: "a level spelled outside the vocabulary is dropped",
-			compat: levels(map[string]*string{
-				"low": str("low"), "high": str("turbo"),
+			compat: levels(map[string]string{
+				"low": "low", "high": "turbo",
 			}),
 			want: []string{"low"},
 		},
 		{
-			name:   "no compat block states no ladder",
-			compat: nil,
-			want:   nil,
-		},
-		{
 			name:   "a compat block without pi states no ladder",
-			compat: &GatewayClientCompat{},
+			compat: GatewayClientCompat{},
 			want:   nil,
 		},
 		{
 			// Every level null is a model with no effort control; the
 			// capabilities block, not an empty ladder, must state that.
 			name:   "an all-null map states no ladder",
-			compat: levels(map[string]*string{"low": nil, "high": nil}),
+			compat: levels(map[string]string{"low": "", "high": ""}),
 			want:   nil,
 		},
 		{
 			name:   "an empty map states no ladder",
-			compat: levels(map[string]*string{}),
+			compat: levels(map[string]string{}),
 			want:   nil,
 		},
 	}
@@ -130,6 +126,61 @@ func TestGatewayEffortLadder(t *testing.T) {
 			got := GatewayEffortLadder(tc.compat)
 			if !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
 				t.Fatalf("GatewayEffortLadder = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyGatewayReasoning(t *testing.T) {
+	yes, no := true, false
+	levels := func(m map[string]string) GatewayClientCompat {
+		return GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}
+	}
+	ladder := map[string]string{"low": "low", "high": "high", "max": "max"}
+	cases := []struct {
+		name       string
+		capsFacts  GatewayCapabilities
+		compat     GatewayClientCompat
+		wantReason *bool
+		wantLadder []string
+	}{
+		{
+			name:       "a verdict and map fill both facts",
+			capsFacts:  GatewayCapabilities{Reasoning: &yes},
+			compat:     levels(ladder),
+			wantReason: &yes,
+			wantLadder: []string{"low", "high", "max"},
+		},
+		{
+			name:       "a non-reasoning verdict keeps no ladder",
+			capsFacts:  GatewayCapabilities{Reasoning: &no},
+			compat:     levels(ladder),
+			wantReason: &no,
+			wantLadder: nil,
+		},
+		{
+			name:       "no verdict still takes the map",
+			compat:     levels(ladder),
+			wantLadder: []string{"low", "high", "max"},
+		},
+		{
+			name:       "a verdict without a map states no ladder",
+			capsFacts:  GatewayCapabilities{Reasoning: &yes},
+			wantReason: &yes,
+		},
+		{
+			name: "facts the listing does not state stay unset",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			caps := registry.Caps{}
+			ApplyGatewayReasoning(&caps, tc.capsFacts, tc.compat)
+			if (caps.Reasoning == nil) != (tc.wantReason == nil) || (caps.Reasoning != nil && *caps.Reasoning != *tc.wantReason) {
+				t.Fatalf("Reasoning = %v, want %v", caps.Reasoning, tc.wantReason)
+			}
+			if !slices.Equal(caps.EffortValues, tc.wantLadder) {
+				t.Fatalf("EffortValues = %v, want %v", caps.EffortValues, tc.wantLadder)
 			}
 		})
 	}
