@@ -1,6 +1,6 @@
 # Automatic completion of provider onboarding
 
-Status: written specification awaiting Jesse's approval after independent review.
+Status: approved by Jesse for implementation after independent review.
 
 ## Intent and decisions
 
