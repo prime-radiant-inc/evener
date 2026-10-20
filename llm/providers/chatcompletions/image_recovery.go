@@ -51,11 +51,11 @@ func runImageRecovery[T any](ctx context.Context, p *Protocol, req llm.Request, 
 		}
 		call := p.completionCall(operation, http.MethodPost, protocolhttp.URL(res, endpoint), body, req, res)
 		finalize := call.FinalizeBody
-		call.FinalizeBody = func(body map[string]any) error {
-			if err := finalize(body); err != nil {
+		call.FinalizeBody = func(attemptCtx context.Context, body map[string]any) error {
+			if err := finalize(attemptCtx, body); err != nil {
 				return err
 			}
-			return recovery.prepare(ctx, body)
+			return recovery.prepare(attemptCtx, body)
 		}
 		result, err := send(call, recovery)
 		if err == nil {

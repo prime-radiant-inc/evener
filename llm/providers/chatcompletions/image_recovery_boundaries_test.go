@@ -3,14 +3,20 @@ package chatcompletions
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/internal/imagerepair"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestImageRecoveryNeverReplaysAnExposedStream(t *testing.T) {
@@ -51,6 +57,72 @@ func TestImageRecoveryCancellationPreventsResend(t *testing.T) {
 			if !errors.Is(err, context.Canceled) || calls != 1 {
 				t.Fatalf("requests=%d error=%v", calls, err)
 			}
+		})
+	}
+}
+
+type deadlineMessages struct {
+	ctx context.Context
+	raw json.RawMessage
+}
+
+func (m deadlineMessages) MarshalJSON() ([]byte, error) {
+	<-m.ctx.Done()
+	return m.raw, nil
+}
+
+type deadlineImagePreparer struct {
+	imageRecoveryPreparer
+	calls int
+	body  map[string]any
+}
+
+func (p *deadlineImagePreparer) PrepareRequest(ctx context.Context, _ *http.Request, body map[string]any, _ llm.Request, _ registry.Resolved) error {
+	p.calls++
+	if p.calls == 2 {
+		raw, err := json.Marshal(body["messages"])
+		if err != nil {
+			return err
+		}
+		// Expire the request deadline inside repair's message serialization.
+		// The parent stays live, so using it would finish the image conversion.
+		body["messages"] = deadlineMessages{ctx: ctx, raw: raw}
+		p.body = body
+	}
+	return nil
+}
+
+func TestImageRecoveryAttemptDeadlineStopsRepair(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "complete", true: "stream"}[stream], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				preparer := &deadlineImagePreparer{}
+				ctx := llm.WithAuthenticatorOverride(t.Context(), preparer)
+				req := recoveryRequest(recoveryJPEG(t, nil))
+				req.AdapterTimeout = &llm.AdapterTimeout{Request: time.Second}
+				res := resolved(nil)
+				res.Transport.Auth = registry.AuthOAuthOpenAICodex
+				res.Transport.BaseURL = "https://provider.test"
+				res.Transport.StreamEndpoint = res.Transport.Endpoint
+				calls := 0
+				client := &http.Client{Transport: listingRoundTripper(func(r *http.Request) (*http.Response, error) {
+					calls++
+					if err := r.Context().Err(); err != nil {
+						return nil, err
+					}
+					return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(imageRejection)), Request: r}, nil
+				})}
+				_, err := recoveryCall(ctx, &Protocol{Client: client}, req, res, stream)
+				if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil || preparer.calls != 2 {
+					t.Fatalf("error=%v parent=%v preparations=%d", err, ctx.Err(), preparer.calls)
+				}
+				if _, unchanged := preparer.body["messages"].(deadlineMessages); !unchanged {
+					t.Error("repair replaced the image after the attempt deadline expired")
+				}
+				if calls != 1 {
+					t.Fatalf("transport calls=%d, want only the initial rejection", calls)
+				}
+			})
 		})
 	}
 }

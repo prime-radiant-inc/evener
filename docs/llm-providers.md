@@ -108,7 +108,8 @@ Both `Complete` and `Stream` repair only a definite HTTP rejection before a stre
 is exposed. There are at most **two repair resends**, on the same endpoint and
 model, and no identical-body resend. A started stream is never replayed. Each HTTP
 exchange retains API-attempt accounting; cancellation stops new attempts and image
-work. If an expanded PNG gets HTTP 413 and there is no distinct smaller fallback,
+work, including expiration of the active attempt's configured request deadline.
+If an expanded PNG gets HTTP 413 and there is no distinct smaller fallback,
 the adapter returns the **original image rejection**, not that repair-only 413.
 Existing configured model fallback can then run without forced history compaction.
 
