@@ -1,0 +1,145 @@
+# Connect to compatible existing hosts
+
+## Intent
+
+Normal Connect should make an existing Evener installation usable without
+replacing it merely to match the controller's build. Jesse specified that an
+installed Evener with the right protocol should connect. This applies even when
+the controller has a matching artifact available, not just when synchronization
+fails.
+
+The reported failure was a Linux/amd64 development controller trying to deploy
+its own executable to a Darwin/arm64 host. The deployment refusal correctly
+rejected an unusable artifact. The connection policy incorrectly required that
+deployment before allowing a compatible host to be used.
+
+## Scope
+
+- Normal Connect and the SSH manager's reconnect path.
+- The distinction between a usable remote build and a requested deployment.
+- Truthful remote build/protocol reporting through the existing host facts API.
+- Browser and native clients that share the host attach/probe APIs.
+- Evergreen host lifecycle and deployment documentation.
+
+This supersedes the weaker fallback-only policy in the product friction guide's
+"Connection versus build synchronization" case.
+
+## Behavior
+
+| Situation | Required result |
+| --- | --- |
+| A usable compatible installation has a different clean build | Connect without deploying or restarting solely for the build difference |
+| Either build is development, dirty, or unstamped | Apply the same compatibility rule, without requiring proof of identical source |
+| Controller and host have different OS/architecture | Connect normally when the existing remote installation is compatible |
+| A matching deploy artifact or build source is configured | Its availability does not itself request a deployment |
+| A compatible installation is stopped | Explicit Connect may start that installation using the existing bootstrap path, without replacing it |
+| A running hub differs from the executable on disk | Judge the connection using the live handshake, keep a compatible running hub, and report its actual build |
+| Evener is missing or the connection is genuinely incompatible | Preserve installation/upgrade recovery through the configured deploy source, or return the accurate missing/incompatible/unavailable-source failure |
+| The user explicitly requests deployment | Preserve the existing plan, confirmation, identity verification, operation journal, and restart guarantees |
+| Deployment is disabled | Never write an artifact through either the push or installer path |
+
+Compatibility remains the existing AppWire protocol contract and capabilities
+actually required for the requested operation. The final live handshake must
+validate the protocol. A build label, equal commit, or healthy HTTP response
+alone cannot establish compatibility. Optional missing features retain their
+existing feature gating instead of blocking all host use.
+
+The on-disk launch contract remains relevant when starting a hub or launching
+runtime processes. Keep its facts separate from facts about the running hub.
+Do not replace a healthy compatible process merely because the on-disk version
+or controller version differs. A bridge that cannot run, authenticate, or speak
+to the configured destination remains a real connection failure.
+
+```mermaid
+flowchart TD
+    A[Normal Connect] --> B{Live compatible hub reachable?}
+    B -->|Yes| C[Keep its build and connect]
+    B -->|No| D{Compatible installed build can be started?}
+    D -->|Yes, explicit Connect| E[Start existing build and verify handshake]
+    D -->|No, installation or upgrade needed| F[Use existing deployment recovery]
+    G[Explicit deployment request] --> H[Verified deployment and restart]
+```
+
+This diagram describes the policy, not an instruction to treat every failed
+handshake as an upgrade request. Authentication and transport failures retain
+their own classifications and must not authorize replacing the installation.
+
+## Preservation and recovery
+
+- A successful compatible Connect leaves the remote executable, running hub,
+  configuration, sessions, and user files unchanged.
+- Losing the SSH channel and reconnecting must not trigger build synchronization
+  or restart a compatible remote hub.
+- Repeated Connect is idempotent. Disconnect continues to stop reconnection.
+- A failed probe or handshake does not count as successful attachment. Keep
+  existing authentication, cancellation, transient-failure and retry semantics.
+- Keep explicit deployment's pending restart and uncertain-write reconciliation.
+  Connecting successfully to an old process cannot complete an unfinished
+  deployment or satisfy its requested identity.
+- Do not implement recovery by catching every deployment error and proceeding.
+  A failed or interrupted write still needs its existing reconciliation owner.
+- Do not turn ordinary reconnect into permission to start a deliberately stopped
+  host. Preserve the explicit-Connect-only bootstrap rule.
+
+## Version reporting and clients
+
+The controller's version and the connected host's version are distinct facts.
+Host attach/probe results must report the remote build actually observed, never
+substitute the controller's build. Bind facts to the attached channel generation
+so reconnect cannot combine an old client's handshake with a new host's facts.
+Do not invent a version when it cannot be observed. Missing trustworthy build
+metadata leaves the version unknown without blocking a compatible connection.
+The handshake's current package-level server version is not a build identity,
+and the on-disk launch-check version cannot stand in for a different live build.
+
+Reuse the existing browser and native Connect controls and host details. Both
+clients must receive successful attachment for a compatible different build and
+retain the remote identity across refresh/reconnect. No new controls, settings,
+protocol version, compatibility shims, or widgets are proposed.
+
+## Implementation boundaries
+
+The SSH manager owns connection policy. Keep build-source selection, artifact
+validation and explicit deployment identity checks in their existing owners.
+Remove version-only auto-deploy/restart decisions and any state used solely to
+force development-build synchronization. Preserve state that reconciles real
+deployment or startup effects.
+
+Update `docs/evener-hub.md`, `docs/evener-hub-remote-operations.md`, and the remote
+host lifecycle row in `docs/product/subsystems.md`. Remove the resolved friction
+case only after its acceptance behavior is implemented and verified.
+
+## Verification
+
+1. Add failing-first manager tests for compatible clean, development and dirty
+   build differences, including Linux/amd64 to Darwin/arm64 and an available
+   deployment source. Assert successful real manager attachment and no build,
+   push, installer, or restart side effects.
+2. Cover live/disk version disagreement, incompatible live protocol, required
+   startup capabilities, missing installations, stopped compatible installations,
+   explicit deployment, and deployment-disabled behavior.
+3. Prove reconnect and repeated Connect preserve a compatible running process and
+   installation. Keep pending-deployment recovery and generation-consistency
+   assertions at least as strict as before.
+4. Exercise host add/attach, host facts, and a forwarded remote read through the
+   real hub handlers and SSH manager. Verify actual remote build reporting in
+   shared responses and affected browser/native consumers.
+5. Run a private real-process SSH journey with differently stamped compatible
+   controller and remote builds. Add the host, connect with default deployment
+   settings, read remote data, disconnect/reconnect, and verify the remote binary
+   hash and hub process identity remain unchanged. Use test-owned configuration,
+   state and ports, never Jesse's live host installation. The real journey uses
+   no mocked Evener or SSH components.
+6. Keep cross-platform decision coverage deterministic at the external transport
+   boundary. A Linux-only real-process run does not establish actual Darwin
+   execution. Report separately if no safe Darwin fixture is available.
+7. Run focused Go and affected client checks locally. Leave full repository gates
+   to CI under the repository policy. Tests assert outcomes, structured fields,
+   and side effects rather than copy.
+
+## Non-goals
+
+No deployment to or restart of Jesse's running hub or m5max. No new release
+artifacts, automatic source-checkout discovery, cross-protocol compatibility,
+host retry policy redesign, teardown remediation, or general host settings
+redesign. Deployment of the merged change requires separate authorization.
