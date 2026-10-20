@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
@@ -205,6 +207,296 @@ func assertRestartRecoveryRecord(t *testing.T, store *hostops.Store, id string, 
 	}
 }
 
+func TestHostRestartRepairsDisconnectedDeployment(t *testing.T) {
+	sha, dirty, channel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
+	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = sha, dirty, channel })
+	buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = restartBuildB, "", "snapshot"
+	for _, scenario := range []string{"protocol", "missing-flag", "malformed", "approved-replacement", "repair-retry", "fingerprint", "wrong-build", "wrong-process"} {
+		t.Run(scenario, func(t *testing.T) {
+			contract := fmt.Appendf(nil, `{"protocol":"incompatible","version":%q,"launch_flags":["api-log"]}`, restartBuildB)
+			if scenario == "missing-flag" {
+				contract = fmt.Appendf(nil, `{"protocol":%q,"version":%q,"launch_flags":[]}`, appwire.ProtocolVersion, restartBuildB)
+			}
+			if scenario == "malformed" || scenario == "approved-replacement" {
+				contract = []byte(`{`)
+			}
+			// A healthy B process makes this public plan deploy-only. Its failed
+			// installation must stay pending when the bridge subsequently drops.
+			runner := &restartRecoveryRunner{diskVersion: restartBuildA, runningVersion: restartBuildB, startedAt: restartStartA,
+				acknowledgeFirstWrite: true, firstWriteContract: contract, failRepair: scenario == "repair-retry"}
+			initialVersion := restartBuildB
+			if scenario == "approved-replacement" {
+				initialVersion = restartBuildA
+				runner.runningVersion = initialVersion
+			}
+			if scenario == "wrong-build" {
+				runner.probeVersion = restartBuildA
+			}
+			if scenario == "wrong-process" {
+				runner.probeStart = restartStartA
+			}
+			m, manager, store, host, events := publicRecoveryHub(t, runner, restartBuildB)
+			ch, err := manager.Ensure(t.Context(), host.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := m.Plan(t.Context(), appwire.HostPlanParams{Name: host.Name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			deploy, err := m.Deploy(t.Context(), appwire.HostDeployParams{Name: host.Name, Token: plan.Token, OperationID: "invalid-install"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.cfg.opsWG.Wait()
+			assertRestartRecoveryRecord(t, store, deploy.ID, hostops.StateFailed)
+			assertPublicRecoveryEffects(t, runner, 1, 1, 0, initialVersion, restartStartA)
+			if err := ch.Close(); err != nil {
+				t.Fatal(err)
+			}
+			// Let actual reconnect reach its terminal contract refusal. It must not
+			// erase installation ownership or manufacture a new deployment.
+			waitPublicRecoveryEvent(t, events, sshconn.EventFailed)
+			if manager.Attached(host.Name) {
+				t.Fatal("failed deployment unexpectedly reattached")
+			}
+			params := appwire.HostRestartParams{Name: host.Name, Generation: host.Generation, IncarnationID: host.IncarnationID, OperationID: "repair-disconnected"}
+			stale := params
+			stale.Generation++
+			if _, err := m.Restart(t.Context(), stale); err == nil {
+				t.Fatal("Restart accepted a stale generation")
+			}
+			assertPublicRecoveryEffects(t, runner, 1, 1, 0, initialVersion, restartStartA)
+			if scenario == "fingerprint" {
+				original, err := os.ReadFile(m.cfg.configPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				edited := host
+				edited.SSH = "elsewhere.example"
+				recoverDeployment := m.cfg.recoverDeployment
+				recoveryCalled := false
+				m.cfg.recoverDeployment = func(ctx context.Context, entry hostreg.Host, holder hostops.Holder) (*sshconn.RestartResult, error) {
+					recoveryCalled = true
+					return recoverDeployment(ctx, entry, holder)
+				}
+				m.cfg.gate = &editingGate{inner: manager, onAs: func() {
+					if err := os.WriteFile(m.cfg.configPath, []byte(planTestHubTOML([]hostreg.Host{edited})), 0o600); err != nil {
+						t.Error(err)
+					}
+				}}
+				refused, err := m.Restart(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.cfg.opsWG.Wait()
+				assertRestartRecoveryRecord(t, store, refused.ID, hostops.StateFailed)
+				if recoveryCalled {
+					t.Fatal("worker entered recovery after its host configuration changed")
+				}
+				assertPublicRecoveryEffects(t, runner, 1, 1, 0, initialVersion, restartStartA)
+				m.cfg.recoverDeployment = recoverDeployment
+				m.cfg.gate = manager
+				if err := os.WriteFile(m.cfg.configPath, original, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				params.OperationID = "after-fingerprint-refusal"
+			}
+			restart, err := m.Restart(t.Context(), params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.cfg.opsWG.Wait()
+			wantWrites := 2
+			if scenario == "repair-retry" {
+				assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
+				assertPublicRecoveryEffects(t, runner, 2, 2, 0, restartBuildB, restartStartA)
+				runner.mu.Lock()
+				runner.failRepair = false
+				runner.mu.Unlock()
+				params.OperationID = "repair-disconnected-retry"
+				restart, err = m.Restart(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.cfg.opsWG.Wait()
+				wantWrites = 3
+			}
+			wantState := hostops.StateComplete
+			if scenario == "wrong-build" || scenario == "wrong-process" {
+				wantState = hostops.StateFailed
+			}
+			assertRestartRecoveryRecord(t, store, restart.ID, wantState)
+			assertPublicRecoveryEffects(t, runner, wantWrites, wantWrites, 1, restartBuildB, restartStartB)
+			record, _ := store.Record(restart.ID)
+			runner.mu.Lock()
+			epochs, bridges := append([]appwire.FencingEpoch(nil), runner.probeEpochs...), len(runner.streams)
+			runner.mu.Unlock()
+			if bridges != 2 || len(epochs) == 0 || epochs[len(epochs)-1] != epochOf(record) {
+				t.Fatalf("post-repair bridge/epoch: bridges=%d epochs=%v record=%+v", bridges, epochs, record)
+			}
+			// A second transport drop must reconnect without another mutation:
+			// this observes the worker's real supervisor handoff, not its callback.
+			waitPublicRecoveryEvent(t, events, sshconn.EventAttached)
+			repaired, ok := manager.ChannelIfAttached(host.Name)
+			if !ok {
+				t.Fatal("completed Restart has no live channel")
+			}
+			if err := repaired.Close(); err != nil {
+				t.Fatal(err)
+			}
+			waitPublicRecoveryEvent(t, events, sshconn.EventAttached)
+			assertPublicRecoveryEffects(t, runner, wantWrites, wantWrites, 1, restartBuildB, restartStartB)
+		})
+	}
+}
+
+func TestHostRestartDisconnectedWithoutDeploymentDoesNotInstall(t *testing.T) {
+	runner := &restartRecoveryRunner{diskVersion: restartBuildA, runningVersion: restartBuildA, startedAt: restartStartA}
+	m, manager, store, host, _ := publicRecoveryHub(t, runner, restartBuildB)
+	ch, err := manager.Ensure(t.Context(), host.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.mu.Lock()
+	runner.launchResponse = fmt.Appendf(nil, `{"protocol":"incompatible","version":%q,"launch_flags":["api-log"]}`, restartBuildA)
+	runner.mu.Unlock()
+	// Drop under the actual operation hold so reconnect cannot win the race.
+	m.cfg.gate = &editingGate{inner: manager, onAs: func() { _ = ch.Close() }}
+	params := appwire.HostRestartParams{Name: host.Name, Generation: host.Generation, IncarnationID: host.IncarnationID, OperationID: "ordinary-disconnected"}
+	restart, err := m.Restart(t.Context(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.opsWG.Wait()
+	assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
+	assertPublicRecoveryEffects(t, runner, 0, 0, 0, restartBuildA, restartStartA)
+	runner.mu.Lock()
+	bridges := len(runner.streams)
+	runner.launchResponse = nil
+	runner.mu.Unlock()
+	if bridges != 2 || !manager.Attached(host.Name) {
+		t.Fatalf("ordinary Restart did not attach first: bridges=%d attached=%t", bridges, manager.Attached(host.Name))
+	}
+	m.cfg.gate = manager
+	params.OperationID = "ordinary-restored"
+	restart, err = m.Restart(t.Context(), params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.opsWG.Wait()
+	assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateComplete)
+	assertPublicRecoveryEffects(t, runner, 0, 0, 1, restartBuildA, restartStartB)
+}
+
+func TestHostDeployRestartAfterFreshProvisioningDoesNotRepush(t *testing.T) {
+	sha, dirty, channel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
+	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = sha, dirty, channel })
+	buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = "", "", ""
+	absent := exec.Command("sh", "-c", "exit 1").Run()
+	var exit *exec.ExitError
+	if !errors.As(absent, &exit) || exit.ExitCode() != 1 {
+		t.Fatalf("missing-executable fixture: %v", absent)
+	}
+	runner := &restartRecoveryRunner{missing: true, missingError: absent, acknowledgeFirstWrite: true}
+	m, manager, store, host, _ := publicRecoveryHub(t, runner, "dev")
+	if _, err := manager.Ensure(t.Context(), host.Name); err != nil {
+		t.Fatalf("fresh provisioning: %v", err)
+	}
+	assertPublicRecoveryEffects(t, runner, 1, 1, 0, "dev", restartStartA)
+	plan, err := m.Plan(t.Context(), appwire.HostPlanParams{Name: host.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deploy, err := m.Deploy(t.Context(), appwire.HostDeployParams{Name: host.Name, Token: plan.Token, OperationID: "same-label-deploy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.opsWG.Wait()
+	assertRestartRecoveryRecord(t, store, deploy.ID, hostops.StateComplete)
+	assertPublicRecoveryEffects(t, runner, 2, 2, 1, "dev", restartStartB)
+	restart, err := m.Restart(t.Context(), appwire.HostRestartParams{Name: host.Name, Generation: host.Generation, IncarnationID: host.IncarnationID, OperationID: "standalone-after-provisioning"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.opsWG.Wait()
+	assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateComplete)
+	assertPublicRecoveryEffects(t, runner, 2, 2, 2, "dev", "2026-01-03T00:00:00Z")
+}
+
+func publicRecoveryHub(t *testing.T, runner *restartRecoveryRunner, artifact string) (*hubHostManager, *sshconn.Manager, *hostops.Store, hostreg.Host, <-chan sshconn.EventKind) {
+	t.Helper()
+	host := deployTestHost()
+	registry, err := hostreg.New([]hostreg.Host{host})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, _ = registry.Get(host.Name)
+	store, err := hostops.Open(hostops.StorePath(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan sshconn.EventKind, 32)
+	manager := sshconn.New(registry, sshconn.Options{Runner: runner, Stderr: io.Discard, BackoffBase: 10 * time.Millisecond,
+		OnEvent: func(event sshconn.Event) {
+			if event.Kind == sshconn.EventAttached || event.Kind == sshconn.EventFailed {
+				events <- event.Kind
+			}
+		},
+		BuildBinary: func(_ context.Context, _, _, out string) error {
+			runner.mu.Lock()
+			runner.builds++
+			runner.mu.Unlock()
+			return os.WriteFile(out, []byte(artifact), 0o700)
+		},
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	m := newHubHostManager(nil, manager, hubcore.WebConfig{RemoteHostOpsStore: store, HubBootID: "public-recovery"}, deployTestConfigPath(t, host), registry, t.Logf)
+	t.Cleanup(func() { m.ShutdownHostOperations(operationsShutdownTimeout) })
+	runner.observeMutation = func() {
+		release, err := manager.TryAcquire(host.Name, hostops.Holder{Kind: hostops.HolderPlan})
+		if release != nil {
+			release()
+		}
+		var busy *hostops.BusyError
+		if !errors.As(err, &busy) || busy.Holder.Kind != hostops.HolderOperation {
+			t.Errorf("mutation without operation gate: %v", err)
+			return
+		}
+		record, ok := store.Record(busy.Holder.OperationID)
+		ensurePending := strings.HasPrefix(record.ClientOperationID, "ensure-") && record.State == hostops.StatePending
+		if !ok || record.State != hostops.StateRunning && !ensurePending || epochOf(record).BootID == "" {
+			t.Errorf("mutation without durable running record/epoch: %+v", record)
+		}
+	}
+	return m, manager, store, host, events
+}
+
+func waitPublicRecoveryEvent(t *testing.T, events <-chan sshconn.EventKind, want sshconn.EventKind) {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case kind := <-events:
+			if kind == want {
+				return
+			}
+		case <-deadline.C:
+			t.Fatalf("no %s event", want)
+		}
+	}
+}
+
+func assertPublicRecoveryEffects(t *testing.T, runner *restartRecoveryRunner, builds, writes, restarts int, version, started string) {
+	t.Helper()
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if runner.builds != builds || runner.writes != writes || runner.restarts != restarts || runner.runningVersion != version || runner.startedAt != started {
+		t.Fatalf("effects: builds=%d writes=%d restarts=%d version=%s start=%s, want %d/%d/%d/%s/%s", runner.builds, runner.writes, runner.restarts, runner.runningVersion, runner.startedAt, builds, writes, restarts, version, started)
+	}
+}
+
 // restartRecoveryRunner models a remote machine at the process/network boundary.
 // Health reports the actual replacement; the AppWire overrides exercise the
 // worker's independent verification after sshconn has accepted that replacement.
@@ -216,6 +508,14 @@ type restartRecoveryRunner struct {
 	launchResponse                []byte
 	delayBridgeExit               bool
 	writes, restarts, afterProbes int
+	builds, starts                int
+	acknowledgeFirstWrite         bool
+	firstWriteContract            []byte
+	failRepair                    bool
+	missing                       bool
+	missingError                  error
+	observeMutation               func()
+	probeEpochs                   []appwire.FencingEpoch
 	streams                       []*probeFakeStdio
 }
 
@@ -233,10 +533,18 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 	case strings.HasSuffix(command, "id -u"):
 		return []byte("1000\n"), nil
 	case strings.Contains(command, "launch-check"):
+		if r.missing {
+			return nil, r.missingError
+		}
 		if r.launchResponse != nil {
 			return r.launchResponse, nil
 		}
 		return fmt.Appendf(nil, `{"protocol":%q,"version":%q,"launch_flags":["api-log"]}`, appwire.ProtocolVersion, r.diskVersion), nil
+	case strings.Contains(command, "if test -x"):
+		if r.missing {
+			return nil, r.missingError
+		}
+		return nil, nil
 	case strings.Contains(command, "test -d /opt/evener/bin"):
 		return nil, nil
 	case strings.Contains(command, "command -v evener"):
@@ -244,10 +552,25 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 	case strings.Contains(command, "evener_resolve"):
 		return []byte("/opt/evener/bin/evener\n"), nil
 	case strings.Contains(command, "list-units"):
+		if r.runningVersion == "" {
+			if strings.Contains(command, "--user") {
+				return nil, nil
+			}
+			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
+		}
 		return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
+	case strings.Contains(command, "lsof -ti :9180"):
+		return []byte(sshconn.NoListenerMarker), nil
+	case strings.Contains(command, "systemctl start"):
+		r.starts++
+		r.runningVersion, r.startedAt = r.diskVersion, restartStartA
+		return nil, nil
 	case strings.Contains(command, "systemctl restart"):
+		if r.observeMutation != nil {
+			r.observeMutation()
+		}
 		r.restarts++
-		r.runningVersion, r.startedAt = r.diskVersion, restartStartB
+		r.runningVersion, r.startedAt = r.diskVersion, fmt.Sprintf("2026-01-%02dT00:00:00Z", r.restarts+1)
 		// A remote replacement can be confirmed before the local SSH reader
 		// observes EOF. Keep that boundary open to exercise the ordering.
 		if !r.delayBridgeExit {
@@ -257,10 +580,16 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 		}
 		return nil, nil
 	case strings.Contains(command, "api/health"):
-		return fmt.Appendf(nil, `{"version":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":%q}`, r.runningVersion, r.startedAt), nil
+		if r.runningVersion == "" {
+			return nil, errors.New("no listener")
+		}
+		return fmt.Appendf(nil, `{"version":%q,"backend_git_sha":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":%q}`, r.runningVersion, r.runningVersion, r.startedAt), nil
 	case strings.Contains(command, "cat >"):
+		if r.observeMutation != nil {
+			r.observeMutation()
+		}
 		r.writes++
-		if r.writes == 1 {
+		if r.writes == 1 && !r.acknowledgeFirstWrite || r.writes > 1 && r.failRepair {
 			return nil, errors.New("interrupted transport")
 		}
 		data, err := io.ReadAll(stdin)
@@ -268,6 +597,10 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 			return nil, err
 		}
 		r.diskVersion = string(data)
+		r.missing, r.launchResponse = false, nil
+		if r.writes == 1 {
+			r.launchResponse = r.firstWriteContract
+		}
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected remote command: %v", argv)
@@ -275,9 +608,10 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 }
 
 func (r *restartRecoveryRunner) Start(context.Context, []string, io.Writer) (sshconn.Stdio, error) {
-	stream := probeBridge(func(appwire.HostRunningParams) (appwire.HostRunningResponse, appwire.WireError) {
+	stream := probeBridge(func(params appwire.HostRunningParams) (appwire.HostRunningResponse, appwire.WireError) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
+		r.probeEpochs = append(r.probeEpochs, params.FencingEpoch)
 		version, startedAt := r.runningVersion, r.startedAt
 		if r.restarts > 0 {
 			r.afterProbes++

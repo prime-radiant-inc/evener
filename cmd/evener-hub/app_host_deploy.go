@@ -823,6 +823,26 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			fail(err)
 			return
 		}
+		if _, attached := m.attachedClient(work.entry); !attached && m.cfg.recoverDeployment != nil {
+			result, err := m.cfg.recoverDeployment(ctx, work.entry, hostops.Holder{Kind: hostops.HolderOperation, OperationID: id})
+			if err != nil {
+				fail(err)
+				return
+			}
+			if result != nil {
+				// The pending installation already authorized repair. Recovery has
+				// replaced its original predecessor under this persisted operation,
+				// not attached a predecessor that needs another restart. Keep that
+				// identity for the independent epoch-bearing post-reattach probe.
+				beforeProbe.ProcessStartTime = nil
+				if !result.ReplacedStartedAt.IsZero() {
+					beforeProbe.ProcessStartTime = &result.ReplacedStartedAt
+				}
+				targetVersion = result.TargetVersion
+				restartFollows = true
+				m.recordProgress(id, "the pending deployment was recovered and its replacement verified before attachment")
+			}
+		}
 		// §6's attach-first arm: a restart with no usable attached channel —
 		// the handler saw none, or the link dropped before this worker ran —
 		// attaches the host under the held gate first, and names the path in
@@ -833,40 +853,42 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		// through fail() before the failure is recorded — the deferred finish
 		// is the backstop for an exit that records no failure — so a failed
 		// probe or restart cannot strand it.
-		if _, attached := m.attachedClient(work.entry); !attached {
-			h, err := m.attachOperationChannel(ctx, id, work.entry,
-				"attach-first: the host had no usable attached channel, so the restart attaches it under the held host gate", true)
-			if h != nil {
-				// A published channel keeps its handoff even when the call
-				// reports a failure, so it is never left unsupervised.
-				handoff = h
+		if !restartFollows {
+			if _, attached := m.attachedClient(work.entry); !attached {
+				h, err := m.attachOperationChannel(ctx, id, work.entry,
+					"attach-first: the host had no usable attached channel, so the restart attaches it under the held host gate", true)
+				if h != nil {
+					// A published channel keeps its handoff even when the call
+					// reports a failure, so it is never left unsupervised.
+					handoff = h
+				}
+				if err != nil {
+					fail(err)
+					return
+				}
 			}
+			// Restart has no pre-operation probe step of its own (no token, no
+			// plan), so the worker takes the "pre-operation probe" value the
+			// post-operation refresh compares against here, under the held gate,
+			// presenting the epoch the record was created with.
+			probe, err := m.probeBeforeRestart(ctx, work)
 			if err != nil {
 				fail(err)
 				return
 			}
+			beforeProbe = probe
+			facts, ok := m.attachedFactsFor(work.entry.Name)
+			if !ok {
+				fail(hostDetachedRefusal(work.entry.Name))
+				return
+			}
+			targetVersion, err = m.runRestartStep(ctx, id, work.entry, facts)
+			if err != nil {
+				fail(err)
+				return
+			}
+			restartFollows = true
 		}
-		// Restart has no pre-operation probe step of its own (no token, no
-		// plan), so the worker takes the "pre-operation probe" value the
-		// post-operation refresh compares against here, under the held gate,
-		// presenting the epoch the record was created with.
-		probe, err := m.probeBeforeRestart(ctx, work)
-		if err != nil {
-			fail(err)
-			return
-		}
-		beforeProbe = probe
-		facts, ok := m.attachedFactsFor(work.entry.Name)
-		if !ok {
-			fail(hostDetachedRefusal(work.entry.Name))
-			return
-		}
-		targetVersion, err = m.runRestartStep(ctx, id, work.entry, facts)
-		if err != nil {
-			fail(err)
-			return
-		}
-		restartFollows = true
 	}
 	if m.interruptIfShuttingDown(ctx, id) {
 		return

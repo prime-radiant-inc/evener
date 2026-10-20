@@ -407,7 +407,11 @@ contract are verified, preserving its repair authority for a later Restart.
 Before stopping the live hub, Restart re-reads the selected executable's startup
 contract and uses those fresh facts to reconcile any pending deployment. An
 already-authorized deployment can repair an invalid contract or a changed build;
-its requested build must be verified before restart. Without that repair, an
+its requested build must be verified before restart. If the SSH channel has
+dropped, Restart performs this recovery under its persisted operation gate before
+requiring attachment. It then reattaches and independently verifies the requested
+build and replacement process without issuing a second restart. Ordinary Restart
+without pending deployment authority still attaches first. Without that repair, an
 incompatible protocol, missing required flag or unreadable contract refuses the
 restart and preserves the live connection. Fix the executable, then retry Restart.
 Connect and reconnect also validate the executable before retrying

@@ -10,8 +10,105 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
+
+func TestRefreshLaunchContractUpdatesAbsenceOnlyOnSuccessfulProbe(t *testing.T) {
+	absent := exitStatus(t, 1)
+	for _, missing := range []bool{false, true} {
+		for _, probe := range []string{"valid", "malformed", "transport", "absent"} {
+			t.Run(fmt.Sprintf("missing=%t/%s", missing, probe), func(t *testing.T) {
+				host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+				fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+					command := strings.Join(argv, " ")
+					if strings.Contains(command, "if test -x") {
+						if probe == "absent" {
+							return nil, absent
+						}
+						return nil, nil
+					}
+					if !strings.Contains(command, "launch-check") {
+						t.Fatalf("unexpected command: %s", command)
+					}
+					switch probe {
+					case "malformed":
+						return []byte(`{`), nil
+					case "transport", "absent":
+						return nil, errors.New("interrupted probe")
+					default:
+						return launchContract("dev"), nil
+					}
+				}}
+				m := newTestManager(t, testRegistry(t, host), fr, Options{})
+				facts, err := m.refreshLaunchContract(t.Context(), host, Preflight{ExecutableMissing: missing})
+				if probe == "valid" {
+					if err != nil || facts.ExecutableMissing || !facts.LaunchCheckKnown || facts.Version != "dev" {
+						t.Fatalf("successful probe: facts=%+v err=%v", facts, err)
+					}
+				} else if err == nil || facts.ExecutableMissing != missing || facts.LaunchCheckKnown {
+					t.Fatalf("failed probe changed absence/unknown facts: facts=%+v err=%v", facts, err)
+				}
+				if probe == "absent" && !errors.Is(err, ErrExecutableMissing) {
+					t.Fatalf("missing executable lost its classification: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestRecoverDeploymentForRestartRequiresOwnGateAndRegistration(t *testing.T) {
+	for _, scenario := range []string{"no-hold", "other-holder", "stale-registration"} {
+		t.Run(scenario, func(t *testing.T) {
+			writes := 0
+			fr := deployRunner(t, func(int) ([]byte, error) {
+				if writes > 0 {
+					return []byte(`{`), nil
+				}
+				return launchContract("dev"), nil
+			}, nil)
+			run := fr.runFn
+			fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+				if strings.Contains(strings.Join(argv, " "), "cat >") {
+					writes++
+				}
+				return run(ctx, argv, stdin)
+			}
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+			registry := testRegistry(t, host)
+			host, _ = registry.Get(host.Name)
+			m := newTestManager(t, registry, fr, Options{controllerVersionOverride: "dev", BuildBinary: writeStageBinary})
+			facts, err := m.preflight(t.Context(), host)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := m.DeployForOperation(t.Context(), host, facts, false); err == nil || writes != 1 {
+				t.Fatalf("expected failed acknowledged deployment: writes=%d err=%v", writes, err)
+			}
+			holder := attachUnderGateCaller()
+			if scenario != "no-hold" {
+				release, err := m.TryAcquire(host.Name, holder)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer release()
+			}
+			wantErr := hostops.ErrGateNotHeld
+			if scenario == "other-holder" {
+				holder.OperationID = "another-operation"
+			}
+			if scenario == "stale-registration" {
+				host.Generation++
+				wantErr = ErrHostNotFound
+			}
+			runs := len(fr.recordedRuns())
+			result, err := m.RecoverDeploymentForRestart(t.Context(), host, holder)
+			if !errors.Is(err, wantErr) || result != nil || len(fr.recordedRuns()) != runs || !m.pendingRestart(host.Name).deployment {
+				t.Fatalf("recovery crossed guard or lost intent: result=%+v err=%v commands=%d→%d", result, err, runs, len(fr.recordedRuns()))
+			}
+		})
+	}
+}
 
 func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 	for _, restart := range []bool{false, true} {

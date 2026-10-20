@@ -13,7 +13,10 @@ package sshconn
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
@@ -70,6 +73,52 @@ func (m *Manager) deployForOperation(ctx context.Context, host hostreg.Host, fac
 	return target, after, nil
 }
 
+// RestartResult preserves the selected build and original predecessor across
+// recovery, so a worker reattaching afterward does not restart the replacement
+// again or compare it against itself. Zero ReplacedStartedAt is unknown, not
+// proof of replacement.
+type RestartResult struct {
+	TargetVersion     string
+	ReplacedStartedAt time.Time
+}
+
+// RecoverDeploymentForRestart completes only an already-authorized deployment
+// under the Restart worker's hold. Attachment cannot precede this repair: its
+// launch-contract guard can refuse the unfinished installation. A nil result
+// leaves ordinary standalone Restart on its attach-first, non-deployment path.
+func (m *Manager) RecoverDeploymentForRestart(ctx context.Context, host hostreg.Host, holder hostops.Holder) (*RestartResult, error) {
+	if !m.hostGateHeldBy(host.Name, holder) {
+		return nil, fmt.Errorf("%w: host %q; deployment recovery requires the caller's hold", hostops.ErrGateNotHeld, host.Name)
+	}
+	if m.reg == nil || !m.reg.SameRegistration(host.Name, host) {
+		return nil, fmt.Errorf("%w: %q", ErrHostNotFound, host.Name)
+	}
+	if !m.pendingRestart(host.Name).deployment {
+		return nil, nil
+	}
+	if !m.beginEnsure() {
+		return nil, ErrManagerClosed
+	}
+	defer m.ensureWG.Done()
+	recoveryCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopClose := context.AfterFunc(m.baseCtx, cancel)
+	defer stopClose()
+	probeCtx, stopProbe := context.WithTimeout(recoveryCtx, m.opts.attemptLimit())
+	resolved := host
+	m.applyResolvedTarget(&resolved)
+	preflight, err := m.collectPreflight(probeCtx, resolved)
+	stopProbe()
+	if err != nil {
+		return nil, err
+	}
+	// Preserve host/environment refusals above, but let the authorized deployment
+	// repair preflight.launchErr. The restart path re-reads and validates the
+	// selected executable and retains the original build pin and predecessor.
+	result, err := m.restartForOperation(recoveryCtx, host, preflight.facts)
+	return &result, err
+}
+
 // RestartForOperation runs the 04b restart path against host under the caller's
 // held gate: the same user-versus-system unit decision and proven-replacement
 // wait `ensureOnce`'s restart step runs (restartHub), including the recorded
@@ -83,6 +132,11 @@ func (m *Manager) deployForOperation(ctx context.Context, host hostreg.Host, fac
 // restart completes a pending deployment. The target is captured before the
 // restart, never inferred from the replacement's health response.
 func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
+	result, err := m.restartForOperation(ctx, host, facts)
+	return result.TargetVersion, err
+}
+
+func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, facts Preflight) (RestartResult, error) {
 	restartCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
 	defer cancel()
 	registration := host
@@ -104,7 +158,7 @@ func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, fa
 		defer cancel()
 	}
 	if err != nil {
-		return "", err
+		return RestartResult{}, err
 	}
 	running, _ := m.probeRunningHub(restartCtx, host)
 	version, pin := expectedServedBuild(facts, m.opts.controllerVersion())
@@ -112,13 +166,14 @@ func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, fa
 		version, pin = pending.expectedVersion, pending.expectedGitSHA
 		running = pending.restartPredecessor(running)
 	}
+	result := RestartResult{TargetVersion: version, ReplacedStartedAt: running.startedAt}
 	if err := m.restartHub(restartCtx, host, facts, version, pin, running); err != nil {
-		return version, err
+		return result, err
 	}
 	// Health has proved the replacement. The predecessor's SSH reader may not
 	// have observed EOF yet, so make reattach replace its channel immediately.
 	if ch := m.currentChannel(host.Name); ch != nil && ch.MatchesRegistration(registration) {
 		ch.markLost()
 	}
-	return version, nil
+	return result, nil
 }

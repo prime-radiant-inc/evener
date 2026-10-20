@@ -2303,6 +2303,7 @@ func (m *Manager) refreshLaunchContract(ctx context.Context, host hostreg.Host, 
 	if err != nil {
 		return facts, err
 	}
+	facts.ExecutableMissing = false
 	facts.LaunchCheckKnown = true
 	facts.Protocol = refreshed.Protocol
 	facts.LaunchFlags = refreshed.LaunchFlags
