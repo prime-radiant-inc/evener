@@ -59,7 +59,7 @@ func replayRecordedStream(body []byte, requestedModel string) (llm.Response, err
 		Body:       io.NopCloser(bytes.NewReader(body)),
 	}
 	stream := llm.NewChanStream(nil)
-	go decodeStream(ctx, cancel, resp, stream, llm.Request{Model: requestedModel}, registry.Resolved{}, &protocolhttp.Result{}, nil)
+	go decodeStream(ctx, cancel, resp, stream, llm.Request{Model: requestedModel}, registry.Resolved{}, &protocolhttp.Result{}, nil, nil)
 
 	var final *llm.Response
 	var streamErr error
