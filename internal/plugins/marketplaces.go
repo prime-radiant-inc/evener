@@ -1087,8 +1087,8 @@ func runUndo(undo []func() error) error {
 }
 
 // moveMarketplaceClone handles only the clone side of a rename. Automatic
-// migration uses it without moving published caches. Explicit edits still move
-// both through moveMarketplace.
+// migration uses it without moving published caches. Explicit edits delegate
+// the cache decision to moveMarketplace.
 func (m *Manager) moveMarketplaceClone(name, newName string, ref MarketplaceRef, mk Marketplaces) (MarketplaceRef, []func() error, error) {
 	var undo []func() error
 	oldDir, newDir := m.marketplaceDir(name), m.marketplaceDir(newName)
