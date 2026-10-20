@@ -44,16 +44,17 @@ test-web: web-preflight build-dev
 ##   document reader through a REAL hub and its REAL daemon, proving the
 ##   selection/comment/Send, exact original-session draft, saved-note access,
 ##   clipped highlight geometry and native IndexedDB reopen with zero agent
+##   input.
 ## trigger: Required CI web job; local pre-merge on a Chrome-capable host.
 ## requires: Chrome/Chromium and the Go toolchain (the gate is the prebuilt
 ##   evener-dev); each guard gets a private process home,
 ##   temporary/XDG roots, and a private browser profile. No WebKit/Safari
 ##   runner. retirementguard also needs the Go toolchain: its npm script runs
 ##   the isolated TestRetirementBrowser fixture, which starts the Hub and
-##   drives the guard against it. The skill, cascade and annotation-journey
-##   guards also need the Go toolchain and the built frontend, which this
-##   target builds first (`build-web`); the gate still builds one when the
-##   dist is missing.
+##   drives the guard against it. The skill, cascade, background-transcript
+##   and annotation-journey guards also need the Go toolchain and the built
+##   frontend, which this target builds first (`build-web`); the gate still
+##   builds one when the dist is missing.
 ## fails-when: Any guard error, Vite failure, cleanup failure, or missing
 ##   Chrome/Chromium is nonzero.
 test-web-browser: build-web build-dev
