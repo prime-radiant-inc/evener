@@ -135,6 +135,7 @@ func liveFacts(m Model) Model {
 		MaxInputTokens: m.Caps.MaxInputTokens, MaxOutputTokens: m.Caps.MaxOutputTokens, EffortValues: m.Caps.EffortValues, Cost: m.Caps.Cost, Reasoning: m.Caps.Reasoning,
 		DefaultEffort: m.Caps.DefaultEffort, ReasoningControls: m.Caps.ReasoningControls,
 		ThinkingFormat: m.Caps.ThinkingFormat, MaxTokensField: m.Caps.MaxTokensField,
+		EffortParameterUnsupported: m.Caps.EffortParameterUnsupported,
 	}}
 	if m.Caps.ThinkingAlwaysOn != nil && *m.Caps.ThinkingAlwaysOn {
 		out.Caps.ThinkingAlwaysOn = new(true)

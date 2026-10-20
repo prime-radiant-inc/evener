@@ -252,11 +252,13 @@ func TestListModelsGatewayEffortUnsupportedIsToggleOnly(t *testing.T) {
 func TestApplyThinkingFormat_ToggleOnlyOpenRouterSendsNoEffort(t *testing.T) {
 	high, on := "high", true
 	format := "openrouter"
+	unsupported := true
 	body := map[string]any{}
 	applyThinkingFormat(body, llm.Request{ReasoningEffort: &high}, registry.Caps{
-		Reasoning:         &on,
-		ReasoningControls: []string{"toggle"},
-		ThinkingFormat:    &format,
+		Reasoning:                  &on,
+		ReasoningControls:          []string{"toggle"},
+		ThinkingFormat:             &format,
+		EffortParameterUnsupported: &unsupported,
 	})
 	r, _ := body["reasoning"].(map[string]any)
 	if r == nil {
@@ -267,6 +269,26 @@ func TestApplyThinkingFormat_ToggleOnlyOpenRouterSendsNoEffort(t *testing.T) {
 	}
 	if r["enabled"] != true {
 		t.Fatalf("reasoning = %v, want the enable object", r)
+	}
+}
+
+// TestApplyThinkingFormat_CatalogToggleKeepsOpenRouterEffort pins the other
+// side: a toggle-only ladder the catalog states (86 OpenRouter rows, e.g.
+// anthropic/claude-sonnet-4.5) is not a gateway rejection of effort. OpenRouter
+// translates the level into a budget, so suppressing it would silently discard
+// the user's setting.
+func TestApplyThinkingFormat_CatalogToggleKeepsOpenRouterEffort(t *testing.T) {
+	high, on := "high", true
+	format := "openrouter"
+	body := map[string]any{}
+	applyThinkingFormat(body, llm.Request{ReasoningEffort: &high}, registry.Caps{
+		Reasoning:         &on,
+		ReasoningControls: []string{"toggle"},
+		ThinkingFormat:    &format,
+	})
+	r, _ := body["reasoning"].(map[string]any)
+	if r == nil || r["effort"] != "high" {
+		t.Fatalf("reasoning = %v, want effort high passed through", body["reasoning"])
 	}
 }
 

@@ -63,10 +63,12 @@ func applyThinkingFormat(body map[string]any, req llm.Request, caps registry.Cap
 		// OpenRouter is the documented exception to the vouch gate: it
 		// normalizes reasoning.effort itself and its model listing often
 		// omits supported efforts, so the requested level is passed through
-		// and the gateway maps it to a budget. A toggle-only row is outside
-		// that exception — the gateway said this model takes no effort
-		// parameter, so it gets the enable object instead of a level.
-		if explicit && capable {
+		// and the gateway maps it to a budget. Only an explicit gateway verdict
+		// that the model takes no effort parameter is outside that exception:
+		// catalog toggle-only rows are exactly the ones whose provider
+		// translates the level, so suppressing those would discard the user's
+		// setting.
+		if explicit && !registry.BoolValue(caps.EffortParameterUnsupported) {
 			body["reasoning"] = map[string]any{"effort": wire}
 		} else if explicit || alwaysOn {
 			body["reasoning"] = map[string]any{"enabled": true}

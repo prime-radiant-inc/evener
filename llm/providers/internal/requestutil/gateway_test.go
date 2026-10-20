@@ -266,6 +266,28 @@ func TestApplyGatewayFacts_NonReasoningBeatsEffortVerdict(t *testing.T) {
 	}
 }
 
+// TestApplyGatewayFacts_EffortUnsupportedStillProvesReasoning pins that the
+// effort verdict and the reasoning evidence are independent. A usable map
+// proves the model reasons even when the gateway says it takes no effort
+// parameter; keeping the weaker inferred verdict would make derivation clear
+// the controls and request shaping drop reasoning entirely.
+func TestApplyGatewayFacts_EffortUnsupportedStillProvesReasoning(t *testing.T) {
+	no := false
+	caps := registry.Caps{}
+	ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{}, GatewayClientCompat{
+		Pi: &GatewayPiCompat{
+			SupportsReasoningEffort: &no,
+			ThinkingLevelMap:        map[string]string{"low": "low", "high": "high"},
+		},
+	})
+	if caps.Reasoning == nil || !*caps.Reasoning {
+		t.Fatalf("Reasoning = %v, want the usable map to prove reasoning", caps.Reasoning)
+	}
+	if !slices.Equal(caps.ReasoningControls, []string{"toggle"}) {
+		t.Fatalf("ReasoningControls = %#v, want toggle-only", caps.ReasoningControls)
+	}
+}
+
 func TestApplyGatewayFacts_Reasoning(t *testing.T) {
 	yes, no := true, false
 	levels := func(m map[string]string) GatewayClientCompat {

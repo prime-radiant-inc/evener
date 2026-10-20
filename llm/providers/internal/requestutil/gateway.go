@@ -101,8 +101,16 @@ func applyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, c
 	// live layer replaces a curated one instead of inheriting it. Building it
 	// first would only be discarded.
 	if pi := compat.Pi; pi != nil && pi.SupportsReasoningEffort != nil && !*pi.SupportsReasoningEffort {
+		caps.EffortParameterUnsupported = new(true)
 		caps.ReasoningControls = []string{"toggle"}
 		caps.EffortValues = []string{}
+		// The map still proves the model reasons, even though its ladder is
+		// not published. Without this, a row whose verdict was inferred false
+		// from a provider-wide parameter list loses the controls derivation
+		// just installed, and request shaping drops reasoning entirely.
+		if pi.ThinkingLevelMap != nil {
+			caps.Reasoning = new(true)
+		}
 		return
 	}
 	ladder, published := gatewayEffortLadder(compat)
