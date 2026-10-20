@@ -58,7 +58,7 @@ func TestOperationRestartReconcilesDeployment(t *testing.T) {
 			if (err != nil) != (scenario != "predecessor-probe") {
 				t.Fatalf("deploy: err=%v writes=%d", err, writes)
 			}
-			if err := m.RestartForOperation(t.Context(), host, after); err != nil {
+			if _, err := m.RestartForOperation(t.Context(), host, after); err != nil {
 				t.Fatalf("restart: %v", err)
 			}
 			ch, err := m.Ensure(t.Context(), host.Name)

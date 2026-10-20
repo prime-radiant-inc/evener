@@ -772,6 +772,9 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// refresh compares the new process against: the step-(3) probe for a deploy,
 	// and the worker's own pre-restart probe for a restart.
 	beforeProbe := work.probe
+	// The requested build is separate from that predecessor's identity: a
+	// standalone restart can finish an earlier deployment to another build.
+	targetVersion := work.token.ControllerRevision
 	if work.record.Kind == hostops.KindDeploy {
 		restartFollows = planRestartFollows(hubcore.HostRuntimeProbe{
 			Version:          work.token.RunningVersion,
@@ -810,7 +813,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 				fail(err)
 				return
 			}
-			if err := m.runRestartStep(ctx, id, work.entry, afterDeploy); err != nil {
+			if _, err := m.runRestartStep(ctx, id, work.entry, afterDeploy); err != nil {
 				fail(err)
 				return
 			}
@@ -858,7 +861,8 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			fail(hostDetachedRefusal(work.entry.Name))
 			return
 		}
-		if err := m.runRestartStep(ctx, id, work.entry, facts); err != nil {
+		targetVersion, err = m.runRestartStep(ctx, id, work.entry, facts)
+		if err != nil {
 			fail(err)
 			return
 		}
@@ -894,7 +898,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// §6's post-operation refresh: the verified channel-free preflight, then
 	// the running probe over the attached (reattached) channel, then the
 	// verification.
-	refreshErr := m.refreshOperation(ctx, id, work, beforeProbe, restartFollows)
+	refreshErr := m.refreshOperation(ctx, id, work, beforeProbe, targetVersion, restartFollows)
 	// The suppress-supervisor scope ends at verification: hand the channel back
 	// to a supervisor under the still-held gate, whether or not the refresh
 	// verified the outcome — the operation is over either way, and the host
@@ -934,18 +938,19 @@ func (m *hubHostManager) probeBeforeRestart(ctx context.Context, work opWork) (h
 	return probe, nil
 }
 
-// runRestartStep runs the 04b restart path and records the progress line both
-// the standalone and planned-restart callers share.
-func (m *hubHostManager) runRestartStep(ctx context.Context, id string, entry hostreg.Host, facts sshconn.Preflight) error {
+// runRestartStep runs the 04b restart path, returning its selected target build,
+// and records the progress line both standalone and planned restarts share.
+func (m *hubHostManager) runRestartStep(ctx context.Context, id string, entry hostreg.Host, facts sshconn.Preflight) (string, error) {
 	if m.cfg.restartHost == nil {
-		return errors.New("this hub has no restart step wired, so the operation cannot run")
+		return "", errors.New("this hub has no restart step wired, so the operation cannot run")
 	}
 	m.recordProgress(id, "restarting the host")
-	if err := m.cfg.restartHost(ctx, entry, facts); err != nil {
-		return err
+	target, err := m.cfg.restartHost(ctx, entry, facts)
+	if err != nil {
+		return "", err
 	}
 	m.recordProgress(id, "restart verified healthy")
-	return nil
+	return target, nil
 }
 
 // checkOperationFingerprint re-reads the host's own hub.toml entry fingerprint
@@ -972,7 +977,7 @@ func (m *hubHostManager) checkOperationFingerprint(entry hostreg.Host, bound str
 // attached channel presenting the operation's persisted fencing epoch. It
 // records the failure verbatim — never a clean success it could not verify —
 // and returns nil only when the refresh verified the outcome.
-func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work opWork, beforeProbe hubcore.HostRuntimeProbe, restarted bool) error {
+func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work opWork, beforeProbe hubcore.HostRuntimeProbe, target string, restarted bool) error {
 	if m.cfg.planFacts == nil {
 		return errors.New("the post-operation preflight is not wired")
 	}
@@ -1001,12 +1006,6 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 	}
 	m.recordProgress(id, fmt.Sprintf("post-operation probe: build %q healthy=%t", probe.Version, probe.RunningHealthy))
 
-	target := work.token.ControllerRevision
-	if work.record.Kind == hostops.KindRestart {
-		// A restart serves the build the host already had; the pre-operation
-		// probe named it.
-		target = beforeProbe.Version
-	}
 	if !probe.RunningHealthy {
 		return fmt.Errorf("the post-operation probe reports the host unhealthy (build %q), so the operation is not a verified success", probe.Version)
 	}

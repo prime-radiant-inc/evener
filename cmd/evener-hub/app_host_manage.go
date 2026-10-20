@@ -202,7 +202,7 @@ type hostManagerConfig struct {
 	// RestartForOperation; a nil pair (tests, embedders) fails the operation's
 	// worker with the refusal the missing seam means.
 	deployHost  func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, restart bool) (string, sshconn.Preflight, error)
-	restartHost func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) error
+	restartHost func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) (string, error)
 	// attachedFacts returns the attached channel's captured preflight facts —
 	// the deploy path's facts source, since deploy runs no fresh preflight of
 	// its own (§6 step 3), and the attach-first restart's probe source. Nil

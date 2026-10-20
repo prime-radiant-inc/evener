@@ -78,15 +78,18 @@ func (m *Manager) deployForOperation(ctx context.Context, host hostreg.Host, fac
 //
 // The hub's restart worker owns the post-restart reattach and re-probe
 // (deploy pipeline §6's post-operation refresh); this call ends once the
-// replacement is proven healthy.
-func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, facts Preflight) error {
+// replacement is proven healthy. It returns the selected target version for
+// that refresh, which may differ from the predecessor's version when this
+// restart completes a pending deployment. The target is captured before the
+// restart, never inferred from the replacement's health response.
+func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
 	if pending := m.pendingRestart(host.Name); pending.needsDeployment(facts) {
 		// This explicit Restart authorizes replacement even when the unfinished
 		// deployment was deploy-only. Finish its write before replacing its marker.
 		pending.restart = true
 		_, after, err := m.deployForOperation(ctx, host, facts, pending)
 		if err != nil {
-			return err
+			return "", err
 		}
 		facts = after
 		m.applyResolvedTarget(&host)
@@ -99,5 +102,5 @@ func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, fa
 		version, pin = pending.expectedVersion, pending.expectedGitSHA
 		running = pending.restartPredecessor(running)
 	}
-	return m.restartHub(restartCtx, host, facts, version, pin, running)
+	return version, m.restartHub(restartCtx, host, facts, version, pin, running)
 }
