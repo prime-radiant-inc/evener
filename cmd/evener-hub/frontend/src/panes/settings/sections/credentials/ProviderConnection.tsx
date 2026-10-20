@@ -169,6 +169,9 @@ function selectionIdentity(row: InstanceEntry | undefined): string {
 function needsConfiguration(row: InstanceEntry | undefined): boolean {
   return !row || !!row.hidden || !row.baseUrl || /[{}]/.test(row.baseUrl);
 }
+function hasSavedAccess(row: InstanceEntry | undefined): boolean {
+  return row?.activeSource === "store" || row?.activeSource === "oauth";
+}
 
 function resolvedAuthModes(row: ProviderDescriptor): string[] {
   return row.setup?.authModes ?? row.authModes ?? [];
@@ -353,8 +356,8 @@ function SelectedConnection({
   }, [resolvedProviderId]);
   const [missingCredential, setMissingCredential] = useState(false);
   const [host, setHost] = useState(false);
-  const [saved, setSaved] = useState(row?.activeSource === "store");
-  const [storedAccess, setStoredAccess] = useState(row?.activeSource === "store");
+  const [saved, setSaved] = useState(hasSavedAccess(row));
+  const [storedAccess, setStoredAccess] = useState(hasSavedAccess(row));
   const [configured, setConfigured] = useState(false);
   const [configure, setConfigure] = useState(false);
   const [oauth, setOAuth] = useState<OAuthEditor | null>(null);
@@ -372,6 +375,17 @@ function SelectedConnection({
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryAttempt = useRef(0);
   const retryRunRef = useRef<((token: number, expectedSource?: string) => Promise<void>) | null>(null);
+  // What automatic work still owes the user, independent of the request token
+  // that a reconnect makes obsolete: a read/check reconciliation anchored on
+  // this flow's destination and expected credential source.
+  const pendingRecovery = useRef<{ expectedSource?: string } | null>(null);
+  // The source the acquisition actually produced ("store" for a saved key or
+  // JSON, "oauth" for a sign-in, a resolved host source, or undefined). Manual
+  // and automatic recovery compare against this, never against a generic
+  // "saved" flag.
+  const acquisitionSource = useRef<string | undefined>(
+    row?.activeSource && row.activeSource !== "none" ? row.activeSource : undefined,
+  );
   // The callback the check completes through. A ref keeps a check that began
   // under an earlier render from calling a stale owner callback.
   const onConnectedRef = useRef(onConnected);
@@ -390,6 +404,32 @@ function SelectedConnection({
     }
   }, []);
   useEffect(() => () => clearRetry(), [clearRetry]);
+  const scheduleRetryRef = useRef<(expectedSource?: string) => void>(() => {});
+  const scheduleRetry = useCallback(
+    (expectedSource?: string) => {
+      if (!active.current) return;
+      clearRetry();
+      const delay = RETRY_DELAYS_MS[Math.min(retryAttempt.current, RETRY_DELAYS_MS.length - 1)] ?? 15000;
+      retryAttempt.current += 1;
+      retryTimer.current = setTimeout(() => {
+        retryTimer.current = null;
+        if (!active.current) return;
+        // A retry that comes due during a reconnect waits for the recovered
+        // connection instead of spending its attempt on a request that cannot
+        // land; transport recovery is what re-anchors the next read.
+        if (connectionStore.getState().state !== "ready") {
+          scheduleRetryRef.current(expectedSource);
+          return;
+        }
+        // Every earlier attempt is obsolete, so the retry starts a fresh
+        // operation and re-reads the listing before it contacts the provider.
+        const next = ++operation.current;
+        void retryRunRef.current?.(next, expectedSource);
+      }, delay);
+    },
+    [active, clearRetry],
+  );
+  scheduleRetryRef.current = scheduleRetry;
   const modes = row?.authModes ?? effectiveProvider.authModes ?? [];
   const json = modes.includes("credentialJson");
   const storedMode = json || modes.includes("apiKey");
@@ -414,6 +454,7 @@ function SelectedConnection({
       if (clearScheduled) {
         clearRetry();
         retryAttempt.current = 0;
+        pendingRecovery.current = null;
       }
       operation.current += 1;
       setPhase("idle");
@@ -429,13 +470,26 @@ function SelectedConnection({
       if (current.client !== previous.client || current.state !== previous.state) {
         // A reconnect or replacement is not a different target: a scheduled
         // retry still re-anchors on the destination it named and reads through
-        // whichever client is current when it fires.
+        // whichever client is current when it fires. Pending read intent is not
+        // a request token: the old request is obsolete, but the reconciliation
+        // it owed the user is scheduled again over the recovered client.
+        const replacement = current.client !== previous.client;
+        const recovered = current.state === "ready" && previous.state !== "ready";
         invalidate(false);
         setConfigure(false);
-        if (current.client !== previous.client) {
-          setSaved(false);
-          setStoredAccess(false);
-          setConfigured(false);
+        // A same-controller replacement is transport, not credential removal:
+        // saved access and its source survive so manual recovery cannot write
+        // the credential a second time. The destination comparison still
+        // refuses a replacement controller's different listing.
+        if (replacement) setConfigured(false);
+        if (
+          current.state === "ready" &&
+          (replacement || recovered) &&
+          pendingRecovery.current !== null &&
+          retryTimer.current === null
+        ) {
+          retryAttempt.current = 0;
+          scheduleRetry(pendingRecovery.current.expectedSource);
         }
       }
     });
@@ -469,7 +523,7 @@ function SelectedConnection({
       unsubscribeConnection();
       unsubscribeStore();
     };
-  }, [invalidate, oauth, name, baseline, review]);
+  }, [invalidate, oauth, name, baseline, review, scheduleRetry]);
   const errorMessage = error?.message;
   useEffect(() => {
     if (errorMessage) errorRef.current?.focus();
@@ -478,6 +532,7 @@ function SelectedConnection({
   function leave(callback: () => void) {
     clearRetry();
     retryAttempt.current = 0;
+    pendingRecovery.current = null;
     operation.current += 1;
     callback();
   }
@@ -487,6 +542,8 @@ function SelectedConnection({
   function changeValue(next: string) {
     clearRetry();
     retryAttempt.current = 0;
+    pendingRecovery.current = null;
+    acquisitionSource.current = undefined;
     operation.current += 1;
     setDraft({ providerId: resolvedProviderId ?? effectiveProvider.id, value: next });
     setMissingCredential(false);
@@ -497,35 +554,25 @@ function SelectedConnection({
     setError(null);
   }
 
-  function scheduleRetry(expectedSource?: string) {
-    if (!active.current) return;
+  // A user-intent change away from the checked connection retires every
+  // automatic read for it; the replacement editor or access mode owns what
+  // happens next.
+  function retireForIntentChange() {
     clearRetry();
-    const delay = RETRY_DELAYS_MS[Math.min(retryAttempt.current, RETRY_DELAYS_MS.length - 1)] ?? 15000;
-    retryAttempt.current += 1;
-    retryTimer.current = setTimeout(() => {
-      retryTimer.current = null;
-      if (!active.current) return;
-      // A retry that comes due during a reconnect waits for the recovered
-      // connection instead of spending its attempt on a request that cannot
-      // land; transport recovery is what re-anchors the next read.
-      if (connectionStore.getState().state !== "ready") {
-        scheduleRetry(expectedSource);
-        return;
-      }
-      // Every earlier attempt is obsolete, so the retry starts a fresh
-      // operation and re-reads the listing before it contacts the provider.
-      const next = ++operation.current;
-      void retryRunRef.current?.(next, expectedSource);
-    }, delay);
+    retryAttempt.current = 0;
+    pendingRecovery.current = null;
+    operation.current += 1;
   }
 
   async function check(token: number, target: InstanceEntry) {
     if (!current(token)) return;
     clearRetry();
+    pendingRecovery.current = { expectedSource: target.activeSource };
     // A row whose destination the listing could not fingerprint has no
     // assertion to carry, and an unasserted probe dials whatever the name
     // resolves to now: refuse it before the call.
     if (fingerprintUnavailable(target)) {
+      pendingRecovery.current = null;
       setPhase("idle");
       setError({ reason: "check-fingerprint-unavailable", message: FINGERPRINT_UNAVAILABLE_TEST_MESSAGE });
       return;
@@ -547,6 +594,7 @@ function SelectedConnection({
       if (response.status === "success") {
         // Retire the operation before telling the owner: whatever the owner
         // does next - including a store notification - cannot complete twice.
+        pendingRecovery.current = null;
         operation.current += 1;
         onConnectedRef.current(target.name);
         return;
@@ -558,6 +606,7 @@ function SelectedConnection({
       // credential, a missing credential and broken configuration are answers
       // about the connection, and retrying them cannot change that.
       if (response.status === "endpoint_failure") scheduleRetry(target.activeSource);
+      else pendingRecovery.current = null;
     } catch (err) {
       if (!current(token)) return;
       // A refused assertion means the destination moved under the check, and a
@@ -612,6 +661,7 @@ function SelectedConnection({
   async function refreshAndCheck(token: number, expectedSource?: string) {
     setPhase("refreshing");
     setError(null);
+    pendingRecovery.current = { expectedSource };
     // The listing this refresh waits for can be superseded by the debounced
     // refetch evener/auth/updated schedules (250ms after the save), and the
     // store drops a superseded response without applying it. The read's own
@@ -649,6 +699,7 @@ function SelectedConnection({
     if (needsConfiguration(target)) {
       clearRetry();
       retryAttempt.current = 0;
+      pendingRecovery.current = null;
       setPhase("idle");
       setError({
         reason: "needs-configuration",
@@ -669,6 +720,7 @@ function SelectedConnection({
       destination(baseline) !== destination(target) ||
       target.activeSource !== (expectedSource ?? baseline?.activeSource)
     ) {
+      pendingRecovery.current = null;
       setReview(target);
       setPhase("review");
       return;
@@ -688,6 +740,7 @@ function SelectedConnection({
     }
     clearRetry();
     retryAttempt.current = 0;
+    pendingRecovery.current = null;
     const token = ++operation.current;
     setError(null);
     setResult(null);
@@ -728,6 +781,7 @@ function SelectedConnection({
         if (!current(token)) return;
         setSaved(true);
         setStoredAccess(true);
+        acquisitionSource.current = "store";
       } catch (err) {
         if (!current(token)) return;
         // The same two changes, and the same recovery: the hub refused the
@@ -743,19 +797,21 @@ function SelectedConnection({
           return;
         }
         setPhase("idle");
+        pendingRecovery.current = null;
         setError({
           reason: "save-failed",
           message: "Credential could not be saved. Your draft is retained; retry saving.",
         });
         return;
       }
-      await refreshAndCheck(token, "store");
-    } else await refreshAndCheck(token, saved ? "store" : undefined);
+      await refreshAndCheck(token, acquisitionSource.current);
+    } else await refreshAndCheck(token, acquisitionSource.current);
   }
 
   async function signIn() {
     clearRetry();
     retryAttempt.current = 0;
+    pendingRecovery.current = null;
     const token = ++operation.current;
     setPhase("saving");
     setError(null);
@@ -774,6 +830,7 @@ function SelectedConnection({
         // what changed and ask for this connection's listing, whose arrival is
         // what makes the retry land.
         if (isStaleListingRefusal(err)) {
+          pendingRecovery.current = null;
           setError({ reason: "connection-replaced", message: CONNECTION_REPLACED_ERROR });
           void credentialsStore
             .getState()
@@ -781,11 +838,13 @@ function SelectedConnection({
             .catch(() => {});
           return;
         }
+        pendingRecovery.current = null;
         setError({ reason: "sign-in-failed", message: "Sign-in could not be started. Try again." });
       }
     }
   }
   function closeOAuth() {
+    pendingRecovery.current = null;
     operation.current += 1;
     setOAuth(null);
     setPhase("idle");
@@ -797,6 +856,7 @@ function SelectedConnection({
     // the check returns.
     setSaved(true);
     setStoredAccess(true);
+    acquisitionSource.current = "oauth";
     const token = ++operation.current;
     void refreshAndCheck(token, "oauth");
   }
@@ -813,6 +873,8 @@ function SelectedConnection({
   function adoptCreated(createdName: string): void {
     clearRetry();
     retryAttempt.current = 0;
+    pendingRecovery.current = null;
+    acquisitionSource.current = undefined;
     operation.current += 1;
     const created = findSetup(createdName);
     setName(createdName);
@@ -820,7 +882,7 @@ function SelectedConnection({
     setConfigured(true);
     setConfigure(false);
     setSaved(false);
-    setStoredAccess(created?.activeSource === "store");
+    setStoredAccess(hasSavedAccess(created));
     // A value typed for a different destination must not be submitted to the
     // adopted connection, the reason the removal effect makes this same reset.
     // Keying that on providerId alone is not enough: one provider can host two
@@ -850,6 +912,7 @@ function SelectedConnection({
   async function reloadCreated() {
     clearRetry();
     retryAttempt.current = 0;
+    pendingRecovery.current = null;
     const token = ++operation.current;
     setPhase("refreshing");
     setError(null);
@@ -884,6 +947,15 @@ function SelectedConnection({
     if (!applied || state.loading || state.error || !created) {
       setError({ reason: "reload-failed", message: RELOAD_FAILED_ERROR });
     } else setBaseline(created);
+  }
+
+  function enterConfiguration() {
+    retireForIntentChange();
+    setResult(null);
+    setReview(null);
+    setError(null);
+    setPhase("idle");
+    setConfigure(true);
   }
 
   // A step of the flow replaces this dialog with the editor it opens - the
@@ -978,7 +1050,7 @@ function SelectedConnection({
               Configure the endpoint and required template variables before adding access.{" "}
               {Object.values(effectiveProvider.vars ?? {}).join(", ")}
             </p>
-            <Button disabled={store.writesRefused || unavailable} onClick={() => setConfigure(true)}>
+            <Button disabled={store.writesRefused || unavailable} onClick={() => enterConfiguration()}>
               Configure provider
             </Button>
             {store.writesRefused && (
@@ -1084,16 +1156,19 @@ function SelectedConnection({
                 variant="quiet"
                 disabled={busy}
                 onClick={() => {
+                  retireForIntentChange();
+                  acquisitionSource.current = undefined;
                   setHost(!host);
                   setResult(null);
                   setReview(null);
                   setPhase("idle");
+                  setError(null);
                 }}
               >
                 {host ? "Use a new credential" : "Use existing host access"}
               </Button>
             )}
-            <Button variant="secondary" disabled={busy || store.writesRefused} onClick={() => setConfigure(true)}>
+            <Button variant="secondary" disabled={busy || store.writesRefused} onClick={() => enterConfiguration()}>
               Configure another instance
             </Button>
             <Button variant="quiet" onClick={() => leave(onOpenSettings)}>
