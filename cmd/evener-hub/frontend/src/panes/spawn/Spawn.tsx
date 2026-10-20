@@ -397,12 +397,23 @@ function SpawnForm({
   // keeps draft B from forgetting draft A: each draft owns its own scope.
   const [providerConnectionScope, setProviderConnectionScope] = useDraftField(draft, "providerConnectionScope");
   const providerCompletion = useRef<ProviderCompletionAttempt | null>(null);
+  // The finite lifetime of the completion's own refresh work. Unlike the
+  // attempt (which answers "may THIS result adopt?"), this says "this global
+  // catalog request was caused by the owned completion and belongs to its
+  // originating draft". It is retired when the completion's work finishes and
+  // its last owned request settles.
+  const completionOwned = useRef<{
+    attempt: ProviderCompletionAttempt;
+    outstanding: number;
+    finished: boolean;
+  } | null>(null);
   const providerCompletionGeneration = useRef(0);
   // The credential generation the completion's fresh catalog must belong to,
   // read at resolution time rather than captured in a stale callback.
   const credentialsGenerationRef = useRef(0);
   const closeProviderSetup = useCallback(() => {
     providerCompletion.current = null;
+    completionOwned.current = null;
     setConnectingProvider(false);
   }, []);
   // ConnectProviderDialog is a CONTROLLER-scoped editor: it reads and writes the
@@ -421,6 +432,7 @@ function SpawnForm({
     if (providerDialogHostRef.current === submittedSource) return;
     providerDialogHostRef.current = submittedSource;
     providerCompletion.current = null;
+    completionOwned.current = null;
     setConnectingProvider(false);
   }, [submittedSource]);
   // The chunk hook owns the lazy payload and its cache-busted retry state;
@@ -472,7 +484,7 @@ function SpawnForm({
   const openProviderSetup = useCallback(() => {
     const fields = draft.fields.getState();
     setProviderConnectionScope({ source: submittedSource, harness: fields.harness, cwd: draft.cwd });
-    providerCompletion.current = {
+    const attempt = {
       draft,
       source: submittedSource,
       harness: fields.harness,
@@ -480,6 +492,12 @@ function SpawnForm({
       modelChoiceRevision: fields.modelChoiceRevision,
       generation: ++providerCompletionGeneration.current,
     };
+    providerCompletion.current = attempt;
+    // The flow owns its originating draft from the moment setup opens: the
+    // connector's own listing refresh during submit is part of the same
+    // operation and must not undo a preserved choice before the access check
+    // even succeeds.
+    completionOwned.current = { attempt, outstanding: 0, finished: false };
     setConnectingProvider(true);
   }, [draft, submittedSource, setProviderConnectionScope]);
   // The completion belongs to the attempt, not to the pane: leaving this draft,
@@ -490,11 +508,13 @@ function SpawnForm({
   useEffect(() => {
     const revoke = () => {
       providerCompletion.current = null;
+      completionOwned.current = null;
     };
     window.addEventListener("popstate", revoke);
     return () => {
       window.removeEventListener("popstate", revoke);
       providerCompletion.current = null;
+      completionOwned.current = null;
     };
   }, [draft, submittedSource, harness, cwd]);
   const [directoryOpen, setDirectoryOpen] = useState(false);
@@ -531,10 +551,10 @@ function SpawnForm({
   const [globalModelRequest, setGlobalModelRequest] = useState<{
     active: boolean;
     promise: Promise<ModelListResponse>;
-    /** True for the one request a provider completion's own refresh causes.
-     * That request may display/prune useful rows, but it must not rewrite saved
-     * defaults or clear a preserved explicit choice for this draft. */
-    protectedByCompletion: boolean;
+    /** The originating draft for a request a provider completion's own refresh
+     * causes, or null for an ordinary request. Only that exact draft skips
+     * destructive cleanup; every other draft keeps its usual validation. */
+    completionOrigin: SpawnDraft | null;
   } | null>(null);
   // The host whose global model list has ANSWERED since the last host change
   // (null while the current host's is outstanding). It is the model half of the
@@ -1195,50 +1215,64 @@ function SpawnForm({
       setConnectingProvider(false);
       modelListCache.current.entries.clear();
       const generationAtRequest = credentialsGenerationRef.current;
+      const existing = completionOwned.current;
+      const owned =
+        existing !== null && existing.attempt === attempt ? existing : { attempt, outstanding: 0, finished: false };
+      owned.finished = false;
+      completionOwned.current = owned;
       void (async () => {
         try {
-          await providerSetup.retry();
-        } catch {
-          return;
+          try {
+            await providerSetup.retry();
+          } catch {
+            return;
+          }
+          if (providerCompletion.current !== attempt) return;
+          let response: ModelListResponse;
+          try {
+            response = await loadModelList(true);
+          } catch {
+            // A failed fresh discovery leaves the ordinary inline model recovery
+            // in charge; cached rows may still display, but they are not evidence.
+            return;
+          }
+          if (providerCompletion.current !== attempt) return;
+          if (credentialsGenerationRef.current !== generationAtRequest) return;
+          if (spawnDraftsStore.getState().current !== attempt.draft) return;
+          const current = attempt.draft.fields.getState();
+          if (
+            current.harness !== attempt.harness ||
+            current.source !== attempt.source ||
+            attempt.draft.cwd !== attempt.cwd ||
+            current.modelChoiceRevision !== attempt.modelChoiceRevision
+          ) {
+            return;
+          }
+          // Only an untouched first run may adopt: a saved model (revision 1) or
+          // any explicit choice (even empty) is preserved as the person left it.
+          if (attempt.modelChoiceRevision !== 0) return;
+          // A /model invocation is explicit intent too, bare included.
+          if (matchBuiltinInvocation(current.prompt, spawnBuiltinCommands())?.command.id === "model") return;
+          if (name === undefined || name.trim() === "") return;
+          const marked = (response.data ?? []).filter(
+            (model) => model.instanceDefault === true && model.provider === name,
+          );
+          if (marked.length !== 1) return;
+          const chosen = marked[0];
+          if (chosen === undefined) return;
+          // Not handleModelChange/saveDefaults: automatic adoption is draft-local
+          // and must not record an explicit choice or persist a global default.
+          setDefaultModelFallback(null);
+          setStaleNotice(null);
+          setModel(`${chosen.provider}/${chosen.model}`);
+        } finally {
+          // The attempt and its protection are copies of THIS operation, not a
+          // standing flag: once its own refresh work is over, later ordinary
+          // refreshes get the usual validation back.
+          if (providerCompletion.current === attempt) providerCompletion.current = null;
+          owned.finished = true;
+          if (owned.outstanding === 0 && completionOwned.current === owned) completionOwned.current = null;
         }
-        if (providerCompletion.current !== attempt) return;
-        let response: ModelListResponse;
-        try {
-          response = await loadModelList(true);
-        } catch {
-          // A failed fresh discovery leaves the ordinary inline model recovery
-          // in charge; cached rows may still display, but they are not evidence.
-          return;
-        }
-        if (providerCompletion.current !== attempt) return;
-        if (credentialsGenerationRef.current !== generationAtRequest) return;
-        if (spawnDraftsStore.getState().current !== attempt.draft) return;
-        const current = attempt.draft.fields.getState();
-        if (
-          current.harness !== attempt.harness ||
-          current.source !== attempt.source ||
-          attempt.draft.cwd !== attempt.cwd ||
-          current.modelChoiceRevision !== attempt.modelChoiceRevision
-        ) {
-          return;
-        }
-        // Only an untouched first run may adopt: a saved model (revision 1) or
-        // any explicit choice (even empty) is preserved as the person left it.
-        if (attempt.modelChoiceRevision !== 0) return;
-        // A /model invocation is explicit intent too, bare included.
-        if (matchBuiltinInvocation(current.prompt, spawnBuiltinCommands())?.command.id === "model") return;
-        if (name === undefined || name.trim() === "") return;
-        const marked = (response.data ?? []).filter(
-          (model) => model.instanceDefault === true && model.provider === name,
-        );
-        if (marked.length !== 1) return;
-        const chosen = marked[0];
-        if (chosen === undefined) return;
-        // Not handleModelChange/saveDefaults: automatic adoption is draft-local
-        // and must not record an explicit choice or persist a global default.
-        setDefaultModelFallback(null);
-        setStaleNotice(null);
-        setModel(`${chosen.provider}/${chosen.model}`);
       })();
       if (ownsFocus) {
         queueMicrotask(() => {
@@ -1636,20 +1670,37 @@ function SpawnForm({
       modelHostRef.current = submittedSource;
       setModelHostSettled(null);
     }
-    const completion = providerCompletion.current;
-    const protectedByCompletion =
-      completion !== null &&
-      completion.generation === providerCompletionGeneration.current &&
-      completion.draft === draft &&
-      draft.fields.getState().modelChoiceRevision === completion.modelChoiceRevision;
+    // Only a request started while the completion's own refresh work is live
+    // belongs to it, and only for its originating draft. The revision is
+    // deliberately not part of this test: an explicit choice made while the
+    // refresh was pending must still be shielded from that refresh's cleanup.
+    const owned = completionOwned.current;
+    const ownedHere =
+      owned !== null &&
+      !owned.finished &&
+      owned.attempt.generation === providerCompletionGeneration.current &&
+      owned.attempt.draft === draft
+        ? owned
+        : null;
+    if (ownedHere !== null) ownedHere.outstanding += 1;
+    let ownedSettled = false;
+    const settleOwned = () => {
+      if (ownedHere === null || ownedSettled) return;
+      ownedSettled = true;
+      ownedHere.outstanding -= 1;
+      if (ownedHere.finished && ownedHere.outstanding === 0 && completionOwned.current === ownedHere) {
+        completionOwned.current = null;
+      }
+    };
     const request = {
       active: true,
       promise: hostRequest(client, submittedSource, "model/list", { harness: "evener" }),
-      protectedByCompletion,
+      completionOrigin: ownedHere === null ? null : ownedHere.attempt.draft,
     };
     setGlobalModelRequest(request);
     request.promise.then(
       (r) => {
+        settleOwned();
         if (!request.active) return;
         // An answer - the host's own list, for the host it names.
         setModelHostSettled(submittedSource);
@@ -1663,11 +1714,11 @@ function SpawnForm({
         // remote draft is validated against the remote list by the effect
         // below, which never writes storage.
         // A completion's own refresh may add or retire display rows, but it
-        // must not rewrite the controller's saved defaults while the preserved
-        // draft is still the attempt's origin.
-        if (isLocalHost(submittedSource) && !request.protectedByCompletion) sweepStaleModels(r.data ?? []);
+        // must not rewrite the controller's saved defaults for its origin.
+        if (isLocalHost(submittedSource) && request.completionOrigin !== draft) sweepStaleModels(r.data ?? []);
       },
       () => {
+        settleOwned();
         // A refusal is a SETTLEMENT, not an answer: it releases the submit gate
         // (an offline host must not hold Start hostage - the same rule the
         // harness/schema gate follows) while the draft validator below still
@@ -1677,6 +1728,7 @@ function SpawnForm({
     );
     return () => {
       request.active = false;
+      settleOwned();
     };
   }, [client, submittedSource, providerSetup.instances, credentialsGeneration]);
 
@@ -1691,9 +1743,9 @@ function SpawnForm({
   useEffect(() => {
     if (!globalModelRequest || !usesEvenerModels) return;
     // The completion's own catalog refresh must not erase a choice the person
-    // preserved into this flow; the regular inline recovery owns an unknown or
-    // unavailable model there.
-    if (globalModelRequest.protectedByCompletion) return;
+    // preserved into the flow it originates. Every other draft - and every
+    // later ordinary refresh - keeps its usual validation.
+    if (globalModelRequest.completionOrigin === draft) return;
     const initial = draft.fields.getState();
     if (!initial.model) return;
     globalModelRequest.promise.then(

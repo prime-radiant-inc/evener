@@ -2074,6 +2074,171 @@ test("automatic connection completion drops a late answer from a retired credent
   expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
 });
 
+test("automatic connection completion preserves a chip choice made while the instance refresh is pending", async () => {
+  const user = setupUser();
+  let saved = false;
+  let released = false;
+  let holdInstanceRead = false;
+  const pendingInstances = deferred<ReturnType<typeof teamInstanceList>>();
+  const postCatalog: ModelDescriptor[] = [
+    { provider: "openai", model: "gpt-5.5", displayName: "openai/gpt-5.5" },
+    { provider: "other", model: "global-default", displayName: "other/global-default" },
+    { provider: "team-local", model: "chosen", displayName: "team-local/chosen", instanceDefault: true },
+  ];
+  // Another project's saved model is also stale against the refreshed catalog;
+  // the completion's owned read must not sweep it away.
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/untouched-project", JSON.stringify({ model: "openai/gpt-5" }));
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => {
+      if (saved && holdInstanceRead) {
+        holdInstanceRead = false;
+        return pendingInstances.promise;
+      }
+      return teamInstanceList(saved);
+    });
+    fake.on("model/list", () => ({
+      data: saved && released ? postCatalog : [{ provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" }],
+    }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => {
+      // The connector's own listing read already happened; the next instance
+      // read is the spawn retry the completion awaits.
+      holdInstanceRead = true;
+      return { provider, status: "success", message: "" };
+    });
+    fake.on("evener/launch/resolve", () => ({
+      effective: { model: "other/global-default" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await setWorkingDir(user, "/tmp/auto-late-choice");
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  // The completion is waiting on the held instance read. The person explicitly
+  // chooses an available model in the meantime.
+  await user.click(modelTrigger());
+  await user.click(await screen.findByRole("option", { name: /openai\/gpt-5/ }));
+  expect(completionDraft("/tmp/auto-late-choice").fields.getState().modelChoiceRevision).toBe(1);
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+
+  // Release the instance read: the refreshed catalog omits the choice.
+  await act(async () => {
+    released = true;
+    pendingInstances.resolve(teamInstanceList(true));
+  });
+  await settled();
+
+  await waitFor(() => expect(modelValue().textContent).toBe("openai/gpt-5"));
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+  expect(JSON.parse(localStorage.getItem("evener-hub.spawn-defaults./tmp/untouched-project") ?? "null")).toEqual({
+    model: "openai/gpt-5",
+  });
+  expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+});
+
+test("automatic connection completion does not shield a same-host draft from its own stale-model validation", async () => {
+  const user = setupUser();
+  window.history.pushState({}, "", "/new?dir=/tmp/protect-a");
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/protect-b", JSON.stringify({ model: "openai/retired" }));
+  let saved = false;
+  const instancesBefore = teamInstanceList(false);
+  const instancesAfter = teamInstanceList(true);
+  const postCatalog: ModelDescriptor[] = [
+    { provider: "openai", model: "gpt-5.5", displayName: "openai/gpt-5.5" },
+    ...TEAM_SAVED_MODELS,
+  ];
+  const client = readyClient((fake) => {
+    // Stable instance identity after the connection: navigation alone must not
+    // manufacture a fresh global request that masks the ownership question.
+    fake.on("evener/instance/list", () => (saved ? instancesAfter : instancesBefore));
+    fake.on("model/list", () => ({
+      data: saved ? postCatalog : [{ provider: "openai", model: "retired", displayName: "openai/retired" }],
+    }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  // Draft B already exists with its saved model before A's completion runs, so
+  // the question is whether B's own live draft is validated, not whether the
+  // completion's refresh already swept B's storage.
+  await visitSpawnURL("/new?dir=/tmp/protect-b");
+  await settled();
+  expect(completionDraft("/tmp/protect-b").fields.getState().model).toBe("openai/retired");
+  await visitSpawnURL("/new?dir=/tmp/protect-a");
+  await settled();
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(modelValue().textContent).toBe("team-local/chosen"));
+  // Let every owner's follow-up store update and its global request land while
+  // A is still the live draft.
+  await settled();
+  await settled();
+
+  // Draft B is on the same host; A's completion owns no validation for it.
+  await visitSpawnURL("/new?dir=/tmp/protect-b");
+  await settled();
+  await waitFor(() => expect(completionDraft("/tmp/protect-b").fields.getState().model).toBe(""));
+  expect(screen.getByText(/discarded last-used model openai\/retired/i)).toBeTruthy();
+});
+
+test("an ordinary refresh after an automatic completion still validates the model", async () => {
+  const user = setupUser();
+  let saved = false;
+  let stale = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", () => ({
+      data: stale
+        ? [{ provider: "team-local", model: "other-model", displayName: "team-local/other-model" }]
+        : saved
+          ? TEAM_SAVED_MODELS
+          : [],
+    }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await setWorkingDir(user, "/tmp/auto-after-refresh");
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(modelValue().textContent).toBe("team-local/chosen"));
+
+  // The completion's owned work is over. A later ordinary provider refresh
+  // validates this draft exactly as it always did.
+  stale = true;
+  await act(async () => credentialsStore.getState().fetch());
+  await settled();
+
+  await waitFor(() => expect(completionDraft("/tmp/auto-after-refresh").fields.getState().model).toBe(""));
+  expect(screen.getByText(/discarded last-used model team-local\/chosen/i)).toBeTruthy();
+});
+
 test("retrying missing provider setup discovers a local server started afterward", async () => {
   const user = setupUser();
   let available = false;
