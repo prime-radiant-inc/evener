@@ -428,7 +428,13 @@ it.each(["draft", "recovery"] as const)(
       expect(new Uint8Array(await attachment.blob.arrayBuffer())).toEqual(new Uint8Array([1]));
     }
     expect(ordinaryAfter.token.sessionRevision).toBe(ordinaryBefore.token.sessionRevision + 1);
-    expect(f.source.getSnapshot()).toEqual({ ...sourceBefore, text: expectedText });
+    // The acknowledged append is durable backing arriving from storage, so it
+    // publishes as an authoritative restoration and advances the epoch with it.
+    expect(f.source.getSnapshot()).toEqual({
+      ...sourceBefore,
+      text: expectedText,
+      restoreEpoch: sourceBefore.restoreEpoch + 1,
+    });
     expect(f.source.getDraftToken()).toEqual(ordinaryAfter.token);
     const appliedRows = await annotationRows(f);
     const appliedReceipts = appliedRows.operations.filter((row) => row.operationKey === f.operationKey);
@@ -1805,7 +1811,13 @@ it.each(["draft", "recovery"] as const)(
     ).find((row) => row.operationKey === f.operationKey);
     expect(afterReceipt).toEqual(expectedReceipt);
     expect(afterOrdinary.token).toEqual(advancedToken);
-    expect(f.source.getSnapshot()).toEqual({ ...sourceBefore, text: expectedSourceText });
+    // The acknowledged append is durable backing arriving from storage, so it
+    // publishes as an authoritative restoration and advances the epoch with it.
+    expect(f.source.getSnapshot()).toEqual({
+      ...sourceBefore,
+      text: expectedSourceText,
+      restoreEpoch: sourceBefore.restoreEpoch + 1,
+    });
     expect(f.source.getDraftToken()).toEqual(advancedToken);
     expect(enqueue).not.toHaveBeenCalled();
     expect(resend).not.toHaveBeenCalled();
@@ -1822,7 +1834,13 @@ it.each(["draft", "recovery"] as const)(
     expect(replayedOrdinary).toEqual(afterOrdinary);
     expect(replayedRecovery).toEqual(afterRecovery);
     expect(replayedReceipt).toEqual(afterReceipt);
-    expect(f.source.getSnapshot()).toEqual({ ...sourceBefore, text: expectedSourceText });
+    // The replay is terminal: it never acknowledges again, so the epoch holds
+    // the restoration the applied handoff already published.
+    expect(f.source.getSnapshot()).toEqual({
+      ...sourceBefore,
+      text: expectedSourceText,
+      restoreEpoch: sourceBefore.restoreEpoch + 1,
+    });
     expect(f.source.getDraftToken()).toEqual(advancedToken);
     const replayedAttachment = replayedRecovery?.attachments[0];
     if (!replayedAttachment) throw new Error("replayed recovery attachment missing");
@@ -3669,7 +3687,13 @@ it.each(["same-adapter", "second-adapter"] as const)(
       editedAt: expect.any(Number),
     });
     expectStampedNoEarlierThan(ordinaryAfter, ordinaryBefore);
-    expect(f.source.getSnapshot()).toEqual({ ...sourceBefore, text: expectedText });
+    // The acknowledged append is durable backing arriving from storage, so it
+    // publishes as an authoritative restoration and advances the epoch with it.
+    expect(f.source.getSnapshot()).toEqual({
+      ...sourceBefore,
+      text: expectedText,
+      restoreEpoch: sourceBefore.restoreEpoch + 1,
+    });
     const recoveryAfter = await f.outbox.getRecovery("rec-1");
     expect(recoveryAfter).toEqual(recoveryBefore);
     const attachmentAfter = recoveryAfter?.attachments[0];
