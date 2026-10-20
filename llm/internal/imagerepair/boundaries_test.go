@@ -28,15 +28,7 @@ func TestICCCurveEncodingsAgainstLittleCMS(t *testing.T) {
 			if !ok {
 				t.Fatal("unsupported curve fixture")
 			}
-			for _, s := range refs.Profiles[name] {
-				c := transform.rgb(s.Input[0], s.Input[1], s.Input[2])
-				for i, v := range []uint8{c.R, c.G, c.B} {
-					d := int(v) - int(s.Output[i])
-					if d < -1 || d > 1 {
-						t.Fatalf("%v: %v != %v", s.Input, c, s.Output)
-					}
-				}
-			}
+			compareColorSamples(t, transform, refs.Profiles[name])
 		})
 	}
 }

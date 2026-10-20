@@ -290,7 +290,8 @@ func convertJPEG(ctx context.Context, data []byte, m jpegMetadata) ([]byte, bool
 			if x%1024 == 0 && ctx.Err() != nil {
 				return nil, false
 			}
-			c := color.RGBAModel.Convert(src.At(x, y)).(color.RGBA)
+			r, g, b, _ := src.At(x, y).RGBA()
+			c := color.RGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: 255}
 			if transform != nil {
 				c = transform.rgb(c.R, c.G, c.B)
 			}

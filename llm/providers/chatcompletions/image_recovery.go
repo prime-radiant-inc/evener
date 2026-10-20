@@ -150,13 +150,15 @@ func repairMessages(ctx context.Context, body map[string]any, mode imagerepair.M
 		if !ok {
 			continue
 		}
-		repaired := make([]any, 0, len(parts))
-		for _, value := range parts {
+		var repaired []any
+		for i, value := range parts {
 			part, _ := value.(map[string]any)
 			imageURL, _ := part["image_url"].(map[string]any)
 			uri, _ := imageURL["url"].(string)
 			if part["type"] != "image_url" || imageURL == nil {
-				repaired = append(repaired, value)
+				if repaired != nil {
+					repaired = append(repaired, value)
+				}
 				continue
 			}
 			result, err := repairImageURI(ctx, uri, mode, &pixelsLeft)
@@ -164,19 +166,26 @@ func repairMessages(ctx context.Context, body map[string]any, mode imagerepair.M
 				return false, false, false, err
 			}
 			if result.Method != imagerepair.Unchanged {
-				imageURL["url"] = "data:" + result.MediaType + ";base64," + base64.StdEncoding.EncodeToString(result.Data)
-				changed = true
+				imageURL["url"] = llm.DataURI(result.MediaType, result.Data)
 				if result.Method == imagerepair.ProfileRemoved {
 					unmanaged = true
+					if repaired == nil {
+						repaired = append(make([]any, 0, len(parts)+1), parts[:i]...)
+					}
 					repaired = append(repaired, map[string]any{"type": "text", "text": unmanagedImageCaveat})
 				} else {
 					managed = true
 				}
 			}
-			repaired = append(repaired, value)
+			if repaired != nil {
+				repaired = append(repaired, value)
+			}
 		}
-		message["content"] = repaired
+		if repaired != nil {
+			message["content"] = repaired
+		}
 	}
+	changed = unmanaged || managed
 	if changed {
 		body["messages"] = messages
 	}

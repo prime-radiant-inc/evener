@@ -148,15 +148,7 @@ func TestRepairLittleCMSReference(t *testing.T) {
 			if !ok {
 				t.Fatal("reference profile not supported")
 			}
-			for _, sample := range refs.Profiles[name] {
-				out := transform.rgb(sample.Input[0], sample.Input[1], sample.Input[2])
-				for i, v := range []uint8{out.R, out.G, out.B} {
-					d := int(v) - int(sample.Output[i])
-					if d < -1 || d > 1 {
-						t.Fatalf("sample %v: %v != %v", sample.Input, out, sample.Output)
-					}
-				}
-			}
+			compareColorSamples(t, transform, refs.Profiles[name])
 			r := call(t, tagged(fixture(t, "patches.jpg"), profile), PreferColorManaged, ColorManaged)
 			reference, e := png.Decode(bytes.NewReader(fixture(t, name+"-reference.png")))
 			if e != nil {
@@ -164,6 +156,19 @@ func TestRepairLittleCMSReference(t *testing.T) {
 			}
 			comparePixels(t, decodedPNG(t, r), reference, 3) // Independent libjpeg vs Go IDCT rounding.
 		})
+	}
+}
+
+func compareColorSamples(t *testing.T, transform *iccTransform, samples []struct{ Input, Output [3]uint8 }) {
+	t.Helper()
+	for _, sample := range samples {
+		out := transform.rgb(sample.Input[0], sample.Input[1], sample.Input[2])
+		for i, v := range []uint8{out.R, out.G, out.B} {
+			d := int(v) - int(sample.Output[i])
+			if d < -1 || d > 1 {
+				t.Fatalf("sample %v: %v != %v", sample.Input, out, sample.Output)
+			}
+		}
 	}
 }
 
