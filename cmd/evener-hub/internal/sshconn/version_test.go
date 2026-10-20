@@ -456,7 +456,7 @@ func TestRestartBareRecoversPidArgvAndLog(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	wantRemote := "nohup /opt/evener/bin/evener hub -addr 0.0.0.0:9180 -evener /opt/evener/bin/evener >>/home/dev/evener-hub.log 2>&1 </dev/null &"
@@ -474,7 +474,7 @@ func TestRestartBareNoHubIsErrRestart(t *testing.T) {
 		return []byte(noListenerMarker + "\n"), nil
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); !errors.Is(err, ErrRestart) {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart", err)
 	}
 	if got := len(fr.recordedRuns()); got != 1 {
@@ -525,7 +525,7 @@ func TestRestartBarePSInvocationSuppressesHeader(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	var psArgv []string
@@ -586,7 +586,7 @@ func TestRestartBareStripsLeadingPSHeader(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	want := rawCommandArgv(m.opts, host, relaunchCommand([]string{"/opt/evener/bin/evener", "hub", "-addr", "0.0.0.0:9180"}, ""))
@@ -642,7 +642,7 @@ func TestRestartBareQuotesRecoveredLogPath(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	// The remote command is one ssh argument; join it so the assertion reads the
@@ -734,7 +734,7 @@ func TestRestartHubRejectsAmbiguousSupervisor(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an ambiguous supervisor", err)
 	}
@@ -790,7 +790,7 @@ func TestRestartHubRejectsStaleVersion(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart (stale version must fail the restart)", err)
 	}
@@ -813,7 +813,7 @@ func TestRestartHubSurfacesFailedRestartCommand(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart (failed restart command must surface)", err)
 	}
@@ -839,7 +839,7 @@ func TestRestartHubWaitsForOldHubToHandOver(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v", err)
 	}
 	if *probes < 2 {
@@ -896,7 +896,7 @@ func TestHostAddrDrivesRestartAndHealthProbes(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	if err := m.waitHealthy(context.Background(), host, "newsha", "", hubIdentity{}); err != nil {
@@ -958,7 +958,7 @@ func TestRestartBareRefusesForeignProcessOnHubPort(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a foreign listener", err)
 	}
@@ -1000,7 +1000,7 @@ func TestRestartBareRefusesListenerOwnedByAnotherUser(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a listener owned by another user", err)
 	}
@@ -1049,7 +1049,7 @@ func TestRestartBareRefusesWhenListenerOwnerIsNotTheProbedLoginUser(t *testing.T
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a listener not owned by the probed login user", err)
 	}
@@ -1110,7 +1110,7 @@ func TestRestartBareRestartsAListenerOwnedByTheEffectiveUser(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v (a hub owned by the effective user must restart)", err)
 	}
 	var probedUser, probedOwner, relaunched bool
@@ -1186,7 +1186,7 @@ func TestRestartBareRefusesCompoundCommandLine(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an untokenizable command line", err)
 	}
@@ -1222,7 +1222,7 @@ func TestRestartBareRefusesAddrMismatch(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an --addr mismatch", err)
 	}
@@ -1256,7 +1256,7 @@ func TestRestartBareRefusesSamePortDifferentHost(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a hub bound to a different loopback address", err)
 	}
@@ -1295,7 +1295,7 @@ func TestRestartBareRefusesDefaultAddrAtNonDefaultEndpoint(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a no---addr hub at a non-default endpoint", err)
 	}
@@ -1356,7 +1356,7 @@ func TestRestartBareInspectsListenerAddress(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v (a listener owning the configured endpoint must restart)", err)
 	}
 	if !killed {
@@ -1393,7 +1393,7 @@ func TestRestartBareListenerAddressBeatsRecoveredAddr(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart when the socket does not own the configured endpoint", err)
 	}
@@ -1674,7 +1674,7 @@ func TestRestartHubLaunchdKickstartStatusIsAdvisory(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v (a failed kickstart status must not mask a successful restart)", err)
 	}
 	if probes == 0 {
@@ -1711,7 +1711,7 @@ func TestRestartHubLaunchdKickstartFailureSurfacesWhenHealthFails(t *testing.T) 
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, hubIdentity{})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart", err)
 	}
@@ -2052,7 +2052,7 @@ func TestPendingStartRecoveryAcceptsTheHostsOwnBuild(t *testing.T) {
 	})
 	testRestartRecorder(t, m)
 	// The recorded start an interrupted first attach leaves behind.
-	m.setPendingStart(host.Name, relaunch)
+	m.setPendingStart(host.Name, relaunch, "oldsha", "")
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure = %v, want nil: recovering a recorded start must accept the host's own build", err)
@@ -2113,7 +2113,7 @@ func TestRestartOnlyMismatchOnAnotherBuildAttaches(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 	testRestartRecorder(t, m)
-	m.setPendingStart(host.Name, relaunch)
+	m.setPendingStart(host.Name, relaunch, "oldsha", "")
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure = %v, want nil: a recorded start must be settled against the host's own build", err)
@@ -2166,7 +2166,7 @@ func TestPendingStartOnHealthySupervisorlessHostAttaches(t *testing.T) {
 	})
 	// An interrupted first attach on a supervisorless host leaves a pending start
 	// behind; the launched hub came up healthy afterwards.
-	m.setPendingStart(host.Name, relaunch)
+	m.setPendingStart(host.Name, relaunch, "newsha", "")
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure = %v, want nil: a healthy hub must settle a recorded start, not be refused as a supervisorless restart", err)
@@ -2212,7 +2212,7 @@ func TestPendingStartOnHealthyHostKeepingItsOwnBuildAttaches(t *testing.T) {
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
-	m.setPendingStart(host.Name, relaunch)
+	m.setPendingStart(host.Name, relaunch, "oldsha", "")
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure = %v, want nil: a recorded start must be settled against the host's own build", err)
@@ -2262,7 +2262,7 @@ func TestPendingStartNotSettledForWrongSnapshotCommit(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 	testRestartRecorder(t, m)
-	m.setPendingStart(host.Name, relaunch)
+	m.setPendingStart(host.Name, relaunch, "newsha", "expectedsha")
 
 	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrRestart) {
 		t.Fatalf("Ensure = %v, want ErrRestart (a wrong-commit hub must not settle a recorded start)", err)
@@ -2917,7 +2917,7 @@ func TestRestartBarePrefersNullDelimitedArgv(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	for _, argv := range fr.recordedRuns() {
@@ -2967,7 +2967,7 @@ func TestRestartBareRefusesAmbiguousSplitValue(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an ambiguous command line", err)
 	}
@@ -3358,7 +3358,7 @@ func TestRestartBareRecordsRelaunchBeforePortClearFails(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); !errors.Is(err, ErrRestart) {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); !errors.Is(err, ErrRestart) {
 		t.Fatalf("restartBare err = %v, want ErrRestart (the port stayed held)", err)
 	}
 	if relaunches != 0 {
@@ -3393,7 +3393,7 @@ func TestRestartBareRefusesUnparsableRecoveredAddr(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an unparsable recovered --addr", err)
 	}
@@ -3620,7 +3620,7 @@ func TestRestartHubStartsAnInactiveSupervisorWhenThePortIsFree(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v (a stopped hub unit with a free port must be started)", err)
 	}
 	if !restarted {
@@ -3682,7 +3682,7 @@ func TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v", err)
 	}
 	if restarted {
@@ -3746,7 +3746,7 @@ func TestRestartHubFallsThroughOnUnsafeLaunchdLabel(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartHub = %v, want nil (an unbuildable launchd command must fall through to the ad hoc path)", err)
 	}
 	if !killed {
@@ -3814,7 +3814,7 @@ func TestRestartHubRestartsAdHocOnSupervisorlessHost(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartHub = %v, want nil (a supervisorless hub must restart through the ad hoc path)", err)
 	}
 	if !killed {
@@ -3855,7 +3855,7 @@ func TestRestartBareFailsClosedOnUnusableProcArgv(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a readable but unusable /proc argv", err)
 	}

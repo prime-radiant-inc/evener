@@ -204,7 +204,7 @@ func TestUpdateHostRacesEnsureAtGate(t *testing.T) {
 func TestUpdateHostClearsPerHostCaches(t *testing.T) {
 	m, events := detachHostFixture(t)
 	m.setResolvedTarget("alpha", "/home/dev/.local/bin/evener")
-	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", hubIdentity{})
+	m.setPendingRestart("alpha", "evener hub --addr 127.0.0.1:9180", "dev", "", hubIdentity{})
 	if err := m.UpdateHost(hostreg.Host{Name: "alpha", SSH: "alpha2.example"}, nil); err != nil {
 		t.Fatalf("UpdateHost = %v, want nil", err)
 	}

@@ -488,7 +488,7 @@ func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostop
 		return innerRun(ctx, argv, stdin)
 	}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
-	m.setPendingRestart(host.Name, "systemctl restart evener-hub.service", hubIdentity{version: "oldsha"})
+	m.setPendingRestart(host.Name, "systemctl restart evener-hub.service", "newsha", "", hubIdentity{version: "oldsha"})
 	m.SetEnsureRestartHook(func(host hostreg.Host) (func(error), error) {
 		record, err := store.Create(hostops.NewRecord{
 			ClientOperationID: "ensure-restart-1",
@@ -598,7 +598,7 @@ func TestEnsureRestartOnlyRefusesWithoutARecorder(t *testing.T) {
 	}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
 
-	m.setPendingRestart(host.Name, "systemctl restart evener-hub.service", hubIdentity{version: "oldsha"})
+	m.setPendingRestart(host.Name, "systemctl restart evener-hub.service", "newsha", "", hubIdentity{version: "oldsha"})
 	_, err := m.Ensure(context.Background(), "alpha")
 	if err == nil || !strings.Contains(err.Error(), "no restart recorder wired") {
 		t.Fatalf("Ensure error = %v, want the no-recorder refusal", err)

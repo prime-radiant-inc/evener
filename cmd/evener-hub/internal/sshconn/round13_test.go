@@ -493,7 +493,7 @@ func TestRound13RestartBareRefusesAnIPv6WildcardListenerForAnIPv4Endpoint(t *tes
 			sleep: func(context.Context, time.Duration) error { return nil },
 		})
 
-		err := m.restartBare(context.Background(), host, hubIdentity{})
+		err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 		if !errors.Is(err, ErrRestart) {
 			t.Fatalf("err = %v, want ErrRestart for an IPv6-wildcard listener on an IPv4 endpoint", err)
 		}
@@ -509,7 +509,7 @@ func TestRound13RestartBareRefusesAnIPv6WildcardListenerForAnIPv4Endpoint(t *tes
 			sleep: func(context.Context, time.Duration) error { return nil },
 		})
 
-		if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+		if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 			t.Fatalf("restartBare: %v (an IPv6 wildcard owns the IPv6 endpoint it was configured for)", err)
 		}
 		if !killed {

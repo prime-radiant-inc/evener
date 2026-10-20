@@ -2062,7 +2062,7 @@ func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 		BuildBinary:               writeStageBinary,
 	})
-	m.setPendingRestart(host.Name, "systemctl restart evener-hub.service", hubIdentity{version: "oldsha"})
+	m.setPendingRestart(host.Name, "systemctl restart evener-hub.service", "newsha", "", hubIdentity{version: "oldsha"})
 	testRestartRecorder(t, m)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {

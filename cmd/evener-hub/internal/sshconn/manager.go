@@ -490,8 +490,10 @@ func (h hubIdentity) differentProcessFrom(other hubIdentity) bool {
 // the restart actually produced a new process instead of trusting a version that
 // may not be unique.
 type pendingRestartState struct {
-	command  string
-	replaced hubIdentity
+	command         string
+	replaced        hubIdentity
+	expectedVersion string
+	expectedGitSHA  string
 	// start records that this command STARTS a hub where none was serving (the
 	// bootstrap path, which refuses to run while a listener holds the address)
 	// rather than replacing a process. A recovered start has no predecessor to
@@ -1878,17 +1880,10 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
 	running, runningKnown := m.probeRunningHub(probeCtx, host)
 	cancelProbe()
-	// Settlement judges the build the host will actually serve, exactly as
-	// recoverRestart and the restart waits do: a host that keeps its own build
-	// (hostBuildDiffers, no deploy configured) answers with its own version, not
-	// the controller's, and a snapshot controller's pin requires the running
-	// hub's backend_git_sha to match. Comparing against the controller's version
-	// alone would leave a recorded start on a keep-its-own-build host unsettled
-	// forever, and dropping the pin would let a wrong-commit hub satisfy the
-	// settlement the waits refuse.
-	servedVersion, servedPin := expectedServedBuild(facts, expected)
-	if pending := m.pendingRestart(host.Name); runningKnown && running.version == servedVersion &&
-		hubBuildSHAMatches(running.gitSHA, servedPin) &&
+	// Settle against the intent recorded before the effect, never later disk
+	// facts. A changed file must not turn a failed deployment into a success.
+	if pending := m.pendingRestart(host.Name); pending.command != "" && runningKnown && running.version == pending.expectedVersion &&
+		hubBuildSHAMatches(running.gitSHA, pending.expectedGitSHA) &&
 		(pending.start || running.differentProcessFrom(pending.replaced)) {
 		// A hub already serving exactly the expected build resolves whatever an
 		// earlier restart or start left outstanding; do not launch a second hub
@@ -2066,9 +2061,17 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		if pending := m.pendingRestart(host.Name); pending.command != "" && !runningKnown {
 			// A previous restart killed the old hub and left no listener. There is
 			// no hub to kill now, so complete the recorded restart instead.
-			restartErr = m.recoverRestart(restartCtx, host, facts, expected, pending)
+			restartErr = m.recoverRestart(restartCtx, host, pending)
 		} else {
-			restartErr = m.restartHub(restartCtx, host, facts, running)
+			version, pin := expectedServedBuild(facts, expected)
+			replaced := running
+			if pending.command != "" {
+				version, pin = pending.expectedVersion, pending.expectedGitSHA
+				if !pending.start {
+					replaced = pending.replaced
+				}
+			}
+			restartErr = m.restartHub(restartCtx, host, facts, version, pin, replaced)
 		}
 		cancelRestart()
 		if restartErr != nil {
@@ -2137,7 +2140,11 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	if explicit && !runningKnown && !restart && m.pendingRestart(host.Name).command == "" {
 		m.stateEvent(host.Name, StateRestarting)
 		startCtx, cancelStart := context.WithTimeout(ctx, m.opts.deployLimit())
-		bootErr := m.bootstrapHub(startCtx, host, facts, expected)
+		startVersion, startPin := facts.Version, ""
+		if deploy {
+			startVersion, startPin = expectedServedBuild(facts, expected)
+		}
+		bootErr := m.bootstrapHub(startCtx, host, facts, startVersion, startPin)
 		cancelStart()
 		if bootErr != nil {
 			return nil, bootErr
@@ -2162,10 +2169,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 // exactly as the restart path does. A host with no resolvable executable and no
 // supervisor is refused with ErrRestart, so the first host action surfaces the
 // failure instead of attaching nothing.
-func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Preflight, expected string) error {
-	// The build this start must see is the one the host will actually run, not
-	// necessarily this controller's: expectedServedBuild.
-	startVersion, startPin := expectedServedBuild(facts, expected)
+func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Preflight, expectedVersion, expectedGitSHA string) error {
 	port := hubPort(m.hostAddr(host))
 	lp, err := m.probeListeners(ctx, host, port)
 	if err != nil {
@@ -2191,12 +2195,12 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 		if remote, ok := sup.startRemote(facts.UID); ok {
 			// kickstart -k / start both bring the unit up; the recorded pending
 			// restart keeps the start recoverable if this attempt is interrupted.
-			m.setPendingStart(host.Name, remote)
+			m.setPendingStart(host.Name, remote, expectedVersion, expectedGitSHA)
 			out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
 			if runErr != nil && !sup.restartStatusIsAdvisory() {
 				return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
 			}
-			if err := m.waitStartedHealthy(ctx, host, startVersion, startPin); err != nil {
+			if err := m.waitStartedHealthy(ctx, host, expectedVersion, expectedGitSHA); err != nil {
 				return err
 			}
 			m.clearPendingRestart(host.Name)
@@ -2211,12 +2215,12 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 		return err
 	}
 	relaunch := relaunchCommand(hubBootstrapArgv(m.opts, host, target), "")
-	m.setPendingStart(host.Name, relaunch)
+	m.setPendingStart(host.Name, relaunch, expectedVersion, expectedGitSHA)
 	out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, relaunch), nil)
 	if runErr != nil {
 		return fmt.Errorf("%w: host %q bootstrap launch: %w: %s", ErrRestart, host.Name, runErr, tail(out))
 	}
-	if err := m.waitStartedHealthy(ctx, host, startVersion, startPin); err != nil {
+	if err := m.waitStartedHealthy(ctx, host, expectedVersion, expectedGitSHA); err != nil {
 		return err
 	}
 	m.clearPendingRestart(host.Name)
@@ -3483,19 +3487,19 @@ func (m *Manager) pendingRestart(name string) pendingRestartState {
 	return m.pendingRestarts[name]
 }
 
-func (m *Manager) setPendingRestart(name, remote string, replaced hubIdentity) {
+func (m *Manager) setPendingRestart(name, remote, expectedVersion, expectedGitSHA string, replaced hubIdentity) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.pendingRestarts[name] = pendingRestartState{command: remote, replaced: replaced}
+	m.pendingRestarts[name] = pendingRestartState{command: remote, expectedVersion: expectedVersion, expectedGitSHA: expectedGitSHA, replaced: replaced}
 }
 
 // setPendingStart records a command that starts a hub where nothing was
 // serving. It is the bootstrap path's recording: there is no predecessor
 // identity to settle, and a later recovery must not require one.
-func (m *Manager) setPendingStart(name, remote string) {
+func (m *Manager) setPendingStart(name, remote, expectedVersion, expectedGitSHA string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.pendingRestarts[name] = pendingRestartState{command: remote, start: true}
+	m.pendingRestarts[name] = pendingRestartState{command: remote, expectedVersion: expectedVersion, expectedGitSHA: expectedGitSHA, start: true}
 }
 
 func (m *Manager) clearPendingRestart(name string) {

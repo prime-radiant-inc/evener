@@ -69,5 +69,6 @@ func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, fa
 	restartCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
 	defer cancel()
 	running, _ := m.probeRunningHub(restartCtx, host)
-	return m.restartHub(restartCtx, host, facts, running)
+	version, pin := expectedServedBuild(facts, m.opts.controllerVersion())
+	return m.restartHub(restartCtx, host, facts, version, pin, running)
 }

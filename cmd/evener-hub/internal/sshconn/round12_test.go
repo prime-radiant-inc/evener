@@ -323,7 +323,7 @@ func TestRound12RelaunchWaitsForTheOldProcessToExit(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	if relaunched != 1 {
@@ -380,7 +380,7 @@ func TestRound12RelaunchRefusedWhileTheOldProcessStillRuns(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("restartBare err = %v, want ErrRestart (the old process never exited)", err)
 	}
@@ -473,7 +473,7 @@ func TestRound12PIDCommandsAreStructurallySafe(t *testing.T) {
 	if _, err := m.hubListenerAddrs(context.Background(), host, "/etc/passwd", hubPort(defaultHubAddr)); !errors.Is(err, ErrRestart) {
 		t.Fatalf("hubListenerAddrs err = %v, want ErrRestart", err)
 	}
-	if err := m.stopAndRelaunch(context.Background(), host, hubPort(defaultHubAddr), "-9", []string{"evener", "hub"}, hubIdentity{}); !errors.Is(err, ErrRestart) {
+	if err := m.stopAndRelaunch(context.Background(), host, hubPort(defaultHubAddr), "-9", []string{"evener", "hub"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); !errors.Is(err, ErrRestart) {
 		t.Fatalf("stopAndRelaunch err = %v, want ErrRestart", err)
 	}
 	if got := len(fr.recordedRuns()); got != 0 {
