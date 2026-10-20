@@ -3,6 +3,10 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +29,7 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 	if testing.Short() {
 		t.Skip("live-stack e2e: builds binaries and runs a hub + daemon")
 	}
+	retireOverlapLog(t, "RETIRE_DIAG context tmpdir=%q test_root=%q go=%s cpus=%d gomaxprocs=%d shard_file=%q", os.TempDir(), testEnv.Root, runtime.Version(), runtime.NumCPU(), runtime.GOMAXPROCS(0), os.Getenv("EVENER_SHARD_RUN_FILE"))
 	// The archive overlap is not here: its retire outcome turns on whether the
 	// retire's hub-side check (archivedRetireRefusal) or the archive's decision
 	// wins the session's alias lock, and two connections cannot order that.
@@ -32,20 +37,36 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 	// by gating the daemon's answer, so the retire is provably past its check.
 	for _, overlap := range []string{"force stop", "delete", "resume"} {
 		t.Run(overlap, func(t *testing.T) {
+			started, last := time.Now(), time.Now()
+			phase := func(name string) {
+				t.Helper()
+				now := time.Now()
+				retireOverlapLog(t, "RETIRE_DIAG phase=%s elapsed=%s total=%s", name, now.Sub(last), now.Sub(started))
+				last = now
+			}
+			t.Cleanup(func() { phase("all-cleanups") })
 			provider, err := fakellm.New()
 			if err != nil {
 				t.Fatalf("start fake provider: %v", err)
 			}
-			t.Cleanup(provider.Close)
+			t.Cleanup(func() {
+				defer retireOverlapDiagnostic(t, "provider-close")()
+				provider.Close()
+			})
+			phase("provider-new")
 			stack := startHubStack(t, provider)
+			phase("stack-start")
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
 			client := stack.dialRPC(ctx, t)
+			phase("rpc-initialize")
 			releaseNamer := provider.HoldNamer()
 			defer releaseNamer()
 			ref := startSessionWithOpeningTurn(ctx, t, client, provider, stack)
+			phase("opening-turn")
 
 			identity := residentDaemonIdentity(ctx, t, client, ref)
+			phase("resident-identity")
 			// The client's request-id observer fires when the retire request is
 			// minted, before its frame is sent, so the retire is issued before
 			// the probe below.
@@ -57,10 +78,12 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 				retired <- overlappedRetire{resp, err}
 			}()
 			awaitRetireInProgress(ctx, t, client, ref, issued, retired)
+			phase("retire-in-progress")
 			// The overlapping action comes from its own connection, as a
 			// second client's would, so this pins an overlap between two
 			// connections rather than a queue on one.
 			other := stack.dialRPC(ctx, t)
+			phase("other-rpc-initialize")
 			// Well inside the namer's 15s hold, so an action that waited
 			// behind the retire fails rather than racing its answer.
 			actionCtx, cancelAction := context.WithTimeout(ctx, 8*time.Second)
@@ -81,6 +104,7 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s during the retire: %v", overlap, err)
 			}
+			phase("overlap-action")
 			if overlap == "force stop" {
 				releaseNamer()
 				// The stop cancels the forwarded retire before ending the daemon.
@@ -94,9 +118,11 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 					t.Fatalf("retire overlapped by a %s = accepted=%t %v, want accepted once the namer settled", overlap, got.resp.Accepted, got.err)
 				}
 			}
+			phase("retire-answer-after-release")
 			if err := awaitDaemonGone(ctx, client, ref); err != nil {
 				t.Fatalf("the daemon is still resident after the %s and the retire: %v", overlap, err)
 			}
+			phase("await-daemon-gone")
 			// Nothing was left half-claimed: the session resumes, resident. A
 			// force-stopped session takes its explicit Resume on a fresh
 			// connection, as that contract requires.
@@ -107,6 +133,7 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 			if _, err := clientRequest[appwire.ThreadResumeResponse](ctx, resumer, appwire.MethodThreadResume, appwire.ThreadResumeParams{Ref: ref}); err != nil {
 				t.Fatalf("resume after the %s and the retire: %v", overlap, err)
 			}
+			phase("resume-after-retire")
 			list, err := clientRequest[appwire.DaemonListResponse](ctx, client, appwire.MethodEvenerDaemonList, appwire.DaemonListParams{})
 			if err != nil {
 				t.Fatalf("evener/daemon/list: %v", err)
@@ -126,7 +153,43 @@ func TestE2E_RetireOverlappedByAnotherOwnershipAction(t *testing.T) {
 			if _, found := residentIdentityForRef(list, ref); !found {
 				t.Fatalf("no resident daemon for %s after the resume: %+v", ref, list.Daemons)
 			}
+			phase("resident-asserted")
 		})
+	}
+}
+
+// retireOverlapDiagnostic is temporary phase attribution for issue #4687.
+func retireOverlapDiagnostic(t *testing.T, phase string) func() {
+	if !strings.HasPrefix(t.Name(), "TestE2E_RetireOverlappedByAnotherOwnershipAction/") {
+		return func() {}
+	}
+	started := time.Now()
+	return func() {
+		t.Helper()
+		retireOverlapLog(t, "RETIRE_DIAG helper=%s elapsed=%s", phase, time.Since(started))
+	}
+}
+
+// The explicit absolute sink is outside the gate's disposable scratch, so a
+// passing test command cannot erase phase evidence before the timing check.
+func retireOverlapLog(t *testing.T, format string, args ...any) {
+	t.Helper()
+	message := fmt.Sprintf(format, args...)
+	t.Log(message)
+	path := os.Getenv("EVENER_RETIRE_OVERLAP_DIAGNOSTIC_FILE")
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Errorf("open retirement diagnostic sink: %v", err)
+		return
+	}
+	if _, err := fmt.Fprintf(f, "%s\tpid=%d\ttest=%s\t%s\n", time.Now().UTC().Format(time.RFC3339Nano), os.Getpid(), t.Name(), message); err != nil {
+		t.Errorf("append retirement diagnostic: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Errorf("close retirement diagnostic sink: %v", err)
 	}
 }
 

@@ -94,9 +94,13 @@ func TestE2E_QueuePromptToARetiredSession(t *testing.T) {
 func startSessionWithOpeningTurn(ctx context.Context, t *testing.T, client *appwire.Client, provider *fakellm.Server, stack hubStack) string {
 	t.Helper()
 	opening := fmt.Sprintf("EVENER-E2E-OPENING-%d", time.Now().UnixNano())
+	started := retireOverlapDiagnostic(t, "thread-start")
 	ref := startLiveThread(ctx, t, client, stack, opening)
+	started()
 
+	started = retireOverlapDiagnostic(t, "provider-next")
 	round, err := provider.Next(ctx.Done())
+	started()
 	if err != nil {
 		t.Fatalf("waiting for the opening model request: %v", err)
 	}
@@ -104,9 +108,11 @@ func startSessionWithOpeningTurn(ctx context.Context, t *testing.T, client *appw
 		t.Fatalf("the opening prompt never reached the model; messages:\n%s", strings.Join(round.Texts(), "\n"))
 	}
 	round.RespondToolCall("communicate", communicateArgs("opening turn done"))
+	started = retireOverlapDiagnostic(t, "opening-await-finished")
 	awaitThread(ctx, t, client, ref, "the opening turn to finish", func(thread appwire.Thread) bool {
 		return thread.Status.Type != "active"
 	})
+	started()
 	return ref
 }
 

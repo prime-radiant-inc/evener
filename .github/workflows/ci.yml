@@ -408,6 +408,16 @@ jobs:
         with:
           go-cache-kind: tests-${{ matrix.scope }}
 
+      - name: Retirement timing environment
+        if: ${{ matrix.scope == 'root' }}
+        run: |
+          uname -r
+          nproc
+          lscpu
+          findmnt -T /dev/shm -o TARGET,FSTYPE,OPTIONS
+          findmnt -T /tmp -o TARGET,FSTYPE,OPTIONS
+          df -Pk /dev/shm /tmp
+
       # The runner is this job's alone, but its checkout and cache restore are
       # still in the load average when the gate sizes its budgets; at 1.85
       # every Go budget came out as 2 of the 4 cores. Size them to the runner.
@@ -415,6 +425,7 @@ jobs:
         env:
           LOAD_AWARE_LOAD1: "0"
           EVENER_GATE_TIMING_TSV: /tmp/gate-timing-${{ matrix.scope }}.tsv
+          EVENER_RETIRE_OVERLAP_DIAGNOSTIC_FILE: ${{ runner.temp }}/retire-overlap-phases.tsv
         run: ROOT_FULL=1 WEB=0 make test TEST_SCOPE=${{ matrix.scope }}
 
       # The timing ratchet's rows come from the test run above (issue #144), so
@@ -423,6 +434,17 @@ jobs:
       # missing file fails the check rather than passing silently.
       - name: Timing budget (rows from the same test run)
         run: scripts/gate/test-timing-budget.sh --check --measured /tmp/gate-timing-${{ matrix.scope }}.tsv
+
+      - name: Keep retirement timing diagnostics
+        if: ${{ always() && matrix.scope == 'root' }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: retire-overlap-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/retire-overlap-phases.tsv
+            /tmp/gate-timing-root.tsv
+          retention-days: 7
+          if-no-files-found: warn
 
       - uses: ./.github/actions/go-cache-save
 
