@@ -1464,254 +1464,614 @@ test("remote model catalogue recovery retries the remote read without offering l
   expect(client.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toEqual([]);
 });
 
-test("connection handoff shows the actual instance models and preserves draft until explicit Start", async () => {
+const TEAM_PROVIDER_ROW = {
+  name: "team-local",
+  providerId: "team-local",
+  protocol: "openai-chat",
+  auth: "bearer",
+  implicit: false,
+  isDefault: false,
+  activeSource: "none",
+  hasStoredOAuth: false,
+  credentialRequired: true,
+  authModes: ["apiKey"],
+  baseUrl: "https://team.example/v1",
+  endpointFingerprint: "fp-team",
+};
+
+const TEAM_PROVIDER_OPTION = {
+  id: TEAM_PROVIDER_ROW.providerId,
+  name: "Team local",
+  protocol: TEAM_PROVIDER_ROW.protocol,
+  auth: TEAM_PROVIDER_ROW.auth,
+  implicit: TEAM_PROVIDER_ROW.implicit,
+  authModes: TEAM_PROVIDER_ROW.authModes,
+  setup: TEAM_PROVIDER_ROW,
+};
+
+function teamInstanceList(saved: boolean) {
+  return {
+    instances: saved ? [{ ...TEAM_PROVIDER_ROW, activeSource: "store", hasStoredFile: true }] : [],
+    availableProviders: [TEAM_PROVIDER_OPTION],
+  };
+}
+
+// The connected instance's marked row is deliberately NOT the first row and
+// not the global default: another provider leads, and the launch resolver names
+// that other provider as the global default.
+const TEAM_SAVED_MODELS: ModelDescriptor[] = [
+  { provider: "other", model: "global-default", displayName: "other/global-default" },
+  { provider: "team-local", model: "first", displayName: "team-local/first" },
+  { provider: "team-local", model: "chosen", displayName: "team-local/chosen", instanceDefault: true },
+];
+
+async function openTeamProvider(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(await screen.findByRole("button", { name: "Connect provider" }));
+  await act(async () => {
+    await vi.dynamicImportSettled();
+  });
+  // team-local is not one of the curated providers the picker leads with.
+  await user.click(await screen.findByText("Show all providers"));
+  await user.click(await screen.findByRole("button", { name: "Team local" }));
+  await user.type(screen.getByLabelText("API key"), "fixture-only-key");
+}
+
+async function saveAndCheckProvider(): Promise<void> {
+  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  await settled();
+}
+
+function savedApiKeyResult(provider: string) {
+  return { provider, supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+}
+
+test("automatic connection completion adopts the connected instance's marked default without a picker", async () => {
+  installCanvasStubs();
   const user = setupUser();
   let saved = false;
-  const row = {
-    name: "team-local",
-    providerId: "team-local",
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: false,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    authModes: ["apiKey"],
-    baseUrl: "https://team.example/v1",
-    endpointFingerprint: "fp-team",
-  };
   const client = readyClient((fake) => {
-    fake.on("evener/instance/list", () => ({
-      instances: saved ? [{ ...row, activeSource: "store", hasStoredFile: true }] : [],
-      availableProviders: [
-        {
-          id: row.providerId,
-          name: "Team local",
-          protocol: row.protocol,
-          auth: row.auth,
-          implicit: row.implicit,
-          authModes: row.authModes,
-          setup: row,
-        },
-      ],
-    }));
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
     fake.on("model/list", () => ({
-      data: saved
-        ? [
-            { provider: "team-local", model: "served-model", displayName: "Served model" },
-            { provider: "other", model: "unrelated", displayName: "Unrelated model" },
-          ]
-        : [],
+      data: saved ? TEAM_SAVED_MODELS : [{ provider: "anthropic", model: "claude-sonnet-4-5" }],
     }));
     fake.on("evener/auth/apiKey/set", ({ provider }) => {
       saved = true;
-      return { provider, supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({
+      effective: { model: "other/global-default" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+
+  await fillPrompt(user, "auto-draft");
+  await setWorkingDir(user, "/tmp/auto-project");
+  const prompt = screen.getByRole("textbox", { name: "Prompt" });
+  await act(async () => pastePngInto(prompt, "shot.png"));
+  await waitFor(() => expect(screen.getByRole("button", { name: "View shot.png" })).toBeTruthy());
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Access mode"), "read-only");
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(screen.queryByRole("listbox")).toBeNull();
+  await waitFor(() => expect(screen.getByTestId("spawn-model-value").textContent).toBe("team-local/chosen"));
+  // The setup flow owned focus when it closed, so the composer gets it back.
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Prompt" })));
+  expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
+  expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+
+  // The originating draft is preserved: prompt, attachment, directory, source,
+  // harness and access settings.
+  const draft = completionDraft("/tmp/auto-project");
+  expect(draft.fields.getState().prompt).toContain("auto-draft");
+  expect(draft.fields.getState().source).toBe("local");
+  expect(screen.getByRole("button", { name: "View shot.png" })).toBeTruthy();
+  expectWorkingDir("/tmp/auto-project");
+  expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("read-only");
+  // Adoption is automatic, not an explicit choice: the revision still says
+  // "untouched", so a later completion refresh can still protect it.
+  expect(draft.fields.getState().modelChoiceRevision).toBe(0);
+  // Fresh discovery for this exact scope is the only authority for the marker.
+  const fresh = modelListRequests(client).filter((params) => params.refresh === true);
+  expect(fresh.at(-1)).toMatchObject({ cwd: "/tmp/auto-project", refresh: true });
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(client.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  const params = client.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
+  expect(params).toMatchObject({
+    cwd: "/tmp/auto-project",
+    model: "team-local/chosen",
+    launchOverrides: { sandbox: "read-only" },
+  });
+});
+
+const UNMARKED_MODEL_CASES: Array<{
+  name: string;
+  models: ModelDescriptor[];
+  diagnostics?: ModelListResponse["diagnostics"];
+}> = [
+  { name: "no marker", models: TEAM_SAVED_MODELS.map(({ instanceDefault: _marker, ...model }) => model) },
+  {
+    name: "an ambiguous double marker",
+    models: [
+      ...TEAM_SAVED_MODELS,
+      { provider: "team-local", model: "second", displayName: "team-local/second", instanceDefault: true },
+    ],
+  },
+  {
+    name: "a marker for another instance",
+    models: [
+      { provider: "other", model: "global-default", instanceDefault: true },
+      { provider: "team-local", model: "first" },
+      { provider: "team-local", model: "chosen" },
+    ],
+  },
+  { name: "an empty catalogue", models: [] },
+  {
+    name: "an unsupported catalogue",
+    models: [],
+    diagnostics: [{ provider: "team-local", message: "fixture unsupported" }],
+  },
+];
+
+test.each(UNMARKED_MODEL_CASES)(
+  "automatic connection completion leaves inline recovery in charge for $name",
+  async ({ models, diagnostics }) => {
+    const user = setupUser();
+    let saved = false;
+    const client = readyClient((fake) => {
+      fake.on("evener/instance/list", () => teamInstanceList(saved));
+      fake.on("model/list", () => ({ data: saved ? models : [], diagnostics }));
+      fake.on("evener/auth/apiKey/set", ({ provider }) => {
+        saved = true;
+        return savedApiKeyResult(provider);
+      });
+      fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+      fake.on("evener/launch/resolve", () => ({
+        effective: { model: "other/global-default" },
+        layers: {},
+        provenance: {},
+      }));
+    });
+    connectionStore.getState().connect(client);
+    renderSpawn(client);
+    await settled();
+    await setWorkingDir(user, "/tmp/auto-inline");
+
+    await openTeamProvider(user);
+    await saveAndCheckProvider();
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(modelState()).toBe("required");
+    expect(modelValue().textContent).not.toContain("team-local/chosen");
+    expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
+    expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+  },
+);
+
+test("automatic connection completion leaves a failed fresh catalogue as inline recovery", async () => {
+  const user = setupUser();
+  let saved = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", (params) => {
+      if (saved && params.refresh) throw new WireError("fixture refresh failure", -32000);
+      return {
+        data: saved
+          ? [{ provider: "team-local", model: "stale-display", displayName: "team-local/stale-display" }]
+          : [],
+      };
+    });
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
     });
     fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
     fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
   });
   connectionStore.getState().connect(client);
   renderSpawn(client);
-  await screen.findByRole("button", { name: "Connect provider" });
-  await fillPrompt(user, "handoff-draft");
-  await setWorkingDir(user, "/tmp/handoff-project");
-  await user.click(screen.getByRole("button", { name: "Connect provider" }));
-  await act(async () => {
-    await vi.dynamicImportSettled();
-  });
-  // team-local is not one of the curated providers the picker leads with, so
-  // its card shows behind the catalogue disclosure.
-  await user.click(await screen.findByText("Show all providers"));
-  await user.click(screen.getByRole("button", { name: "Team local" }));
-  await user.type(screen.getByLabelText("API key"), "fixture-only-key");
-  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
   await settled();
-  // The completed connection hands off to the picker, which reopens scoped to
-  // the connected instance: its models are offered, the unrelated provider's
-  // are not.
-  const option = await screen.findByRole("option", { name: /Served model/ });
-  expect(screen.queryByRole("option", { name: /Unrelated model/ })).toBeNull();
-  expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
-  expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
-  expectWorkingDir("/tmp/handoff-project");
-  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("textContent", "handoff-draft");
-  await user.click(option);
-  expect(modelValue().textContent).toBe("team-local/served-model");
-  expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
-  await user.click(screen.getByRole("button", { name: "Start" }));
-  await waitFor(() => expect(client.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
-  expect(client.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
-    cwd: "/tmp/handoff-project",
-    model: "team-local/served-model",
-  });
-});
+  await setWorkingDir(user, "/tmp/auto-failed");
 
-test("fresh guided connection waits for a successful check and explicit model choice without changing the draft", async () => {
-  const user = setupUser();
-  let saved = false;
-  const setup = {
-    name: "openai",
-    providerId: "openai",
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: true,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    authModes: ["apiKey"],
-    baseUrl: "https://provider.example/v1",
-    endpointFingerprint: "fp-provider",
-  };
-  const client = readyClient((fake) => {
-    fake.on("evener/instance/list", () => {
-      const row = { ...setup, activeSource: saved ? "store" : "none", hasStoredFile: saved };
-      return {
-        instances: saved ? [row] : [],
-        availableProviders: [
-          {
-            id: "openai",
-            name: "OpenAI",
-            protocol: row.protocol,
-            auth: row.auth,
-            implicit: true,
-            authModes: ["apiKey"],
-            setup: row,
-          },
-        ],
-      };
-    });
-    fake.on("model/list", () => ({
-      data: saved ? [{ provider: "openai", model: "from-server", displayName: "Server choice" }] : [],
-    }));
-    fake.on("evener/auth/apiKey/set", ({ provider }) => {
-      saved = true;
-      return {
-        provider,
-        supported: true,
-        signedIn: true,
-        activeSource: "store",
-        hasStoredOAuth: false,
-      };
-    });
-    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
-    fake.on("evener/launch/resolve", () => ({
-      effective: { model: "missing/old-default" },
-      layers: {},
-      provenance: {},
-    }));
-  });
-  connectionStore.getState().connect(client);
-  renderSpawn(client);
-  await screen.findByRole("button", { name: "Connect provider" });
-  await fillPrompt(user, "guided-draft");
-  await setWorkingDir(user, "/tmp/guided");
-  await user.click(screen.getByRole("button", { name: "Connect provider" }));
-  await act(async () => {
-    await vi.dynamicImportSettled();
-  });
-  await user.click(await screen.findByRole("button", { name: "OpenAI" }));
-  await user.type(screen.getByLabelText("API key"), "fixture-only-key");
-  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
-  await settled();
-  await screen.findByRole("option", { name: /Server choice/ });
-  expect(modelValue().textContent).not.toBe("openai/from-server");
-  expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
-  expect(modelValue().textContent).not.toBe("openai/from-server");
-  await user.keyboard("{Escape}");
-  expectWorkingDir("/tmp/guided");
-  expect(screen.getByRole("textbox", { name: "Prompt" })).toHaveProperty("textContent", "guided-draft");
-  expect(modelValue().textContent).not.toBe("openai/from-server");
-  expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
-  expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
-});
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
 
-test("closing the handoff without choosing requires an explicit model before Start", async () => {
-  const user = setupUser();
-  let saved = false;
-  const setup = {
-    name: "openai",
-    providerId: "openai",
-    protocol: "openai-chat",
-    auth: "bearer",
-    implicit: true,
-    isDefault: false,
-    activeSource: "none",
-    hasStoredOAuth: false,
-    credentialRequired: true,
-    authModes: ["apiKey"],
-    baseUrl: "https://provider.example/v1",
-    endpointFingerprint: "fp-provider",
-  };
-  const client = readyClient((fake) => {
-    fake.on("evener/instance/list", () => {
-      const row = { ...setup, activeSource: saved ? "store" : "none", hasStoredFile: saved };
-      return {
-        instances: saved ? [row] : [],
-        availableProviders: [
-          {
-            id: "openai",
-            name: "OpenAI",
-            protocol: row.protocol,
-            auth: row.auth,
-            implicit: true,
-            authModes: ["apiKey"],
-            setup: row,
-          },
-        ],
-      };
-    });
-    fake.on("model/list", () => ({
-      data: saved ? [{ provider: "openai", model: "from-server", displayName: "Server choice" }] : [],
-    }));
-    fake.on("evener/auth/apiKey/set", ({ provider }) => {
-      saved = true;
-      return {
-        provider,
-        supported: true,
-        signedIn: true,
-        activeSource: "store",
-        hasStoredOAuth: false,
-      };
-    });
-    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
-    fake.on("evener/launch/resolve", () => ({
-      // A NON-empty default whose provider has no credentials: the exact case
-      // the uncredentialed-default fallback exists for - and onboarding
-      // suppresses that fallback in favor of the explicit choice.
-      effective: { model: "missing/old-default" },
-      layers: {},
-      provenance: {},
-    }));
-  });
-  connectionStore.getState().connect(client);
-  renderSpawn(client);
-  await fillPrompt(user, "guided-draft");
-  await setWorkingDir(user, "/tmp/guided-required");
-  await user.click(screen.getByRole("button", { name: "Connect provider" }));
-  await act(async () => {
-    await vi.dynamicImportSettled();
-  });
-  await user.click(await screen.findByRole("button", { name: "OpenAI" }));
-  await user.type(screen.getByLabelText("API key"), "fixture-only-key");
-  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
-  await settled();
-  await screen.findByRole("option", { name: /Server choice/ });
-  await user.keyboard("{Escape}");
-  // The resolved default is non-empty, so the noDefaultModel gate alone would
-  // leave Start enabled - submitting into a certain thread/start failure on
-  // the uncredentialed default. Onboarding suppressed the fallback, so the
-  // explicit pick is required.
-  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(modelState()).toBe("required");
+  expect(modelValue().textContent).not.toContain("team-local/chosen");
+  // Display rows survive the failed fresh read, but they are not evidence.
   await user.click(modelTrigger());
-  await user.click(await screen.findByRole("option", { name: /Server choice/ }));
-  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
-  await user.click(screen.getByRole("button", { name: "Start" }));
+  expect(await screen.findByRole("option", { name: /stale-display/ })).toBeTruthy();
+});
+
+test("automatic connection completion with no marker can still reach a manual choice and Start", async () => {
+  const user = setupUser();
+  let saved = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", () => ({
+      data: saved ? TEAM_SAVED_MODELS.map(({ instanceDefault: _marker, ...model }) => model) : [],
+    }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await setWorkingDir(user, "/tmp/auto-manual");
+  await fillPrompt(user, "manual-draft");
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(modelState()).toBe("required");
+
+  // The ordinary user-opened picker is intact.
+  await user.click(modelTrigger());
+  await user.click(await screen.findByRole("option", { name: /team-local\/chosen/ }));
+  expect(modelValue().textContent).toBe("team-local/chosen");
+  expect(completionDraft("/tmp/auto-manual").fields.getState().modelChoiceRevision).toBe(1);
+
+  await user.click(screen.getByTestId("spawn-submit"));
   await waitFor(() => expect(client.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
   expect(client.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
-    model: "openai/from-server",
+    model: "team-local/chosen",
   });
+});
+
+test("automatic connection completion preserves a saved model the fresh catalogue calls stale", async () => {
+  const user = setupUser();
+  window.history.pushState({}, "", "/new?dir=/tmp/auto-saved");
+  localStorage.setItem(
+    "evener-hub.spawn-defaults./tmp/auto-saved",
+    JSON.stringify({ model: "openai/gpt-5", access_mode: "read-only" }),
+  );
+  localStorage.setItem("evener-hub.spawn-defaults.global.model", "openai/gpt-5");
+  let saved = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", () => ({
+      data: saved
+        ? [
+            { provider: "openai", model: "gpt-5.5" },
+            { provider: "other", model: "global-default" },
+            { provider: "team-local", model: "chosen", instanceDefault: true },
+          ]
+        : [{ provider: "openai", model: "gpt-5" }],
+    }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  // The explicit saved choice survives even though this fresh listing no
+  // longer offers it, and the completion does not rewrite saved defaults.
+  expect(modelValue().textContent).toBe("openai/gpt-5");
+  expect(screen.queryByText(/discarded last-used model/i)).toBeNull();
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/gpt-5");
+  expect(JSON.parse(localStorage.getItem("evener-hub.spawn-defaults./tmp/auto-saved") ?? "null")).toEqual({
+    model: "openai/gpt-5",
+    access_mode: "read-only",
+  });
+  expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+});
+
+test("automatic connection completion keeps a same-value chip choice as explicit intent", async () => {
+  const user = setupUser();
+  let saved = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", () => ({
+      data: saved
+        ? TEAM_SAVED_MODELS
+        : [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+    }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await setWorkingDir(user, "/tmp/auto-same");
+
+  // Choosing the same row twice still records two explicit choices.
+  await pickModel(user, "claude-sonnet-4-5", "anthropic/claude-sonnet-4-5");
+  await user.click(modelTrigger());
+  const sameRow = await screen.findByRole("listbox");
+  await user.click(within(sameRow).getByRole("option", { name: /claude-sonnet-4-5/ }));
+  expect(completionDraft("/tmp/auto-same").fields.getState().modelChoiceRevision).toBe(2);
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  expect(modelValue().textContent).toBe("anthropic/claude-sonnet-4-5");
+  expect(completionDraft("/tmp/auto-same").fields.getState().modelChoiceRevision).toBe(2);
+});
+
+test("automatic connection completion preserves an Advanced-options model choice", async () => {
+  const user = setupUser();
+  let saved = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/launch/schema", () => ({
+      options: [
+        { field: "model", wireField: "model", label: "Model", group: "general", kind: "modelPicker", perLaunch: true },
+      ],
+    }));
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", () => ({
+      data: saved ? TEAM_SAVED_MODELS : [{ provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" }],
+    }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await setWorkingDir(user, "/tmp/auto-advanced");
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const pickers = screen.getAllByRole("button", { name: /change model/i });
+  await user.click(pickers[pickers.length - 1]!);
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.type(combo, "gpt-5");
+  await user.click(await screen.findByText("openai/gpt-5"));
+  expect(completionDraft("/tmp/auto-advanced").fields.getState().modelChoiceRevision).toBe(1);
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  expect(modelState()).not.toBe("chosen");
+  const after = screen.getAllByRole("button", { name: /change model/i });
+  expect(after[after.length - 1]!.textContent).toContain("openai/gpt-5");
+  expect(screen.getByTestId("spawn-model-value").textContent).not.toBe("team-local/chosen");
+});
+
+test("automatic connection completion does not adopt over a /model choice made while the catalogue is pending", async () => {
+  const user = setupUser();
+  let saved = false;
+  const pendingCatalog = deferred<ModelListResponse>();
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", (params) => {
+      if (saved && params.refresh) return pendingCatalog.promise;
+      return { data: saved ? TEAM_SAVED_MODELS : [{ provider: "team-local", model: "later" }] };
+    });
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({
+      effective: { model: "other/global-default" },
+      layers: {},
+      provenance: {},
+    }));
+    fake.on("thread/start", () => startResponse("local:abc123"));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await setWorkingDir(user, "/tmp/auto-slash");
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  // Typed while the completion's fresh catalogue is still in flight.
+  await fillPrompt(user, "/model team-local/later");
+  await act(async () => pendingCatalog.resolve({ data: TEAM_SAVED_MODELS }));
+  await settled();
+
+  expect(screen.getByTestId("spawn-model-value").textContent).not.toBe("team-local/chosen");
+  expect(modelState()).toBe("required");
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(client.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  expect(client.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    modelProvider: "team-local",
+    model: "later",
+  });
+});
+
+test("automatic connection completion preserves an explicit empty /model choice made while pending", async () => {
+  const user = setupUser();
+  let saved = false;
+  const pendingCatalog = deferred<ModelListResponse>();
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", (params) => {
+      if (saved && params.refresh) return pendingCatalog.promise;
+      return { data: saved ? TEAM_SAVED_MODELS : [] };
+    });
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+    fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await setWorkingDir(user, "/tmp/auto-empty-slash");
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  // Bare /model means "the default", which is an explicit empty choice.
+  await fillPrompt(user, "/model");
+  await act(async () => pendingCatalog.resolve({ data: TEAM_SAVED_MODELS }));
+  await settled();
+  expect(screen.getByTestId("spawn-model-value").textContent).not.toContain("team-local/");
+
+  // Inline recovery still works from here: choose a model manually and start.
+  await user.click(modelTrigger());
+  await user.click(await screen.findByRole("option", { name: /team-local\/chosen/ }));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(client.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  expect(client.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    model: "team-local/chosen",
+  });
+});
+
+test.each(["draft", "harness", "host"])(
+  "automatic connection completion is retired by an A-to-B-to-A %s round trip",
+  async (kind) => {
+    const user = setupUser();
+    window.history.pushState({}, "", "/new?dir=/tmp/auto-round-a");
+    const probe = deferred<{ provider: string; status: string; message: string }>();
+    let saved = false;
+    const client = readyClient((fake) => {
+      fake.on("evener/instance/list", () => teamInstanceList(saved));
+      fake.on("model/list", () => ({ data: saved ? TEAM_SAVED_MODELS : [] }));
+      fake.on("evener/auth/apiKey/set", ({ provider }) => {
+        saved = true;
+        return savedApiKeyResult(provider);
+      });
+      fake.on("evener/auth/test", () => probe.promise);
+    });
+    connectionStore.getState().connect(client);
+    renderSpawn(client);
+    await settled();
+    await fillPrompt(user, "round-a");
+    const origin = completionDraft("/tmp/auto-round-a");
+
+    await openTeamProvider(user);
+    fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+
+    if (kind === "draft") {
+      await visitSpawnURL("/new?dir=/tmp/auto-round-b");
+      await act(async () => setDraftField(completionDraft("/tmp/auto-round-b"), "prompt", "round-b"));
+      await visitSpawnURL("/new?dir=/tmp/auto-round-a");
+    } else if (kind === "harness") {
+      await act(async () => setDraftField(origin, "harness", "external"));
+      await act(async () => setDraftField(origin, "harness", ""));
+    } else {
+      await act(async () => setDraftField(origin, "source", "buildbox"));
+      await act(async () => setDraftField(origin, "source", "local"));
+    }
+
+    await act(async () => probe.resolve({ provider: "team-local", status: "success", message: "" }));
+    await settled();
+
+    // A -> B -> A cannot revive the old attempt: the draft keeps its prompt and
+    // an empty model, and nothing launched.
+    expect(origin.fields.getState().prompt).toBe("round-a");
+    expect(origin.fields.getState().model).toBe("");
+    expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Prompt" }));
+    expect(spawnDraftsStore.getState().current).toBe(origin);
+    expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
+    expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
+  },
+);
+
+test("automatic connection completion is retired by a pane remount", async () => {
+  const user = setupUser();
+  const pendingCatalog = deferred<ModelListResponse>();
+  let saved = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", (params) => {
+      if (saved && params.refresh) return pendingCatalog.promise;
+      return { data: saved ? TEAM_SAVED_MODELS : [] };
+    });
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  });
+  connectionStore.getState().connect(client);
+  const mounted = renderSpawn(client);
+  await settled();
+  await setWorkingDir(user, "/tmp/auto-remount");
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  mounted.unmount();
+  renderSpawn(client);
+  await settled();
+  await act(async () => pendingCatalog.resolve({ data: TEAM_SAVED_MODELS }));
+  await settled();
+
+  const draft = completionDraft("/tmp/auto-remount");
+  expect(draft.fields.getState().model).toBe("");
+  expect(modelState()).toBe("required");
+  expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
+});
+
+test("automatic connection completion drops a late answer from a retired credential generation", async () => {
+  const user = setupUser();
+  const pendingCatalog = deferred<ModelListResponse>();
+  let saved = false;
+  const client = readyClient((fake) => {
+    fake.on("evener/instance/list", () => teamInstanceList(saved));
+    fake.on("model/list", (params) => {
+      if (saved && params.refresh) return pendingCatalog.promise;
+      return { data: saved ? TEAM_SAVED_MODELS : [] };
+    });
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return savedApiKeyResult(provider);
+    });
+    fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  });
+  connectionStore.getState().connect(client);
+  renderSpawn(client);
+  await settled();
+  await setWorkingDir(user, "/tmp/auto-generation");
+
+  await openTeamProvider(user);
+  await saveAndCheckProvider();
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  // The credentials changed while the completion's read was in flight.
+  act(() => client.emitNotification({ method: "evener/auth/updated", params: {} }));
+  await act(async () => pendingCatalog.resolve({ data: TEAM_SAVED_MODELS }));
+  await settled();
+
+  const draft = completionDraft("/tmp/auto-generation");
+  expect(draft.fields.getState().model).toBe("");
+  expect(modelState()).toBe("required");
+  expect(client.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
 });
 
 test("retrying missing provider setup discovers a local server started afterward", async () => {
@@ -1862,14 +2222,17 @@ test("successful keyless testing refreshes availability without an auth notifica
   available = true;
   fireEvent.click(testConnection);
   await settled();
-  await screen.findByRole("option", { name: /local-model/ });
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
     { method: "evener/auth/test", params: { provider: "ollama", expectedEndpointFingerprint: "fp-ollama" } },
   ]);
   await waitFor(() => {
-    expect(screen.queryByRole("option", { name: /local-model/ })).not.toBeNull();
     expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull();
   });
+  // The successful check returns to the draft without opening a picker; the
+  // refreshed catalogue is available from the ordinary model control.
+  expect(screen.queryByRole("listbox")).toBeNull();
+  await user.click(modelTrigger());
+  expect(await screen.findByRole("option", { name: /local-model/ })).toBeTruthy();
   await settled();
 });
 
@@ -4477,8 +4840,7 @@ test("an Advanced-options model override after onboarding satisfies the requirem
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
   fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
   await settled();
-  await screen.findByRole("option", { name: /Server choice/ });
-  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));

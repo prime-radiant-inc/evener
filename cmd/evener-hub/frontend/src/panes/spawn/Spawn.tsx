@@ -106,6 +106,7 @@ import {
 import {
   applySpawnURL,
   controllerDefaultDirectory,
+  markModelChoice,
   reseedSpawnDirectory,
   type SpawnDraft,
   selectSpawnDirectory,
@@ -141,6 +142,19 @@ import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
 // No route params: /new resolves to spawn with an empty param object; the
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
 export type SpawnPaneParams = Record<string, never>;
+
+/** One provider-setup attempt's originating state. The completion may act only
+ * while this object is still the current attempt, which a draft/host/harness
+ * change, a remount or a newer attempt revokes. The generation is monotonic so
+ * a late result can never be mistaken for a newer flow. */
+interface ProviderCompletionAttempt {
+  draft: SpawnDraft;
+  source: string;
+  harness: string;
+  cwd: string;
+  modelChoiceRevision: number;
+  generation: number;
+}
 
 // Fallback effort ladder for a model whose own ladder the hub does not
 // enumerate - the same fallback the session status row uses (StatusRow.tsx's
@@ -377,14 +391,20 @@ function SpawnForm({
   // draft already names the host.
   const providerSetup = useProviderSetup(submittedSource);
   const [connectingProvider, setConnectingProvider] = useState(false);
-  const [modelHandoff, setModelHandoff] = useState<{ name?: string }>();
-  // Save/reload can make new models appear before Continue. Once a draft scope
-  // enters onboarding, do not substitute the legacy untouched-model fallback
-  // for its explicit choice, including after cancellation. Scopes are tracked
-  // as a set, not one slot: onboarding draft B must not forget that draft A
-  // also made an explicit choice (see openProviderSetup below).
-  const providerChoiceScopes = useRef<Set<string>>(new Set());
-  const closeProviderSetup = useCallback(() => setConnectingProvider(false), []);
+  // The draft remembers which source/harness/cwd scope entered onboarding, so
+  // the uncredentialed-default fallback stays suppressed there across a pane
+  // remount. It is one field per draft (not a pane-wide set), which is what
+  // keeps draft B from forgetting draft A: each draft owns its own scope.
+  const [providerConnectionScope, setProviderConnectionScope] = useDraftField(draft, "providerConnectionScope");
+  const providerCompletion = useRef<ProviderCompletionAttempt | null>(null);
+  const providerCompletionGeneration = useRef(0);
+  // The credential generation the completion's fresh catalog must belong to,
+  // read at resolution time rather than captured in a stale callback.
+  const credentialsGenerationRef = useRef(0);
+  const closeProviderSetup = useCallback(() => {
+    providerCompletion.current = null;
+    setConnectingProvider(false);
+  }, []);
   // ConnectProviderDialog is a CONTROLLER-scoped editor: it reads and writes the
   // package store's top-level fields and issues its auth/test flows on the plain
   // connection, so it can only configure the controller's own hub. A remote
@@ -400,17 +420,9 @@ function SpawnForm({
   useEffect(() => {
     if (providerDialogHostRef.current === submittedSource) return;
     providerDialogHostRef.current = submittedSource;
+    providerCompletion.current = null;
     setConnectingProvider(false);
   }, [submittedSource]);
-  const providerConnected = useCallback(
-    (name?: string) => {
-      setConnectingProvider(false);
-      modelListCache.current.entries.clear();
-      setModelHandoff({ name });
-      void providerSetup.retry();
-    },
-    [providerSetup.retry],
-  );
   // The chunk hook owns the lazy payload and its cache-busted retry state;
   // see ConnectProviderDialogBoundary.tsx.
   const {
@@ -451,13 +463,40 @@ function SpawnForm({
   const cwd = draft.cwd;
   const setCwd = selectSpawnDirectory;
   // Entering onboarding records the draft's own scope; the fallback below is
-  // suppressed for exactly that harness+directory. A later scope in the same
-  // pane mount still gets its own default, and a connection-driven re-render -
-  // which never changes the draft scope - cannot clear the choice.
+  // suppressed for exactly that source+harness+directory. A later scope in the
+  // same pane mount still gets its own default, and a connection-driven
+  // re-render - which never changes the draft scope - cannot clear the choice.
+  // The attempt object is what binds the eventual completion to THIS draft,
+  // host, harness and directory: any change revokes it (see the ownership
+  // effect below), so A -> B -> A cannot revive an old result.
   const openProviderSetup = useCallback(() => {
-    providerChoiceScopes.current.add(`${harness}\0${cwd}`);
+    const fields = draft.fields.getState();
+    setProviderConnectionScope({ source: submittedSource, harness: fields.harness, cwd: draft.cwd });
+    providerCompletion.current = {
+      draft,
+      source: submittedSource,
+      harness: fields.harness,
+      cwd: draft.cwd,
+      modelChoiceRevision: fields.modelChoiceRevision,
+      generation: ++providerCompletionGeneration.current,
+    };
     setConnectingProvider(true);
-  }, [harness, cwd]);
+  }, [draft, submittedSource, setProviderConnectionScope]);
+  // The completion belongs to the attempt, not to the pane: leaving this draft,
+  // changing the host/harness/directory it was opened from, navigating away or
+  // unmounting retires it. Cleanup on each dependency change is what makes an
+  // A -> B -> A round trip unable to revive A's old completion.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: draft/host/harness/directory are deliberate revocation triggers - the body only clears the ref, but must re-run whenever they change
+  useEffect(() => {
+    const revoke = () => {
+      providerCompletion.current = null;
+    };
+    window.addEventListener("popstate", revoke);
+    return () => {
+      window.removeEventListener("popstate", revoke);
+      providerCompletion.current = null;
+    };
+  }, [draft, submittedSource, harness, cwd]);
   const [directoryOpen, setDirectoryOpen] = useState(false);
   // Scoped by cwd AND host so neither a draft switch nor a host switch can show
   // the previous project's/host's branch while the new evener/git/head request
@@ -492,6 +531,10 @@ function SpawnForm({
   const [globalModelRequest, setGlobalModelRequest] = useState<{
     active: boolean;
     promise: Promise<ModelListResponse>;
+    /** True for the one request a provider completion's own refresh causes.
+     * That request may display/prune useful rows, but it must not rewrite saved
+     * defaults or clear a preserved explicit choice for this draft. */
+    protectedByCompletion: boolean;
   } | null>(null);
   // The host whose global model list has ANSWERED since the last host change
   // (null while the current host's is outstanding). It is the model half of the
@@ -981,6 +1024,14 @@ function SpawnForm({
   // provider on THAT host blocks Start the way a local one does, and the banner
   // below offers the host-side remediation instead of this controller's editor.
   const providerRequired = usesEvenerModels && providerSetup.status === "missing";
+  // The draft's own connection flow suppresses the fallback only in the exact
+  // source/harness/directory scope that entered setup. An explicit choice made
+  // elsewhere, or a later scope, keeps the ordinary fallback.
+  const providerConnectionScopeMatches =
+    providerConnectionScope !== null &&
+    providerConnectionScope.source === submittedSource &&
+    providerConnectionScope.harness === harness &&
+    providerConnectionScope.cwd === cwd;
   // kata xgk8: Start cannot succeed while Model is untouched AND the hub has
   // confirmed there is no default to fall back to - see the resolve effect
   // below for how noDefaultModel is set. The onboarding scope is a second
@@ -1002,7 +1053,7 @@ function SpawnForm({
     usesEvenerModels &&
     model === "" &&
     advancedModel === "" &&
-    (noDefaultModel || providerChoiceScopes.current.has(`${harness}\0${cwd}`));
+    (noDefaultModel || providerConnectionScopeMatches);
   // What the card's model trigger stands for, in the same order its label is
   // chosen below.
   const modelTriggerState = modelRequired
@@ -1027,6 +1078,10 @@ function SpawnForm({
   // either, the loader identities change, the catalog effect and pickers reload,
   // and global cleanup retires its old authority before requesting a new catalog.
   const [credentialsGeneration, setCredentialsGeneration] = useState(0);
+  // The completion's fresh catalog is only evidence while it belongs to the
+  // generation current when the request was issued: a late answer from a
+  // retired generation must not adopt a model.
+  credentialsGenerationRef.current = credentialsGeneration;
   useEffect(
     () =>
       client.onNotification((n) => {
@@ -1113,6 +1168,87 @@ function SpawnForm({
       return loadModelList(refresh).then(modelListToCatalog);
     },
     [loadModelList],
+  );
+  // A successful access check returns to the draft that opened setup. The
+  // connector has already retired its own operation; here we close the dialog
+  // first, refresh the instance and catalog owners, and only then consider one
+  // automatic model. Every step is fenced by the originating attempt, so a
+  // late result cannot close a newer dialog, act on another draft or overwrite
+  // a later choice.
+  const providerConnected = useCallback(
+    (name?: string) => {
+      const attempt = providerCompletion.current;
+      if (attempt === null || attempt.generation !== providerCompletionGeneration.current) return;
+      const fields = attempt.draft.fields.getState();
+      if (
+        spawnDraftsStore.getState().current !== attempt.draft ||
+        fields.harness !== attempt.harness ||
+        fields.source !== attempt.source ||
+        attempt.draft.cwd !== attempt.cwd
+      ) {
+        return;
+      }
+      // Restore focus to the composer only while this flow still owns it: the
+      // dialog must still hold focus at the moment it closes.
+      const dialog = document.querySelector('[role="dialog"]');
+      const ownsFocus = dialog !== null && document.activeElement !== null && dialog.contains(document.activeElement);
+      setConnectingProvider(false);
+      modelListCache.current.entries.clear();
+      const generationAtRequest = credentialsGenerationRef.current;
+      void (async () => {
+        try {
+          await providerSetup.retry();
+        } catch {
+          return;
+        }
+        if (providerCompletion.current !== attempt) return;
+        let response: ModelListResponse;
+        try {
+          response = await loadModelList(true);
+        } catch {
+          // A failed fresh discovery leaves the ordinary inline model recovery
+          // in charge; cached rows may still display, but they are not evidence.
+          return;
+        }
+        if (providerCompletion.current !== attempt) return;
+        if (credentialsGenerationRef.current !== generationAtRequest) return;
+        if (spawnDraftsStore.getState().current !== attempt.draft) return;
+        const current = attempt.draft.fields.getState();
+        if (
+          current.harness !== attempt.harness ||
+          current.source !== attempt.source ||
+          attempt.draft.cwd !== attempt.cwd ||
+          current.modelChoiceRevision !== attempt.modelChoiceRevision
+        ) {
+          return;
+        }
+        // Only an untouched first run may adopt: a saved model (revision 1) or
+        // any explicit choice (even empty) is preserved as the person left it.
+        if (attempt.modelChoiceRevision !== 0) return;
+        // A /model invocation is explicit intent too, bare included.
+        if (matchBuiltinInvocation(current.prompt, spawnBuiltinCommands())?.command.id === "model") return;
+        if (name === undefined || name.trim() === "") return;
+        const marked = (response.data ?? []).filter(
+          (model) => model.instanceDefault === true && model.provider === name,
+        );
+        if (marked.length !== 1) return;
+        const chosen = marked[0];
+        if (chosen === undefined) return;
+        // Not handleModelChange/saveDefaults: automatic adoption is draft-local
+        // and must not record an explicit choice or persist a global default.
+        setDefaultModelFallback(null);
+        setStaleNotice(null);
+        setModel(`${chosen.provider}/${chosen.model}`);
+      })();
+      if (ownsFocus) {
+        queueMicrotask(() => {
+          if (spawnDraftsStore.getState().current !== attempt.draft) return;
+          if (document.querySelector('[role="dialog"]') !== null) return;
+          textareaRef.current?.focus();
+        });
+      }
+    },
+    [providerSetup.retry, loadModelList, setDefaultModelFallback, setModel, setStaleNotice],
   );
   // Both path RPCs answer with a Go slice, and an EMPTY one marshals as JSON
   // null rather than [] - a hub with no remembered projects, or a directory with
@@ -1500,9 +1636,16 @@ function SpawnForm({
       modelHostRef.current = submittedSource;
       setModelHostSettled(null);
     }
+    const completion = providerCompletion.current;
+    const protectedByCompletion =
+      completion !== null &&
+      completion.generation === providerCompletionGeneration.current &&
+      completion.draft === draft &&
+      draft.fields.getState().modelChoiceRevision === completion.modelChoiceRevision;
     const request = {
       active: true,
       promise: hostRequest(client, submittedSource, "model/list", { harness: "evener" }),
+      protectedByCompletion,
     };
     setGlobalModelRequest(request);
     request.promise.then(
@@ -1519,7 +1662,10 @@ function SpawnForm({
         // still offers. Only the local host's catalog has authority here; a
         // remote draft is validated against the remote list by the effect
         // below, which never writes storage.
-        if (isLocalHost(submittedSource)) sweepStaleModels(r.data ?? []);
+        // A completion's own refresh may add or retire display rows, but it
+        // must not rewrite the controller's saved defaults while the preserved
+        // draft is still the attempt's origin.
+        if (isLocalHost(submittedSource) && !request.protectedByCompletion) sweepStaleModels(r.data ?? []);
       },
       () => {
         // A refusal is a SETTLEMENT, not an answer: it releases the submit gate
@@ -1544,6 +1690,10 @@ function SpawnForm({
   // the sweep above is local-only - so this path never writes a saved default.
   useEffect(() => {
     if (!globalModelRequest || !usesEvenerModels) return;
+    // The completion's own catalog refresh must not erase a choice the person
+    // preserved into this flow; the regular inline recovery owns an unknown or
+    // unavailable model there.
+    if (globalModelRequest.protectedByCompletion) return;
     const initial = draft.fields.getState();
     if (!initial.model) return;
     globalModelRequest.promise.then(
@@ -1714,7 +1864,7 @@ function SpawnForm({
             advancedModel === "" &&
             !defaultCredentialed &&
             fallback &&
-            !providerChoiceScopes.current.has(`${harness}\0${cwd}`)
+            !providerConnectionScopeMatches
           ) {
             const installed = `${fallback.provider}/${fallback.model}`;
             setDefaultModelFallback(installed);
@@ -1745,8 +1895,8 @@ function SpawnForm({
     remoteLaunch,
     setModel,
     setDefaultModelFallback,
-    harness,
     usesEvenerModels,
+    providerConnectionScopeMatches,
   ]);
 
   // Retire a model this fallback installed once the target becomes remote: the
@@ -1886,6 +2036,9 @@ function SpawnForm({
   }
 
   function handleModelChange(next: string): void {
+    // The act of choosing is what the completion fences on; record it even
+    // when the picker lands on the value already shown.
+    markModelChoice(draft);
     // Any value the person sets is their own choice, not the
     // uncredentialed-default fallback's controller-derived pick, so it is no
     // longer retired if the launch target becomes remote.
@@ -1893,6 +2046,19 @@ function SpawnForm({
     setModel(next);
     clearAdvancedOverride("model");
     if (next !== "") setStaleNotice(null); // any new model clears the discard notice (floor §1.10)
+  }
+
+  // Advanced-options edits are the panel's own user entry points. Only a change
+  // to the per-launch model field is a model choice; path validation and other
+  // automatic writes go through setAdvancedValues directly and never mark one.
+  function handleAdvancedValuesChange(next: AdvancedValues): void {
+    const previous = draft.fields.getState().advancedValues;
+    setAdvancedValues(next);
+    // The panel writes a fresh field object for the field the user touched;
+    // untouched fields keep their reference. Identity therefore records a
+    // same-value Advanced model pick too, while automatic path re-validation
+    // (which rewrites only its own path field) does not mark a model choice.
+    if (previous.model !== next.model) markModelChoice(draft);
   }
 
   function handleEffortChange(next: string): void {
@@ -2201,6 +2367,10 @@ function SpawnForm({
         }
       }
     }
+    // A /model invocation at submit is an explicit model choice - bare
+    // included, where it means "(default)". Record it at the entry point so a
+    // completion that is still settling cannot adopt over it.
+    if (builtinMatch?.command.id === "model") markModelChoice(draft);
     // The advanced schema's sandbox wins over the access-mode chip (floor §1.8);
     // its model/reasoningEffort win over the chips (floor §1.11) - resolveScalars
     // hoists them into the top-level fields the daemon prefers over overrides.
@@ -2714,7 +2884,6 @@ function SpawnForm({
                       loadCatalog={loadCatalog}
                       refreshKey={modelListRevision}
                       onPick={handleModelPickEntry}
-                      connectionRequest={modelHandoff}
                       onOpenConnection={providerSetupIsLocal ? openProviderSetup : undefined}
                       data-testid="spawn-model-trigger"
                       valueTestId="spawn-model-value"
@@ -2967,7 +3136,7 @@ function SpawnForm({
             options={schemaOptions}
             onOverridesChange={setAdvancedOverrides}
             values={advancedValues}
-            onValuesChange={setAdvancedValues}
+            onValuesChange={handleAdvancedValuesChange}
             errors={advancedErrors}
             onErrorsChange={setAdvancedErrors}
             readValues={readAdvancedValues}
