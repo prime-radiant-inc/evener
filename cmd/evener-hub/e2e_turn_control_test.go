@@ -541,7 +541,10 @@ func (s hubStack) dialRPC(ctx context.Context, t *testing.T) *appwire.Client {
 	client := appwire.NewClient(transport)
 	// Registered before any thread exists, so the LIFO cleanup order leaves
 	// the socket open for the thread/shutdown the test registers later.
-	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() {
+		defer retireOverlapDiagnostic(t, "rpc-close")()
+		_ = client.Close()
+	})
 	// The read loop's context must outlive the test body's bounded ctx, or
 	// cancelling that ctx closes the socket before the cleanup can shut the
 	// thread down. Close is what ends the loop here.
@@ -568,6 +571,7 @@ var liveStackBuild struct {
 
 func liveStackBinaries(t *testing.T, repoRoot string) string {
 	t.Helper()
+	defer retireOverlapDiagnostic(t, "live-stack-binaries")()
 	liveStackBuild.once.Do(func() {
 		// Under TestMain's root, so its Discard is the only cleanup path.
 		dir := filepath.Join(testEnv.Root, "live-stack-bin")
@@ -634,6 +638,7 @@ type hubStackOptions struct{ ChildEnv []string }
 
 func startHubStackWithOptions(t *testing.T, providersTOML, model, evenerBin string, opts hubStackOptions, extraHubArgs ...string) hubStack {
 	t.Helper()
+	defer retireOverlapDiagnostic(t, "hub-stack-with-options")()
 
 	home := t.TempDir()
 	if opts.ChildEnv != nil {
@@ -707,9 +712,12 @@ func startHubStackWithOptions(t *testing.T, providersTOML, model, evenerBin stri
 	}
 	logPath := filepath.Join(home, "hub.log")
 	t.Cleanup(func() {
+		defer retireOverlapDiagnostic(t, "hub-cleanup")()
+		killed := retireOverlapDiagnostic(t, "hub-kill-wait")
 		_ = hub.Process.Kill()
 		_ = hub.Wait()
 		_ = hubLog.Close()
+		killed()
 		// A hub under test must never sync marketplaces: the seeded defaults
 		// point at real GitHub repos, so a sync is a network clone of an
 		// external repo -- and Kill above is SIGKILL, which orphans an
@@ -723,6 +731,13 @@ func startHubStackWithOptions(t *testing.T, providersTOML, model, evenerBin stri
 		}
 		body, readErr := os.ReadFile(logPath)
 		if readErr == nil {
+			if strings.HasPrefix(t.Name(), "TestE2E_RetireOverlappedByAnotherOwnershipAction/") {
+				for line := range strings.SplitSeq(string(body), "\n") {
+					if strings.HasPrefix(line, "[hub] lifecycle ") {
+						retireOverlapLog(t, "RETIRE_DIAG %s", line)
+					}
+				}
+			}
 			// Daemons are grandchildren the hub deliberately outlives, and
 			// thread/shutdown is asynchronous — a daemon parked in a held
 			// model round can still be alive here. Reap by the pid the hub
@@ -759,6 +774,7 @@ var daemonPIDPattern = regexp.MustCompile(`\bdaemon session=\S+ pid=(\d+)\b`)
 
 func reapDaemons(t *testing.T, hubLog string) {
 	t.Helper()
+	defer retireOverlapDiagnostic(t, "reap-daemons")()
 	var procs []*os.Process
 	for _, match := range daemonPIDPattern.FindAllStringSubmatch(hubLog, -1) {
 		pid, err := strconv.Atoi(match[1])
@@ -781,7 +797,12 @@ func reapDaemons(t *testing.T, hubLog string) {
 	// SIGKILL the laggards. A process that is gone can no longer write, so
 	// RemoveAll after this point cannot lose the race.
 	for _, proc := range procs {
+		waited := func() {}
+		if strings.HasPrefix(t.Name(), "TestE2E_RetireOverlappedByAnotherOwnershipAction/") {
+			waited = retireOverlapDiagnostic(t, fmt.Sprintf("daemon-exit-pid-%d", proc.Pid))
+		}
 		if waitForProcessExit(proc, 35*time.Second) {
+			waited()
 			continue
 		}
 		t.Logf("daemon pid %d ignored SIGTERM; escalating to SIGKILL", proc.Pid)
@@ -789,6 +810,7 @@ func reapDaemons(t *testing.T, hubLog string) {
 		if !waitForProcessExit(proc, 5*time.Second) {
 			t.Logf("daemon pid %d still present after SIGKILL; it may be a zombie awaiting init's reap, which holds no writable fds", proc.Pid)
 		}
+		waited()
 	}
 }
 

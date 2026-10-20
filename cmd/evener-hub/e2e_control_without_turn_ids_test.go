@@ -694,6 +694,7 @@ func startLiveThread(ctx context.Context, t *testing.T, client *appwire.Client, 
 		t.Fatalf("thread/start returned no evener ref: %+v", started.Thread)
 	}
 	t.Cleanup(func() {
+		defer retireOverlapDiagnostic(t, "thread-shutdown-cleanup")()
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancelShutdown()
 		// A fresh connection: one open when the session was force-stopped
