@@ -791,7 +791,13 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
           operations.replaceWithSettled(committed);
         }
       }
-      publishValue(cloneValue(value));
+      // The acknowledged append is durable backing arriving from storage, not
+      // a programmatic edit: an unchanged composer must take it whole. A retry
+      // that reconciles an uncertain completion can find a peer's newer
+      // selections over identical text, and a text-only patch would keep the
+      // stale chip in the unchanged prefix and echo it back over the peer's
+      // winning row.
+      publishValue(cloneValue(value), { restores: true });
       draftToken = { ...token };
       return;
     }
@@ -814,6 +820,20 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       draftToken === null ||
       draftToken.namespaceIncarnation !== preparation.token.namespaceIncarnation ||
       draftToken.sessionRevision !== preparation.token.sessionRevision
+    ) {
+      return;
+    }
+    // A retried uncertain append reconciles from whatever the durable row now
+    // holds, so its token can carry a later peer revision on top of the
+    // append's own. Only the append's own advance proves this source may spend
+    // the revision on the typing it still holds: a later token belongs to a
+    // peer whose newer text or attachments this editor never adopted, and
+    // persisting the local work under it would overwrite them. Leave the typing
+    // unsaved on its captured lineage instead; an unchanged composer takes the
+    // committed value through the ownership branch above.
+    if (
+      token.namespaceIncarnation !== preparation.token.namespaceIncarnation ||
+      token.sessionRevision !== preparation.token.sessionRevision + 1
     ) {
       return;
     }
@@ -1017,18 +1037,24 @@ export function createComposerSourceState(ref: string, deps?: ComposerSourceDeps
       const capture = ownedCaptureGuards.get(guard);
       const row = r && k ? await r.load(k) : null;
       if (capture && ownsSubmissionSnapshot(submitted, capture.items)) {
-        // The accepted dispatch's own guarded write — the resend, or a command
-        // settlement's discard — advanced the row from the guard's captured
-        // token by exactly one, and only that advance is adopted: a competing
-        // tab's newer revision never joins this source's lineage.
+        const command = opts?.command === true;
+        // An accepted resend consumed its recovery record before settlement, so
+        // the row's one advance past the capture is unambiguously this source's
+        // own guarded write and may be adopted here. A built-in command has
+        // consumed nothing yet: an advance at this point can equally be a peer's
+        // edit to the recovery, and adopting it would leave this source holding
+        // the peer's revision while still showing its pre-peer content — the
+        // next edit would then spend that revision overwriting the peer's work.
+        // A command advances its token only after its own discard succeeds.
         if (
+          !command &&
           row &&
           row.token.namespaceIncarnation === guard.token.namespaceIncarnation &&
           row.token.sessionRevision === guard.token.sessionRevision + 1
         ) {
           draftToken = { ...row.token };
         }
-        if (opts?.command === true) {
+        if (command) {
           // A built-in command's settlement is not a resend: nothing consumed
           // the durable recovery record before this point, so clearing the
           // editor while the record survived would resurface the just-acted-

@@ -1769,6 +1769,68 @@ test("a stale acknowledgment preserves the bound editor's literal later typing a
   });
 });
 
+test("a later peer revision in an uncertain append's acknowledgment leaves local typing unsaved", async () => {
+  const fixture = sourceFixture("source-state-ack-later-peer");
+  setMutationStorageForTests(fixture.outbox);
+  await fixture.repository.seedDraft(fixture.key, { text: "ordinary", skillNames: [] });
+  const original = await enqueueRecovery(fixture, "recovery original /same");
+  const source = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  await source.ready();
+  source.setActiveRecoveryId(original.clientMutationId);
+  const preparation = await source.prepareAnnotation();
+  if (!preparation) throw new Error("expected a recovery preparation");
+  // The uncertain append's own committed write is the preparation's one
+  // advance; the acknowledgment that never arrived would have carried it.
+  await fixture.outbox.updateRecoveryInput(
+    original.clientMutationId,
+    [{ type: "text" as const, text: "appended reference" }],
+    [],
+    "appended reference",
+    [],
+  );
+  // A mounted editor holds the typing below until its own persistence runs.
+  const unbind = source.bindEditor(
+    fakeEditor({ text: "recovery original /same", cursor: 21, selection: { start: 21, end: 21 } }),
+  );
+  sourceCleanups.push(unbind);
+  source.editText("local typing");
+  // A peer then edits the recovery, so reconciliation's token carries the
+  // append's revision AND the peer's - newer than this source's typing.
+  await fixture.outbox.updateRecoveryInput(
+    original.clientMutationId,
+    [{ type: "text" as const, text: "peer recovery edit" }],
+    [],
+    "peer recovery edit",
+    [],
+  );
+  const peerRow = await requireRow(fixture.repository, fixture.key);
+  expect(peerRow.token.sessionRevision).toBe(preparation.token.sessionRevision + 2);
+  // The uncertain append's retry acknowledges that later token with the peer's
+  // committed value.
+  source.acknowledgeAnnotation(preparation, peerRow.token, {
+    text: "peer recovery edit",
+    skillNames: [],
+    mentions: [],
+    attachments: [],
+  });
+  // The acknowledgment may not persist the local typing under the peer's
+  // revision: that would replace the peer's newer text without adopting it.
+  // Draining recovery writes through preparation also proves the typing stays
+  // unsaved, because its pending marker refuses the handoff.
+  const blocked = await source.prepareAnnotation();
+  expect(await fixture.outbox.getRecovery(original.clientMutationId)).toMatchObject({
+    composerText: "peer recovery edit",
+  });
+  expect(blocked).toBeNull();
+  expect(await requireRow(fixture.repository, fixture.key)).toMatchObject({ text: "ordinary" });
+  expect(source.getSnapshot()).toMatchObject({
+    activeRecoveryId: original.clientMutationId,
+    text: "local typing",
+  });
+});
+
 test("prepareAnnotation returns null while accepted work is unsaved or the source is disposed", async () => {
   const factory = new IDBFactory();
   const databaseName = `source-state-prepare-null-${crypto.randomUUID()}`;
@@ -2138,6 +2200,32 @@ test("a command settlement vetoed by a newer edit keeps the surviving recovery b
   if (!resent) throw new Error("expected the guarded resend to consume the record");
   expect(await source.settleDraft(sent)).toMatchObject({ cleared: true, persistence: "committed" });
   expect(await fixture.outbox.getRecovery(original.clientMutationId)).toBeUndefined();
+});
+
+test("a command settlement never spends a peer recovery revision on stale local content", async () => {
+  const { fixture, source, original, submitted } = await arrangeSelectedRecovery("source-state-command-peer-recovery");
+  // A peer tab edits the recovery record while the command is in flight: its
+  // write holds the row's one advance past this command's captured token.
+  await fixture.outbox.updateRecoveryInput(
+    original.clientMutationId,
+    [{ type: "text" as const, text: "peer recovery edit" }],
+    [],
+    "peer recovery edit",
+    [],
+  );
+  // The command's guarded discard refuses the peer-advanced authority, so the
+  // command stays unsettled and keeps the record.
+  expect(await source.settleDraft(submitted, { command: true })).toMatchObject({
+    cleared: false,
+    persistence: "pending",
+  });
+  // The refused discard must leave the source on its OWN captured lineage. The
+  // next persistence of local work may not spend the peer's revision writing
+  // the content this editor still holds over the peer's newer recovery text.
+  await source.queueRecoveryPersistence(original.clientMutationId, "stale local edit", [], [], [], []);
+  expect(await fixture.outbox.getRecovery(original.clientMutationId)).toMatchObject({
+    composerText: "peer recovery edit",
+  });
 });
 
 test("a resend settlement vetoed by a newer edit releases its consumed recovery backing", async () => {
@@ -4137,6 +4225,96 @@ test("hydration restores an identical-text selection change through a mounted ed
   } finally {
     hold.release();
   }
+});
+
+// The uncertain completion of an annotation append is a reconciliation from
+// durable backing, so a peer may have changed the record's selections by the
+// time the retry observes it. That value is authoritative for the mounted
+// editor exactly like a hydration winner: identical text cannot make it a
+// patch, or the editor keeps its stale atom and echoes it over the peer's row.
+test("an uncertain append's peer selection change is an authoritative restoration for a mounted editor", async () => {
+  const fixture = sourceFixture("ack-uncertain-peer-selections");
+  setMutationStorageForTests(fixture.outbox);
+  await fixture.repository.seedDraft(fixture.key, { text: "ordinary", skillNames: [] });
+  const originalInput = [
+    { type: "text" as const, text: "/same", mentions: [] },
+    { type: "skill" as const, name: "same" },
+  ];
+  const original = await fixture.outbox.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input: originalInput },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: originalInput },
+    composerText: "/same",
+    composerMentions: [{ kind: "skill", name: "same", offset: 0 }],
+  });
+  await fixture.outbox.transferToRecovery(original.clientMutationId, "rejected");
+  const source = fixture.track(
+    createComposerSourceState("root", { repository: fixture.repository, key: fixture.key, outbox: fixture.outbox }),
+  );
+  await source.ready();
+  source.setActiveRecoveryId(original.clientMutationId);
+  const preparation = await source.prepareAnnotation();
+  if (!preparation) throw new Error("expected a recovery preparation");
+  expect(source.getSnapshot()).toMatchObject({ text: "/same", skillNames: ["same"] });
+
+  // The editor, wired exactly as Composer wires it: the source's snapshot
+  // drives it and its echo feeds back through the same edit paths.
+  function EditorPane({ bound }: { bound: ReturnType<typeof createComposerSourceState> }) {
+    const snapshot = useSyncExternalStore(bound.subscribe, bound.getSnapshot, bound.getSnapshot);
+    const value: SkillEditorValue = {
+      text: snapshot.text,
+      skillNames: snapshot.skillNames,
+      ...(snapshot.commandNames === undefined ? {} : { commandNames: snapshot.commandNames }),
+      ...(snapshot.mentions === undefined ? {} : { mentions: snapshot.mentions.map((m) => ({ ...m })) }),
+    };
+    return createElement(SkillEditor, {
+      value,
+      restoreEpoch: snapshot.restoreEpoch,
+      "aria-label": "Message",
+      onChange: (next: SkillEditorValue) => {
+        bound.editSkillNames(next.skillNames);
+        bound.editText(next.text);
+        bound.persistDraft(next.text);
+      },
+    });
+  }
+  const view = render(createElement(EditorPane, { bound: source }));
+  const editor = view.getByRole("textbox");
+  expect(editor.querySelectorAll('[data-skill-name="same"]')).toHaveLength(1);
+
+  // The uncertain append committed at the preparation's own revision.
+  await fixture.outbox.updateRecoveryInput(original.clientMutationId, originalInput, [], "/same", []);
+  // A peer then replaced the record's whole-text skill selection with plain
+  // prose at the next revision, leaving the text identical.
+  await fixture.outbox.updateRecoveryInput(
+    original.clientMutationId,
+    [{ type: "text" as const, text: "/same", mentions: [] }],
+    [],
+    "/same",
+    [],
+  );
+  const peerRow = await requireRow(fixture.repository, fixture.key);
+  expect(peerRow.token.sessionRevision).toBe(preparation.token.sessionRevision + 2);
+
+  // The retry's acknowledgment publishes the peer's value with the peer's
+  // token into an unchanged composer.
+  await act(async () => {
+    source.acknowledgeAnnotation(preparation, peerRow.token, {
+      text: "/same",
+      skillNames: [],
+      mentions: [],
+      attachments: [],
+    });
+  });
+
+  await waitFor(() => expect(editor.querySelectorAll("[data-skill-name]")).toHaveLength(0));
+  expect(source.getSnapshot().skillNames).toEqual([]);
+  expect(source.getSnapshot().mentions).toEqual([]);
+  // No echo rode the reconciliation: the peer's plain selection stays durable.
+  expect((await requireRow(fixture.repository, fixture.key)).skillNames).toEqual([]);
+  view.unmount();
 });
 
 // The restoration never overruns an accepted edit: the generation guard keeps
