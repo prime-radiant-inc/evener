@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
+import { SymbolView } from "expo-symbols";
 import type { TextProps } from "react-native";
-import { Platform, Pressable, StyleSheet, Text, useColorScheme, useWindowDimensions } from "react-native";
-import { type Palette, paletteFor } from "./design/tokens";
+import { Platform, Pressable, StyleSheet, Text, View, useColorScheme, useWindowDimensions } from "react-native";
+import { type Palette, paletteFor, scaledType, uiType } from "./design/tokens";
 import { useReadingType } from "./display/displayContext";
 
 /** The app's colors: the redesign palette (src/design/tokens.ts) under the
@@ -70,18 +71,22 @@ export function Choice({
 			accessibilityLabel={label}
 			accessibilityState={{ checked: selected, disabled }}
 			disabled={disabled}
-			onPress={onPress}
-			style={[styles.action, { opacity: disabled ? 0.4 : 1 }]}
+			onPress={disabled ? undefined : onPress}
+			style={[styles.action, { flexDirection: "row", alignItems: "center", justifyContent: "flex-start", gap: 12 }]}
 		>
+			<View style={{ width: 22, alignItems: "center" }}>
+				{selected ? (
+					<SymbolView name="checkmark" size={17} tintColor={disabled ? colors.secondary : colors.accent} />
+				) : null}
+			</View>
 			<Text
 				allowFontScaling={allowFontScaling}
 				style={{
-					color: selected ? colors.accent : colors.text,
-					fontSize: 16 * textScale,
+					color: disabled ? colors.secondary : colors.text,
+					...scaledType(uiType.listRow, textScale),
 					flexShrink: 1,
 				}}
 			>
-				{selected ? "● " : "○ "}
 				{label}
 			</Text>
 		</Pressable>
@@ -125,8 +130,7 @@ export function Copy({
 						}
 					: {
 							color: muted ? colors.secondary : colors.text,
-							fontSize: (muted ? 13 : Platform.OS === "ios" ? 17 : 16) * textScale,
-							lineHeight: (muted ? 19 : 25) * textScale,
+							...scaledType(muted ? uiType.footnote : uiType.listRow, textScale),
 						}
 			}
 		>

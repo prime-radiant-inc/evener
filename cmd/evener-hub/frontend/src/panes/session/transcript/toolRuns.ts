@@ -49,9 +49,14 @@ function foldable(entry: ProjectedEntry, opts: FoldOptions): entry is ToolItemEn
   const { item } = entry;
   if (item.status !== "completed") return false;
   // The same failure the row itself renders (protocol/itemFailure.ts), not a
-  // looser re-reading of the wire fields: a call that exited nonzero must not
-  // fold away behind a quiet run summary, and an error string with nothing in
-  // it is not a reason to keep a clean call out of one.
+  // looser re-reading of the wire fields: a call carrying a real failure must
+  // not fold away behind a quiet run summary, and an error string with nothing
+  // in it is not a reason to keep a clean call out of one.
+  //
+  // A call whose ONLY problem is a nonzero exit is NOT a failure (Jesse,
+  // 2026-10-16), so it does fold — like any other clean call. Its small inline
+  // exit mark is not lost: the folded run keeps every step, and expanding the
+  // run draws each step's mark (ToolCallItem at the member).
   if (hasItemFailure(item)) return false;
   const descriptor = opts.descriptorFor(item.toolName ?? "");
   if (descriptor.fold !== "quiet" && descriptor.fold !== "consequential") return false;

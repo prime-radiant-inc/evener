@@ -48,7 +48,7 @@ type prepareResult struct {
 func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames []string, requestedVisible, resultToolName, finishReason string) prepareResult {
 	res := prepareResult{Call: call}
 	if strings.TrimSpace(res.Call.ID) == "" {
-		res.Call.ID = "call_" + shortHash(res.Call.Arguments)
+		res.Call.ID = tool.SynthesizedCallID()
 	}
 	if err := tool.ValidateRawArguments(res.Call.Arguments); err != nil {
 		res.RawArgumentsRejected = true

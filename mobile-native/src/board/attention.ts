@@ -8,7 +8,7 @@
 // and hands the read back in - this file has no client of its own), with no
 // fallback left when it's given. A subagent failure never puts a Board row in
 // Needs you; the row's subagent chip (subagentChip) counts it, and the
-// session's Subagents list holds the detail.
+// session's Agents list holds the detail.
 import type { DelegateTiming, NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { DELEGATE_QUIET_AFTER_MS, quietState, taskSettledCount } from "@evener/appwire-client";
 import { relativeAge, subagentTallyToShow } from "@evener/appwire-client/state/navigation";
@@ -325,14 +325,14 @@ function durationLabel(forMs: number): string {
 }
 
 /** The why line of a session or subagent waiting on its subagents: on the
- * Board, in the tray, in the Activity list and on a subagent's row (spec
+ * Board, in the tray, in the Agents and Jobs lists and on a subagent's row (spec
  * 13.1). */
 export function waitingOnSubagents(count: number): string {
 	return `Waiting on ${plural(count, "subagent")}`;
 }
 
 /** No update for this long reads "Quiet" in a session's tray, on a
- * subagent's row and in the Activity list, and dims a subagent row's dot:
+ * subagent's row and in the Agents and Jobs lists, and dims a subagent row's dot:
  * the shared client's quiet threshold, so every surface flips at the same
  * instant. The tray also waits this long before showing a first model retry.
  * The Board's rows read the package's quietState instead. */
@@ -462,7 +462,7 @@ export interface LastLine {
  * project and host, each only when it differs from the fleet's usual one,
  * then the model's display name (S17) when "Show model on Board rows" is on.
  * Subagent failures never appear here; they show only in the session's
- * Subagents chip and list. */
+ * Agents chip and list. */
 export function lastLine(
 	row: NavigationSessionSummary,
 	usual: Usual,

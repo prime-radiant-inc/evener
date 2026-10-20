@@ -117,11 +117,11 @@ export interface ToolRendererDescriptor {
   autoExpand?(item: ItemModel): boolean; // e.g. an image read whose picture IS the output
   // failed is a TOOL-SPECIFIC failure signal, OR'd with the generic one
   // ToolCallItem derives from ItemModel.error/status. It exists because a
-  // clean tool RESULT can still report a failed action: a shell command that
-  // ran and exited nonzero carries no ItemModel.error at all (the wire stamps
-  // status "completed"), yet it is exactly what the reader needs the failure
-  // glyph for. Mirrors the legacy renderer's own toolLooksGood, which likewise
-  // treated a nonzero exit_code as not-good (renderer-format.js:593).
+  // clean tool RESULT can still report a failed action whose failure lives in
+  // the shape of its own output, not in error/status. A nonzero exit is NOT
+  // such a signal (Jesse, 2026-10-16): it is common and expected, so exit
+  // alone is never failure - the row shows the inline exit mark instead (see
+  // ToolCallItem's shared toolExitCode read).
   failed?(item: ItemModel): boolean;
   // suppress removes the whole tool-call row from the transcript when true -
   // no summary, no body, nothing (ToolCallItem renders null). Used for a
@@ -225,8 +225,10 @@ export interface ResolvedToolRendererDescriptor extends Omit<ToolRendererDescrip
 // when the tool descriptor has a domain-specific failure signal of its own.
 // The shared half is the same rule the transcript projector and the native
 // app apply, so a call cannot read as failed in one surface and clean in
-// another. The descriptor half stays: a tool whose failure lives in its own
-// output shape, not in error/status/exitCode, still marks its row here.
+// another. A nonzero exit is no longer any part of it (Jesse, 2026-10-16): the
+// shared predicate dropped it, and no descriptor declares it as a failure
+// (shell's exit is the inline mark's source now, not a failed()). So exit
+// alone never makes a row fail here - the same as on the phone.
 export function toolCallFailed(item: ItemModel): boolean {
   const descriptor = toolRendererFor(item.toolName ?? "");
   return hasItemFailure(item) || (descriptor.failed?.(item) ?? false);

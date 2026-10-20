@@ -1,6 +1,7 @@
 import {
 	type ActivityTree,
 	type EvenerDelegateInfo,
+	isExitOnly,
 	itemIdentityMatches,
 	MEMORY_CONTEXT_EVENT_KIND,
 	type TurnModel,
@@ -20,22 +21,40 @@ import { useNowPastQuiet } from "./session/quietClock";
 import { memoryContextSourceDisclosureId, rowDisclosureIds } from "./session/disclosureKeys";
 import type { ErrorAction } from "./session/errorAction";
 import { ErrorRow } from "./session/ErrorRow";
+import { ExitMark } from "./session/ExitMark";
 import { MemoryContextBody } from "./session/MemoryContextBody";
 import { NotificationCards } from "./session/NotificationCards";
 import { ApprovalHistory } from "./session/ApprovalHistory";
 import { QuestionHistory } from "./session/QuestionHistory";
 import { RunRow } from "./session/RunRow";
+import { StepEvidence } from "./session/StepEvidence";
 import { SubagentRow } from "./session/SubagentRow";
 import { SystemEvent } from "./session/SystemEvent";
 import { subagentLine } from "./session/subagentLine";
 import { ThoughtRow } from "./session/ThoughtRow";
 import { askRowQuestions, stepWords, timeMarkerText } from "./session/transcriptRows";
+import { useStepEvidence } from "./session/useStepEvidence";
 import { subagentOutcome } from "./subagents/subagentModel";
 import { TranscriptImages } from "./TranscriptImages";
 import { isCriticalNotice, noticeLabel, type TimelineRow } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
 import { allowFontScaling, Copy, styles, useColors, useTextScale } from "./ui";
 import { Button } from "./sheet/Grouped";
+import { FoldChevron } from "./board/BoardRow";
+
+// A row that shows a call's small exit mark beside its line: the mark and the
+// line share one row, centered. Module-level so it is not re-allocated on every
+// render (the same reason RunRow keeps its own `lineStyle` in one place).
+const exitRowStyle = { flexDirection: "row", alignItems: "center", gap: 6 } as const;
+// The line beside the mark wraps in the space left for it. React Native
+// defaults a row child's flexShrink to 0, so without this a long command (or a
+// large text scale) overflows the viewport and pushes the mark offscreen. Same
+// constraint RunRow puts on its own step text.
+const exitTextStyle = { flex: 1, minWidth: 0 } as const;
+
+// The evidence source for a row that is not a tool step: hooks are called for
+// every row, so a non-step needs a stable source with nothing to show.
+const NO_STEP = { label: "", summaryOnly: true, detail: {} } as const;
 
 export function TimelineItem({
 	item,
@@ -107,6 +126,14 @@ export function TimelineItem({
 		if (heldOpen) setDisclosureOpenAll(disclosureIds, true);
 	}, [heldOpen, disclosureKey]);
 	const colors = useColors();
+	// A tool step's evidence, for the rows that show one: the same renderer a
+	// run uses, so an expanded failed call keeps its 40-line preview, its ANSI
+	// handling and its full-log viewer here too.
+	// Every activity but a thought shows this evidence: a tool step, and an
+	// unknown forward-compatible item, whose body the projection put in its
+	// detail. A thought has its own row.
+	const step = item.kind === "activity" && item.family !== "reasoning" ? item : NO_STEP;
+	const evidence = useStepEvidence(step);
 	// A thought the projector didn't show reads as one quiet line, with no
 	// error rule, unless the thought itself failed.
 	const quietThought = item.kind === "failure" && item.thought === true && item.title !== "Thought failed";
@@ -239,6 +266,9 @@ export function TimelineItem({
 			content = <TranscriptImages images={item.items} hubId={hubId} />;
 			break;
 		case "activity":
+			// The shared exit rule's inputs, read once for whichever activity
+			// branch needs them (the compact intent line, or the full step line).
+			const exitSignals = { status: item.state, error: item.detail.error, exitCode: item.detail.exitCode };
 			if (item.family === "reasoning" && item.state !== "running") {
 				content = (
 					<ThoughtRow
@@ -270,44 +300,65 @@ export function TimelineItem({
 				}
 			}
 			if (activityPresentation?.mode === "intent") {
-				content = <Copy muted>{activityPresentation.summary}</Copy>;
+				// A summary-only row is one quiet line, but an exit-only call keeps its
+				// small x beside it so the phone shows the same mark the web does at
+				// this level (Jesse, 2026-10-16).
+				const intentExitOnly = isExitOnly(exitSignals);
+				content = intentExitOnly ? (
+					<View style={exitRowStyle}>
+						<View style={exitTextStyle}>
+							{/* The mark is decorative, so the code it stands for has to be
+							named here or VoiceOver never hears it (the full step line
+							names it in its own label). */}
+							<Copy muted label={`${activityPresentation.summary}, exit ${item.detail.exitCode}`}>
+								{activityPresentation.summary}
+							</Copy>
+						</View>
+						<ExitMark />
+					</View>
+				) : (
+					<Copy muted>{activityPresentation.summary}</Copy>
+				);
 				break;
 			}
 			// A tool step reads as its words (the package's toolStepSummary),
 			// never its raw tool name.
 			const stepName = stepWords(item);
+			// An otherwise-clean call whose process exited nonzero: not a failure
+			// (the shared classifier no longer reads the exit), but the exit stays
+			// visible as a small x in attention ink, and the line says the code.
+			const exitOnly = isExitOnly(exitSignals);
+			const stepLine = (
+				<View style={{ flexDirection: "row", alignItems: "center" }}>
+					<FoldChevron folded={!expanded} />
+					<View style={{ flex: 1, minWidth: 0 }}>
+						<Button
+							text
+							quiet
+							label={`${stepName} · ${exitOnly ? `exit ${item.detail.exitCode}` : item.state}`}
+							accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${stepName}${exitOnly ? `, exit ${item.detail.exitCode}` : ""}`}
+							expanded={expanded}
+							onPress={toggle}
+						/>
+					</View>
+				</View>
+			);
 			content = (
 				<>
 					{activityPresentation?.summary ? <Copy muted>{activityPresentation.summary}</Copy> : null}
-					<Button
-						text
-						quiet
-						label={`${expanded ? "▾" : "▸"} ${stepName} · ${item.state}`}
-						accessibilityLabel={`${expanded ? "Collapse" : "Expand"} ${stepName}`}
-						expanded={expanded}
-						onPress={toggle}
-					/>
+					{/* Only an exit-only row needs the row wrapper: it is what seats the
+					mark beside the line. A clean row keeps its line alone. */}
+					{exitOnly ? (
+						<View style={exitRowStyle}>
+							<View style={exitTextStyle}>{stepLine}</View>
+							<ExitMark />
+						</View>
+					) : (
+						stepLine
+					)}
 					{expanded ? (
 						<>
-							{item.detail.arguments ? (
-								<>
-									<Copy muted>Input</Copy>
-									<Copy>{item.detail.arguments}</Copy>
-								</>
-							) : null}
-							{item.detail.output ? (
-								<>
-									<Copy muted>Output</Copy>
-									<Copy>{item.detail.output}</Copy>
-								</>
-							) : null}
-							{item.detail.error ? (
-								<>
-									<Copy muted>Error</Copy>
-									<Copy>{item.detail.error}</Copy>
-								</>
-							) : null}
-							{item.detail.exitCode !== undefined ? <Copy muted>Exit code: {item.detail.exitCode}</Copy> : null}
+							<StepEvidence step={item} evidence={evidence} hubId={hubId} />
 							{showDuration && item.detail.durationMs !== undefined ? (
 								<Copy muted>Duration: {item.detail.durationMs} ms</Copy>
 							) : null}
@@ -485,7 +536,7 @@ function Subagent({
 	// its line turns Quiet the moment a silent subagent crosses into it.
 	const now = useNowPastQuiet(useMinuteClock(), (at) => [subagentLine(row, delegates, at).quietForMs]);
 	const line = subagentLine(row, delegates, now);
-	// A finished subagent's outcome, as the Subagents list gives it, once the
+	// A finished subagent's outcome, as the Agents list gives it, once the
 	// tree shows it done; until then the line says what the roster knows.
 	const finished = line.state === "done" ? line.delegateId : undefined;
 	const outcome = useMemo(

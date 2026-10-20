@@ -1,7 +1,7 @@
 // The Session's transcript rows (spec 8.2):
 // - consecutive steps fold into one run line ("12 steps · 8m · read 6 files,
 //   ran go test (2 failed), edited 3 files"), and a step's images ride with it;
-// - the step in progress, and a live thought, are left to the status tray
+// - the step in progress, and a live thought, are left to the live status line
 //   (ruling 10);
 // - a question still waiting is left to the ask dock, which is the question
 //   while it is open;
@@ -10,6 +10,7 @@
 import {
 	answeredAskUserSuffix,
 	type AskUserQuestion,
+	contentVectorForConfig,
 	housekeepingAction,
 	mcpToolParts,
 	memoryMutation,
@@ -19,6 +20,7 @@ import {
 	taskListChanges,
 	type ToolFamily,
 	type TurnModel,
+	type TranscriptDisplayConfigV1,
 	toolFamily,
 	words,
 } from "@evener/appwire-client";
@@ -56,18 +58,25 @@ export interface SessionRowsOptions {
 	 * list's first key with it, which the list's position keeping needs to
 	 * find again. The marker appears once the history is whole. */
 	olderToLoad?: boolean;
+	/** The transcript's display config, which decides whether runs fold (see
+	 * foldRuns below). Absent, runs fold, as they always did. */
+	config?: TranscriptDisplayConfigV1 | null;
 }
 
 export function sessionRows(
 	rows: readonly TimelineRow[],
 	turns: readonly TurnTimes[],
-	{ timeZone, olderToLoad = false }: SessionRowsOptions = {},
+	{ timeZone, olderToLoad = false, config }: SessionRowsOptions = {},
 ): TimelineRow[] {
 	const byId = new Map(turns.map((turn) => [turn.id, turn]));
 	const out: TimelineRow[] = [];
 	let run: RunRow | null = null;
 	let lastTurn: string | undefined;
 	const marked = new Set<string>();
+	// Where the level hides tool calls it draws intent lines instead, so each
+	// action stays its own row: folding them would hide the intents the reader
+	// asked for, and any failure behind a run's "N steps" count.
+	const foldRuns = config ? contentVectorForConfig(config).toolCalls : true;
 	for (const row of rows) {
 		if (inTray(row) || row.kind === "question") continue;
 		const turnId = rowTurnId(row);
@@ -90,7 +99,7 @@ export function sessionRows(
 			run = null;
 			lastTurn = turnId;
 		}
-		if (isStep(row)) {
+		if (foldRuns && isStep(row)) {
 			if (!run) {
 				run = {
 					kind: "run",

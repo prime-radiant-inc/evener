@@ -11,6 +11,7 @@ import { ProviderConnection } from "./ProviderConnection";
 export interface ConnectProviderDialogProps {
   onClose(): void;
   onConnected(name?: string): void;
+  completionLabel: string;
 }
 
 export function ConnectProviderDialog(props: ConnectProviderDialogProps) {

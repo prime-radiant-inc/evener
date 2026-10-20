@@ -1,5 +1,5 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	AnyNotification,
 	NavigationInvalidatedPayload,
@@ -8,6 +8,7 @@ import type {
 } from "@evener/appwire-client";
 import { wireSnapshot } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { reconnectDelay } from "./hubConnection";
 import { NavigationPages, updating } from "./navigationPages";
 
 it("reconciles a restarted hub without carrying a prior generation's receipt floor", async () => {
@@ -63,17 +64,18 @@ it("does not accept a stale tombstone as mutation readback", async () => {
 	expect(pages.getSnapshot().stale).toBe(true);
 });
 
-function boundary(resource: "catalog" | "section" = "catalog") {
+function boundary(resource: "catalog" | "section" = "catalog", { readRetry = true } = {}) {
 	const requests: {
 		params: NavigationReadParams;
 		resolve: (value: NavigationReadResponse) => void;
+		reject: (error: Error) => void;
 	}[] = [];
 	const arrivals = new Map<number, () => void>();
 	let notify: (event: AnyNotification) => void = () => {};
 	const client: ConversationClientLike = Object.assign(new FakeClient("ready"), {
 		request: (_method, params) =>
-			new Promise((resolve) => {
-				requests.push({ params: params as NavigationReadParams, resolve });
+			new Promise((resolve, reject) => {
+				requests.push({ params: params as NavigationReadParams, resolve, reject });
 				arrivals.get(requests.length)?.();
 			}),
 		onNotification: (listener) => {
@@ -95,6 +97,7 @@ function boundary(resource: "catalog" | "section" = "catalog") {
 			resource === "catalog" ? "projects" : "sessions",
 			(row) => row.ref ?? row.key,
 			2,
+			{ readRetry },
 		),
 	};
 }
@@ -158,10 +161,14 @@ describe("navigation pages", () => {
 		await next;
 		expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["a"]);
 		expect(pages.getSnapshot().stale).toBe(true);
-		await pages.more();
+		// The revision mismatch hands the page to the recovery flight, which
+		// re-reads from the first page on its own: the fresh read is already
+		// in flight, and the press that arrives meanwhile joins it.
+		const joined = pages.more();
 		expect(requests).toHaveLength(3);
 		expect(requests[2].params.offset).toBe(0);
 		requests[2].resolve(response(["b"], 0, 2));
+		await joined;
 		await settled(pages);
 		expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["b"]);
 	});
@@ -181,6 +188,435 @@ describe("navigation pages", () => {
 		await first;
 		expect(pages.getSnapshot().error).toBeTruthy();
 		expect(pages.getSnapshot().remaining).toBe(0);
+	});
+});
+
+describe("a failed read's own retry", () => {
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(() => vi.useRealTimers());
+
+	it("re-reads after a growing backoff until a read lands, then retires", async () => {
+		const { requests, pages } = boundary();
+		const first = pages.refresh();
+		requests[0].reject(new Error("request timed out"));
+		await first;
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The first retry waits the backoff's first step, and keeps waiting
+		// longer with each failure in a row.
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1) - 1);
+		expect(requests).toHaveLength(1);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(requests).toHaveLength(2);
+		requests[1].reject(new Error("request timed out"));
+		await settled(pages).catch(() => {});
+		await vi.advanceTimersByTimeAsync(reconnectDelay(2) - 1);
+		expect(requests).toHaveLength(2);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(requests).toHaveLength(3);
+		requests[2].resolve(response(["fresh"]));
+		await settled(pages);
+		expect(pages.getSnapshot()).toMatchObject({ rows: [{ key: "fresh" }], error: null });
+		// Loaded and clean: no more retries arm.
+		const reads = requests.length;
+		await vi.advanceTimersByTimeAsync(reconnectDelay(3) * 2);
+		expect(requests).toHaveLength(reads);
+	});
+
+	it("a failed refresh of an already-loaded page re-arms the re-read too", async () => {
+		const { requests, pages } = boundary();
+		const first = pages.refresh();
+		requests[0].resolve(response(["a"]));
+		await first;
+		const refresh = pages.refresh();
+		requests[1].reject(new Error("request timed out"));
+		await refresh;
+		expect(pages.getSnapshot().rows).toMatchObject([{ key: "a" }]);
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1));
+		expect(requests).toHaveLength(3);
+		requests[2].resolve(response(["b"]));
+		await settled(pages);
+		expect(pages.getSnapshot().rows).toMatchObject([{ key: "b" }]);
+	});
+
+	it("a retry restores the depth the reader had reached, not just the first page", async () => {
+		const { requests, pages, requested } = boundary();
+		// Two pages loaded: the reader reached a depth of four rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 0, 1, 2));
+		await more;
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a", "b", "c", "d"]);
+		// A refresh replaces page one and fails on page two: the rows fall
+		// back to one page while the retry still owes the second.
+		const refresh = pages.refresh();
+		requests[2].resolve(response(["a2", "b2"], 2));
+		await refresh;
+		const deeper = pages.more();
+		requests[3].reject(new Error("request timed out"));
+		await Promise.allSettled([deeper]);
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a2", "b2"]);
+		// The retry re-reads to the depth the reader had (two pages) before it
+		// clears the error: a first-page landing alone must not end recovery.
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1));
+		expect(requests).toHaveLength(5);
+		requests[4].resolve(response(["a3", "b3"], 2));
+		await settled(pages);
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The depth loop continues on the same landing, and only a full
+		// restore clears the error.
+		await requested(6);
+		requests[5].resolve(response(["c3", "d3"], 0, 1, 2));
+		await settled(pages);
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a3", "b3", "c3", "d3"]);
+		expect(pages.getSnapshot().error).toBeNull();
+	});
+
+	it("completes recovery when the results end below the depth it owed", async () => {
+		const { requests, pages, requested } = boundary();
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 0, 1, 2));
+		await more;
+		// The catalog shrank: the refresh answers with a single page and
+		// nothing remaining, though the reader had reached a depth of four.
+		const refresh = pages.refresh();
+		requests[2].resolve(response(["a2"], 0, 2));
+		await refresh;
+		// The old rows are gone from the hub: results exhausted, recovery is
+		// complete, and no error stays latched for depth that cannot exist.
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a2"]);
+		expect(pages.getSnapshot().error).toBeNull();
+		// No retry arms for depth the list no longer has.
+		const reads = requests.length;
+		await vi.advanceTimersByTimeAsync(reconnectDelay(2) * 2);
+		expect(requests).toHaveLength(reads);
+		await Promise.resolve(requested);
+	});
+
+	it("cancel abandons the pending retry, and none runs while paused", async () => {
+		const { requests, pages } = boundary();
+		const first = pages.refresh();
+		requests[0].reject(new Error("request timed out"));
+		await first;
+		pages.cancel();
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1) * 3);
+		expect(requests).toHaveLength(1);
+		// Resume re-arms the read the way it always has: the store's own
+		// owed-read path, not a second retry owner.
+		pages.resume();
+		expect(requests).toHaveLength(2);
+		requests[1].resolve(response(["back"]));
+		await settled(pages);
+		expect(pages.getSnapshot().rows).toMatchObject([{ key: "back" }]);
+	});
+
+	it("a failed recovery walk waits out the backoff instead of restarting at once", async () => {
+		const { requests, pages, requested, invalidate } = boundary();
+		pages.watch();
+		// Two pages loaded: the reader reached a depth of four rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 0, 1, 2));
+		await more;
+		// A hub change re-reads the loaded depth; the re-read's own walk fails
+		// on page two.
+		invalidate({
+			generationId: "hub-generation",
+			sequence: 2,
+			targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+		});
+		await requested(3);
+		requests[2].resolve(response(["a2", "b2"], 2, 2));
+		await requested(4);
+		requests[3].reject(new Error("request timed out"));
+		await settled(pages);
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The walk's own page-one landing must not leave a queued request that
+		// restarts the recovery the moment the failed walk ends: the next read
+		// waits for the backoff the failure armed.
+		const reads = requests.length;
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1) - 1);
+		expect(requests).toHaveLength(reads);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(requests).toHaveLength(reads + 1);
+	});
+
+	it("a mutation readback landing short beside a superseded recovery still queues the walk", async () => {
+		const { requests, pages, requested, invalidate } = boundary();
+		pages.watch();
+		// Three pages loaded: the reader reached a depth of six rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 2, 1, 2));
+		await more;
+		const deepest = pages.more();
+		requests[2].resolve(response(["e", "f"], 0, 1, 4));
+		await deepest;
+		// A hub change starts a recovery whose page two is slow to answer.
+		invalidate({
+			generationId: "hub-generation",
+			sequence: 2,
+			targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+		});
+		await requested(4);
+		requests[3].resolve(response(["a2", "b2"], 2, 2));
+		await requested(5);
+		// The reader archives a project: the mutation readback supersedes the
+		// walk's in-flight page two and lands a first page short of the depth.
+		// Its landing must still hand the rest of the depth to the flight,
+		// superseded walk or not.
+		const after = pages.refreshAfter({
+			generation_id: "hub-generation",
+			targets: [{ kind: "catalog", catalog: "projects", revision: 3 }],
+		});
+		await requested(6);
+		requests[5].resolve(response(["a3", "b3"], 2, 3));
+		await expect(after).resolves.toBeUndefined();
+		// The superseded walk's late answer arrives and is discarded; the
+		// flight still owes the depth and re-reads for it.
+		requests[4].resolve(response(["c2", "d2"], 2, 2, 2));
+		await requested(7);
+		requests[6].resolve(response(["a3", "b3"], 2, 3));
+		await requested(8);
+		requests[7].resolve(response(["c3", "d3"], 2, 3, 2));
+		await requested(9);
+		requests[8].resolve(response(["e3", "f3"], 0, 3, 4));
+		await settled(pages);
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a3", "b3", "c3", "d3", "e3", "f3"]);
+		expect(pages.getSnapshot().error).toBeNull();
+	});
+
+	it("a stale resume that fails waits out the backoff, with no trailing run queued", async () => {
+		const { requests, pages, requested, invalidate } = boundary();
+		pages.watch();
+		// Three pages loaded: the reader reached a depth of six rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 2, 1, 2));
+		await more;
+		const deepest = pages.more();
+		requests[2].resolve(response(["e", "f"], 0, 1, 4));
+		await deepest;
+		// A hub change starts a recovery; the reader leaves before its reset
+		// lands, so the page is stale with the depth owed underneath.
+		invalidate({
+			generationId: "hub-generation",
+			sequence: 2,
+			targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+		});
+		await requested(4);
+		pages.cancel();
+		pages.resume();
+		// The resumed re-read starts and fails: the next read must wait for
+		// the backoff the failure armed, not fire from a trailing run the
+		// resume queued behind the stale re-read.
+		await requested(5);
+		requests[4].reject(new Error("request timed out"));
+		// The failed read leaves the page stale: drain the microtasks so the
+		// failure's retry timer arms before counting.
+		await Promise.resolve();
+		await Promise.resolve();
+		const reads = requests.length;
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1) - 1);
+		expect(requests).toHaveLength(reads);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(requests).toHaveLength(reads + 1);
+	});
+
+	it("resume restores a cancelled recovery's depth without the retry opt-in", async () => {
+		const { requests, pages, requested, invalidate } = boundary("catalog", { readRetry: false });
+		pages.watch();
+		// Three pages loaded: the reader reached a depth of six rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 2, 1, 2));
+		await more;
+		const deepest = pages.more();
+		requests[2].resolve(response(["e", "f"], 0, 1, 4));
+		await deepest;
+		// A hub change starts a recovery; its first page lands clean and the
+		// reader leaves while the walk's deeper page is pending. Without the
+		// automatic-retry opt-in, the depth is the only thing that can bring
+		// the reader's pages back on resume.
+		invalidate({
+			generationId: "hub-generation",
+			sequence: 2,
+			targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+		});
+		await requested(4);
+		requests[3].resolve(response(["a2", "b2"], 2, 2));
+		await requested(5);
+		pages.cancel();
+		pages.resume();
+		// The recovery re-reads from the first page and completes the depth.
+		await requested(6);
+		requests[5].resolve(response(["a2", "b2"], 2, 2));
+		await requested(7);
+		requests[6].resolve(response(["c2", "d2"], 2, 2, 2));
+		await requested(8);
+		requests[7].resolve(response(["e2", "f2"], 0, 2, 4));
+		await settled(pages);
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a2", "b2", "c2", "d2", "e2", "f2"]);
+	});
+
+	it("a not_modified landing with depth owed keeps the error for a resume to re-arm", async () => {
+		const { requests, pages, requested, invalidate } = boundary();
+		pages.watch();
+		// Three pages loaded: the reader reached a depth of six rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 2, 1, 2));
+		await more;
+		const deepest = pages.more();
+		requests[2].resolve(response(["e", "f"], 0, 1, 4));
+		await deepest;
+		// A hub change starts a recovery whose page two fails.
+		invalidate({
+			generationId: "hub-generation",
+			sequence: 2,
+			targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+		});
+		await requested(4);
+		requests[3].resolve(response(["a2", "b2"], 2, 2));
+		await requested(5);
+		requests[4].reject(new Error("request timed out"));
+		await settled(pages);
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The reader presses Try again: a conditional reset whose base is
+		// the revision the store already holds. The hub answers not_modified
+		// — the rows stand — but the depth is still owed, so the error must
+		// hold through that landing: a cleared error would strand the
+		// recovery with nothing for a resume to re-arm.
+		const manual = pages.refresh();
+		await requested(6);
+		expect(requests[5].params.base).toMatchObject({
+			generationId: "hub-generation",
+			revision: 2,
+			etag: "etag-0-2",
+		});
+		requests[5].resolve({
+			status: "not_modified",
+			generationId: "hub-generation",
+			revision: 2,
+			etag: "etag-0-2",
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The walk's page two is pending; the reader leaves the screen. The
+		// recovery is cancelled mid-walk with neither stale nor error able
+		// to re-arm it — only the depth it still owes.
+		await requested(7);
+		pages.cancel();
+		pages.resume();
+		// The recovery re-reads from the first page, the hub answers
+		// not_modified again, and the walk completes the depth.
+		await requested(8);
+		expect(requests[7].params.base).toMatchObject({
+			generationId: "hub-generation",
+			revision: 2,
+			etag: "etag-0-2",
+		});
+		requests[7].resolve({
+			status: "not_modified",
+			generationId: "hub-generation",
+			revision: 2,
+			etag: "etag-0-2",
+		});
+		await requested(9);
+		requests[8].resolve(response(["c2", "d2"], 2, 2, 2));
+		await requested(10);
+		requests[9].resolve(response(["e2", "f2"], 0, 2, 4));
+		await manual;
+		await settled(pages);
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a2", "b2", "c2", "d2", "e2", "f2"]);
+		expect(pages.getSnapshot().error).toBeNull();
+	});
+
+	it("a refresh that joins a running recovery observes its completion, not a page", async () => {
+		const { requests, pages, requested, invalidate } = boundary();
+		pages.watch();
+		// Three pages loaded: the reader reached a depth of six rows.
+		const first = pages.refresh();
+		requests[0].resolve(response(["a", "b"], 2));
+		await first;
+		const more = pages.more();
+		requests[1].resolve(response(["c", "d"], 2, 1, 2));
+		await more;
+		const deepest = pages.more();
+		requests[2].resolve(response(["e", "f"], 0, 1, 4));
+		await deepest;
+		// A hub change re-reads the loaded depth. The re-read's reset lands
+		// the new revision, and its own walk fails on page two, so the
+		// recovery still owes the full depth.
+		invalidate({
+			generationId: "hub-generation",
+			sequence: 2,
+			targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+		});
+		await requested(4);
+		requests[3].resolve(response(["a2", "b2"], 2, 2));
+		await requested(5);
+		requests[4].reject(new Error("request timed out"));
+		await settled(pages);
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The reader presses Retry loading more: the press is a direct page
+		// read at the offset it reached for. It lands short of the owed depth,
+		// so its landing hands the rest of the recovery to the flight, whose
+		// re-read walks from the first page.
+		const manual = pages.more();
+		await requested(6);
+		// The refresh joins while the press's own read is still in flight.
+		// The press lands short of the owed depth, so its landing must hand
+		// the rest of the recovery to the flight without resolving the
+		// joined refresh: the depth is not restored yet.
+		const joined = pages.refresh();
+		let resolved = false;
+		void joined.then(() => {
+			resolved = true;
+		});
+		requests[5].resolve(response(["c2", "d2"], 2, 2, 2));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(resolved).toBe(false);
+		await manual;
+		expect(pages.getSnapshot().error).toBeTruthy();
+		// The flight's re-read walks the rest of the depth. The reset page
+		// stands (the revision has not changed again) while page three is
+		// still owed; the joined refresh must stay pending through it too.
+		await requested(7);
+		requests[6].resolve({
+			status: "not_modified",
+			generationId: "hub-generation",
+			revision: 2,
+			etag: "etag-0-2",
+		});
+		await requested(8);
+		requests[7].resolve(response(["e2", "f2"], 0, 2, 4));
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(resolved).toBe(false);
+		// The not_modified reset landing must not have resolved the joined
+		// refresh either; the walk's last page completes the recovery, and
+		// the joined refresh resolves with it.
+		await joined;
+		expect(resolved).toBe(true);
+		expect(pages.getSnapshot().rows.map((r) => r.key)).toEqual(["a2", "b2", "c2", "d2", "e2", "f2"]);
+		expect(pages.getSnapshot().error).toBeNull();
 	});
 });
 
@@ -210,9 +646,12 @@ it("re-reads a relevant update without user action, keeping the visible rows unt
 	});
 	expect(requests).toHaveLength(2);
 	expect(requests[1].params.offset).toBe(0);
-	await pages.more();
+	// The recovery flight owns the re-read; a press that arrives while it is
+	// in flight joins it rather than racing a second read.
+	const joined = pages.more();
 	expect(requests).toHaveLength(2);
 	requests[1].resolve(response(["b"], 0, 2));
+	await joined;
 	await settled(pages);
 	expect(pages.getSnapshot().rows).toMatchObject([{ key: "b" }]);
 	stop();

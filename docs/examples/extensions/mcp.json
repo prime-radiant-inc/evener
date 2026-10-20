@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "example": {
+      "command": "${EVENER_EXAMPLE_MCP_SERVER}"
+    }
+  }
+}

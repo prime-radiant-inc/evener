@@ -30,7 +30,7 @@ GOPROXY=off GOMAXPROCS=4 go test -p 2 ./agent -run '^TestMemoryGenericDelivery$'
 Check it without `-update-wire`. Its actual session-produced oversized
 `memory_read`/`memory_search` results and `read_transcript` recovery pass through
 existing shared hydration, browser generic tool bodies, native row/evidence
-rendering and the TUI transcript adapter. Normalize only nondeterministic
+rendering and the shared transcript adapter. Normalize only nondeterministic
 capability IDs and runtime times; keep output and reference relationships.
 Renderer unit checks are not physical-device or browser end-to-end evidence.
 
@@ -250,7 +250,7 @@ TOKEN=$(cat "$HOME/.local/state/evener/auth-token")
 Some cards share one hub on purpose. `ask-web-answer.md` stands one up and
 `ask-restart-rederive.md`, `ask-cross-session-notify.md`,
 `ask-two-clients.md`, `ask-noninteractive-invisible.md`,
-`ask-subagent-invisible.md` and `ask-tui-answer.md` all say "reuse that
+`ask-subagent-invisible.md` say "reuse that
 card's hub if it's still running" rather than each paying for its own hub,
 credential export, and authenticated browser tab. They used to do that by
 **agreeing on a number** — one hand-picked port, written into all six — which
@@ -362,7 +362,7 @@ sharing itself):
 ## Testing against a rate-limited provider
 
 Some scenarios need a provider that is ACTUALLY throttling — verifying the
-retry backoff, the honest-liveness "may be stalled" line, or a TUI
+retry backoff, the honest-liveness "may be stalled" line, or a
 notification for a model-call retry (kata 4zn8, e79v) — for as long as the
 check takes. A real provider will not reliably do that on demand.
 `test/e2e/fake429` is a fake OpenAI-compatible backend that answers
@@ -377,8 +377,7 @@ provider credential — and points the isolated hub's `providers.toml` at it:
 scripts/e2e/e2e-ratelimited-provider.sh --retry-after 5
 ```
 
-prints the run directory, fake429's address, and the exact `evener tui
---hub-addr ... --auth-token ... --no-auto-start-hub` command to attach.
+prints the run directory and fake429's address.
 Start a session with `model: "ratelimited/fake-model"` through AppWire
 `thread/start` (see "Starting a session via AppWire" below) and every
 completion call it makes will 429. Tear down with
@@ -408,7 +407,7 @@ it before starting. Pass `tmpdir` as `cwd` in the `thread/start` params.
 
 ## Starting a session via AppWire
 
-The shipped web UI and TUI start sessions with the typed AppWire
+The shipped web UI starts sessions with the typed AppWire
 `thread/start` method. For a browser-free scenario, build the method's
 camelCase parameter object and send it over the authenticated AppWire socket
 described in [Driving AppWire directly](#driving-appwire-directly-the-browser-free-lever):
@@ -434,7 +433,7 @@ session reference; a local session has the form `local:<SID>`.
 
 ### Polling for state transitions
 
-The state vocabulary is fixed and shared by the web rail, the TUI, and
+The state vocabulary is fixed and shared by the web rail and
 AppWire: `idle`, `active`, `awaiting`, `warning`, `errored`,
 `ended`, `notLoaded` (`hubcore.NormalizeState`,
 `cmd/evener-hub/internal/hubcore/tree.go#NormalizeState`, normalizing
@@ -893,97 +892,6 @@ and the on-disk transcript. When a DOM read is ambiguous, do not add
 more selectors — cross-check `thread/read` and
 `evener doctor transcript`, which cannot be fooled by a stale tab.
 
-## Driving the TUI with tmux
-
-Each scenario gets its own tmux session. Naming matters — the cleanup
-step needs a deterministic name, and it needs to be **your** name: two
-agents both launching a literal `-t evener-test` will `kill-session` each
-other's TUI (tmux session names are as collision-prone as a fixed port
-or a fixed `/tmp` path, for the same reason — nothing makes them unique
-by construction). Derive it from `$run`, which `mktemp` already made
-unique:
-
-```bash
-TMUX_SESSION="evener-test-$(basename "$run")"
-tmux kill-session -t "$TMUX_SESSION" 2>/dev/null   # idempotent: prior run
-tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-  "$run/evener" tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/tui-stderr.log"
-sleep 2
-```
-
-`-x 200 -y 50` forces a stable terminal size so capture-pane is
-deterministic. `--debug` disables the bubbletea AltScreen so
-capture-pane sees output as plain text rather than the screen-buffer
-escape sequences.
-
-Redirect stderr to a file — most TUI panics, log lines, and any
-`fmt.Fprintln(os.Stderr, ...)` debug probes you add land there.
-
-### Form fill: tmux send-keys patterns
-
-`send-keys` parses keystrokes by name (`Enter`, `BTab`, `C-u`) and
-literal text. Use `-l` to disable parsing for the literal-text path:
-
-```bash
-tmux send-keys -t "$TMUX_SESSION" "n"                # tap "n" for new session
-sleep 1
-tmux send-keys -t "$TMUX_SESSION" BTab               # shift-tab back one field
-sleep 0.3
-tmux send-keys -t "$TMUX_SESSION" C-u                # clear the current line
-sleep 0.3
-tmux send-keys -t "$TMUX_SESSION" -l "$tmpdir"       # literal — no key parsing
-sleep 0.3
-tmux send-keys -t "$TMUX_SESSION" Tab                # forward to next field
-sleep 0.3
-tmux send-keys -t "$TMUX_SESSION" -l "Read AGENTS.md and write a long essay."
-sleep 0.3
-tmux send-keys -t "$TMUX_SESSION" Enter              # spawn
-```
-
-`-l` matters: without it, a literal `/tmp/foo/AGENTS.md` containing
-a `/` gets parsed as an arrow-key escape. Always `-l` for
-user-typed strings.
-
-`sleep 0.3` between keys is usually enough; bumps to 0.5–1.0s for
-field transitions where the UI re-renders.
-
-### Polling capture-pane for state
-
-`capture-pane -p` dumps the visible pane to stdout. Grep for the
-state line in the workspace header:
-
-```bash
-for i in $(seq 1 30); do
-  pane=$(tmux capture-pane -t "$TMUX_SESSION" -p)
-  echo "$pane" | grep -q "state: processing" && { echo "i=$i processing"; break; }
-  sleep 1
-done
-```
-
-For optimistic-rendering scenarios, take two captures — one
-synchronously after the keypress, one after a reconcile window —
-mirroring the web sync/async pattern:
-
-```bash
-tmux send-keys -t "$TMUX_SESSION" -l "Stop and write a haiku."
-sleep 0.5
-tmux send-keys -t "$TMUX_SESSION" C-s
-sleep 0.3
-echo "=== synchronous ===" ; tmux capture-pane -t "$TMUX_SESSION" -p | grep -E "draining|⠋|Force-steer"
-sleep 6
-echo "=== reconciled  ===" ; tmux capture-pane -t "$TMUX_SESSION" -p | grep -E "draining|⠋" || echo "[no pending — reconciled]"
-```
-
-### ANSI styling and Unicode glyphs
-
-`tmux capture-pane -p` drops ANSI styling unless you pass `-e`. The
-TUI uses faint vs bold-red glyphs to signal pending vs failed —
-**grep on the glyph itself, not on the color**:
-
-- pending: `⠋` (UTF-8 `e2 a0 8b` — Braille pattern dots-1-2-3)
-- failed: `✗` (UTF-8 `e2 9c 97`)
-- success/reconciled: glyph removed, no marker
-
 ## Inspecting transcript and meta on disk
 
 Every session writes a JSONL transcript and meta sidecar under
@@ -1005,7 +913,7 @@ go run ./cmd/evener doctor transcript "$SID" --format outline --range last:20
 go run ./cmd/evener doctor transcript "$SID" --count delegate_send
 ```
 
-Useful when a scenario's web/TUI assertion is ambiguous. The on-disk
+Useful when a scenario's web assertion is ambiguous. The on-disk
 transcript is the daemon's authoritative record of what happened, but
 do not hand-parse transcript JSONL for comprehension; use
 `evener doctor transcript`. Raw `jsonl` reads are for byte-level replay
@@ -1060,30 +968,18 @@ Five forensics facts that have each closed an investigation:
 If a scenario's assertion fails and the failure isn't obvious from
 the captured pane / DOM, the next move is to add a stderr probe to
 the offending layer, rebuild, rerun, grep the log. The full pipeline
-has six rebuild points:
+has four rebuild points:
 
 1. **Daemon** — `cmd/evener/` and `agent/`. Rebuild: `go build -o "$run/evener" ./cmd/evener`. The hub re-spawns it per session, so the next spawned session picks up the new binary.
 2. **Hub** — `cmd/evener-hub/` and `server/`. Rebuild + kill the running hub by PID (not `pkill -f`, which would also kill any other concurrent agent's hub), then restart it the same way as step 4 of the setup checklist — it binds a *new* ephemeral port, so re-read `$run/hub.log` for the new `PORT`/`HUB`: `kill "$HUBPID"; go build -o "$run/evener" ./cmd/evener && "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" & HUBPID=$!`.
 3. **Web UI** — `cmd/evener-hub/frontend/src/` (TypeScript/React). Two steps, and skipping the first is the classic "my change didn't take": `make build-web` compiles it into `cmd/evener-hub/frontend/dist`, which `webnext.go`'s `//go:embed all:frontend/dist` bakes into the hub binary. So rebuild the frontend, **then** rebuild and restart the hub, then hard-refresh the tab. When in doubt whether a live tab is running the fix, grep the served bundle for a symbol the fix introduced (`curl -s "$HUB/assets/…"` or view-source) — a tab picks nothing up until the hub binary was rebuilt, restarted, AND the tab reloaded. A checkout that has never run `make build-web` has a one-line `dist/PLACEHOLDER` and serves no app at all. Agent worktrees symlink `node_modules` to a shared install; `make web-preflight` accepts that install when the `package-lock.json` beside it is byte-identical to this worktree's (mtime cannot answer the question — a fresh worktree's lockfile is always newer than the shared install). When the two lockfiles differ it refuses to `npm ci` through the symlink on purpose, because that would empty the install for every other worktree: refresh the shared install where it lives, or give this worktree its own real `node_modules`.
-5. **AppWire types** — `appwire/`. Both daemon and hub statically link these; rebuild both. The generated TypeScript mirror (`appwire-client/typescript/types.gen.ts`) is a third consumer — a wire change that only rebuilds the Go side leaves the browser decoding the old shape.
-6. **Optimistic-mutation plumbing** — the TUI's pending coordinator and the web's durable outbox (`frontend/src/stores/mutationOutbox.ts`, `panes/session/composer/queue/pendingTurnsStore.ts`); same rebuild rules as 4 and 3 respectively.
+4. **AppWire types** — `appwire/`. Both daemon and hub statically link these; rebuild both. The generated TypeScript mirror (`appwire-client/typescript/types.gen.ts`) is a third consumer — a wire change that only rebuilds the Go side leaves the browser decoding the old shape.
 
-Stderr probes are cheap and unambiguous. Example from the kata `wymv`
-debug session — wanted to know whether the TUI's reconcile path was
-reaching `applyHubNotification`:
-
-```go
-// In cmd/evener-tui/hub_model.go applyHubNotification
-matched := m.notificationMatchesCurrentSession(notification)
-fmt.Fprintf(os.Stderr, "DEBUG applyHubNotification method=%s matched=%v detailRef=%q\n",
-    notification.Method, matched, m.detail.Ref)
-if !matched {
-    return nil
-}
-```
-
-Then run the TUI with `2>$TUI_LOG`, grep for `DEBUG` after the
-keypress. Same shape for the renderer side using `console.warn` in
+Stderr probes are cheap and unambiguous. Add one to the offending Go
+layer, rebuild and rerun, then grep the log. Example: a `fmt.Fprintf(os.Stderr,
+"DEBUG ...\\n", ...)` at the top of the suspect handler tells you whether the
+call reaches it and which branch it takes. Same shape for the renderer side
+using `console.warn` in
 JS — though the browsing skill's `*-console.txt` capture is a stub
 in some versions; redirecting via `eval` to a `window.__DEBUG_LOG`
 array and reading it via a follow-up `eval` works around that.
@@ -1098,9 +994,6 @@ Idempotent cleanup that won't fail if anything's already gone:
 ```bash
 # Shut down each spawned session over the authenticated AppWire socket:
 # {"id":N,"method":"thread/shutdown","params":{"ref":"local:<SID>"}}
-
-# Kill any tmux sessions you opened.
-for name in evener-test evener-test-2; do tmux kill-session -t $name 2>/dev/null; done
 
 # Kill the hub you started, by the PID you captured — not by a
 # `pkill -f evener-hub-test` pattern match, which would also kill any other
@@ -1174,16 +1067,16 @@ For sidecar fluency, record these separately from pass/fail:
 ## The over-specification trap
 
 A scenario can describe a behavior that production gating prevents.
-Example: `tui-steer-in-idle-fails-fast.md` documents what Ctrl+S in
-an IDLE session *should* look like — but `handleSessionForceSteer`
-in `cmd/evener-tui/hub_model.go` early-returns when the composer mode
-isn't `queue`. So Ctrl+S in IDLE is a silent no-op, not a visible
-failure chip.
+Example: a card documents what a control *should* do in some state, but
+the owning handler early-returns unless a precondition holds, so the
+control is a silent no-op rather than the visible reaction the card
+imagines. The through-line: the scenario describes an intent, and the
+UI gate decides what actually happens.
 
 When you hit this:
 
 1. Confirm the gating in the source. Don't burn time trying to drive
-   around it via tmux send-keys.
+   around it with scripted input.
 2. Verify the underlying behavior the scenario was meant to assert
    via the corresponding **unit test**. If a unit test doesn't exist,
    write one — that's where the assertion belongs once a UI gate
@@ -1214,7 +1107,6 @@ file a kata. Don't try to drive past the gate from the scenario.
   file. Daemon lines are stamped `[serve <RFC3339 UTC ms> session=<SID>]`,
   so they cross-reference directly against rendezvous `started_at` and the
   provider API logs.
-- **TUI debug stderr** (when launched with `--debug`): redirect via `tmux new-session -d -s "$TMUX_SESSION" "$run/evener" tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/tui-stderr.log"`
 - **Browser console capture**: `~/.cache/superpowers/browser/<date>/<session>/<NNN>-<action>-console.txt`
 - **Kata CLI**: `~/go/bin/kata` (see `kata create --help`)
 - **Rate-limited provider for retry/liveness checks**: `scripts/e2e/e2e-ratelimited-provider.sh` — see "Testing against a rate-limited provider" above.

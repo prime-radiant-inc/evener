@@ -1129,7 +1129,7 @@ func TestRun_MutationsMalformedStoreFailsNamingTheFile(t *testing.T) {
 	if code := run([]string{"mutations", sid, "--state-dir", base}, &out, &errb); code != 1 {
 		t.Fatalf("exit %d, want 1; stdout=%s stderr=%s", code, out.String(), errb.String())
 	}
-	if !strings.Contains(errb.String(), "evener-doctor mutations:") || !strings.Contains(errb.String(), path) {
+	if !strings.Contains(errb.String(), "evener doctor mutations:") || !strings.Contains(errb.String(), path) {
 		t.Errorf("error does not name the subcommand and the file: %s", errb.String())
 	}
 }

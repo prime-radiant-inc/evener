@@ -7,10 +7,8 @@ RPC `urls/add` and the tool differ in spelling) appends entries the Notes
 panel renders as links; the human's `urls/remove`
 (`appwire/types.go:826-837`, daemon `agent/session_notes_rpc.go:RemoveSessionURL`)
 removes one by id; the `evener/urls/updated` push keeps every client
-converged; and the removed id stays discoverable from the panel (the Task 8
-minor-5 watch item — the TUI drawer renders URLs without ids, so a bare-id
-command is usable but undiscoverable there; step 5 pins the web panel's
-answer).
+converged; and the removed id stays discoverable from the panel (step 5 pins
+the web panel's answer).
 
 The Go layer covers the store and the gate with unit tests
 (`agent/session_notes_test.go:TestAddSessionURLDedupsCanonically`,
@@ -169,17 +167,14 @@ ref off the resulting `/s/local:<SID>` path, and wait for `idle` (poll `thread/r
    nothing else — the not-live inert `No shared notes` text); still no
    toast. Then answer the Task 8 minor-5 question explicitly: read one
    remaining-or-remembered row's `remove` testid and strip the
-   `shared-notes-url-remove-` prefix — the remainder is the bare id the
-   `/url-remove` TUI command (or a raw `urls/remove` RPC) needs. Record in
+   `shared-notes-url-remove-` prefix — the remainder is the bare id a raw
+   `urls/remove` RPC needs. Record in
    the run notes whether that pairing held: on the web panel the id IS
    discoverable (row testid + button testid both embed it, and the button's
    `aria-label` names the entry — `Remove spec` — so a human can pair row to
    id without devtools only if they can see testids, which they cannot; the
    honest statement is "discoverable over `/rpc` + DOM, not from the rendered
-   text alone"). The TUI drawer renders URLs without ids at all
-   (`cmd/evener-tui/details_drawer.go:110-116`), so there the command stays
-   usable-but-undiscoverable — carried forward as the documented sharp edge,
-   not silently fixed by this card.
+   text alone").
 
 6. **[browser-free, history check] Assert the URL context shape.** Read the
    agent context block the session actually consumed:
@@ -226,8 +221,7 @@ ref off the resulting `/s/local:<SID>` path, and wait for `idle` (poll `thread/r
   the read still listing the id (the store never removed it).
 - **Step 5 (converge + discoverability, qualitative)**: no-reload
   convergence plus the recorded discoverability verdict (web: id embedded in
-  row/button testids; rendered text alone does not show it; TUI: not shown
-  at all — the sharp edge below).
+  row/button testids; rendered text alone does not show it).
 - **Step 6 (context, exact)**: `Link: <label> (<url>)` lines while set,
   absent after removal; growth within the per-round bound.
 
@@ -268,11 +262,10 @@ above is what keeps this run's sessions out of them.
   `UrlsRemoveResponse` carries no state by wire design; the push is the
   authority. A test that reads the removed id out of the response is testing
   a field that must not exist.
-- **`/url-remove` takes a bare id with no picker** (Task 8 minor 5 carried
+- **`urls/remove` takes a bare id with no picker** (Task 8 minor 5 carried
   watch item). On the web the id is embedded in the row and button testids
-  (step 5's pairing); in the TUI drawer it is not rendered at all, so the id
-  is undiscoverable there without `/rpc`. Usable but undiscoverable — noted
-  in scenario prose per the brief, not fixed by this card.
+  (step 5's pairing), so a human can pair row to id from the DOM even though
+  the rendered text alone does not show it.
 - **Entries keep their first id across re-adds.** A re-add updates the label
   but keeps `id`/`addedBy`/`addedAt` (`TestAddSessionURLDedupKeepsIdentity`),
   so an id recorded in step 1 stays valid through any label churn. Asserting

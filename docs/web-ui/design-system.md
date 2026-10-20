@@ -4,6 +4,16 @@ Status: **current editorial design system**. The canonical
 system for the React + CSS Modules frontend under `cmd/evener-hub/frontend/src/`.
 The real `/dev/widgets`, `/dev/type`, and `/dev/surfaces` galleries show it in both themes.
 
+**Platform scope.** This guide governs the web frontend, including its phone browser
+layout. The native iPhone app is governed by [mobile-native/DESIGN.md](../../mobile-native/DESIGN.md)
+and its [native tokens](../../mobile-native/src/design/tokens.ts). Evener shares semantic
+color meanings, identity, and the distinction between conversation, evidence, and controls.
+Typography, surface values, geometry, and navigation remain platform-native: do not copy
+this guide's desktop hex values, type sizes, radii, or breakpoint rules literally onto iOS.
+The native app uses neutral light/dark surfaces, SF interface text, optional Source Serif
+reading text, Menlo evidence, and native stacks and sheets. References to phone or mobile
+layout below mean the web frontend, not the React Native app.
+
 The approved [editorial-instrument design](../superpowers/specs/2026-09-09-tufte-webui-design.md)
 supersedes the Beautiful UI aesthetic mandate for palette, typography, enclosure and elevation.
 It does **not** replace the interaction law, widget APIs, semantic color meanings,
@@ -65,14 +75,16 @@ losing the conversation that made the evidence relevant.
   [route reconciliation](../../cmd/evener-hub/frontend/src/shell/AppShell.tsx).
 - **Return to reading, not a fresh end landing.** The pane-lifetime transcript
   read view retains the source's measured entry and offset while a document is
-  open. On readonly remount,
-  [ReadOnlyThreadContent](../../cmd/evener-hub/frontend/src/panes/transcript/ReadOnlyThreadContent.tsx)
-  admits that capture through the existing transcript registry before scroll
-  initialization, including when content arrives after hydration. The shared
-  body and VirtualList still own committed measurement and restoration. A
-  retained away reader does not acquire end-follow intent from an unmeasured
-  port. Fresh readers still land at the latest content, and newer reader
-  movement supersedes the retained capture.
+  open. The session pane owns that reader, so the capture is restored when the
+  conversation remounts rather than by a separate read-only transcript view:
+  [transcriptReadView.ts](../../cmd/evener-hub/frontend/src/panes/session/transcript/transcriptReadView.ts)
+  holds the capture and
+  [useTranscriptScroll.ts](../../cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts)
+  admits it before scroll initialization, including when content arrives after
+  hydration. The shared body and VirtualList still own committed measurement and
+  restoration. A retained away reader does not acquire end-follow intent from an
+  unmeasured port. Fresh readers still land at the latest content, and newer
+  reader movement supersedes the retained capture.
 - **Reconstruct the host, not the workspace.** Switching from a living phone
   workspace to desktop, including its first desktop mount, restores dockview
   geometry around the exact living pane records, their current slots and the
@@ -314,7 +326,7 @@ viewport. Other HoverCards and tooltips keep their default placement.
 ## 2. Tokens as shipped
 
 `src/styles/tokens.css` is the single source of every color, type, space, radius, and motion
-value in the app. Consumers only ever write `var(--name)` — no component CSS branches on
+value in the web app. Consumers only ever write `var(--name)` — no component CSS branches on
 theme; the light-theme block (`[data-theme="light"]`) redeclares every color token under the
 same name, and `token-contract.test.ts` (§4) fails CI if a token exists in one theme's block
 but not the other's.

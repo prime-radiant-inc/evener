@@ -99,7 +99,7 @@ func TestOwnershipFingerprintExcludesSecretsAndSettings(t *testing.T) {
 		"agent":      func(e *Entry) { e.Agent = "other-agent" },
 		"model":      func(e *Entry) { e.Model = "gpt-5.1" },
 		"provider":   func(e *Entry) { e.Provider = "anthropic" },
-		"spawned by": func(e *Entry) { e.SpawnedBy = "evener-tui" },
+		"spawned by": func(e *Entry) { e.SpawnedBy = "evener-doctor" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

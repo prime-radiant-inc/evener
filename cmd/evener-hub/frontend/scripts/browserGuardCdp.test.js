@@ -25,6 +25,7 @@ import {
   CDP_EVALUATE_TRIPWIRE_MS,
   clearViewportOverride,
   collectFontStatusInPage,
+  connectBrowser,
   connectOnlyPage,
   connectPage,
   createStartupDeadline,
@@ -50,6 +51,24 @@ afterEach(() => {
 });
 
 const STUB_ENDPOINT = { url: "ws://127.0.0.1:9/devtools/browser/B" };
+
+test("connectBrowser uses the announced browser socket and rejects closed commands", async () => {
+  const socket = new EventTarget();
+  socket.send = vi.fn();
+  socket.close = vi.fn();
+  vi.stubGlobal("WebSocket", function StubWebSocket(url) {
+    assert.equal(url, STUB_ENDPOINT.url);
+    return socket;
+  });
+  const connecting = connectBrowser(STUB_ENDPOINT);
+  socket.dispatchEvent(new Event("open"));
+  const browser = await connecting;
+  const pending = browser.send("Target.getBrowserContexts");
+  socket.dispatchEvent(new Event("close"));
+  await assert.rejects(pending, /Target.getBrowserContexts: .*CDP socket closed/);
+  browser.close();
+  assert.equal(socket.close.mock.calls.length, 1);
+});
 
 // Starts connectPage against a fake page target and waits until its socket is
 // built; the test drives that socket through the returned handle. A closing tab
@@ -504,6 +523,8 @@ function fakeSend(socket, { onNavigate } = {}) {
         return { result: { root: { nodeId: 1 } } };
       case "DOM.querySelector":
         return { result: { nodeId: 2 } };
+      case "Browser.getWindowForTarget":
+        return { result: { windowId: 1, bounds: { width: 800, height: 600 } } };
       default:
         return { result: { result: { value: 42 } } };
     }

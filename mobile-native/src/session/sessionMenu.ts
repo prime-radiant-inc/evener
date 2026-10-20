@@ -15,13 +15,14 @@ export type SessionMenuAction =
 	| {
 			kind:
 				| "find"
+				| "stop"
 				| "files"
-				| "activity"
+				| "agents"
+				| "jobs"
 				| "tasks"
 				| "notes"
 				| "info"
 				| "aside"
-				| "like"
 				| "pin"
 				| "archive"
 				| "shutDown";
@@ -37,6 +38,10 @@ export interface SessionMenuInput {
 	sharedNotes: boolean;
 	canAside: boolean;
 	canShutDown: boolean;
+	/** The running turn can be stopped (`controls.stop`). The composer's Stop
+	 * takes the slot while the field is empty; this is where it stays
+	 * reachable once a draft fills it. */
+	canStop: boolean;
 	choose(action: SessionMenuAction): void;
 }
 
@@ -69,18 +74,25 @@ export function sessionMenu(input: SessionMenuInput): NativeStackHeaderItem[] {
 	};
 	const entries: Entry[] = [
 		levels,
+		// Stop leads: it is the one action whose misfire cannot be undone, and a
+		// draft in the composer is exactly when Stop has no other home.
+		...(input.canStop ? [item("Stop", "stop", { destructive: true })] : []),
 		item("Find in session", "find"),
 		...(input.hasDocuments ? [item("Files", "files")] : []),
-		// Activity lists shell jobs as well as subagents, and a session's read
-		// can't say whether it has jobs, so like Tasks it needs only a
-		// connection.
-		...(input.connected ? [item("Activity", "activity"), item("Tasks", "tasks")] : []),
+		// Agents and Jobs each list one kind. A session's read can't say whether
+		// it has either, so like Tasks they need only a connection.
+		...(input.connected
+			? [
+					item("Agents", "agents", { description: "The subagents this session started" }),
+					item("Jobs", "jobs", { description: "The shell jobs this session and its subagents started" }),
+					item("Tasks", "tasks"),
+				]
+			: []),
 		...(input.sharedNotes ? [item("Notes & links", "notes")] : []),
 		item("Session info", "info"),
 		...(input.canAside
 			? [item("Ask aside…", "aside", { description: "A side question in its own session; this one keeps working" })]
 			: []),
-		item("New session like this", "like"),
 		item("Pin to category…", "pin"),
 		item("Archive", "archive"),
 		...(input.canShutDown ? [item("Shut down", "shutDown", { destructive: true })] : []),

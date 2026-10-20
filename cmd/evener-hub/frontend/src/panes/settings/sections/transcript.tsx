@@ -7,12 +7,13 @@ import {
   type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
+import { isMobileViewport } from "../../../shell/useIsMobile";
 import {
   initTranscriptDisplay,
   transcriptDisplayStore,
   useTranscriptDisplayStore,
 } from "../../../stores/transcriptDisplay";
-import { Button, InlineNotice, useToasts } from "../../../widgets";
+import { Button, InlineNotice, SegmentedControl, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TranscriptDisplayCard } from "./TranscriptDisplayCard";
 import styles from "./transcript.module.css";
@@ -48,6 +49,7 @@ function confirmedFor(
  * card when it is present.
  */
 export function TranscriptSection() {
+  const [layout, setLayout] = useState<Layout>(() => (isMobileViewport() ? "mobile" : "desktop"));
   const hub = useTranscriptDisplayStore((state) => state.hub);
   const drafts = useTranscriptDisplayStore((state) => state.drafts);
   const local = useTranscriptDisplayStore((state) => state.local);
@@ -151,24 +153,29 @@ export function TranscriptSection() {
         </InlineNotice>
       )}
 
+      <SegmentedControl<Layout>
+        label="Device layout"
+        value={layout}
+        options={[
+          { value: "desktop", label: "Desktop" },
+          { value: "mobile", label: "Mobile" },
+        ]}
+        onChange={setLayout}
+      />
       <div className={CLASS.cards}>
-        {(["desktop", "mobile"] as const).map((layout) => {
-          const state = pending[layout];
-          return (
-            <TranscriptDisplayCard
-              key={layout}
-              layout={layout}
-              confirmed={confirmedFor(layout, hub)}
-              draft={drafts[layout]}
-              localOverride={local[layout]}
-              saveState={state?.state ?? "idle"}
-              error={state?.error ?? hubErrors[layout]}
-              disabled={disabled}
-              onChange={(config) => void save(layout, config)}
-              onRetry={() => retry(layout)}
-            />
-          );
-        })}
+        <TranscriptDisplayCard
+          key={layout}
+          layout={layout}
+          confirmed={confirmedFor(layout, hub)}
+          draft={drafts[layout]}
+          localOverride={local[layout]}
+          saveState={pending[layout]?.state ?? "idle"}
+          error={pending[layout]?.error ?? hubErrors[layout]}
+          disabled={disabled}
+          onChange={(config) => void save(layout, config)}
+          onRetry={() => retry(layout)}
+          onClearLocal={() => transcriptDisplayStore.getState().clearLocal(layout)}
+        />
       </div>
     </div>
   );

@@ -7,17 +7,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Text } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { keyboard, keyboardProgress, render, systemGlass, unmountMountedTrees } from "../renderNative.testkit";
-import { BarFrame } from "./BarFrame";
+import { BarFrame, indicatorRoom, INDICATOR_ROOM_FLOOR } from "./BarFrame";
 import { paletteFor } from "./tokens";
 
 // The app's color scheme, which a test switches to dark.
 const appearance = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
+// The home indicator's inset, which a test lowers to check the floor.
+const insets = vi.hoisted(() => ({ bottom: 34 }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 	useColorScheme: () => appearance.scheme,
 }));
 vi.mock("react-native-safe-area-context", () => ({
-	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
+	useSafeAreaInsets: () => ({ top: 47, bottom: insets.bottom, left: 0, right: 0 }),
 }));
 
 afterEach(() => {
@@ -26,12 +28,16 @@ afterEach(() => {
 	keyboardProgress.at = null;
 	systemGlass.reset();
 	appearance.scheme = "light";
+	insets.bottom = 34;
 });
 
 // These pin which fill the frame chooses; what the glass looks like is in
 // the Release-build screenshots on #3136.
 
 const inset = () => useSafeAreaInsets().bottom;
+/** The home indicator's room the bar reserves: the inset less its trim, so a
+ * screen's own control sits close to the bottom edge. */
+const room = () => indicatorRoom(inset());
 const style = (node: { props: { style?: unknown } }) =>
 	Object.assign({}, ...[node.props.style].flat(Number.POSITIVE_INFINITY));
 // The frame's own host view (glass or plain), not the BarFrame element that
@@ -52,7 +58,9 @@ describe("BarFrame", () => {
 			borderTopWidth: 0.5,
 			borderColor: paletteFor("light").edge,
 			backgroundColor: paletteFor("light").page,
-			paddingBottom: inset(),
+			// Less than the indicator's full room, so a screen's own control
+			// sits close to the bottom edge; the control's margin is the rest.
+			paddingBottom: room(),
 		});
 	});
 
@@ -61,7 +69,15 @@ describe("BarFrame", () => {
 		act(() => keyboard.show());
 		expect(style(host(tree)).paddingBottom).toBe(0);
 		act(() => keyboard.hide());
-		expect(style(host(tree)).paddingBottom).toBe(inset());
+		expect(style(host(tree)).paddingBottom).toBe(room());
+	});
+
+	it("keeps the floor of room on a device with a small home inset", () => {
+		// A device whose inset is under the trim still reserves the floor, so a
+		// screen's own control never sits flat on the edge.
+		insets.bottom = 2;
+		const tree = render(<BarFrame testID="bar">{null}</BarFrame>);
+		expect(style(host(tree)).paddingBottom).toBe(INDICATOR_ROOM_FLOOR);
 	});
 
 	// The room closes as the keyboard rises over the indicator, frame by
@@ -69,7 +85,7 @@ describe("BarFrame", () => {
 	it("closes the home indicator's room as far as the keyboard has risen", () => {
 		keyboardProgress.at = 0.5;
 		const tree = render(<BarFrame testID="bar">{null}</BarFrame>);
-		expect(style(host(tree)).paddingBottom).toBe(inset() / 2);
+		expect(style(host(tree)).paddingBottom).toBe(room() / 2);
 	});
 
 	it("takes a screen's own layout on top", () => {
@@ -82,7 +98,7 @@ describe("BarFrame", () => {
 			flexShrink: 1,
 			maxHeight: "80%",
 			paddingTop: 8,
-			paddingBottom: inset(),
+			paddingBottom: room(),
 		});
 	});
 
@@ -93,7 +109,7 @@ describe("BarFrame", () => {
 			</BarFrame>,
 		);
 		expect(style(host(tree))).toMatchObject({
-			paddingBottom: inset(),
+			paddingBottom: room(),
 			borderTopWidth: 0.5,
 			backgroundColor: paletteFor("light").page,
 		});
@@ -111,7 +127,7 @@ describe("BarFrame", () => {
 		expect(bar.props.colorScheme).toBe("auto");
 		// The glass is the fill; the hairline and the home indicator's room stay.
 		expect(style(bar).backgroundColor).toBe("transparent");
-		expect(style(bar)).toMatchObject({ borderTopWidth: 0.5, paddingBottom: inset() });
+		expect(style(bar)).toMatchObject({ borderTopWidth: 0.5, paddingBottom: room() });
 	});
 
 	it("stays opaque where the device has no Liquid Glass (before iOS 26)", async () => {

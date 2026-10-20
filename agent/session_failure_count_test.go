@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -10,19 +9,16 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func failedShellResultTurn(callID string, exitCode int64) schema.Turn {
-	state, err := json.Marshal(struct {
-		ExitCode int64 `json:"exit_code"`
-	}{exitCode})
-	if err != nil {
-		panic(err)
-	}
+// failedShellResultTurn is one errored tool result — the only thing that counts
+// as a failure (Jesse, 2026-10-16). A nonzero shell exit alone does NOT count,
+// so a failure-count fixture must carry IsError.
+func failedShellResultTurn(callID string) schema.Turn {
 	return schema.NewTurn(schema.TurnToolResults, llm.Message{Content: []llm.ContentPart{{
 		Kind: llm.ContentToolResult,
 		ToolResult: &llm.ToolResultData{
 			ToolCallID: callID,
 			Name:       "shell",
-			ToolState:  state,
+			IsError:    true,
 		},
 	}}})
 }
@@ -58,7 +54,7 @@ func TestFailedToolCallsSnapshotRisesAsFailuresAreRecorded(t *testing.T) {
 	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
 	defer sess.Close()
 
-	if err := sess.transcript.Append(failedShellResultTurn("call_1", 1)); err != nil {
+	if err := sess.transcript.Append(failedShellResultTurn("call_1")); err != nil {
 		t.Fatalf("append failed shell result: %v", err)
 	}
 	if count, _ := sess.FailedToolCallsSnapshot(); count != 1 {
@@ -91,7 +87,7 @@ func TestFailedToolCallsSnapshotCoversTheWholeSessionAfterResume(t *testing.T) {
 	// one, and under-reporting is the harm the count exists to prevent.
 	dir := t.TempDir()
 	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
-	if err := sess.transcript.Append(failedShellResultTurn("call_1", 2)); err != nil {
+	if err := sess.transcript.Append(failedShellResultTurn("call_1")); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	meta := sess.Meta()
@@ -130,7 +126,7 @@ func TestFailedToolCallsSnapshotDoesNotChargeAForkChildTheParentsFailures(t *tes
 	// bounds the live count exactly as it bounds the token sum.
 	dir := t.TempDir()
 	parent := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
-	if err := parent.transcript.Append(failedShellResultTurn("call_1", 1)); err != nil {
+	if err := parent.transcript.Append(failedShellResultTurn("call_1")); err != nil {
 		t.Fatalf("append parent failure: %v", err)
 	}
 	parentMeta := parent.Meta()

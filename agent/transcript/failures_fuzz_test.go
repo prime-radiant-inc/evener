@@ -23,11 +23,9 @@ import (
 //   - communicate is never a failure, whatever else is true of it, because
 //     ProjectTurn drops those results and they render no row to disagree with.
 //   - An errored result is always a failure, except communicate.
-//   - A non-shell result that did not error is never a failure, no matter what
-//     its tool state says — only shell tools carry an exit code.
-//   - A shell result that did not error is a failure exactly when its state
-//     records a nonzero exit code. Absent, unreadable, or field-less state
-//     reads as "no exit code recorded", which is not a failure.
+//   - A result that did not error is never a failure, whatever tool produced it
+//     and whatever its tool state says — a nonzero shell exit is a small inline
+//     mark, not a failure (Jesse, 2026-10-16).
 //   - ExitCodeFromToolState is total over arbitrary bytes and never reports a
 //     code it did not read.
 func FuzzToolFailureRule(f *testing.F) {
@@ -55,7 +53,7 @@ func FuzzToolFailureRule(f *testing.F) {
 			t.Fatalf("ExitCodeFromToolState read %d out of state that is not valid JSON: %q", *code, state)
 		}
 
-		failed := FailedToolResult(name, isError, raw)
+		failed := FailedToolResult(name, isError)
 
 		switch {
 		case name == "communicate":
@@ -66,14 +64,9 @@ func FuzzToolFailureRule(f *testing.F) {
 			if !failed {
 				t.Fatalf("errored %q result not counted as a failure", name)
 			}
-		case !IsShellTool(name):
-			if failed {
-				t.Fatalf("clean non-shell %q result counted as a failure on state %q", name, state)
-			}
 		default:
-			want := code != nil && *code != 0
-			if failed != want {
-				t.Fatalf("shell %q with state %q: failed=%v, want %v (exit code %v)", name, state, failed, want, code)
+			if failed {
+				t.Fatalf("clean %q result counted as a failure on state %q (exit code %v)", name, state, code)
 			}
 		}
 	})

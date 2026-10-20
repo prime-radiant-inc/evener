@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { ActivityIndicator, Pressable, ScrollView, SectionList, View } from "react-native";
+import { Pressable, ScrollView, SectionList, View } from "react-native";
 import type { TaskRow } from "@evener/appwire-client";
 import { absoluteTime, createTasksPanelStore, EMPTY_TASKS_PANEL_ENTRY, groupTasks } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -10,10 +10,11 @@ import { useRetainedScreenConnection } from "./retainedScreen";
 import type { Routes } from "./screens";
 import { Sheet } from "./sheet/Sheet";
 import { useSheet } from "./sheet/useSheet";
-import { TASK_STATUS_GLYPH, TASK_STATUS_LABEL } from "./taskStatus";
+import { TaskStatusMark, TASK_STATUS_LABEL } from "./taskStatus";
 import { tasksReadThroughCurrentClient } from "./tasksRead";
 import { Copy, ErrorMessage, useColors } from "./ui";
 import { Button } from "./sheet/Grouped";
+import { Spinner } from "./sheet/Spinner";
 
 /** The session's Tasks sheet: a formSheet route over the session it lists
  * (sheetRoutes.ts). It reads its hub's connection itself, since a sheet
@@ -136,7 +137,13 @@ export function TaskList({
 					onPress={() => toggle(task.id)}
 					style={{ minHeight: 44, justifyContent: "center", gap: 4 }}
 				>
-					<Copy>{`${TASK_STATUS_GLYPH[task.status] ?? "○"} ${task.description}`}</Copy>
+					<View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
+						{/* The composed label above already reads the state in words. */}
+						<TaskStatusMark status={task.status} size={16} style={{ marginTop: 2 }} />
+						<View style={{ flex: 1, minWidth: 0 }}>
+							<Copy>{task.description}</Copy>
+						</View>
+					</View>
 					{!open && latest && (task.status === "open" || task.status === "in_progress") ? (
 						<Copy muted>{latest}</Copy>
 					) : null}
@@ -213,13 +220,11 @@ export function TaskList({
 							<Copy muted>Disconnected. The last loaded tasks are shown.</Copy>
 						</View>
 					) : null}
-					{state.loading ? <ActivityIndicator accessibilityLabel="Loading tasks" color={colors.accent} /> : null}
+					{state.loading ? <Spinner label="Loading tasks" /> : null}
 					<ErrorMessage message={error} />
 					{error && state.rows ? <Copy muted>Showing the last list that loaded.</Copy> : null}
 					{error ? <Button text label="Try again" disabled={state.loading || !connected} onPress={refresh} /> : null}
-					{state.daemonGone ? (
-						<Copy muted>This session’s daemon has exited. Showing the last available list.</Copy>
-					) : null}
+					{state.daemonGone ? <Copy muted>This session has stopped. Showing the last available task list.</Copy> : null}
 					{state.unsupported ? <Copy muted>Tasks are not available for this session.</Copy> : null}
 					{!state.loading && !error && !state.unsupported && !state.daemonGone && state.rows?.length === 0 ? (
 						<Copy muted>No tasks yet.</Copy>

@@ -33,10 +33,11 @@ export const projectIndent = (depth: number) => 16 + 16 * depth;
 export function ProjectTreeRow({ item, onPress, onLongPress, changing = false }: ProjectTreeRowProps): ReactElement {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const symbolScale = Math.min(scale, 1.4);
 	const text = (content: string, style: Record<string, unknown>, flex = false) => (
 		<Text
 			allowFontScaling={allowFontScaling}
-			numberOfLines={1}
+			numberOfLines={flex && scale > 1.4 ? undefined : 1}
 			style={{ ...(flex ? { flex: 1, minWidth: 0 } : {}), ...style }}
 		>
 			{content}
@@ -65,6 +66,7 @@ export function ProjectTreeRow({ item, onPress, onLongPress, changing = false }:
 				minHeight: height,
 				paddingLeft: projectIndent(item.depth),
 				paddingRight: 16,
+				paddingVertical: scale > 1.4 ? 8 : 0,
 				flexDirection: "row",
 				alignItems: "center",
 				columnGap: 8,
@@ -73,7 +75,7 @@ export function ProjectTreeRow({ item, onPress, onLongPress, changing = false }:
 			})}
 		>
 			{children}
-			<SymbolView name={folded ? "chevron.right" : "chevron.down"} size={13 * scale} tintColor={palette.inkLow} />
+			<SymbolView name={folded ? "chevron.right" : "chevron.down"} size={13 * symbolScale} tintColor={palette.inkLow} />
 		</Pressable>
 	);
 
@@ -87,7 +89,7 @@ export function ProjectTreeRow({ item, onPress, onLongPress, changing = false }:
 					.filter(Boolean)
 					.join(", "),
 				<>
-					<SymbolView name="server.rack" size={17 * scale} tintColor={palette.inkMid} />
+					<SymbolView name="server.rack" size={17 * symbolScale} tintColor={palette.inkMid} />
 					{text(
 						host.label,
 						{ fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.inkHi },
@@ -107,8 +109,8 @@ export function ProjectTreeRow({ item, onPress, onLongPress, changing = false }:
 					.filter(Boolean)
 					.join(", "),
 				<>
-					<SymbolView name="folder" size={17 * scale} tintColor={palette.inkMid} />
-					{project.favorite ? <SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} /> : null}
+					<SymbolView name="folder" size={17 * symbolScale} tintColor={palette.inkMid} />
+					{project.favorite ? <SymbolView name="pin.fill" size={12 * symbolScale} tintColor={palette.inkLow} /> : null}
 					{text(name, { fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkHi }, true)}
 					{liveCount(item.liveCount)}
 				</>,
@@ -122,7 +124,7 @@ export function ProjectTreeRow({ item, onPress, onLongPress, changing = false }:
 				44,
 				host.online ? host.label : `${host.label}, Offline`,
 				<>
-					<SymbolView name="server.rack" size={15 * scale} tintColor={palette.inkMid} />
+					<SymbolView name="server.rack" size={15 * symbolScale} tintColor={palette.inkMid} />
 					{text(host.label, { fontSize: 15 * scale, fontWeight: "600", color: palette.inkMid }, true)}
 					{host.online ? null : offline}
 				</>,

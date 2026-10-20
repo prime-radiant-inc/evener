@@ -136,7 +136,7 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 			<Group label="More">
 				<Row
 					icon="keyboard"
-					label="Keyboard shortcuts"
+					label="Web keyboard shortcuts"
 					chevron
 					onPress={() => navigation.navigate("KeybindingPreferences", { hubId })}
 				/>

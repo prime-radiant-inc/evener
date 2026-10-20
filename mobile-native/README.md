@@ -55,10 +55,20 @@ source, a URL, environment variables exposed by Expo, or screenshots.
 
 For standalone development builds, use `npm run ios`. The historical Android
 command is `npm run android` when deferred Android work resumes.
-`npx expo prebuild` generates the native directories from app.json. Both native
+`npx expo prebuild` generates the native directories from app.config.js. Both native
 platform configurations permit user-entered HTTP hubs; HTTPS should be used
 where transport encryption is needed. Native generated projects are ignored.
 Expo SDK 57 configuration reference: https://docs.expo.dev/versions/v57.0.0/.
+
+The iOS build uses Expo's scene lifecycle, required when building with the iOS 27
+SDK. Keep Expo at 57.0.23 or newer within SDK 57 and the
+`expo-build-properties` `ios.enableSceneSupport` option enabled. Prebuild makes
+the standard Swift AppDelegate an `ExpoReactNativeFactoryProvider` and delegates
+window startup to `EXExpoAppSceneDelegate`; do not hand-edit generated Swift or
+the scene manifest. See the [versioned build-properties reference](https://docs.expo.dev/versions/v57.0.0/sdk/build-properties/).
+`npm test` exercises that real plugin against the installed Expo template and
+checks generated lifecycle structure. An actual simulator Release launch remains
+necessary to verify native startup; Metro export alone cannot catch UIKit traps.
 
 ## Checks
 
@@ -174,6 +184,10 @@ do not establish installed-device rendering or touch behavior.
 - Backgrounding closes the socket; returning reconnects and reloads the open
   conversation. Pending text with uncertain delivery is shown separately for
   manual recovery, never automatically resent.
+- iOS uses one UIKit scene. Expo owns window startup, scene link delivery and
+  lifecycle forwarding. UIKit's application notifications drive React Native
+  AppState and the existing connection recovery. See the
+  [native startup contract](../docs/design/mobile/ios-build-distribution.md#ios-scene-startup).
 - Conversation and creation drafts persist in SQLite, scoped by hub and session
   as applicable, including images and uncertain-delivery state. Saved navigation
   and reader-position restoration are implemented. Current-artifact restoration
@@ -183,10 +197,13 @@ do not establish installed-device rendering or touch behavior.
   configuration/trust. These advertised operations are wired in source and await
   current-artifact workflow qualification. Full parity, upgrade/recovery and
   failure/lifecycle acceptance are unfinished; see the [acceptance ledger](../docs/design/mobile/acceptance.md).
-- Activity separates current work from independent Done delegate and Completed
-  background-job histories. All starts both histories closed; Done reveals every
-  terminal outcome, including failures, with neutral rows and truthful reasons.
-  Active descendants retain navigation and stop controls. Search narrows loaded
+- Agents and Jobs are separate lists, reached from the session menu; the top
+  bar's Agents chip opens the first. Agents lists only subagents, Jobs only
+  shell jobs, and each shows its own authoritative counts and strip. Each
+  separates current work from one quiet history — Done for Agents, Completed
+  for Jobs — which starts closed and reveals every terminal outcome, including
+  failures, with neutral rows and truthful reasons. Active descendants retain
+  navigation and stop controls. Search narrows loaded
   rows while chips keep authoritative counts, including unknown counts. The
   binding carries loaded membership into its replacement shared store after
   reconnect, so its existing paging owner restores later rows without a phone
@@ -197,7 +214,7 @@ do not establish installed-device rendering or touch behavior.
   keyboard and VoiceOver remain separate qualification.
 - Board, project/location and pinned session rows show only running delegates
   in their subagent chips. Settled failures have no visual or spoken count.
-  The session header keeps neutral Subagents access with the authoritative total,
+  The session header keeps neutral Agents access with the authoritative total,
   or “count unknown” when only a delegate roster is available. A session's own
   errors, current questions and approvals retain their attention and priority;
   offline and stale-input rules remain unchanged.

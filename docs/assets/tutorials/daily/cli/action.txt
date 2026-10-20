@@ -1,0 +1,30 @@
+Rendered command transcript
+Streams are recorded separately, not interleaved.
+
+$ evener --model fake/fake-test-model --timeout 2m --max-rounds 8 --sandbox off 'Write initial.json with nonce b8e54d60 and a receipts array containing that nonce once.'
+cwd: daily-workspace
+stdout:
+Wrote initial.json. Review its receipt before continuing.
+
+stderr:
+[model] fake-test-model (fake)
+[prompt] embedded:prompts/system.md.tmpl (26214B)
+[prompt] agent:default (0B)
+[usage] in=1 out=1 total=2
+[tool] shell {"command":"python3 -c 'import json,pathlib; p=pathlib.Path(\"initial.json\"); d=json.loads(p.rea...
+[tool] shell: done
+[usage] in=1 out=1 total=2
+[tool] communicate {"end_turn":true,"message":"Wrote initial.json. Review its receipt before continuing.","output":{...
+[communicate:end_turn] Wrote initial.json. Review its receipt before continuing.
+[tool] communicate: done
+
+exit: 0
+
+$ evener --list-sessions
+cwd: daily-workspace
+stdout:
+034iIGJjq9S52QR7AHkF3G  fake-test-model   -                     2026-10-18 22:38:36   turns=2
+
+stderr:
+
+exit: 0

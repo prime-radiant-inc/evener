@@ -168,11 +168,12 @@ function Chip({ chip, onPress }: { chip: ContextChip; onPress: () => void }) {
 			// 32pt tall, 44pt to the finger.
 			hitSlop={{ top: 6, bottom: 6 }}
 			style={({ pressed }) => ({
-				height: 32,
+				minHeight: 32,
 				flexDirection: "row",
 				alignItems: "center",
 				gap: 6,
 				paddingHorizontal: 12,
+				paddingVertical: 5,
 				borderRadius: 16,
 				borderWidth: 1,
 				borderColor: chip.attention ? palette.attentionEdge : palette.edge,

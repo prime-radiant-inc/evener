@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { AccessibilityInfo, Animated, PanResponder, Pressable, Text, View } from "react-native";
 import type { BoardState, WhyLine } from "../board/attention";
 import { StateMark } from "../board/StateMark";
+import { FLOATING_SHADOW } from "../design/underBar";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { type Alert, type Banner, quiet } from "./alertCenter";
 import { swipeDismisses } from "./bannerGesture";
@@ -194,10 +195,7 @@ export function AlertBanner({
 						borderColor: news ? palette.accentEdge : palette.attentionEdge,
 						backgroundColor: palette.surface,
 						// A floating element's shadow (spec 16.3), as the toast's.
-						shadowColor: "#000000",
-						shadowOpacity: 0.12,
-						shadowRadius: 12,
-						shadowOffset: { width: 0, height: 4 },
+						...FLOATING_SHADOW,
 					}}
 				>
 					<View style={{ width: 24, alignItems: "center", paddingTop: 1 }}>

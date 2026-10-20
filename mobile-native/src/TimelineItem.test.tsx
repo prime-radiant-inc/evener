@@ -51,10 +51,10 @@ function userMessageTextProps() {
 
 it("fills your message bubble with the accent tint in both themes", () => {
 	mode.scheme = "light";
-	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#DDEBFC" });
+	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#DFEEFF" });
 
 	mode.scheme = "dark";
-	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#2A343D" });
+	expect(userBubbleStyle()).toMatchObject({ backgroundColor: "#232D3B" });
 });
 
 it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keeping the text and label", () => {
@@ -64,19 +64,20 @@ it("sets your message text in Source Serif 4 at 17/25 with the prose ink, keepin
 		fontFamily: "SourceSerif4-Regular",
 		fontSize: 17,
 		lineHeight: 25,
-		color: "#252521",
+		color: "#1C1C1E",
 	});
 	expect(light.children).toBe("Ship it");
 	expect(light.accessibilityLabel).toBe("You: Ship it");
 
 	mode.scheme = "dark";
 	const dark = userMessageTextProps();
-	expect(dark.style).toMatchObject({ color: "#E0DED6" });
+	expect(dark.style).toMatchObject({ color: "#E3E3E8" });
 });
 
-const INK_LOW = "#6D6D64";
-const INK_MID = "#5F5F57";
-const EDGE_STRONG = "#B7B6AC";
+const INK_LOW = "#62626D";
+const INK_MID = "#55555E";
+const EDGE_STRONG = "#B8B8C1";
+const ATTENTION_INK = "#9C4908";
 
 beforeEach(() => {
 	mode.scheme = "light";
@@ -367,7 +368,7 @@ describe("a saved note (spec 8.2, 8.8)", () => {
 			fontFamily: "SourceSerif4-Regular",
 			fontSize: 17,
 			lineHeight: 25,
-			color: "#252521",
+			color: "#1C1C1E",
 		});
 		const [rule] = tree.root.findAll((node) => node.props.style?.borderLeftWidth === 2);
 		expect(rule.props.style).toMatchObject({ borderLeftColor: EDGE_STRONG });
@@ -445,12 +446,123 @@ describe("a tool step", () => {
 	it("opens from a toggle VoiceOver names Expand, then Collapse", () => {
 		const tree = render(<TimelineItem item={step} hubId="hub" sessionRef="step-toggle" />);
 		const closed = pressable(tree, "Expand Read agent/session.go");
-		expect(closed && textOf(closed)).toBe("▸ Read agent/session.go · completed");
+		expect(closed && textOf(closed)).toBe("Read agent/session.go · completed");
 		expect(closed?.props.accessibilityState).toMatchObject({ expanded: false });
 		act(() => closed?.props.onPress());
 		const open = pressable(tree, "Collapse Read agent/session.go");
-		expect(open && textOf(open)).toBe("▾ Read agent/session.go · completed");
+		expect(open && textOf(open)).toBe("Read agent/session.go · completed");
 		expect(open?.props.accessibilityState).toMatchObject({ expanded: true });
+		// The fold chevron beside the words turns down once open.
+		const chevron = tree.root.findAllByType("SymbolView" as never).find((mark) => mark.props.name === "chevron.right");
+		const rotation = chevron?.parent?.props?.style?.transform;
+		expect(Array.isArray(rotation) ? rotation[0]?.rotate : undefined).toBe("90deg");
+	});
+
+	// Jesse, 2026-10-16: an exit-only call is not failed; a small attention x
+	// carries the exit on the standalone activity row instead.
+	it("shows a small attention x on an exit-only call, never a failed state", () => {
+		const exitStep: TimelineRow = {
+			kind: "activity",
+			id: "step-exit",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			detail: { arguments: '{"command":"grep missing"}', summary: "Ran grep missing", exitCode: 1 },
+		};
+		const tree = render(<TimelineItem item={exitStep} hubId="hub" sessionRef="step-exit" />);
+		// The row's fold chevron is a disclosure control, not a status mark.
+		const marks = tree.root
+			.findAllByType("SymbolView" as never)
+			.filter((mark) => !String(mark.props.name).startsWith("chevron"));
+		expect(marks.map((mark) => [mark.props.name, mark.props.tintColor])).toEqual([["xmark", ATTENTION_INK]]);
+		// Never the failure octagon: exit-only is not a failure.
+		expect(tree.root.findAll((node) => node.props.name === "xmark.octagon.fill")).toEqual([]);
+	});
+
+	// At the compact intent level the row is a summary line only, but an
+	// exit-only call keeps its small x so the phone agrees with the web (Jesse,
+	// 2026-10-16).
+	it("shows the exit mark on an exit-only intent-mode activity row", () => {
+		const exitStep: TimelineRow = {
+			kind: "activity",
+			id: "step-exit-intent",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			summaryOnly: true,
+			detail: { summary: "Ran grep missing", exitCode: 3 },
+		};
+		const tree = render(
+			<TimelineItem
+				item={exitStep}
+				hubId="hub"
+				sessionRef="step-exit-intent"
+				activityPresentation={{ mode: "intent", summary: "Ran grep missing" }}
+			/>,
+		);
+		const marks = tree.root.findAllByType("SymbolView" as never).filter((mark) => mark.props.name === "xmark");
+		expect(marks.map((mark) => [mark.props.name, mark.props.tintColor])).toEqual([["xmark", ATTENTION_INK]]);
+		// The mark is decorative, so the compact row's accessible name must
+		// carry the exit code itself - otherwise VoiceOver never hears it.
+		const labelled = tree.root.findAll((node) => String(node.props.accessibilityLabel ?? "").endsWith("exit 3"));
+		expect(labelled.length).toBeGreaterThan(0);
+	});
+
+	// At Intent a failed call is a row of its own, where it used to sit in a
+	// run. Opening it must still show the step's evidence - the first 40 lines
+	// and the full-log viewer - never the whole raw output at once (RoboRev on
+	// PR #4740).
+	it("opens a standalone failed step to its evidence, not its whole raw output", () => {
+		const output = Array.from({ length: 60 }, (_, index) => `line ${index + 1}`).join("\n");
+		const failedStep: TimelineRow = {
+			kind: "activity",
+			id: "step-failed",
+			label: "shell",
+			family: "tool",
+			state: "failed",
+			detail: {
+				arguments: '{"command":"go test ./..."}',
+				summary: "Ran go test ./...",
+				output,
+				error: "exit status 1",
+			},
+		};
+		const tree = render(
+			<TimelineItem
+				item={failedStep}
+				hubId="hub"
+				sessionRef="step-failed"
+				activityPresentation={{ mode: "critical", summary: "Ran go test ./..." }}
+			/>,
+		);
+		const toggle = pressable(tree, "Expand Ran go test ./...");
+		expect(toggle).toBeDefined();
+		act(() => toggle?.props.onPress());
+		// The preview holds the opening lines; the last one waits behind the
+		// full-log control, so a long output cannot flood the transcript.
+		const text = renderedText(tree);
+		expect(text).toContain("line 1");
+		expect(text).not.toContain("line 60");
+		expect(text).toContain("Show all 60 lines");
+	});
+
+	// An unknown, forward-compatible item type is a neutral activity row that
+	// never disappears (projectedRows). Opening it must still show the body the
+	// projection gave it (RoboRev on PR #4740).
+	it("opens an unknown activity row to its own body", () => {
+		const unknownRow: TimelineRow = {
+			kind: "activity",
+			id: "unknown-1",
+			label: "Activity",
+			family: "unknown",
+			state: "completed",
+			detail: { output: "a future item's body" },
+		};
+		const tree = render(<TimelineItem item={unknownRow} hubId="hub" sessionRef="unknown-row" />);
+		const toggle = pressable(tree, "Expand Activity");
+		expect(toggle).toBeDefined();
+		act(() => toggle?.props.onPress());
+		expect(renderedText(tree)).toContain("a future item's body");
 	});
 });
 
@@ -612,6 +724,21 @@ describe("a settled thought", () => {
 		expect(textOf(tree.root.findAll((node) => node.props.accessibilityRole === "button")[0])).not.toMatch(/\d/);
 	});
 
+	it("folds behind a chevron that turns down once open", () => {
+		const tree = render(<TimelineItem item={thought(12_000)} hubId="hub" sessionRef="thought-chevron" />);
+		const rotation = () => {
+			const chevron = tree.root
+				.findAllByType("SymbolView" as never)
+				.find((mark) => mark.props.name === "chevron.right");
+			const transform = chevron?.parent?.props?.style?.transform;
+			return Array.isArray(transform) ? transform[0]?.rotate : undefined;
+		};
+		expect(rotation()).toBe("0deg");
+		const line = tree.root.findAll((node) => node.props.accessibilityRole === "button")[0];
+		act(() => line.props.onPress());
+		expect(rotation()).toBe("90deg");
+	});
+
 	it("reads a thought it can't show as one quiet line, with no rule", () => {
 		const row: TimelineRow = { kind: "failure", id: "r-2", title: "Thought not shown", detail: "", thought: true };
 		const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="thought-hidden" />);
@@ -626,7 +753,7 @@ describe("a settled thought", () => {
 describe("a subagent", () => {
 	const ALIVE = "#189A4D";
 	const DANGER = "#E3474C";
-	const EDGE_STRONG = "#B7B6AC";
+	const EDGE_STRONG = "#B8B8C1";
 	const row = (state: "running" | "failed" | "completed"): TimelineRow => ({
 		kind: "activity",
 		id: "item-1",
@@ -853,7 +980,11 @@ describe("an error", () => {
 	});
 	const session = (resumeRequired = false) => ({
 		resumeRequired,
-		turns: [{ id: "turn_1" }, { id: "turn_2" }] as never,
+		// The failed turn opened with the user's own input, which Retry re-sends.
+		turns: [
+			{ id: "turn_1" },
+			{ id: "turn_2", items: [{ id: "u-1", type: "userMessage", text: "my original question" }] },
+		] as never,
 	});
 	function show(row: TimelineRow, resumeRequired = false) {
 		const onErrorAction = vi.fn();

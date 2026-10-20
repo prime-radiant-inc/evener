@@ -63,6 +63,31 @@ it("puts Hub default first, checked while no model is chosen", () => {
 	expect(pressable(chosen.tree, "GLM 5.3 Vision")?.props.accessibilityState).toMatchObject({ selected: true });
 });
 
+it("gives provider headings the shared readable type without transforming their names", () => {
+	const { tree } = mount({});
+	const headings = tree.root.findAllByProps({ testID: "section-title" });
+	expect(headings).toHaveLength(2);
+	for (const heading of headings) {
+		expect(heading.props.style).toMatchObject({ fontSize: 15, lineHeight: 20, fontWeight: "600" });
+		expect(heading.props.style.textTransform).toBeUndefined();
+		expect(heading.props.style.letterSpacing).toBeUndefined();
+	}
+});
+
+it("reserves the same leading check slot for selected and unselected model choices", () => {
+	const { tree } = mount({ model: glm });
+	const selected = pressable(tree, "GLM 5.3 Vision");
+	const unselected = pressable(tree, "Kimi K2");
+	if (!selected || !unselected) throw new Error("missing model choices");
+	const slots = [selected, unselected].map((row) => row.findByProps({ testID: "choice-mark" }));
+	for (const [index, slot] of slots.entries()) {
+		expect(slot.props.style).toMatchObject({ width: 24, alignItems: "center" });
+		expect([selected, unselected][index]?.children[0]).toBe(slot);
+	}
+	expect(slots[0]?.findAllByProps({ name: "checkmark" })).toHaveLength(1);
+	expect(slots[1]?.findAllByProps({ name: "checkmark" })).toHaveLength(0);
+});
+
 it("lists up to five recent models before one group per provider", () => {
 	const picker = mount({ recentModels: [qwen, kimi, extra(1), extra(2), extra(3), extra(4)] });
 	expect(picker.sections()).toEqual(["Recent", "lunaroute", "ollama"]);

@@ -1,10 +1,12 @@
 import { markerText } from "@evener/appwire-client";
 import { useMemo, useSyncExternalStore } from "react";
-import { ActivityIndicator, Image, Pressable, ScrollView, Text, View } from "react-native";
+import { Image, Pressable, ScrollView, Text, View } from "react-native";
+import { SymbolView } from "expo-symbols";
 import type { DraftDocument } from "./draftDocument";
 import type { DraftImage } from "./draftImages";
 import type { ImageSelection } from "./imageSelection";
 import { ErrorMessage, useColors } from "./ui";
+import { Spinner } from "./sheet/Spinner";
 
 const EMPTY: DraftImage[] = [];
 export function ImageAttachments({
@@ -71,10 +73,9 @@ export function ImageAttachments({
 								/>
 							) : null}
 							{image.pending ? (
-								<ActivityIndicator
-									accessibilityLabel={`Processing ${image.name}`}
-									style={{ position: "absolute", inset: 0 }}
-								/>
+								<View style={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center" }}>
+									<Spinner label={`Processing ${image.name}`} />
+								</View>
 							) : null}
 						</View>
 						{!uncertain ? (
@@ -83,6 +84,7 @@ export function ImageAttachments({
 								accessibilityState={{ disabled }}
 								disabled={disabled}
 								accessibilityLabel={`Remove image ${image.marker}: ${image.name ?? "attachment"}`}
+								// 28 visible + 8 slop each side = the 44pt target.
 								hitSlop={8}
 								onPress={() => (image.pending ? selection.remove(image.id) : document.removeImage(image.id))}
 								style={{
@@ -99,7 +101,7 @@ export function ImageAttachments({
 									borderColor: colors.border,
 								}}
 							>
-								<Text style={{ color: colors.text, fontSize: 20 }}>×</Text>
+								<SymbolView name="xmark" tintColor={colors.text} size={16} />
 							</Pressable>
 						) : null}
 						<Text style={{ color: colors.secondary, fontSize: 12, marginTop: 4 }} numberOfLines={1}>

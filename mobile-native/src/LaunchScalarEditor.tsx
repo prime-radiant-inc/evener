@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, TextInput, View } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
-import { friendlyErrorMessage, type LaunchOption, schemaPathKind } from "@evener/appwire-client";
+import { ActivityIndicator, type FlatList, KeyboardAvoidingView, Platform, TextInput, View } from "react-native";
+import { friendlyErrorMessage, type LaunchOption, type PickerRow, schemaPathKind } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { HoldingModal } from "./alerts/HoldingModal";
 import { HubPathField } from "./HubPathField";
 import { LaunchModelPicker } from "./LaunchModelPicker";
 import { assertLaunchFieldCurrent, launchFieldConflictMessage, parseLaunchScalar } from "./launchScalar";
-import { Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
-import { Button } from "./sheet/Grouped";
+import { allowFontScaling, ErrorMessage, styles, useColors, useTextScale } from "./ui";
+import { Group, GroupedPage, GroupFooter, Row, TextFieldRow, useErrorInView, useFormError } from "./sheet/Grouped";
+import { ModalSheet } from "./sheet/ModalSheet";
+import { space, uiType } from "./design/tokens";
 
 export function LaunchScalarEditor({
 	option,
@@ -26,12 +26,19 @@ export function LaunchScalarEditor({
 	apply(value: string | number | boolean | undefined): void;
 }) {
 	const colors = useColors();
+	const scale = useTextScale();
 	const [raw, setRaw] = useState(value);
 	const originalValue = useRef(value);
 	const currentValue = useRef(value);
 	currentValue.current = value;
 	const [busy, setBusy] = useState(false);
-	const [error, setError] = useState<string | null>(null);
+	const [error, setError] = useFormError();
+	const page = useErrorInView(error);
+	const modelList = useRef<FlatList<PickerRow>>(null);
+	useEffect(() => {
+		// Each refusal has its own report, even when its words haven't changed.
+		if (error) modelList.current?.scrollToOffset({ offset: 0, animated: true });
+	}, [error]);
 	const alive = useRef(true);
 	useEffect(
 		() => () => {
@@ -97,48 +104,46 @@ export function LaunchScalarEditor({
 			: option.choices?.filter((choice) => choice.value !== "");
 	const fieldHeader = (
 		<>
-			<Copy>{option.label}</Copy>
-			{option.description && <Copy muted>{option.description}</Copy>}
-			<Copy muted>{effective ? `Effective value · ${effective}` : "Effective value unavailable"}</Copy>
-			<Choice label="Use inherited value" selected={raw === ""} disabled={busy} onPress={() => setRaw("")} />
-			<ErrorMessage message={error} />
+			<View style={{ paddingHorizontal: space.labelInset }}>
+				<ErrorMessage message={error?.message ?? null} />
+			</View>
+			{option.description && <GroupFooter>{option.description}</GroupFooter>}
+			<Group>
+				<Row label="Effective value" sub={effective || "Unavailable"} selectable />
+				<Row label="Use inherited value" checked={raw === ""} disabled={busy} onPress={() => setRaw("")} />
+			</Group>
 		</>
 	);
 	return (
-		<HoldingModal visible presentationStyle="pageSheet" animationType="slide" onRequestClose={close}>
-			<SafeAreaView style={[styles.fill, { backgroundColor: colors.background }]}>
-				<View style={[styles.row, { paddingHorizontal: 16 }]}>
-					<Button text label="Cancel" onPress={close} />
-					<Button
-						text
-						label="Done"
-						disabled={busy}
-						onPress={() => {
-							void done();
-						}}
-					/>
-				</View>
-				<KeyboardAvoidingView
-					style={styles.fill}
-					behavior={Platform.OS === "android" ? "height" : undefined}
-					enabled={Platform.OS === "android"}
-				>
-					{option.kind === "modelPicker" ? (
-						<LaunchModelPicker client={client} value={raw} onChange={setRaw} header={fieldHeader} />
-					) : (
-						<ScrollView
-							automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}
-							keyboardShouldPersistTaps="handled"
-							keyboardDismissMode="on-drag"
-							contentContainerStyle={{ padding: 20, gap: 12 }}
-						>
-							{fieldHeader}
+		<ModalSheet
+			title={option.label}
+			onRequestClose={close}
+			onCancel={close}
+			done={{
+				disabled: busy,
+				busy,
+				onPress: () => {
+					void done();
+				},
+			}}
+		>
+			<KeyboardAvoidingView
+				style={styles.fill}
+				behavior={Platform.OS === "android" ? "height" : undefined}
+				enabled={Platform.OS === "android"}
+			>
+				{option.kind === "modelPicker" ? (
+					<LaunchModelPicker client={client} value={raw} onChange={setRaw} header={fieldHeader} scrollRef={modelList} />
+				) : (
+					<GroupedPage scrollRef={page}>
+						{fieldHeader}
+						<Group label={option.label}>
 							{choices ? (
 								choices.map((choice) => (
-									<Choice
+									<Row
 										key={choice.value}
 										label={choice.label}
-										selected={raw === choice.value}
+										checked={raw === choice.value}
 										disabled={busy || !!choice.disabled}
 										onPress={() => setRaw(choice.value)}
 									/>
@@ -152,7 +157,7 @@ export function LaunchScalarEditor({
 									onChange={setRaw}
 									disabled={busy}
 								/>
-							) : (
+							) : option.kind === "integer" ? (
 								<TextInput
 									accessibilityLabel={option.label}
 									value={raw}
@@ -160,23 +165,30 @@ export function LaunchScalarEditor({
 									editable={!busy}
 									autoCorrect={false}
 									autoCapitalize="none"
+									keyboardType="numbers-and-punctuation"
+									allowFontScaling={allowFontScaling}
+									style={{
+										color: colors.text,
+										fontSize: uiType.listRow.fontSize * scale,
+										minHeight: 44,
+										paddingHorizontal: space.rowInset,
+										paddingVertical: space.rowPadding,
+									}}
+								/>
+							) : (
+								<TextFieldRow
+									label={option.label}
+									value={raw}
+									onChangeText={setRaw}
+									disabled={busy}
 									multiline={option.kind === "multilineText"}
-									keyboardType={option.kind === "integer" ? "numbers-and-punctuation" : "default"}
-									style={[
-										styles.input,
-										{
-											color: colors.text,
-											borderColor: colors.border,
-											minHeight: option.kind === "multilineText" ? 160 : 44,
-										},
-									]}
 								/>
 							)}
-							{busy && <ActivityIndicator accessibilityLabel="Validating setting" />}
-						</ScrollView>
-					)}
-				</KeyboardAvoidingView>
-			</SafeAreaView>
-		</HoldingModal>
+						</Group>
+						{busy && <ActivityIndicator accessibilityLabel="Validating setting" />}
+					</GroupedPage>
+				)}
+			</KeyboardAvoidingView>
+		</ModalSheet>
 	);
 }

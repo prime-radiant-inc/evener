@@ -13,6 +13,7 @@ import { MotionProvider } from "../motion";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { conversationContextIncludes } from "../panes/session/transcript/openTranscript";
+import { isKnownSettingsSection, resolveSettingsSection } from "../panes/settings/sections";
 import { zoomParamsCoverConversation } from "../panes/zoom/cascadeCoverage";
 import { parseZoomParams, type SessionZoomParams } from "../panes/zoom/intent";
 import { startBackgroundTranscripts } from "../stores/backgroundTranscripts";
@@ -147,10 +148,28 @@ function adoptClientSlot(fresh: AppwireClientLike): ClientSlot {
 // (and, this task, open a pane) when the path changes" - and pushState
 // doesn't fire popstate on its own, so this listens for the same synthetic
 // popstate routing.ts's navigate() dispatches.
+function readPathname(): string {
+  const route = urlToPane(window.location.pathname);
+  if (route?.type === "settings") {
+    const { section } = route.params as { section?: string };
+    if (section !== undefined && !isKnownSettingsSection(section)) {
+      // Reconcile the URL before pane placement, so mobile URL sync never
+      // receives retired params and cannot push them over this replacement.
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `/settings/${resolveSettingsSection(section, null)}${window.location.search}${window.location.hash}`,
+      );
+    }
+  }
+  return window.location.pathname;
+}
+
 function usePathname(): string {
-  const [pathname, setPathname] = useState(() => window.location.pathname);
+  const [pathname, setPathname] = useState(readPathname);
   useEffect(() => {
     const onPopState = () => {
+      const nextPathname = readPathname();
       // Synchronize the settings selection with the route the window just moved
       // to, in THIS tick and before React re-renders. A Back/Forward into a
       // host-scoped settings URL otherwise mounts the settings pane on the
@@ -159,7 +178,7 @@ function usePathname(): string {
       // effect. navigate() mirrors the app's own navigations; this is the door
       // the browser's Back/Forward comes through (M1, round 6).
       syncSettingsHostToRoute(window.location.pathname, window.location.search);
-      setPathname(window.location.pathname);
+      setPathname(nextPathname);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);

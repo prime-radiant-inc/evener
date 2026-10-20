@@ -1,6 +1,6 @@
 // The demo fleet's subagents and documents, as the hub serves them: the
 // activity tree the typed activity reads project (demoSessionActivity.ts) for
-// the Activity list, and the documents the Reader opens (/doc/file). Built
+// the Jobs list, and the documents the Reader opens (/doc/file). Built
 // from the same raw swarm the Board's navigation rows come from
 // (demoFleet.ts, after the prototype's data.js), so the Board, the list and
 // the transcript agree (spec Appendix B). Each subagent's own session
@@ -50,7 +50,7 @@ export interface DemoCoordinator {
 const DEFAULT_ELAPSED_SECONDS = 300;
 
 /** When a subagent's run started, from data.js's elapsed: a running one's
- * counts back from now, an ended one's from when it ended. The Subagents list,
+ * counts back from now, an ended one's from when it ended. The Agents list,
  * the coordinator's transcript and the subagent's own screen all read this
  * one fact (demoSessions.ts), so their times agree. */
 export function demoRunStartedAt(sub: Pick<DemoSubagent, "state" | "ago" | "elapsed">, startupMs: number): number {

@@ -1,0 +1,3 @@
+{"id":1,"method":"initialize","params":{"protocolVersion":"evener-appwire-v7","clientInfo":{"name":"documentation-inspector","version":"1"},"capabilities":{"experimentalApi":false}}}
+{"method":"initialized","params":{}}
+{"id":2,"method":"thread/list","params":{"limit":20}}

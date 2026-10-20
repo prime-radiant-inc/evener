@@ -44,6 +44,7 @@ import { documentMemory } from "./nativeDocumentMemory";
 import { type BlockAction, ReaderBlock, useCodeText } from "./ReaderBlock";
 import { type ReaderHost, readerHosts } from "./readerHosts";
 import { useDocument, type NativeImageAttempt } from "./useDocument";
+import { useShareDocument } from "./useShareDocument";
 
 const hubs = new HubProfiles(SecureStore);
 
@@ -292,8 +293,28 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 	const text = document?.kind === "markdown" || document?.kind === "code" ? document.text : null;
 	const hasOutline = headings.length >= 2;
 
+	// Sharing hands the whole file to the system sheet, which carries "Open in
+	// another app" along with Save to Files and the usual destinations. The
+	// download happens first, so the sheet never appears with nothing to share.
+	const shareDocument = useShareDocument(hubId, sessionRef);
+	const share = useCallback(() => {
+		// The read target, not the display path: an absolute reference inside
+		// the session's folder reads as the same file either way, and this is
+		// exactly what the Reader itself fetched.
+		shareDocument(reference.readTarget, reference.path);
+	}, [shareDocument, reference.readTarget, reference.path]);
+
 	useEffect(() => {
 		const items: NativeStackHeaderItem[] = [
+			// Offered wherever the menu offers it; whether the platform can share
+			// at all is the share seam's check, not a screen's.
+			{
+				type: "button" as const,
+				label: "Share",
+				accessibilityLabel: "Share",
+				icon: { type: "sfSymbol" as const, name: "square.and.arrow.up" as const },
+				onPress: share,
+			},
 			...(hasOutline
 				? [
 						{
@@ -312,6 +333,7 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 				icon: { type: "sfSymbol", name: "ellipsis.circle" },
 				menu: {
 					items: [
+						{ type: "action", label: "Share", onPress: share },
 						{ type: "action", label: "Reload", onPress: reload },
 						{
 							type: "action",
@@ -341,7 +363,21 @@ export function ReaderScreen({ route, navigation }: NativeStackScreenProps<Route
 			headerTitle: () => (titleShown ? <HeaderTitle title={title} caption={about} /> : null),
 			unstable_headerRightItems: () => items,
 		});
-	}, [navigation, held, hasOutline, hubId, sessionRef, path, sessionTitle, text, titleShown, title, about, reload]);
+	}, [
+		navigation,
+		held,
+		hasOutline,
+		hubId,
+		sessionRef,
+		path,
+		sessionTitle,
+		text,
+		titleShown,
+		title,
+		about,
+		reload,
+		share,
+	]);
 
 	const cellRenderer = useMemo(
 		() =>

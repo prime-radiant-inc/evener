@@ -1,18 +1,64 @@
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect, useState } from "react";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
+import { urlToPane } from "../../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { resetCredentialsStoreForTests } from "../../stores/credentials";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetSettingsOverviewStoreForTests } from "../../stores/settingsOverview";
-import { emptyStateReasons } from "../../widgets/emptystate/emptyStateTestUtils";
 import Settings from "./Settings";
 import { SETTINGS_SECTIONS, settingsSectionLabel } from "./sections";
 import { statusReasons } from "./sections/reasonTestUtils";
+
+function RoutedSettings() {
+  const [path, setPath] = useState(window.location.pathname);
+  useEffect(() => {
+    const update = () => setPath(window.location.pathname);
+    window.addEventListener("popstate", update);
+    return () => window.removeEventListener("popstate", update);
+  }, []);
+  const params = urlToPane(path)?.params as { section?: string };
+  return <Settings params={params} paneId="settings-history" focused={true} />;
+}
+
+test("phone Back and Forward retain the filter and list scroll", async () => {
+  stubMatchMedia(true);
+  window.history.pushState({}, "", "/settings");
+  render(<RoutedSettings />);
+  const user = userEvent.setup();
+  const nav = screen.getByRole("navigation");
+  nav.scrollTop = 120;
+  await user.type(screen.getByRole("searchbox"), "appear");
+  expect(nav.querySelector("[aria-current]")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Appearance" }));
+  expect(window.location.pathname).toBe("/settings/theme");
+  expect(screen.getByTestId("settings-content")).toBeTruthy();
+  await act(async () => {
+    const changed = new Promise<void>((resolve) =>
+      window.addEventListener("popstate", () => resolve(), { once: true }),
+    );
+    window.history.back();
+    await changed;
+  });
+  expect(screen.queryByTestId("settings-content")).toBeNull();
+  expect(screen.getByRole("searchbox")).toHaveProperty("value", "appear");
+  expect(nav.scrollTop).toBe(120);
+  await act(async () => {
+    const changed = new Promise<void>((resolve) =>
+      window.addEventListener("popstate", () => resolve(), { once: true }),
+    );
+    window.history.forward();
+    await changed;
+  });
+  expect(window.location.pathname).toBe("/settings/theme");
+  expect(screen.getByTestId("settings-content")).toBeTruthy();
+  expect(screen.getByRole("searchbox")).toHaveProperty("value", "appear");
+});
 
 beforeAll(() => {
   installLocalStorage(new MemoryStorage());
@@ -79,9 +125,8 @@ test("Escape closes this pane", async () => {
   stubMatchMedia(false);
   seedOpenSettingsPane();
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  await sectionLoadFailed();
 
-  fireEvent.keyDown(screen.getByRole("button", { name: "General" }), { key: "Escape" });
+  fireEvent.keyDown(screen.getByRole("button", { name: "Appearance" }), { key: "Escape" });
 
   expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain("settings-1");
 });
@@ -137,34 +182,33 @@ test("a non-Escape key does not close this pane", async () => {
   stubMatchMedia(false);
   seedOpenSettingsPane();
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  await sectionLoadFailed();
 
-  fireEvent.keyDown(screen.getByRole("button", { name: "General" }), { key: "a" });
+  fireEvent.keyDown(screen.getByRole("button", { name: "Appearance" }), { key: "a" });
 
   expect(workspaceStore.getState().panes.map((p) => p.id)).toContain("settings-1");
 });
 
-test("bare params show the default (General) section", async () => {
+test("bare params show the default (Appearance) section", async () => {
   stubMatchMedia(false);
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  await sectionLoadFailed();
-  expect(screen.getByRole("button", { name: "General" })).toBeTruthy();
+
+  expect(screen.getByRole("button", { name: "Appearance" })).toBeTruthy();
   // General's own nav link is the active one.
-  expect(screen.getByRole("button", { name: "General" }).getAttribute("aria-current")).toBe("page");
+  expect(screen.getByRole("button", { name: "Appearance" }).getAttribute("aria-current")).toBe("page");
 });
 
 test("params.section selects that section", () => {
   stubMatchMedia(false);
   render(<Settings params={{ section: "theme" }} paneId="settings-1" focused={true} />);
-  expect(screen.getByRole("button", { name: "Theme" }).getAttribute("aria-current")).toBe("page");
+  expect(screen.getByRole("button", { name: "Appearance" }).getAttribute("aria-current")).toBe("page");
 });
 
 test("desktop: nav and content render simultaneously, with no back button", async () => {
   stubMatchMedia(false);
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  await sectionLoadFailed();
+
   expect(screen.getByRole("navigation", { name: "Settings sections" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "General" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Appearance" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Back to settings" })).toBeNull();
 });
 
@@ -205,7 +249,7 @@ test("mobile: a section param shows that section's content", () => {
   stubMatchMedia(true);
   render(<Settings params={{ section: "bogus" }} paneId="settings-1" focused={true} />);
   expect(screen.getByTestId("settings-content")).toBeTruthy();
-  expect(emptyStateReasons(screen.getByTestId("settings-content"))).toEqual(["not-built"]);
+  expect(screen.getByRole("button", { name: "Appearance" }).getAttribute("aria-current")).toBe("page");
 });
 
 test("mobile: the section detail has no in-content back button - back lives in the shell top bar", async () => {
@@ -290,16 +334,15 @@ test("a bare /settings reopens on the last visited section", async () => {
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
 
   expect(await screen.findByRole("heading", { name: settingsSectionLabel("keybindings") })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Keybindings" }).getAttribute("aria-current")).toBe("page");
+  expect(screen.getByRole("button", { name: "Input & shortcuts" }).getAttribute("aria-current")).toBe("page");
 });
 
-test("a bare /settings opens on General when no section has been visited", async () => {
+test("a bare /settings opens on Appearance when no section has been visited", async () => {
   stubMatchMedia(false);
   seedOpenSettingsPane();
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  await sectionLoadFailed();
 
-  expect(screen.getByRole("heading", { name: settingsSectionLabel("general") })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: settingsSectionLabel("theme") })).toBeTruthy();
 });
 
 test("the pane tab title follows the remembered section too - no General tab over Keybindings content", async () => {
@@ -316,21 +359,20 @@ test("the pane tab title follows the remembered section too - no General tab ove
   expect(paneFor("settings").title({}, {})).toBe(settingsSectionLabel("keybindings"));
   // An explicit section always wins over the memory.
   expect(paneFor("settings").title({ section: "theme" }, {})).toBe(settingsSectionLabel("theme"));
-  // And a stale remembered id falls back to General, like the content does.
+  // And a stale remembered id falls back to Appearance, like the content does.
   localStorage.setItem("evener.prefs.lastSettingsSection", "retired.section");
   resetPrefsStoreForTests();
-  expect(paneFor("settings").title({}, {})).toBe(settingsSectionLabel("general"));
+  expect(paneFor("settings").title({}, {})).toBe(settingsSectionLabel("theme"));
 });
 
-test("a remembered section that is no longer a known section falls back to General", async () => {
+test("a remembered section that is no longer a known section falls back to Appearance", async () => {
   stubMatchMedia(false);
   seedOpenSettingsPane();
   localStorage.setItem("evener.prefs.lastSettingsSection", "retired.section");
   resetPrefsStoreForTests();
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  await sectionLoadFailed();
 
-  expect(screen.getByRole("heading", { name: settingsSectionLabel("general") })).toBeTruthy();
+  expect(screen.getByRole("heading", { name: settingsSectionLabel("theme") })).toBeTruthy();
 });
 
 test("the project section is not remembered (it has no nav row and needs its ?cwd= context)", () => {

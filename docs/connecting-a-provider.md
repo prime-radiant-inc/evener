@@ -1,5 +1,12 @@
 # Connecting a provider
 
+Connect one provider on the host that will run your session. You need an installed, running hub and either a hosted account with suitable access or a reachable local model server. No existing API key is required for the [Ollama path](ollama.md).
+
+The [first-task walkthrough](getting-started.md#connect-a-provider-in-new-session)
+uses this dialog without leaving New session. Settings → Providers & credentials
+manages the same host connections and credentials. If access is already
+configured, choose that connection rather than adding it again.
+
 ## Start your first session
 
 1. Open **New session**. Choose a working directory and, optionally, write your
@@ -16,14 +23,23 @@
    [OpenRouter](https://openrouter.ai/settings/keys).
 4. Select **Save and check**. Evener saves access on the Evener host, reloads the
    resolved connection, and requests the provider's **model list only**. It does
-   not send your prompt or prove generation access, quota, or model capability.
-5. After a successful check, select **Continue**. The model chooser opens with
+   not send your prompt or make a generation request. A returned list does not
+   prove generation access, quota, billing status, or a model's tool capability.
+5. After a successful check, select **Choose model**. The model chooser opens with
    models returned for that connection's actual instance name. Choose a model;
    **Show all models** returns to the full catalogue. If no models are listed,
    check the provider's model access and endpoint rather than guessing a model ID.
-6. Review your working directory, prompt, and model, then press **Start**.
+6. Review your working directory, task, and explicit model. Review **Effective
+   access** near Start and use **Change** if the resolved permission is not what
+   you intended. Instructions in the task do not restrict tools; the access
+   setting does. Then press **Start**.
    Connecting and choosing a model do not start a session or change the global
    provider default.
+
+The task and working-directory drafts stay in New session while the provider
+dialog and model chooser open, fail, retry, and close. Check them again before
+Start. A successful credential save survives a later model-list failure; retry
+the check without pasting the key again. Cancel does not start a session.
 
 **Subscriptions are not API keys.** Claude, ChatGPT, and Gemini subscriptions
 do not automatically include separately billed API access. OpenAI API keys and
@@ -51,10 +67,43 @@ pasting an API key. Availability depends on your account and provider terms.
   The guided form also offers **Use existing host access** under **Advanced
   settings**.
 - **Advanced management:** Settings → Providers & credentials → **Connect provider** uses the
-  same connector. The instance rows are the real editor, with custom instances,
+  same connector. After a successful check, **Done** returns to Settings; it does
+  not open the New session model chooser. The instance rows are the real editor, with custom instances,
   rename, reset overrides, replace/clear stored credentials, logout, source
   inspection, and explicit default management. In the session model chooser,
   only an explicit model pick requests a session model switch.
+
+## Connect from the CLI
+
+For ChatGPT/Codex access, run these on the execution host:
+
+```sh
+evener openai login
+evener openai status
+```
+
+Complete the browser or device flow privately. These commands use the `openai-codex` instance by default, not the API-key `openai` instance. On a headless host, `EVENER_LOGIN_HEADLESS=1 evener openai login` requests the device flow. Status checks local login state; it does not prove quota or model generation.
+
+For API-key access, the browser's masked form is the simplest way to store a key without shell history. A service can instead receive the provider's supported variable from its secret manager. Restart the service after changing that environment. Do not type a literal secret into `--credential-header` or another command argument.
+
+Inspect what resolves without making a generation request:
+
+```sh
+EVENER_OFFLINE=1 evener providers list
+EVENER_OFFLINE=1 evener models inspect openai/gpt-5.6
+```
+
+Substitute the instance/model you intend to use. For a custom gateway, author an instance without probing it:
+
+```sh
+evener providers add work --base openai \
+  --base-url https://gateway.example.com/v1 \
+  --api-key-env WORK_API_KEY --no-probe
+```
+
+This writes configuration; it does not set `WORK_API_KEY` or validate that example endpoint. Supply the real gateway URL and inject its key securely. An instance pointing to a different endpoint does not inherit vendor key variables. Inspect the resulting destination before any live check. Without `--no-probe`, `providers add` may send provider requests.
+
+Once the connection resolves, use an explicit `instance/model` in the [CLI](cli.md), or choose it in New session. Review the result using [Daily work](daily-work.md).
 
 ## Repair or return
 

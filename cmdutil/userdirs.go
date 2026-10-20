@@ -38,7 +38,7 @@ func CheckLegacyDataDirs() error {
 // Runtime state remains lazy and is created by the subsystem that writes it.
 //
 // It is the first side-effecting call in every product binary's startup
-// (cmd/evener, cmd/evener-hub, cmd/evener-tui), so checkLegacyDataDirs runs
+// (cmd/evener, cmd/evener-hub), so checkLegacyDataDirs runs
 // here, before anything creates a directory a stranded ~/.serf could be
 // mistaken as already migrated into.
 func EnsureUserConfigDirs() error {

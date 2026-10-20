@@ -219,7 +219,10 @@ function ResultDetail({ text }: { text: string }) {
 	);
 }
 
-function ResultRow({
+/** The row every session search result sits in. Exported so a surface that
+ * lists results outside the Board (the Share target sheet) renders the same
+ * row: same mark, title, project line, indentation and spoken label. */
+export function ResultRow({
 	row,
 	connected,
 	onOpen,

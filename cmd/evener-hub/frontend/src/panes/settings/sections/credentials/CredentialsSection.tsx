@@ -541,7 +541,11 @@ export function CredentialsSection({
               </Dialog>
             }
           >
-            <ConnectProviderDialog onClose={() => setConnecting(false)} onConnected={() => setConnecting(false)} />
+            <ConnectProviderDialog
+              completionLabel="Done"
+              onClose={() => setConnecting(false)}
+              onConnected={() => setConnecting(false)}
+            />
           </Suspense>
         </ConnectProviderDialogBoundary>
       )}

@@ -161,7 +161,7 @@ spawn with a legible error, never a silent suffix.
 `name` is accepted for every delegate, not just worktree-isolated ones: without
 `isolation:"worktree"` it is a display-only label, carried on the durable
 descriptor and surfaced in `job_list` rows, `job_status`, the delegate create
-result, the completion notification frame, and `evener-doctor tree` output. It
+result, the completion notification frame, and `evener doctor tree` output. It
 never addresses anything — `delegate_send` and every other surface stay keyed to
 the `dlg_…` id — and nothing enforces uniqueness across siblings.
 

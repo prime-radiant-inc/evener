@@ -187,6 +187,15 @@ it("offers Show model on Board rows, off at first, and stores it for this phone"
 	expect(tree.root.findByProps({ accessibilityLabel: "Show model on Board rows" }).props.value).toBe(true);
 });
 
+it("offers Open at unread replies, on at first, and stores turning it off for this phone", () => {
+	const { tree, storage, prefs } = mount();
+	const toggle = tree.root.findByProps({ accessibilityLabel: "Open at unread replies", value: true });
+	act(() => toggle.props.onValueChange(false));
+	expect(prefs.getSnapshot().openAtUnreadReplies).toBe(false);
+	expect(JSON.parse(storage.get(DISPLAY_KEY) ?? "{}")).toMatchObject({ openAtUnreadReplies: false });
+	expect(tree.root.findByProps({ accessibilityLabel: "Open at unread replies" }).props.value).toBe(false);
+});
+
 it("says Show model on Board rows applies now but won't survive a restart when the phone can't store it", () => {
 	const { tree, prefs } = mount();
 	prefs.set = ((set) => (change: Parameters<typeof set>[0]) => {

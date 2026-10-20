@@ -24,7 +24,8 @@ import { type ActivityListItem, activityListKey } from "./activityList";
 import { forgetStopRequestsForHub } from "./nativeStopRequests";
 import { flattenSubagents } from "./subagentModel";
 import { forgetSubagentTrees, subagentTree, type SubagentTreeSnapshot } from "./subagentTree";
-import { SubagentsScreen } from "./SubagentsScreen";
+import { ActivityScreen } from "./ActivityScreen";
+import type { ActivityKind } from "./activityList";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -94,27 +95,27 @@ function hub(readDelegates = () => subagentOutcomesDelegatesResponse()) {
 	}));
 	return client;
 }
-function element() {
+function element(kind: ActivityKind = "jobs") {
 	return (
-		<SubagentsScreen
-			route={{ key: "history", name: "Subagents", params: { hubId, ...coordinator } } as never}
+		<ActivityScreen
+			route={{ key: kind, name: "Activity", params: { hubId, ...coordinator, kind } } as never}
 			navigation={navigation as never}
 		/>
 	);
 }
-async function mount(client: FakeClient) {
+async function mount(client: FakeClient, kind: ActivityKind = "jobs") {
 	harness.connection = screenConnection(client, "ready");
-	const screen = render(element());
+	const screen = render(element(kind));
 	await act(async () => {
 		await subagentTree(hubId, coordinator.ref, "root").reload();
 	});
 	return screen;
 }
-async function reconnect(screen: ReactTestRenderer, old: FakeClient, next: FakeClient) {
+async function reconnect(screen: ReactTestRenderer, old: FakeClient, next: FakeClient, kind: ActivityKind = "jobs") {
 	const binding = subagentTree(hubId, coordinator.ref, "root");
 	act(() => {
 		harness.connection = screenConnection(old, "reconnecting");
-		screen.update(element());
+		screen.update(element(kind));
 	});
 	await act(async () => {
 		await binding.setClient(null);
@@ -122,7 +123,7 @@ async function reconnect(screen: ReactTestRenderer, old: FakeClient, next: FakeC
 	await act(async () => {
 		await binding.setClient(next);
 		harness.connection = screenConnection(next, "ready");
-		screen.update(element());
+		screen.update(element(kind));
 		await binding.reload();
 	});
 }
@@ -152,7 +153,7 @@ function published(check: (snapshot: SubagentTreeSnapshot) => boolean): Promise<
 it("renders the recorded reported, failed and stopped generations as truthful quiet history", async () => {
 	let response = subagentOutcomesDelegatesResponse();
 	const client = hub(() => response);
-	const screen = await mount(client);
+	const screen = await mount(client, "agents");
 	expect(renderedText(screen)).not.toContain("provider returned 500");
 	press(screen, "Done · 3");
 	const rows = flattenSubagents(projection());
@@ -187,7 +188,7 @@ it("renders the recorded reported, failed and stopped generations as truthful qu
 
 it("rejects a delayed prior report after a newer running generation reaches the phone", async () => {
 	const old = hub(() => subagentResumedDelegatesResponse());
-	const screen = await mount(old);
+	const screen = await mount(old, "agents");
 	press(screen, "Done · 3");
 	const entered = deferred<void>();
 	const answer = deferred<SessionDelegatesResponse>();
@@ -225,7 +226,7 @@ it("rejects a delayed prior report after a newer running generation reaches the 
 		jobs: emptyCounts,
 		watches: emptyCounts,
 	}));
-	await reconnect(screen, old, next);
+	await reconnect(screen, old, next, "agents");
 	const seen: unknown[] = [];
 	const stop = binding.subscribe(() =>
 		seen.push(flattenSubagents(projection()).find((row) => row.id === "dlg_reported")?.delegate.reportPreview),
@@ -414,7 +415,7 @@ it("retains an open later job history, filter, search and qualified row through 
 	act(() => screen.root.findByType("TextInput" as never).props.onChangeText("History task"));
 	expect(laterRow(screen).props.row.title).toBe("History task 11");
 	expect(pressable(screen, "Done · 3")).toBeUndefined();
-	expect(pressable(screen, "Done, 15")).toBeDefined();
+	expect(pressable(screen, "Done, 12")).toBeDefined();
 	options.description = "History task 11 refreshed";
 	const binding = subagentTree(hubId, coordinator.ref, "root");
 	await act(async () => {
@@ -436,17 +437,16 @@ it("retains an open later job history, filter, search and qualified row through 
 	expect(cursors(next).slice(-3)).toEqual([undefined, "page-2", "page-3"]);
 	expect(laterRow(screen).props.row.title).toBe("History task 11 reconnected");
 	expect(pressable(screen, "Completed · 12")?.props.accessibilityState).toEqual({ expanded: true });
-	expect(pressable(screen, "All, 15")?.props.accessibilityState).toEqual({ selected: true });
+	expect(pressable(screen, "All, 12")?.props.accessibilityState).toEqual({ selected: true });
 	expect(screen.root.findByType("TextInput" as never).props.value).toBe("History task");
 	press(screen, "Clear filter");
-	expect(pressable(screen, "Done · 3")?.props.accessibilityState).toEqual({ expanded: false });
+	expect(pressable(screen, "Completed · 12")?.props.accessibilityState).toEqual({ expanded: true });
 });
 
 it("closed histories discover later live work, then retain one terminal output target after recovery", async () => {
 	const options = { active: true, failed: false };
 	const client = pagedHub(options);
 	const screen = await mount(client);
-	expect(pressable(screen, "Done · 3")?.props.accessibilityState).toEqual({ expanded: false });
 	expect(pressable(screen, "Completed · 4")?.props.accessibilityState).toEqual({ expanded: false });
 	const binding = subagentTree(hubId, coordinator.ref, "root");
 	const second = published(
@@ -540,7 +540,7 @@ it("one native edge callback discovers a terminal parent's page-three active des
 			page: { complete: page === 2, issues: [], ...(page < 2 ? { nextCursor: `page-${page + 2}` } : {}) },
 		};
 	});
-	const screen = await mount(client);
+	const screen = await mount(client, "agents");
 	expect(pressable(screen, "Done · 50")?.props.accessibilityState).toEqual({ expanded: false });
 	const boundary = nativeEndBoundary(screen);
 	const second = published((snapshot) => flattenSubagents(snapshot.tree!).some((row) => row.id === "failed-parent-99"));
@@ -696,7 +696,7 @@ it("keeps healthy rows and unknown counts until a missing owner recovers", async
 	});
 	await loadThirdPage();
 	expect(laterRow(screen).props.row.title).toBe("History task 11");
-	expect(pressable(screen, "All, 15")).toBeDefined();
+	expect(pressable(screen, "All, 12")).toBeDefined();
 	expect(withTestID(screen, "activity-missing")).toEqual([]);
 	expect(pressable(screen, "Completed · 12")?.props.accessibilityState).toEqual({ expanded: true });
 });
