@@ -1438,6 +1438,32 @@ effort_parameter_unsupported = true
 	}
 }
 
+// The live path must not clobber a budget control either. A gateway listing can
+// enrich a budget-shaped row (a Google-protocol Gemini over an OpenAI-shaped
+// listing); recording the no-effort verdict there leaves derivation free to
+// strip only the effort control and keep budget_tokens.
+func TestResolve_LiveNoEffortVerdictKeepsBudgetCapability(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
+[providers.google.models."gemini-budget"]
+reasoning = true
+reasoning_controls = ["budget_tokens"]
+`)))
+	unsupported := true
+	r.ApplyLive("google", []Model{{
+		ID: "gemini-budget", Caps: Caps{Reasoning: new(true), EffortParameterUnsupported: &unsupported, EffortValues: []string{}},
+	}})
+	res := mustResolve(t, r, "google/gemini-budget")
+	if !slices.Contains(res.Caps.ReasoningControls, "budget_tokens") {
+		t.Fatalf("ReasoningControls = %v, want budget_tokens preserved through the live layer", res.Caps.ReasoningControls)
+	}
+	if slices.Contains(res.Caps.ReasoningControls, "effort") {
+		t.Fatalf("ReasoningControls = %v, want no effort control", res.Caps.ReasoningControls)
+	}
+	if res.Caps.ThinkingShape == nil || *res.Caps.ThinkingShape != "budget" {
+		t.Fatalf("ThinkingShape = %v, want budget derived", res.Caps.ThinkingShape)
+	}
+}
+
 var provRe = regexp.MustCompile(`^((snapshot|cache|overlay|config)/(provider|row|glob:.+)|live|alias|derived)$`)
 
 func TestResolve_ProvenanceNamesRealLayers(t *testing.T) {

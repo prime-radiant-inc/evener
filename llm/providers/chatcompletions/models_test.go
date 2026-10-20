@@ -229,15 +229,17 @@ func TestListModelsReadsGatewayDialect(t *testing.T) {
 }
 
 // TestListModelsGatewayEffortUnsupportedIsToggleOnly pins a model the gateway
-// says takes no effort parameter: the row is reasoning-capable but has no
-// effort control, so derivation cannot infer one and requests spell no level.
+// says takes no effort parameter: the row records the verdict and publishes an
+// empty ladder, so no effort control survives resolution and requests spell no
+// level. Derivation, not the reader, turns the verdict into toggle-only
+// controls, because only it can preserve a numeric budget from another layer.
 func TestListModelsGatewayEffortUnsupportedIsToggleOnly(t *testing.T) {
 	c := listRow(t, `{"id":"toggle-model","supported_parameters":["reasoning"],"client_compat":{"pi":{"supportsReasoningEffort":false,"thinkingLevelMap":{"low":"low","high":"high"}}}}`)
-	if !slices.Equal(c.ReasoningControls, []string{"toggle"}) {
-		t.Fatalf("ReasoningControls = %#v, want toggle-only", c.ReasoningControls)
+	if !registry.BoolValue(c.EffortParameterUnsupported) {
+		t.Fatal("the row must record the no-effort verdict")
 	}
-	if c.EffortCapable() || len(c.EffortValues) != 0 {
-		t.Fatalf("effort must be unavailable: capable=%v ladder=%#v", c.EffortCapable(), c.EffortValues)
+	if len(c.EffortValues) != 0 {
+		t.Fatalf("ladder = %#v, want a published empty list", c.EffortValues)
 	}
 	if c.Reasoning == nil || !*c.Reasoning {
 		t.Fatalf("Reasoning = %v, want true", c.Reasoning)

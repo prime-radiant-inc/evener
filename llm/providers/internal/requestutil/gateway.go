@@ -94,15 +94,13 @@ func applyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, c
 			return
 		}
 	}
-	// A model the gateway says takes no effort parameter is toggle-only:
-	// dropping "effort" from the controls is what keeps derivation from
-	// inferring it back and the request builder from spelling a level the
-	// gateway ignores. The ladder is an empty non-nil list, not nil, so the
-	// live layer replaces a curated one instead of inheriting it. Building it
-	// first would only be discarded.
+	// A model the gateway says takes no effort parameter records that verdict
+	// and publishes an empty ladder, so the live layer replaces a curated one
+	// instead of inheriting it. The controls themselves are derivation's call:
+	// it removes the effort control while preserving a numeric budget, which a
+	// wholesale write here would destroy before derivation ever saw it.
 	if pi := compat.Pi; pi != nil && pi.SupportsReasoningEffort != nil && !*pi.SupportsReasoningEffort {
 		caps.EffortParameterUnsupported = new(true)
-		caps.ReasoningControls = []string{"toggle"}
 		caps.EffortValues = []string{}
 		// The map still proves the model reasons, even though its ladder is
 		// not published. Without this, a row whose verdict was inferred false

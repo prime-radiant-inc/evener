@@ -229,11 +229,11 @@ func TestApplyGatewayFacts_EffortUnsupported(t *testing.T) {
 			if len(caps.EffortValues) != 0 {
 				t.Fatalf("EffortValues = %#v, want none", caps.EffortValues)
 			}
-			if !slices.Equal(caps.ReasoningControls, []string{"toggle"}) {
-				t.Fatalf("ReasoningControls = %#v, want toggle-only", caps.ReasoningControls)
-			}
-			if caps.EffortCapable() {
-				t.Fatal("a toggle-only row must not be effort-capable")
+			// The raw row states the verdict; derivation is what turns it into
+			// toggle-only controls, because only derivation can preserve a
+			// numeric budget control that came from another layer.
+			if !registry.BoolValue(caps.EffortParameterUnsupported) {
+				t.Fatal("the row must record the no-effort verdict")
 			}
 			// Non-nil, or mergeCaps inherits a curated ladder and derivation
 			// re-adds the effort control the gateway just said not to use.
@@ -283,8 +283,8 @@ func TestApplyGatewayFacts_EffortUnsupportedStillProvesReasoning(t *testing.T) {
 	if caps.Reasoning == nil || !*caps.Reasoning {
 		t.Fatalf("Reasoning = %v, want the usable map to prove reasoning", caps.Reasoning)
 	}
-	if !slices.Equal(caps.ReasoningControls, []string{"toggle"}) {
-		t.Fatalf("ReasoningControls = %#v, want toggle-only", caps.ReasoningControls)
+	if !registry.BoolValue(caps.EffortParameterUnsupported) {
+		t.Fatal("the row must record the no-effort verdict")
 	}
 }
 
