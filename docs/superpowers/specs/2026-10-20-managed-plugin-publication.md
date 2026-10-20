@@ -88,8 +88,9 @@ Move rule (bounded metadata only):
   ordinary files are outside what migration can identify.
 
 A store with any remaining `.git` name, an unsafe pointer, or a read error is
-not clean. Diagnostic output is a count plus store-relative paths, no absolute
-paths on the wire.
+not clean. Migration decisions are logged with store-relative paths; a raw
+filesystem error keeps its own local log text, and none of this reaches an RPC
+payload.
 
 ## Scan policy
 

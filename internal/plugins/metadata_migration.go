@@ -153,12 +153,26 @@ func (m *Manager) unsafeGitEntry(entry string) bool {
 // targetIsMixedManagedContent reports whether target lies under any managed
 // content root at a path that is not itself inside a .git entry.
 func (m *Manager) targetIsMixedManagedContent(target string) bool {
+	targets := []string{target}
+	if resolved, err := filepath.EvalSymlinks(target); err == nil && resolved != target {
+		targets = append(targets, resolved)
+	}
 	for _, root := range m.managedRoots() {
-		rel, err := filepath.Rel(root.path, target)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			continue
+		spellings := []string{root.path}
+		if resolved, err := filepath.EvalSymlinks(root.path); err == nil && resolved != root.path {
+			spellings = append(spellings, resolved)
 		}
-		return !hasGitComponent(rel)
+		for _, spelling := range spellings {
+			for _, candidate := range targets {
+				rel, err := filepath.Rel(spelling, candidate)
+				if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+					continue
+				}
+				if !hasGitComponent(rel) {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }

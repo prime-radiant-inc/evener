@@ -127,7 +127,9 @@ func TestManagedMetadataMigrationRetriesAfterInterruption(t *testing.T) {
 	if remaining == 0 {
 		t.Fatal("interrupted migration removed both entries despite the failure")
 	}
-	m.ensureManagedContentMigrated(context.Background())
+	if _, err := m.Gc(context.Background()); err != nil {
+		t.Fatalf("an ordinary GC did not recover after the transient migration failure: %v", err)
+	}
 	if !m.managedContentClean() {
 		t.Fatal("retry did not complete after the interruption cleared")
 	}
@@ -160,7 +162,9 @@ func TestManagedMetadataMigrationLeavesAnOversizedPointer(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(pointer), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	body := []byte("gitdir: ../metadata\n")
+	// An external target would otherwise be moved (and the store called clean).
+	// The size bound is what leaves it in place here.
+	body := []byte("gitdir: /outside/target\n")
 	if err := os.WriteFile(pointer, append(body, make([]byte, 1<<20)...), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -200,5 +204,39 @@ func TestManagedMetadataMigrationCanceledLeavesStoreUsable(t *testing.T) {
 	m.ensureManagedContentMigrated(context.Background())
 	if !m.managedContentClean() {
 		t.Fatal("retry after cancellation did not complete")
+	}
+}
+
+func TestManagedMetadataMigrationResolvesPointerThroughASymlinkedRoot(t *testing.T) {
+	realRoot := t.TempDir()
+	linkParent := t.TempDir()
+	linkedRoot := filepath.Join(linkParent, "store")
+	if err := os.Symlink(realRoot, linkedRoot); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(linkedRoot)
+	metadata := filepath.Join(realRoot, "cache", "acme", "widget", "metadata")
+	writeTestFile(t, filepath.Join(metadata, "object"), "metadata")
+	pointer := filepath.Join(linkedRoot, "cache", "acme", "widget", "aaa", ".git")
+	if err := os.MkdirAll(filepath.Dir(pointer), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "gitdir: " + metadata + "\n"
+	if err := os.WriteFile(pointer, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.ensureManagedContentMigrated(context.Background())
+	if m.managedContentClean() {
+		t.Fatal("a resolved-spelling pointer into mixed managed content was called clean")
+	}
+	if _, err := os.Lstat(pointer); err != nil {
+		t.Fatalf("resolved-spelling pointer was moved: %v", err)
+	}
+	if err := os.Remove(pointer); err != nil {
+		t.Fatal(err)
+	}
+	m.ensureManagedContentMigrated(context.Background())
+	if !m.managedContentClean() {
+		t.Fatal("retry after removing the resolved-spelling pointer did not complete")
 	}
 }
