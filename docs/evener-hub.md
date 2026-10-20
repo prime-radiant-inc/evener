@@ -406,6 +406,9 @@ An explicit Restart also finishes any pending deployment write before restarting
 If the first health probe missed the predecessor, a later probe can identify it
 before the first restart command runs; an issued command retains its original
 predecessor identity across retries.
+If a supervisorless predecessor exits before a restart command is recorded,
+recovery proves the port is free and starts the saved target with the deployment's
+build expectations. An occupied or unprobeable port leaves the recovery pending.
 Source refusals before a write leave no recovery intent. Recovery does not
 reinterpret the operation from a newly observed executable or hide its failure.
 

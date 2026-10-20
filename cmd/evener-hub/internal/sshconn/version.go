@@ -595,6 +595,19 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 		// to the guarded ad hoc path without naming the label in any command.
 	}
 
+	if pending := m.pendingRestart(host.Name); sup.kind == supervisorNone && pending.deployment && pending.restart && pending.command == "" {
+		// The deployment already authorized replacing the predecessor. If it
+		// exited before a restart command was recorded, finish by starting the
+		// saved target, retaining the deployment's build expectations.
+		cleared, err := m.portCleared(ctx, host, hubPort(m.hostAddr(host)))
+		if err != nil {
+			return err
+		}
+		if cleared {
+			return m.startBareHub(ctx, host, expectVersion, expectPin)
+		}
+	}
+
 	// No supervisor owns the hub, so the guarded ad hoc restart is the only path
 	// that can run. A stopped host's cold bootstrap is unaffected: it is
 	// start-only (bootstrapHub) and never reaches this branch.

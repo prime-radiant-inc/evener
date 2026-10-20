@@ -2212,8 +2212,13 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 		}
 	}
 
-	// Ad hoc: launch the resolved executable detached, discarding output (there is
-	// no recovered log for a hub that was not running).
+	return m.startBareHub(ctx, host, expectedVersion, expectedGitSHA)
+}
+
+// startBareHub launches the resolved executable after its caller has proved
+// the port is free and selected a detached launch. There is no predecessor
+// whose argv or log destination can be recovered.
+func (m *Manager) startBareHub(ctx context.Context, host hostreg.Host, expectedVersion, expectedGitSHA string) error {
 	target, err := m.expectedHubExecutable(ctx, host)
 	if err != nil {
 		return err
