@@ -52,3 +52,85 @@ func TestDedupStrings(t *testing.T) {
 		})
 	}
 }
+
+func TestGatewayEffortLadder(t *testing.T) {
+	str := func(s string) *string { return &s }
+	levels := func(m map[string]*string) *GatewayClientCompat {
+		return &GatewayClientCompat{Pi: &GatewayPiCompat{ThinkingLevelMap: m}}
+	}
+	cases := []struct {
+		name   string
+		compat *GatewayClientCompat
+		want   []string
+	}{
+		{
+			name: "map levels come back in rank order",
+			compat: levels(map[string]*string{
+				"max": str("max"), "high": str("high"), "low": str("low"),
+				"medium": str("medium"), "xhigh": str("xhigh"), "minimal": nil, "off": nil,
+			}),
+			want: []string{"low", "medium", "high", "xhigh", "max"},
+		},
+		{
+			name: "an explicit off level leads the ladder",
+			compat: levels(map[string]*string{
+				"off": str("none"), "low": str("low"), "high": str("high"),
+			}),
+			want: []string{"none", "low", "high"},
+		},
+		{
+			name: "an off level spelled as another tier is not an off",
+			compat: levels(map[string]*string{
+				"off": str("low"), "low": str("low"), "high": str("high"),
+			}),
+			want: []string{"low", "high"},
+		},
+		{
+			// glm maps medium→high, minimal→low and xhigh→max: the menu offers
+			// the wire values the gateway accepts, once each.
+			name: "aliases collapse to their wire values",
+			compat: levels(map[string]*string{
+				"minimal": str("low"), "low": str("low"), "medium": str("high"),
+				"high": str("high"), "xhigh": str("max"), "max": str("max"), "off": str("none"),
+			}),
+			want: []string{"none", "low", "high", "max"},
+		},
+		{
+			name: "a level spelled outside the vocabulary is dropped",
+			compat: levels(map[string]*string{
+				"low": str("low"), "high": str("turbo"),
+			}),
+			want: []string{"low"},
+		},
+		{
+			name:   "no compat block states no ladder",
+			compat: nil,
+			want:   nil,
+		},
+		{
+			name:   "a compat block without pi states no ladder",
+			compat: &GatewayClientCompat{},
+			want:   nil,
+		},
+		{
+			// Every level null is a model with no effort control; the
+			// capabilities block, not an empty ladder, must state that.
+			name:   "an all-null map states no ladder",
+			compat: levels(map[string]*string{"low": nil, "high": nil}),
+			want:   nil,
+		},
+		{
+			name:   "an empty map states no ladder",
+			compat: levels(map[string]*string{}),
+			want:   nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := GatewayEffortLadder(tc.compat)
+			if !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
+				t.Fatalf("GatewayEffortLadder = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}

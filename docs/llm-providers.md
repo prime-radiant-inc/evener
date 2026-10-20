@@ -139,7 +139,15 @@ the user config. It supplies `Tools`, `InputModalities`, `ContextWindow`,
 `InputModalities` comes from OpenRouter's `architecture.input_modalities`, or,
 when that list carries no entry, from a gateway's `capabilities.vision` (an
 advertised vision capability is `["text", "image"]`); the Codex backend states
-the list itself. It
+the list itself. `Reasoning` and `EffortValues` come from OpenRouter's
+`supported_parameters` / `reasoning.supported_efforts`, the Codex backend's
+`supported_reasoning_levels`, or a gateway's own per-model facts: a
+`capabilities.reasoning` verdict, and the `client_compat.pi.thinkingLevelMap`
+ladder (lunaroute's shape), where a level mapped to a string is supported, a
+null is not, and levels sharing a wire value are advertised once. The ladder
+is ordered as the picker shows it, with an off level first when `off` maps to
+`none`. A model whose ladder the listing does not state keeps no ladder, so
+the request builder sends no effort name it cannot vouch for. It
 overrides catalog and curated facts but **never a field the user layer (layer
 4) set**, and it never touches any other wire-shaping cap. Live rows matching
 the non-chat pattern list (`embedding`, `whisper`, `tts`, `dall-e`,

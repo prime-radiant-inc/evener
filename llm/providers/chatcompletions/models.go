@@ -36,7 +36,8 @@ type modelEntry struct {
 		DefaultEnabled   *bool    `json:"default_enabled"`
 		SupportedEfforts []string `json:"supported_efforts"`
 	} `json:"reasoning"`
-	Pricing struct {
+	ClientCompat requestutil.GatewayClientCompat `json:"client_compat"`
+	Pricing      struct {
 		Prompt     string `json:"prompt"`
 		Completion string `json:"completion"`
 	} `json:"pricing"`
@@ -83,6 +84,15 @@ func (m modelEntry) row() registry.Model {
 			caps.ThinkingAlwaysOn = new(true)
 		}
 		caps.EffortValues = requestutil.DedupStrings(m.Reasoning.SupportedEfforts)
+	}
+	// A gateway that states the model's own reasoning verdict and effort map
+	// is authoritative over the supported_parameters inference above: it knows
+	// per model what OpenRouter's parameter list only says provider-wide.
+	if m.Capabilities.Reasoning != nil {
+		caps.Reasoning = new(*m.Capabilities.Reasoning)
+	}
+	if ladder := requestutil.GatewayEffortLadder(&m.ClientCompat); len(ladder) > 0 {
+		caps.EffortValues = ladder
 	}
 	caps.InputModalities = requestutil.GatewayInputModalities(m.Architecture, m.Capabilities)
 	if in, ok := perTokenCostToPerMillion(m.Pricing.Prompt); ok {
