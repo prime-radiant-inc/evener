@@ -1,12 +1,16 @@
 package chatcompletions
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
+
+	"primeradiant.com/evener/llm/internal/imagerepair"
 )
 
 func TestImageRecoveryNeverReplaysAnExposedStream(t *testing.T) {
@@ -48,5 +52,28 @@ func TestImageRecoveryCancellationPreventsResend(t *testing.T) {
 				t.Fatalf("requests=%d error=%v", calls, err)
 			}
 		})
+	}
+}
+
+func TestImageRecoverySharesDecodeBudget(t *testing.T) {
+	t.Parallel()
+	profile, err := os.ReadFile("../../internal/imagerepair/testdata/p3.icc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := recoveryJPEG(t, nil)
+	uri := recoveryURI(recoveryWithProfile(original, profile))
+	pixelsLeft := int64(6)
+	first, err := repairImageURI(t.Context(), uri, imagerepair.PreferColorManaged, &pixelsLeft)
+	if err != nil || first.MediaType != "image/png" || first.Method != imagerepair.ColorManaged || pixelsLeft != 0 {
+		t.Fatalf("first repair method=%v remaining=%d error=%v", first.Method, pixelsLeft, err)
+	}
+	second, err := repairImageURI(t.Context(), uri, imagerepair.PreferColorManaged, &pixelsLeft)
+	if err != nil || second.Method != imagerepair.ProfileRemoved || !bytes.Equal(second.Data, original) {
+		t.Fatalf("budget fallback method=%v error=%v", second.Method, err)
+	}
+	third, err := repairImageURI(t.Context(), recoveryURI(original), imagerepair.PreferColorManaged, &pixelsLeft)
+	if err != nil || third.Method != imagerepair.Unchanged || !bytes.Equal(third.Data, original) {
+		t.Fatalf("unchanged fallback method=%v error=%v", third.Method, err)
 	}
 }
