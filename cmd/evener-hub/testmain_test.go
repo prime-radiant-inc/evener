@@ -74,6 +74,20 @@ func TestMain(m *testing.M) {
 		_ = hostTemp.Discard()
 		os.Exit(1)
 	}
+	// Build the live-stack binaries before any test runs. liveStackBinaries
+	// guards the build with a sync.Once, so without this the first test that
+	// starts a stack pays for it: prebuildLiveStackBinaries reported 1.77s of
+	// one test's 2.50s here, and the same build on a contended CI runner is
+	// what pushed
+	// TestE2E_RetireOverlappedByAnotherOwnershipAction over its strict
+	// per-test ceiling. That test builds a stack per subtest, so the cost
+	// landed entirely on its first one.
+	if err := prebuildLiveStackBinaries(repoRootForTestMain()); err != nil {
+		fmt.Fprintf(os.Stderr, "evener-hub TestMain: warm live-stack binaries: %v\n", err)
+		testEnv.Discard()
+		_ = hostTemp.Discard()
+		os.Exit(1)
+	}
 
 	code := m.Run()
 	testEnv.Discard()

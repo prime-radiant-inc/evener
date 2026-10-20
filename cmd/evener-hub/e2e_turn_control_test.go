@@ -566,8 +566,39 @@ var liveStackBuild struct {
 	err  error
 }
 
+// repoRootForTestMain is the repo root from this package's working directory,
+// which `go test` sets to cmd/evener-hub.
+func repoRootForTestMain() string {
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		// The only caller is TestMain, which reports the error itself; an
+		// unreadable working directory would fail far earlier than this.
+		return ""
+	}
+	return root
+}
+
+// prebuildLiveStackBinaries does the build liveStackBinaries would do lazily,
+// so it lands before any test's clock starts. Called from TestMain.
+func prebuildLiveStackBinaries(repoRoot string) error {
+	if repoRoot == "" {
+		return errors.New("resolve repo root")
+	}
+	liveStackBinariesBuild(repoRoot)
+	return liveStackBuild.err
+}
+
 func liveStackBinaries(t *testing.T, repoRoot string) string {
 	t.Helper()
+	liveStackBinariesBuild(repoRoot)
+	if liveStackBuild.err != nil {
+		t.Fatalf("build live-stack binaries: %v", liveStackBuild.err)
+	}
+	return liveStackBuild.dir
+}
+
+// liveStackBinariesBuild is the once-guarded build both entry points use.
+func liveStackBinariesBuild(repoRoot string) {
 	liveStackBuild.once.Do(func() {
 		// Under TestMain's root, so its Discard is the only cleanup path.
 		dir := filepath.Join(testEnv.Root, "live-stack-bin")
@@ -585,10 +616,6 @@ func liveStackBinaries(t *testing.T, repoRoot string) string {
 			}
 		}
 	})
-	if liveStackBuild.err != nil {
-		t.Fatalf("build live-stack binaries: %v", liveStackBuild.err)
-	}
-	return liveStackBuild.dir
 }
 
 func startHubStack(t *testing.T, provider *fakellm.Server) hubStack {
