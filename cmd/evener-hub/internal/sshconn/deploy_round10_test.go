@@ -164,12 +164,20 @@ func TestRound10ResolvedTargetAvoidsRedeploy(t *testing.T) {
 		case strings.HasSuffix(joined, "id -u"):
 			return []byte("1000\n"), nil
 		case strings.Contains(joined, resolved+" launch-check"):
+			if !installed {
+				return nil, exitStatus(t, 127)
+			}
 			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, " evener launch-check"):
 			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 		case strings.Contains(joined, executableProbeRemote("evener")):
 			// The dedicated executable probe: absent.
 			return nil, exitStatus(t, 1)
+		case strings.Contains(joined, executableProbeRemote(resolved)):
+			if !installed {
+				return nil, exitStatus(t, 1)
+			}
+			return nil, nil
 		case strings.Contains(joined, "[ -f ") && strings.Contains(joined, resolved):
 			if installed {
 				return []byte(resolved + "\n"), nil

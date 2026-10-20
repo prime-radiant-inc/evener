@@ -63,7 +63,7 @@ func TestRound8PushDeployReturnsResolvedTarget(t *testing.T) {
 // push had just provisioned.
 func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
-	launched := false
+	installed, launched := false, false
 	var launchPaths []string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
@@ -79,7 +79,7 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			if strings.Contains(joined, " evener launch-check") {
+			if strings.Contains(joined, " evener launch-check") || !installed {
 				// No evener_path and nothing on the non-interactive PATH.
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
@@ -92,6 +92,11 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 		case strings.Contains(joined, executableProbeRemote("evener")):
 			// The dedicated executable probe: absent.
 			return nil, exitStatus(t, 1)
+		case strings.Contains(joined, executableProbeRemote("/home/dev/.local/bin/evener")):
+			if !installed {
+				return nil, exitStatus(t, 1)
+			}
+			return nil, nil
 		case strings.Contains(joined, "command -v evener"):
 			return []byte(evenerPathMissingMarker + "\n"), nil
 		case strings.Contains(joined, "mkdir -p /home/dev/.local/bin"):
@@ -99,6 +104,7 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 		case strings.Contains(joined, "evener_resolve"):
 			return []byte("/home/dev/.local/bin/evener\n"), nil
 		case strings.Contains(joined, "cat >"):
+			installed = true
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
 			}

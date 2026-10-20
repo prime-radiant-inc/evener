@@ -1358,7 +1358,7 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 		case argv[len(argv)-1] == envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			if strings.Contains(joined, " evener launch-check") {
+			if strings.Contains(joined, " evener launch-check") || !installerRan {
 				// No evener on the host's non-interactive PATH.
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
@@ -1366,6 +1366,11 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 		case strings.Contains(joined, executableProbeRemote("evener")):
 			// The dedicated executable probe: absent.
 			return nil, exitStatus(t, 1)
+		case strings.Contains(joined, executableProbeRemote("/home/dev/.local/bin/evener")):
+			if !installerRan {
+				return nil, exitStatus(t, 1)
+			}
+			return nil, nil
 		case strings.Contains(joined, "list-units"):
 			return nil, nil
 		case strings.Contains(joined, "lsof -ti :9180"):

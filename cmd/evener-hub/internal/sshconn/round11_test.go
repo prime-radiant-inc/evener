@@ -226,7 +226,7 @@ func TestRound11FreshHostWithoutLsofIsProvisioned(t *testing.T) {
 			case strings.Contains(joined, "command -v evener"):
 				return []byte(evenerPathMissingMarker + "\n"), nil
 			case strings.Contains(joined, "launch-check"):
-				if strings.Contains(joined, " evener launch-check") {
+				if strings.Contains(joined, " evener launch-check") || !pushed {
 					return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 				}
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
@@ -238,6 +238,11 @@ func TestRound11FreshHostWithoutLsofIsProvisioned(t *testing.T) {
 					return nil, exitStatus(t, 1)
 				}
 				return []byte(resolved + "\n"), nil
+			case strings.Contains(joined, executableProbeRemote(resolved)):
+				if !pushed {
+					return nil, exitStatus(t, 1)
+				}
+				return nil, nil
 			case strings.Contains(joined, "if [ -e "):
 				return []byte(resolved + "\n"), nil
 			case strings.Contains(joined, "if [ -n "):

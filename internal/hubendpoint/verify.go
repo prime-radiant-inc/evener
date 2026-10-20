@@ -140,6 +140,9 @@ func localAddress(addr netip.Addr) bool {
 	if !addr.IsValid() || addr.Zone() != "" {
 		return false
 	}
+	if addr.Unmap().IsLoopback() {
+		return true
+	}
 	ifaces, err := net.InterfaceAddrs()
 	if err != nil {
 		return false

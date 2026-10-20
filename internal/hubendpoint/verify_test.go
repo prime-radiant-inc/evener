@@ -6,10 +6,42 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestEndpointLocalTargetLiteralAddresses(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{"http://127.0.0.1:9180", true},
+		{"http://127.0.0.2:9180", true},
+		{"http://[::1]:9180", true},
+		{"http://[::ffff:127.0.0.2]:9180", true},
+		{"http://192.0.2.1:9180", false},
+		{"http://[2001:db8::1]:9180", false},
+		{"http://localhost:9180", false},
+		{"http://unresolved.invalid:9180", false},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			origin, err := ParseOrigin(tc.raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := LocalTarget(origin); got != tc.want {
+				t.Fatalf("local=%v want=%v", got, tc.want)
+			}
+		})
+	}
+	for _, addr := range []netip.Addr{{}, netip.MustParseAddr("::1%lo"), netip.MustParseAddr("fe80::1%lo")} {
+		if localAddress(addr) {
+			t.Fatalf("accepted invalid or zoned address %v", addr)
+		}
+	}
+}
 
 func TestEndpointVerifyLocalConnReusableForAuthenticatedRequest(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

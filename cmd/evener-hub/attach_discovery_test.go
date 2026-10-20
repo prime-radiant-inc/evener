@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,7 +25,7 @@ import (
 // This fixture uses the real health and RPC routes, config loader, endpoint file,
 // singleton lock and token file. Only the process's stdio is an in-memory pipe.
 func TestAttachDiscoveryRoundTrips(t *testing.T) {
-	for _, selection := range []string{"default config", "explicit config", "matching URL"} {
+	for _, selection := range []string{"default config", "explicit config", "matching URL", "alternate loopback"} {
 		t.Run(selection, func(t *testing.T) {
 			root, state := endpointTestRoot(t)
 			path := endpointTestConfig(t, root, state, "127.0.0.1:0")
@@ -62,6 +63,19 @@ func TestAttachDiscoveryRoundTrips(t *testing.T) {
 				t.Fatal(err)
 			}
 			srv := httptest.NewUnstartedServer(nil)
+			if selection == "alternate loopback" {
+				if err := srv.Listener.Close(); err != nil {
+					t.Fatal(err)
+				}
+				listener, err := net.Listen("tcp4", "127.0.0.2:0")
+				if errors.Is(err, syscall.EADDRNOTAVAIL) {
+					t.Skipf("host cannot bind loopback alias: %v", err)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				srv.Listener = listener
+			}
 			web := NewWebServer(hubcore.WebConfig{AuthToken: token, HubAddr: srv.Listener.Addr().String(), HubBootID: "attach-discovery-boot", Past: hubcore.NewPastIndex("")})
 			var bearerHealth, authorizedRPC, bridgeRPC atomic.Int32
 			handler := web.Handler()
@@ -89,6 +103,17 @@ func TestAttachDiscoveryRoundTrips(t *testing.T) {
 					t.Error(err)
 				}
 			}()
+			report, err := resolveHubEndpoint(t.Context(), endpointOptions{configPath: path, configExplicit: true}, defaultMainDeps())
+			if err != nil || report.State != "running" || report.Running.LocalURL != srv.URL {
+				t.Fatalf("discovery: report=%+v err=%v", report, err)
+			}
+			var login, loginStderr bytes.Buffer
+			if err := runLoginURL([]string{"--config", path}, &login, &loginStderr, defaultMainDeps()); err != nil {
+				t.Fatal(err)
+			}
+			if login.String() != srv.URL+"/auth/"+token+"\n" || strings.Contains(loginStderr.String(), token) {
+				t.Fatal("login retrieval selected the wrong origin or disclosed credentials to stderr")
+			}
 			if selection == "matching URL" {
 				args = append(args, "--hub-url", srv.URL+"/")
 			}

@@ -317,7 +317,7 @@ func (m *Manager) deploySelected(ctx context.Context, host hostreg.Host, facts P
 	if m.opts.DeployDisabled || (isDirtyVersion(m.opts.controllerVersion()) && !m.ownExecutableIsStagingPath()) {
 		return m.deploy(ctx, host, facts)
 	}
-	var check func() error
+	var check func(string) error
 	if !facts.ExecutableMissing {
 		if strings.TrimSpace(host.EvenerPath) == "" {
 			target, err := m.evenerOnPath(ctx, host)
@@ -339,12 +339,16 @@ func (m *Manager) deploySelected(ctx context.Context, host hostreg.Host, facts P
 				return "", err
 			}
 		}
-		check = func() error { _, err := m.revalidateOwnedEndpoint(ctx, host, facts, owner); return err }
+		check = func(string) error { _, err := m.revalidateOwnedEndpoint(ctx, host, facts, owner); return err }
 	} else {
 		// Verified executable absence is the preflight's explicitly authorized fresh
 		// install path. Recheck absence at each write rather than inheriting it.
-		check = func() error {
-			_, err := m.probeLaunchCheck(ctx, host)
+		check = func(target string) error {
+			probeHost := host
+			if target != "" {
+				probeHost.EvenerPath = target
+			}
+			_, err := m.probeLaunchCheck(ctx, probeHost)
 			if errors.Is(err, ErrExecutableMissing) {
 				return nil
 			}
@@ -366,9 +370,9 @@ func (m *Manager) deploySelected(ctx context.Context, host hostreg.Host, facts P
 	return target, nil
 }
 
-func checkInstall(checks []func() error) error {
+func checkInstall(checks []func(string) error, target string) error {
 	for _, check := range checks {
-		if err := check(); err != nil {
+		if err := check(target); err != nil {
 			return err
 		}
 	}
@@ -378,7 +382,7 @@ func checkInstall(checks []func() error) error {
 // deploy installs through push or the installer fallback and returns the resolved
 // run target for later endpoint inspection, restart and attachment. Production
 // callers enter through deploySelected to supply the pre-write owner checks.
-func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func() error) (string, error) {
+func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func(string) error) (string, error) {
 	// Deploying turned off wins over every deploy source: a hub started with
 	// -no-deploy installs nothing on a host, not even through the installer
 	// fallback a release or snapshot controller would otherwise use. The attach
@@ -496,8 +500,8 @@ func (m *Manager) ownExecutableCannotServe(facts Preflight) bool {
 // on a fresh host that target is the installer default ~/.local/bin/evener, and
 // discarding it left the manager probing the literal `evener`, which the
 // non-interactive PATH cannot resolve.
-func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func() error) (string, error) {
-	if err := checkInstall(checks); err != nil {
+func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func(string) error) (string, error) {
+	if err := checkInstall(checks, ""); err != nil {
 		return "", err
 	}
 	target, err := m.deployTarget(ctx, host, facts, checks...)
@@ -541,7 +545,7 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q stat staged binary: %w", ErrDeploy, host.Name, err)
 	}
-	if err := checkInstall(checks); err != nil {
+	if err := checkInstall(checks, target); err != nil {
 		return "", err
 	}
 	if err := m.pushBinary(ctx, host, target, f, info.Size()); err != nil {
@@ -636,7 +640,7 @@ func checkRunTarget(hostName, p string) error {
 // restart a hub running a different binary, and the on-disk target already
 // matches — so the deploy/restart pair loops forever. deployInstaller preserves
 // the same location (existingInstallableEvener); this is the push path's half.
-func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func() error) (string, error) {
+func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func(string) error) (string, error) {
 	if p := strings.TrimSpace(host.EvenerPath); p != "" {
 		// Before even the directory probe: a run target that cannot serve a hub
 		// is refused with no remote command at all (checkRunTarget).
@@ -935,7 +939,7 @@ func DeployRunTargetFor(host hostreg.Host, home string) (string, error) {
 // expected build before any restart or attach. A tag that resolves to a wrong or
 // moved artifact is a failed verification (a terminal ErrVersionMismatch), never
 // a retry of the same pinned ref and never an attach.
-func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func() error) (string, error) {
+func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts Preflight, checks ...func(string) error) (string, error) {
 	ref, err := installerRefFor(buildinfo.BuildChannel(), buildinfo.ReleaseTag, buildinfo.GitDirty, m.installerRemedy())
 	if err != nil {
 		return "", err
@@ -957,7 +961,7 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	if err != nil {
 		return "", err
 	}
-	if err := checkInstall(checks); err != nil {
+	if err := checkInstall(checks, runTarget); err != nil {
 		return "", err
 	}
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remoteinstall.Command(ref, "", bindir, shareBindir)), bytes.NewReader(remoteinstall.Script))
