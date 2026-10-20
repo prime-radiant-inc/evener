@@ -40,29 +40,34 @@ func auditPluginContent(dir string) error {
 			return err
 		}
 		if path != dir && isGitName(info.Name()) {
-			if info.IsDir() {
-				return fmt.Errorf("plugin content contains Git metadata at %s", relForDiagnostic(dir, path))
-			}
 			return fmt.Errorf("plugin content contains Git metadata at %s", relForDiagnostic(dir, path))
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(path)
+			reachesGit, err := symlinkReachesGit(dir, path)
 			if err != nil {
 				return err
 			}
-			lexical := target
-			if !filepath.IsAbs(lexical) {
-				lexical = filepath.Join(filepath.Dir(path), lexical)
-			}
-			if targetTouchesGit(dir, lexical) {
-				return fmt.Errorf("plugin content link %s reaches Git metadata", relForDiagnostic(dir, path))
-			}
-			if resolved, err := filepath.EvalSymlinks(path); err == nil && targetTouchesGit(resolvedOrSelf(dir), resolved) {
+			if reachesGit {
 				return fmt.Errorf("plugin content link %s reaches Git metadata", relForDiagnostic(dir, path))
 			}
 		}
 		return nil
 	})
+}
+
+func symlinkReachesGit(root, path string) (bool, error) {
+	target, err := os.Readlink(path)
+	if err != nil {
+		return false, err
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	if targetTouchesGit(root, target) {
+		return true, nil
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	return err == nil && targetTouchesGit(resolvedOrSelf(root), resolved), nil
 }
 
 func resolvedOrSelf(path string) string {
@@ -126,7 +131,7 @@ const (
 	// reclaimed.
 	publishScratchPrefix       = ".publish-"
 	publishScratchMarkerSuffix = ".publish-owned"
-	abandonedPublishScratch    = time.Hour
+	abandonedPublishScratch    = abandonedStaging
 )
 
 func (m *Manager) managedGitArchiveDir(rootName, rel string) string {
@@ -182,23 +187,27 @@ func copyEntryExact(src, dst string) error {
 		}
 		return os.Symlink(link, dst)
 	case info.Mode().IsRegular():
-		in, err := os.Open(src)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = in.Close() }()
-		out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
-		if err != nil {
-			return err
-		}
-		_, err = io.Copy(out, in)
-		if closeErr := out.Close(); err == nil {
-			err = closeErr
-		}
-		return err
+		return copyRegularFile(src, dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
 	default:
 		return fmt.Errorf("archivable metadata %s is not a regular file, directory, or symlink", filepath.Base(src))
 	}
+}
+
+func copyRegularFile(src, dst string, flags int, mode fs.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(dst, flags, mode)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, in)
+	if closeErr := out.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }
 
 // publishStaged renames an audited staging tree into place. When staging and
@@ -300,20 +309,7 @@ func copyTreeExact(src, dst string) error {
 			}
 			return os.Symlink(link, target)
 		case info.Mode().IsRegular():
-			in, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			defer func() { _ = in.Close() }()
-			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
-			if err != nil {
-				return err
-			}
-			_, err = io.Copy(out, in)
-			if closeErr := out.Close(); err == nil {
-				err = closeErr
-			}
-			return err
+			return copyRegularFile(path, target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
 		default:
 			return fmt.Errorf("prepared content %s is not a regular file, directory, or symlink", relForDiagnostic(src, path))
 		}

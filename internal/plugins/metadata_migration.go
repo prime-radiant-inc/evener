@@ -76,7 +76,7 @@ func preservesManagedNamespace(root managedRoot, entry string) bool {
 	if err != nil {
 		return true
 	}
-	return len(strings.Split(rel, string(filepath.Separator))) <= 2
+	return strings.Count(rel, string(filepath.Separator)) <= 1
 }
 
 // collectGitEntries returns every entry named .git under root without following
@@ -156,10 +156,11 @@ func (m *Manager) unsafeGitEntry(entry string) bool {
 	}
 	line, _, _ := strings.Cut(string(data), "\n")
 	const prefix = "gitdir:"
-	if !strings.HasPrefix(line, prefix) {
+	target, ok := strings.CutPrefix(line, prefix)
+	if !ok {
 		return false
 	}
-	target := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+	target = strings.TrimSpace(target)
 	if target == "" {
 		return false
 	}

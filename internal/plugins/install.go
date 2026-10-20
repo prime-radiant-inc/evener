@@ -120,6 +120,14 @@ func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string
 		_ = installRemoveAll(staging)
 		return "", err
 	}
+	if (isGitName(marketplace) || isGitName(plugin)) && m.managedContentClean() {
+		// Invalidate before even creating the namespace. If this write fails,
+		// preserve the content that the previous clean marker describes.
+		if err := m.writeManagedContentState(managedContentUnverified); err != nil {
+			_ = installRemoveAll(staging)
+			return "", err
+		}
+	}
 	parent := filepath.Join(m.cacheDir(), marketplace, plugin)
 	if err := installMkdirAll(parent, 0o755); err != nil {
 		_ = installRemoveAll(staging)
@@ -153,14 +161,6 @@ func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string
 	if err := publishStaged(staging, final, installRename); err != nil {
 		_ = installRemoveAll(staging)
 		return "", err
-	}
-	if isGitName(marketplace) || isGitName(plugin) {
-		// A marketplace or plugin legitimately named .git is a namespace the
-		// whole-store audit treats as unverified. Do not let a clean marker
-		// outlive that publication.
-		if err := m.writeManagedContentState(managedContentUnverified); err != nil {
-			_, _ = fmt.Fprintf(m.stderr(), "warning: recording managed plugin content state failed: %v\n", err)
-		}
 	}
 	return final, nil
 }

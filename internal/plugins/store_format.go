@@ -76,10 +76,10 @@ func (m *Manager) ensureManagedContentMigrated(ctx context.Context) {
 		return
 	}
 	problems := m.migrateManagedGitMetadata()
-	clean, auditProblems := m.auditManagedContentRoots()
+	_, auditProblems := m.auditManagedContentRoots()
 	problems = append(problems, auditProblems...)
 	state := managedContentClean
-	if len(problems) > 0 || !clean {
+	if len(problems) > 0 {
 		state = managedContentUnverified
 	}
 	if err := m.writeManagedContentState(state); err != nil {

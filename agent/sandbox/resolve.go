@@ -542,10 +542,12 @@ func (rp ResolvedPolicy) ManagedWalkExempt(path string) bool {
 	if !rp.ManagedContentClean {
 		return false
 	}
-	path = filepath.Clean(path)
-	for _, root := range slices.Concat(rp.ManagedContentRoots, rp.managedContentRootsResolved) {
-		if root != "" && filepath.Clean(root) == path {
-			return true
+	path = StripDataVolumeAlias(filepath.Clean(path))
+	for _, roots := range [][]string{rp.ManagedContentRoots, rp.managedContentRootsResolved} {
+		for _, root := range roots {
+			if root != "" && StripDataVolumeAlias(filepath.Clean(root)) == path {
+				return true
+			}
 		}
 	}
 	return false

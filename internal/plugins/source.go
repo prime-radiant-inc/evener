@@ -213,18 +213,11 @@ func copyTree(src, dst string) error {
 // names a .git component. Ordinary links keep copyTree's existing dereference
 // behavior; only links into Git metadata are refused.
 func refuseGitSymlink(src, path string) error {
-	target, err := os.Readlink(path)
+	reachesGit, err := symlinkReachesGit(src, path)
 	if err != nil {
 		return err
 	}
-	lexical := target
-	if !filepath.IsAbs(lexical) {
-		lexical = filepath.Join(filepath.Dir(path), lexical)
-	}
-	if targetTouchesGit(src, lexical) {
-		return gitSymlinkError(src, path)
-	}
-	if resolved, err := filepath.EvalSymlinks(path); err == nil && targetTouchesGit(resolvedOrSelf(src), resolved) {
+	if reachesGit {
 		return gitSymlinkError(src, path)
 	}
 	return nil
