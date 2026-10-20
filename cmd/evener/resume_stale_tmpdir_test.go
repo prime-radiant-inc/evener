@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,10 +45,12 @@ func TestRunResumeSucceedsWhenInheritedTMPDIRIsGone(t *testing.T) {
 	deps.stdinMode = func() (os.FileMode, error) { return os.ModeCharDevice, nil }
 	exitCode := -1
 	deps.exit = func(code int) { exitCode = code }
-	deps.run = runWithScratchReclaim
 
 	mainWithDeps(deps)
 	if exitCode != -1 {
 		t.Fatalf("resume exited %d: a resume must not fail because an inherited TMPDIR is gone\nstderr:\n%s", exitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "[resumed] session "+sessionID) {
+		t.Fatalf("resume produced no restored session; stderr:\n%s", stderr.String())
 	}
 }

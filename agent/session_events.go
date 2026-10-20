@@ -174,10 +174,6 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 		s.emit(events.EventWarning, w)
 	}
 	s.pendingTranscriptWarnings = nil
-	for _, w := range s.pendingArtifactStoreWarnings {
-		s.emit(events.EventWarning, w)
-	}
-	s.pendingArtifactStoreWarnings = nil
 	for _, data := range s.pendingPluginEvents {
 		s.emit(events.EventPluginLoaded, data)
 	}

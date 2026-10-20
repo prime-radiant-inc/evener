@@ -18,36 +18,37 @@ type artifactStore interface {
 
 var _ artifactStore = (*artifactstore.Store)(nil)
 
-// sessionArtifactStoreBasesFn lists the bases tried in order for the store that
-// retains full tool output. The process temp dir comes first and the user cache
-// dir second, the same walk session scratch makes (sandbox.sessionScratchBase):
-// a temp dir that outlived its directory — an inherited TMPDIR pointing at a
-// deleted session container — must not cost the session its retention for its
-// whole life.
-var sessionArtifactStoreBasesFn = func() []string {
-	bases := []string{""}
-	if cache, err := os.UserCacheDir(); err == nil {
-		if info, statErr := os.Stat(cache); statErr == nil && info.IsDir() {
-			bases = append(bases, cache)
-		}
-	}
-	return bases
-}
+// sessionArtifactStoreCacheDir is the second base the store falls back to, the
+// same way session scratch does (sandbox.sessionScratchBase). It is a seam only
+// so a test can name it; production reads the user cache dir.
+var sessionArtifactStoreCacheDir = os.UserCacheDir
 
-var sessionArtifactStoreFactory = func() (artifactStore, error) {
-	var failures []error
-	for _, base := range sessionArtifactStoreBasesFn() {
-		store, err := artifactstore.New(base)
-		if err == nil {
-			return store, nil
-		}
-		failures = append(failures, err)
-	}
-	return nil, errors.Join(failures...)
-}
-
+// newSessionArtifactStore creates the store that retains full tool output. The
+// process temp dir is tried first and the user cache dir only after it fails,
+// so a working temp dir costs one call and no cache-directory filesystem probe
+// (which session scratch likewise refuses to make on the fast path). The live
+// reason the temp dir fails is an inherited TMPDIR pointing at a session
+// container that has been deleted.
 func newSessionArtifactStore() (artifactStore, error) {
 	return sessionArtifactStoreFactory()
+}
+
+// sessionArtifactStoreFactory is the seam a test replaces to make store
+// creation fail. Production resolves the bases itself.
+var sessionArtifactStoreFactory = func() (artifactStore, error) {
+	store, tempErr := artifactstore.New("")
+	if tempErr == nil {
+		return store, nil
+	}
+	cache, cacheErr := sessionArtifactStoreCacheDir()
+	if cacheErr != nil {
+		return nil, errors.Join(tempErr, cacheErr)
+	}
+	store, cacheErr = artifactstore.New(cache)
+	if cacheErr != nil {
+		return nil, errors.Join(tempErr, cacheErr)
+	}
+	return store, nil
 }
 
 // resolveArtifactStore resolves the store a session retains full tool output
@@ -74,7 +75,7 @@ func (s *Session) bufferArtifactStoreWarning(err error) {
 	if err == nil {
 		return
 	}
-	s.pendingArtifactStoreWarnings = append(s.pendingArtifactStoreWarnings, events.WarningData{
+	s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
 		Message: fmt.Sprintf("full tool output will not be retained: %v", err),
 	})
 }
@@ -83,11 +84,9 @@ func (s *Session) retainToolArtifact(res *tool.ExecResult) string {
 	if !res.Truncated {
 		return ""
 	}
-	if s.artifactStore == nil {
-		res.Output += "\n[retention_failed: full output could not be retained]"
-		return ""
-	}
-	ref, err := s.artifactStore.Put([]byte(res.RecoverableOutput))
+	// A nil store is the degraded session: its retention is unavailable for the
+	// same reason a failed Put is, so both take the same tail.
+	ref, err := s.putArtifact(res.RecoverableOutput)
 	if err != nil {
 		res.Output += "\n[retention_failed: full output could not be retained]"
 		return ""
@@ -95,4 +94,13 @@ func (s *Session) retainToolArtifact(res *tool.ExecResult) string {
 	res.Output += "\nFull output: " + ref +
 		"\nRead with: read_transcript(transcript_ref=\"" + ref + "\")"
 	return ref
+}
+
+// putArtifact stores recoverable output, reporting a degraded session (no
+// store) as the same failure a missing store produces on write.
+func (s *Session) putArtifact(data string) (string, error) {
+	if s.artifactStore == nil {
+		return "", artifactstore.ErrExpired
+	}
+	return s.artifactStore.Put([]byte(data))
 }

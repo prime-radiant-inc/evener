@@ -33,7 +33,10 @@ func TestRestoreSurvivesArtifactStoreCreationFailure(t *testing.T) {
 	sess.Close()
 }
 
-func TestFreshSessionSurvivesArtifactStoreCreationFailure(t *testing.T) {
+// The notice must reach the client, and it must arrive after SESSION_START:
+// a warning emitted during construction is lost for good. A fresh session
+// proves the same degradation path the restore uses.
+func TestArtifactStoreCreationFailureWarnsAfterSessionStart(t *testing.T) {
 	installArtifactStoreFactory(t, func() (artifactStore, error) {
 		return nil, errors.New("temp dir is gone")
 	})
@@ -41,20 +44,10 @@ func TestFreshSessionSurvivesArtifactStoreCreationFailure(t *testing.T) {
 	if sess.artifactStore != nil {
 		t.Fatal("session kept an artifact store the factory did not return")
 	}
-	sess.Close()
-}
-
-// The notice must reach the client, and it must arrive after SESSION_START:
-// a warning emitted during construction is lost for good.
-func TestArtifactStoreCreationFailureWarnsAfterSessionStart(t *testing.T) {
-	installArtifactStoreFactory(t, func() (artifactStore, error) {
-		return nil, errors.New("temp dir is gone")
-	})
-	sess := newArtifactTestRoot(t)
-	sess.Close()
+	evs := transcriptWarningOrderingDrainAll(t, sess)
 
 	sessionStartIdx, warningIdx := -1, -1
-	for i, ev := range drainArtifactSessionEvents(sess) {
+	for i, ev := range evs {
 		switch ev.Kind {
 		case events.EventSessionStart:
 			if sessionStartIdx == -1 {
@@ -76,15 +69,4 @@ func TestArtifactStoreCreationFailureWarnsAfterSessionStart(t *testing.T) {
 	if warningIdx <= sessionStartIdx {
 		t.Fatalf("warning (index %d) arrived before SESSION_START (index %d)", warningIdx, sessionStartIdx)
 	}
-}
-
-// drainArtifactSessionEvents closes sess and returns its stream in emission
-// order.
-func drainArtifactSessionEvents(sess *Session) []events.SessionEvent {
-	sess.Close()
-	var evs []events.SessionEvent
-	for ev := range sess.Events() {
-		evs = append(evs, ev)
-	}
-	return evs
 }

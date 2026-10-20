@@ -22,7 +22,7 @@ func TestMainWithDepsDropsDeadTMPDIRBeforeDispatch(t *testing.T) {
 	deps.args = []string{"serve"}
 
 	mainWithDeps(deps)
-	if seen == dead {
-		t.Fatalf("dispatch saw the dead TMPDIR %q; the repair ran after dispatch", seen)
+	if seen != "" {
+		t.Fatalf("dispatch saw TMPDIR %q; a dead value must be removed, not just changed", seen)
 	}
 }
