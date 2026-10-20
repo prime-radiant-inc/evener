@@ -1372,6 +1372,26 @@ effort_values = ["low", "high"]
 	}
 }
 
+// An alias seeds its facts from the target, and the gateway's no-effort verdict
+// must travel with them. Without it the alias inherits toggle-only controls and
+// an empty ladder but not the flag that suppresses the level, so an OpenRouter
+// alias transmits an effort its provider rejects.
+func TestResolve_AliasInheritsNoEffortVerdict(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
+[providers.openrouter.models."target-model"]
+reasoning = true
+reasoning_controls = ["toggle"]
+effort_values = []
+effort_parameter_unsupported = true
+[providers.openrouter.models."alias-model"]
+alias_of = "target-model"
+`)))
+	res := mustResolve(t, r, "openrouter/alias-model")
+	if !BoolValue(res.Caps.EffortParameterUnsupported) {
+		t.Fatalf("EffortParameterUnsupported = %v, want the alias to inherit the target's verdict", res.Caps.EffortParameterUnsupported)
+	}
+}
+
 var provRe = regexp.MustCompile(`^((snapshot|cache|overlay|config)/(provider|row|glob:.+)|live|alias|derived)$`)
 
 func TestResolve_ProvenanceNamesRealLayers(t *testing.T) {

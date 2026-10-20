@@ -1023,8 +1023,9 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, aliasProtocol string, p
 		ContextWindow: target.Caps.ContextWindow, MaxInputTokens: target.Caps.MaxInputTokens, MaxOutputTokens: target.Caps.MaxOutputTokens, Tools: target.Caps.Tools,
 		StructuredOutput: target.Caps.StructuredOutput, Sampling: target.Caps.Sampling, Reasoning: target.Caps.Reasoning,
 		ReasoningControls: target.Caps.ReasoningControls, EffortValues: target.Caps.EffortValues,
-		DefaultEffort:   target.Caps.DefaultEffort,
-		InputModalities: target.Caps.InputModalities, KnowledgeCutoff: target.Caps.KnowledgeCutoff, Cost: target.Caps.Cost,
+		EffortParameterUnsupported: target.Caps.EffortParameterUnsupported,
+		DefaultEffort:              target.Caps.DefaultEffort,
+		InputModalities:            target.Caps.InputModalities, KnowledgeCutoff: target.Caps.KnowledgeCutoff, Cost: target.Caps.Cost,
 	}
 	// A thinking shape is a verdict of the target's protocol: a same-protocol
 	// alias inherits it settled, while a cross-protocol alias re-derives from

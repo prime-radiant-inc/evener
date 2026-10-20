@@ -288,6 +288,28 @@ func TestApplyGatewayFacts_EffortUnsupportedStillProvesReasoning(t *testing.T) {
 	}
 }
 
+// TestApplyGatewayFacts_EmptyMapProvesNothing pins the other side of that
+// evidence rule: a published map with no usable level says the model takes no
+// effort control, and is not proof the model reasons at all. Raising the
+// verdict for it would open a thinking-enable object on a non-reasoning model.
+func TestApplyGatewayFacts_EmptyMapProvesNothing(t *testing.T) {
+	no := false
+	for name, levels := range map[string]map[string]string{
+		"empty":   {},
+		"all-nil": {"low": "", "high": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			caps := registry.Caps{}
+			ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{}, GatewayClientCompat{
+				Pi: &GatewayPiCompat{SupportsReasoningEffort: &no, ThinkingLevelMap: levels},
+			})
+			if caps.Reasoning != nil {
+				t.Fatalf("Reasoning = %v, want the inferred verdict left alone", *caps.Reasoning)
+			}
+		})
+	}
+}
+
 func TestApplyGatewayFacts_Reasoning(t *testing.T) {
 	yes, no := true, false
 	levels := func(m map[string]string) GatewayClientCompat {

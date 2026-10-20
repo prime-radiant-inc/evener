@@ -107,8 +107,10 @@ func applyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, c
 		// The map still proves the model reasons, even though its ladder is
 		// not published. Without this, a row whose verdict was inferred false
 		// from a provider-wide parameter list loses the controls derivation
-		// just installed, and request shaping drops reasoning entirely.
-		if pi.ThinkingLevelMap != nil {
+		// just installed, and request shaping drops reasoning entirely. A
+		// published map with no usable level proves nothing, though: it says
+		// the model takes no effort, not that it reasons.
+		if hasUsableLevel(pi.ThinkingLevelMap) {
 			caps.Reasoning = new(true)
 		}
 		return
@@ -158,6 +160,18 @@ func gatewayEffortLadder(compat GatewayClientCompat) (ladder []string, published
 		ladder = []string{}
 	}
 	return ladder, true
+}
+
+// hasUsableLevel reports whether a thinking-level map names at least one level
+// evener can rank. It is the evidence that the model reasons, separate from
+// whether its ladder is publishable.
+func hasUsableLevel(levels map[string]string) bool {
+	for _, wire := range levels {
+		if llm.ReasoningEffortRank(wire) != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // gatewayInputModalities is the input modality list a /models row advertises:
