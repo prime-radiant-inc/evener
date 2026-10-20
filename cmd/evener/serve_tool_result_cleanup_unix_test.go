@@ -405,11 +405,11 @@ func waitForOwnedProcessesGone(shellPID int, shellIdentity string, descendantPID
 
 // terminateOwnedProcessTree stops the fixture's shell and its descendant without
 // removing the descendant's reaper first. The shell is asked to TERM first so its
-// trap can kill and wait the child; only after the grace does escalation SIGKILL
-// the descendant before the shell, leaving the still-parent shell to reap its
-// child instead of orphaning a zombie. Only a non-empty, matching recorded
-// identity is ever signaled; nothing is killed by name or process group. It
-// reports whether it signaled anything.
+// trap can kill and wait the child on the graceful path. If that does not settle
+// within the grace, escalation SIGKILLs the descendant first so it cannot outlive
+// its reaper, then the shell; any zombie that escalation leaves depends on the
+// host reaper. Only a non-empty, matching recorded identity is ever signaled;
+// nothing is killed by name or process group. It reports whether it signaled.
 func terminateOwnedProcessTree(shellPID int, shellIdentity string, descendantPID int, descendantIdentity string, grace time.Duration) bool {
 	signaled := signalOwnedProcess(shellPID, shellIdentity, syscall.SIGTERM)
 	if waitForOwnedProcessesGone(shellPID, shellIdentity, descendantPID, descendantIdentity, grace) {
@@ -559,22 +559,23 @@ func TestOwnedProcessSurvivesCountsAnUnreapedZombie(t *testing.T) {
 
 // TestTerminateOwnedProcessTreeReapsDescendant is the real fallback-teardown
 // reproducer: a shell with the fixture's TERM trap and a background child are
-// both alive when termination starts. SIGTERM to the shell first lets its trap
-// kill and wait the child; the old parent-first SIGKILL removed the child's
-// reaper and left it behind as an unreaped zombie. Both must be gone, not
-// zombies, after the helper returns.
+// both alive when termination starts. The trap writes a marker before it kills
+// the child, so the marker proves the shell received SIGTERM first and ran its
+// trap; the old parent-first SIGKILL bypasses the trap and leaves the marker
+// absent on any host. Both processes must also be gone, not zombies.
 func TestTerminateOwnedProcessTreeReapsDescendant(t *testing.T) {
 	dir := t.TempDir()
 	shellPIDPath := filepath.Join(dir, "shell.pid")
 	childPIDPath := filepath.Join(dir, "child.pid")
 	gatePath := filepath.Join(dir, "gate")
+	trapMarkerPath := filepath.Join(dir, "trap-ran")
 	script := fmt.Sprintf(
 		"sleep 600 & child=$!; "+
-			"trap 'kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 0' TERM; "+
+			"trap 'printf ran > %s; kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null; exit 0' TERM; "+
 			"printf '%%s' \"$child\" > %s; printf '%%s' $$ > %s; "+
 			"while [ ! -f %s ]; do sleep 0.01; done; "+
 			"kill \"$child\" 2>/dev/null; wait \"$child\" 2>/dev/null",
-		strconv.Quote(childPIDPath), strconv.Quote(shellPIDPath), strconv.Quote(gatePath))
+		strconv.Quote(trapMarkerPath), strconv.Quote(childPIDPath), strconv.Quote(shellPIDPath), strconv.Quote(gatePath))
 	cmd := exec.Command("sh", "-c", script)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start terminating shell: %v", err)
@@ -627,6 +628,9 @@ func TestTerminateOwnedProcessTreeReapsDescendant(t *testing.T) {
 	case <-waited:
 	case <-time.After(5 * time.Second):
 		t.Fatal("terminating shell was not reaped after termination")
+	}
+	if _, err := os.Stat(trapMarkerPath); err != nil {
+		t.Fatalf("the shell's TERM trap never ran (marker %s missing), so SIGTERM did not reach the shell first: %v", trapMarkerPath, err)
 	}
 	if _, _, ok := processSnapshot(shellPID); ok {
 		t.Fatalf("terminating shell %d still exists after termination", shellPID)
