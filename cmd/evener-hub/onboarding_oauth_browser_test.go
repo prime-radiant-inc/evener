@@ -1,0 +1,319 @@
+//go:build browserguard
+
+package hub
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/openai"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
+	"primeradiant.com/evener/rendezvous"
+)
+
+// oauthFixture scripts only the external OAuth issuer and the external model
+// endpoint. Device codes, polling, token exchange, persistence, registry
+// reload, AppWire, the browser UI and the daemon all stay production code.
+type oauthFixture struct {
+	mu         sync.Mutex
+	scenario   string
+	deviceHits int
+	polls      map[string]int
+	exchanges  int
+	refreshes  int
+	models     int
+	access     string
+	providerAt time.Time
+}
+
+func newOAuthFixture(scenario string) *oauthFixture {
+	return &oauthFixture{scenario: scenario, polls: map[string]int{}, access: "oauth-fixture-access-not-a-secret"}
+}
+
+func (f *oauthFixture) issuer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/accounts/deviceauth/usercode", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if f.scenario == "oauth-redirect" {
+			http.NotFound(w, r)
+			return
+		}
+		f.deviceHits++
+		code := fmt.Sprintf("ONBOARD-CODE-%d", f.deviceHits)
+		if f.scenario == "oauth-cancel" && f.deviceHits == 1 {
+			code = "ONBOARD-CANCEL"
+		}
+		if f.scenario == "oauth-endpoint-change" {
+			code = "ONBOARD-CHANGE"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"device_auth_id":"fixture-device-%d","user_code":%q,"interval":"1"}`, f.deviceHits, code)
+	})
+	mux.HandleFunc("/api/accounts/deviceauth/token", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			UserCode string `json:"user_code"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if strings.Contains(req.UserCode, "CANCEL") || strings.Contains(req.UserCode, "CHANGE") {
+			http.Error(w, "pending", http.StatusForbidden)
+			return
+		}
+		f.polls[req.UserCode]++
+		if f.polls[req.UserCode] == 1 {
+			http.Error(w, "pending", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"authorization_code":"fixture-authorization-code","code_challenge":"fixture-challenge","code_verifier":"fixture-verifier"}`)
+	})
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch r.Form.Get("grant_type") {
+		case "authorization_code":
+			f.exchanges++
+		case "refresh_token":
+			f.refreshes++
+		default:
+			http.Error(w, "unexpected grant", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"access_token":%q,"refresh_token":"oauth-fixture-refresh-not-a-secret","id_token":%q,"token_type":"Bearer","scope":"openid profile email","expires_in":3600}`,
+			f.access, hubAuthTestJWT(t, map[string]any{"email": "onboarding-oauth@example.invalid", "sub": "fixture-account"}))
+	})
+	mux.HandleFunc("/oauth/authorize", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "fixture authorization page")
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+func (f *oauthFixture) provider(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if strings.HasPrefix(r.URL.Path, "/unavailable") {
+			http.Error(w, "fixture local discovery unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if !strings.HasPrefix(r.URL.Path, "/v1/models") {
+			t.Errorf("unexpected provider route %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		if got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); got != f.access {
+			t.Errorf("model list carried access %q, want the OAuth record's pointer", got)
+		}
+		f.models++
+		f.providerAt = time.Now()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"models":[{"slug":"gpt-fixture-first"},{"slug":"gpt-fixture-chosen"}]}`)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func (f *oauthFixture) counts() (device, exchanges, refreshes, models int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.deviceHits, f.exchanges, f.refreshes, f.models
+}
+
+// TestOnboardingOAuthBrowser drives both production OAuth continuations
+// (device polling and browser redirect), explicit cancellation with no late
+// completion, and a real instance endpoint edit refused while sign-in is
+// pending. The only scripted services are the issuer and the model endpoint.
+func TestOnboardingOAuthBrowser(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires Chrome and production frontend")
+	}
+	for _, scenario := range []string{"oauth-device", "oauth-redirect", "oauth-cancel", "oauth-endpoint-change"} {
+		t.Run(scenario, func(t *testing.T) {
+			guard := newOnboardingGuardEnv(t)
+			fixture := newOAuthFixture(scenario)
+			issuer := fixture.issuer(t)
+			provider := fixture.provider(t)
+			config := fmt.Sprintf("[providers.\"openai-codex\"]\nbase_url = %q\ndefault_model = \"gpt-fixture-chosen\"\n", provider.URL+"/v1")
+			if err := os.WriteFile(os.Getenv("EVENER_PROVIDERS_CONFIG"), []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("OLLAMA_BASE_URL", provider.URL+"/unavailable")
+			t.Setenv("EVENER_OFFLINE", "1")
+			hub := newOnboardingGuardHub(t, guard, func(c *hubAuthController) {
+				c.cfg = openai.Config{IssuerBaseURL: issuer.URL}
+				c.client = issuer.Client()
+			})
+			if inst, ok := hub.reg.Get().Instance("openai-codex"); !ok || inst.DefaultModel != "gpt-fixture-chosen" {
+				t.Fatalf("fixture instance default = %q ok=%v, want the configured non-first default", inst.DefaultModel, ok)
+			}
+			// The checkpoint is the fixture channel to the real Go owners. It
+			// asserts the pre-Start absence of sessions/generations and, at the
+			// named stage, performs a real instance edit or verifies that a
+			// cancelled/changed flow left no completion behind.
+			var stageMu sync.Mutex
+			stages := map[string]bool{}
+			checkpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				stage := r.URL.Query().Get("stage")
+				entries, err := rendezvous.List(guard.run)
+				if err != nil {
+					http.Error(w, err.Error(), 500)
+					return
+				}
+				_, exchanges, _, models := fixture.counts()
+				if len(entries) != 0 {
+					http.Error(w, "session before Start", 500)
+					return
+				}
+				switch stage {
+				case "oauth-pending":
+					stageMu.Lock()
+					stages[stage] = true
+					stageMu.Unlock()
+				case "oauth-cancelled":
+					if exchanges != 0 || models != 0 {
+						http.Error(w, fmt.Sprintf("cancelled flow completed: exchanges=%d models=%d", exchanges, models), 500)
+						return
+					}
+					stageMu.Lock()
+					stages[stage] = true
+					stageMu.Unlock()
+				case "oauth-endpoint-change":
+					if err := editOnboardingEndpoint(r.Context(), hub, guard, provider.URL+"/moved/v1"); err != nil {
+						http.Error(w, err.Error(), 500)
+						return
+					}
+				case "oauth-endpoint-changed":
+					if exchanges != 0 || models != 0 {
+						http.Error(w, fmt.Sprintf("changed flow completed: exchanges=%d models=%d", exchanges, models), 500)
+						return
+					}
+					stageMu.Lock()
+					stages[stage] = true
+					stageMu.Unlock()
+				}
+				_ = json.NewEncoder(w).Encode(map[string]int{"checks": models, "sessions": len(entries), "generations": 0})
+			}))
+			defer checkpoint.Close()
+
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+			defer cancel()
+			args := []string{
+				"scripts/onboardingguard/run.mjs",
+				"--url", hubedge.AuthURLFor(hub.server.URL, guard.token),
+				"--artifact-dir", guard.root,
+				"--work", guard.work,
+				"--checkpoint", checkpoint.URL,
+				"--scenario", scenario,
+				"--adopted-model", "openai-codex/gpt-fixture-chosen",
+			}
+			if guard.recordVideo != "" {
+				args = append(args, "--record-video", guard.recordVideo)
+			}
+			if guard.evidenceDir != "" {
+				args = append(args, "--evidence-dir", guard.evidenceDir)
+			}
+			cmd := exec.CommandContext(ctx, "node", args...)
+			cmd.Dir = filepath.Join(guard.repo, "cmd/evener-hub/frontend")
+			cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
+			cmd.WaitDelay = 15 * time.Second
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("browser %s: %v\n%s", scenario, err, out)
+			}
+			t.Logf("browser: %s", out)
+
+			switch scenario {
+			case "oauth-device", "oauth-redirect":
+				record, err := openai.LoadAuth(hub.state, "openai-codex")
+				if err != nil {
+					t.Fatalf("saved OAuth record: %v", err)
+				}
+				if record.AccessToken != fixture.access || record.Email != "onboarding-oauth@example.invalid" {
+					t.Fatalf("OAuth record = access %q email %q, want the fixture exchange result", record.AccessToken, record.Email)
+				}
+				_, exchanges, _, models := fixture.counts()
+				if exchanges != 1 || models == 0 {
+					t.Fatalf("exchanges=%d model lists=%d, want one real token exchange and model-list access", exchanges, models)
+				}
+			case "oauth-cancel":
+				device, exchanges, _, models := fixture.counts()
+				if device < 2 || exchanges != 1 {
+					t.Fatalf("device starts=%d exchanges=%d, want a cancelled first flow and one recovering flow", device, exchanges)
+				}
+				if models == 0 {
+					t.Fatal("recovering sign-in never checked the model list")
+				}
+			case "oauth-endpoint-change":
+				_, exchanges, _, models := fixture.counts()
+				if exchanges != 0 || models != 0 {
+					t.Fatalf("changed flow completed: exchanges=%d models=%d", exchanges, models)
+				}
+			}
+			stageMu.Lock()
+			defer stageMu.Unlock()
+			for _, required := range requiredStages(scenario) {
+				if !stages[required] {
+					t.Errorf("checkpoint stage %q never observed", required)
+				}
+			}
+		})
+	}
+}
+
+func requiredStages(scenario string) []string {
+	switch scenario {
+	case "oauth-cancel":
+		return []string{"oauth-pending", "oauth-cancelled"}
+	case "oauth-endpoint-change":
+		return []string{"oauth-pending", "oauth-endpoint-changed"}
+	case "oauth-device":
+		return []string{"oauth-pending"}
+	}
+	return nil
+}
+
+// editOnboardingEndpoint performs the real AppWire instance edit the browser
+// sees: a second client re-points the instance while sign-in is pending, the
+// hub rewrites providers.toml and reloads, and its auth/updated broadcast
+// refreshes the browser's listing.
+func editOnboardingEndpoint(ctx context.Context, hub *onboardingGuardHub, guard *onboardingGuardEnv, baseURL string) error {
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+guard.token)
+	transport, err := appwire.DialWebSocketWithHeaders(ctx, "ws"+strings.TrimPrefix(hub.server.URL, "http")+"/rpc", http.DefaultClient, header)
+	if err != nil {
+		return fmt.Errorf("dial rpc: %w", err)
+	}
+	defer transport.Close()
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		return fmt.Errorf("initialize: %w", err)
+	}
+	var out appwire.InstanceListResponse
+	return client.Request(ctx, appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{
+		Name:    "openai-codex",
+		BaseURL: baseURL,
+	}, &out)
+}
