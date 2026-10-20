@@ -244,6 +244,32 @@ func TestListModelsGatewayEffortUnsupportedIsToggleOnly(t *testing.T) {
 	}
 }
 
+// TestApplyThinkingFormat_ToggleOnlyOpenRouterSendsNoEffort pins the OpenRouter
+// dialect's vouch-gate exception against the toggle-only verdict. That branch
+// passes the requested level through unconditionally because OpenRouter
+// normalizes it, but a model the gateway says takes no effort parameter must
+// still get the enable object instead of a level it does not accept.
+func TestApplyThinkingFormat_ToggleOnlyOpenRouterSendsNoEffort(t *testing.T) {
+	high, on := "high", true
+	format := "openrouter"
+	body := map[string]any{}
+	applyThinkingFormat(body, llm.Request{ReasoningEffort: &high}, registry.Caps{
+		Reasoning:         &on,
+		ReasoningControls: []string{"toggle"},
+		ThinkingFormat:    &format,
+	})
+	r, _ := body["reasoning"].(map[string]any)
+	if r == nil {
+		t.Fatalf("body = %v, want a reasoning object", body)
+	}
+	if _, has := r["effort"]; has {
+		t.Fatalf("reasoning = %v, a toggle-only row must send no effort", r)
+	}
+	if r["enabled"] != true {
+		t.Fatalf("reasoning = %v, want the enable object", r)
+	}
+}
+
 // TestListModelsPrefersContextLengthOverContextWindow keeps OpenRouter's
 // ordering: context_length wins when both spellings are present.
 func TestListModelsPrefersContextLengthOverContextWindow(t *testing.T) {
