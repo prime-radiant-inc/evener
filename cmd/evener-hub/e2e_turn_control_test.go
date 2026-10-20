@@ -578,11 +578,16 @@ func repoRootForTestMain() string {
 	return root
 }
 
-// prebuildLiveStackBinaries does the build liveStackBinaries would do lazily,
-// so it lands before any test's clock starts. Called from TestMain.
-func prebuildLiveStackBinaries(repoRoot string) error {
+// warmLiveStackBinaries does the build liveStackBinaries would do lazily, so it
+// lands before any test's clock starts. Called from TestMain.
+//
+// A process with no resolvable repo root warms nothing and reports no error:
+// that is a helper running from somewhere other than the checkout (the browser
+// guard launches one through the shell from a session workspace), and it starts
+// no live stack. Failing there killed a helper that only needed to write bytes.
+func warmLiveStackBinaries(repoRoot string) error {
 	if repoRoot == "" {
-		return errors.New("resolve repo root")
+		return nil
 	}
 	liveStackBinariesBuild(repoRoot)
 	return liveStackBuild.err

@@ -28,22 +28,20 @@ var testEnv *hubtestenv.Env
 
 const detachHelperRunDirEnv = "EVENER_HUB_DETACH_HELPER_RUN_DIR"
 
-// isTestChildProcess reports whether this process is a test re-invoked as a
-// child helper rather than the suite's own run. Each child case runs one
-// focused test in a controlled environment and starts no live stack, so
-// TestMain's warm builds would only be duplicated work.
-func isTestChildProcess() bool {
-	for _, key := range []string{
-		hostDeployEnvironmentChildEnv,
-		detachHelperRunDirEnv,
-		hostSafetyChildCaseEnv,
-	} {
-		if os.Getenv(key) != "" {
-			return true
-		}
-	}
-	return false
-}
+// liveStackWarmEnv marks a process whose suite has already warmed the
+// live-stack binaries. The parent sets it in its own environment, so every
+// descendant that inherits the environment (however a test launches it — the
+// shell, a daemon, a fixture) can tell that the build is done and must not
+// repeat it.
+//
+// A name list of helper variables was the obvious first cut and it failed
+// twice: TestHostDeployFilesystemSafety re-invokes this binary 16 times, and
+// TestBackgroundJobsBrowser launches its paging producer through the real
+// shell from a session workspace, which inherits no test variable at all. A
+// child that ran the warm build from there resolved the repo root to nothing
+// and died before producing a byte, so the browser journey waited out its
+// tripwire.
+const liveStackWarmEnv = "EVENER_HUB_LIVE_STACK_WARM"
 
 func TestMain(m *testing.M) {
 	// The remote startup probe must observe its supplied environment before
@@ -99,17 +97,17 @@ func TestMain(m *testing.M) {
 	// per-test ceiling. That test builds a stack per subtest, so the cost
 	// landed entirely on its first one.
 	//
-	// Only the parent process warms them. Tests that re-invoke this binary as
-	// a child helper (TestHostDeployFilesystemSafety runs 16 of them) must not
-	// each pay for the build: that would turn one build into seventeen. A
-	// child starts no live stack, so it needs nothing here.
-	if !isTestChildProcess() {
-		if err := prebuildLiveStackBinaries(repoRootForTestMain()); err != nil {
+	// The parent warms once and marks the environment so descendants skip it.
+	// The build also refuses where no repo root resolves, which is what a
+	// helper running from a session workspace sees.
+	if os.Getenv(liveStackWarmEnv) == "" {
+		if err := warmLiveStackBinaries(repoRootForTestMain()); err != nil {
 			fmt.Fprintf(os.Stderr, "evener-hub TestMain: warm live-stack binaries: %v\n", err)
 			testEnv.Discard()
 			_ = hostTemp.Discard()
 			os.Exit(1)
 		}
+		_ = os.Setenv(liveStackWarmEnv, "1")
 	}
 
 	code := m.Run()
