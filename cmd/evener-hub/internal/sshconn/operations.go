@@ -167,11 +167,17 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 	running, runningKnown := m.probeRunningHub(restartCtx, host)
 	version, pin := expectedServedBuild(facts, m.opts.controllerVersion())
 	pending = m.pendingRestart(host.Name)
+	completed := runningKnown && pending.completedBy(running, facts)
 	if pending.active() {
 		version, pin = pending.expectedVersion, pending.expectedGitSHA
 		running = pending.restartPredecessor(running)
 	}
 	result := RestartResult{TargetVersion: version, ReplacedStartedAt: running.startedAt}
+	if !completed {
+		if err := pending.validateExecutable(host.Name, facts); err != nil {
+			return result, err
+		}
+	}
 	started := pending.start
 	if pending.start {
 		// A failed owned startup is not a new replacement request. If it is
@@ -186,6 +192,8 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 			}
 			err = m.recoverRestartPending(restartCtx, host, pending)
 		}
+	} else if completed {
+		m.clearPendingRestart(host.Name)
 	} else {
 		started, err = m.restartHubWithStartProof(restartCtx, host, facts, version, pin, running)
 	}

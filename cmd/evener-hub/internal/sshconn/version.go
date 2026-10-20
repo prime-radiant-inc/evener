@@ -584,6 +584,7 @@ func (m *Manager) restartHubWithStartProof(ctx context.Context, host hostreg.Hos
 		return false, err
 	}
 	sup := set.live
+	starting := false
 	if sup.kind == supervisorNone && set.dormant.kind != supervisorNone {
 		// A loaded-but-inactive evener hub unit owns this host's hub: restarting
 		// it starts it, which is the repair for a host left with no listener after
@@ -596,10 +597,14 @@ func (m *Manager) restartHubWithStartProof(ctx context.Context, host hostreg.Hos
 		}
 		if cleared {
 			sup = set.dormant
+			starting = true
 		}
 	}
 	if sup.kind != supervisorNone {
 		if remote, ok := sup.restartRemote(facts.UID); ok {
+			if starting {
+				return true, m.startSupervisedPending(ctx, host, sup, remote, expectVersion, expectPin)
+			}
 			return false, m.restartSupervised(ctx, host, sup, remote, expectVersion, expectPin, replaced)
 		}
 		// The supervisor's restart command cannot be built safely, so fall through

@@ -176,6 +176,7 @@ func TestEnsureCompatibleLiveHubDoesNotSettlePendingRestart(t *testing.T) {
 			version, diskVersion, sha := "dev", "dev", "old-sha"
 			started := "2026-01-01T00:00:00Z"
 			present := true
+			restarts, writes := 0, 0
 			fr := deployRunner(t, func(int) ([]byte, error) { return launchContract(diskVersion), nil }, func(int) ([]byte, error) {
 				if !present {
 					return nil, errors.New("health unavailable")
@@ -184,8 +185,13 @@ func TestEnsureCompatibleLiveHubDoesNotSettlePendingRestart(t *testing.T) {
 			})
 			run := fr.runFn
 			fr.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
-				if strings.Contains(strings.Join(argv, " "), "systemctl restart") {
+				command := strings.Join(argv, " ")
+				if strings.Contains(command, "systemctl restart") {
+					restarts++
 					present = true
+				}
+				if strings.Contains(command, "cat >") {
+					writes++
 				}
 				return run(ctx, argv, stdin)
 			}
@@ -199,10 +205,12 @@ func TestEnsureCompatibleLiveHubDoesNotSettlePendingRestart(t *testing.T) {
 			if pending.command == "" || pending.start || len(*ids) != 1 {
 				t.Fatalf("pending=%+v journal=%v", pending, *ids)
 			}
+			wantErr := ErrRestart
 			switch mode {
 			case "disk-drift", "disk-drift-replay":
 				version, diskVersion, started = "other-build", "other-build", "2026-01-02T00:00:00Z"
 				present = mode != "disk-drift-replay"
+				wantErr = ErrVersionMismatch
 			case "wrong-commit":
 				started = "2026-01-02T00:00:00Z"
 			case "old-process":
@@ -210,9 +218,13 @@ func TestEnsureCompatibleLiveHubDoesNotSettlePendingRestart(t *testing.T) {
 			case "unknown-start":
 				sha, started = "deployed-sha", "0001-01-01T00:00:00Z"
 			}
+			beforeRestarts, beforeWrites, beforePresent := restarts, writes, present
 			ch, recoveryErr := m.Ensure(t.Context(), "alpha")
-			if !errors.Is(recoveryErr, ErrRestart) || ch != nil || m.pendingRestart("alpha").command == "" {
+			if !errors.Is(recoveryErr, wantErr) || ch != nil || m.pendingRestart("alpha") != pending {
 				t.Fatalf("unproved recovery: channel=%v error=%v pending=%+v", ch, recoveryErr, m.pendingRestart("alpha"))
+			}
+			if errors.Is(wantErr, ErrVersionMismatch) && (restarts != beforeRestarts || writes != beforeWrites || present != beforePresent) {
+				t.Fatalf("disk drift mutated remote: restarts=%d writes=%d present=%t", restarts, writes, present)
 			}
 			for _, id := range *ids {
 				record, ok := store.Record(id)
@@ -220,9 +232,13 @@ func TestEnsureCompatibleLiveHubDoesNotSettlePendingRestart(t *testing.T) {
 					t.Fatalf("unproved recovery settled journal: %+v", record)
 				}
 			}
-			version, sha, started = "dev", "deployed-sha", "2026-01-03T00:00:00Z"
+			version, sha, started, present = "dev", "deployed-sha", "2026-01-03T00:00:00Z", true
+			beforeRestarts, beforeWrites = restarts, writes
 			if ch, err := m.Ensure(t.Context(), "alpha"); err != nil || ch == nil || m.pendingRestart("alpha").command != "" {
 				t.Fatalf("proved replacement did not recover: channel=%v err=%v pending=%+v", ch, err, m.pendingRestart("alpha"))
+			}
+			if restarts != beforeRestarts || writes != beforeWrites {
+				t.Fatalf("completed target mutated remote: restarts=%d writes=%d", restarts, writes)
 			}
 		})
 	}

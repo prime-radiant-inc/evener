@@ -1899,10 +1899,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	}
 	// Settle against the intent recorded before the effect, never later disk
 	// facts. A changed file must not turn a failed deployment into a success.
-	if pending := m.pendingRestart(host.Name); pending.active() && runningKnown && running.version == pending.expectedVersion &&
-		!pending.needsDeployment(facts) &&
-		hubBuildSHAMatches(running.gitSHA, pending.expectedGitSHA) &&
-		(pending.start || running.differentProcessFrom(pending.replaced)) {
+	if pending := m.pendingRestart(host.Name); runningKnown && pending.completedBy(running, facts) {
 		// A hub already serving exactly the expected build resolves whatever an
 		// earlier restart or start left outstanding; do not launch a second hub
 		// over it. A recorded START has no predecessor to exclude — bootstrapHub
@@ -2059,6 +2056,9 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	if err := validateStartupContract(host.Name, facts); err != nil {
 		return nil, err
 	}
+	if err := m.pendingRestart(host.Name).validateExecutable(host.Name, facts); err != nil {
+		return nil, err
+	}
 	if restart && !deploy {
 		// A restart-only attempt (a stale running build, or a recorded
 		// pendingRestart) is its own durable operation (§6: "a reconnect with
@@ -2195,14 +2195,7 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 	}
 	if sup.kind != supervisorNone {
 		if remote, ok := sup.startRemote(facts.UID); ok {
-			// kickstart -k / start both bring the unit up; the recorded pending
-			// restart keeps the start recoverable if this attempt is interrupted.
-			m.setPendingStart(host.Name, remote, expectedVersion, expectedGitSHA)
-			out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
-			if runErr != nil && !sup.restartStatusIsAdvisory() {
-				return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
-			}
-			if err := m.waitStartedHealthy(ctx, host, expectedVersion, expectedGitSHA); err != nil {
+			if err := m.startSupervisedPending(ctx, host, sup, remote, expectedVersion, expectedGitSHA); err != nil {
 				return err
 			}
 			m.clearPendingRestart(host.Name)
@@ -2211,6 +2204,17 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 	}
 
 	return m.startBareHub(ctx, host, expectedVersion, expectedGitSHA)
+}
+
+// startSupervisedPending retains a startup on a proven-free port until its
+// caller finishes verification, including an operation's independent identity proof.
+func (m *Manager) startSupervisedPending(ctx context.Context, host hostreg.Host, sup supervisor, remote, expectedVersion, expectedGitSHA string) error {
+	m.setPendingStart(host.Name, remote, expectedVersion, expectedGitSHA)
+	out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
+	if runErr != nil && !sup.restartStatusIsAdvisory() {
+		return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
+	}
+	return m.waitStartedHealthy(ctx, host, expectedVersion, expectedGitSHA)
 }
 
 // startBareHub launches the resolved executable after its caller has proved
@@ -3527,6 +3531,22 @@ func (p pendingRestartState) active() bool {
 // Replay an unacknowledged write before settling or restarting its deployment.
 func (p pendingRestartState) needsDeployment(facts Preflight) bool {
 	return p.deployment && (!p.writeAcknowledged || facts.ExecutableMissing || facts.Version != p.expectedVersion)
+}
+
+func (p pendingRestartState) completedBy(running hubIdentity, facts Preflight) bool {
+	return p.active() && !p.needsDeployment(facts) && running.version == p.expectedVersion &&
+		hubBuildSHAMatches(running.gitSHA, p.expectedGitSHA) &&
+		(p.start || running.differentProcessFrom(p.replaced))
+}
+
+// A saved command has no authority to install its target or adopt different
+// bytes. Check fresh disk facts only after a completed effect could settle.
+func (p pendingRestartState) validateExecutable(name string, facts Preflight) error {
+	if p.active() && !p.deployment && facts.LaunchCheckKnown && facts.Version != "" &&
+		p.expectedVersion != "" && facts.Version != p.expectedVersion {
+		return fmt.Errorf("%w: host %q executable reports %q, pending launch requires %q; restore the requested executable before retrying", ErrVersionMismatch, name, facts.Version, p.expectedVersion)
+	}
+	return nil
 }
 
 // Before the first restart command, a fresh probe may fill an unknown predecessor.

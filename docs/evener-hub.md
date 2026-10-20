@@ -421,7 +421,9 @@ a pending restart, whether the predecessor is still running or has stopped.
 Refusal retains the pending intent so recovery can finish after the repair.
 A pending standalone start or Restart retains its original build and predecessor;
 enabling automatic deployment does not authorize replacing that intent with a
-controller-build installation.
+controller-build installation. A known different executable build refuses another
+start or restart until the requested executable is restored. An already-completed
+expected process can still settle without another command despite later disk drift.
 A verified restart retires the predecessor's bridge before reattaching and
 checking the replacement, even if the old SSH connection has not reported EOF.
 If the first health probe missed the predecessor, a later probe can identify it
@@ -430,6 +432,8 @@ predecessor identity across retries.
 If a supervisorless predecessor exits before a restart command is recorded,
 recovery proves the port is free and starts the saved target with the deployment's
 build expectations. An occupied or unprobeable port leaves the recovery pending.
+The same startup proof applies when a dormant systemd, systemd user, or launchd
+unit starts on a proven-free port; a live supervisor remains a replacement.
 When the predecessor is unknown, the public operation independently verifies the
 actual startup process after reattachment. A known predecessor still requires a
 different process start time. Retrying a recorded startup completes that effect
