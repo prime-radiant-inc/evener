@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -50,7 +49,9 @@ func TestRunResumeSucceedsWhenInheritedTMPDIRIsGone(t *testing.T) {
 	if exitCode != -1 {
 		t.Fatalf("resume exited %d: a resume must not fail because an inherited TMPDIR is gone\nstderr:\n%s", exitCode, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "[resumed] session "+sessionID) {
-		t.Fatalf("resume produced no restored session; stderr:\n%s", stderr.String())
+	// A completed restore opens the session's transcript; a failure to build
+	// one leaves the file absent.
+	if _, statErr := os.Stat(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")); statErr != nil {
+		t.Fatalf("resume restored no session (no transcript): %v\nstderr:\n%s", statErr, stderr.String())
 	}
 }

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -55,7 +54,7 @@ func TestArtifactStoreCreationFailureWarnsAfterSessionStart(t *testing.T) {
 			}
 		case events.EventWarning:
 			if w, ok := ev.Data.(events.WarningData); ok &&
-				strings.Contains(w.Message, "full tool output will not be retained") && warningIdx == -1 {
+				w.Code == "artifact_store_unavailable" && warningIdx == -1 {
 				warningIdx = i
 			}
 		}
@@ -64,7 +63,7 @@ func TestArtifactStoreCreationFailureWarnsAfterSessionStart(t *testing.T) {
 		t.Fatal("no SESSION_START on the stream")
 	}
 	if warningIdx == -1 {
-		t.Fatal("no warning that full tool output will not be retained")
+		t.Fatal("no artifact_store_unavailable warning on the stream")
 	}
 	if warningIdx <= sessionStartIdx {
 		t.Fatalf("warning (index %d) arrived before SESSION_START (index %d)", warningIdx, sessionStartIdx)

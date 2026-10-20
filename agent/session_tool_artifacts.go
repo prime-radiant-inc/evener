@@ -52,16 +52,23 @@ var sessionArtifactStoreFactory = func() (artifactStore, error) {
 }
 
 // resolveArtifactStore resolves the store a session retains full tool output
-// in, reporting whether the session owns what it returns. Full-output retention
-// is a convenience — retainToolArtifact already degrades to retention_failed
-// when a Put fails — so a store that cannot be created leaves the session
-// running without one, with the cause returned for its session-start warning.
-// The live cause is a TMPDIR that outlived the directory it named.
-func resolveArtifactStore(inherited artifactStore, inheritedSet bool) (store artifactStore, owns bool, err error) {
-	if inheritedSet {
-		// The parent runtime handed this session its store, possibly nil when
-		// the tree's retention is degraded. Either way the tree owns it.
-		return inherited, false, nil
+// in, reporting whether the session owns what it returns. A non-nil supplied
+// store is adopted as-is; an inherited nil means the tree's retention is
+// degraded, so no new store is created. Full-output retention is a
+// convenience — retainToolArtifact already degrades to retention_failed when a
+// Put fails — so a store that cannot be created leaves the session running
+// without one, with the cause returned for its session-start warning. The live
+// cause is a TMPDIR that outlived the directory it named.
+func resolveArtifactStore(supplied artifactStore, inherited bool) (store artifactStore, owns bool, err error) {
+	if supplied != nil {
+		// A supplied store always wins: the session adopts it without owning it,
+		// whether a caller configured it or a parent runtime handed it down.
+		return supplied, false, nil
+	}
+	if inherited {
+		// The parent handed this session its store and has none: the tree's
+		// retention is degraded, and the child must not mint its own.
+		return nil, false, nil
 	}
 	created, err := newSessionArtifactStore()
 	if err != nil {
@@ -79,6 +86,7 @@ func (s *Session) bufferArtifactStoreWarning(err error) {
 	}
 	s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
 		Message: fmt.Sprintf("full tool output will not be retained: %v", err),
+		Code:    "artifact_store_unavailable",
 	})
 }
 
