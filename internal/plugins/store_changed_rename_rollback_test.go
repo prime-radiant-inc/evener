@@ -16,25 +16,30 @@ import (
 // them so (#1800, ported from #1602's
 // TestAnIncompleteRenameRollbackReportsTheStoreChanged).
 //
-// The migration barrier's moveMarketplace has moved the clone to the new name
-// and fails moving the plugin cache; its own undo cannot put the clone back, so
-// no store file is ever written and only the rename site can report the state.
+// Automatic migration moves only the clone. A failed marketplace save and a
+// failed clone rollback must still report the surviving change to observers.
 func TestAnIncompleteRenameRollbackReportsTheStoreChanged(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
 	plantLegacyMarketplace(t, m, "a/b", "widget")
 	reports := recordStoreChanges(m)
-	orig := marketplaceRename
-	t.Cleanup(func() { marketplaceRename = orig })
+	orig, write := marketplaceRename, marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceRename, marketplaceAtomicWriteFile = orig, write })
+	marketplaceAtomicWriteFile = func(path string, data []byte, mode os.FileMode) error {
+		if filepath.Base(path) == marketplacesFileName {
+			return os.ErrPermission
+		}
+		return write(path, data, mode)
+	}
 	marketplaceRename = func(from, to string) error {
-		if to == filepath.Join(m.cacheDir(), "a-b") || from == m.marketplaceDir("a-b") {
+		if from == m.marketplaceDir("a-b") {
 			return errors.New("boom")
 		}
 		return orig(from, to)
 	}
 
 	if _, err := m.ListMarketplaces(context.Background()); err == nil {
-		t.Fatal("expected the cache move to fail")
+		t.Fatal("expected the save and clone rollback to fail")
 	}
 	if len(*reports) != 1 {
 		t.Fatalf("OnStoreChanged fired %d times, want 1: %+v", len(*reports), *reports)
@@ -133,57 +138,37 @@ func TestAnIncompleteCacheRenameRollbackReportsTheStoreChanged(t *testing.T) {
 	}
 }
 
-// movePluginCachesToNewName is the migration barrier's own cache-move helper,
-// for a rename whose clone and cache another marketplace owns. Its undo steps
-// carry the same contract as the rename site's: a cache restore that fails
-// leaves installed_plugins.json's install paths under the new name, so the hook
-// must report Plugins even though this helper writes no store file and returns
-// before saveRename (#1800).
-func TestMovePluginCachesToNewNameRollbackFailureReportsPlugins(t *testing.T) {
+// A blocked name used to move individual plugin caches out from under the
+// marketplace owning its parent. Automatic migration now leaves both trees
+// in place, so there can be no partial cache-move rollback to report.
+func TestAutomaticMigrationDoesNotMoveBlockedPluginCaches(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
-	const oldName, newName = "old", "new"
-	oldCache := filepath.Join(m.cacheDir(), oldName)
-	plugins := []string{"alpha", "beta"}
-	reg := Registry{Version: 2, Plugins: map[string][]InstallEntry{}}
-	owners := map[string]string{}
-	for _, plugin := range plugins {
-		install := filepath.Join(oldCache, plugin, "sha")
-		if err := os.MkdirAll(install, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		key := plugin + "@" + oldName
-		reg.Plugins[key] = []InstallEntry{{InstallPath: install}}
-		owners[key] = oldName
-	}
-
+	owner := plantLegacyMarketplace(t, m, "a", "owner")
+	alpha := plantLegacyMarketplace(t, m, "a/b", "alpha")
+	beta := plantLegacyMarketplace(t, m, "a/b", "beta")
+	trees := []migrationTree{snapshotMigrationTree(t, owner), snapshotMigrationTree(t, alpha), snapshotMigrationTree(t, beta)}
 	orig := marketplaceRename
 	t.Cleanup(func() { marketplaceRename = orig })
-	// pluginCacheMoves sorts the two caches, but drive the failure from call
-	// order rather than a plugin's name so the test cannot depend on it: the
-	// first move succeeds, the second fails, and the first's own undo then
-	// cannot put it back.
 	calls := 0
 	marketplaceRename = func(from, to string) error {
-		calls++
-		switch calls {
-		case 2:
-			// The second cache move fails, so the helper rolls the first back.
-			return errors.New("renaming plugin cache: boom")
-		case 3:
-			// The first cache's own undo then cannot put it back either.
-			return errors.New("restoring plugin cache: boom")
+		if pathWithinDir(m.cacheDir(), from) || pathWithinDir(m.cacheDir(), to) {
+			calls++
+			return os.ErrPermission
 		}
 		return orig(from, to)
 	}
-
-	if _, _, err := m.movePluginCachesToNewName(reg, oldName, newName, owners); err == nil {
-		t.Fatal("movePluginCachesToNewName = nil, want the failed cache move reported")
+	if _, err := m.Gc(context.Background()); err != nil || calls != 0 {
+		t.Fatalf("automatic migration err=%v, cache rename attempts=%d", err, calls)
 	}
-	if !m.pendingStoreChanged.Plugins {
-		t.Errorf("pendingStoreChanged = %+v, want Plugins true: a cache the registry names could not be put back", m.pendingStoreChanged)
+	for _, tree := range trees {
+		assertMigrationTree(t, tree)
 	}
-	if m.pendingStoreChanged.Marketplaces {
-		t.Errorf("pendingStoreChanged = %+v, want Marketplaces false: this helper writes no known_marketplaces.json", m.pendingStoreChanged)
+	reg, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installedAt(t, reg, "alpha@a-b").InstallPath != alpha || installedAt(t, reg, "beta@a-b").InstallPath != beta {
+		t.Fatal("blocked-name migration changed an install path")
 	}
 }

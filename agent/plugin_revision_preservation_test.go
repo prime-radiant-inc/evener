@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -42,6 +43,16 @@ func revisionFile(t *testing.T, root, name string, data []byte, mode os.FileMode
 
 func TestPluginRevisionSurvivesUpgradeGcAndRestore(t *testing.T) {
 	t.Parallel()
+	testPluginRevisionPreservation(t, false)
+}
+
+func TestPluginRevisionSurvivesAutomaticMigrationAndRestore(t *testing.T) {
+	t.Parallel()
+	testPluginRevisionPreservation(t, true)
+}
+
+func testPluginRevisionPreservation(t *testing.T, migrate bool) {
+	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git unavailable")
 	}
@@ -79,7 +90,53 @@ func TestPluginRevisionSurvivesUpgradeGcAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	marketplace := "acme"
+	if migrate {
+		// Reproduce an older installer's on-disk layout before any session
+		// selects A. Everything is real local Git and typed store metadata.
+		const legacy = "legacy@acme"
+		for _, dir := range []string{"marketplaces", "cache"} {
+			if err := os.Rename(filepath.Join(store.Root, dir, "acme"), filepath.Join(store.Root, dir, legacy)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		mk := plugins.Marketplaces{}
+		data, err := os.ReadFile(filepath.Join(store.Root, "known_marketplaces.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, &mk); err != nil {
+			t.Fatal(err)
+		}
+		ref := mk["acme"]
+		delete(mk, "acme")
+		ref.InstallLocation = filepath.Join(store.Root, "marketplaces", legacy)
+		mk[legacy] = ref
+		reg := plugins.Registry{}
+		data, err = os.ReadFile(filepath.Join(store.Root, "installed_plugins.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(data, &reg); err != nil {
+			t.Fatal(err)
+		}
+		first.InstallPath = filepath.Join(store.Root, "cache", legacy, "widget", filepath.Base(first.InstallPath))
+		delete(reg.Plugins, "widget@acme")
+		reg.Plugins["widget@"+legacy] = []plugins.InstallEntry{first}
+		for name, value := range map[string]any{"known_marketplaces.json": mk, "installed_plugins.json": reg} {
+			data, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			revisionFile(t, store.Root, name, data, 0o644)
+		}
+		marketplace = "legacy-acme"
+	}
 	oldPath := first.InstallPath
+	oldIdentity, err := os.Stat(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	profile := NewOpenAIProfile("gpt-5.2")
@@ -120,7 +177,7 @@ func TestPluginRevisionSurvivesUpgradeGcAndRestore(t *testing.T) {
 	revisionFile(t, pluginRepo, "resources/companion.bin", []byte("B-COMPANION"), 0o644)
 	revisionGit(t, pluginRepo, "add", ".")
 	revisionGit(t, pluginRepo, "commit", "-qm", "B")
-	second, err := store.Upgrade(ctx, "widget", "acme")
+	second, err := store.Upgrade(ctx, "widget", marketplace)
 	if err != nil || second.InstallPath == oldPath {
 		t.Fatalf("upgrade B: %+v, %v", second, err)
 	}
@@ -130,15 +187,21 @@ func TestPluginRevisionSurvivesUpgradeGcAndRestore(t *testing.T) {
 	revisionFile(t, pluginRepo, ".claude-plugin/plugin.json", []byte("{"), 0o644)
 	revisionGit(t, pluginRepo, "add", ".")
 	revisionGit(t, pluginRepo, "commit", "-qm", "invalid C")
-	if _, err := store.Install(ctx, "widget", "acme"); err == nil {
+	if _, err := store.Install(ctx, "widget", marketplace); err == nil {
 		t.Fatal("invalid new install unexpectedly succeeded")
 	}
+	// Restart the store owner before GC and session restore. No in-memory
+	// migration state may be needed to keep A's exact source useful.
+	store = plugins.NewManager(store.Root)
 	removed, err := store.Gc(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if slices.Contains(removed, oldPath) {
 		t.Fatal("GC removed a selected revision")
+	}
+	if identity, err := os.Stat(oldPath); err != nil || !os.SameFile(oldIdentity, identity) {
+		t.Fatalf("original A directory identity changed: %v", err)
 	}
 	for _, dir := range []string{oldPath, second.InstallPath} {
 		if _, err := os.Stat(filepath.Join(dir, "resources/companion.bin")); err != nil {
@@ -158,15 +221,21 @@ func TestPluginRevisionSurvivesUpgradeGcAndRestore(t *testing.T) {
 	if !slices.Contains(restored.cfg.PluginDirs, oldPath) {
 		t.Fatal("resume changed the selected revision")
 	}
-	assertRevisionUse := func(s *Session, wantSkill, wantCompanion string) {
+	assertRevisionUse := func(s *Session, wantDir, wantSkill, wantCompanion string) {
 		t.Helper()
 		descriptor, err := s.skills.ResolveExact("widget:probe")
 		if err != nil {
 			t.Fatalf("resolve skill: %v", err)
 		}
+		if descriptor.Meta.SkillFile != filepath.Join(wantDir, "skills", "probe", "SKILL.md") {
+			t.Fatalf("skill source = %q, want exact selected directory %q", descriptor.Meta.SkillFile, wantDir)
+		}
 		loaded, _, err := loadSkillInvocationSource(skillInvocation{Name: "widget:probe"}, descriptor)
 		if err != nil || loaded.Body != wantSkill {
 			t.Fatalf("loaded skill body = %q, err = %v", loaded.Body, err)
+		}
+		if err := os.Remove(observed); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
 		}
 		result := s.execTool(ctx, useSkillCall("revision-probe", "widget:probe"), "")
 		if result.IsError {
@@ -177,9 +246,9 @@ func TestPluginRevisionSurvivesUpgradeGcAndRestore(t *testing.T) {
 			t.Fatalf("hook companion bytes = %q, err = %v, want %q", bytesReadFromCompanion, err, wantCompanion)
 		}
 	}
-	assertRevisionUse(restored, "A-SKILL\n", originalCompanion)
+	assertRevisionUse(restored, oldPath, "A-SKILL\n", originalCompanion)
 	unrecorded.cfg.testOnly.metaFS = nil // storage recovers only after the no-inventory GC
-	assertRevisionUse(unrecorded, "A-SKILL\n", originalCompanion)
+	assertRevisionUse(unrecorded, oldPath, "A-SKILL\n", originalCompanion)
 	unrecorded.Close()
 
 	rootDelegate, err := restoreDelegateResourceBootstrapSession(frozen.client, frozen.profile, frozen.workspace, frozen.meta, frozen.stateDir)
@@ -218,6 +287,9 @@ func TestPluginRevisionSurvivesUpgradeGcAndRestore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cold delegate lost plugin skill: %v", err)
 	}
+	if childSkill.Meta.SkillFile != filepath.Join(oldPath, "skills", "probe", "SKILL.md") {
+		t.Fatalf("cold delegate skill source = %q, want original A", childSkill.Meta.SkillFile)
+	}
 	loadedChildSkill, _, err := loadSkillInvocationSource(skillInvocation{Name: "widget:probe"}, childSkill)
 	if err != nil || loadedChildSkill.Body != "A-SKILL\n" {
 		t.Fatalf("cold delegate skill = %q, err = %v", loadedChildSkill.Body, err)
@@ -229,5 +301,5 @@ func TestPluginRevisionSurvivesUpgradeGcAndRestore(t *testing.T) {
 	}
 	newSession := newSelected(fresh.SelectedDirs[0])
 	defer newSession.Close()
-	assertRevisionUse(newSession, "B-SKILL\n", "B-COMPANION")
+	assertRevisionUse(newSession, second.InstallPath, "B-SKILL\n", "B-COMPANION")
 }

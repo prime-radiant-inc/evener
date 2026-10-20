@@ -109,9 +109,15 @@ older paths and all their companion files even when the installed registry
 points to a newer revision or no metadata was saved yet. Neither hub startup
 nor `evener plugin gc` removes published revisions, so they accumulate on disk;
 `gc` only reclaims leftover marketplace clones. Read its output before assuming
-cleanup succeeded. Explicit plugin uninstall and marketplace removal retain
-their deletion semantics; externally edited directory sources remain live
-directories, not managed snapshots. `evener plugin marketplace remove
+cleanup succeeded. Automatic marketplace-name migration rekeys logical ownership
+without moving published revisions or changing valid recorded install paths.
+Same-source alias merges follow that rule too. Recovery of an older interrupted
+migration keeps surviving old paths, and reconciles a missing recorded path only
+when its existing marker and physical ownership prove an already-moved destination.
+New revisions may use the new marketplace namespace.
+Explicit marketplace rename still moves paths. Explicit plugin uninstall and
+marketplace removal retain their deletion semantics; externally edited directory
+sources remain live directories, not managed snapshots. `evener plugin marketplace remove
 MARKETPLACE` removes a marketplace explicitly. Deleted selections are not
 recovered by this retention rule.
 
