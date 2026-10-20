@@ -873,7 +873,7 @@ describe("durable recovery rows", () => {
 // delivery is uncertain (blockedUnknown) or settled by the user's own Stop
 // (canceled).
 describe("canceled rows", () => {
-  test("a canceled row renders beside the queue as Canceled by Stop with Retry and no sendable action", async () => {
+  test("a canceled row keeps Retry and offers local editing and removal without a send action", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a");
     await seedCanceled("stopped by user");
@@ -882,7 +882,9 @@ describe("canceled rows", () => {
     const row = await findRow("canceled");
     expect(within(row).getByText("stopped by user")).toBeTruthy();
     expect(within(row).getByRole("button", { name: "Retry" })).toBeTruthy();
-    expect(within(row).queryByRole("button", { name: /edit|send|steer|remove/i })).toBeNull();
+    expect(within(row).queryByRole("button", { name: /send|steer/i })).toBeNull();
+    expect(isDisabled(within(row).getByRole("button", { name: "Edit message" }))).toBe(false);
+    expect(isDisabled(within(row).getByRole("button", { name: "Remove from queue" }))).toBe(false);
     // The header counts it like any other durable row, same as a blocked one.
     expect(queuedCount()).toBe("1");
   });
@@ -960,7 +962,7 @@ describe("canceled rows", () => {
     }));
     renderStrip(defaultProps());
     const pending = await screen.findByText("queued while busy");
-    expect(pending.closest("li")?.getAttribute("data-kind")).toBe("pending");
+    expect(pending.closest("li")?.getAttribute("data-kind")).toBe("waiting");
     expect(pending.closest("li")?.getAttribute("data-busy")).toBe("true");
     // The visible affordance is a non-empty reason span, not a phrase: copy
     // is not a test oracle, so its wording stays free to change. The ?? ""
@@ -2054,7 +2056,7 @@ describe("in-flight row locking", () => {
 });
 
 describe("optimistic pending queue rows", () => {
-  test("a pending queue-method entry from another submission renders as an extra, action-less row", async () => {
+  test("an unattempted local queue-method entry renders once with Edit and Remove", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
       evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0, depth: 0 } },
@@ -2077,7 +2079,9 @@ describe("optimistic pending queue rows", () => {
 
     const row = (await screen.findAllByRole("listitem"))[0]!;
     expect(within(row).getByText("not yet confirmed")).toBeTruthy();
-    expect(within(row).queryByRole("button")).toBeNull();
+    expect(within(row).getByRole("button", { name: "Edit message" })).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Remove from queue" })).toBeTruthy();
+    expect(screen.getAllByText("not yet confirmed")).toHaveLength(1);
   });
 
   // A queued submission can carry ONLY skills, with no typed prose. The pending

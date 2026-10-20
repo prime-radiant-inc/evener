@@ -10,17 +10,25 @@
 
 import type { ComposerMention, InputItem } from "@evener/appwire-client";
 import { canonicalSkillNames, errorText, STEER_UNAVAILABLE, sessionActionError } from "@evener/appwire-client";
-import { type ReactNode, useState } from "react";
+import { canEditQueuedMessage, canRemoveQueuedMessage } from "@evener/appwire-client/state/mutation";
+import { type ReactNode, useRef, useState } from "react";
 import { copyToClipboard } from "../../../../shell/palette/commands";
 import { controlsFor, pressLocalRecoveryFenced, pressRefusal } from "../../../../stores/liveControls";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
-import { retryBlockedBySnapshot, threadsStore, useThreadsStore } from "../../../../stores/threads";
+import {
+  retryBlockedBySnapshot,
+  threadsStore,
+  useEditableQueuedMutationEntries,
+  useThreadsStore,
+} from "../../../../stores/threads";
 import { Button, IconButton, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
   discardRecoveryPendingTurn,
+  editQueuedPendingTurn,
   type PendingTurnEntry,
+  removeQueuedPendingTurn,
   resendRecoveryPendingTurn,
   retryBlockedPendingTurn,
   submitWithPendingTracking,
@@ -90,7 +98,7 @@ export interface QueueStripProps {
     mentions?: readonly ComposerMention[],
   ): void;
   activeRecoveryId?: string;
-  onEditRecovery?(record: MutationRecoveryRecord): void;
+  onEditRecovery?(record: MutationRecoveryRecord): void | Promise<void>;
   // Called once a drain-as-steer intent commits to IndexedDB, so the
   // integration can clear the unchanged composer text/attachment snapshot.
   onDrainSuccess(): void;
@@ -190,11 +198,13 @@ export function QueueStrip({
   const recoveryObligated = useThreadsStore((s) => s.restartBlockingObligations.has(sessionRef));
   const reconciliationStorageBlocked = useThreadsStore((s) => s.mutationReconciliationStorageBlocked.has(sessionRef));
   const refusedId = useThreadsStore((s) => s.transientRefusalPaces.get(sessionRef)?.clientMutationId);
+  const editableEntries = useEditableQueuedMutationEntries(sessionRef);
+  const editableIds = new Set(editableEntries.map((record) => record.clientMutationId));
   const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue").filter(
     // A queue-method row Stop canceled (or one whose delivery turned unknown)
     // is a durable row below, not a bare pending one - the same slot rule the
     // blocked state already follows.
-    (entry) => entry.state !== "blockedUnknown" && entry.state !== "canceled",
+    (entry) => entry.state !== "blockedUnknown" && entry.state !== "canceled" && !editableIds.has(entry.id),
   );
   const recoveryEntries = useRecoveryEntries(sessionRef).filter(
     (record) => record.method !== "notes/human/set" && record.clientMutationId !== activeRecoveryId,
@@ -209,12 +219,16 @@ export function QueueStrip({
     ...recoveryEntries.map((record) => ({ kind: "recovery" as const, record })),
     ...blockedEntries.map((record) => ({ kind: "blocked" as const, record })),
     ...canceledEntries.map((record) => ({ kind: "canceled" as const, record })),
+    ...editableEntries
+      .filter((record) => record.state !== "canceled")
+      .map((record) => ({ kind: "waiting" as const, record })),
   ].sort((left, right) => left.record.intentSequence - right.record.intentSequence);
   const toasts = useToasts();
   // Keyed by daemon-minted entryId (stable across a re-render even as
   // indices shift), not row index - mirrors the legacy renderer's own
   // setQueuedRowActionsDisabled keying.
   const [busyEntryIds, setBusyEntryIds] = useState<ReadonlySet<string>>(new Set());
+  const localActions = useRef(new Set<string>());
   const [retryErrors, setRetryErrors] = useState<ReadonlyMap<string, string>>(new Map());
 
   const queue = model?.queue ?? null;
@@ -242,6 +256,31 @@ export function QueueStrip({
       else next.delete(entryId);
       return next;
     });
+  }
+
+  async function handleLocalAction(record: MutationOutboxRecord, action: "edit" | "remove"): Promise<void> {
+    const id = record.clientMutationId;
+    if (localActions.current.has(id)) return;
+    if (action === "edit" && getComposerText().hasPending) {
+      toasts.push("error", "Image attachment is still processing");
+      return;
+    }
+    localActions.current.add(id);
+    setRowBusy(id, true);
+    try {
+      if (action === "edit") {
+        const recovery = await editQueuedPendingTurn(id, sessionRef);
+        if (recovery) await onEditRecovery?.(recovery);
+        else toasts.push("info", "This message changed in another tab. Refresh and try again.");
+      } else if (!(await removeQueuedPendingTurn(id, sessionRef))) {
+        toasts.push("info", "This message changed in another tab. Refresh and try again.");
+      }
+    } catch (error) {
+      toasts.push("error", sessionActionError(action === "edit" ? "Edit failed" : "Remove failed", error));
+    } finally {
+      localActions.current.delete(id);
+      setRowBusy(id, false);
+    }
   }
 
   async function handlePromote(
@@ -613,7 +652,8 @@ export function QueueStrip({
         {durableEntries.map(({ kind, record }) => {
           const rowBusy = busyEntryIds.has(record.clientMutationId);
           const retryError = retryErrors.get(record.clientMutationId);
-          if (kind === "blocked" || kind === "canceled") {
+          const hubRefused = kind === "waiting" && record.clientMutationId === refusedId;
+          if (kind === "blocked" || kind === "canceled" || kind === "waiting") {
             // Delivery-uncertain rows and Stop-canceled rows share one slot
             // (stop-cancellation-outbox §6 Display): both are this client's
             // own undelivered submissions sitting in durable storage, and
@@ -621,42 +661,79 @@ export function QueueStrip({
             // cancellation the user's own click wrote. The Retry affordance,
             // its gating, and the error slot are identical.
             return (
-              <li key={record.clientMutationId} className={CLASS.row} data-kind={kind}>
+              <li
+                key={record.clientMutationId}
+                className={CLASS.row}
+                data-kind={kind}
+                data-busy={hubRefused ? "true" : undefined}
+              >
                 <span className={CLASS.rowText}>
-                  <span>{kind === "canceled" ? "Canceled by Stop" : "Delivery uncertain"}</span>
+                  {hubRefused && (
+                    <span className={CLASS.rowReason} data-busy-reason="">
+                      Retrying —{" "}
+                    </span>
+                  )}
+                  <span>
+                    {kind === "canceled"
+                      ? "Canceled by Stop"
+                      : kind === "waiting"
+                        ? "Waiting to send"
+                        : "Delivery uncertain"}
+                  </span>
                   {" — "}
                   <span>{recordPreview(record)}</span>
                   {retryError !== undefined && <span role="alert">{retryError}</span>}
                 </span>
                 <div className={CLASS.rowActions}>
-                  <Button
-                    size="sm"
-                    variant="quiet"
-                    disabled={
-                      rowBusy ||
-                      // Retry is offered only when retryBlockedMutation can
-                      // actually act. Its snapshot-level refusals - every
-                      // notLoaded or restartRequired snapshot, any ref without
-                      // mutation authority, and a restart-blocking obligation
-                      // (a Stop, or a snapshot the daemon reports as
-                      // restartRequired/resumeRequired) - are shared with it as
-                      // retryBlockedBySnapshot (stores/threads.ts), so a
-                      // recovery-fenced local session keeps Retry disabled until
-                      // the explicit Resume action restores it; without the
-                      // obligation term an idle fenced row would offer a Retry
-                      // that always fails.
-                      retryBlockedBySnapshot(model?.status.type, mutationAuthority, recoveryObligated) ||
-                      // A storage-blocked ref refuses the press too - but its
-                      // press would first hang on the wedged storage read
-                      // before failing, so mirror the refusal here and let the
-                      // button return when discovery's reconcile retry clears
-                      // the state.
-                      reconciliationStorageBlocked
-                    }
-                    onClick={() => void handleRetry(record)}
-                  >
-                    {rowBusy ? "Retrying…" : "Retry"}
-                  </Button>
+                  {canEditQueuedMessage(record) && (
+                    <IconButton
+                      label="Edit message"
+                      icon={<span aria-hidden="true">✎</span>}
+                      size="sm"
+                      disabled={rowBusy || busy || onEditRecovery === undefined}
+                      onClick={() => void handleLocalAction(record, "edit")}
+                    />
+                  )}
+                  {canRemoveQueuedMessage(record) && (
+                    <IconButton
+                      label="Remove from queue"
+                      icon={<span aria-hidden="true">✕</span>}
+                      size="sm"
+                      variant="danger"
+                      disabled={rowBusy || busy}
+                      onClick={() => void handleLocalAction(record, "remove")}
+                    />
+                  )}
+                  {kind !== "waiting" && (
+                    <Button
+                      size="sm"
+                      variant="quiet"
+                      disabled={
+                        rowBusy ||
+                        // Retry is offered only when retryBlockedMutation can
+                        // actually act. Its snapshot-level refusals - every
+                        // notLoaded or restartRequired snapshot, any ref without
+                        // mutation authority, and a restart-blocking obligation
+                        // (a Stop, or a snapshot the daemon reports as
+                        // restartRequired/resumeRequired) - are shared with it as
+                        // retryBlockedBySnapshot (stores/threads.ts), so a
+                        // recovery-fenced local session keeps Retry disabled until
+                        // the explicit Resume action restores it; without the
+                        // obligation term an idle fenced row would offer a Retry
+                        // that always fails.
+                        retryBlockedBySnapshot(model?.status.type, mutationAuthority, recoveryObligated) ||
+                        // A storage-blocked ref refuses the press too - but its
+                        // press would first hang on the wedged storage read
+                        // before failing, so mirror the refusal here and let the
+                        // button return when discovery's reconcile retry clears
+                        // the state.
+                        reconciliationStorageBlocked
+                      }
+                      onClick={() => void handleRetry(record)}
+                    >
+                      {rowBusy ? "Retrying…" : "Retry"}
+                    </Button>
+                  )}
                 </div>
               </li>
             );
@@ -691,7 +768,7 @@ export function QueueStrip({
             <li
               key={record.clientMutationId}
               className={CLASS.row}
-              data-kind={isInterrupt ? "refused-stop" : "refused"}
+              data-kind={isInterrupt ? "refused-stop" : record.recoveryKind === "editing" ? "editing" : "refused"}
             >
               <span className={CLASS.rowText}>
                 {isInterrupt ? "Stop didn't reach the session" : recordPreview(record)}

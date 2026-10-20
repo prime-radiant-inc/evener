@@ -1,5 +1,6 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import { createStore } from "zustand/vanilla";
+import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../stores/threads";
 import { pushToast } from "../../../widgets/toast/store";
 import {
@@ -24,7 +25,14 @@ import {
   subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
 } from "./queue/pendingTurnsStore";
-import { parseSkillDocument, patchSelectionText, type SkillEditorValue, serializeSkillDocument } from "./skillDocument";
+import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
+import {
+  materializeSelectionReferences,
+  parseSkillDocument,
+  patchSelectionText,
+  type SkillEditorValue,
+  serializeSkillDocument,
+} from "./skillDocument";
 
 type RevisionRef<T> = { current: T };
 type SelectionMeta = { commandNames: string[]; mentions: ComposerMention[] | undefined };
@@ -44,6 +52,7 @@ export interface ComposerSourceSnapshot {
   commandNames: string[];
   mentions?: ComposerMention[];
   activeRecoveryId: string | null;
+  recoveryActivating: boolean;
   freshRecoveryRef: string | null;
   restoreEpoch: number;
 }
@@ -78,6 +87,7 @@ export interface ComposerSourceState {
   persistDraft(text: string): void;
   writeDraft(text: string, mayPersist: boolean, source?: TextEditSource): void;
   refreshRecovery(): void;
+  activateRecovery(record: MutationRecoveryRecord): Promise<boolean>;
   queueRecoveryPersistence(
     id: string,
     text: string,
@@ -114,6 +124,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     commandNames: initial.commandNames ?? [],
     mentions: initial.mentions,
     activeRecoveryId: null,
+    recoveryActivating: false,
     freshRecoveryRef: null,
     restoreEpoch: 0,
   }));
@@ -252,7 +263,12 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     const operation = recoveryWrites
       .catch(() => undefined)
       .then(async () => {
-        if (disposed || activeRecoveryIdRef.current !== clientMutationId) return;
+        if (
+          disposed ||
+          activeRecoveryIdRef.current !== clientMutationId ||
+          recoveryReplacementEpochRef.current !== replacementEpoch
+        )
+          return;
         if (
           nextText.trim() === "" &&
           nextAttachments.length === 0 &&
@@ -320,6 +336,68 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
       pushToast("error", `Couldn't save recovered message: ${error instanceof Error ? error.message : String(error)}`);
     });
     return operation;
+  }
+
+  function activateRecovery(record: MutationRecoveryRecord): Promise<boolean> {
+    if (disposed || state.getState().recoveryActivating) return Promise.resolve(false);
+    state.setState({ recoveryActivating: true });
+    const operation = recoveryWrites
+      .catch(() => undefined)
+      .then(async () => {
+        if (disposed || operations.hasPending || record.targetRef !== ref) return false;
+        if (activeRecoveryIdRef.current === record.clientMutationId) return false;
+        // Keep this object: the recovery wrapper carries older-record image
+        // reference provenance by identity, not in enumerable properties.
+        const recovered = recoveryComposerDraft(record);
+        if (record.recoveryKind === "editing") Object.assign(recovered, materializeSelectionReferences(recovered));
+        const merge = () =>
+          mergeRecoveryComposerDraft(
+            textRef.current,
+            operations.items,
+            recovered,
+            skillNamesRef.current,
+            selectionMetaRef.current.commandNames,
+            selectionMetaRef.current.mentions,
+          );
+        const merged = merge();
+        const ownerId = activeRecoveryIdRef.current ?? record.clientMutationId;
+        const replacementEpoch = recoveryReplacementEpochRef.current;
+        const updated = await updateRecoveryPendingTurn(
+          ownerId,
+          ref,
+          merged.text,
+          merged.attachments.flatMap((item) =>
+            item.data === undefined
+              ? []
+              : [{ marker: item.marker, name: item.name, mediaType: item.mediaType, data: item.data }],
+          ),
+          restoredSkillNames(merged),
+          merged.commandNames,
+          merged.mentions,
+          ownerId === record.clientMutationId ? [] : [record.clientMutationId],
+        );
+        if (!updated || disposed || recoveryReplacementEpochRef.current !== replacementEpoch) return false;
+        // A commit may finish after new typing or attachment work. Append to
+        // that newer draft rather than restoring the press-time snapshot.
+        const latest = merge();
+        recoveryReplacementEpochRef.current += 1;
+        recoveryOwnsLocalDraftRef.current = true;
+        setActiveRecoveryId(ownerId);
+        editText(latest.text);
+        editSkillNames(restoredSkillNames(latest));
+        updateSelectionMeta(latest);
+        operations.replaceWithSettled(latest.attachments);
+        markRestore();
+        return true;
+      });
+    const completed = operation.finally(() => {
+      if (!disposed) state.setState({ recoveryActivating: false });
+    });
+    recoveryWrites = completed.then(
+      () => undefined,
+      () => undefined,
+    );
+    return completed;
   }
 
   const unsubscribeCommitted = subscribeComposerSubmissionCommitted(
@@ -405,6 +483,7 @@ export function createComposerSourceState(ref: string): ComposerSourceState {
     persistDraft,
     writeDraft,
     queueRecoveryPersistence,
+    activateRecovery,
     bindEditor(nextEditor) {
       if (disposed) return () => {};
       if (!ownsDraft() && activeRecoveryIdRef.current === null) {

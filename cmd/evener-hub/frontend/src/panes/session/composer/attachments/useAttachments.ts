@@ -7,7 +7,13 @@
 // composer. A caller can supply an in-memory store to retain the bag and its
 // encode continuations across remounts. Image bytes never go through
 // localStorage.
-import { insertMarker, markerText, rejectionReason, stripMarker } from "@evener/appwire-client";
+import {
+  insertMarker,
+  markerText,
+  nextComposerImageMarker,
+  rejectionReason,
+  stripMarker,
+} from "@evener/appwire-client";
 import { type SetStateAction, useMemo, useState } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -180,7 +186,11 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         continue;
       }
       reservedCount++;
-      nextMarkerRef.current += 1;
+      nextMarkerRef.current = nextComposerImageMarker(
+        editor.read().text,
+        store.getState().items,
+        nextMarkerRef.current,
+      );
       accepted.push({ file, marker: nextMarkerRef.current });
     }
 

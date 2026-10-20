@@ -692,12 +692,11 @@ test("goal replacement preserves a recovery row whose empty-draft discard is alr
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
 });
 
-test("goal replacement preserves both recovery rows while a merged source discard is pending", async () => {
-  const storage = new ControlledDiscardStorage();
+test("goal replacement preserves the consolidated recovery owner while its commit is unobserved", async () => {
+  const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
   const owner = await seedRejectedRecovery(storage, "ref_a", "first recovery");
   const source = await seedRejectedRecovery(storage, "ref_a", "second recovery");
-  storage.pauseDiscard(source.clientMutationId);
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "idle" },
@@ -707,21 +706,30 @@ test("goal replacement preserves both recovery rows while a merged source discar
   expect(textarea().textContent).toBe("first recovery");
   const sourceRow = screen.getByText("second recovery").closest("li");
   if (!sourceRow) throw new Error("missing second recovery row");
-  await user.click(within(sourceRow).getByRole("button", { name: "Edit message" }));
-  await storage.discardStarted;
-
-  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
-  await user.click(screen.getByRole("button", { name: "Replace draft" }));
-  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
-
-  storage.release();
-  await flushPendingTurnsProjectionForTests();
-
-  expect((await storage.listRecovery("ref_a")).map((row) => row.clientMutationId)).toEqual([
-    owner.clientMutationId,
-    source.clientMutationId,
-  ]);
-  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+  const hold = holdNextWriteTransaction(["recovery"]);
+  try {
+    await user.click(within(sourceRow).getByRole("button", { name: "Edit message" }));
+    await hold.reached;
+    await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+    await user.click(screen.getByRole("button", { name: "Replace draft" }));
+    expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+    await act(async () => hold.release());
+    await flushPendingTurnsProjectionForTests();
+    const reopened = new MutationOutboxIndexedDB();
+    try {
+      const records = await reopened.listRecovery("ref_a");
+      expect(records.map((row) => row.clientMutationId)).toEqual([owner.clientMutationId]);
+      expect(records[0]?.composerText).toBe("first recovery\n\nsecond recovery");
+      expect(records[0]?.payload.input).toEqual([{ type: "text", text: "first recovery\n\nsecond recovery" }]);
+      expect(await reopened.getRecovery(source.clientMutationId)).toBeUndefined();
+      expect(textarea().textContent).toBe("/goal Keep the session focused");
+      expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    hold.release();
+  }
 });
 
 test("goal replacement closes slash completion and resets selection", async () => {

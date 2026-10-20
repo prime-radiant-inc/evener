@@ -77,6 +77,7 @@ import {
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import {
+  captureRecoveryStopBarrier,
   hasBlockedUnknown,
   hasQueuedNonSend,
   type InputAttachment,
@@ -102,7 +103,7 @@ import { AttachmentTile } from "./AttachmentTile";
 import { useAskDockPending } from "./askDockPending";
 import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
-import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
+import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import { runBuiltinCommand } from "./builtinCommand";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
@@ -112,7 +113,6 @@ import { clearPersistedDraft, readDraftRevision } from "./draft";
 import { useNarrowComposer } from "./narrowComposer";
 import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
-  discardRecoveryPendingTurn,
   resendRecoveryPendingTurn,
   useBlockedMutationEntries,
   useComposerSubmitting,
@@ -161,14 +161,6 @@ const CLASS = {
 const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: SessionChromeProps) {
   return <SessionChrome {...props} />;
 });
-
-function settledInputAttachments(items: PendingAttachment[]): InputAttachment[] {
-  return items.flatMap((item) =>
-    item.data === undefined
-      ? []
-      : [{ marker: item.marker, name: item.name, mediaType: item.mediaType, data: item.data }],
-  );
-}
 
 // "drain" is set/cleared only by QueueStrip's own onDrainBusyChange (its
 // "Steer queue now" button) - never by this component's own submitAction, which
@@ -229,8 +221,16 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     cursorToRestoreRef.current = cursor;
     setCursorRestoreSeq((seq) => seq + 1);
   }, []);
-  const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId, freshRecoveryRef } =
-    useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
+  const {
+    text,
+    skillNames,
+    commandNames,
+    mentions,
+    restoreEpoch,
+    activeRecoveryId,
+    recoveryActivating,
+    freshRecoveryRef,
+  } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   const selectionMeta = useMemo(() => ({ commandNames, mentions }), [commandNames, mentions]);
   const {
     lastDrainSnapshotRef,
@@ -259,7 +259,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     clearSubmittedAttachments,
   } = source;
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
-  const actionPending = busyAction !== null || submitting || mutationWriteStalled;
+  const actionPending = busyAction !== null || submitting || mutationWriteStalled || recoveryActivating;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
   // Track live focus too, so stopping does not collapse a focused editor.
@@ -953,53 +953,22 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     editorRef.current?.focus();
   }
 
-  function activateRecovery(record: MutationRecoveryRecord): void {
+  async function activateRecovery(record: MutationRecoveryRecord): Promise<void> {
+    if (!source.alive) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing");
       return;
     }
-    const merged = mergeRecoveryComposerDraft(
-      textRef.current,
-      attachments.items,
-      recoveryComposerDraft(record),
-      skillNamesRef.current,
-      selectionMetaRef.current.commandNames,
-      selectionMetaRef.current.mentions,
-    );
-    const currentRecoveryId = activeRecoveryIdRef.current;
-    if (currentRecoveryId === null) {
-      recoveryOwnsLocalDraftRef.current = true;
-      setActiveRecoveryId(record.clientMutationId);
-    }
-    const nextSkillNames = restoredSkillNames(merged);
-    markRestore();
-    editText(merged.text);
-    editSkillNames(nextSkillNames);
-    updateSelectionMeta(merged);
-    attachments.replaceWithSettled(merged.attachments);
-    scheduleCursorRestore(merged.text.length);
-    editorRef.current?.focus();
-
-    const ownerId = currentRecoveryId ?? record.clientMutationId;
-    const replacementEpoch = recoveryReplacementEpochRef.current;
-    const persistence = queueRecoveryPersistence(
-      ownerId,
-      merged.text,
-      settledInputAttachments(merged.attachments),
-      nextSkillNames,
-      merged.commandNames,
-      merged.mentions,
-    );
-    if (currentRecoveryId !== null && currentRecoveryId !== record.clientMutationId) {
-      void persistence
-        .then(async () => {
-          await discardRecoveryPendingTurn(
-            record.clientMutationId,
-            ref,
-            () => recoveryReplacementEpochRef.current === replacementEpoch,
-          );
-        })
-        .catch(() => undefined);
+    try {
+      if (!(await source.activateRecovery(record))) {
+        if (source.alive) toasts.push("info", "This message changed in another tab. Refresh and try again.");
+        return;
+      }
+      if (!source.alive) return;
+      scheduleCursorRestore(source.getSnapshot().text.length);
+      editorRef.current?.focus();
+    } catch (error) {
+      if (source.alive) toasts.push("error", sessionActionError("Edit failed", error));
     }
   }
 
@@ -1058,6 +1027,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
   // it takes. Before this reconciliation, both sides pushed a toast for the
   // SAME failure; this is the fix, not a pre-existing split.
   async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
+    if (source.getSnapshot().recoveryActivating) return;
     const submittedText = textRef.current;
     const submittedAttachments = attachments.items;
     const submittedSkillNames = [...skillNamesRef.current];
@@ -1067,6 +1037,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     const submittedDraftRevision = readDraftRevision(ref);
     const payload = attachments.toInputAttachments();
     const submittedRecoveryId = activeRecoveryIdRef.current;
+    const recoveryBarrier = submittedRecoveryId === null ? undefined : captureRecoveryStopBarrier(ref);
     let wonRecoveryResend = true;
     // The UI-side half of the skillInput gate (threads.ts's composerMutationIntent
     // is the store-side half, and Task 12 gates the hub's forwarding too): a
@@ -1114,6 +1085,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
               submittedSkillNames,
               submittedCommandNames,
               submittedMentions,
+              recoveryBarrier,
             );
             return;
           }
