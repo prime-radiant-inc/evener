@@ -270,7 +270,7 @@ func TestRepairRefusesMultipictureAndUnsafeStructure(t *testing.T) {
 func profileTag(t testing.TB, p []byte, name string) (entry, off, size int) {
 	t.Helper()
 	n := int(binary.BigEndian.Uint32(p[128:]))
-	for i := 0; i < n; i++ {
+	for i := range n {
 		e := 132 + 12*i
 		if string(p[e:e+4]) == name {
 			return e, int(binary.BigEndian.Uint32(p[e+4:])), int(binary.BigEndian.Uint32(p[e+8:]))
@@ -330,7 +330,7 @@ func TestRepairBudgets(t *testing.T) {
 	}
 	// ICC assembly may exceed the budget, but stripping never needs to assemble it.
 	var parts [][]byte
-	for i := 0; i < 18; i++ {
+	for i := range 18 {
 		parts = append(parts, iccChunk(make([]byte, 60000), byte(i+1), 18))
 	}
 	r = call(t, inject(j, parts...), PreferColorManaged, ProfileRemoved)

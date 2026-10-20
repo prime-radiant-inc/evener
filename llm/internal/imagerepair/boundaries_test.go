@@ -121,7 +121,7 @@ func manyICC(j, p []byte) []byte {
 	var parts [][]byte
 	const size = 60000
 	n := (len(p) + size - 1) / size
-	for i := 0; i < n; i++ {
+	for i := range n {
 		parts = append(parts, iccChunk(p[i*size:min((i+1)*size, len(p))], byte(i+1), byte(n)))
 	}
 	return inject(j, parts...)
@@ -178,7 +178,7 @@ func TestRepairExactPixelBudget(t *testing.T) {
 func TestPNGOutputBudgetAndCancellation(t *testing.T) {
 	w := pngWriter{ctx: context.Background()}
 	chunk := make([]byte, 1<<20)
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		n, e := w.Write(chunk)
 		if e != nil || n != len(chunk) {
 			t.Fatalf("write %d: %d %v", i, n, e)

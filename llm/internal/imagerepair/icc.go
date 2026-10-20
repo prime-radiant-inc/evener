@@ -47,7 +47,7 @@ func parseICC(ctx context.Context, p []byte) (*iccTransform, bool) {
 	tableEnd := 132 + 12*count
 	tags := make(map[string][]byte, count)
 	ranges := make([]iccTag, 0, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		if ctx.Err() != nil {
 			return nil, false
 		}
@@ -191,7 +191,7 @@ func parseCurve(ctx context.Context, b []byte) ([256]float64, bool) {
 			evaluate = func(x float64) float64 { return math.Pow(x, gamma) }
 		default:
 			prev := uint16(0)
-			for i := uint64(0); i < n; i++ {
+			for i := range n {
 				if i%1024 == 0 && ctx.Err() != nil {
 					return out, false
 				}

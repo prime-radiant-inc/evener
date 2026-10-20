@@ -30,7 +30,7 @@ func parseOrientation(tiff []byte) (int, bool) {
 		return 0, false
 	}
 	orientation, found := 1, false
-	for i := uint64(0); i < n; i++ {
+	for i := range n {
 		e := tiff[off+2+12*i:]
 		if order.Uint16(e) != 0x112 {
 			continue

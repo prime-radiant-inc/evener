@@ -285,8 +285,8 @@ func convertJPEG(ctx context.Context, data []byte, m jpegMetadata) ([]byte, bool
 		ow, oh = h, w
 	}
 	out := image.NewRGBA(image.Rect(0, 0, ow, oh))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			if x%1024 == 0 && ctx.Err() != nil {
 				return nil, false
 			}
