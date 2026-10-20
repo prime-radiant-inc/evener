@@ -205,6 +205,16 @@ func TestListModelsGatewayPublishedEmptyMapStatesNoEffort(t *testing.T) {
 	}
 }
 
+// TestListModelsGatewayPiWithoutMapStatesNoLadder pins that the Pi block's
+// other compat fields do not count as a published map: silence about effort
+// must leave an inherited ladder alone rather than erase it.
+func TestListModelsGatewayPiWithoutMapStatesNoLadder(t *testing.T) {
+	c := listRow(t, `{"id":"max-tokens-only","client_compat":{"pi":{"maxTokensField":"max_tokens","supportsReasoningEffort":true}}}`)
+	if c.EffortValues != nil {
+		t.Fatalf("EffortValues = %#v, want nil when the block states no map", c.EffortValues)
+	}
+}
+
 // TestListModelsPrefersContextLengthOverContextWindow keeps OpenRouter's
 // ordering: context_length wins when both spellings are present.
 func TestListModelsPrefersContextLengthOverContextWindow(t *testing.T) {

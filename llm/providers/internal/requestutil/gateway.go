@@ -78,12 +78,13 @@ func ApplyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, c
 // value (glm maps medium and high to "high") advertise it once.
 //
 // published reports whether the listing stated a map at all. Absent (no
-// client_compat block) leaves the ladder nil so the live replay inherits a
-// curated one. A published map whose every level is null is the gateway
-// stating that the model takes no effort control: the ladder is empty and the
-// caller must apply it as such, not inherit around it.
+// client_compat block, or a Pi block carrying only its other compat fields)
+// leaves the ladder nil so the live replay inherits a curated one. A published
+// map whose every level is null is the gateway stating that the model takes no
+// effort control: the ladder is empty and the caller must apply it as such, not
+// inherit around it.
 func GatewayEffortLadder(compat GatewayClientCompat) (ladder []string, published bool) {
-	if compat.Pi == nil {
+	if compat.Pi == nil || compat.Pi.ThinkingLevelMap == nil {
 		return nil, false
 	}
 	levels := compat.Pi.ThinkingLevelMap

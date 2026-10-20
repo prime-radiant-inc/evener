@@ -115,6 +115,14 @@ func TestGatewayEffortLadder(t *testing.T) {
 			want:   nil,
 		},
 		{
+			// A Pi block carrying other compat fields publishes no map: that is
+			// silence about effort, not the model refusing every level, so the
+			// caller must keep whatever ladder it inherited.
+			name:   "a pi block without a map states no ladder",
+			compat: GatewayClientCompat{Pi: &GatewayPiCompat{}},
+			want:   nil,
+		},
+		{
 			// A published map with every level null is the gateway stating that
 			// the model takes no effort control. That is not the same as an
 			// absent map: inheriting a curated ladder would send levels the
@@ -215,6 +223,14 @@ func TestApplyGatewayReasoning(t *testing.T) {
 		},
 		{
 			name: "facts the listing does not state stay unset",
+		},
+		{
+			// A Pi block with only other compat fields carries no effort
+			// verdict: an inherited ladder must survive.
+			name:       "a pi block without a map keeps an inherited ladder",
+			compat:     GatewayClientCompat{Pi: &GatewayPiCompat{}},
+			before:     []string{"low", "medium", "high"},
+			wantLadder: []string{"low", "medium", "high"},
 		},
 	}
 	for _, tc := range cases {
