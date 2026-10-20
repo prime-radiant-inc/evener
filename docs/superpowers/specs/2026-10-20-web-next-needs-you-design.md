@@ -80,6 +80,12 @@ The existing attention opener eventually calls `workspace.replacePrimary`. For a
 
 Keep the workspace and retained source/read-view lifetime as the authorities. Avoid a second composer, transcript, or attention store. A narrowly scoped attention-history binding may reference exact retained records; it must not duplicate their contents. If satisfying hidden retention requires changing the general workspace lifecycle or slot model, bring that architectural choice back before implementation rather than hiding a general redesign inside this feature.
 
+### Hidden-retention decision
+
+Jesse selected hidden retention after source inspection found no existing cross-host presentation state that could preserve the source without exposing another pane. Add an attention-only parked presentation under workspace ownership. The parked conversation keeps its exact pane lifetime, composer and reader, but neither host presents it as another pane or tab. Runtime browser-history bindings refer to those records; they do not copy drafts, attachments or transcript state. Prove this groundwork before adding the floating control.
+
+Back and Forward restore only the affected presentation and exact reader. An already-presented destination is focused without rearranging it. Ordinary navigation and explicit Close retain their existing behavior. Close invalidates retained bindings; reload uses normal fresh-open/layout recovery and does not restore binary attachment state. Discarded Forward history releases parked records no longer referenced by any remaining attention entry. A host change must preserve the logical binding without replaying an entire workspace layout over independent panes.
+
 Use existing Button/IconButton native-event forwarding for pointer and keyboard handling, and an existing controlled Popover or Sheet for the list. A controlled Popover can use its existing `closeOnScroll={false}` option so list scrolling does not dismiss it. Reposition/dismiss when its anchor becomes unavailable. The uncontrolled Menu trigger cannot implement held opening by itself. No new widgets or widget props without Jesse's approval.
 
 ## Proof required
