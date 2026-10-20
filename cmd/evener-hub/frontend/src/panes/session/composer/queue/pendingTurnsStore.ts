@@ -118,6 +118,107 @@ export function useRetryAdmissionInFlight(ref: string): boolean {
   return useStore(retryAdmissionStore, (state) => state.refs.has(ref));
 }
 
+// An accepted Retry whose result the client has not observed yet. A
+// projectionState:"reflected" receipt settles the durable row, but the
+// conversation only proves the accepted turn when its own model advances (or
+// an authoritative read says otherwise). Until then the old failure is not
+// retryable: server-side reflection is not proof this client knows the tail.
+// The marker is page-lifetime bookkeeping tied to the existing mutation and
+// recovery owners, never a durable Retry record.
+interface RetryReflection {
+  failedTurnId: string;
+  // Recovery rows already present when the Retry was submitted: a new one is
+  // the existing explicit refusal path, which restores a usable Retry.
+  recoveryBaseline: ReadonlySet<string>;
+  refreshStarted: boolean;
+}
+
+const retryReflections = new Map<string, RetryReflection>();
+const retryReflectionStore = createStore<{ byRef: ReadonlyMap<string, string> }>(() => ({ byRef: new Map() }));
+
+function publishRetryReflections(): void {
+  retryReflectionStore.setState({
+    byRef: new Map([...retryReflections].map(([ref, marker]) => [ref, marker.failedTurnId])),
+  });
+}
+
+function latestTurnId(model: { turns: readonly { id: string }[] } | undefined): string | undefined {
+  return model?.turns[model.turns.length - 1]?.id;
+}
+
+function clearRetryReflection(ref: string): void {
+  if (!retryReflections.delete(ref)) return;
+  publishRetryReflections();
+}
+
+function hasNewRecovery(ref: string, marker: RetryReflection): boolean {
+  return recoveryEntries(pendingTurnsStore.getState().recovery, ref).some(
+    (record) => !marker.recoveryBaseline.has(record.clientMutationId),
+  );
+}
+
+function markRetrySubmitted(ref: string, failedTurnId: string): void {
+  retryReflections.set(ref, {
+    failedTurnId,
+    recoveryBaseline: new Set(
+      recoveryEntries(pendingTurnsStore.getState().recovery, ref).map((r) => r.clientMutationId),
+    ),
+    refreshStarted: false,
+  });
+  publishRetryReflections();
+  reconcileRetryReflection(ref);
+}
+
+function waitForRetryReflection(ref: string, marker: RetryReflection): void {
+  if (marker.refreshStarted) return;
+  marker.refreshStarted = true;
+  void threadsStore
+    .getState()
+    .refreshThread(ref)
+    .then(() => {
+      if (retryReflections.get(ref) !== marker) return;
+      // A successful authoritative read is current-conversation evidence: if
+      // it still names this failure as the tail and no unresolved input or
+      // new recovery stands, the existing eligibility rule may act again.
+      clearRetryReflection(ref);
+    })
+    .catch(() => {
+      // A failed read proves nothing, so the marker stays; a later
+      // notification, reconnect or remount drives another attempt.
+      marker.refreshStarted = false;
+    });
+}
+
+// Re-decide one marker from the owners as they are now. Advances clear it, a
+// new refusal recovery clears it, and an empty pending projection with no
+// conversation change asks the thread owner for the authoritative answer once.
+function reconcileRetryReflection(ref: string): void {
+  const marker = retryReflections.get(ref);
+  if (!marker) return;
+  const model = threadsStore.getState().threads.get(ref);
+  if (!model || latestTurnId(model) !== marker.failedTurnId) {
+    clearRetryReflection(ref);
+    return;
+  }
+  if (hasNewRecovery(ref, marker)) {
+    clearRetryReflection(ref);
+    return;
+  }
+  if (ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref))) return;
+  waitForRetryReflection(ref, marker);
+}
+
+export function useRetryAwaitingReflection(ref: string, turnId: string): boolean {
+  return useStore(retryReflectionStore, (state) => state.byRef.get(ref) === turnId);
+}
+
+// A mounted action asks the owner to re-decide a still-open marker, so a
+// remount after a failed reconciliation read gets another authoritative
+// attempt instead of leaving the action permanently inactive.
+export function ensureRetryReflectionResolved(ref: string): void {
+  reconcileRetryReflection(ref);
+}
+
 // The refs whose durable outbox this projection has actually read and
 // published. The resume-only predicate (threads.ts's hasBlockedUnknown /
 // hasQueuedNonSend) reads this through the registered isLoaded below to fail
@@ -169,6 +270,19 @@ installRetryPendingProjection({
   begin: beginRetryAdmission,
   end: endRetryAdmission,
   isInFlight: (ref) => retryAdmissions.has(ref),
+  markSubmitted: markRetrySubmitted,
+  awaitingReflection: (ref, failedTurnId) => retryReflections.get(ref)?.failedTurnId === failedTurnId,
+});
+
+// Settlement notifications and model changes are the two facts that can
+// resolve a reflection marker. Both subscriptions re-decide from current
+// owner state, so no marker outlives what proves it.
+pendingTurnsStore.subscribe(() => {
+  for (const ref of [...retryReflections.keys()]) reconcileRetryReflection(ref);
+});
+threadsStore.subscribe((state, previous) => {
+  if (state.threads === previous.threads) return;
+  for (const ref of [...retryReflections.keys()]) reconcileRetryReflection(ref);
 });
 
 // The durable-read fence a refresh's targets are decided through, and the
@@ -608,6 +722,8 @@ export function resetPendingTurnsStoreForTests(): void {
   publishPendingReadiness();
   retryAdmissions.clear();
   publishRetryAdmissions();
+  retryReflections.clear();
+  publishRetryReflections();
   pendingTurnsStore.setState({
     outbox: new Map(),
     optimistic: new Map(),

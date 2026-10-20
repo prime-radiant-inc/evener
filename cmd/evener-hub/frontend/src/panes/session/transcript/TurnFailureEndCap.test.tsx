@@ -8,7 +8,12 @@ import { accessibleName } from "../../../accessibleNameTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { holdNextTransaction, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
-import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
+import {
+  installHydrationRetrySchedulerForTests,
+  resetThreadsStoreForTests,
+  setMutationStorageForTests,
+  threadsStore,
+} from "../../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
 import {
   pendingTurnEntries,
@@ -206,6 +211,10 @@ test.each([
 ] as const)("Retry submits continuation for %s and preserves the transcript", async (_case, items) => {
   const turn = failedTurn({ items: [...items] });
   const { fake, storage } = await loadThread("ref_a", [turn], { runningTurnId: turn.id });
+  // The accepted continuation's authoritative read is not this fixture's
+  // subject; hold it so the transcript under test is not replaced by the
+  // helper's unrelated empty snapshot.
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
   fake.on("turn/start", ({ clientMutationId }) => ({
     receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
     turn: { id: "turn_next", status: "inProgress", itemsView: "" },
@@ -713,6 +722,153 @@ test("a definitive refusal restores a usable Retry without duplicating the input
     // enabled by the earlier refusal.
     await waitFor(() => expect(retryButton()?.disabled).toBe(true));
   } finally {
+    storage.close();
+  }
+});
+
+// --- review round 1: reflected acceptance and automatic history recovery ----
+
+test("a reflected acceptance with held turn events cannot reopen the old Retry", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "turn_continued", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    expect(await storage.listOutbox("ref_a")).toHaveLength(0);
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
+    // The acceptance is reflected but the client has not observed the new
+    // turn: the old failure must not become actionable again.
+    const afterAcceptance = retryButton();
+    expect(afterAcceptance === null || afterAcceptance.disabled).toBe(true);
+    await waitFor(() => expect(retryButton()).toBeNull());
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    const calls = fake.calls.filter((call) => call.method === "turn/start");
+    expect(new Set(calls.map((call) => (call.params as { clientMutationId: string }).clientMutationId)).size).toBe(1);
+
+    // A later latest failure is still actionable.
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("thread went away");
+    const later: TurnModel = { id: "turn_later", status: "failed", items: [], error: { message: "boom again" } };
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          ["ref_a", { ...model, runningTurnId: undefined, status: { type: "idle" }, turns: [turn, later] }],
+        ]),
+      });
+    });
+    await flushPendingTurnsProjectionForTests();
+    const laterView = render(
+      <TurnFailureEndCap error={{ message: "boom again" }} sessionRef="ref_a" turnId={later.id} />,
+    );
+    const laterRetry = within(laterView.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+    await waitFor(() => expect(laterRetry.disabled).toBe(false));
+    // The old failure keeps its diagnostic but never regains an action.
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
+  } finally {
+    storage.close();
+  }
+});
+
+test("notification invalidation, a failed owner read, and its automatic retry restore Retry", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  const retries: (() => void)[] = [];
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    retries.push(retry);
+    return () => undefined;
+  });
+  try {
+    const hydrated = threadsStore.getState().threads.get("ref_a");
+    if (!hydrated) throw new Error("thread was not loaded");
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          [
+            "ref_a",
+            {
+              ...hydrated,
+              history: {
+                bootGeneration: "1",
+                epoch: 1,
+                length: 1,
+                appliedGeneration: 0,
+                issuedGeneration: 0,
+                deferredPages: [],
+                turns: [],
+              },
+            },
+          ],
+        ]),
+      });
+    });
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+
+    // The owner read after invalidation fails at the transport.
+    fake.on("thread/read", () => {
+      throw new Error("transport down");
+    });
+    act(() => {
+      fake.emitNotification({
+        method: "history/updated",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          bootGeneration: "2",
+          epoch: 0,
+          snapshot: { incarnation: "inc-2", length: 0 },
+        },
+      } as Parameters<FakeClient["emitNotification"]>[0]);
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.history?.invalidatedAtGeneration).toBe(0);
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "thread/read")).toHaveLength(2);
+    // The failed read is the owner's genuine error, and it leaves history
+    // invalid so no historical row can offer Retry.
+    expect(threadsStore.getState().threads.get("ref_a")?.history?.invalidatedAtGeneration).toBeDefined();
+    expect(retryButton()).toBeNull();
+    // The owner scheduled its own retry; the test never calls refreshThread.
+    expect(retries).toHaveLength(1);
+
+    fake.on("thread/read", ({ requestGeneration }) => ({
+      ...readResponse("ref_a", {
+        status: { type: "idle" },
+        turns: [
+          {
+            id: turn.id,
+            status: "failed",
+            itemsView: "full",
+            items: [{ id: "item_1", turnId: turn.id, type: "userMessage", text: "do the thing", status: "completed" }],
+            error: { message: "the provider exploded" },
+          },
+        ],
+      }),
+      bootGeneration: "2",
+      epoch: 0,
+      snapshot: { incarnation: "inc-2", length: 1 },
+      requestGeneration,
+    }));
+    await act(async () => {
+      retries[0]?.();
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+  } finally {
+    restoreScheduler();
     storage.close();
   }
 });

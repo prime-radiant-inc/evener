@@ -2,14 +2,16 @@
 import type { TurnError } from "@evener/appwire-client";
 import { isLatestRetryTurn, sessionActionError } from "@evener/appwire-client";
 import { ownPendingTurnInput } from "@evener/appwire-client/state/mutation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, Disclosure, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import {
+  ensureRetryReflectionResolved,
   usePendingTurnEntries,
   usePendingTurnReadiness,
   useRetryAdmissionInFlight,
+  useRetryAwaitingReflection,
 } from "../composer/queue/pendingTurnsStore";
 import { classifyTurnError } from "./turnFailure";
 import styles from "./turnfailure.module.css";
@@ -71,7 +73,11 @@ function RetryAction({
   const pendingLoaded = usePendingTurnReadiness(sessionRef);
   const pendingEntries = usePendingTurnEntries(sessionRef);
   const admissionInFlight = useRetryAdmissionInFlight(sessionRef);
+  const awaitingReflection = useRetryAwaitingReflection(sessionRef, turnId);
   const pending = ownPendingTurnInput(pendingEntries);
+  useEffect(() => {
+    if (awaitingReflection) ensureRetryReflectionResolved(sessionRef);
+  }, [awaitingReflection, sessionRef]);
   async function retry() {
     try {
       await threadsStore.getState().continueTurn(sessionRef, turnId);
@@ -84,7 +90,7 @@ function RetryAction({
     <Button
       variant="primary"
       size="sm"
-      disabled={!pendingLoaded || pending || admissionInFlight}
+      disabled={!pendingLoaded || pending || admissionInFlight || awaitingReflection}
       onClick={() => void retry()}
     >
       {recoveryLabel}

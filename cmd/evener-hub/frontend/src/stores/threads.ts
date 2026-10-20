@@ -4083,6 +4083,11 @@ interface RetryPendingProjection {
   begin(ref: string): boolean;
   end(ref: string): void;
   isInFlight(ref: string): boolean;
+  // An accepted Retry the client has not yet observed in the conversation.
+  // Admission stays closed until the owner's model or an authoritative read
+  // establishes the current tail.
+  markSubmitted(ref: string, failedTurnId: string): void;
+  awaitingReflection(ref: string, failedTurnId: string): boolean;
 }
 let retryPendingProjection: RetryPendingProjection | null = null;
 
@@ -4119,6 +4124,7 @@ function retryAdmissionCurrent(ref: string, failedTurnId: string): boolean {
   const model = threadsStore.getState().threads.get(ref);
   if (!model || !isLatestRetryTurn(model, failedTurnId)) return false;
   if (retryPendingProjection === null || !retryPendingProjection.isLoaded(ref)) return false;
+  if (retryPendingProjection.awaitingReflection(ref, failedTurnId)) return false;
   return !retryPendingProjection.hasOwnPendingTurnInput(ref);
 }
 
@@ -7576,6 +7582,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           },
           () => assertRetrySourceCurrent(ref, failedTurnId),
         );
+        admission.markSubmitted(ref, failedTurnId);
       } catch (error) {
         if (!(error instanceof RetryAdmissionLostError)) throw error;
       }
