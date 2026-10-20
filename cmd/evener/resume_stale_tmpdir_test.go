@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -47,12 +48,26 @@ func TestRunResumeSucceedsWhenInheritedTMPDIRIsGone(t *testing.T) {
 	// The production entry point is runWithScratchReclaim, whose sweep bases on
 	// the process temp dir. The repair under test clears the rig's private
 	// TMPDIR, so that sweep would walk the host's real /tmp and could reclaim
-	// other sessions' containers. This test is about resume, not the sweep.
-	deps.run = run
+	// other sessions' containers. Run the bare launch instead, but first prove
+	// the repair ran and then point the session at a test-owned temp dir, so
+	// its scratch is not created and retained in the host's temp dir either.
+	sessionTemp := t.TempDir()
+	clearedTMPDIR := false
+	deps.run = func(ctx context.Context, cfg runConfig) error {
+		_, clearedTMPDIR = os.LookupEnv("TMPDIR")
+		clearedTMPDIR = !clearedTMPDIR
+		if err := os.Setenv("TMPDIR", sessionTemp); err != nil {
+			return err
+		}
+		return run(ctx, cfg)
+	}
 
 	mainWithDeps(deps)
 	if exitCode != -1 {
 		t.Fatalf("resume exited %d: a resume must not fail because an inherited TMPDIR is gone\nstderr:\n%s", exitCode, stderr.String())
+	}
+	if !clearedTMPDIR {
+		t.Fatal("startup did not clear the dead TMPDIR before running")
 	}
 	// A completed restore opens the session's transcript; a failure to build
 	// one leaves the file absent.
