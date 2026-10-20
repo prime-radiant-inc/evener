@@ -1,6 +1,7 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -114,7 +115,7 @@ func TestManagedPublicationJourneyPreservesOlderSessionPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The upgrade and GC must not remove the path a saved session still names.
-	if got, err := os.ReadFile(filepath.Join(oldPath, "resource.txt")); err != nil || string(got) != string(oldBytes) {
+	if got, err := os.ReadFile(filepath.Join(oldPath, "resource.txt")); err != nil || !bytes.Equal(got, oldBytes) {
 		t.Fatalf("older session path lost its bytes: %q, %v", got, err)
 	}
 
@@ -130,7 +131,7 @@ func TestManagedPublicationJourneyPreservesOlderSessionPaths(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(oldPath, ".git")); !os.IsNotExist(err) {
 		t.Fatalf("older path still carries .git: %v", err)
 	}
-	if got, err := os.ReadFile(filepath.Join(oldPath, "resource.txt")); err != nil || string(got) != string(oldBytes) {
+	if got, err := os.ReadFile(filepath.Join(oldPath, "resource.txt")); err != nil || !bytes.Equal(got, oldBytes) {
 		t.Fatalf("migration changed older session bytes: %q, %v", got, err)
 	}
 	// A resumed session reads the same path and the repeated policy resolution

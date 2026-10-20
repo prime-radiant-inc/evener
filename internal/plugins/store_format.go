@@ -57,20 +57,6 @@ func (m *Manager) managedRoots() []managedRoot {
 	}
 }
 
-// managedContentState reads the marker for a store root without constructing a
-// Manager. The sandbox probe uses this shape; see managedContentClean.
-func managedContentState(storeRoot string) bool {
-	data, err := os.ReadFile(filepath.Join(storeRoot, storeFormatFileName))
-	if err != nil {
-		return false
-	}
-	var state storeFormat
-	if err := json.Unmarshal(data, &state); err != nil {
-		return false
-	}
-	return state.Version == 1 && state.ManagedContent == managedContentClean
-}
-
 // ensureManagedContentMigrated performs the one-time, bounded metadata
 // migration while the caller holds the store lock. It is best effort: a lock
 // or I/O failure leaves the store unverified so the old scan continues, and

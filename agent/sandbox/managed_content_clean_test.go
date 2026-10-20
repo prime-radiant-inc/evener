@@ -150,7 +150,7 @@ func TestProbeResolveSeatbeltWithASymlinkedManagedRoot(t *testing.T) {
 	home := t.TempDir()
 	configBase := t.TempDir()
 	realConfig := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(configBase), 0o755); err != nil {
+	if err := os.MkdirAll(configBase, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(realConfig, filepath.Join(configBase, "evener")); err != nil {

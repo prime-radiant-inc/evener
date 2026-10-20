@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -239,12 +240,7 @@ func gitSymlinkError(src, path string) error {
 
 // hasGitComponent reports whether any path component names .git, in any case.
 func hasGitComponent(path string) bool {
-	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
-		if isGitName(part) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(strings.Split(filepath.ToSlash(path), "/"), isGitName)
 }
 
 // removeGitMetadata removes a work tree's .git entry without following a
