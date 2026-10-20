@@ -2217,6 +2217,16 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 // the port is free and selected a detached launch. There is no predecessor
 // whose argv or log destination can be recovered.
 func (m *Manager) startBareHub(ctx context.Context, host hostreg.Host, expectedVersion, expectedGitSHA string) error {
+	if err := m.startBareHubPending(ctx, host, expectedVersion, expectedGitSHA); err != nil {
+		return err
+	}
+	m.clearPendingRestart(host.Name)
+	return nil
+}
+
+// startBareHubPending retains the owned startup until its caller has finished
+// verifying it. Operation recovery also requires the actual process identity.
+func (m *Manager) startBareHubPending(ctx context.Context, host hostreg.Host, expectedVersion, expectedGitSHA string) error {
 	target, err := m.expectedHubExecutable(ctx, host)
 	if err != nil {
 		return err
@@ -2227,11 +2237,7 @@ func (m *Manager) startBareHub(ctx context.Context, host hostreg.Host, expectedV
 	if runErr != nil {
 		return fmt.Errorf("%w: host %q bootstrap launch: %w: %s", ErrRestart, host.Name, runErr, tail(out))
 	}
-	if err := m.waitStartedHealthy(ctx, host, expectedVersion, expectedGitSHA); err != nil {
-		return err
-	}
-	m.clearPendingRestart(host.Name)
-	return nil
+	return m.waitStartedHealthy(ctx, host, expectedVersion, expectedGitSHA)
 }
 
 // deployRequired reports whether a stopped installation lacks its startup
@@ -3557,6 +3563,20 @@ func (m *Manager) acknowledgeDeployment(name string) {
 	m.pendingRestarts[name] = pending
 }
 
+// authorizeDeploymentRestart promotes only an existing installation intent in
+// response to explicit Restart. A matching acknowledged write still needs this
+// authority to start a stopped target; every other recorded fact stays intact.
+func (m *Manager) authorizeDeploymentRestart(name string) pendingRestartState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	pending := m.pendingRestarts[name]
+	if pending.deployment {
+		pending.restart = true
+		m.pendingRestarts[name] = pending
+	}
+	return pending
+}
+
 func (m *Manager) setPendingRestart(name, remote, expectedVersion, expectedGitSHA string, replaced hubIdentity) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -3564,12 +3584,15 @@ func (m *Manager) setPendingRestart(name, remote, expectedVersion, expectedGitSH
 }
 
 // setPendingStart records a command that starts a hub where nothing was
-// serving. It is the bootstrap path's recording: there is no predecessor
-// identity to settle, and a later recovery must not require one.
+// serving. Recovery need not prove a predecessor's replacement, but a known
+// original identity remains available to the public operation's verification.
 func (m *Manager) setPendingStart(name, remote, expectedVersion, expectedGitSHA string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.pendingRestarts[name] = pendingRestartState{command: remote, expectedVersion: expectedVersion, expectedGitSHA: expectedGitSHA, start: true}
+	// Starting a stopped deployment can still retain a known original
+	// predecessor for the public worker's independent verification.
+	replaced := m.pendingRestarts[name].replaced
+	m.pendingRestarts[name] = pendingRestartState{command: remote, expectedVersion: expectedVersion, expectedGitSHA: expectedGitSHA, replaced: replaced, start: true}
 }
 
 func (m *Manager) clearPendingRestart(name string) {

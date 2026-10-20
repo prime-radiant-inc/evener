@@ -351,6 +351,252 @@ func TestHostRestartRepairsDisconnectedDeployment(t *testing.T) {
 	}
 }
 
+func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
+	sha, dirty, channel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
+	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = sha, dirty, channel })
+	buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = restartBuildB, "", "snapshot"
+	for _, scenario := range []string{
+		"matching", "controller-drift", "repair-needed", "unacknowledged", "occupied-port", "unknown-port", "start-retry",
+		"wrong-build", "wrong-pin", "wrong-probe-process", "missing-probe-process", "wrong-probe-build",
+		"known-predecessor", "known-predecessor-start-retry", "known-unchanged-process", "reconnect-only",
+		"identity-failed", "identity-missing", "retry-identity-failed", "retry-identity-missing",
+		"start-retry-occupied-port", "start-retry-unknown-port",
+	} {
+		t.Run(scenario, func(t *testing.T) {
+			buildinfo.GitSHA = restartBuildB
+			retryStart := strings.HasPrefix(scenario, "start-retry") || scenario == "known-predecessor-start-retry" || strings.HasPrefix(scenario, "retry-identity-")
+			runner := &restartRecoveryRunner{diskVersion: restartBuildA, runningVersion: restartBuildB, startedAt: restartStartA,
+				acknowledgeFirstWrite: scenario != "unacknowledged", firstWriteContract: []byte(`{`), noSupervisor: true}
+			initialVersion := restartBuildB
+			if strings.HasPrefix(scenario, "known-") {
+				// Unlike deploy-only, this plan authorizes replacement while the
+				// original process can still be identified before the failed write.
+				initialVersion = restartBuildA
+				runner.runningVersion = initialVersion
+			}
+			m, manager, store, host, events := publicRecoveryHub(t, runner, restartBuildB)
+			ch, err := manager.Ensure(t.Context(), host.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := m.Plan(t.Context(), appwire.HostPlanParams{Name: host.Name})
+			if err != nil {
+				t.Fatal(err)
+			}
+			deploy, err := m.Deploy(t.Context(), appwire.HostDeployParams{Name: host.Name, Token: plan.Token, OperationID: "stopped-deploy-only"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.cfg.opsWG.Wait()
+			assertRestartRecoveryRecord(t, store, deploy.ID, hostops.StateFailed)
+			assertPublicRecoveryEffects(t, runner, 1, 1, 0, initialVersion, restartStartA)
+			runner.mu.Lock()
+			runner.runningVersion, runner.startedAt = "", ""
+			runner.launchResponse = []byte(`{`)
+			if scenario == "reconnect-only" {
+				runner.launchResponse = nil
+				runner.bridgeAttempts = make(chan struct{}, 1)
+			}
+			runner.mu.Unlock()
+			if err := ch.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "reconnect-only" {
+				select {
+				case <-runner.bridgeAttempts:
+				case <-time.After(5 * time.Second):
+					t.Fatal("normal reconnect did not attempt its bridge")
+				}
+				assertPublicRecoveryEffects(t, runner, 1, 1, 0, "", "")
+				runner.mu.Lock()
+				starts := runner.starts
+				runner.mu.Unlock()
+				if starts != 0 {
+					t.Fatalf("normal reconnect promoted deploy-only into %d starts", starts)
+				}
+				return
+			}
+			waitPublicRecoveryEvent(t, events, sshconn.EventFailed)
+			// Matching bytes alone do not acknowledge an interrupted write. A
+			// valid, acknowledged installation must not need another write.
+			runner.mu.Lock()
+			runner.diskVersion = restartBuildB
+			if scenario != "repair-needed" {
+				runner.launchResponse = nil
+			}
+			switch scenario {
+			case "occupied-port", "unknown-port":
+				runner.portState = scenario
+			case "start-retry", "known-predecessor-start-retry", "start-retry-occupied-port", "start-retry-unknown-port":
+				runner.failStart = true
+			case "identity-failed", "identity-missing", "retry-identity-failed", "retry-identity-missing":
+				runner.startupIdentityFault = strings.TrimPrefix(scenario, "retry-")
+				runner.failStart = strings.HasPrefix(scenario, "retry-")
+			case "known-unchanged-process":
+				runner.startTime = restartStartA
+			case "wrong-build":
+				runner.startVersion = restartBuildA
+			case "wrong-pin":
+				runner.healthPin = restartBuildA
+			case "wrong-probe-process":
+				runner.probeStart = restartStartA
+			case "missing-probe-process":
+				runner.omitProbeStart = true
+			case "wrong-probe-build":
+				runner.probeVersion = restartBuildA
+			}
+			runner.mu.Unlock()
+			if scenario == "controller-drift" {
+				buildinfo.GitSHA = restartBuildA
+			}
+			var recoveryResult *sshconn.RestartResult
+			if strings.Contains(scenario, "identity-") {
+				recoverDeployment := m.cfg.recoverDeployment
+				m.cfg.recoverDeployment = func(ctx context.Context, entry hostreg.Host, holder hostops.Holder) (*sshconn.RestartResult, error) {
+					result, err := recoverDeployment(ctx, entry, holder)
+					recoveryResult = result
+					return result, err
+				}
+			}
+			params := appwire.HostRestartParams{Name: host.Name, Generation: host.Generation, IncarnationID: host.IncarnationID, OperationID: "start-deployed-installation"}
+			restart, err := m.Restart(t.Context(), params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.cfg.opsWG.Wait()
+			wantStarts, wantWrites := 1, 1
+			if scenario == "repair-needed" || scenario == "unacknowledged" {
+				wantWrites = 2
+			}
+			switch scenario {
+			case "occupied-port", "unknown-port", "start-retry", "known-predecessor-start-retry", "wrong-build", "wrong-pin", "retry-identity-failed", "retry-identity-missing", "start-retry-occupied-port", "start-retry-unknown-port":
+				assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
+				runner.mu.Lock()
+				starts, writes := runner.starts, runner.writes
+				runner.portState, runner.failStart = "", false
+				if scenario == "wrong-build" || scenario == "wrong-pin" {
+					// The owned start is already running. Repair its response and
+					// settle it without launching or replacing another process.
+					runner.runningVersion, runner.healthPin = restartBuildB, ""
+				}
+				runner.mu.Unlock()
+				failedStarts := 1
+				if scenario == "occupied-port" || scenario == "unknown-port" {
+					failedStarts = 0
+				}
+				if starts != failedStarts || writes != 1 {
+					t.Fatalf("failed recovery effects: starts=%d writes=%d, want %d/1", starts, writes, failedStarts)
+				}
+				if retryStart {
+					buildinfo.GitSHA = restartBuildA
+				}
+				if strings.HasPrefix(scenario, "start-retry-") {
+					runner.mu.Lock()
+					runner.portState = strings.TrimPrefix(scenario, "start-retry-")
+					runner.mu.Unlock()
+					params.OperationID = "retry-start-blocked-port"
+					blocked, err := m.Restart(t.Context(), params)
+					if err != nil {
+						t.Fatal(err)
+					}
+					m.cfg.opsWG.Wait()
+					assertRestartRecoveryRecord(t, store, blocked.ID, hostops.StateFailed)
+					assertPublicRecoveryEffects(t, runner, 1, 1, 0, "", "")
+					runner.mu.Lock()
+					starts = runner.starts
+					runner.portState = ""
+					runner.mu.Unlock()
+					if starts != 1 {
+						t.Fatalf("blocked recorded startup ran again: starts=%d", starts)
+					}
+				}
+				params.OperationID = "retry-start-deployed-installation"
+				restart, err = m.Restart(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.cfg.opsWG.Wait()
+				if retryStart {
+					wantStarts = 2
+				}
+			}
+			if strings.Contains(scenario, "identity-") {
+				assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
+				assertPublicRecoveryEffects(t, runner, 1, 1, 0, restartBuildB, restartStartB)
+				runner.mu.Lock()
+				starts, observations := runner.starts, runner.healthAfterStart
+				runner.startupIdentityFault = ""
+				runner.healthPin = restartBuildA
+				runner.mu.Unlock()
+				if starts != wantStarts || observations != 2 {
+					t.Fatalf("identity refusal: starts=%d health observations=%d, want %d/2", starts, observations, wantStarts)
+				}
+				// Health was accepted once before identity observation failed. The
+				// original B intent must survive, even after the controller changes.
+				buildinfo.GitSHA = restartBuildA
+				recoveryResult = nil
+				params.OperationID = "retry-start-wrong-pin"
+				wrongPin, err := m.Restart(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.cfg.opsWG.Wait()
+				assertRestartRecoveryRecord(t, store, wrongPin.ID, hostops.StateFailed)
+				assertPublicRecoveryEffects(t, runner, 1, 1, 0, restartBuildB, restartStartB)
+				if recoveryResult == nil || recoveryResult.TargetVersion != restartBuildB || !recoveryResult.StartedAt.IsZero() {
+					t.Fatalf("startup accepted a different pin after identity refusal: recovery=%+v", recoveryResult)
+				}
+				runner.mu.Lock()
+				runner.healthPin = ""
+				runner.mu.Unlock()
+				recoveryResult = nil
+				params.OperationID = "retry-start-identity-observation"
+				restart, err = m.Restart(t.Context(), params)
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.cfg.opsWG.Wait()
+				if recoveryResult == nil || recoveryResult.TargetVersion != restartBuildB || recoveryResult.StartedAt.Format(time.RFC3339) != restartStartB {
+					t.Fatalf("owned startup did not survive identity refusal: recovery=%+v", recoveryResult)
+				}
+			}
+			wantState := hostops.StateComplete
+			if scenario == "wrong-probe-process" || scenario == "missing-probe-process" || scenario == "wrong-probe-build" || scenario == "known-unchanged-process" {
+				wantState = hostops.StateFailed
+			}
+			wantStart := restartStartB
+			if scenario == "known-unchanged-process" {
+				wantStart = restartStartA
+			}
+			assertRestartRecoveryRecord(t, store, restart.ID, wantState)
+			assertPublicRecoveryEffects(t, runner, wantWrites, wantWrites, 0, restartBuildB, wantStart)
+			runner.mu.Lock()
+			starts, epochs := runner.starts, append([]appwire.FencingEpoch(nil), runner.probeEpochs...)
+			runner.mu.Unlock()
+			record, _ := store.Record(restart.ID)
+			if starts != wantStarts || len(epochs) == 0 || epochs[len(epochs)-1] != epochOf(record) {
+				t.Fatalf("startup/epoch: starts=%d epochs=%v record=%+v", starts, epochs, record)
+			}
+			waitPublicRecoveryEvent(t, events, sshconn.EventAttached)
+			repaired, ok := manager.ChannelIfAttached(host.Name)
+			if !ok {
+				t.Fatal("verified startup has no live channel")
+			}
+			if err := repaired.Close(); err != nil {
+				t.Fatal(err)
+			}
+			waitPublicRecoveryEvent(t, events, sshconn.EventAttached)
+			assertPublicRecoveryEffects(t, runner, wantWrites, wantWrites, 0, restartBuildB, wantStart)
+			runner.mu.Lock()
+			starts = runner.starts
+			runner.mu.Unlock()
+			if starts != wantStarts {
+				t.Fatalf("supervisor repeated startup: starts=%d want=%d", starts, wantStarts)
+			}
+		})
+	}
+}
+
 func TestHostRestartDisconnectedWithoutDeploymentDoesNotInstall(t *testing.T) {
 	runner := &restartRecoveryRunner{diskVersion: restartBuildA, runningVersion: restartBuildA, startedAt: restartStartA}
 	m, manager, store, host, _ := publicRecoveryHub(t, runner, restartBuildB)
@@ -514,6 +760,14 @@ type restartRecoveryRunner struct {
 	failRepair                    bool
 	missing                       bool
 	missingError                  error
+	noSupervisor                  bool
+	portState, startVersion       string
+	startTime                     string
+	healthPin                     string
+	failStart, omitProbeStart     bool
+	startupIdentityFault          string
+	healthAfterStart              int
+	bridgeAttempts                chan struct{}
 	observeMutation               func()
 	probeEpochs                   []appwire.FencingEpoch
 	streams                       []*probeFakeStdio
@@ -552,6 +806,9 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 	case strings.Contains(command, "evener_resolve"):
 		return []byte("/opt/evener/bin/evener\n"), nil
 	case strings.Contains(command, "list-units"):
+		if r.noSupervisor {
+			return nil, nil
+		}
 		if r.runningVersion == "" {
 			if strings.Contains(command, "--user") {
 				return nil, nil
@@ -560,7 +817,30 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 		}
 		return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
 	case strings.Contains(command, "lsof -ti :9180"):
+		if r.portState == "unknown-port" {
+			return nil, errors.New("port probe interrupted")
+		}
+		if r.portState == "occupied-port" || r.noSupervisor && r.runningVersion != "" {
+			return []byte(sshconn.ListenerPresentMarker), nil
+		}
 		return []byte(sshconn.NoListenerMarker), nil
+	case strings.Contains(command, "nohup"):
+		if r.observeMutation != nil {
+			r.observeMutation()
+		}
+		r.starts++
+		if r.failStart {
+			return nil, errors.New("startup interrupted")
+		}
+		r.runningVersion, r.startedAt = r.diskVersion, restartStartB
+		if r.startVersion != "" {
+			r.runningVersion = r.startVersion
+		}
+		if r.startTime != "" {
+			r.startedAt = r.startTime
+		}
+		r.healthAfterStart = 0
+		return nil, nil
 	case strings.Contains(command, "systemctl start"):
 		r.starts++
 		r.runningVersion, r.startedAt = r.diskVersion, restartStartA
@@ -583,7 +863,23 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 		if r.runningVersion == "" {
 			return nil, errors.New("no listener")
 		}
-		return fmt.Appendf(nil, `{"version":%q,"backend_git_sha":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":%q}`, r.runningVersion, r.runningVersion, r.startedAt), nil
+		pin := r.runningVersion
+		if r.healthPin != "" {
+			pin = r.healthPin
+		}
+		startedAt := r.startedAt
+		if r.starts > 0 {
+			r.healthAfterStart++
+			if r.healthAfterStart >= 2 {
+				switch r.startupIdentityFault {
+				case "identity-failed":
+					return nil, errors.New("startup identity observation interrupted")
+				case "identity-missing":
+					startedAt = ""
+				}
+			}
+		}
+		return fmt.Appendf(nil, `{"version":%q,"backend_git_sha":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":%q}`, r.runningVersion, pin, startedAt), nil
 	case strings.Contains(command, "cat >"):
 		if r.observeMutation != nil {
 			r.observeMutation()
@@ -608,18 +904,33 @@ func (r *restartRecoveryRunner) Run(_ context.Context, argv []string, stdin io.R
 }
 
 func (r *restartRecoveryRunner) Start(context.Context, []string, io.Writer) (sshconn.Stdio, error) {
+	r.mu.Lock()
+	present := r.runningVersion != ""
+	if r.bridgeAttempts != nil {
+		select {
+		case r.bridgeAttempts <- struct{}{}:
+		default:
+		}
+	}
+	r.mu.Unlock()
+	if !present {
+		return nil, errors.New("no listener")
+	}
 	stream := probeBridge(func(params appwire.HostRunningParams) (appwire.HostRunningResponse, appwire.WireError) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		r.probeEpochs = append(r.probeEpochs, params.FencingEpoch)
 		version, startedAt := r.runningVersion, r.startedAt
-		if r.restarts > 0 {
+		if r.restarts > 0 || r.starts > 0 {
 			r.afterProbes++
 			if r.probeVersion != "" {
 				version = r.probeVersion
 			}
 			if r.probeStart != "" {
 				startedAt = r.probeStart
+			}
+			if r.omitProbeStart {
+				startedAt = ""
 			}
 		}
 		return appwire.HostRunningResponse{

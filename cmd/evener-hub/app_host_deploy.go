@@ -775,6 +775,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// The requested build is separate from that predecessor's identity: a
 	// standalone restart can finish an earlier deployment to another build.
 	targetVersion := work.token.ControllerRevision
+	var startedAt time.Time
 	if work.record.Kind == hostops.KindDeploy {
 		restartFollows = planRestartFollows(hubcore.HostRuntimeProbe{
 			Version:          work.token.RunningVersion,
@@ -839,6 +840,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 					beforeProbe.ProcessStartTime = &result.ReplacedStartedAt
 				}
 				targetVersion = result.TargetVersion
+				startedAt = result.StartedAt
 				restartFollows = true
 				m.recordProgress(id, "the pending deployment was recovered and its replacement verified before attachment")
 			}
@@ -920,7 +922,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// §6's post-operation refresh: the verified channel-free preflight, then
 	// the running probe over the attached (reattached) channel, then the
 	// verification.
-	refreshErr := m.refreshOperation(ctx, id, work, beforeProbe, targetVersion, restartFollows)
+	refreshErr := m.refreshOperation(ctx, id, work, beforeProbe, targetVersion, restartFollows, startedAt)
 	// The suppress-supervisor scope ends at verification: hand the channel back
 	// to a supervisor under the still-held gate, whether or not the refresh
 	// verified the outcome — the operation is over either way, and the host
@@ -999,7 +1001,7 @@ func (m *hubHostManager) checkOperationFingerprint(entry hostreg.Host, bound str
 // attached channel presenting the operation's persisted fencing epoch. It
 // records the failure verbatim — never a clean success it could not verify —
 // and returns nil only when the refresh verified the outcome.
-func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work opWork, beforeProbe hubcore.HostRuntimeProbe, target string, restarted bool) error {
+func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work opWork, beforeProbe hubcore.HostRuntimeProbe, target string, restarted bool, startedAt time.Time) error {
 	if m.cfg.planFacts == nil {
 		return errors.New("the post-operation preflight is not wired")
 	}
@@ -1031,7 +1033,14 @@ func (m *hubHostManager) refreshOperation(ctx context.Context, id string, work o
 	if !probe.RunningHealthy {
 		return fmt.Errorf("the post-operation probe reports the host unhealthy (build %q), so the operation is not a verified success", probe.Version)
 	}
-	if restarted {
+	if !startedAt.IsZero() {
+		// An owned free-port start can have no predecessor. Its proof is the
+		// actual process sshconn verified, independently observed at this epoch.
+		if probe.ProcessStartTime == nil || !probe.ProcessStartTime.Equal(startedAt) {
+			return errors.New("the post-operation probe did not identify the verified startup process")
+		}
+	}
+	if restarted && (startedAt.IsZero() || beforeProbe.ProcessStartTime != nil) {
 		before := beforeProbe.ProcessStartTime
 		if before == nil || probe.ProcessStartTime == nil {
 			return fmt.Errorf("the post-operation probe cannot prove the new process replaced the old one: a process start time is absent (before=%v, after=%v)",

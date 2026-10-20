@@ -400,6 +400,8 @@ the predecessor process identity before the first remote write, including writes
 whose acknowledgement is lost. Reconnect verifies the installed build and finishes
 the recorded replacement even if the original attempt failed before choosing a
 restart command. A confirmed deploy-only operation remains deploy-only on retry.
+Explicit Restart authorizes starting or replacing that installation even when
+its acknowledged write already matches the requested build and needs no rewrite.
 An unacknowledged write is retried before recovery can settle, since equal build
 labels such as `dev` do not prove the requested executable was installed.
 Even an acknowledged deploy-only write remains pending until its build and startup
@@ -428,6 +430,10 @@ predecessor identity across retries.
 If a supervisorless predecessor exits before a restart command is recorded,
 recovery proves the port is free and starts the saved target with the deployment's
 build expectations. An occupied or unprobeable port leaves the recovery pending.
+When the predecessor is unknown, the public operation independently verifies the
+actual startup process after reattachment. A known predecessor still requires a
+different process start time. Retrying a recorded startup completes that effect
+without requesting another replacement.
 Source refusals before a write leave no recovery intent. Recovery does not
 reinterpret the operation from a newly observed executable or hide its failure.
 

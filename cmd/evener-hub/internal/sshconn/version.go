@@ -568,9 +568,20 @@ func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts
 // a non-unique version cannot make the old process look like a successful
 // replacement.
 func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Preflight, expectVersion, expectPin string, replaced hubIdentity) error {
+	started, err := m.restartHubWithStartProof(ctx, host, facts, expectVersion, expectPin, replaced)
+	if started && err == nil {
+		m.clearPendingRestart(host.Name)
+	}
+	return err
+}
+
+// restartHubWithStartProof reports only the actual free-port startup branch.
+// Unknown predecessor identity alone never authorizes startup verification.
+// That branch retains its pending intent for the caller to verify and settle.
+func (m *Manager) restartHubWithStartProof(ctx context.Context, host hostreg.Host, facts Preflight, expectVersion, expectPin string, replaced hubIdentity) (bool, error) {
 	set, err := m.detectSupervisor(ctx, host, facts)
 	if err != nil {
-		return err
+		return false, err
 	}
 	sup := set.live
 	if sup.kind == supervisorNone && set.dormant.kind != supervisorNone {
@@ -581,7 +592,7 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 		// hub.lock and leave the ad hoc hub (on the old build) still serving.
 		cleared, err := m.portCleared(ctx, host, hubPort(m.hostAddr(host)))
 		if err != nil {
-			return err
+			return false, err
 		}
 		if cleared {
 			sup = set.dormant
@@ -589,7 +600,7 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 	}
 	if sup.kind != supervisorNone {
 		if remote, ok := sup.restartRemote(facts.UID); ok {
-			return m.restartSupervised(ctx, host, sup, remote, expectVersion, expectPin, replaced)
+			return false, m.restartSupervised(ctx, host, sup, remote, expectVersion, expectPin, replaced)
 		}
 		// The supervisor's restart command cannot be built safely, so fall through
 		// to the guarded ad hoc path without naming the label in any command.
@@ -601,10 +612,10 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 		// saved target, retaining the deployment's build expectations.
 		cleared, err := m.portCleared(ctx, host, hubPort(m.hostAddr(host)))
 		if err != nil {
-			return err
+			return false, err
 		}
 		if cleared {
-			return m.startBareHub(ctx, host, expectVersion, expectPin)
+			return true, m.startBareHubPending(ctx, host, expectVersion, expectPin)
 		}
 	}
 
@@ -612,15 +623,15 @@ func (m *Manager) restartHub(ctx context.Context, host hostreg.Host, facts Prefl
 	// that can run. A stopped host's cold bootstrap is unaffected: it is
 	// start-only (bootstrapHub) and never reaches this branch.
 	if err := m.restartBare(ctx, host, expectVersion, expectPin, replaced); err != nil {
-		return err
+		return false, err
 	}
 	if err := m.waitHealthy(ctx, host, expectVersion, expectPin, replaced); err != nil {
-		return err
+		return false, err
 	}
 	// A healthy replacement is serving, so any relaunch this Manager recorded for
 	// this host is settled.
 	m.clearPendingRestart(host.Name)
-	return nil
+	return false, nil
 }
 
 // restartSupervised runs a detected supervisor's restart command and verifies
@@ -664,23 +675,26 @@ func (m *Manager) restartSupervised(ctx context.Context, host hostreg.Host, sup 
 // hub to kill here, so it runs the recorded command directly and waits for the
 // expected build to answer.
 func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, pending pendingRestartState) error {
+	if err := m.recoverRestartPending(ctx, host, pending); err != nil {
+		return err
+	}
+	m.clearPendingRestart(host.Name)
+	return nil
+}
+
+// recoverRestartPending keeps the recorded effect owned until its caller's
+// verification finishes, including operation recovery's startup identity proof.
+func (m *Manager) recoverRestartPending(ctx context.Context, host hostreg.Host, pending pendingRestartState) error {
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, pending.command), nil)
 	if err != nil {
 		return fmt.Errorf("%w: host %q restart recovery: %w: %s", ErrRestart, host.Name, err, tail(out))
 	}
 	// The recorded intent owns both the build expectation and the predecessor.
 	// Later disk facts and unverified health answers cannot replace either.
-	var waitErr error
 	if pending.start {
-		waitErr = m.waitStartedHealthy(ctx, host, pending.expectedVersion, pending.expectedGitSHA)
-	} else {
-		waitErr = m.waitHealthy(ctx, host, pending.expectedVersion, pending.expectedGitSHA, pending.replaced)
+		return m.waitStartedHealthy(ctx, host, pending.expectedVersion, pending.expectedGitSHA)
 	}
-	if waitErr != nil {
-		return waitErr
-	}
-	m.clearPendingRestart(host.Name)
-	return nil
+	return m.waitHealthy(ctx, host, pending.expectedVersion, pending.expectedGitSHA, pending.replaced)
 }
 
 // restartBare implements the doc's four-step ad hoc-hub restart: find the pid
