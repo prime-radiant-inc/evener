@@ -551,16 +551,17 @@ func (rp ResolvedPolicy) ManagedWalkExempt(path string) bool {
 	return false
 }
 
-// resolveRootSpellings returns each existing root's symlink-resolved spelling,
-// skipping roots that cannot be resolved. It is what lets a backend that binds
-// the real path match the managed root it came from.
+// resolveRootSpellings returns each root's resolved spelling through whatever
+// ancestors exist, so a root created after resolution is still matched by the
+// path a backend will bind. It is what lets a symlinked config/store directory
+// use the walk exemption.
 func resolveRootSpellings(roots []string) []string {
 	out := make([]string, 0, len(roots))
 	for _, root := range roots {
 		if root == "" {
 			continue
 		}
-		if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		if resolved := resolveExistingPrefix(root); resolved != root {
 			out = append(out, resolved)
 		}
 	}

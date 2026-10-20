@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func writeTestFile(t *testing.T, path, body string) {
@@ -113,6 +114,42 @@ func TestPublicationFallsBackAcrossFilesystems(t *testing.T) {
 	}
 	if got, err := os.ReadFile(filepath.Join(final, "README.md")); err != nil || string(got) != "content" {
 		t.Fatalf("cross-device publication = %q, %v", got, err)
+	}
+}
+
+func TestPublishReclaimsAbandonedCrossFilesystemScratch(t *testing.T) {
+	parent := t.TempDir()
+	stale := filepath.Join(parent, publishScratchPrefix+"stale")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := stale + publishScratchMarkerSuffix
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-2 * abandonedPublishScratch)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(marker, old, old); err != nil {
+		t.Fatal(err)
+	}
+	young := filepath.Join(parent, publishScratchPrefix+"young")
+	if err := os.MkdirAll(young, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(young+publishScratchMarkerSuffix, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reclaimPublishScratch(parent)
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("abandoned cross-filesystem copy survived: %v", err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("abandoned marker survived: %v", err)
+	}
+	if _, err := os.Stat(young); err != nil {
+		t.Fatalf("young in-flight copy was reclaimed: %v", err)
 	}
 }
 

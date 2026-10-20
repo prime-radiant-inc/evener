@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // publishingDirName is the private store area where a managed source is
@@ -118,6 +119,16 @@ func relForDiagnostic(root, path string) string {
 // runtime.
 const managedGitArchiveDirName = "managed-git-archive"
 
+const (
+	// publishScratchPrefix names the temporary sibling of a destination used
+	// when staging and destination are on different filesystems. The sidecar
+	// marker proves this code created it; only a marked, old directory is
+	// reclaimed.
+	publishScratchPrefix       = ".publish-"
+	publishScratchMarkerSuffix = ".publish-owned"
+	abandonedPublishScratch    = time.Hour
+)
+
 func (m *Manager) managedGitArchiveDir(rootName, rel string) string {
 	return filepath.Join(m.Root, managedGitArchiveDirName, rootName, rel)
 }
@@ -145,6 +156,7 @@ func moveNoReplace(src, dst string) error {
 // atomic. The staged content is already audited, so nothing reachable from the
 // destination filesystem before the rename contains Git metadata.
 func publishStaged(staging, final string, rename func(string, string) error) error {
+	reclaimPublishScratch(filepath.Dir(final))
 	err := rename(staging, final)
 	if err == nil {
 		return nil
@@ -156,15 +168,60 @@ func publishStaged(staging, final string, rename func(string, string) error) err
 	if err != nil {
 		return err
 	}
+	marker := tmp + publishScratchMarkerSuffix
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		_ = os.RemoveAll(tmp)
+		return err
+	}
 	if err := copyTreeExact(staging, tmp); err != nil {
 		_ = os.RemoveAll(tmp)
+		_ = os.Remove(marker)
 		return err
 	}
 	if err := rename(tmp, final); err != nil {
 		_ = os.RemoveAll(tmp)
+		_ = os.Remove(marker)
 		return err
 	}
+	_ = os.Remove(marker)
 	return nil
+}
+
+// reclaimPublishScratch removes old, marked cross-filesystem copies left by a
+// termination between copy and rename. Callers hold the publication lock for
+// this destination; a concurrent copy is younger than the abandonment age.
+func reclaimPublishScratch(parent string) {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	for _, entry := range entries {
+		name := entry.Name()
+		path := filepath.Join(parent, name)
+		if strings.HasSuffix(name, publishScratchMarkerSuffix) {
+			dir := strings.TrimSuffix(path, publishScratchMarkerSuffix)
+			if _, err := os.Lstat(dir); !errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			if info, err := entry.Info(); err == nil && now.Sub(info.ModTime()) >= abandonedPublishScratch {
+				_ = os.Remove(path)
+			}
+			continue
+		}
+		if !strings.HasPrefix(name, publishScratchPrefix) {
+			continue
+		}
+		marker := path + publishScratchMarkerSuffix
+		if info, err := os.Stat(marker); err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if info, err := entry.Info(); err != nil || now.Sub(info.ModTime()) < abandonedPublishScratch {
+			continue
+		}
+		_ = os.RemoveAll(path)
+		_ = os.Remove(marker)
+	}
 }
 
 // copyTreeExact copies a prepared tree preserving directory modes, file modes,

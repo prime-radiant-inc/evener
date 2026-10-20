@@ -211,3 +211,30 @@ func TestProbeResolveSeatbeltWithASymlinkedManagedRoot(t *testing.T) {
 		t.Errorf("user-skills linked .git target was not walked:\n%s", text)
 	}
 }
+
+func TestMissingManagedRootUsesProspectiveResolvedSpelling(t *testing.T) {
+	home := t.TempDir()
+	realConfig := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realConfig, filepath.Join(home, ".config", "evener")); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(home, ".config", "evener", "plugins", "cache")
+	facts := bwrapFacts(home)
+	facts.EvenerContentRoots = []string{cache}
+	facts.EvenerManagedContentRoots = []string{cache}
+	facts.EvenerManagedContentClean = true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, facts, MaterializeWorkspace(t, MainCheckout))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resolved := filepath.Join(realConfig, "plugins", "cache")
+	if !rp.ManagedWalkExempt(resolved) {
+		t.Fatalf("a managed root created after resolution was not exempt at %q", resolved)
+	}
+}
