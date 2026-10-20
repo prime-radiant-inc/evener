@@ -402,6 +402,10 @@ the recorded replacement even if the original attempt failed before choosing a
 restart command. A confirmed deploy-only operation remains deploy-only on retry.
 An unacknowledged write is retried before recovery can settle, since equal build
 labels such as `dev` do not prove the requested executable was installed.
+An explicit Restart also finishes any pending deployment write before restarting.
+If the first health probe missed the predecessor, a later probe can identify it
+before the first restart command runs; an issued command retains its original
+predecessor identity across retries.
 Source refusals before a write leave no recovery intent. Recovery does not
 reinterpret the operation from a newly observed executable or hide its failure.
 

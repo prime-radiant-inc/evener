@@ -36,14 +36,17 @@ import (
 // The phase is bounded by the deploy limit, and the caller's context (the
 // operation worker's controller-lifetime context) cancels it.
 func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, facts Preflight, restart bool) (string, Preflight, error) {
+	return m.deployForOperation(ctx, host, facts, m.deploymentIntent(restart, hubIdentity{}))
+}
+
+func (m *Manager) deployForOperation(ctx context.Context, host hostreg.Host, facts Preflight, intent pendingRestartState) (string, Preflight, error) {
 	deployCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
 	defer cancel()
 	beforeWrite := func(target string) {
-		var running hubIdentity
-		if restart {
-			running, _ = m.probeRunningHub(deployCtx, host)
+		if intent.restart && intent.replaced.startedAt.IsZero() && intent.command == "" {
+			intent.replaced, _ = m.probeRunningHub(deployCtx, host)
 		}
-		m.deploymentRecorder(host.Name, m.deploymentIntent(restart, running))(target)
+		m.deploymentRecorder(host.Name, intent)(target)
 	}
 	target, err := m.deploy(deployCtx, host, facts, beforeWrite)
 	if err != nil {
@@ -58,10 +61,10 @@ func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, fac
 	if err != nil {
 		return "", facts, err
 	}
-	if err := m.deployedBuildNotStamped(host.Name, after, m.opts.controllerVersion()); err != nil {
+	if err := m.deployedBuildNotStamped(host.Name, after, intent.expectedVersion); err != nil {
 		return "", facts, err
 	}
-	if !restart {
+	if !intent.restart {
 		m.clearPendingRestart(host.Name)
 	}
 	return target, after, nil
@@ -77,12 +80,24 @@ func (m *Manager) DeployForOperation(ctx context.Context, host hostreg.Host, fac
 // (deploy pipeline §6's post-operation refresh); this call ends once the
 // replacement is proven healthy.
 func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, facts Preflight) error {
+	if pending := m.pendingRestart(host.Name); pending.needsDeployment(facts) {
+		// This explicit Restart authorizes replacement even when the unfinished
+		// deployment was deploy-only. Finish its write before replacing its marker.
+		pending.restart = true
+		_, after, err := m.deployForOperation(ctx, host, facts, pending)
+		if err != nil {
+			return err
+		}
+		facts = after
+		m.applyResolvedTarget(&host)
+	}
 	restartCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
 	defer cancel()
 	running, _ := m.probeRunningHub(restartCtx, host)
 	version, pin := expectedServedBuild(facts, m.opts.controllerVersion())
 	if pending := m.pendingRestart(host.Name); pending.active() {
-		version, pin, running = pending.expectedVersion, pending.expectedGitSHA, pending.replaced
+		version, pin = pending.expectedVersion, pending.expectedGitSHA
+		running = pending.restartPredecessor(running)
 	}
 	return m.restartHub(restartCtx, host, facts, version, pin, running)
 }

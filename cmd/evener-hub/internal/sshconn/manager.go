@@ -2085,7 +2085,7 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 			if pending.active() {
 				version, pin = pending.expectedVersion, pending.expectedGitSHA
 				if !pending.start {
-					replaced = pending.replaced
+					replaced = pending.restartPredecessor(running)
 				}
 			}
 			restartErr = m.restartHub(restartCtx, host, facts, version, pin, replaced)
@@ -3503,6 +3503,15 @@ func (p pendingRestartState) active() bool {
 // Replay an unacknowledged write before settling or restarting its deployment.
 func (p pendingRestartState) needsDeployment(facts Preflight) bool {
 	return p.deployment && (!p.writeAcknowledged || facts.ExecutableMissing || facts.Version != p.expectedVersion)
+}
+
+// Before the first restart command, a fresh probe may fill an unknown predecessor.
+// After a command could have run, only the original identity can prove replacement.
+func (p pendingRestartState) restartPredecessor(running hubIdentity) hubIdentity {
+	if p.command == "" && p.replaced.startedAt.IsZero() {
+		return running
+	}
+	return p.replaced
 }
 
 func (m *Manager) deploymentIntent(restart bool, replaced hubIdentity) pendingRestartState {
