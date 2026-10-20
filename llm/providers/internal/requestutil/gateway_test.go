@@ -27,9 +27,9 @@ func TestGatewayInputModalities(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Nil, not an empty slice, is what "advertises nothing" must mean:
 			// anything else would erase a curated list on the live replay.
-			got := GatewayInputModalities(tc.arch, tc.caps)
+			got := gatewayInputModalities(tc.arch, tc.caps)
 			if !slices.Equal(got, tc.want) || (got == nil) != (tc.want == nil) {
-				t.Fatalf("GatewayInputModalities = %#v, want %#v", got, tc.want)
+				t.Fatalf("gatewayInputModalities = %#v, want %#v", got, tc.want)
 			}
 		})
 	}
@@ -141,12 +141,12 @@ func TestGatewayEffortLadder(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, published := GatewayEffortLadder(tc.compat)
+			got, published := gatewayEffortLadder(tc.compat)
 			if published != tc.published {
 				t.Fatalf("published = %v, want %v", published, tc.published)
 			}
 			if !slices.Equal(got, tc.want) || (!published && got != nil) {
-				t.Fatalf("GatewayEffortLadder = %#v, want %#v (published %v)", got, tc.want, published)
+				t.Fatalf("gatewayEffortLadder = %#v, want %#v (published %v)", got, tc.want, published)
 			}
 		})
 	}

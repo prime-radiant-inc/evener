@@ -60,30 +60,20 @@ func ApplyGatewayFacts(caps *registry.Caps, arch GatewayArchitecture, capsFacts 
 		if registry.ValidMaxTokensField(pi.MaxTokensField) {
 			caps.MaxTokensField = new(pi.MaxTokensField)
 		}
-		// A model the gateway says takes no effort parameter is toggle-only:
-		// dropping "effort" from the controls is what keeps derivation from
-		// inferring it back and the request builder from spelling a level the
-		// gateway ignores. The ladder is an empty non-nil list, not nil, so the
-		// live layer replaces a curated one instead of inheriting it.
-		//
-		// An explicit non-reasoning verdict wins over this: such a row has no
-		// reasoning controls at all, and derivation's clean-up is the only
-		// thing that would otherwise remove them.
-		nonReasoning := caps.Reasoning != nil && !*caps.Reasoning
-		if pi.SupportsReasoningEffort != nil && !*pi.SupportsReasoningEffort && !nonReasoning {
-			caps.ReasoningControls = []string{"toggle"}
-			caps.EffortValues = []string{}
-		}
 	}
-	caps.InputModalities = GatewayInputModalities(arch, capsFacts)
+	caps.InputModalities = gatewayInputModalities(arch, capsFacts)
 }
 
 // applyGatewayReasoning is ApplyGatewayFacts' reasoning half.
 //
-// A usable ladder is itself evidence the model tunes effort, so it raises a
-// verdict inferred elsewhere (a provider-wide parameter list, the catalog) to
-// true. An explicit capabilities verdict still wins: a gateway saying the model
-// does not reason is not overruled by a stale map beside it.
+// The two verdicts a gateway can state are checked in precedence order. An
+// explicit capabilities verdict on reasoning wins outright: a non-reasoning row
+// carries no ladder and no effort control, whatever a map or the effort field
+// beside it says. Next, a model the gateway says takes no effort parameter is
+// toggle-only — it reasons, but no level ever reaches the wire, so the ladder
+// is neither built nor kept. Only then is the map itself consulted, and a
+// usable ladder is evidence the model tunes effort: it raises a verdict
+// inferred elsewhere (a provider-wide parameter list, the catalog) to true.
 //
 // A row the gateway marks non-reasoning carries no ladder. Clearing it here,
 // rather than merely skipping the write, is what keeps the raw live row
@@ -93,14 +83,30 @@ func ApplyGatewayFacts(caps *registry.Caps, arch GatewayArchitecture, capsFacts 
 // gateway saying the same thing, so it too clears any inherited ladder rather
 // than letting the replay keep one the gateway marks unsupported.
 func applyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
-	ladder, published := GatewayEffortLadder(compat)
+	// An explicit capabilities verdict is the gateway's own knowledge, and a
+	// negative one ends the matter: nothing below may reopen it. A verdict the
+	// caller already inferred (a provider-wide parameter list, the catalog) is
+	// weaker, and a usable ladder below still raises it.
 	if capsFacts.Reasoning != nil {
 		caps.Reasoning = capsFacts.Reasoning
 		if !*capsFacts.Reasoning {
 			caps.EffortValues = nil
 			return
 		}
-	} else if len(ladder) > 0 {
+	}
+	// A model the gateway says takes no effort parameter is toggle-only:
+	// dropping "effort" from the controls is what keeps derivation from
+	// inferring it back and the request builder from spelling a level the
+	// gateway ignores. The ladder is an empty non-nil list, not nil, so the
+	// live layer replaces a curated one instead of inheriting it. Building it
+	// first would only be discarded.
+	if pi := compat.Pi; pi != nil && pi.SupportsReasoningEffort != nil && !*pi.SupportsReasoningEffort {
+		caps.ReasoningControls = []string{"toggle"}
+		caps.EffortValues = []string{}
+		return
+	}
+	ladder, published := gatewayEffortLadder(compat)
+	if len(ladder) > 0 {
 		caps.Reasoning = new(true)
 	}
 	if published {
@@ -108,7 +114,7 @@ func applyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, c
 	}
 }
 
-// GatewayEffortLadder returns the effort ladder a gateway's per-model
+// gatewayEffortLadder returns the effort ladder a gateway's per-model
 // client_compat states, ordered as evener displays one: an explicit off level
 // first when the model has one, then minimal → max. A null value, or no key at
 // all, is a level the model does not support; a value outside evener's
@@ -122,7 +128,7 @@ func applyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, c
 // map whose every level is null is the gateway stating that the model takes no
 // effort control: the ladder is empty and the caller must apply it as such, not
 // inherit around it.
-func GatewayEffortLadder(compat GatewayClientCompat) (ladder []string, published bool) {
+func gatewayEffortLadder(compat GatewayClientCompat) (ladder []string, published bool) {
 	if compat.Pi == nil || compat.Pi.ThinkingLevelMap == nil {
 		return nil, false
 	}
@@ -146,11 +152,11 @@ func GatewayEffortLadder(compat GatewayClientCompat) (ladder []string, published
 	return ladder, true
 }
 
-// GatewayInputModalities is the input modality list a /models row advertises:
+// gatewayInputModalities is the input modality list a /models row advertises:
 // architecture.input_modalities when that list carries any entry, else text
 // plus image for an advertised vision capability, else nil. The protocol
 // readers share it so they cannot disagree about the precedence.
-func GatewayInputModalities(arch GatewayArchitecture, caps GatewayCapabilities) []string {
+func gatewayInputModalities(arch GatewayArchitecture, caps GatewayCapabilities) []string {
 	if mods := DedupStrings(arch.InputModalities); len(mods) > 0 {
 		return mods
 	}
