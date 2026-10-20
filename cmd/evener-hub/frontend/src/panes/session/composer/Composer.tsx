@@ -515,7 +515,7 @@ export function Composer({ ref, paneId, focused, source }: ComposerProps) {
     // turn/start -- a Stop becoming a message. QueueStrip renders it as a
     // failure with its reason instead.
     const record = recoveryEntries.find(
-      (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt",
+      (entry) => entry.recoveryKind === "rejected" && entry.method !== "turn/interrupt" && !entry.preserveComposer,
     );
     if (!record) return;
     const recovered = recoveryComposerDraft(record);

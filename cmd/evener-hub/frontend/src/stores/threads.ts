@@ -1,4 +1,4 @@
-import type { ComposerMention } from "@evener/appwire-client";
+import { type ComposerMention, TURN_CONTINUATION_TEXT } from "@evener/appwire-client";
 // threads.ts tracks the ThreadModel for every ref currently open in a pane,
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
@@ -355,6 +355,7 @@ export interface ThreadsStoreState {
     commandNames?: readonly string[],
     mentions?: readonly ComposerMention[],
   ): Promise<void>;
+  continueTurn(ref: string): Promise<void>;
   steer(
     ref: string,
     text: string,
@@ -3845,6 +3846,24 @@ const COMPOSER_ROUTE_METHODS: Record<ComposerMutationRoute, string> = {
   steer: "turn/steer",
   drain: "turn/drainAsSteer",
 };
+
+async function sendMutationIntent(intent: MutationIntent): Promise<void> {
+  // The recovery fence is enforced at the shared admission every durable
+  // action funnels through (enqueueMutationIntent's central check), so the
+  // alternate send paths - the palette's slash fallthrough, the ask dock's
+  // batch send, a failed turn's Retry - hear the same refusal the surfaces
+  // render, with nothing parked behind it.
+  //
+  // The Send-resumes face is the one shape the fence admits: its send parks
+  // (no RPC leaves while the obligation stands). After the durable write the
+  // store runs the resume the standalone button used to, and the deferred
+  // dispatch tails drain the parked row once the resume reconciles. The face
+  // is read AFTER the write: a hydration that landed while the write was in
+  // flight is the snapshot the admission saw, and re-reading here keeps the
+  // drive from being skipped (or spuriously started) across that window.
+  await enqueueMutationIntent(intent);
+  if (sendResumesLocalModel(intent.targetRef)) void resumeFencedForSend(intent.targetRef);
+}
 
 function composerMutationIntent(
   ref: string,
@@ -7455,23 +7474,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async send(ref, text, attachments, skillNames, commandNames, mentions) {
-    // The recovery fence is enforced at the shared admission every durable
-    // action funnels through (enqueueMutationIntent's central check), so the
-    // alternate send paths - the palette's slash fallthrough, the ask dock's
-    // batch send, a failed turn's Retry - hear the same refusal the surfaces
-    // render, with nothing parked behind it.
-    //
-    // The Send-resumes face is the one shape the fence admits: its send parks
-    // (no RPC leaves while the obligation stands). After the durable write the
-    // store runs the resume the standalone button used to, and the deferred
-    // dispatch tails drain the parked row once the resume reconciles. The face
-    // is read AFTER the write: a hydration that landed while the write was in
-    // flight is the snapshot the admission saw, and re-reading here keeps the
-    // drive from being skipped (or spuriously started) across that window.
-    await enqueueMutationIntent(
+    await sendMutationIntent(
       composerMutationIntent(ref, "send", text, attachments, skillNames, commandNames, mentions),
     );
-    if (sendResumesLocalModel(ref)) void resumeFencedForSend(ref);
+  },
+
+  async continueTurn(ref) {
+    await sendMutationIntent({
+      ...composerMutationIntent(ref, "send", TURN_CONTINUATION_TEXT),
+      preserveComposer: true,
+    });
   },
 
   async steer(ref, text, attachments, skillNames, commandNames, mentions) {

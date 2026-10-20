@@ -46,6 +46,7 @@ import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { createTestComposerSource } from "../testing/composerSource";
 import { editorCursor, pastePngInto, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
+import { TurnBlock } from "../transcript/TurnBlock";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
@@ -3120,6 +3121,102 @@ test("an explicit rejection returns to the sole Composer textarea", async () => 
   expect(screen.getAllByRole("textbox")).toEqual([editor]);
   expect(screen.queryByText("Recovery drafts")).toBeNull();
   expect(screen.queryByRole("textbox", { name: "Recovered message" })).toBeNull();
+});
+
+test.each(["", "  ", "occupied draft"])(
+  "a refused failed-turn Retry preserves draft %j across remount",
+  async (text) => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const view = await mountComposerWithHandle("ref_a");
+    await replaceEditorText(textarea(), text);
+    const beforeDraft = readComposerDraft("ref_a");
+    const turn = {
+      id: "failed_turn",
+      status: "failed" as const,
+      error: { message: "provider failure" },
+      items: [{ id: "original", turnId: "failed_turn", type: "userMessage" as const, text: "original request" }],
+    };
+    view.fake.on("turn/start", ({ clientMutationId }) => {
+      throw notAcceptedError(clientMutationId);
+    });
+    const cap = render(<TurnBlock turn={turn} sessionRef="ref_a" />);
+    fireEvent.click(within(cap.container).getByRole("button", { name: "Retry" }));
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.listRecovery("ref_a")).toHaveLength(1);
+    expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
+    expect(textarea().textContent).toBe(text);
+    view.unmount();
+    render(<Composer ref="ref_a" source={createTestComposerSource("ref_a")} focused={false} />);
+    await flushPendingTurnsProjectionForTests();
+    expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
+    expect(await storage.listRecovery("ref_a")).toHaveLength(1);
+    const reopened = new MutationOutboxIndexedDB();
+    try {
+      expect((await reopened.listRecovery("ref_a"))[0]?.preserveComposer).toBe(true);
+    } finally {
+      reopened.close();
+    }
+    if (text === "") {
+      view.fake.on("turn/start", ({ clientMutationId }) => ({
+        receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+        turn: { id: "continued", status: "inProgress", itemsView: "" },
+      }));
+      fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+      await flushPendingTurnsProjectionForTests();
+      fireEvent.click(submitButton());
+      await waitFor(async () => expect(await storage.listRecovery("ref_a")).toHaveLength(0));
+      await waitFor(() => expect(view.fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2));
+      const requests = view.fake.calls.filter((call) => call.method === "turn/start");
+      expect(requests).toHaveLength(2);
+      expect((requests[1]?.params as { input: InputItem[] } | undefined)?.input).toMatchInlineSnapshot(`
+      [
+        {
+          "text": "continue",
+          "type": "text",
+        },
+      ]
+    `);
+    }
+  },
+);
+
+test.each([false, true])("failed-turn Retry preserves a selected and attached draft, rejected=%s", async (rejected) => {
+  installCanvasStubs();
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  writeComposerDraft("ref_a", { text: "unsent", skillNames: ["draft-skill"], commandNames: ["draft-command"] });
+  const view = await mountComposerWithHandle("ref_a");
+  pastePngInto(textarea(), "draft.png");
+  const image = await screen.findByRole("button", { name: "View draft.png" });
+  const beforeDraft = readComposerDraft("ref_a");
+  const beforeText = textarea().textContent;
+  view.fake.on("turn/start", ({ clientMutationId }) => {
+    if (rejected) throw notAcceptedError(clientMutationId);
+    return {
+      receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+      turn: { id: "continued", status: "inProgress", itemsView: "" },
+    };
+  });
+  const cap = render(
+    <TurnBlock turn={{ id: "failed", status: "failed", error: { message: "failed" }, items: [] }} sessionRef="ref_a" />,
+  );
+  fireEvent.click(within(cap.container).getByRole("button", { name: "Retry" }));
+  await flushPendingTurnsProjectionForTests();
+  expect(view.fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  if (rejected) expect(await storage.listRecovery("ref_a")).toHaveLength(1);
+  const request = view.fake.calls.find((call) => call.method === "turn/start");
+  expect((request?.params as { input: InputItem[] } | undefined)?.input).toMatchInlineSnapshot(`
+    [
+      {
+        "text": "continue",
+        "type": "text",
+      },
+    ]
+  `);
+  expect(readComposerDraft("ref_a")).toEqual(beforeDraft);
+  expect(textarea().textContent).toBe(beforeText);
+  expect(screen.getByRole("button", { name: "View draft.png" })).toBe(image);
 });
 
 test("an occupied Composer is not overwritten by a later rejection", async () => {
