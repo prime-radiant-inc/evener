@@ -134,7 +134,7 @@ func TestDeploymentRecoveryRetainsUnverifiedContract(t *testing.T) {
 					}
 					if !approvedRestart || drift == "unknown" {
 						// Only this explicit Restart may promote deploy-only intent to replacement.
-						version, restartErr := m.RestartForOperation(t.Context(), host, facts)
+						version, restartErr := m.RestartForOperation(t.Context(), host, facts, nil)
 						if restartErr != nil || version != "snapshot" {
 							t.Fatalf("explicit repair: version=%s err=%v", version, restartErr)
 						}

@@ -90,7 +90,7 @@ type RestartResult struct {
 // this repair: its launch-contract guard can refuse the unfinished installation.
 // A nil result leaves ordinary standalone Restart on its attach-first,
 // non-deployment path.
-func (m *Manager) RecoverDeploymentForRestart(ctx context.Context, host hostreg.Host, holder hostops.Holder) (*RestartResult, error) {
+func (m *Manager) RecoverDeploymentForRestart(ctx context.Context, host hostreg.Host, holder hostops.Holder, beforeMutation func() error) (*RestartResult, error) {
 	if !m.hostGateHeldBy(host.Name, holder) {
 		return nil, fmt.Errorf("%w: host %q; deployment recovery requires the caller's hold", hostops.ErrGateNotHeld, host.Name)
 	}
@@ -119,7 +119,7 @@ func (m *Manager) RecoverDeploymentForRestart(ctx context.Context, host hostreg.
 	// Preserve host/environment refusals above, but let the authorized deployment
 	// repair preflight.launchErr. The restart path re-reads and validates the
 	// selected executable and retains the original build pin and predecessor.
-	result, err := m.restartForOperation(recoveryCtx, host, preflight.facts)
+	result, err := m.restartForOperation(recoveryCtx, host, preflight.facts, beforeMutation)
 	return &result, err
 }
 
@@ -135,12 +135,14 @@ func (m *Manager) RecoverDeploymentForRestart(ctx context.Context, host hostreg.
 // that refresh, which may differ from the predecessor's version when this
 // restart completes a pending deployment. The target is captured before the
 // restart, never inferred from the replacement's health response.
-func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
-	result, err := m.restartForOperation(ctx, host, facts)
+// beforeMutation revalidates the worker's bound entry before each execution
+// phase, including replacement after an installation repair within this call.
+func (m *Manager) RestartForOperation(ctx context.Context, host hostreg.Host, facts Preflight, beforeMutation func() error) (string, error) {
+	result, err := m.restartForOperation(ctx, host, facts, beforeMutation)
 	return result.TargetVersion, err
 }
 
-func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, facts Preflight) (RestartResult, error) {
+func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, facts Preflight, beforeMutation func() error) (RestartResult, error) {
 	restartCtx, cancel := context.WithTimeout(ctx, m.opts.deployLimit())
 	defer cancel()
 	registration := host
@@ -154,6 +156,11 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 		// deployment was deploy-only. Finish its write before replacing its marker.
 		// An unusable contract must not block this already-authorized repair;
 		// deployForOperation validates both the installed contract and exact build.
+		if beforeMutation != nil {
+			if err := beforeMutation(); err != nil {
+				return RestartResult{}, err
+			}
+		}
 		cancel()
 		_, facts, err = m.deployForOperation(ctx, host, facts, pending)
 		m.applyResolvedTarget(&host)
@@ -175,6 +182,11 @@ func (m *Manager) restartForOperation(ctx context.Context, host hostreg.Host, fa
 	result := RestartResult{TargetVersion: version, ReplacedStartedAt: running.startedAt}
 	if !completed {
 		if err := pending.validateExecutable(host.Name, facts); err != nil {
+			return result, err
+		}
+	}
+	if beforeMutation != nil {
+		if err := beforeMutation(); err != nil {
 			return result, err
 		}
 	}

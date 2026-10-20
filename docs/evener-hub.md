@@ -412,7 +412,11 @@ already-authorized deployment can repair an invalid contract or a changed build;
 its requested build must be verified before restart. If the SSH channel has
 dropped, Restart performs this recovery under its persisted operation gate before
 requiring attachment. It then reattaches and independently verifies the requested
-build and replacement process without issuing a second restart. Ordinary Restart
+build and replacement process without issuing a second restart. Recovery rechecks
+the operation-bound host entry before installation repair and again before starting
+or replacing the process. An entry edit during installation refuses replacement
+while retaining the verified installation for retry after the entry is restored.
+These reads do not atomically exclude external edits after the check. Ordinary Restart
 without pending deployment authority still attaches first. Without that repair, an
 incompatible protocol, missing required flag or unreadable contract refuses the
 restart and preserves the live connection. Fix the executable, then retry Restart.

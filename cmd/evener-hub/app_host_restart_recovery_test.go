@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -208,6 +209,170 @@ func assertRestartRecoveryRecord(t *testing.T, store *hostops.Store, id string, 
 	}
 }
 
+func TestHostRestartRecoveryChecksFingerprintBetweenPhases(t *testing.T) {
+	sha, dirty, channel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
+	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = sha, dirty, channel })
+	for _, path := range []string{"attached", "disconnected", "disconnected-stopped"} {
+		for _, edit := range []string{"entry", "invalid", "unreadable", "unrelated", "unchanged", "before-write"} {
+			t.Run(path+"/"+edit, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = restartBuildB, "", "snapshot"
+					runner := &restartRecoveryRunner{diskVersion: restartBuildA, runningVersion: restartBuildA, startedAt: restartStartA,
+						acknowledgeFirstWrite: true, firstWriteContract: []byte(`{`), noSupervisor: path == "disconnected-stopped"}
+					m, manager, store, host, events := publicRecoveryHub(t, runner, restartBuildB)
+					ch, err := manager.Ensure(t.Context(), host.Name)
+					if err != nil {
+						t.Fatal(err)
+					}
+					plan, err := m.Plan(t.Context(), appwire.HostPlanParams{Name: host.Name})
+					if err != nil {
+						t.Fatal(err)
+					}
+					deploy, err := m.Deploy(t.Context(), appwire.HostDeployParams{Name: host.Name, Token: plan.Token, OperationID: "unfinished-install"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					m.cfg.opsWG.Wait()
+					assertRestartRecoveryRecord(t, store, deploy.ID, hostops.StateFailed)
+					assertPublicRecoveryEffects(t, runner, 1, 1, 0, restartBuildA, restartStartA)
+					initialVersion, initialStart := restartBuildA, restartStartA
+					if path != "attached" {
+						if path == "disconnected-stopped" {
+							runner.mu.Lock()
+							runner.runningVersion, runner.startedAt = "", ""
+							runner.mu.Unlock()
+							initialVersion, initialStart = "", ""
+						}
+						if err := ch.Close(); err != nil {
+							t.Fatal(err)
+						}
+						waitPublicRecoveryEvent(t, events, sshconn.EventFailed)
+					}
+					original, err := os.ReadFile(m.cfg.configPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					editConfig := func() {
+						entries := []hostreg.Host{host}
+						switch edit {
+						case "entry", "before-write":
+							entries[0].SSH = "changed.example"
+						case "unrelated":
+							entries = append(entries, hostreg.Host{Name: "other", SSH: "other.example"})
+						case "unreadable":
+							if err := os.Remove(m.cfg.configPath); err != nil {
+								t.Error(err)
+							}
+							if err := os.Mkdir(m.cfg.configPath, 0o700); err != nil {
+								t.Error(err)
+							}
+							return
+						}
+						contents := []byte(planTestHubTOML(entries))
+						if edit == "invalid" {
+							contents = []byte("[[hosts]\n")
+						}
+						if err := os.WriteFile(m.cfg.configPath, contents, 0o600); err != nil {
+							t.Error(err)
+						}
+					}
+					observeMutation := runner.observeMutation
+					runner.observeMutation = func() {
+						observeMutation()
+						// Run executes this under runner.mu immediately before the repair
+						// write. The write still lands and its launch contract is verified.
+						if runner.writes == 1 && edit != "before-write" {
+							editConfig()
+						}
+					}
+					if edit == "before-write" {
+						m.cfg.gate = &editingGate{inner: manager, onAs: editConfig}
+					}
+					var workerErr error
+					restartHost, recoverDeployment := m.cfg.restartHost, m.cfg.recoverDeployment
+					m.cfg.restartHost = func(ctx context.Context, entry hostreg.Host, facts sshconn.Preflight, guard func() error) (string, error) {
+						result, err := restartHost(ctx, entry, facts, guard)
+						workerErr = err
+						return result, err
+					}
+					m.cfg.recoverDeployment = func(ctx context.Context, entry hostreg.Host, holder hostops.Holder, guard func() error) (*sshconn.RestartResult, error) {
+						result, err := recoverDeployment(ctx, entry, holder, guard)
+						workerErr = err
+						return result, err
+					}
+					params := appwire.HostRestartParams{Name: host.Name, Generation: host.Generation, IncarnationID: host.IncarnationID, OperationID: "repair-with-config-edit"}
+					restart, err := m.Restart(t.Context(), params)
+					if err != nil {
+						t.Fatal(err)
+					}
+					m.cfg.opsWG.Wait()
+					refused := edit != "unchanged" && edit != "unrelated"
+					if refused {
+						assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateFailed)
+						wantWrites := 2
+						switch edit {
+						case "before-write":
+							wantWrites = 1
+							if workerErr != nil {
+								t.Fatalf("pre-write refusal reached recovery: %v", workerErr)
+							}
+						case "entry":
+							info, data, code := deployWireInfo(t, workerErr)
+							var binding appwire.StaleEntryBinding
+							if err := json.Unmarshal(data["binding"], &binding); err != nil || info != appwire.ErrorStaleEntry || code != appwire.CodeConflict || binding != appwire.StaleEntryBindingHubTOMLFingerprint {
+								t.Fatalf("post-install refusal: info=%s code=%d binding=%s err=%v", info, code, binding, err)
+							}
+						default:
+							var wire appwire.WireError
+							if !errors.As(workerErr, &wire) || wire.Code != appwire.CodeInternalError {
+								t.Fatalf("invalid selected config was not refused: %v", workerErr)
+							}
+						}
+						assertPublicRecoveryEffects(t, runner, wantWrites, wantWrites, 0, initialVersion, initialStart)
+						runner.mu.Lock()
+						starts, disk := runner.starts, runner.diskVersion
+						runner.mu.Unlock()
+						if starts != 0 || disk != restartBuildB {
+							t.Fatalf("post-install refusal: starts=%d disk=%s", starts, disk)
+						}
+						if edit == "unreadable" {
+							if err := os.Remove(m.cfg.configPath); err != nil {
+								t.Fatal(err)
+							}
+						}
+						if err := os.WriteFile(m.cfg.configPath, original, 0o600); err != nil {
+							t.Fatal(err)
+						}
+						runner.observeMutation, m.cfg.gate = observeMutation, manager
+						// A later controller must not replace the original B intent. A
+						// verified acknowledged repair must not write a third time.
+						buildinfo.GitSHA = restartBuildA
+						params.OperationID = "retry-restored-config"
+						restart, err = m.Restart(t.Context(), params)
+						if err != nil {
+							t.Fatal(err)
+						}
+						m.cfg.opsWG.Wait()
+					}
+					assertRestartRecoveryRecord(t, store, restart.ID, hostops.StateComplete)
+					wantRestarts, wantStarts := 1, 0
+					if path == "disconnected-stopped" {
+						wantRestarts, wantStarts = 0, 1
+					}
+					assertPublicRecoveryEffects(t, runner, 2, 2, wantRestarts, restartBuildB, restartStartB)
+					runner.mu.Lock()
+					starts, epochs := runner.starts, append([]appwire.FencingEpoch(nil), runner.probeEpochs...)
+					runner.mu.Unlock()
+					record, _ := store.Record(restart.ID)
+					if starts != wantStarts || len(epochs) == 0 || epochs[len(epochs)-1] != epochOf(record) {
+						t.Fatalf("recovered process proof: starts=%d epochs=%v record=%+v", starts, epochs, record)
+					}
+				})
+			})
+		}
+	}
+}
+
 func TestHostRestartRepairsDisconnectedDeployment(t *testing.T) {
 	sha, dirty, channel := buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel
 	t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty, buildinfo.Channel = sha, dirty, channel })
@@ -292,9 +457,9 @@ func TestHostRestartRepairsDisconnectedDeployment(t *testing.T) {
 				edited.SSH = "elsewhere.example"
 				recoverDeployment := m.cfg.recoverDeployment
 				recoveryCalled := false
-				m.cfg.recoverDeployment = func(ctx context.Context, entry hostreg.Host, holder hostops.Holder) (*sshconn.RestartResult, error) {
+				m.cfg.recoverDeployment = func(ctx context.Context, entry hostreg.Host, holder hostops.Holder, guard func() error) (*sshconn.RestartResult, error) {
 					recoveryCalled = true
-					return recoverDeployment(ctx, entry, holder)
+					return recoverDeployment(ctx, entry, holder, guard)
 				}
 				m.cfg.gate = &editingGate{inner: manager, onAs: func() {
 					if err := os.WriteFile(m.cfg.configPath, []byte(planTestHubTOML([]hostreg.Host{edited})), 0o600); err != nil {
@@ -491,8 +656,8 @@ func TestHostRestartStartsStoppedDeployOnlyInstallation(t *testing.T) {
 			var recoveryResult *sshconn.RestartResult
 			if strings.Contains(scenario, "identity-") {
 				recoverDeployment := m.cfg.recoverDeployment
-				m.cfg.recoverDeployment = func(ctx context.Context, entry hostreg.Host, holder hostops.Holder) (*sshconn.RestartResult, error) {
-					result, err := recoverDeployment(ctx, entry, holder)
+				m.cfg.recoverDeployment = func(ctx context.Context, entry hostreg.Host, holder hostops.Holder, guard func() error) (*sshconn.RestartResult, error) {
+					result, err := recoverDeployment(ctx, entry, holder, guard)
 					recoveryResult = result
 					return result, err
 				}

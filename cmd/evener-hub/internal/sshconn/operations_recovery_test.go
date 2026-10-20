@@ -102,7 +102,7 @@ func TestRecoverDeploymentForRestartRequiresOwnGateAndRegistration(t *testing.T)
 				wantErr = ErrHostNotFound
 			}
 			runs := len(fr.recordedRuns())
-			result, err := m.RecoverDeploymentForRestart(t.Context(), host, holder)
+			result, err := m.RecoverDeploymentForRestart(t.Context(), host, holder, nil)
 			if !errors.Is(err, wantErr) || result != nil || len(fr.recordedRuns()) != runs || !m.pendingRestart(host.Name).deployment {
 				t.Fatalf("recovery crossed guard or lost intent: result=%+v err=%v commands=%d→%d", result, err, runs, len(fr.recordedRuns()))
 			}
@@ -113,7 +113,7 @@ func TestRecoverDeploymentForRestartRequiresOwnGateAndRegistration(t *testing.T)
 func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 	for _, restart := range []bool{false, true} {
 		for _, acknowledged := range []bool{false, true} {
-			for _, drift := range []string{"unchanged", "cached-different", "compatible-build", "protocol", "protocol-refusal", "startup-flag", "unreadable", "repair-write-failure", "repair-wrong-build"} {
+			for _, drift := range []string{"unchanged", "cached-different", "compatible-build", "protocol", "protocol-refusal", "startup-flag", "unreadable", "repair-write-failure", "repair-wrong-build", "guard-before-repair", "guard-after-repair"} {
 				t.Run(fmt.Sprintf("restart=%t/acknowledged=%t/%s", restart, acknowledged, drift), func(t *testing.T) {
 					const requested = "requested-build"
 					disk, running, started := requested, "predecessor-build", "2026-01-01T00:00:00Z"
@@ -193,7 +193,31 @@ func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 					case "unreadable":
 						badContract = []byte(`{`)
 					}
-					version, err := m.RestartForOperation(t.Context(), host, facts)
+					refusal := errors.New("operation entry changed")
+					guard := func() error {
+						if drift == "guard-before-repair" || drift == "guard-after-repair" && writes == 2 {
+							return refusal
+						}
+						return nil
+					}
+					version, err := m.RestartForOperation(t.Context(), host, facts, guard)
+					if strings.HasPrefix(drift, "guard-") {
+						after := m.pendingRestart(host.Name)
+						wantWrites, wantAcknowledged := 1, acknowledged
+						if drift == "guard-after-repair" {
+							wantWrites, wantAcknowledged = 2, true
+							if after.replaced.version != "predecessor-build" || after.replaced.startedAt.Format(time.RFC3339) != "2026-01-01T00:00:00Z" {
+								t.Fatalf("guard lost original predecessor: %+v", after)
+							}
+						} else if after.replaced != pending.replaced {
+							t.Fatalf("pre-write guard changed predecessor: before=%+v after=%+v", pending, after)
+						}
+						if !errors.Is(err, refusal) || writes != wantWrites || restarts != 0 || running != "predecessor-build" || started != "2026-01-01T00:00:00Z" || !after.deployment || !after.restart || after.start || after.command != "" || after.writeAcknowledged != wantAcknowledged || after.expectedVersion != pending.expectedVersion || after.expectedGitSHA != pending.expectedGitSHA {
+							t.Fatalf("guard changed owned intent or process: err=%v writes=%d restarts=%d pending=%+v", err, writes, restarts, after)
+						}
+						m.opts.controllerVersionOverride = "later-controller"
+						version, err = m.RestartForOperation(t.Context(), host, facts, nil)
+					}
 					if drift == "repair-write-failure" || drift == "repair-wrong-build" {
 						wantErr := ErrDeploy
 						if drift == "repair-wrong-build" {
@@ -203,7 +227,7 @@ func TestOperationRestartReconcilesFreshDeploymentDrift(t *testing.T) {
 						if !errors.Is(err, wantErr) || writes != 2 || restarts != 0 || running != "predecessor-build" || !pending.deployment || !pending.restart || pending.expectedVersion != requested || pending.replaced.startedAt.Format(time.RFC3339) != "2026-01-01T00:00:00Z" || pending.writeAcknowledged != (drift == "repair-wrong-build") {
 							t.Fatalf("failed repair lost intent or replaced predecessor: err=%v writes=%d restarts=%d running=%q pending=%+v", err, writes, restarts, running, pending)
 						}
-						version, err = m.RestartForOperation(t.Context(), host, facts)
+						version, err = m.RestartForOperation(t.Context(), host, facts, nil)
 						wantWrites = 3
 					}
 					if err != nil || version != requested || writes != wantWrites || restarts != 1 || disk != requested || running != requested || m.pendingRestart(host.Name).active() {
@@ -261,7 +285,7 @@ func TestOperationRestartReconcilesDeployment(t *testing.T) {
 			if (err != nil) != (scenario != "predecessor-probe") {
 				t.Fatalf("deploy: err=%v writes=%d", err, writes)
 			}
-			if _, err := m.RestartForOperation(t.Context(), host, after); err != nil {
+			if _, err := m.RestartForOperation(t.Context(), host, after, nil); err != nil {
 				t.Fatalf("restart: %v", err)
 			}
 			ch, err := m.Ensure(t.Context(), host.Name)

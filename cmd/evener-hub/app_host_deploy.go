@@ -776,20 +776,23 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	// standalone restart can finish an earlier deployment to another build.
 	targetVersion := work.token.ControllerRevision
 	var startedAt time.Time
+	fingerprint := work.fingerprint
 	if work.record.Kind == hostops.KindDeploy {
+		fingerprint = work.token.HubTOMLFingerprint
 		restartFollows = planRestartFollows(hubcore.HostRuntimeProbe{
 			Version:          work.token.RunningVersion,
 			RunningHealthy:   work.token.RunningHealthy,
 			ProcessStartTime: work.token.ProcessStartTime,
 		}, work.token.ControllerRevision)
 	}
+	beforeMutation := func() error { return m.checkOperationFingerprint(work.entry, fingerprint) }
 
 	if m.interruptIfShuttingDown(ctx, id) {
 		return
 	}
 	// The irreversible steps, each behind a fresh fingerprint check.
 	if work.record.Kind == hostops.KindDeploy {
-		if err := m.checkOperationFingerprint(work.entry, work.token.HubTOMLFingerprint); err != nil {
+		if err := beforeMutation(); err != nil {
 			fail(err)
 			return
 		}
@@ -810,22 +813,22 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		}
 		m.recordProgress(id, "the controller's build is installed and verified")
 		if restartFollows {
-			if err := m.checkOperationFingerprint(work.entry, work.token.HubTOMLFingerprint); err != nil {
+			if err := beforeMutation(); err != nil {
 				fail(err)
 				return
 			}
-			if _, err := m.runRestartStep(ctx, id, work.entry, afterDeploy); err != nil {
+			if _, err := m.runRestartStep(ctx, id, work.entry, afterDeploy, beforeMutation); err != nil {
 				fail(err)
 				return
 			}
 		}
 	} else {
-		if err := m.checkOperationFingerprint(work.entry, work.fingerprint); err != nil {
+		if err := beforeMutation(); err != nil {
 			fail(err)
 			return
 		}
 		if _, attached := m.attachedClient(work.entry); !attached && m.cfg.recoverDeployment != nil {
-			result, err := m.cfg.recoverDeployment(ctx, work.entry, hostops.Holder{Kind: hostops.HolderOperation, OperationID: id})
+			result, err := m.cfg.recoverDeployment(ctx, work.entry, hostops.Holder{Kind: hostops.HolderOperation, OperationID: id}, beforeMutation)
 			if err != nil {
 				fail(err)
 				return
@@ -884,7 +887,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 				fail(hostDetachedRefusal(work.entry.Name))
 				return
 			}
-			targetVersion, err = m.runRestartStep(ctx, id, work.entry, facts)
+			targetVersion, err = m.runRestartStep(ctx, id, work.entry, facts, beforeMutation)
 			if err != nil {
 				fail(err)
 				return
@@ -964,12 +967,12 @@ func (m *hubHostManager) probeBeforeRestart(ctx context.Context, work opWork) (h
 
 // runRestartStep runs the 04b restart path, returning its selected target build,
 // and records the progress line both standalone and planned restarts share.
-func (m *hubHostManager) runRestartStep(ctx context.Context, id string, entry hostreg.Host, facts sshconn.Preflight) (string, error) {
+func (m *hubHostManager) runRestartStep(ctx context.Context, id string, entry hostreg.Host, facts sshconn.Preflight, beforeMutation func() error) (string, error) {
 	if m.cfg.restartHost == nil {
 		return "", errors.New("this hub has no restart step wired, so the operation cannot run")
 	}
 	m.recordProgress(id, "restarting the host")
-	target, err := m.cfg.restartHost(ctx, entry, facts)
+	target, err := m.cfg.restartHost(ctx, entry, facts, beforeMutation)
 	if err != nil {
 		return "", err
 	}
@@ -991,7 +994,7 @@ func (m *hubHostManager) checkOperationFingerprint(entry hostreg.Host, bound str
 	}
 	if bound != "" && fingerprint != bound {
 		return appwire.StaleEntry(appwire.StaleEntryBindingHubTOMLFingerprint, fmt.Sprintf(
-			"stale-entry (hub.toml-fingerprint): host %q's hub.toml entry changed since this operation was confirmed; nothing irreversible ran", entry.Name))
+			"stale-entry (hub.toml-fingerprint): host %q's hub.toml entry changed since this operation was confirmed; the next irreversible step was refused", entry.Name))
 	}
 	return nil
 }

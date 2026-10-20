@@ -88,7 +88,7 @@ func TestRestartRecoveryValidatesExecutableBeforeMutation(t *testing.T) {
 						if operation == "start-stopped" {
 							_, err = m.Ensure(t.Context(), host.Name)
 						} else {
-							_, err = m.RestartForOperation(t.Context(), host, facts)
+							_, err = m.RestartForOperation(t.Context(), host, facts, nil)
 						}
 						if !errors.Is(err, ErrRestart) {
 							t.Fatalf("initial interruption: %v", err)
@@ -123,7 +123,7 @@ func TestRestartRecoveryValidatesExecutableBeforeMutation(t *testing.T) {
 								return m.ensureOnce(t.Context(), host, false)
 							}
 							if ingress == "restart" {
-								if _, err := m.RestartForOperation(t.Context(), host, facts); err != nil {
+								if _, err := m.RestartForOperation(t.Context(), host, facts, nil); err != nil {
 									return nil, err
 								}
 							}
@@ -215,7 +215,7 @@ func TestRestartRecoverySupervisedProcessProof(t *testing.T) {
 					if supervisor == "launchd" {
 						facts.OS = "darwin"
 					}
-					result, err := m.restartForOperation(t.Context(), host, facts)
+					result, err := m.restartForOperation(t.Context(), host, facts, nil)
 					switch mode {
 					case "dormant":
 						if err != nil || effects != 1 || result.TargetVersion != label || !result.ReplacedStartedAt.IsZero() || result.StartedAt.Format(time.RFC3339) != "2026-01-02T00:00:00Z" || m.pendingRestart(host.Name).active() {

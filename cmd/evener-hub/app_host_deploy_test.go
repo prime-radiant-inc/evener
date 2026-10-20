@@ -244,7 +244,7 @@ func deployTestHub(t *testing.T, configPath string, entries []hostreg.Host, seam
 	m.cfg.deployHost = func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, _ bool) (string, sshconn.Preflight, error) {
 		return deploy(ctx, host, facts)
 	}
-	m.cfg.restartHost = func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) (string, error) {
+	m.cfg.restartHost = func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight, _ func() error) (string, error) {
 		target := seams.restartVersion
 		if target == "" {
 			target = facts.Version
