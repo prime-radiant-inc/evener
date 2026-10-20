@@ -64,6 +64,16 @@ This diagram describes the policy, not an instruction to treat every failed
 handshake as an upgrade request. Authentication and transport failures retain
 their own classifications and must not authorize replacing the installation.
 
+Positive live protocol evidence is a successful initialize response naming a
+different protocol, or a structured protocol refusal such as `ErrorUpgradeRequired`.
+A generic `InvalidRequest`, its message text, malformed response, EOF, or timeout
+does not establish protocol incompatibility. Without separate live protocol
+evidence, leave the installation unchanged and return the unresolved connection
+failure. On-disk protocol facts cannot resolve an ambiguous live refusal.
+An established mismatch enters existing incompatibility recovery; it does not
+bypass deployment-source validation, deployment-disabled settings, or explicit
+deployment guarantees.
+
 ## Preservation and recovery
 
 - A successful compatible Connect leaves the remote executable, running hub,
@@ -117,7 +127,11 @@ case only after its acceptance behavior is implemented and verified.
    push, installer, or restart side effects.
 2. Cover live/disk version disagreement, incompatible live protocol, required
    startup capabilities, missing installations, stopped compatible installations,
-   explicit deployment, and deployment-disabled behavior.
+   explicit deployment, and deployment-disabled behavior. Exercise real server-side
+   initialize rejection, including structured upgrade refusal and generic
+   `InvalidRequest`, as well as a successful response naming a mismatched protocol.
+   Verify that ambiguous rejections, authentication failures, malformed responses,
+   EOF, and timeouts cannot authorize deployment.
 3. Prove reconnect and repeated Connect preserve a compatible running process and
    installation. Keep pending-deployment recovery and generation-consistency
    assertions at least as strict as before.
@@ -129,7 +143,13 @@ case only after its acceptance behavior is implemented and verified.
    settings, read remote data, disconnect/reconnect, and verify the remote binary
    hash and hub process identity remain unchanged. Use test-owned configuration,
    state and ports, never Jesse's live host installation. The real journey uses
-   no mocked Evener or SSH components.
+   no mocked Evener or SSH components. Its filesystem, process and service-manager
+   authority must be isolated from all non-test installations and services,
+   including system services. Alternate paths and ports under Jesse's normal
+   account over localhost SSH are insufficient: restart discovery consults host-wide
+   supervisors. Prove the fixture's isolation before running the journey, including
+   the pre-fix failure. If isolation cannot be established, report this journey as
+   unverified rather than running it against the shared host.
 6. Keep cross-platform decision coverage deterministic at the external transport
    boundary. A Linux-only real-process run does not establish actual Darwin
    execution. Report separately if no safe Darwin fixture is available.
