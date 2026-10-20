@@ -102,10 +102,18 @@ uses exactly its named candidates, including an empty selection for none.
 Explicit directories are enumerated before installed candidates. Duplicate
 manifest names use the first valid manifest, even when its unrelated component
 later fails. A broken plugin produces diagnostics rather than hiding healthy
-plugins. If installation or loading fails, run `evener plugin doctor`; use
-`evener plugin gc` to reclaim eligible unused store data. Read its output before
-assuming cleanup succeeded. Marketplace removal is separate:
-`evener plugin marketplace remove MARKETPLACE`.
+plugins. If installation or loading fails, run `evener plugin doctor`.
+Upgrades publish new directories without replacing older published revisions.
+Sessions, including stopped sessions and frozen delegates, can retain those
+older paths and all their companion files even when the installed registry
+points to a newer revision or no metadata was saved yet. Neither hub startup
+nor `evener plugin gc` removes published revisions, so they accumulate on disk;
+`gc` only reclaims leftover marketplace clones. Read its output before assuming
+cleanup succeeded. Explicit plugin uninstall and marketplace removal retain
+their deletion semantics; externally edited directory sources remain live
+directories, not managed snapshots. `evener plugin marketplace remove
+MARKETPLACE` removes a marketplace explicitly. Deleted selections are not
+recovered by this retention rule.
 
 ## Maintain installed plugins
 
@@ -118,7 +126,7 @@ assuming cleanup succeeded. Marketplace removal is separate:
 | `evener plugin auto-upgrade --off PLUGIN@MARKETPLACE` | Disable that opt-in. |
 | `evener plugin check-now` | Run one upgrade pass for opted-in plugins. |
 | `evener plugin doctor` | Diagnose the store without repairing it. |
-| `evener plugin gc` | Collect unused cache entries and orphaned marketplace clones. |
+| `evener plugin gc` | Remove leftover marketplace clones without deleting published plugin revisions. |
 
 ## Package format reference
 

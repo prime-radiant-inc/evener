@@ -96,7 +96,7 @@ func TestDoctor_OrphanEntryNotADirectory(t *testing.T) {
 	}
 }
 
-func TestDoctor_OrphanCacheDir(t *testing.T) {
+func TestDoctor_RetainedCacheRevision(t *testing.T) {
 	m := NewManager(t.TempDir())
 	orphan := m.pluginCacheDir("acme", "widget", "deadbeef")
 	writePlugin(t, orphan, "widget", nil)
@@ -108,12 +108,12 @@ func TestDoctor_OrphanCacheDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	f := findFinding(t, findings, orphan)
-	if f.Level != LevelWarn {
-		t.Errorf("orphan cache dir level = %s, want %s", f.Level, LevelWarn)
+	f := findCheck(t, findings, checkRetainedCacheRevision)
+	if f.Level != LevelOK || f.Category != catRegistry {
+		t.Errorf("retained cache finding = %+v, want OK/registry", f)
 	}
-	if !strings.Contains(f.Remediation, "gc") {
-		t.Errorf("remediation should point at gc: %q", f.Remediation)
+	if f.Remediation != "" {
+		t.Errorf("retained cache revision must not suggest deletion: %+v", f)
 	}
 }
 
@@ -132,17 +132,15 @@ func TestDoctor_OrphanCacheDir_NoneWhenReferenced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if hasCheck(findings, checkOrphanCacheDir) {
+	if hasCheck(findings, checkRetainedCacheRevision) {
 		t.Errorf("referenced cache dir flagged as orphan: %+v", findings)
 	}
 }
 
-// A materialize creates its sha directory before it records the registry
-// entry, and gc drops the entry before it removes the directory, so a walk
-// that runs between either pair calls a live install an orphan. Waiting for
-// the writer is only half of it: the registry the walk compares the cache
-// against has to be the one the writer left, not the one Doctor read on its
-// way in.
+// A materialize creates its revision directory before it records the registry
+// entry. A walk between those steps calls the new install retained. Waiting
+// for the writer is only half of it: the registry the walk compares against
+// must be the one the writer left, not the one Doctor read on its way in.
 func TestDoctor_OrphanCacheDir_ReadsTheRegistryAMaterializeLeftBehind(t *testing.T) {
 	m := NewManager(t.TempDir())
 	dir := m.pluginCacheDir("acme", "widget", "deadbeef")
@@ -168,8 +166,7 @@ func TestDoctor_OrphanCacheDir_ReadsTheRegistryAMaterializeLeftBehind(t *testing
 		reports <- report{findings, doctorErr}
 	}()
 
-	// Long enough that a walk which does not wait for the lock has already
-	// made its (wrong) report by the time the entry lands.
+	// The walk must wait until the writer has recorded its registry entry.
 	time.Sleep(200 * time.Millisecond)
 	saveErr := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
 		"widget@acme": {{InstallPath: dir, Version: "1.0.0", Enabled: true, Source: Source{Kind: SourceGitHub, Repo: "acme/widget"}}},
@@ -183,7 +180,7 @@ func TestDoctor_OrphanCacheDir_ReadsTheRegistryAMaterializeLeftBehind(t *testing
 	if got.err != nil {
 		t.Fatalf("Doctor: %v", got.err)
 	}
-	if hasCheck(got.findings, checkOrphanCacheDir) {
+	if hasCheck(got.findings, checkRetainedCacheRevision) {
 		t.Errorf("a materialize in flight was reported as an orphan: %+v", got.findings)
 	}
 }
@@ -210,7 +207,7 @@ func TestDoctor_OrphanCacheDir_ReportsAHeldStoreLockInsteadOfGuessing(t *testing
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if hasCheck(findings, checkOrphanCacheDir) {
+	if hasCheck(findings, checkRetainedCacheRevision) {
 		t.Errorf("orphan claimed while a writer holds the store lock: %+v", findings)
 	}
 	f := findCheck(t, findings, checkOrphanScanSkipped)
@@ -262,8 +259,8 @@ func TestDoctor_OrphanCacheDir_LeavesAStoreWithNoLockFileAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if f := findFinding(t, findings, orphan); f.Level != LevelWarn {
-		t.Errorf("orphan cache dir level = %s, want %s", f.Level, LevelWarn)
+	if f := findCheck(t, findings, checkRetainedCacheRevision); f.Level != LevelOK || f.Category != catRegistry || f.Remediation != "" {
+		t.Errorf("retained cache finding = %+v, want OK/registry without remediation", f)
 	}
 	if _, statErr := os.Stat(m.lockPath()); !errors.Is(statErr, fs.ErrNotExist) {
 		t.Errorf("Doctor created the store lock %s (stat err = %v)", m.lockPath(), statErr)
