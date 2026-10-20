@@ -71,6 +71,48 @@ func TestListModelsPlatformAndCodexShapes(t *testing.T) {
 	}
 }
 
+// TestListModelsReadsGatewayReasoningLadder pins lunaroute's per-model effort
+// ladder on the Responses listing — the protocol a lunaroute instance resolves
+// to, so this is the path a live session's profile is built from. The gateway
+// publishes the ladder only under client_compat.pi.thinkingLevelMap, and these
+// models are absent from models.dev, so without this read the row's ladder is
+// empty: the picker falls back to low/medium/high and the request builder drops
+// the effort name.
+func TestListModelsReadsGatewayReasoningLadder(t *testing.T) {
+	srv, _ := server(t, 200, `{"data":[{"id":"deepseek-4.1-flash","context_window":1048576,"max_output_tokens":262144,"capabilities":{"reasoning":true,"tools":true,"vision":true},"client_compat":{"pi":{"thinkingFormat":"openai","thinkingLevelMap":{"high":"high","low":"low","max":"max","medium":"medium","minimal":null,"off":null,"xhigh":"xhigh"}}}}]}`)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	caps := rows[0].Caps
+	if want := []string{"low", "medium", "high", "xhigh", "max"}; !slices.Equal(caps.EffortValues, want) {
+		t.Fatalf("EffortValues = %v, want %v", caps.EffortValues, want)
+	}
+	if caps.Reasoning == nil || !*caps.Reasoning {
+		t.Fatalf("Reasoning = %v, want true from capabilities.reasoning", caps.Reasoning)
+	}
+	if caps.ContextWindow == nil || *caps.ContextWindow != 1048576 || caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 262144 {
+		t.Fatalf("limits = %+v", caps)
+	}
+}
+
+// TestListModelsGatewayReasoningFollowsTheCapability pins that a gateway
+// stating reasoning = false leaves its row non-reasoning even when a stale map
+// rides along.
+func TestListModelsGatewayReasoningFollowsTheCapability(t *testing.T) {
+	srv, _ := server(t, 200, `{"data":[{"id":"no-reasoning","capabilities":{"reasoning":false},"client_compat":{"pi":{"thinkingLevelMap":{"low":"low","high":"high"}}}}]}`)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if caps := rows[0].Caps; caps.Reasoning == nil || *caps.Reasoning {
+		t.Fatalf("Reasoning = %v, want an explicit false", caps.Reasoning)
+	}
+}
+
 // TestListModelsPlatformVisionCapability pins that a platform /models row's
 // advertised modality facts reach the row: capabilities.vision yields image
 // input, and architecture.input_modalities wins when both are present. Without
