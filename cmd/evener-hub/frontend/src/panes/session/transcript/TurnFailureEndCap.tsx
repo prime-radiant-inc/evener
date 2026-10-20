@@ -6,7 +6,11 @@ import { useState } from "react";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, Disclosure, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { usePendingTurnEntries, usePendingTurnReadiness } from "../composer/queue/pendingTurnsStore";
+import {
+  usePendingTurnEntries,
+  usePendingTurnReadiness,
+  useRetryAdmissionInFlight,
+} from "../composer/queue/pendingTurnsStore";
 import { classifyTurnError } from "./turnFailure";
 import styles from "./turnfailure.module.css";
 
@@ -66,6 +70,7 @@ function RetryAction({
   const toasts = useToasts();
   const pendingLoaded = usePendingTurnReadiness(sessionRef);
   const pendingEntries = usePendingTurnEntries(sessionRef);
+  const admissionInFlight = useRetryAdmissionInFlight(sessionRef);
   const pending = ownPendingTurnInput(pendingEntries);
   async function retry() {
     try {
@@ -76,7 +81,12 @@ function RetryAction({
   }
 
   return (
-    <Button variant="primary" size="sm" disabled={!pendingLoaded || pending} onClick={() => void retry()}>
+    <Button
+      variant="primary"
+      size="sm"
+      disabled={!pendingLoaded || pending || admissionInFlight}
+      onClick={() => void retry()}
+    >
       {recoveryLabel}
     </Button>
   );

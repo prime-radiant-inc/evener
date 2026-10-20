@@ -87,6 +87,37 @@ export function usePendingTurnReadiness(ref: string): boolean {
   return useStore(pendingReadinessStore, (state) => state.loaded.has(ref));
 }
 
+// Retry's owner-scoped in-flight admission, reactive so every mounted view
+// disables the action at the press rather than only after the durable row is
+// visible. It is page-lifetime bookkeeping, not durable state: the pending
+// projection owns the block once the record exists.
+interface RetryAdmissionState {
+  refs: ReadonlySet<string>;
+}
+
+const retryAdmissionStore = createStore<RetryAdmissionState>(() => ({ refs: new Set() }));
+const retryAdmissions = new Set<string>();
+
+function publishRetryAdmissions(): void {
+  retryAdmissionStore.setState({ refs: new Set(retryAdmissions) });
+}
+
+function beginRetryAdmission(ref: string): boolean {
+  if (retryAdmissions.has(ref)) return false;
+  retryAdmissions.add(ref);
+  publishRetryAdmissions();
+  return true;
+}
+
+function endRetryAdmission(ref: string): void {
+  if (!retryAdmissions.delete(ref)) return;
+  publishRetryAdmissions();
+}
+
+export function useRetryAdmissionInFlight(ref: string): boolean {
+  return useStore(retryAdmissionStore, (state) => state.refs.has(ref));
+}
+
 // The refs whose durable outbox this projection has actually read and
 // published. The resume-only predicate (threads.ts's hasBlockedUnknown /
 // hasQueuedNonSend) reads this through the registered isLoaded below to fail
@@ -135,6 +166,9 @@ installRetryPendingProjection({
   isLoaded: (ref) => loadedRefs.has(ref),
   hasOwnPendingTurnInput: (ref) => ownPendingTurnInput(pendingTurnsStore.pendingTurnEntries(ref)),
   load: (ref) => void refreshPendingTurnsProjection(ref),
+  begin: beginRetryAdmission,
+  end: endRetryAdmission,
+  isInFlight: (ref) => retryAdmissions.has(ref),
 });
 
 // The durable-read fence a refresh's targets are decided through, and the
@@ -572,6 +606,8 @@ export function resetPendingTurnsStoreForTests(): void {
   clearProjectionWorkForTests();
   loadedRefs.clear();
   publishPendingReadiness();
+  retryAdmissions.clear();
+  publishRetryAdmissions();
   pendingTurnsStore.setState({
     outbox: new Map(),
     optimistic: new Map(),

@@ -1,4 +1,5 @@
 import type { ItemModel, MethodTypes, ThreadModel, TurnModel } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
@@ -6,9 +7,14 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { accessibleName } from "../../../accessibleNameTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
+import { holdNextTransaction, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
-import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "../composer/queue/pendingTurnsStore";
+import {
+  pendingTurnEntries,
+  refreshPendingTurnsProjection,
+  resetPendingTurnsStoreForTests,
+} from "../composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
 import { readResponse, seedHeld } from "./messages/testing/heldSteerTestUtils";
 import { TurnBlock } from "./TurnBlock";
@@ -549,3 +555,164 @@ test.each([
     }
   },
 );
+
+// --- post-prerequisite source revalidation and pre-commit visibility --------
+
+test("a source advance during the held stop-barrier read creates no durable mutation or send", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "turn_continued", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    // The Stop-barrier read is an awaited prerequisite inside the enqueue
+    // funnel; hold its completion, then advance the conversation.
+    const barrier = holdNextTransaction(["sequences"], "readonly");
+    fireEvent.click(retryButton() as HTMLButtonElement);
+    await barrier.reached;
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("thread went away");
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          ["ref_a", { ...model, turns: [...model.turns, { id: "turn_after", status: "completed", items: [] }] }],
+        ]),
+      });
+    });
+    barrier.release();
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    expect(await storage.listOutbox("ref_a")).toHaveLength(0);
+    expect(retryButton()).toBeNull();
+  } finally {
+    storage.close();
+  }
+});
+
+test("a held local enqueue disables Retry in every view and remount before the row exists", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  const held = new Promise<never>(() => undefined);
+  fake.on("turn/start", () => held);
+  try {
+    const first = render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    const second = render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    const firstButton = within(first.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+    const secondButton = within(second.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+    await waitFor(() => expect(firstButton.disabled).toBe(false));
+    await waitFor(() => expect(secondButton.disabled).toBe(false));
+
+    const write = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+    fireEvent.click(firstButton);
+    await write.reached;
+    // The write has not settled, so no continuation has gone out, but the
+    // in-flight admission already owns the ref.
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+    expect(firstButton.disabled).toBe(true);
+    expect(secondButton.disabled).toBe(true);
+    const remounted = render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    const remountedButton = within(remounted.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+    expect(remountedButton.disabled).toBe(true);
+
+    write.release();
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.listOutbox("ref_a")).toHaveLength(1);
+    expect(remountedButton.disabled).toBe(true);
+  } finally {
+    storage.close();
+  }
+});
+
+test("the post-commit record is published before the refresh read settles", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "pending" },
+    turn: { id: "turn_continued", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    // Hold the commit feed's post-commit durable read: the live projection
+    // must already carry the record, and the action must already be disabled.
+    const refreshRead = holdNextTransaction(["outbox"], "readonly");
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    expect(pendingTurnEntries("ref_a").some((entry) => entry.method === "send")).toBe(true);
+    expect(retryButton()?.disabled).toBe(true);
+    refreshRead.release();
+    await flushPendingTurnsProjectionForTests();
+    expect(retryButton()?.disabled).toBe(true);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a queued pending turn of this client keeps Retry inactive", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  try {
+    await seedHeld("queue", "queued follow-up", { ref: "ref_a" });
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+    await threadsStore.getState().continueTurn("ref_a", turn.id);
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a definitive refusal restores a usable Retry without duplicating the input", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  let refuse = true;
+  fake.on("turn/start", ({ clientMutationId }) => {
+    if (refuse) {
+      throw new WireError("validation failed", -32602, {
+        clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+      });
+    }
+    return {
+      receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "pending" },
+      turn: { id: "turn_continued", status: "inProgress", itemsView: "" },
+    };
+  });
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    fireEvent.click(retryButton() as HTMLButtonElement);
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.listOutbox("ref_a")).toHaveLength(0);
+    expect(await storage.listRecovery("ref_a")).toHaveLength(1);
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+
+    refuse = false;
+    fireEvent.click(retryButton() as HTMLButtonElement);
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(2));
+    await flushPendingTurnsProjectionForTests();
+    const requests = fake.calls.filter((call) => call.method === "turn/start");
+    expect((requests[1]?.params as { input: { text?: string }[] } | undefined)?.input).toEqual([
+      { text: "continue", type: "text" },
+    ]);
+    // Retry is disabled while the second identity is unresolved, not stuck
+    // enabled by the earlier refusal.
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+  } finally {
+    storage.close();
+  }
+});
