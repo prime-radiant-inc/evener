@@ -141,6 +141,76 @@ func TestAutomaticMigrationPreservesPublishedPaths(t *testing.T) {
 	assertMigrationIdempotent(t, m)
 }
 
+func TestEditMarketplaceAfterMigrationPreservesSharedCache(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	foreign := plantMigrationRevisions(t, m, "a/b", "widget")
+	own := plantMigrationRevisions(t, m, "a", "gadget")
+	ctx := context.Background()
+
+	// Run the actual logical migration, not just its final registry shape.
+	mk, err := m.ListMarketplaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, old := mk["a/b"]; old || len(mk) != 2 {
+		t.Fatalf("marketplaces after migration = %+v", mk)
+	}
+	if _, migrated := mk["a-b"]; !migrated {
+		t.Fatal("nested marketplace was not migrated")
+	}
+	before, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignEntry := installedAt(t, before, "widget@a-b")
+	ownEntry := installedAt(t, before, "gadget@a")
+	if foreignEntry.InstallPath != foreign[2].path || ownEntry.InstallPath != own[2].path {
+		t.Fatalf("migration changed original selections: %+v", before)
+	}
+	// The whole shared namespace must stay, including unregistered superseded
+	// packages, hook scripts, companion resources and their file identities.
+	shared := snapshotMigrationTree(t, filepath.Join(m.cacheDir(), "a"))
+	if _, err := m.EditMarketplace(ctx, "a", "renamed", nil); err != nil {
+		t.Fatal(err)
+	}
+	assertMigrationTree(t, shared)
+	for _, tree := range append(foreign, own...) {
+		assertMigrationTree(t, tree)
+	}
+	want := Registry{Version: before.Version, Plugins: map[string][]InstallEntry{
+		"widget@a-b":     {foreignEntry},
+		"gadget@renamed": {ownEntry},
+	}}
+	after, err := m.loadRegistry()
+	if err != nil || !reflect.DeepEqual(after, want) {
+		t.Fatalf("registry after explicit rename = %+v, %v, want %+v", after, err, want)
+	}
+	items, err := m.List(ctx)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("fresh selections = %+v, %v", items, err)
+	}
+	for _, item := range items {
+		entry := installedAt(t, want, registryKey(item.Plugin, item.Marketplace))
+		if item.Broken || !item.Enabled || item.InstallPath != entry.InstallPath {
+			t.Fatalf("fresh selection no longer names original package: %+v", item)
+		}
+		assertMigrationTree(t, snapshotForPath(t, append(foreign, own...), item.InstallPath))
+	}
+	mustNotExist(t, filepath.Join(m.cacheDir(), "renamed"))
+}
+
+func snapshotForPath(t *testing.T, trees []migrationTree, path string) migrationTree {
+	t.Helper()
+	for _, tree := range trees {
+		if tree.path == path {
+			return tree
+		}
+	}
+	t.Fatalf("no original package snapshot for %s", path)
+	return migrationTree{}
+}
+
 func TestAutomaticMigrationAliasPreservesPublishedPaths(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard

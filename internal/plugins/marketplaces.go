@@ -1157,9 +1157,10 @@ func (m *Manager) moveMarketplaceClone(name, newName string, ref MarketplaceRef,
 // moveMarketplace renames a marketplace on disk and in the registry: the clone
 // directory, when one is there — moved for a non-directory source, swept for a
 // directory source, which never lives there; the plugin cache directory, when
-// one is there; and every <plugin>@name registry entry, whose install path
-// follows the cache. Neither store file is written. On success it returns the
-// ref and registry as they are to be recorded, and the steps that put the
+// one is there and no other marketplace installs into it; and every
+// <plugin>@name registry entry, whose install path follows a moved cache.
+// Neither store file is written. On success it returns the ref and registry
+// as they are to be recorded, and the steps that put the
 // directories back should a later step fail; a failure puts back what it had
 // moved itself and reports what it could not.
 func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk Marketplaces, reg Registry, owners map[string]string, resourcing bool) (MarketplaceRef, Registry, []func() error, error) {
@@ -1191,6 +1192,15 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		// out from under its record, so refuse rather than break it.
 		if _, protect := m.sweepDestroysSource(registeredSources(), oldCache); protect {
 			return fail(fmt.Errorf("renaming plugin cache %s would move a path a marketplace records", oldCache))
+		}
+		for key, entries := range reg.Plugins {
+			if owner, known := owners[key]; (!known || owner != name) && installedUnder(oldCache, entries) {
+				// Logical migration can leave another marketplace's published
+				// packages here, such as a-b in cache/a/b. Keep the entire shared
+				// namespace, including superseded revisions and companion files.
+				// Our keys still follow the explicit rename, but no paths moved.
+				return ref, rekeyRegistry(reg, owners, name, newName, "", ""), undo, nil
+			}
 		}
 		if err := marketplaceRename(oldCache, newCache); err != nil {
 			return fail(fmt.Errorf("renaming plugin cache: %w", err))
