@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -51,7 +52,7 @@ func TestColdReadDerivesTotalsWithoutScan(t *testing.T) {
 func TestPastThreadTurnsListDoesNotDeriveIndexedTotals(t *testing.T) {
 	cfg, entry := seedPastItemPagingThread(t)
 	ctx := context.Background()
-	ref := "local:" + entry.Meta.ID
+	ref := localAppRef(entry.Meta.ID)
 
 	// Obtain the cursor from the public page before asserting on the private
 	// page the turns-list path builds from it.
@@ -108,10 +109,8 @@ func requirePageFragments(t *testing.T, name string, page pastItemPage, want ...
 	if len(got) != len(want) {
 		t.Fatalf("%s page fragments = %v, want %v", name, got, want)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("%s page fragments = %v, want %v", name, got, want)
-		}
+	if !slices.Equal(got, want) {
+		t.Fatalf("%s page fragments = %v, want %v", name, got, want)
 	}
 }
 
@@ -187,7 +186,7 @@ func seedMidTurnDivergencePastSession(t *testing.T) (hubcore.WebConfig, hubcore.
 func TestPastThreadTurnsListDoesNotScanFallbackTotals(t *testing.T) {
 	cfg, entry := seedMidTurnDivergencePastSession(t)
 	ctx := context.Background()
-	ref := "local:" + entry.Meta.ID
+	ref := localAppRef(entry.Meta.ID)
 
 	// Prove the fixture actually forces the fallback: the sidecar refuses the
 	// mid-turn cut rather than answering it.

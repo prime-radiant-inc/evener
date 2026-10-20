@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/execsupport/valueexpr"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/transcriptindex"
@@ -1676,7 +1677,18 @@ func TestPastThreadItemPagingSplitsTurnsAndEntries(t *testing.T) {
 func TestPastThreadTurnsListPreservesDecoratedFragmentsWithoutTotals(t *testing.T) {
 	cfg, entry, facts := seedDecoratedPagingThread(t)
 	ctx := context.Background()
-	ref := "local:" + entry.Meta.ID
+	ref := localAppRef(entry.Meta.ID)
+
+	// The snapshot and cursor expectations come from the fixture's own index,
+	// read directly, not from another production response.
+	window := indexLatestWindow(t, pastTranscriptPath(entry), 40)
+	wantSnapshot := appwire.SnapshotIdentity{Incarnation: window.Incarnation, Length: window.Length}
+	wantBefore := window.Candidates[0].Position
+	cursorIdentity := appitempaging.CursorIdentity{
+		ThreadRef:         localAppRef(entry.Meta.ID),
+		Incarnation:       window.Incarnation,
+		ProjectionVersion: appitempaging.TranscriptItemProjectionVersion,
+	}
 
 	requireDecoratedLatestPage := func(page appwire.ThreadTurnsListResponse) {
 		t.Helper()
@@ -1697,8 +1709,8 @@ func TestPastThreadTurnsListPreservesDecoratedFragmentsWithoutTotals(t *testing.
 			t.Fatalf("latest completeness = alpha(%v,%v) beta(%v,%v), want alpha earlier only",
 				alpha.HasEarlierItems, alpha.HasLaterItems, beta.HasEarlierItems, beta.HasLaterItems)
 		}
-		requireTurnUsageAndCost(t, cfg, entry, alpha, facts.alphaUsage)
-		requireTurnUsageAndCost(t, cfg, entry, beta, facts.betaUsage)
+		requireTurnUsageAndCost(t, alpha, facts.alphaUsage, facts.alphaCost)
+		requireTurnUsageAndCost(t, beta, facts.betaUsage, facts.betaCost)
 		last := alpha.Items[len(alpha.Items)-1]
 		if last.Type != "commandExecution" {
 			t.Fatalf("alpha's last item type = %q, want commandExecution", last.Type)
@@ -1715,6 +1727,13 @@ func TestPastThreadTurnsListPreservesDecoratedFragmentsWithoutTotals(t *testing.
 	requireDecoratedLatestPage(latest)
 	if latest.NextCursor == "" {
 		t.Fatal("latest turns/list has no older cursor")
+	}
+	boundary, err := appitempaging.DecodeCursor(latest.NextCursor, cursorIdentity)
+	if err != nil {
+		t.Fatalf("decode latest cursor: %v", err)
+	}
+	if boundary != wantBefore {
+		t.Fatalf("latest cursor boundary = %+v, want the fixture index's first position %+v", boundary, wantBefore)
 	}
 
 	requireOlderPage := func(page appwire.ThreadTurnsListResponse) {
@@ -1735,7 +1754,16 @@ func TestPastThreadTurnsListPreservesDecoratedFragmentsWithoutTotals(t *testing.
 		if alpha.HasEarlierItems || !alpha.HasLaterItems {
 			t.Fatalf("older completeness = (%v,%v), want no earlier and later", alpha.HasEarlierItems, alpha.HasLaterItems)
 		}
-		requireTurnUsageAndCost(t, cfg, entry, alpha, facts.alphaUsage)
+		if got := alpha.Items[0].Position; got == nil || *got != (appwire.ThreadItemPosition{Entry: 1, Item: 0}) {
+			t.Fatalf("older first position = %+v, want entry 1 item 0", got)
+		}
+		if got := alpha.Items[1].Position; got == nil || *got != (appwire.ThreadItemPosition{Entry: 2, Item: 0}) {
+			t.Fatalf("older second position = %+v, want entry 2 item 0", got)
+		}
+		if got := alpha.Items[len(alpha.Items)-1].Position; got == nil || *got != (appwire.ThreadItemPosition{Entry: 7, Item: 0}) {
+			t.Fatalf("older last position = %+v, want entry 7 item 0", got)
+		}
+		requireTurnUsageAndCost(t, alpha, facts.alphaUsage, facts.alphaCost)
 	}
 
 	older, found, err := pastThreadTurnsList(ctx, cfg, appwire.ThreadTurnsListParams{Ref: ref, ItemLimit: 40, Cursor: latest.NextCursor})
@@ -1745,7 +1773,7 @@ func TestPastThreadTurnsListPreservesDecoratedFragmentsWithoutTotals(t *testing.
 	requireOlderPage(older)
 
 	before, found, err := pastThreadTurnsList(ctx, cfg, appwire.ThreadTurnsListParams{
-		Ref: ref, ItemLimit: 40, Before: latest.Data[0].Items[0].Position,
+		Ref: ref, ItemLimit: 40, Before: &wantBefore,
 	})
 	if err != nil || !found {
 		t.Fatalf("before turns/list = (%+v, %v, %v)", before, found, err)
@@ -1759,18 +1787,18 @@ func TestPastThreadTurnsListPreservesDecoratedFragmentsWithoutTotals(t *testing.
 		t.Fatalf("thread/read = (%+v, %v, %v)", first, found, err)
 	}
 	requireDecoratedLatestPage(appwire.ThreadTurnsListResponse{Data: first.Thread.Turns})
-	if first.Snapshot == nil {
-		t.Fatal("thread/read returned no snapshot")
+	if first.Snapshot == nil || *first.Snapshot != wantSnapshot {
+		t.Fatalf("thread/read snapshot = %+v, want the fixture index's %+v", first.Snapshot, wantSnapshot)
 	}
 	held, found, err := pastThreadReadResponse(ctx, cfg, appwire.ThreadReadParams{
-		Ref: ref, IncludeTurns: true, ItemLimit: 40, HeldSnapshot: first.Snapshot,
+		Ref: ref, IncludeTurns: true, ItemLimit: 40, HeldSnapshot: &wantSnapshot,
 	})
 	if err != nil || !found {
 		t.Fatalf("held-snapshot thread/read = (%+v, %v, %v)", held, found, err)
 	}
 	requireDecoratedLatestPage(appwire.ThreadTurnsListResponse{Data: held.Thread.Turns})
-	if held.Snapshot == nil || *held.Snapshot != *first.Snapshot {
-		t.Fatalf("held-snapshot read snapshot = %+v, want %+v", held.Snapshot, first.Snapshot)
+	if held.Snapshot == nil || *held.Snapshot != wantSnapshot {
+		t.Fatalf("held-snapshot read snapshot = %+v, want the fixture index's %+v", held.Snapshot, wantSnapshot)
 	}
 	if held.Changes != nil && (len(held.Changes.Turns) != 0 || len(held.Changes.Items) != 0) {
 		t.Fatalf("held-snapshot read changes = %+v, want no changed turns or items", held.Changes)
@@ -1786,32 +1814,23 @@ func TestPastThreadTurnsListPreservesDecoratedFragmentsWithoutTotals(t *testing.
 	if _, err := cfg.Past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	forkEntry, ok := cfg.Past.Find(entry.Meta.ID)
-	if !ok {
-		t.Fatal("fork-divergence fixture disappeared from the past index")
-	}
 	fork, found, err := pastThreadTurnsList(ctx, cfg, appwire.ThreadTurnsListParams{Ref: ref, ItemLimit: 40})
 	if err != nil || !found {
 		t.Fatalf("fork turns/list = (%+v, %v, %v)", fork, found, err)
 	}
 	requireDecoratedLatestPage(fork)
-	requireTurnUsageAndCost(t, cfg, forkEntry, fork.Data[0], facts.alphaUsage)
+	requireTurnUsageAndCost(t, fork.Data[0], facts.alphaUsage, facts.alphaCost)
 }
 
 // requireTurnUsageAndCost fails unless turn carries the fixture's own per-turn
-// usage and the cost those fixture facts price at.
-func requireTurnUsageAndCost(t *testing.T, cfg hubcore.WebConfig, entry hubcore.PastEntry, turn appwire.Turn, usage llm.Usage) {
+// usage and the cost its authored price facts produce.
+func requireTurnUsageAndCost(t *testing.T, turn appwire.Turn, usage appwire.EvenerUsage, cost string) {
 	t.Helper()
-	wantUsage := appwire.EvenerUsageFromLLM(usage)
-	if turn.Usage == nil || *turn.Usage != *wantUsage {
-		t.Fatalf("turn %s usage = %+v, want %+v", turn.ID, turn.Usage, wantUsage)
+	if turn.Usage == nil || *turn.Usage != usage {
+		t.Fatalf("turn %s usage = %+v, want %+v", turn.ID, turn.Usage, usage)
 	}
-	wantCost := appwire.EstimateCost(pastEntryCost(cfg, entry), wantUsage)
-	if wantCost == "" {
-		t.Fatalf("fixture model %s/%s has no pricing row", entry.Meta.ProfileID, entry.Meta.Model)
-	}
-	if turn.Cost != wantCost {
-		t.Fatalf("turn %s cost = %q, want %q", turn.ID, turn.Cost, wantCost)
+	if turn.Cost != cost {
+		t.Fatalf("turn %s cost = %q, want %q", turn.ID, turn.Cost, cost)
 	}
 }
 
@@ -1821,7 +1840,7 @@ func requireTurnUsageAndCost(t *testing.T, cfg hubcore.WebConfig, entry hubcore.
 func seedDecoratedPagingThread(t *testing.T) (hubcore.WebConfig, hubcore.PastEntry, decoratedPagingFacts) {
 	t.Helper()
 	alphaUsage := llm.Usage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100}
-	betaUsage := llm.Usage{InputTokens: 2000, OutputTokens: 200, TotalTokens: 2200}
+	betaUsage := llm.Usage{InputTokens: 4000, OutputTokens: 400, TotalTokens: 4400}
 	imageData := []byte("decorated paging fixture output image")
 
 	// One new-format entry contributes one item, so the 41-item turn and the
@@ -1882,18 +1901,24 @@ func seedDecoratedPagingThread(t *testing.T) (hubcore.WebConfig, hubcore.PastEnt
 	}
 	sha := hex.EncodeToString(sha256Sum(imageData))
 	return cfg, entry, decoratedPagingFacts{
-		alphaUsage: alphaUsage,
-		betaUsage:  betaUsage,
-		imageSHA:   sha,
-		imageURL:   sessionImageURL(entry.Meta.ID, sha),
+		alphaUsage: appwire.EvenerUsage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100},
+		betaUsage:  appwire.EvenerUsage{InputTokens: 4000, OutputTokens: 400, TotalTokens: 4400},
+		// The curated anthropic/claude-opus-4-5 row prices input at $5/M and
+		// output at $25/M: 1000*5+100*25 = $0.0075, 4000*5+400*25 = $0.03.
+		alphaCost: "~$0.01",
+		betaCost:  "~$0.03",
+		imageSHA:  sha,
+		imageURL:  "/s/" + entry.Meta.ID + "/images/" + sha,
 	}
 }
 
 // decoratedPagingFacts is what seedDecoratedPagingThread authored, so expected
 // page fields come from the fixture rather than from a read.
 type decoratedPagingFacts struct {
-	alphaUsage llm.Usage
-	betaUsage  llm.Usage
+	alphaUsage appwire.EvenerUsage
+	betaUsage  appwire.EvenerUsage
+	alphaCost  string
+	betaCost   string
 	imageSHA   string
 	imageURL   string
 }
