@@ -1068,7 +1068,14 @@ func (x *Index) removeOtherBuilds() {
 
 // scan covers complete lines from the covered end up to length.
 func (x *Index) scan(length int64) error {
-	reader := bufio.NewReaderSize(io.NewSectionReader(x.transcript, x.meta.Length, length-x.meta.Length), 1<<20)
+	// Size the reader to the unread section, not a fixed 1 MiB: a small
+	// catch-up would otherwise pay a megabyte of scratch for a few bytes.
+	// Keep a small floor so ReadLine's fragment accumulation still gets a
+	// reasonable first read, and the existing 1 MiB ceiling. Clamp in int64
+	// before the conversion to int.
+	unread := length - x.meta.Length
+	bufSize := max(min(unread, 1<<20), 4<<10)
+	reader := bufio.NewReaderSize(io.NewSectionReader(x.transcript, x.meta.Length, unread), int(bufSize))
 	offset := x.meta.Length
 	for {
 		line, complete, n, err := transcript.ReadLine(reader, maxLineBytes)

@@ -407,6 +407,75 @@ test("a cancelled long press does not leave the next click swallowed", () => {
   expect(activate).toHaveBeenCalledOnce();
 });
 
+function LongPressToggleFixture({
+  longPressEnabled,
+  onActivate,
+}: {
+  longPressEnabled: boolean;
+  onActivate: () => void;
+}) {
+  return (
+    <div>
+      <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled={longPressEnabled}>
+        <button type="button" onClick={onActivate}>
+          Fix flaky test
+        </button>
+      </HoverCard>
+    </div>
+  );
+}
+
+function endPress(trigger: HTMLElement, endingEvent: string) {
+  if (endingEvent === "pointerup") fireEvent.pointerUp(trigger, { pointerId: 1, clientX: 10, clientY: 10 });
+  else fireEvent.pointerCancel(trigger, { pointerId: 1 });
+}
+
+test.each(["pointerup", "pointercancel"])(
+  "disabling long-press mode during a pending press does not swallow a later activation (%s ends it)",
+  (endingEvent) => {
+    vi.useFakeTimers();
+    installHoverlessMatchMedia();
+    const activate = vi.fn();
+    const view = render(<LongPressToggleFixture longPressEnabled onActivate={activate} />);
+    const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+    fireEvent.pointerDown(trigger, { pointerId: 1, button: 0, clientX: 10, clientY: 10 });
+    act(() => vi.advanceTimersByTime(100));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    view.rerender(<LongPressToggleFixture longPressEnabled={false} onActivate={activate} />);
+    endPress(trigger, endingEvent);
+    view.rerender(<LongPressToggleFixture longPressEnabled onActivate={activate} />);
+
+    // No further pointerdown resets the gesture: this is the control's own
+    // activation, the click a keyboard or assistive technology sends.
+    fireEvent.click(trigger);
+    expect(activate).toHaveBeenCalledOnce();
+  },
+);
+
+test.each(["pointerup", "pointercancel"])(
+  "disabling long-press mode after the card is revealed does not swallow a later activation (%s ends it)",
+  (endingEvent) => {
+    vi.useFakeTimers();
+    installHoverlessMatchMedia();
+    const activate = vi.fn();
+    const view = render(<LongPressToggleFixture longPressEnabled onActivate={activate} />);
+    const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+    fireEvent.pointerDown(trigger, { pointerId: 1, button: 0, clientX: 10, clientY: 10 });
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+
+    view.rerender(<LongPressToggleFixture longPressEnabled={false} onActivate={activate} />);
+    endPress(trigger, endingEvent);
+    view.rerender(<LongPressToggleFixture longPressEnabled onActivate={activate} />);
+
+    fireEvent.click(trigger);
+    expect(activate).toHaveBeenCalledOnce();
+  },
+);
+
 test("a press that leaves the trigger before the click does not swallow a later one", () => {
   vi.useFakeTimers();
   installHoverlessMatchMedia();
@@ -711,3 +780,256 @@ function restoreOwnProperty(target: object, key: string, descriptor: PropertyDes
   if (descriptor) Object.defineProperty(target, key, descriptor);
   else delete (target as Record<string, unknown>)[key];
 }
+
+// Counts live callback identities registered on an EventTarget, keyed by event
+// type and capture flag. The native methods still run, so the listeners counted
+// are the ones actually installed. The pre-existing listeners present before the
+// count starts are a baseline, subtracted from every reading. window is the
+// target here: the gesture's cancellation pair and the floating-label hook's
+// dismissal pair both live on window, and only the callback identity tells them
+// apart. window carries its OWN addEventListener, which shadows
+// EventTarget.prototype's, so the override lands on the target itself.
+function tallyEventTarget(target: EventTarget) {
+  const originalAdd = Object.getOwnPropertyDescriptor(target, "addEventListener");
+  const originalRemove = Object.getOwnPropertyDescriptor(target, "removeEventListener");
+  const nativeAdd = (originalAdd?.value ?? target.addEventListener) as EventTarget["addEventListener"];
+  const nativeRemove = (originalRemove?.value ?? target.removeEventListener) as EventTarget["removeEventListener"];
+
+  const live = new Map<string, Set<EventListenerOrEventListenerObject>>();
+  const keyOf = (type: string, capture: boolean) => `${type}|${capture}`;
+  const captureOf = (options?: boolean | AddEventListenerOptions) =>
+    typeof options === "boolean" ? options : options?.capture === true;
+
+  function trackedAdd(
+    this: EventTarget,
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ) {
+    if (this === target && listener !== null) {
+      const key = keyOf(type, captureOf(options));
+      let identities = live.get(key);
+      if (!identities) {
+        identities = new Set();
+        live.set(key, identities);
+      }
+      identities.add(listener);
+    }
+    return nativeAdd.call(this, type, listener, options);
+  }
+
+  function trackedRemove(
+    this: EventTarget,
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ) {
+    if (this === target && listener !== null) {
+      live.get(keyOf(type, captureOf(options)))?.delete(listener);
+    }
+    return nativeRemove.call(this, type, listener, options);
+  }
+
+  Object.defineProperty(target, "addEventListener", { configurable: true, writable: true, value: trackedAdd });
+  Object.defineProperty(target, "removeEventListener", { configurable: true, writable: true, value: trackedRemove });
+
+  const baseline = new Map<string, number>();
+  for (const [key, identities] of live) baseline.set(key, identities.size);
+
+  return {
+    net(type: string, capture: boolean) {
+      return (live.get(keyOf(type, capture))?.size ?? 0) - (baseline.get(keyOf(type, capture)) ?? 0);
+    },
+    restore() {
+      if (originalAdd) Object.defineProperty(target, "addEventListener", originalAdd);
+      else Reflect.deleteProperty(target, "addEventListener");
+      if (originalRemove) Object.defineProperty(target, "removeEventListener", originalRemove);
+      else Reflect.deleteProperty(target, "removeEventListener");
+    },
+  };
+}
+
+const TALLY_IDS = Array.from({ length: 100 }, (_, index) => `hovercard-${index}`);
+
+function LongPressCards({ count }: { count: number }) {
+  return (
+    <div>
+      {TALLY_IDS.slice(0, count).map((id) => (
+        <HoverCard key={id} label={<div>Project prime-radiant</div>} longPressEnabled>
+          <button type="button">Fix flaky test {id}</button>
+        </HoverCard>
+      ))}
+    </div>
+  );
+}
+
+test("owns window cancellation only during its gesture", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const tally = tallyEventTarget(window);
+  try {
+    for (const count of [1, 10, 100]) {
+      const view = render(<LongPressCards count={count} />);
+      // An idle long-press card owns no window scroll/resize listener, and the
+      // count does not grow with the number of mounted cards.
+      expect(tally.net("scroll", true)).toBe(0);
+      expect(tally.net("resize", false)).toBe(0);
+      view.unmount();
+      expect(tally.net("scroll", true)).toBe(0);
+      expect(tally.net("resize", false)).toBe(0);
+    }
+
+    const view = render(<LongPressCards count={1} />);
+    const trigger = screen.getByRole("button", { name: `Fix flaky test ${TALLY_IDS[0]}` });
+
+    // Starting a gesture owns exactly one scroll/resize cancellation pair.
+    fireEvent.pointerDown(trigger, { pointerId: 7, button: 0, clientX: 10, clientY: 10 });
+    expect(tally.net("scroll", true)).toBe(1);
+    expect(tally.net("resize", false)).toBe(1);
+
+    // Showing the card adds the floating-label hook's own dismissal pair; the
+    // gesture pair is distinct and still owned by the gesture.
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    expect(tally.net("scroll", true)).toBe(2);
+    expect(tally.net("resize", false)).toBe(2);
+
+    // Lifting ends the gesture and disposes its pair, leaving the visible
+    // card's own hook pair (which goes when the card is dismissed).
+    fireEvent.pointerUp(trigger, { pointerId: 7 });
+    expect(tally.net("scroll", true)).toBe(1);
+    expect(tally.net("resize", false)).toBe(1);
+
+    // A cancelled gesture disposes its pair.
+    fireEvent.pointerDown(trigger, { pointerId: 8, button: 0, clientX: 10, clientY: 10 });
+    expect(tally.net("resize", false)).toBe(2);
+    fireEvent.pointerCancel(trigger, { pointerId: 8 });
+    expect(tally.net("resize", false)).toBe(1);
+
+    // Leaving the trigger ends the gesture without a lift there.
+    fireEvent.pointerDown(trigger, { pointerId: 9, button: 0, clientX: 10, clientY: 10 });
+    expect(tally.net("resize", false)).toBe(2);
+    fireEvent.pointerLeave(trigger, { pointerId: 9 });
+    expect(tally.net("resize", false)).toBe(1);
+
+    // Unmounting disposes a gesture pair still owed.
+    fireEvent.pointerDown(trigger, { pointerId: 10, button: 0, clientX: 10, clientY: 10 });
+    expect(tally.net("resize", false)).toBe(2);
+    view.unmount();
+    expect(tally.net("scroll", true)).toBe(0);
+    expect(tally.net("resize", false)).toBe(0);
+  } finally {
+    tally.restore();
+  }
+});
+
+test.each(["touch", "pen"])("ignores an unrelated %s pointer and retains the initiating gesture", (pointerType) => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const activate = vi.fn();
+  const tally = tallyEventTarget(window);
+  try {
+    render(
+      // biome-ignore lint/a11y/noStaticElementInteractions: this fixture observes whether the nested trigger bubbles
+      // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard activation is exercised through the external focus test
+      <div onClick={activate}>
+        <HoverCard label={<div>Project prime-radiant</div>} longPressEnabled>
+          <button type="button" tabIndex={-1}>
+            Fix flaky test
+          </button>
+        </HoverCard>
+      </div>,
+    );
+    const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+
+    // Pointer 7 starts the gesture.
+    fireEvent.pointerDown(trigger, { pointerId: 7, pointerType, button: 0, clientX: 10, clientY: 10 });
+    expect(tally.net("scroll", true)).toBe(1);
+    expect(tally.net("resize", false)).toBe(1);
+
+    // Pointer 8 presses, moves, lifts and cancels on the same trigger; none of
+    // it may replace pointer 7's start record, timer, listeners or suppression.
+    fireEvent.pointerDown(trigger, { pointerId: 8, pointerType, button: 0, clientX: 12, clientY: 12 });
+    fireEvent.pointerMove(trigger, { pointerId: 8, pointerType, clientX: 90, clientY: 90 });
+    fireEvent.pointerUp(trigger, { pointerId: 8, pointerType, clientX: 90, clientY: 90 });
+    fireEvent.pointerCancel(trigger, { pointerId: 8, pointerType });
+    expect(tally.net("scroll", true)).toBe(1);
+    expect(tally.net("resize", false)).toBe(1);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    // Pointer 7 still reveals the card at its original deadline.
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    expect(tally.net("scroll", true)).toBe(2);
+    expect(tally.net("resize", false)).toBe(2);
+
+    // Its OWN end disposes the gesture pair and arms exactly one suppressed
+    // compatibility click; the later ordinary activation still fires.
+    fireEvent.pointerUp(trigger, { pointerId: 7, pointerType, clientX: 10, clientY: 10 });
+    expect(tally.net("scroll", true)).toBe(1);
+    fireEvent.click(trigger);
+    expect(activate).not.toHaveBeenCalled();
+    fireEvent.click(trigger);
+    expect(activate).toHaveBeenCalledOnce();
+
+    // A fresh gesture after the cancellation works, and a cancelled one
+    // disposes its own pair.
+    fireEvent.pointerDown(trigger, { pointerId: 7, pointerType, button: 0, clientX: 10, clientY: 10 });
+    expect(tally.net("scroll", true)).toBe(1);
+    fireEvent.pointerCancel(trigger, { pointerId: 7, pointerType });
+    expect(tally.net("scroll", true)).toBe(0);
+    fireEvent.pointerDown(trigger, { pointerId: 7, pointerType, button: 0, clientX: 10, clientY: 10 });
+    expect(tally.net("scroll", true)).toBe(1);
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    fireEvent.pointerUp(trigger, { pointerId: 7, pointerType });
+    expect(tally.net("scroll", true)).toBe(1);
+  } finally {
+    tally.restore();
+  }
+});
+
+test("a disabled long-press mode owns no cancellation listeners", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const tally = tallyEventTarget(window);
+  try {
+    render(
+      <HoverCard label={<div>Project prime-radiant</div>}>
+        <button type="button">Fix flaky test</button>
+      </HoverCard>,
+    );
+    const trigger = screen.getByRole("button", { name: "Fix flaky test" });
+    expect(tally.net("scroll", true)).toBe(0);
+    expect(tally.net("resize", false)).toBe(0);
+
+    fireEvent.pointerDown(trigger, { pointerId: 3, pointerType: "touch", button: 0, clientX: 10, clientY: 10 });
+    expect(tally.net("scroll", true)).toBe(0);
+    expect(tally.net("resize", false)).toBe(0);
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  } finally {
+    tally.restore();
+  }
+});
+
+test("unmounting during the press disposes the pending gesture listeners", () => {
+  vi.useFakeTimers();
+  installHoverlessMatchMedia();
+  const tally = tallyEventTarget(window);
+  try {
+    const view = render(<LongPressCards count={1} />);
+    const trigger = screen.getByRole("button", { name: `Fix flaky test ${TALLY_IDS[0]}` });
+    fireEvent.pointerDown(trigger, { pointerId: 4, pointerType: "touch", button: 0, clientX: 10, clientY: 10 });
+    expect(tally.net("scroll", true)).toBe(1);
+    expect(tally.net("resize", false)).toBe(1);
+
+    view.unmount();
+    expect(tally.net("scroll", true)).toBe(0);
+    expect(tally.net("resize", false)).toBe(0);
+    act(() => vi.advanceTimersByTime(LONG_PRESS_MS));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  } finally {
+    tally.restore();
+  }
+});

@@ -315,9 +315,11 @@ owning row and shifted to keep 8px of viewport clearance. An open card follows t
 the sidebar is dragged to a new width. When the card cannot fit beside the
 sidebar, it opens above or below the row with the same 12px gap. The card stays in the body portal
 and does not reflow navigation or take focus. Scroll and viewport resize dismiss it and cancel
-pending reveals, including long presses; a fresh gesture reveals it at the new position.
-Containment applies when the card's dimensions fit the viewport. Other HoverCards and tooltips
-keep their default placement.
+pending reveals, including long presses; a fresh gesture reveals it at the new position. The
+window scroll and resize cancellation listeners a long press arms live only while its initiating
+pointer holds the gesture, so an idle trigger owns none and a second pointer neither ends nor
+takes over the first pointer's press. Containment applies when the card's dimensions fit the
+viewport. Other HoverCards and tooltips keep their default placement.
 
 ---
 

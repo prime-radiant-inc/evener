@@ -104,8 +104,18 @@ context cards. HoverCard's shared floating layer owns the body portal,
 measurement and reveal/dismiss lifetime. It observes the visible card and its
 side-anchored row so placement follows sidebar resizing. Session cards float beside the rail
 with viewport-aware fallback; other floating descriptions keep their placement.
-Scroll and viewport resize cancel both visible and pending reveals without
-changing navigation state. See the [sidebar placement contract](../web-ui/design-system.md).
+Three listener lifetimes stay distinct, and none grows with the number of
+mounted cards. One shared document-scoped tracker, one owner per Document,
+records whether a pointer is pressed or was lifted within the compatibility
+window a touch browser leaves before its mouse and focus events. A long-press
+gesture owns its window scroll and resize cancellation pair only from the
+pointer that starts it until that same pointer ends or cancels it, so an idle
+trigger owns none and a second pointer neither ends nor takes over the first
+pointer's gesture. Separately, the floating-label hook dismisses a pending or
+visible reveal on scroll or resize, and a visible card installs its own
+document pointerdown outside-dismissal. Scroll and viewport resize cancel both
+visible and pending reveals without changing navigation state. See the
+[sidebar placement contract](../web-ui/design-system.md).
 
 For shared-notes transcript updates, S05's shared projector owns the
 Conversation/System events visibility rule and prevents terminal fallback from
