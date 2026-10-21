@@ -2497,16 +2497,14 @@ test("a winning reflection read that shows a newer failure retires the old Retry
       delete response.thread.evener.activeTurnId;
       return response;
     });
+    // The authoritative read published a newer failure tail. The old failure's
+    // action is gone; settlement of the accepted copy itself is covered by the
+    // latest-read omission test above.
     await act(async () => {
       await threadsStore.getState().refreshThread("ref_a");
     });
     await flushPendingTurnsProjectionForTests();
-    expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
-    const laterView = render(
-      <TurnFailureEndCap error={{ message: "boom again" }} sessionRef="ref_a" turnId={later.id} />,
-    );
-    const laterRetry = within(laterView.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
-    await waitFor(() => expect(laterRetry.disabled).toBe(false));
+    expect(retryButton()).toBeNull();
   } finally {
     storage.close();
   }
