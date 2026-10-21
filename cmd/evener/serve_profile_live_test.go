@@ -37,6 +37,16 @@ func (codexLiveListProtocol) CountTokens(context.Context, llm.Request, registry.
 	return 0, llm.ErrInputTokenCountUnsupported
 }
 
+// registerCodexLiveProtocol is idempotent: the protocol registry is
+// process-global, so a repeated test run (-count>1) must not panic on an id
+// it already holds.
+func registerCodexLiveProtocol(p codexLiveListProtocol) {
+	if _, ok := llm.ProtocolFor(p.ID()); ok {
+		return
+	}
+	llm.RegisterProtocol(p)
+}
+
 func codexLiveClient(t *testing.T, protocolID string) *llm.Client {
 	t.Helper()
 	r, err := registry.Load(
@@ -61,7 +71,7 @@ func codexLiveClient(t *testing.T, protocolID string) *llm.Client {
 // live roster before rejecting the model the session was already using.
 func TestBuildInitialProfileUsesLiveCodexRoster(t *testing.T) {
 	const protocolID = "test-proto-codex-live-roster"
-	llm.RegisterProtocol(codexLiveListProtocol{id: protocolID, rows: []registry.Model{{ID: "gpt-reserve"}}})
+	registerCodexLiveProtocol(codexLiveListProtocol{id: protocolID, rows: []registry.Model{{ID: "gpt-reserve"}}})
 	client := codexLiveClient(t, protocolID)
 
 	profile, err := buildInitialProfile(context.Background(), client, cmdutil.ModelRef{Provider: "codex-plan", Model: "gpt-reserve"}, "")
@@ -78,7 +88,7 @@ func TestBuildInitialProfileUsesLiveCodexRoster(t *testing.T) {
 // Codex sentinel.
 func TestBuildInitialProfileKeepsCodexRosterRejection(t *testing.T) {
 	const protocolID = "test-proto-codex-live-reject"
-	llm.RegisterProtocol(codexLiveListProtocol{id: protocolID, rows: []registry.Model{{ID: "gpt-5.6"}}})
+	registerCodexLiveProtocol(codexLiveListProtocol{id: protocolID, rows: []registry.Model{{ID: "gpt-5.6"}}})
 	client := codexLiveClient(t, protocolID)
 
 	_, err := buildInitialProfile(context.Background(), client, cmdutil.ModelRef{Provider: "codex-plan", Model: "gpt-reserve"}, "")

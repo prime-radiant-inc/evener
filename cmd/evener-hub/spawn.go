@@ -917,6 +917,14 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// before the spawn, with the model's own verdict rather than a
 		// credential message for a launch that never happens.
 		res, err := r.ResolveGateCredential(name, model)
+		if err != nil && model != "" && errors.Is(err, registry.ErrCodexModelNotListed) {
+			// The bundled Codex roster lags the backend. The child applies the
+			// instance's live roster before resolving the persisted model, so
+			// judge this launch by the instance's own transport rather than
+			// refusing a model the provider serves. The child still owns the
+			// authoritative error when the model is genuinely absent.
+			res, err = r.ResolveGateCredential(name, "")
+		}
 		if err != nil {
 			return wireRefusal(appwire.HubLaunchError, err)
 		}
@@ -946,6 +954,12 @@ func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRe
 		// spawn — not a bare-launch scheme to offer a credential remedy
 		// against.
 		res, err := r.ResolveGateCredential(name, model)
+		if err != nil && model != "" && errors.Is(err, registry.ErrCodexModelNotListed) {
+			// Same deferral as the instance branch: the child resolves the
+			// model against the instance's live roster, and an id the bundle
+			// does not carry is not this gate's to refuse.
+			res, err = r.ResolveGateCredential(name, "")
+		}
 		if err != nil {
 			return wireRefusal(appwire.HubLaunchError, err)
 		}

@@ -725,8 +725,10 @@ transport with behavior beyond authentication:
   above). Launch and resume resolve the reference again after applying the
   instance's live listing when the bundled rows reject it, so a model the
   backend serves but the catalog lags — including a restarted session's
-  persisted model — starts instead of failing the roster check. An id the
-  live listing does not name either is still a resolve error.
+  persisted model — starts instead of failing the roster check. The hub's
+  launch check reads the same live listing, and its resume credential gate
+  leaves an unlisted Codex id for the child, which does. An id the live
+  listing does not name either is still a resolve error.
 
 `openai-codex/gpt-6-astra` is available in the curated catalog, including on
 named instances with `base = "openai-codex"`; discovery is not required to
