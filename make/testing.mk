@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-native test-native-bundle check-podfile-lock native-preflight api-package-preflight test-api-package test test-short test-changed test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -210,6 +210,30 @@ test:
 ## Alias for `make test`.
 test-short:
 	@$(MAKE) test
+
+# test-changed answers "what did this diff break" without paying for every
+# package in the modules it touched. The selection lives in
+# internal/devtool/testchanged, which maps changed files to modules from
+# GO_MODULES and closes over `go list -deps -test`, so a change in a
+# depended-on module reaches its dependents without a hardcoded list.
+## Run only the Go tests the current diff can affect, across the go.work
+## modules.
+## proves: the changed packages and every workspace package whose
+##   test-inclusive import graph reaches them compile and pass in
+##   short mode, including dependent modules reached through a changed
+##   dependency, so a one-file change runs its own packages and importers
+##   instead of a whole module.
+## trigger: Local pre-commit/pre-push iteration and quick regression checks;
+##   CI keeps running the full `make test` scopes.
+## requires: git history for BASE (default main) and the local worktree, the
+##   Go toolchain for `go list` and `go test`, and the go.work modules
+##   installed; no provider, network service, or fuzz-family test. BASE=<ref>
+##   measures the change set from another ref; RACE=1 adds -race. It exits 0
+##   with an explicit message when the diff selects no Go package.
+## fails-when: Any selected package fails, `go list` or git fails, the diff
+##   contains Go changes but selects no package, or RACE is neither 0 nor 1.
+test-changed:
+	@go run ./internal/devtool/testchanged -base "$(or $(BASE),main)" -race "$(or $(RACE),0)" -modules "$(GO_MODULES)"
 
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
 # explicit expansion in docs/developing-evener/testing.md for diagnosis and evidence. Sandboxed
