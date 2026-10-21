@@ -1,4 +1,10 @@
-import type { AuthTestResponse, InstanceEditParams, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
+import type {
+  AuthTestResponse,
+  InstanceCreateParams,
+  InstanceEditParams,
+  InstanceEntry,
+  ProviderDescriptor,
+} from "@evener/appwire-client";
 import {
   activeSourceLabel,
   CONNECTION_REPLACED_ERROR,
@@ -8,6 +14,7 @@ import {
   isEndpointConflict,
   safeCredentialTestResult,
 } from "@evener/appwire-client";
+import type { EditSupersededReconcile } from "@evener/appwire-client/state/credentials";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { isEditableTarget } from "../../../../keybindings/dispatcher";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
@@ -122,6 +129,12 @@ function findSetup(name: string): InstanceEntry | undefined {
     store.availableProviders.find((row) => row.setup?.name === name)?.setup
   );
 }
+/** listedInstance reports whether the name is an instance the hub lists, as
+ * opposed to a discovery-only setup row. Only the former can be edited; the
+ * latter has to author an instance with create. */
+function listedInstance(name: string): boolean {
+  return credentialsStore.getState().instances.some((row) => row.name === name);
+}
 function destination(row: InstanceEntry | undefined): string {
   if (!row) return "";
   return JSON.stringify([
@@ -175,7 +188,7 @@ function listingRow(rows: InstanceEntry[], name: string): InstanceEntry | undefi
 }
 
 function needsConfiguration(row: InstanceEntry | undefined): boolean {
-  return !row || !!row.hidden || !row.baseUrl || /[{}]/.test(row.baseUrl);
+  return !row?.baseUrl || /[{}]/.test(row.baseUrl);
 }
 /** The refusal every write and check reports the same way: either the
  * connection was replaced under the flow, or its endpoint moved. */
@@ -417,10 +430,12 @@ function SelectedConnection({
   // has read the listing.
   const selfMutation = useRef(false);
   const active = useEditorLifetime();
-  // The add state: a connection this card has not created yet. Its three rows
-  // are inputs; every other state shows values.
-  const hostConfigured = !!row?.hidden;
-  const adding = !row?.hidden && needsConfiguration(row) && !configured;
+  // The add state: a connection the hub does not list at all. Its three rows
+  // are inputs; every other state shows values. A listed instance whose
+  // destination is unresolved is edited in place, not created again under a
+  // name the hub already holds.
+  const listed = listedInstance(name);
+  const adding = !listed && needsConfiguration(row) && !configured;
   const [newName, setNewName] = useState(provider.setup?.name ?? provider.id);
   const [newBaseUrl, setNewBaseUrl] = useState("");
   const [endpointDraft, setEndpointDraft] = useState("");
@@ -438,11 +453,15 @@ function SelectedConnection({
   // A connection with nothing saved yet opens its key row: the card's first
   // job is to get one, and an "Add key" step would hide the only field the
   // user can act on.
-  const needsKey = storedMode && !adding && !row?.hidden && row?.activeSource !== "store";
+  const needsKey = storedMode && !adding && row?.activeSource !== "store";
   const [editing, setEditing] = useState<EditingRow>(() => (needsKey ? "key" : null));
   const busy = phase === "saving" || phase === "refreshing" || phase === "checking";
   const help = Object.hasOwn(HELP, effectiveProvider.id) ? HELP[effectiveProvider.id] : undefined;
   const unavailable = connection !== "ready" || store.loading;
+  // The hub refuses instance mutations while its provider config is broken;
+  // credential store writes are a separate path and stay available.
+  const writesRefused = store.writesRefused;
+  const instanceEditsBlocked = busy || writesRefused;
   const providerLabel = help?.label || effectiveProvider.name || effectiveProvider.id;
   const status = statusOf();
 
@@ -590,33 +609,55 @@ function SelectedConnection({
 
   type EditConfirmation = { kind: "confirmed"; row: InstanceEntry } | { kind: "moved" } | { kind: "unconfirmed" };
 
-  /** confirmEdit runs one instance edit and resolves the row it wrote from a
-   * listing that reflects it. The store's applied answer is authoritative. An
-   * answer a newer request superseded still carries the edit's own row, read
+  /** confirmWrite runs one instance write and resolves the row it authored from
+   * a listing that reflects it. The store's applied answer is authoritative. An
+   * answer a newer request superseded still carries the write's own row, read
    * under the hub's write lock, but only an applied read may make that row the
    * card's baseline; without one the caller keeps its draft and says so. */
-  async function confirmEdit(params: InstanceEditParams): Promise<EditConfirmation> {
+  async function confirmWrite(
+    write: (reconcile: EditSupersededReconcile) => Promise<boolean>,
+    name: string,
+  ): Promise<EditConfirmation> {
     let superseded: InstanceEntry | undefined;
-    const applied = await credentialsStore.getState().edit(params, {
+    const applied = await write({
       onSuperseded: (response) => {
-        superseded = listingRow(response.instances, params.name);
+        superseded = listingRow(response.instances, name);
       },
     });
-    const authored = applied ? findSetup(params.name) : superseded;
+    const authored = applied ? findSetup(name) : superseded;
     if (!authored) return { kind: "unconfirmed" };
     const read = await appliedSelfRead();
     if (!applied && !read) return { kind: "unconfirmed" };
-    const row = findSetup(params.name);
+    const row = findSetup(name);
     if (!row) return { kind: "unconfirmed" };
     return destination(row) === destination(authored) ? { kind: "confirmed", row } : { kind: "moved" };
   }
 
-  /** saveClaimedEdit runs one editor save through the card's one outcome
-   * protocol. confirmEdit asserts the claim on the wire; a confirmed row
+  function confirmEdit(params: InstanceEditParams): Promise<EditConfirmation> {
+    return confirmWrite((reconcile) => credentialsStore.getState().edit(params, reconcile), params.name);
+  }
+
+  function confirmCreate(params: InstanceCreateParams): Promise<EditConfirmation> {
+    return confirmWrite((reconcile) => credentialsStore.getState().create(params, reconcile), params.name);
+  }
+
+  /** writeFor picks the write a save against name needs: an edit when the hub
+   * lists the name as an instance, a create when the row is only a
+   * discovery-only setup. */
+  function writeFor(
+    name: string,
+    editParams: InstanceEditParams,
+    createParams: InstanceCreateParams,
+  ): () => Promise<EditConfirmation> {
+    return listedInstance(name) ? () => confirmEdit(editParams) : () => confirmCreate(createParams);
+  }
+
+  /** saveClaimed runs one editor save through the card's one outcome protocol.
+   * confirmEdit/confirmCreate assert the claim on the wire; a confirmed row
    * becomes the baseline, a moved destination closes the editor and re-anchors,
    * and an unconfirmed write keeps the editor and its draft for a retry. */
-  async function saveClaimedEdit(
-    params: InstanceEditParams,
+  async function saveClaimed(
+    write: () => Promise<EditConfirmation>,
     closeEditor: () => void,
     saveFailedMessage: string,
   ): Promise<void> {
@@ -626,7 +667,7 @@ function SelectedConnection({
     setResult(null);
     selfMutation.current = true;
     try {
-      const outcome = await confirmEdit(params);
+      const outcome = await write();
       selfMutation.current = false;
       if (!current(token)) return;
       if (outcome.kind === "unconfirmed") {
@@ -822,6 +863,7 @@ function SelectedConnection({
   // Creating the connection is the add state's save: the row the card shows
   // afterwards is the one the listing holds, never an optimistic copy.
   async function createConnection() {
+    if (writesRefused) return;
     const trimmedName = newName.trim();
     const trimmedBaseUrl = newBaseUrl.trim();
     if (!trimmedName) {
@@ -978,7 +1020,7 @@ function SelectedConnection({
   // Saving the endpoint row rewrites the destination the card shows and drops
   // the test result, which was taken against the old one.
   async function saveEndpoint() {
-    if (busy) return;
+    if (instanceEditsBlocked) return;
     const next = endpointDraft.trim();
     if (!row) return;
     if (!next) {
@@ -1001,17 +1043,18 @@ function SelectedConnection({
       await recoverChangedEndpoint({ reason: "endpoint-changed", message: ENDPOINT_MOVED_ERROR });
       return;
     }
-    await saveClaimedEdit(
+    const write = writeFor(
+      row.name,
       { name: row.name, baseUrl: next, expectedEndpointFingerprint: claim.fingerprint },
-      closeEndpointEditor,
-      "The endpoint could not be saved. Your value is kept.",
+      { name: row.name, base: row.base || row.providerId, baseUrl: next },
     );
+    await saveClaimed(write, closeEndpointEditor, "The endpoint could not be saved. Your value is kept.");
   }
 
   // The full editor is this card's own disclosure. Saving it is one edit with
   // every field, so the row the listing returns is the only source of truth.
   async function saveSettings() {
-    if (busy) return;
+    if (instanceEditsBlocked) return;
     if (!row) return;
     const claim = settingsClaim;
     if (!claim || claimEndpointMoved(claim, row)) {
@@ -1023,29 +1066,27 @@ function SelectedConnection({
       return;
     }
     const changed = (field: keyof SettingsDraft) => settingsDraft[field] !== settingsBaseline[field];
-    await saveClaimedEdit(
+    const values = {
+      protocol: settingsDraft.protocol || undefined,
+      surface: settingsDraft.surface || undefined,
+      apiKeyEnv: settingsDraft.apiKeyEnv || undefined,
+      credentialHeader: settingsDraft.credentialHeader || undefined,
+    };
+    const write = writeFor(
+      row.name,
       {
         name: row.name,
-        ...(changed("protocol")
-          ? { protocol: settingsDraft.protocol || undefined, clearProtocol: !settingsDraft.protocol }
-          : {}),
-        ...(changed("surface")
-          ? { surface: settingsDraft.surface || undefined, clearSurface: !settingsDraft.surface }
-          : {}),
-        ...(changed("apiKeyEnv")
-          ? { apiKeyEnv: settingsDraft.apiKeyEnv || undefined, clearApiKeyEnv: !settingsDraft.apiKeyEnv }
-          : {}),
+        ...(changed("protocol") ? { protocol: values.protocol, clearProtocol: !values.protocol } : {}),
+        ...(changed("surface") ? { surface: values.surface, clearSurface: !values.surface } : {}),
+        ...(changed("apiKeyEnv") ? { apiKeyEnv: values.apiKeyEnv, clearApiKeyEnv: !values.apiKeyEnv } : {}),
         ...(changed("credentialHeader")
-          ? {
-              credentialHeader: settingsDraft.credentialHeader || undefined,
-              clearCredentialHeader: !settingsDraft.credentialHeader,
-            }
+          ? { credentialHeader: values.credentialHeader, clearCredentialHeader: !values.credentialHeader }
           : {}),
         expectedEndpointFingerprint: claim.fingerprint,
       },
-      closeSettings,
-      "The settings could not be saved. Your values are kept.",
+      { name: row.name, base: row.base || row.providerId, ...values },
     );
+    await saveClaimed(write, closeSettings, "The settings could not be saved. Your values are kept.");
   }
 
   async function signIn() {
@@ -1177,7 +1218,11 @@ function SelectedConnection({
               {completionLabel}
             </Button>
           ) : (
-            <Button type="submit" form="provider-connection-form" disabled={busy || unavailable || hostConfigured}>
+            <Button
+              type="submit"
+              form="provider-connection-form"
+              disabled={busy || unavailable || (adding && writesRefused)}
+            >
               {primaryLabel}
             </Button>
           )}
@@ -1307,7 +1352,12 @@ function SelectedConnection({
                 <div className={styles.rowActions}>
                   {editing === "endpoint" ? (
                     <>
-                      <Button variant="secondary" size="xs" disabled={busy} onClick={() => void saveEndpoint()}>
+                      <Button
+                        variant="secondary"
+                        size="xs"
+                        disabled={instanceEditsBlocked}
+                        onClick={() => void saveEndpoint()}
+                      >
                         Save
                       </Button>
                       <Button variant="quiet" size="xs" disabled={busy} onClick={closeEndpointEditor}>
@@ -1318,7 +1368,7 @@ function SelectedConnection({
                     <Button
                       variant="quiet"
                       size="xs"
-                      disabled={busy}
+                      disabled={instanceEditsBlocked}
                       onClick={() => {
                         setEndpointSeed(row?.baseUrl ?? "");
                         setEndpointDraft(row?.baseUrl ?? "");
@@ -1440,9 +1490,9 @@ function SelectedConnection({
           )}
         </div>
 
-        {hostConfigured && (
-          <p className={styles.note} data-state="host-configured">
-            This connection is configured on the host, so its settings are read-only here.
+        {writesRefused && (
+          <p className={styles.note} data-state="writes-refused">
+            Provider settings are read-only. Repair the host configuration to add or edit a connection.
           </p>
         )}
 
@@ -1524,7 +1574,7 @@ function SelectedConnection({
           </p>
         )}
 
-        {!adding && !hostConfigured && (
+        {!adding && (
           <Disclosure
             open={settingsOpen}
             onOpenChange={(open) => {
@@ -1548,7 +1598,7 @@ function SelectedConnection({
                   value={settingsDraft.protocol}
                   onChange={(event) => setSettingsDraft((current) => ({ ...current, protocol: event.target.value }))}
                   options={PROTOCOL_OPTIONS}
-                  disabled={busy}
+                  disabled={instanceEditsBlocked}
                 />
               </label>
               <label className={styles.settingsRow} htmlFor="connection-surface">
@@ -1558,7 +1608,7 @@ function SelectedConnection({
                   value={settingsDraft.surface}
                   onChange={(event) => setSettingsDraft((current) => ({ ...current, surface: event.target.value }))}
                   options={SURFACE_OPTIONS}
-                  disabled={busy}
+                  disabled={instanceEditsBlocked}
                 />
               </label>
               <label className={styles.settingsRow} htmlFor="connection-apikeyenv">
@@ -1567,7 +1617,7 @@ function SelectedConnection({
                   id="connection-apikeyenv"
                   placeholder="e.g. PORTKEY_KEY"
                   value={settingsDraft.apiKeyEnv}
-                  disabled={busy}
+                  disabled={instanceEditsBlocked}
                   onChange={(event) => setSettingsDraft((current) => ({ ...current, apiKeyEnv: event.target.value }))}
                 />
               </label>
@@ -1577,7 +1627,7 @@ function SelectedConnection({
                   id="connection-credentialheader"
                   placeholder="Authorization=Bearer $VAR or $(get-token)"
                   value={settingsDraft.credentialHeader}
-                  disabled={busy}
+                  disabled={instanceEditsBlocked}
                   onChange={(event) =>
                     setSettingsDraft((current) => ({ ...current, credentialHeader: event.target.value }))
                   }
@@ -1587,7 +1637,12 @@ function SelectedConnection({
                 <Button variant="quiet" size="sm" disabled={busy} onClick={() => leave(onOpenSettings)}>
                   Manage all connections
                 </Button>
-                <Button variant="secondary" size="sm" disabled={busy} onClick={() => void saveSettings()}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={instanceEditsBlocked}
+                  onClick={() => void saveSettings()}
+                >
                   Save settings
                 </Button>
               </div>

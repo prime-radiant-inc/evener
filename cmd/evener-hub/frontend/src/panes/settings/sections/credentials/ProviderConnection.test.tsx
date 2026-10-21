@@ -582,6 +582,12 @@ function scriptSave(client: FakeClient, next = savedList()) {
   });
   client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "raw-provider-secret" }));
 }
+function scriptCreate(client: FakeClient, listing: InstanceListResponse) {
+  client.on("evener/instance/create", () => {
+    client.on("evener/instance/list", () => structuredClone(listing));
+    return structuredClone(listing);
+  });
+}
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((r) => {
@@ -1236,14 +1242,147 @@ test("reconnect restores initial loading and invalidates late check callbacks", 
   await user.click(screen.getByRole("button", { name: "Replace" }));
   expect(screen.getByLabelText("API key")).toHaveProperty("value", "draft");
 });
-test("a host-configured setup is read-only, not a direct key/check route", async () => {
-  const hidden = provider("anthropic", "Anthropic", ["apiKey"], { hidden: true });
-  const { user, client } = setup({ instances: [], availableProviders: [hidden], writesRefused: true });
+// hidden is the hub's "this provider's base URL variable is unset" flag, not a
+// host-configured connection: fresh hosts list Azure, Vertex and compatible
+// endpoints this way, and the card has to let the user supply the destination.
+test("a hidden setup row is configurable instead of read-only", async () => {
+  const hidden = provider("azure", "Azure", ["apiKey"], { hidden: true, baseUrl: "" });
+  const { user, client } = setup({ instances: [], availableProviders: [hidden] });
+  await choose(user, "Azure");
+
+  expect(screen.getByRole("dialog", { name: "New connection" })).toBeTruthy();
+  expect(screen.queryByText(/read-only/i)).toBeNull();
+  const endpoint = screen.getByLabelText("Endpoint URL");
+  await enterText(user, endpoint, "https://team.azure.example/v1");
+
+  const created: InstanceEntry = {
+    ...hidden.setup!,
+    base: "azure",
+    auth: "api-key",
+    implicit: false,
+    hidden: false,
+    baseUrl: "https://team.azure.example/v1",
+    endpointFingerprint: "fp-azure",
+  };
+  const listing: InstanceListResponse = { instances: [created], availableProviders: [hidden] };
+  scriptCreate(client, listing);
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+
+  await user.click(screen.getByRole("button", { name: "Save and test" }));
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/create")).toBe(true));
+  expect(client.calls.find((call) => call.method === "evener/instance/create")?.params).toMatchObject({
+    name: "azure",
+    base: "azure",
+    baseUrl: "https://team.azure.example/v1",
+  });
+});
+
+// The other hidden shape: an authored instance whose destination no longer
+// resolves. It is already listed, so the card edits it in place rather than
+// entering add mode and asking the hub to create the same name again.
+test("a listed hidden instance is edited instead of created again", async () => {
+  const hidden = savedList("anthropic", {
+    hidden: true,
+    baseUrl: "",
+    endpointFingerprint: undefined,
+  }).instances[0]!;
+  const { user, client } = setup({ instances: [hidden], availableProviders: catalogue });
   await choose(user);
-  expect(screen.queryByLabelText("API key")).toBeNull();
-  expect(screen.getByRole("button", { name: "Save and test" })).toHaveProperty("disabled", true);
-  expect(document.querySelector('[data-state="host-configured"]')).not.toBeNull();
+  expect(screen.queryByRole("dialog", { name: "New connection" })).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  await enterText(user, screen.getByLabelText("Endpoint URL"), "https://restored.example/v1");
+
+  const restored: InstanceEntry = {
+    ...hidden,
+    hidden: false,
+    baseUrl: "https://restored.example/v1",
+    endpointFingerprint: "fp-restored",
+  };
+  const listing: InstanceListResponse = { instances: [restored], availableProviders: structuredClone(catalogue) };
+  client.on("evener/instance/edit", () => {
+    client.on("evener/instance/list", () => structuredClone(listing));
+    return structuredClone(listing);
+  });
+
+  await user.click(screen.getByRole("button", { name: "Save" }));
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/edit")).toBe(true));
+  expect(client.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(0);
+  expect(await screen.findByText("https://restored.example/v1")).toBeTruthy();
+});
+
+// writesRefused is the hub saying its instance mutators would be rejected -
+// provider settings are read-only - while credential store writes still work.
+test("a host that refuses provider settings shows them read-only", async () => {
+  const setupRow = provider("anthropic", "Anthropic", ["apiKey"]);
+  const { user, client } = setup({ instances: [], availableProviders: [setupRow], writesRefused: true });
+  await choose(user);
+
+  expect(document.querySelector('[data-state="writes-refused"]')).not.toBeNull();
+  // The key row remains usable; the instance editors do not.
+  expect(screen.getByLabelText("API key")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Edit" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Save and test" })).toHaveProperty("disabled", false);
   expect(client.calls.some((c) => c.method === "evener/auth/test")).toBe(false);
+});
+
+// findSetup also returns discovery-only setup rows: providers the catalogue
+// lists but no instance of, because no credential or authored configuration
+// exists yet. Editing one as an instance is rejected by the hub, so the card
+// authors the instance with the editor's fields instead.
+test("a discovery-only row saves its endpoint by authoring the instance", async () => {
+  const setupRow = provider("anthropic", "Anthropic", ["apiKey"]);
+  const { user, client } = setup({ instances: [], availableProviders: [setupRow] });
+  await choose(user);
+  await user.click(screen.getByRole("button", { name: "Edit" }));
+  const field = screen.getByLabelText("Endpoint URL");
+  await user.clear(field);
+  await enterText(user, field, "https://proxy.example/v1");
+
+  const created: InstanceEntry = {
+    ...setupRow.setup!,
+    name: "anthropic",
+    implicit: false,
+    baseUrl: "https://proxy.example/v1",
+    endpointFingerprint: "fp-proxy",
+  };
+  const listing: InstanceListResponse = { instances: [created], availableProviders: [setupRow] };
+  scriptCreate(client, listing);
+
+  await user.click(screen.getByRole("button", { name: "Save" }));
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/create")).toBe(true));
+  expect(client.calls.find((call) => call.method === "evener/instance/create")?.params).toMatchObject({
+    name: "anthropic",
+    base: "anthropic",
+    baseUrl: "https://proxy.example/v1",
+  });
+  expect(client.calls.filter((call) => call.method === "evener/instance/edit")).toHaveLength(0);
+  expect(await screen.findByText("https://proxy.example/v1")).toBeTruthy();
+});
+
+test("a discovery-only row saves its configuration by authoring the instance", async () => {
+  const setupRow = provider("anthropic", "Anthropic", ["apiKey"]);
+  const { user, client } = setup({ instances: [], availableProviders: [setupRow] });
+  await choose(user);
+  await user.click(screen.getByText("All connection settings"));
+  await enterText(user, screen.getByLabelText("API key env"), "TEAM_KEY");
+
+  const created: InstanceEntry = { ...setupRow.setup!, name: "anthropic", implicit: false, apiKeyEnv: "TEAM_KEY" };
+  const listing: InstanceListResponse = { instances: [created], availableProviders: [setupRow] };
+  scriptCreate(client, listing);
+
+  await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+  await waitFor(() => expect(client.calls.some((call) => call.method === "evener/instance/create")).toBe(true));
+  expect(client.calls.find((call) => call.method === "evener/instance/create")?.params).toMatchObject({
+    name: "anthropic",
+    base: "anthropic",
+    apiKeyEnv: "TEAM_KEY",
+  });
+  expect(client.calls.filter((call) => call.method === "evener/instance/edit")).toHaveLength(0);
 });
 test("read-only provider settings do not disable an existing credential store write", async () => {
   const { user, client } = setup({ instances: [], availableProviders: catalogue, writesRefused: true });
@@ -1384,6 +1523,7 @@ test("a superseded reload read does not baseline a same-named row the store stil
     name: "retained-name",
     implicit: false,
     hidden: true,
+    baseUrl: "",
   };
   client.on("evener/instance/list", () => ({
     instances: [structuredClone(staleRow)],
