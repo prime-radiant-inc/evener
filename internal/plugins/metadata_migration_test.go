@@ -496,24 +496,38 @@ func TestManagedMetadataMigrationFindsANumberedArchiveMarker(t *testing.T) {
 	}
 }
 
+// writeArchivedRefs writes refs whose names end in the live journal marker
+// suffix and the legacy one. Both record a commit id, not a source path, so a
+// journal sweep must never treat them as markers.
+func writeArchivedRefs(t *testing.T, archive string) (refs []string, commitID string) {
+	t.Helper()
+	const id = "0123456789abcdef0123456789abcdef01234567"
+	refs = []string{
+		filepath.Join(archive, "refs", "heads", "topic.pending"),
+		filepath.Join(archive, "refs", "heads", "topic.evener-pending"),
+	}
+	for _, ref := range refs {
+		writeTestFile(t, ref, id)
+	}
+	return refs, id
+}
+
+func assertArchivedRefs(t *testing.T, refs []string, commitID, pass string) {
+	t.Helper()
+	for _, ref := range refs {
+		got, err := os.ReadFile(ref)
+		if err != nil || string(got) != commitID {
+			t.Fatalf("archived ref %s after %s = %q, %v", filepath.Base(ref), pass, got, err)
+		}
+	}
+}
+
 func TestManagedMetadataMigrationKeepsArchivedRefs(t *testing.T) {
 	m := NewManager(t.TempDir())
 	archive := m.managedGitArchiveDir("cache", "acme/widget/aaa/.git")
 	writeGitAdministration(t, archive)
-	// An archived ref whose name ends in the marker suffix records a commit id,
-	// not a source path. It lives inside archived metadata, so it is not a
-	// journal marker and must survive every pass untouched.
-	ref := filepath.Join(archive, "refs", "heads", "topic.evener-pending")
-	const commitID = "0123456789abcdef0123456789abcdef01234567"
-	writeTestFile(t, ref, commitID)
+	refs, commitID := writeArchivedRefs(t, archive)
 
-	assertRef := func(pass string) {
-		t.Helper()
-		got, err := os.ReadFile(ref)
-		if err != nil || string(got) != commitID {
-			t.Fatalf("archived ref after %s = %q, %v", pass, got, err)
-		}
-	}
 	stateBytes := func() []byte {
 		t.Helper()
 		data, err := os.ReadFile(filepath.Join(m.Root, storeFormatFileName))
@@ -524,14 +538,14 @@ func TestManagedMetadataMigrationKeepsArchivedRefs(t *testing.T) {
 	}
 
 	m.ensureManagedContentMigrated(context.Background())
-	assertRef("the first pass")
+	assertArchivedRefs(t, refs, commitID, "the first pass")
 	if !m.managedContentClean() {
 		t.Fatal("store with archived refs was not reported clean")
 	}
 	first := stateBytes()
 
 	m.ensureManagedContentMigrated(context.Background())
-	assertRef("the second pass")
+	assertArchivedRefs(t, refs, commitID, "the second pass")
 	if !m.managedContentClean() {
 		t.Fatal("store with archived refs was not reported clean after the second pass")
 	}
@@ -547,9 +561,7 @@ func TestManagedMetadataMigrationKeepsArchivedRefsInNumberedPayload(t *testing.T
 	// as a stale marker or descend into it.
 	archive := m.managedGitArchiveDir("cache", "acme/widget/aaa/.git") + "-1"
 	writeGitAdministration(t, archive)
-	ref := filepath.Join(archive, "refs", "heads", "topic.evener-pending")
-	const commitID = "0123456789abcdef0123456789abcdef01234567"
-	writeTestFile(t, ref, commitID)
+	refs, commitID := writeArchivedRefs(t, archive)
 
 	stateBytes := func() []byte {
 		t.Helper()
@@ -561,18 +573,14 @@ func TestManagedMetadataMigrationKeepsArchivedRefsInNumberedPayload(t *testing.T
 	}
 
 	m.ensureManagedContentMigrated(context.Background())
-	if got, err := os.ReadFile(ref); err != nil || string(got) != commitID {
-		t.Fatalf("archived ref after the first pass = %q, %v", got, err)
-	}
+	assertArchivedRefs(t, refs, commitID, "the first pass")
 	if !m.managedContentClean() {
 		t.Fatal("store with a numbered archive payload was not reported clean")
 	}
 	first := stateBytes()
 
 	m.ensureManagedContentMigrated(context.Background())
-	if got, err := os.ReadFile(ref); err != nil || string(got) != commitID {
-		t.Fatalf("archived ref after the second pass = %q, %v", got, err)
-	}
+	assertArchivedRefs(t, refs, commitID, "the second pass")
 	if !m.managedContentClean() {
 		t.Fatal("store with a numbered archive payload was not reported clean after the second pass")
 	}
