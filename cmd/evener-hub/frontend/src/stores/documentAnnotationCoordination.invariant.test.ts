@@ -1674,3 +1674,48 @@ test("a dismissal of an already-applied row wakes the same-adapter reader once",
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// An acknowledgment is a delivery, not an observation: if it throws, the
+// composer's token never advanced while the handoff still reported applied.
+// The old wrapper swallowed that fault and nothing retried, leaving the editor
+// permanently behind the committed draft. A fault now retains the operation in
+// the existing uncertain-append mechanism, and a later pass re-drives it.
+test("a throwing acknowledgment is retained and retried by a later pass", async () => {
+  let acknowledgeFaults = 1;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    prepareAnnotation: async () => {
+      const current = fixture;
+      if (current === undefined) return null;
+      const loaded = await current.drafts.load(current.key);
+      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+    },
+    acknowledgeAnnotation: () => {
+      if (acknowledgeFaults > 0) {
+        acknowledgeFaults -= 1;
+        throw new Error("acknowledgment fault");
+      }
+    },
+  });
+
+  // The handoff reports the applied result the commit earned even though the
+  // delivery faulted.
+  expect(await fixture.runtime.handoff(fixture.document, fixture.operation.operationId)).toMatchObject({
+    state: "applied",
+  });
+  expect(fixture.acknowledge).toHaveBeenCalledTimes(1);
+
+  // No external trigger retries a delivery on its own; the retained work makes
+  // the next pass re-drive it, and the composer eventually receives it.
+  await fixture.runtime.retryPending("storage-recovered");
+  await fixture.runtime.whenIdle();
+  expect(fixture.acknowledge).toHaveBeenCalledTimes(2);
+  expect(acknowledgeFaults).toBe(0);
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});

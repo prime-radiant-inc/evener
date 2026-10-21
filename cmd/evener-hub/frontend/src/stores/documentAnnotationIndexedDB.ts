@@ -203,6 +203,19 @@ function invokeObserver(listener: () => void): void {
   }
 }
 
+// An acknowledgment is a DELIVERY, not an observation: a fault leaves the
+// composer's authority un-advanced while the append is already committed. It
+// must be attempted, not swallowed, so the caller can retain the work a later
+// pass re-drives. True means the composer received the committed backing.
+function attemptDelivery(delivery: () => void): boolean {
+  try {
+    delivery();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // One deletion pattern for every store swept by a namespace reset: a row
 // leaves when its namespace identity matches, deleted by the store's own key,
 // so a store added to the reset cannot grow a divergent loop. Every request is
@@ -2091,7 +2104,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // refuse: acknowledging here would insert the dismissed note into the
       // very editor the user dismissed it from.
       if (!this.#pendingCancelledDiscards.has(operationKey)) {
-        invokeObserver(() => source.acknowledgeAnnotation(preparation, result.token, result.value));
+        const delivered = attemptDelivery(() => source.acknowledgeAnnotation(preparation, result.token, result.value));
+        // A fault leaves the composer's token un-advanced while the handoff
+        // reports applied. Retain the existing uncertain-append record so a
+        // later pass re-drives the delivery from the committed backing.
+        if (!delivered) this.#uncertainAppends.set(operationKey, { key, operationId, source, preparation });
       }
       // The append committed; wake matching readers (and peers) after commit.
       this.#settleTransition({ signal: true, documentKey: annotationDocumentKey(key) });
@@ -2149,7 +2166,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       return "unreconcilable";
     }
     const { token, value } = backing;
-    invokeObserver(() => retained.source.acknowledgeAnnotation(retained.preparation, token, value));
+    if (!attemptDelivery(() => retained.source.acknowledgeAnnotation(retained.preparation, token, value))) {
+      // The delivery faulted: the record stays and the next pass attempts it
+      // again. The applied row is already published, so no signal is owed.
+      return "faulted";
+    }
     // The acknowledgment is the moment the committed backing makes the
     // composer current again: a handoff that refused against the pre-append
     // token can now append. Signal storage success here, outside every
