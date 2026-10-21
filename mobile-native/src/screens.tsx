@@ -2566,25 +2566,25 @@ export function ConversationScreen({
 			if (kind === "resume") {
 				const live = store.getState();
 				const target = mutationTarget(live);
-				if (target === null) return false;
+				if (target === null || client === null) return false;
 				await getNativeMutationRuntime().submit(offlineRequest(target, "resume", buildComposerInput(text, images)));
 				haptic("light");
 				// The message is durably admitted, so it is sent: the resume is the
 				// recovery it needs, not part of the send's success. Reporting a
 				// failed resume as a failed send would leave a ghost of a message
 				// that is already parked, and re-sending that ghost would duplicate
-				// it. The next resume or settle dispatches the parked row, and the
-				// person is told here when this one could not, so a parked message is
-				// never left unexplained.
-				void controls?.resume().then((resumed) => {
-					if (resumed) return;
-					const reason = controls?.getSnapshot().error;
-					showToast({
-						text: reason
-							? `Your message is saved and will send once the session resumes. ${reason}`
-							: "Your message is saved and will send once the session resumes.",
-					});
-				});
+				// it.
+				//
+				// The resume runs through the runtime's settle rather than
+				// controls.resume(): that is the path that also retargets the parked
+				// row when the resume returns a different identity, and its read is
+				// what releases the message. A refusal or failure is reported here,
+				// so a parked message is never left unexplained.
+				const answered = await getNativeMutationRuntime()
+					.settleTarget(target.hubId, target.ref, client, { mayResumeFenced: async () => true })
+					.catch(() => undefined);
+				if (answered === "reconciled" || answered === "open") return true;
+				showToast({ text: "Your message is saved and will send once the session resumes." });
 				return true;
 			}
 			const previous = store.getState().lastAcceptedMutation;

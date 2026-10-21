@@ -44,7 +44,7 @@ type NativeStorage = MutationOutboxStorage<MutationAttachmentRef> & {
 	releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean>;
 	/** Moves a resumed session's waiting rows to its resolved identity and
 	 * returns the ids that moved. */
-	retarget(ref: string, to: { ref: string; threadId?: string; instanceId?: string }): string[];
+	retarget(ref: string, to: { ref: string; wireRef: string; threadId?: string; instanceId?: string }): string[];
 	pruneUnlistedAccepted(
 		targetRef: string,
 		acceptedBefore: number,
@@ -146,6 +146,12 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		{ client: AppwireClientLike; token: symbol; readToken?: symbol; unsubscribe: () => void }
 	>();
 	readonly #blockedTargets = new Set<string>();
+	// Registrations this runtime created for its own work and must release when
+	// that work ends. A settle that retargets a resumed session registers the
+	// new identity so the moved rows can dispatch; nothing else owns that
+	// registration, so it is retired with the settle rather than left pinned to
+	// a client a later connection replaces.
+	readonly #retireWithSettle: Array<() => void> = [];
 	// The mutations this phone submitted to each target, by id, with when:
 	// reconcilePendingEntries' submittedHere. An authoritative read that lists
 	// a send as pending settles its durable record before any turn shows it,
@@ -237,6 +243,10 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		this.#started = false;
 		this.#startup = undefined;
 		await this.#outbox.stop();
+		// A stopped runtime serves nothing, so the registrations it made for its
+		// own work end here. A later start that needs the identity registers it
+		// again; leaving them held would pin the targets to this attempt's client.
+		for (const release of this.#retireWithSettle.splice(0)) release();
 	}
 
 	// The scoped durable read (NativeMutationPersistenceRead): the snapshot
@@ -454,7 +464,7 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 		targetRef: string,
 		client: AppwireClientLike,
 		options: { mayResumeFenced?: () => Promise<boolean> } = {},
-	): Promise<"open" | "reconciled" | "blocked" | "resumed" | "stale" | "unregistered"> {
+	): Promise<"open" | "reconciled" | "blocked" | "resumed" | "retry" | "stale" | "unregistered"> {
 		const targetKey = nativeMutationTargetKey(hubId, targetRef);
 		if (!this.#targets.has(targetKey)) return "unregistered";
 		if (!this.#blockedTargets.has(targetKey)) return "open";
@@ -487,10 +497,20 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			response.thread.status.type !== "restartRequired"
 		) {
 			// Asked only now, on a fence the caller has actually seen: the ordinary
-			// settle path pays no storage read for it. A caller that cannot tell (a
-			// failed read) answers false, which leaves the row exactly where a fence
-			// always left it.
-			if (!(await options.mayResumeFenced().catch(() => false))) return "blocked";
+			// settle path pays no storage read for it.
+			//
+			// A refusal and a failure are different facts. Refused: the session has
+			// no message worth resuming for, and "blocked" is its resting state.
+			// Failed: the caller could not tell, and answering "blocked" would skip
+			// the storage backoff it needs - so that answer is its own, and the
+			// flush schedules the retry it already has for a failed read.
+			let mayResume: boolean;
+			try {
+				mayResume = await options.mayResumeFenced();
+			} catch {
+				return "retry";
+			}
+			if (!mayResume) return "blocked";
 			// A refused resume leaves the row parked and the next settle retries.
 			const resumed = await client.resumeThread(targetRef).catch(() => undefined);
 			if (!resumed) return "blocked";
@@ -502,17 +522,28 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			if (resolvedRef !== targetRef) {
 				// Rows are keyed by the composite hub+ref the intent was built
 				// with, so the move names that same key on both sides.
+				const resolvedKey = nativeMutationTargetKey(hubId, resolvedRef);
 				this.storage.retarget(targetKey, {
-					ref: nativeMutationTargetKey(hubId, resolvedRef),
+					ref: resolvedKey,
+					// The wire ref is the bare session ref; the key above is this
+					// phone's storage identity for it. Conflating them would send the
+					// daemon a JSON-encoded pair as a session ref.
+					wireRef: resolvedRef,
 					threadId: resumed.thread.id,
 					instanceId: resumed.thread.evener.instanceId,
 				});
 				// The resumed identity needs its own registration: the dispatcher
 				// reaches a client only through the key it names, so without this the
 				// moved rows would sit under a key nothing can serve. The original
-				// registration still belongs to its owner and is left alone.
-				this.registerTarget(hubId, resolvedRef, client);
-				this.#notifyStorageChange([targetRef, resolvedRef]);
+				// registration still belongs to its owner and is left alone. This one
+				// belongs to nothing that will ever release it - its owner is this
+				// settle - so it is retired with the settle's own result rather than
+				// outliving it pinned to a client the next connection replaces.
+				const releaseResolved = this.registerTarget(hubId, resolvedRef, client);
+				this.#retireWithSettle.push(releaseResolved);
+				// Subscribers match the composite key, so a bare ref reaches none of
+				// them and both projections would keep showing rows that moved.
+				this.#notifyStorageChange([targetKey, resolvedKey]);
 			}
 			// The resume cleared the fence, so read once more and reconcile in this
 			// same settle. A flush with no screen on the target lets go after a

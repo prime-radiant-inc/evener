@@ -20,7 +20,7 @@
 import type { AppwireClientLike } from "@evener/appwire-client";
 import { reconnectDelay } from "../hubConnection";
 
-export type SettleResult = "open" | "reconciled" | "blocked" | "resumed" | "stale" | "unregistered";
+export type SettleResult = "open" | "reconciled" | "blocked" | "resumed" | "retry" | "stale" | "unregistered";
 
 /** The slice of NativeMutationRuntime the flush uses. */
 export interface FlushRuntime {
@@ -194,12 +194,18 @@ export class OutboxFlush {
 					// The runtime asks the predicate only when it sees a fence, so a
 					// healthy settle pays no extra storage read.
 					const answer = await runtime.settleTarget(hubId, ref, client, {
-						mayResumeFenced: () => this.waiting(runtime, key),
+						mayResumeFenced: () => this.messageWaiting(runtime, key),
 					});
 					// The screen is not reading here, and a resume writes nothing, so
 					// this path owns the follow-up for a settle that resumed but could
 					// not finish - the same reason the claim path does.
 					if (answer === "resumed") this.retryTargetSoon(generation);
+					// A predicate that could not read storage: retry on the existing
+					// storage backoff, since the message behind it is still waiting.
+					else if (answer === "retry") {
+						this.readFailures += 1;
+						this.retryLater(generation);
+					}
 				}
 			} catch {
 				// Storage failed: nothing else looks again for a screen's target
@@ -229,7 +235,7 @@ export class OutboxFlush {
 				// Asked only when the runtime sees a fence. A failed read answers
 				// "no", which leaves the row where a fence always left it and keeps
 				// the retry cadence this path has always had.
-				mayResumeFenced: () => this.waiting(runtime, key),
+				mayResumeFenced: () => this.messageWaiting(runtime, key),
 			});
 			settled = answer === "reconciled" || answer === "open";
 			// A settle that resumed but could not finish (a stale read after the
@@ -237,6 +243,10 @@ export class OutboxFlush {
 			// write to wake this flush, so it owns the next look. A plain "blocked"
 			// is a fence or a failure and waits as it always did.
 			if (answer === "resumed") this.retryTargetSoon(generation);
+			else if (answer === "retry") {
+				this.readFailures += 1;
+				this.retryLater(generation);
+			}
 		} catch {
 			// A read or storage failure: let go, as for a read that failed.
 		}
@@ -330,9 +340,16 @@ export class OutboxFlush {
 
 	private async waiting(runtime: FlushRuntime, key: string): Promise<boolean> {
 		const records = await runtime.storage.listOutbox(key);
-		// A pending turn/interrupt is not a reason to restart a session: the
-		// person stopped it, and a Stop left across a reconnect must not bring it
-		// back just to deliver the Stop. Only real message work does.
+		return records.some((record) => record.state === "submitting");
+	}
+
+	/** Whether this target holds a message that still needs delivering. This is
+	 * the resume decision, and it is narrower than `waiting`: a pending
+	 * turn/interrupt is not a reason to restart a session - the person stopped
+	 * it - so a Stop left across a reconnect must not bring it back. The Stop
+	 * still settles through `waiting`, which is what delivers it. */
+	private async messageWaiting(runtime: FlushRuntime, key: string): Promise<boolean> {
+		const records = await runtime.storage.listOutbox(key);
 		return records.some((record) => record.state === "submitting" && record.method !== "turn/interrupt");
 	}
 

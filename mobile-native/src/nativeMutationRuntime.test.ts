@@ -682,6 +682,10 @@ test("a resume that changes identity retargets the parked row", async () => {
 	expect(await storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-1"))).toEqual([]);
 	const moved = await storage.listOutbox(nativeMutationTargetKey("hub-1", "ref-2"));
 	expect(moved.map((record) => record.clientMutationId)).toEqual(["mutation-1"]);
+	// The dispatcher sends the payload verbatim, so the row's own wire ref must
+	// move too - a payload still naming ref-1 would be refused however the
+	// columns read.
+	expect(moved[0]?.payload).toMatchObject({ ref: "ref-2" });
 	await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
 	await runtime.stop();
 });

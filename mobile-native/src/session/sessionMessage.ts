@@ -202,12 +202,21 @@ export async function submitSessionMessage(
 	});
 	if (!client) return;
 	if (resumeFirst) {
-		if (typeof client.resumeThread !== "function") throw new Error("ConversationService: resume is unavailable");
 		// The message is already durably admitted, so a failed resume is not a
 		// failed send: throwing here would report one to a caller whose retry
 		// mints a second message. The row stays parked for the next resume or
 		// settle to dispatch.
-		await client.resumeThread(target.ref).catch(() => undefined);
+		//
+		// The resume runs through the runtime's settle, not client.resumeThread:
+		// that is the one path that also retargets the parked row when the resume
+		// hands back a different identity. Calling resumeThread here would leave
+		// this message addressing the identity the daemon just retired.
+		await runtime
+			.settleTarget(target.hubId, target.ref, client, {
+				mayResumeFenced: async () => true,
+			})
+			.catch(() => undefined);
+		return;
 	}
 	await runtime.settleTarget(target.hubId, target.ref, client).catch(() => "blocked" as const);
 }

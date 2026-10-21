@@ -604,13 +604,16 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 	 * with. Returns the ids that moved. A resume that returns a new identity
 	 * makes the old ref useless: a row left there would dispatch against an
 	 * instance the daemon no longer serves. */
-	retarget(ref: string, to: { ref: string; threadId?: string; instanceId?: string }): string[] {
+	retarget(ref: string, to: { ref: string; wireRef: string; threadId?: string; instanceId?: string }): string[] {
 		if (!to.ref.trim()) throw new Error("retarget ref is required");
 		if (ref === to.ref) return [];
 		return this.transaction("mutation_outbox_retarget", () => {
-			const rows = this.db.getAllSync<{ client_mutation_id: string }>(
-				`SELECT client_mutation_id FROM ${TABLES.outbox}
-				 WHERE target_ref = ? AND state IN ('submitting', 'blockedUnknown')`,
+			// Source order matters: the moved rows keep their relative order at the
+			// destination, so the FIFO the daemon saw is the FIFO it keeps seeing.
+			const rows = this.db.getAllSync<{ client_mutation_id: string; payload: string }>(
+				`SELECT client_mutation_id, payload FROM ${TABLES.outbox}
+				 WHERE target_ref = ? AND state IN ('submitting', 'blockedUnknown')
+				 ORDER BY intent_sequence`,
 				ref,
 			);
 			if (rows.length === 0) return [];
@@ -618,17 +621,27 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			for (const table of [TABLES.outbox, TABLES.optimistic, TABLES.recovery]) {
 				this.db.runSync(`UPDATE ${table} SET target_ref = ? WHERE target_ref = ?`, to.ref, ref);
 			}
-			// The payload's own fence travels with the row: the dispatcher sends
-			// payload verbatim, so the old instance id there would be refused as
-			// stale even though the row now lives under the resumed ref.
-			this.db.runSync(
-				`UPDATE ${TABLES.outbox}
-				 SET thread_id = COALESCE(?, thread_id), instance_id = COALESCE(?, instance_id)
-				 WHERE target_ref = ?`,
-				to.threadId ?? null,
-				to.instanceId ?? null,
-				to.ref,
-			);
+			for (const row of rows) {
+				// The dispatcher sends the payload verbatim as the RPC params, so the
+				// row's own wire ref and instance fence must move with it: a payload
+				// still naming the old identity is refused as stale however the
+				// columns read. Sequences are allocated per destination so a later
+				// send cannot take a lower number and overtake a moved row.
+				const payload = JSON.parse(row.payload) as Record<string, unknown>;
+				if (typeof payload.ref === "string") payload.ref = to.wireRef;
+				if (to.instanceId !== undefined) payload.expectedInstanceId = to.instanceId;
+				this.db.runSync(
+					`UPDATE ${TABLES.outbox}
+					 SET payload = ?, intent_sequence = ?,
+					     thread_id = COALESCE(?, thread_id), instance_id = COALESCE(?, instance_id)
+					 WHERE client_mutation_id = ?`,
+					JSON.stringify(payload),
+					this.allocateSequence(to.ref),
+					to.threadId ?? null,
+					to.instanceId ?? null,
+					row.client_mutation_id,
+				);
+			}
 			return ids;
 		});
 	}
