@@ -39,6 +39,10 @@ test("nextNeedsYouRef starts at first without a matching focus", () => {
   expect(nextNeedsYouRef(["a", "b", "c"], "missing")).toBe("a");
 });
 test("nextNeedsYouRef returns null for an empty list", () => expect(nextNeedsYouRef([], "a")).toBeNull());
+test("nextNeedsYouRef excludes its only current session and duplicate rows", () => {
+  expect(nextNeedsYouRef(["a"], "a")).toBeNull();
+  expect(nextNeedsYouRef(["a", "b", "b", "c"], "b")).toBe("c");
+});
 test("openNeedsYouSession navigates to encoded session URL", () => {
   openNeedsYouSession("local:ny1");
   expect(window.location.pathname).toBe("/s/local%3Any1");
