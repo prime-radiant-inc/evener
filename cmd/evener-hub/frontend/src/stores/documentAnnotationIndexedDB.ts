@@ -1442,9 +1442,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // namespace-qualified operation identity is flipped to the fence's terminal
   // cancelled receipt; an absent row (the save never committed), a terminal
   // receipt (applied, cancelled, unclaimed) and every other operation stay
-  // untouched, so a replay is an idempotent no-op. No wake is published: the
-  // discard's only producer is the reader's own fault branch, which publishes
-  // its own state in the same flow, and the acceptance that follows on healed
+  // untouched, so a replay is an idempotent no-op. No wake is published here:
+  // a discard changes only the operation receipt. The reader's fault branch
+  // publishes its own state in the same flow, and a dismissal's consumer has
+  // already removed the note locally; the acceptance that follows on healed
   // storage fences the epoch and wakes peers - the same shape settleUnclaimed
   // keeps.
   async discardPendingOperation(key: DocumentKey, operationId: string): Promise<void> {
