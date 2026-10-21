@@ -10,8 +10,9 @@ package server
 //     disabling value, agent/session_config.go:247-250), so
 //     applyResponsesContinuationAnchorPlanning takes its != auto early return
 //     and never applies a continuation shadow estimate.
-//   - the scripted adapter returns zero llm.Usage, so response usage contributes
-//     no input tokens.
+//   - the scripted adapter returns a response with zero llm.Usage and records
+//     that returned response's usage, so response usage contributes no input
+//     tokens.
 //   - exactly one ProcessInput round runs, so no prior measurement exists for
 //     attachFullHistoryInputEstimate to carry (it also requires
 //     LastInputTokens() > 0).
@@ -20,6 +21,7 @@ package server
 // the inputs effectiveRecordedInputTokens needs to return record=false.
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"os"
@@ -32,6 +34,8 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -72,15 +76,7 @@ type contextFacetScriptedAdapter struct {
 func (a *contextFacetScriptedAdapter) Name() string { return a.name }
 
 func (a *contextFacetScriptedAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
-	a.mu.Lock()
-	a.reqs = append(a.reqs, contextFacetFixtureRequest{
-		fullHistoryEstimate: req.FullHistoryInputTokensEstimate,
-		inputEstimate:       req.InputTokensEstimate,
-		historyMode:         req.HistoryMode,
-		usage:               llm.Usage{},
-	})
-	a.mu.Unlock()
-	return llm.Response{
+	resp := llm.Response{
 		Provider: a.name,
 		Model:    req.Model,
 		Message: llm.Message{
@@ -98,7 +94,16 @@ func (a *contextFacetScriptedAdapter) Complete(_ context.Context, req llm.Reques
 				},
 			},
 		},
-	}, nil
+	}
+	a.mu.Lock()
+	a.reqs = append(a.reqs, contextFacetFixtureRequest{
+		fullHistoryEstimate: req.FullHistoryInputTokensEstimate,
+		inputEstimate:       req.InputTokensEstimate,
+		historyMode:         req.HistoryMode,
+		usage:               resp.Usage,
+	})
+	a.mu.Unlock()
+	return resp, nil
 }
 
 func (a *contextFacetScriptedAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
@@ -137,7 +142,6 @@ func (s *contextFacetEnvelopeSource) ContextStatus() (ContextMetrics, float64) {
 
 type contextFacetFixture struct {
 	srv              *Server
-	src              *contextFacetEnvelopeSource
 	expectedMetrics  ContextMetrics
 	expectedPressure float64
 }
@@ -257,7 +261,6 @@ func newContextFacetFixture(t testing.TB) *contextFacetFixture {
 
 	return &contextFacetFixture{
 		srv:              srv,
-		src:              src,
 		expectedMetrics:  expected,
 		expectedPressure: expectedPressure,
 	}
@@ -281,63 +284,56 @@ func contextFacetTranscriptCharsOver4(t testing.TB, dir, wantResult string) int 
 	if path == "" {
 		t.Fatal("no transcript jsonl in the session state dir")
 	}
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
-		t.Fatalf("read transcript: %v", err)
+		t.Fatalf("open transcript: %v", err)
 	}
+	defer f.Close() //nolint:errcheck // read-only
 
-	type part struct {
-		Kind     string `json:"kind"`
-		Text     string `json:"text"`
-		ToolCall *struct {
-			ID        string          `json:"id"`
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
-		} `json:"tool_call"`
-		ToolResult *struct {
-			ToolCallID string `json:"tool_call_id"`
-			Name       string `json:"name"`
-			Content    string `json:"content"`
-		} `json:"tool_result"`
-	}
-	type entry struct {
-		Kind string `json:"kind"`
-		Turn *struct {
-			Kind    string `json:"kind"`
-			Message struct {
-				Content []part `json:"content"`
-			} `json:"message"`
-		} `json:"turn"`
+	reader := bufio.NewReaderSize(f, 1<<20)
+	if _, err := transcript.ReadHeader(context.Background(), reader, appTranscriptMaxLineBytes); err != nil {
+		t.Fatalf("read transcript header: %v", err)
 	}
 
 	chars := 0
 	sawResult := false
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(line) == "" {
+	for {
+		line, complete, _, err := transcript.ReadLine(reader, appTranscriptMaxLineBytes)
+		if err != nil {
+			t.Fatalf("read transcript: %v", err)
+		}
+		if !complete {
+			break
+		}
+		if strings.TrimSpace(string(line)) == "" {
 			continue
 		}
-		var e entry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			t.Fatalf("parse transcript line: %v", err)
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
+			t.Fatalf("decode transcript entry: %v", err)
 		}
-		if e.Kind != "entry" || e.Turn == nil || e.Turn.Kind == "ATTENTION_RESOLUTION" {
+		if entry.Turn.Kind == schema.TurnAttentionResolution {
 			continue
 		}
-		for _, p := range e.Turn.Message.Content {
+		for _, p := range entry.Turn.Message.Content {
 			switch p.Kind {
-			case "text":
+			case llm.ContentText:
 				chars += len(p.Text)
-			case "tool_call":
+			case llm.ContentToolCall:
 				if p.ToolCall != nil {
 					chars += len(p.ToolCall.ID) + len(p.ToolCall.Name) + len(p.ToolCall.Arguments)
 				}
-			case "tool_result":
+			case llm.ContentToolResult:
 				if p.ToolResult != nil {
-					chars += len(p.ToolResult.ToolCallID) + len(p.ToolResult.Name) + len(p.ToolResult.Content)
+					content, ok := p.ToolResult.Content.(string)
+					if !ok {
+						t.Fatalf("recorded %s result content has type %T, want string", p.ToolResult.Name, p.ToolResult.Content)
+					}
+					chars += len(p.ToolResult.ToolCallID) + len(p.ToolResult.Name) + len(content)
 					if p.ToolResult.Name == contextFacetFixtureResultTool {
 						sawResult = true
-						if p.ToolResult.Content != wantResult {
-							t.Fatalf("recorded %s result = %q, want the production reply %q", contextFacetFixtureResultTool, p.ToolResult.Content, wantResult)
+						if content != wantResult {
+							t.Fatalf("recorded %s result = %q, want the production reply %q", contextFacetFixtureResultTool, content, wantResult)
 						}
 					}
 				}

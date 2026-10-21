@@ -21,20 +21,7 @@ func assertContextStatus(t *testing.T, s *Session, wantUsed, wantWindow int, wan
 		t.Fatalf("ContextStatus metrics = %+v pressure %v, want Used %d Window %d Assumed %v",
 			metrics, pressure, wantUsed, wantWindow, wantAssumed)
 	}
-	wantRemaining := wantWindow - wantUsed
-	if wantRemaining < 0 {
-		wantRemaining = 0
-	}
-	if metrics.Remaining != wantRemaining {
-		t.Fatalf("Remaining = %d, want %d", metrics.Remaining, wantRemaining)
-	}
-	wantPressure := 0.0
-	if wantWindow > 0 {
-		wantPressure = float64(wantUsed) / float64(wantWindow)
-	}
-	if pressure != wantPressure {
-		t.Fatalf("pressure = %v, want %v", pressure, wantPressure)
-	}
+	checkContextStatusInvariants(t, metrics, pressure)
 	// Preservation check only: each wrapper must report the same sample the
 	// combined call just returned.
 	if got := s.ContextMetrics(); got != metrics {
@@ -116,6 +103,9 @@ func TestContextStatusAllocationBudget(t *testing.T) {
 	if len(s.history) != turns {
 		t.Fatalf("fixture history = %d, want %d", len(s.history), turns)
 	}
+	if got := s.contextMgr.LastInputTokens(); got != 0 {
+		t.Fatalf("fixture LastInputTokens = %d, want 0 (no recorded measurement)", got)
+	}
 	allocs := testing.AllocsPerRun(20, func() { _, _ = s.ContextStatus() })
 	t.Logf("ContextStatus at %d turns allocates %v allocations per sample", turns, allocs)
 	if allocs > 2 {
@@ -132,6 +122,9 @@ func TestContextStatusAllocationBudget(t *testing.T) {
 func TestContextStatusAllocationCeiling10000Turns(t *testing.T) {
 	const turns = 10_000
 	s, profile := newContextStatusLargeFixture(turns)
+	if got := s.contextMgr.LastInputTokens(); got != 0 {
+		t.Fatalf("fixture LastInputTokens = %d, want 0 (no recorded measurement)", got)
+	}
 
 	_, _ = s.ContextStatus() // warm the call once
 	runtime.GC()
@@ -159,17 +152,7 @@ func TestContextStatusAllocationCeiling10000Turns(t *testing.T) {
 	if metrics.Window != wantWindow || metrics.Assumed {
 		t.Fatalf("Window/Assumed = %d/%v, want %d/false", metrics.Window, metrics.Assumed, wantWindow)
 	}
-	wantRemaining := wantWindow - wantUsed
-	if wantRemaining < 0 {
-		wantRemaining = 0
-	}
-	if metrics.Remaining != wantRemaining {
-		t.Fatalf("Remaining = %d, want %d", metrics.Remaining, wantRemaining)
-	}
-	wantPressure := float64(wantUsed) / float64(wantWindow)
-	if pressure != wantPressure {
-		t.Fatalf("pressure = %v, want %v", pressure, wantPressure)
-	}
+	checkContextStatusInvariants(t, metrics, pressure)
 }
 
 // checkContextStatusInvariants applies the identities every sample must hold,
@@ -289,17 +272,6 @@ func TestContextStatusConcurrentMutations(t *testing.T) {
 	}
 	if metrics.Window != wantWindow || metrics.Assumed {
 		t.Fatalf("Window/Assumed after final measurement = %d/%v, want %d/false", metrics.Window, metrics.Assumed, wantWindow)
-	}
-	wantRemaining := wantWindow - 300
-	if wantRemaining < 0 {
-		wantRemaining = 0
-	}
-	if metrics.Remaining != wantRemaining {
-		t.Fatalf("Remaining after final measurement = %d, want %d", metrics.Remaining, wantRemaining)
-	}
-	wantPressure := 300.0 / float64(wantWindow)
-	if pressure != wantPressure {
-		t.Fatalf("pressure after final measurement = %v, want %v", pressure, wantPressure)
 	}
 	checkContextStatusInvariants(t, metrics, pressure)
 }
