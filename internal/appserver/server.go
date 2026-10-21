@@ -17,10 +17,11 @@ import (
 )
 
 type ServerConfig struct {
-	ServerName string
-	Version    string
-	SourceID   string
-	Features   appwire.FeatureSet
+	ServerName   string
+	Version      string
+	BuildVersion string
+	SourceID     string
+	Features     appwire.FeatureSet
 	// OS, Arch and Roots describe the serving machine, reported in
 	// ServerInfo so a client can show the hub's own machine's system and
 	// project roots beside the hosts it reaches over SSH. Empty OS/Arch and a
@@ -568,11 +569,12 @@ func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) 
 	}
 	return appwire.InitializeResponse{
 		ServerInfo: appwire.ServerInfo{
-			Name:    s.cfg.ServerName,
-			Version: s.cfg.Version,
-			OS:      s.cfg.OS,
-			Arch:    s.cfg.Arch,
-			Roots:   append([]string(nil), s.cfg.Roots...),
+			Name:         s.cfg.ServerName,
+			Version:      s.cfg.Version,
+			BuildVersion: s.cfg.BuildVersion,
+			OS:           s.cfg.OS,
+			Arch:         s.cfg.Arch,
+			Roots:        append([]string(nil), s.cfg.Roots...),
 		},
 		ProtocolVersion: protocolVersion,
 		SourceID:        s.cfg.SourceID,

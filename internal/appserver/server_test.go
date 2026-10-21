@@ -123,6 +123,30 @@ func TestConnectionInitializeAllowsLaterRequests(t *testing.T) {
 	}
 }
 
+func TestInitializeBuildVersionIsOptional(t *testing.T) {
+	for _, build := range []string{"", "serving-build-a"} {
+		t.Run(build, func(t *testing.T) {
+			server := NewServer(ServerConfig{Version: "package-a", BuildVersion: build})
+			response, err := server.initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(response.ServerInfo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]any
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatal(err)
+			}
+			value, present := fields["buildVersion"]
+			if present != (build != "") || (present && value != build) || fields["version"] != "package-a" {
+				t.Fatalf("serialized identity = %v, build = %q", fields, build)
+			}
+		})
+	}
+}
+
 func TestInitializeIncludesNavigationCapabilityWhenConfigured(t *testing.T) {
 	server := NewServer(ServerConfig{
 		ServerName: "evener-hub",

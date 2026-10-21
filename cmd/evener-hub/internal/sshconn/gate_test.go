@@ -274,6 +274,7 @@ func TestEnsureDeployHookRunsUnderTheGateBeforeAnyRemoteWrite(t *testing.T) {
 		startFn: goodStartFn(t),
 	}
 	gateHeld := make(chan bool, 1)
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, reg, fr, Options{
 		controllerVersionOverride: "newsha",
 		BuildBinary: func(_ context.Context, _, _, out string) error {
@@ -340,6 +341,7 @@ func ensureDeployTestHarness(t *testing.T, restartErr error) (*Manager, *hostops
 		}
 		return innerRun(ctx, argv, stdin)
 	}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		BuildBinary:               writeStageBinary,
@@ -449,11 +451,8 @@ func TestEnsureRestartLegFailureFailsTheStillOpenRecord(t *testing.T) {
 	}
 }
 
-// ensureRestartTestHarness builds the Ensure ladder for a restart-only attempt:
-// the on-disk build is this controller's, while the running hub serves a stale
-// one, so ensureDecision returns restart without deploy. The restart hook mints
-// a real record and returns its scope plus a finish that transitions it the way
-// the hub's own finish does.
+// ensureRestartTestHarness resumes a recorded replacement. The restart hook
+// creates a real operation record and keeps it open throughout recovery.
 func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostops.Store, *string, *[]ensureCommandSighting) {
 	t.Helper()
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
@@ -489,6 +488,7 @@ func ensureRestartTestHarness(t *testing.T, restartErr error) (*Manager, *hostop
 		return innerRun(ctx, argv, stdin)
 	}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
+	m.setPendingRestart(host.Name, "systemctl restart evener-hub.service", "newsha", "", hubIdentity{version: "oldsha"}, nil)
 	m.SetEnsureRestartHook(func(host hostreg.Host) (func(error), error) {
 		record, err := store.Create(hostops.NewRecord{
 			ClientOperationID: "ensure-restart-1",
@@ -598,6 +598,7 @@ func TestEnsureRestartOnlyRefusesWithoutARecorder(t *testing.T) {
 	}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
 
+	m.setPendingRestart(host.Name, "systemctl restart evener-hub.service", "newsha", "", hubIdentity{version: "oldsha"}, nil)
 	_, err := m.Ensure(context.Background(), "alpha")
 	if err == nil || !strings.Contains(err.Error(), "no restart recorder wired") {
 		t.Fatalf("Ensure error = %v, want the no-recorder refusal", err)
@@ -633,6 +634,7 @@ func TestEnsureDeployRefusesWithoutARecorder(t *testing.T) {
 		commands = append(commands, strings.Join(argv, " "))
 		return innerRun(ctx, argv, stdin)
 	}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha", BuildBinary: writeStageBinary})
 
 	_, err := m.Ensure(context.Background(), "alpha")

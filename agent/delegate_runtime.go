@@ -2794,6 +2794,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		TurnEndsProcess:         s.cfg.TurnEndsProcess,
 		ForceRealIO:             s.cfg.ForceRealIO,
 		artifactStore:           s.artifactStore,
+		artifactStoreInherited:  true,
 		deferRestoreSideEffects: true,
 		sandboxProvisioned:      true,
 		spawn: spawnConfig{

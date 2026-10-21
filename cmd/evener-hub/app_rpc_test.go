@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -43,6 +44,32 @@ import (
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
+
+func TestHubInitializeReportsBuildVersion(t *testing.T) {
+	server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+	message := server.NewConnection("test").HandleMessage(t.Context(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if message.Response == nil || message.Error != nil {
+		t.Fatalf("initialize = %#v", message)
+	}
+	raw, err := json.Marshal(message.Response.Result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &response); err != nil {
+		t.Fatal(err)
+	}
+	var serverInfo map[string]string
+	if err := json.Unmarshal(response["serverInfo"], &serverInfo); err != nil {
+		t.Fatal(err)
+	}
+	if got := serverInfo["buildVersion"]; got == "" || got != buildinfo.Version() {
+		t.Fatalf("live build = %q, want %q", got, buildinfo.Version())
+	}
+	if got := serverInfo["version"]; got != Version {
+		t.Fatalf("package version = %q, want %q", got, Version)
+	}
+}
 
 // A hub thread/list child alias must carry the child's own watches, which the
 // daemon prober samples into LiveEntry.ChildWatches, while the root alias keeps

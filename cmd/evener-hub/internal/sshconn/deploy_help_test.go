@@ -40,7 +40,7 @@ func installerRefusal(t *testing.T, host hostreg.Host, help, channel, dirty stri
 		return nil, fmt.Errorf("unexpected remote command: %v", argv)
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{DeployHelp: help})
-	_, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+	_, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 	if err == nil {
 		t.Fatalf("deployInstaller succeeded for channel %q with GitDirty %q", channel, dirty)
 	}
@@ -127,7 +127,7 @@ func TestInstallerMovedChannelRefusalNamesThePushPath(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha", DeployHelp: help})
 
-	_, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+	_, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 	if !errors.Is(err, ErrVersionMismatch) {
 		t.Fatalf("err = %v, want ErrVersionMismatch", err)
 	}
@@ -163,6 +163,7 @@ func unstampedRefusal(t *testing.T, opts Options) error {
 	if opts.BuildBinary == nil {
 		opts.BuildBinary = writeStageBinary
 	}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, opts)
 	testDeployRecorder(t, m)
 	testRestartRecorder(t, m)

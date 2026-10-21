@@ -187,6 +187,77 @@ func TestRootAttentionTransientFailureKeepsThePacedRetry(t *testing.T) {
 	}
 }
 
+// A permanent failure pauses the rail. A fresh delegate event re-arms delivery;
+// if that attempt then fails transiently, the paced retry owns the next wake.
+// That retry moves the session without the user, so the session must read
+// Working during the backoff, then deliver when the provider recovers.
+func TestRootAttentionTransientRetryAfterAPauseReadsWorking(t *testing.T) {
+	dir := t.TempDir()
+	adapter := &fakeErrAdapter{name: "openai", steps: []func(llm.Request) (llm.Response, error){
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil)
+		},
+		func(llm.Request) (llm.Response, error) {
+			return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil)
+		},
+		func(llm.Request) (llm.Response, error) { return finalResponse("delivered"), nil },
+	}}
+	c := llm.NewClient()
+	c.Register(adapter)
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	clk := agenttest.NewFakeClock()
+	s := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+		clock:          clk,
+	}))
+	defer s.Close()
+	var notifies atomic.Int64
+	s.SetNotifyFunc(func() { notifies.Add(1) })
+
+	armOneRootAttention(t, s, "dlg_pause", "delegate:dlg_pause/delivery/1")
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
+		t.Fatal("the 401 notification turn unexpectedly succeeded")
+	}
+	if got := s.WireState(); got != appwire.ThreadStatusSystemError {
+		t.Fatalf("WireState after the permanent failure = %q, want %q", got, appwire.ThreadStatusSystemError)
+	}
+
+	armOneRootAttention(t, s, "dlg_fresh", "delegate:dlg_fresh/delivery/1")
+	if got := s.WireState(); got != string(SessionProcessing) {
+		t.Fatalf("WireState after a fresh delegate event = %q, want %q", got, SessionProcessing)
+	}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
+		t.Fatal("the 503 notification turn unexpectedly succeeded")
+	}
+	wake, retryActive, pending := attentionRailState(s)
+	if wake || !retryActive || pending != 2 {
+		t.Fatalf("after the transient failure: wake=%t retry=%t pending=%d, want the paced retry with both IDs (false, true, 2)", wake, retryActive, pending)
+	}
+	if got := s.WireState(); got != string(SessionProcessing) {
+		t.Fatalf("WireState during transient retry backoff = %q, want %q: the retry will deliver without the user", got, SessionProcessing)
+	}
+
+	before := notifies.Load()
+	clk.Advance(jobNotificationRetryInitialDelay)
+	clk.Drain()
+	if notifies.Load() == before {
+		t.Fatal("the paced retry fired without waking the session")
+	}
+	if _, _, pending := attentionRailState(s); pending != 2 {
+		t.Fatalf("pending attention after the retry wake = %d, want 2", pending)
+	}
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("delivery turn after the provider recovered: %v", err)
+	}
+	if s.hasPendingRootDelegateAttention() {
+		t.Fatal("the recovered delivery left root attention pending")
+	}
+	if got := s.WireState(); got != string(SessionIdle) {
+		t.Fatalf("WireState after delivery = %q, want idle", got)
+	}
+}
+
 // A Stop must reach the attention rail the same way it reaches the queue and
 // the steering: park it. The paced retry the Stop interrupts cancels, a
 // straggler wake stands down without a model turn, a fresh child
