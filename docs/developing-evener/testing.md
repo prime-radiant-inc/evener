@@ -840,10 +840,10 @@ make test TEST_SCOPE=root) and `tests / nonroot` (TEST_SCOPE=nonroot, every
 other module) on separate runners, with the required `tests` job passing only
 when both do. WEB=0 keeps frontend tests from being duplicated.
 
-Three packages run as cost-balanced shards: the agent module through
-`./evener-dev dev agent-shards`, and cmd/evener-hub and cmd/evener, beside the rest
-of the root module, through `./evener-dev dev hub-shards` and `./evener-dev dev
-cli-shards` (cmd/evener-dev/agentshards.go; the gate's `ROOT_SHARDED` table).
+`make test` runs three packages as cost-balanced shards: the agent module,
+`cmd/evener-hub`, and `cmd/evener`. Its test runner invokes the development
+tooling's `agent-shards`, `hub-shards`, and `cli-shards` commands
+(`cmd/evener-dev/agentshards.go`; the gate's `ROOT_SHARDED` table).
 Each is one binary of hundreds to thousands of mostly serial tests, so
 splitting it across processes is what bounds its wall time (hub: ~80s serial,
 ~13s as eight shards). A shard's `-test.run` arrives through `EVENER_SHARD_RUN_FILE`, which
