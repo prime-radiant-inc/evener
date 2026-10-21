@@ -26,7 +26,12 @@ type selectionResult struct {
 	Outside   []string // changed files outside every module in GO_MODULES
 	NoPackage []string // changed files in a directory with no Go package
 	Removed   []string // deleted files that no surviving package can observe
-	GoChanged int
+	GraphOnly []string // selected packages whose module test-changed does not run
+	// OutOfScope counts Go files that belong to a module test-changed does not
+	// run (fuzz). They are a real change and a legitimate skip, so they are not
+	// part of GoChanged and must not trip the loud-failure guard.
+	OutOfScope int
+	GoChanged  int
 }
 
 // Module manifests change what every package in their module can build against,
@@ -130,7 +135,12 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			// that imports the root module. Removing a dead package with no
 			// surviving importers is a complete change, so it is reported and
 			// does not fail the run.
-			if !pathExists(filepath.Join(g.root, filepath.FromSlash(rel))) {
+			//
+			// Testdata is exempt: a deleted fixture is still read by its
+			// package's tests, so it must reach the attribution below rather
+			// than be dropped as unobservable. Treating it as removed reported
+			// success while the owning package's tests failed.
+			if !isTestdataPath(rel) && !pathExists(filepath.Join(g.root, filepath.FromSlash(rel))) {
 				res.Removed = append(res.Removed, rel)
 				continue
 			}
@@ -230,6 +240,11 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			continue
 		}
 		if !g.runnableModule(info.ModuleRoot) {
+			// The module is loaded for its import edges only (fuzz), so its own
+			// tests are out of scope by design. Say so instead of dropping it:
+			// otherwise a fuzz-only diff selects nothing with GoChanged > 0 and
+			// exits 2, which reads as a broken change.
+			res.GraphOnly = append(res.GraphOnly, ip+" (module "+info.ModuleRoot+", not run by test-changed)")
 			continue
 		}
 		res.Selected = append(res.Selected, selection{
@@ -250,6 +265,19 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 		}
 		return a.ImportPath < b.ImportPath
 	})
+
+	// Go changes in a module test-changed does not run are a legitimate skip,
+	// not a broken selection. Recording them separately keeps a fuzz-only diff
+	// from exiting 2 with "no runnable package was selected".
+	for _, rel := range changed {
+		rel = filepath.ToSlash(rel)
+		if !strings.HasSuffix(rel, ".go") {
+			continue
+		}
+		if module, ok := g.moduleFor(rel); ok && !g.runnableModule(module) {
+			res.OutOfScope++
+		}
+	}
 	return res
 }
 

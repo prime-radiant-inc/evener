@@ -78,10 +78,20 @@ func run(root, base string, modules []string, race bool) int {
 	for _, f := range res.Removed {
 		fmt.Printf("test-changed: skipped %s: removed, and no surviving package imports it\n", f)
 	}
+	for _, p := range res.GraphOnly {
+		fmt.Printf("test-changed: skipped %s\n", p)
+	}
 	if len(res.Selected) == 0 {
-		if res.GoChanged > 0 {
-			fmt.Fprintf(os.Stderr, "test-changed: FAIL: %d Go file(s) changed but no runnable package was selected; refusing to report a passing run\n", res.GoChanged)
+		// Only Go changes test-changed could have run count here. A change
+		// confined to a module it does not run is a legitimate skip, reported
+		// below rather than treated as a broken selection.
+		if inScope := res.GoChanged - res.OutOfScope; inScope > 0 {
+			fmt.Fprintf(os.Stderr, "test-changed: FAIL: %d Go file(s) changed but no runnable package was selected; refusing to report a passing run\n", inScope)
 			return 2
+		}
+		if res.OutOfScope > 0 {
+			fmt.Printf("test-changed: %d Go file(s) changed in modules test-changed does not run; nothing to run here\n", res.OutOfScope)
+			return 0
 		}
 		fmt.Println("test-changed: diff touches no Go package; nothing to run")
 		return 0

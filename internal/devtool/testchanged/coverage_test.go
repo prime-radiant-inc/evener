@@ -300,6 +300,71 @@ func TestEmbeddedAssetInPackageDirReachesImporters(t *testing.T) {
 	}
 }
 
+// A deleted testdata fixture is still read by its owning package's tests. The
+// removed shortcut once swallowed it, so a deleted fixture reported success
+// while the owning package's tests failed.
+func TestDeletedTestdataFixtureSelectsOwningPackage(t *testing.T) {
+	const (
+		moduleRoot = "."
+		modulePath = "example.com/mod"
+	)
+	root := t.TempDir()
+	ownerDir := filepath.Join(root, "pkg")
+	g := &graph{
+		root:        root,
+		moduleRoots: []string{moduleRoot},
+		moduleDirs:  map[string]string{moduleRoot: root},
+		modulePaths: map[string]string{moduleRoot: modulePath},
+		runnable:    map[string]bool{moduleRoot: true},
+		pkgs: map[string]*pkgInfo{
+			modulePath + "/pkg": {ImportPath: modulePath + "/pkg", ModuleRoot: moduleRoot, Dir: ownerDir},
+		},
+		byDir: map[string]string{ownerDir: modulePath + "/pkg"},
+		deps:  map[string]map[string]bool{},
+	}
+
+	res := selectPackages(g, []string{"pkg/testdata/golden.json"}, []string{moduleRoot})
+
+	if len(res.Removed) != 0 {
+		t.Errorf("Removed = %v, want nothing: a testdata fixture is observable by its package", res.Removed)
+	}
+	if reasonForPath(res, modulePath+"/pkg") == "" {
+		t.Errorf("Selected = %v, want %s selected for its deleted fixture", selectedPaths(res), modulePath+"/pkg")
+	}
+}
+
+// A change confined to a module test-changed does not run (fuzz) is a
+// legitimate skip, not a failed selection: exit 0 with an explanation.
+func TestGraphOnlyModuleChangeIsSkippedNotFailed(t *testing.T) {
+	const (
+		moduleRoot = "."
+		modulePath = "example.com/mod"
+	)
+	root := t.TempDir()
+	g := &graph{
+		root:        root,
+		moduleRoots: []string{moduleRoot},
+		moduleDirs:  map[string]string{moduleRoot: root, "fuzzmod": filepath.Join(root, "fuzzmod")},
+		modulePaths: map[string]string{moduleRoot: modulePath, "fuzzmod": "example.com/fuzzmod"},
+		runnable:    map[string]bool{moduleRoot: true},
+		pkgs:        map[string]*pkgInfo{},
+		byDir:       map[string]string{},
+		deps:        map[string]map[string]bool{},
+	}
+
+	res := selectPackages(g, []string{"fuzzmod/x/x.go"}, []string{moduleRoot})
+
+	if len(res.Selected) != 0 {
+		t.Errorf("Selected = %v, want nothing: fuzzmod is not a gate module", selectedPaths(res))
+	}
+	if res.GoChanged != 0 {
+		t.Errorf("GoChanged = %d, want 0 so the loud-failure guard does not fire", res.GoChanged)
+	}
+	if res.OutOfScope != 1 {
+		t.Errorf("OutOfScope = %d, want 1", res.OutOfScope)
+	}
+}
+
 // run() owns the exit status a developer's pre-push check depends on: 0 for a
 // diff with no Go work, 2 when Go files changed but nothing was selected, and 1
 // when a selected package fails. An earlier version had no test here, so the
