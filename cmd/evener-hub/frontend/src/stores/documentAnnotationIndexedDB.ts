@@ -84,7 +84,7 @@ export interface DocumentAnnotationOptions {
   keyRange?: typeof IDBKeyRange;
   drafts: BrowserDraftRepository;
   targetFor(destination: PreparedAnnotation["destination"], key: DocumentKey): ComposerSourceState | null;
-  beforeCommit?: (operation: "acceptRead" | "save" | "expiry" | "deleteExpiry" | "reset") => void;
+  beforeCommit?: (operation: "acceptRead" | "save" | "expiry" | "deleteExpiry" | "reset" | "discard") => void;
   beforeFinalGuard?: () => void;
   beforeAbortableCompletion?: () => void;
   afterCommit?: () => void;
@@ -96,6 +96,11 @@ export interface DocumentAnnotationOptions {
   // retryable repository work. The retry runtime registers the need so a later
   // storage-success notification can start the pass that completes the fence.
   onPendingExpiryRetained?: () => void;
+  // Observational, outside every transaction: a cancelled save's durable
+  // discard faulted. The identity stays fenced and the discard is retained
+  // retryable repository work, so the retry runtime registers the need that a
+  // later storage-success notification spends.
+  onCancelledDiscardRetained?: () => void;
 }
 
 // Operation-scoped cancellation for ONE in-flight save. The runtime owns the
@@ -329,6 +334,15 @@ interface PendingExpiry {
   ticketKey: DocumentKey;
 }
 
+// A dismissed save whose durable discard has not committed. The operation
+// identity is fenced from handoff (the row may still be pending) and the
+// discard is retryable work this adapter instance retains until storage accepts
+// it. Per-instance like every other in-memory coordination set here.
+interface PendingCancelledDiscard {
+  key: DocumentKey;
+  operationId: string;
+}
+
 // One append attempt whose completion the caller never observed, with the
 // composer seam captured before the append ran: the key and operation
 // identity replay the handoff, and the source and preparation reconcile
@@ -422,6 +436,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   readonly #suppressedEpochs = new Map<string, SuppressionEntry>();
   // Retained pending expiry fences awaiting real completion.
   readonly #pendingExpiries = new Map<string, PendingExpiry>();
+  // Operation identities whose save was dismissed but whose durable discard has
+  // not committed: fenced from handoff, and retried by the next pass.
+  readonly #pendingCancelledDiscards = new Map<string, PendingCancelledDiscard>();
   // One append attempt per operation whose outcome the caller could not
   // observe: the transaction may have committed (receipt applied, reference
   // durable) while the live composer still holds its pre-append text. The
@@ -511,6 +528,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     this.#recoveryNotificationReleases.clear();
     this.#subscriptions.clear();
     this.#uncertainAppends.clear();
+    this.#pendingCancelledDiscards.clear();
     this.#unsubscribeDrafts();
     this.#channel.close();
     this.#connection.close();
@@ -1019,6 +1037,12 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const operationKey = annotationOperationKey(namespace, captured.operationId);
     const documentKey = annotationDocumentKey(captured.lease.key);
     const sessionKey = serializeSessionKey({ namespace, sessionRef: captured.lease.key.sessionRef });
+    // The dismissal's fence must be up at the moment the cancellation lands,
+    // not when the transaction settles: the committed row is visible to a retry
+    // pass while the held completion still keeps this save unsettled, and that
+    // pass must refuse the identity. The token notifies synchronously with the
+    // cancellation, which is the earliest observation of it.
+    const releaseCancellationFence = cancellation?.onCancel(() => this.#fenceCancelledDiscard(captured));
     let receipt: SaveReceipt;
     try {
       receipt = await this.#transaction(
@@ -1143,11 +1167,14 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // outlives a held completion event. A dismissed attempt still leaves no
       // durable work for a later pass.
       if (cancellation?.cancelled) {
+        releaseCancellationFence?.();
         await this.#discardCancelledSave(captured);
         throw new SaveCancelledError();
       }
+      releaseCancellationFence?.();
       throw error;
     }
+    releaseCancellationFence?.();
     // Cancellation reaches the transaction only while it can still abort. One
     // that passed that boundary commits anyway, so the success path must
     // observe the token too: the row belongs to a dismissal the runtime
@@ -1163,18 +1190,53 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     return receipt;
   }
 
-  // A save the runtime dismissed can still commit: its cancellation reaches
-  // the transaction only while it can abort, and one past that boundary leaves
-  // its pending row durable. That row is exactly the work a later pass would
-  // hand off, so the dismissed attempt discards its own row before settling as
-  // the handled dismissal the runtime's catch already defines. Best effort: a
-  // discard that faults is a storage refusal like any other and must not
-  // relabel the dismissal as retryable work.
+  // A save the runtime dismissed can still commit: its cancellation reaches the
+  // transaction only while it can abort, and one past that boundary leaves its
+  // pending row durable. The identity was fenced when the cancellation landed,
+  // before any retry could observe that row; this attempts the durable discard
+  // and drops the fence only when the discard commits. A fault keeps the fence
+  // and the retained discard, and registers the retry need a later
+  // storage-success trigger spends. The runtime's cancellation stays terminal
+  // for this attempt either way.
   async #discardCancelledSave(operation: PreparedAnnotation): Promise<void> {
+    const record = this.#fenceCancelledDiscard(operation);
+    if (!record) return;
     try {
-      await this.discardPendingOperation(operation.lease.key, operation.operationId);
+      await this.#completeCancelledDiscard(record);
     } catch {
-      // The runtime's cancellation stays terminal for this attempt.
+      // Closure is terminal: this adapter retains nothing it could never retry,
+      // and a handoff refuses anyway. Any other fault keeps the fence and the
+      // record, and the runtime registers the need a later trigger spends.
+      if (this.#closed) return;
+      invokeObserver(() => this.#options.onCancelledDiscardRetained?.());
+    }
+  }
+
+  // Fence ONE operation identity from handoff until its durable discard
+  // commits. Added wherever a cancelled save's outcome is observed; a closed
+  // adapter retains nothing it could never retry, and handoffs refuse anyway.
+  #fenceCancelledDiscard(operation: PreparedAnnotation): PendingCancelledDiscard | null {
+    if (this.#closed) return null;
+    const namespace = operation.lease.key.namespace;
+    if (namespace.kind !== "browser") return null;
+    const operationKey = annotationOperationKey(namespace, operation.operationId);
+    const existing = this.#pendingCancelledDiscards.get(operationKey);
+    if (existing) return existing;
+    const record: PendingCancelledDiscard = { key: operation.lease.key, operationId: operation.operationId };
+    this.#pendingCancelledDiscards.set(operationKey, record);
+    return record;
+  }
+
+  // The discard's commit is the ONLY point that drops the fence: the row is
+  // terminal then, so the identity can never legitimately append. A fault
+  // leaves the record for the next pass to retry.
+  async #completeCancelledDiscard(record: PendingCancelledDiscard): Promise<void> {
+    await this.discardPendingOperation(record.key, record.operationId);
+    const namespace = record.key.namespace;
+    if (namespace.kind !== "browser") return;
+    const operationKey = annotationOperationKey(namespace, record.operationId);
+    if (this.#pendingCancelledDiscards.get(operationKey) === record) {
+      this.#pendingCancelledDiscards.delete(operationKey);
     }
   }
 
@@ -1320,6 +1382,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         transaction.objectStore(ANNOTATION_OPERATIONS_STORE).get(operationKey),
       );
       if (row?.state !== "pending") return;
+      this.#options.beforeCommit?.("discard");
       await requestResult(putTerminalOperation(transaction, row, "cancelled"));
     });
   }
@@ -1348,6 +1411,17 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   async retryPending(reason: AnnotationRetryReason, cancellation?: AnnotationRetryCancellation): Promise<void> {
     void reason;
     const retainedFaults: unknown[] = [];
+    // Complete retained dismissals FIRST: their identities stay fenced from the
+    // pending sweep below until the discard commits, and a committed discard
+    // leaves the sweep no row to visit. A fault retains the record for the next
+    // trigger and surfaces through the same retained-fault rule as the fences.
+    for (const record of [...this.#pendingCancelledDiscards.values()]) {
+      try {
+        await this.#completeCancelledDiscard(record);
+      } catch (error) {
+        retainedFaults.push(error);
+      }
+    }
     for (const [identity, record] of [...this.#pendingExpiries]) {
       try {
         await this.#fence(
@@ -1627,6 +1701,11 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const namespace = key.namespace;
     if (namespace.kind !== "browser") return { state: "cancelled" };
     const operationKey = annotationOperationKey(namespace, operationId);
+    // A dismissed save's identity is fenced until its durable discard commits.
+    // Its row may still be pending, but a dismissed note must never reach the
+    // composer; the terminal cancelled outcome also drops the runtime's retry
+    // intent so no pass keeps revisiting it.
+    if (this.#pendingCancelledDiscards.has(operationKey)) return { state: "cancelled" };
     // The whole fallible pre-commit path returns the documented fulfilled
     // pending/owner-unavailable result on a storage or preparation fault: an
     // unreadable receipt is not cancelled and must stay recoverable through the

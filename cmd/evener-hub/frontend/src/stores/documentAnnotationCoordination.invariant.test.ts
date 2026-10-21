@@ -109,6 +109,154 @@ test("a save cancelled after its commit boundary leaves no pending operation", a
   fixture.drafts.close();
 });
 
+// A cancellation that lands past the abort boundary leaves its committed row
+// pending until the save's own completion settles and its discard runs. A
+// retry during that window used to hand the row off: handoffs consulted only
+// storage closure and the retry-scoped cancellation, never the operation-scoped
+// dismissal, so a note the user dismissed appended anyway. The dismissal must
+// fence the identity from handoff for the whole window, not just after it.
+test("a retry during a cancelled save's held completion cannot append the dismissed note", async () => {
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    // Every handoff prepares against the draft's current token: the sweep
+    // visits the fixture's own pending operation first, and its append must not
+    // make the dismissed operation's preparation stale.
+    prepareAnnotation: async () => {
+      if (fixture === undefined) return null;
+      const loaded = await fixture.drafts.load(fixture.key);
+      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+    },
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  const handoff = vi.spyOn(fixture.repository, "handoff");
+  const answerFor = async (operationId: string) => {
+    const index = handoff.mock.calls.findIndex((call) => call[1] === operationId);
+    const result = index < 0 ? undefined : handoff.mock.results[index];
+    return result === undefined ? undefined : await result.value;
+  };
+  // Apply the fixture's own pending operation first: a later pending operation
+  // for the same draft would otherwise refuse the direct handoff below as a
+  // dirty draft, which would hide the append this case is about.
+  expect(await fixture.repository.handoff(fixture.document, fixture.operation.operationId)).toMatchObject({
+    state: "applied",
+  });
+
+  // The save transaction commits, but its completion event is held: the row is
+  // durable while the save's promise is still unsettled.
+  const hold = holdNextWriteTransaction(SAVE_STORES);
+  const save = fixture.runtime.save(operation);
+  await hold.reached;
+  // The dismissal lands inside the commit window, past the abort boundary.
+  fixture.runtime.retireAttempted(operation);
+
+  // A handoff DURING the window, while the pending row is still visible, must
+  // answer the terminal cancelled outcome instead of appending the note.
+  expect(await fixture.repository.handoff(fixture.document, operation.operationId)).toEqual({ state: "cancelled" });
+
+  // A retry pass runs in the same window and must not append it either: the
+  // retained discard completes first, leaving the sweep nothing to hand off.
+  await fixture.runtime.retryPending("storage-recovered");
+  await fixture.runtime.whenIdle();
+  expect(await answerFor(operation.operationId)).toEqual({ state: "cancelled" });
+  const midWindow = await fixture.repository.listAnnotations(fixture.document);
+  expect(midWindow.find((view) => view.operation.operationId === operation.operationId)).toBeUndefined();
+
+  // The held completion settles; the dismissed row must not survive it.
+  hold.release();
+  expect(await save).toBeNull();
+  await fixture.runtime.whenIdle();
+
+  // A later pass finds nothing to hand off and nothing left pending.
+  handoff.mockClear();
+  await fixture.runtime.retryPending("storage-recovered");
+  await fixture.runtime.whenIdle();
+  expect(handoff.mock.calls.some((call) => call[1] === operation.operationId)).toBe(false);
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === operation.operationId)).toBeUndefined();
+
+  handoff.mockRestore();
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// The dismissal's cleanup is durable work of its own: when its transaction
+// faults, the dismissed identity must stay fenced rather than become eligible
+// again, and the discard must be retained for a later trigger. Best-effort
+// cleanup that swallowed the fault left the pending row and no retry, so the
+// dismissed operation stayed appending-eligible forever.
+test("a faulted cancelled-save discard stays fenced and a later trigger completes it", async () => {
+  // Count every durably attempted discard and fault the first one: storage
+  // refuses the dismissal's cleanup exactly once, then accepts it.
+  let discardAttempts = 0;
+  let faultNext = true;
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    routeCancelledDiscardIntoRuntime: true,
+    // Every handoff prepares against the draft's current token: the fixture's
+    // own operation is applied first, and its append must not leave the
+    // dismissed operation's preparation stale.
+    prepareAnnotation: async () => {
+      if (fixture === undefined) return null;
+      const loaded = await fixture.drafts.load(fixture.key);
+      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+    },
+    beforeCommit: (operation) => {
+      if (operation !== "discard") return;
+      discardAttempts += 1;
+      if (faultNext) {
+        faultNext = false;
+        throw new Error("discard fault");
+      }
+    },
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  // Apply the fixture's own pending operation first: a later pending operation
+  // for the same draft would otherwise refuse the direct handoff below as a
+  // dirty draft, which would hide the append this case is about.
+  expect(await fixture.repository.handoff(fixture.document, fixture.operation.operationId)).toMatchObject({
+    state: "applied",
+  });
+  fixture.acknowledge.mockClear();
+
+  const hold = holdNextWriteTransaction(SAVE_STORES);
+  const save = fixture.runtime.save(operation);
+  await hold.reached;
+  fixture.runtime.retireAttempted(operation);
+  hold.release();
+  expect(await save).toBeNull();
+  expect(discardAttempts).toBe(1);
+
+  // The identity stays fenced while its discard work is pending: a retry that
+  // runs in that window must still refuse the dismissed note.
+  expect(await fixture.repository.handoff(fixture.document, operation.operationId)).toEqual({ state: "cancelled" });
+  expect(fixture.acknowledge).not.toHaveBeenCalled();
+  // The fault retained the discard as retryable work and said so.
+  expect(fixture.cancelledDiscardRetained).toHaveBeenCalledTimes(1);
+
+  // The retained work registered its need; this trigger alone must spend the
+  // pass that retries and commits the discard.
+  fixture.runtime.storageSucceeded();
+  await fixture.runtime.whenIdle();
+  expect(discardAttempts).toBe(2);
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === operation.operationId)).toBeUndefined();
+
+  // The committed discard cleared the fence: no later trigger re-attempts it.
+  fixture.runtime.storageSucceeded();
+  await fixture.runtime.whenIdle();
+  expect(discardAttempts).toBe(2);
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
 // Every durable identity is namespace-qualified: the operation row's key is
 // [kind, origin, operationId]. The reconciliation sweep's handled set compared
 // bare operation IDs, so two namespaces that both minted "operation-1" made
