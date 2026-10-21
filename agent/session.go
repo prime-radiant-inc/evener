@@ -1771,11 +1771,31 @@ func (s *Session) SetModel(model string) error {
 // lock; a failure leaves the resolve to report its authoritative error.
 func (s *Session) primeCodexRoster(ref string) (string, *llm.ModelListing) {
 	ref = strings.TrimSpace(ref)
-	instance, _, ok := strings.Cut(ref, "/")
+	instance, model, ok := strings.Cut(ref, "/")
 	if !ok || instance == "" || s.client == nil {
 		return "", nil
 	}
-	if _, err := s.client.Resolve(ref); err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
+	s.mu.Lock()
+	base := s.profile
+	s.mu.Unlock()
+	if base != nil && strings.EqualFold(instance, base.ID()) {
+		return "", nil
+	}
+	r := s.client.Registry()
+	if base != nil {
+		if res, err := r.ResolveInstanceModelFacts(base.ID(), ref); err == nil && !res.Synthesized {
+			// The current instance already serves this namespaced id; the
+			// first segment is a model namespace, not a provider switch.
+			return "", nil
+		}
+	}
+	if !r.HasInstance(instance) {
+		// A namespaced model on the current instance (an OpenRouter
+		// "anthropic/..." id) is not a provider switch. Resolving the raw
+		// ref would name the anthropic instance and mint its credential.
+		return "", nil
+	}
+	if _, err := r.ResolveInstanceModelFacts(instance, model); err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
 		return "", nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), llm.LiveModelListTimeout)
