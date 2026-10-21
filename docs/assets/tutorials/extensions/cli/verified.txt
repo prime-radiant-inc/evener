@@ -6,10 +6,10 @@ cwd: extensions-workspace
 stdout:
 HOOK_END {"event": "SessionStart", "matcher": "startup", "plugin_name": "hello-plugin", "exit_code": 0}
 PLUGIN_LOADED {"name": "hello-plugin"}
-USER_INPUT {"text": "Summarize this change: cfd56bcb1df35b0b010462f157043994\nState the evidence and anything not verified. Do not edit files.\n"}
+USER_INPUT {"text": "Summarize this change: b2ec9c0b9b7f4a51831d7ecaad950296\nState the evidence and anything not verified. Do not edit files.\n"}
 SKILL_ACTIVATED {"name": "change-summary"}
-TOOL_CALL_START {"tool_name": "example__echo", "call_id": "call_fakellm_2", "arguments_json": "{\"message\":\"d0d579cf05c885642dc3f6770cdb7a3b\"}"}
-TOOL_CALL_END {"tool_name": "example__echo", "call_id": "call_fakellm_2", "arguments_json": "{\"message\":\"d0d579cf05c885642dc3f6770cdb7a3b\"}", "output": "d0d579cf05c885642dc3f6770cdb7a3b"}
+TOOL_CALL_START {"tool_name": "example__echo", "call_id": "call_fakellm_2", "arguments_json": "{\"message\":\"3e259515b52778821e0e8bd4b69f7f23\"}"}
+TOOL_CALL_END {"tool_name": "example__echo", "call_id": "call_fakellm_2", "arguments_json": "{\"message\":\"3e259515b52778821e0e8bd4b69f7f23\"}", "output": "3e259515b52778821e0e8bd4b69f7f23"}
 
 stderr:
 
@@ -20,7 +20,7 @@ cwd: extensions-workspace
 stdout:
 HOOK_END {"event": "SessionStart", "matcher": "startup", "plugin_name": "hello-plugin", "exit_code": 0}
 PLUGIN_LOADED {"name": "hello-plugin"}
-USER_INPUT {"text": "Greet 1da7dd3ed5c7cde8e51d3884c8b609c1 in one sentence. Do not use tools.\n"}
+USER_INPUT {"text": "Greet 89cf902e5f7d399326ed9cf1c7f3b131 in one sentence. Do not use tools.\n"}
 
 stderr:
 

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "sourceRevision": "1c879486a5fdcb40e09f6cf90d6f9a3a1128d9c8",
-  "sourceTreeDigest": "2653b3c8827601cc5f5acccac46a10ee0d012038d894ff9f7c51ab1dc005237a",
+  "sourceRevision": "6c9bd788818f77383cf0c1f6a34b889046462fa0",
+  "sourceTreeDigest": "c8c46eeaab6c91d9d193e299a56e5c80b6e93934be859cd876df7ea0652ec0ed",
   "toolVersions": {
     "node": "v22.13.1",
     "go": "go version go1.27.1 darwin/arm64",
@@ -232,7 +232,7 @@
       "checkpoint": "action",
       "representation": "web-screenshot",
       "file": "receipt/web/action.png",
-      "sha256": "ffce99d363c18197fb62e5a6ab61d0b930c31abe8b330c8fd6b134017a56d897",
+      "sha256": "05ddbb34c900cd679f11587b783bdea39c55a9484b4dee09549168c81d4ff08c",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -259,7 +259,7 @@
       "checkpoint": "verified",
       "representation": "web-screenshot",
       "file": "receipt/web/verified.png",
-      "sha256": "1572a5adef37495455a0021a0d3ffc6a6b5375dafd1ff3a598f62df77ec85dff",
+      "sha256": "c8dcfa231df7d1b78031d1d3d4380487356f432d2691da77dc7c5877d7328df0",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -373,7 +373,7 @@
       "checkpoint": "action",
       "representation": "rendered-command-transcript",
       "file": "daily/cli/action.png",
-      "sha256": "83954646da97bc7e126c081e17eff79e9a8163f500106c89a0ef28ba981df3ca",
+      "sha256": "b59cf0411b44002d1ac78964b633cd0d6b62a88d4b0b2296800061c7457cc56c",
       "dimensions": {
         "width": 1200,
         "height": 1800
@@ -387,7 +387,7 @@
       "result": "passed",
       "text": {
         "file": "daily/cli/action.txt",
-        "sha256": "58ab596e98d7612e1bab8c68e86d8585afdadee59bfce4c1249f90f364bd7568"
+        "sha256": "382cf2f2029d20b6276c072a804858d0b00911ab47c16e3fe7b2bd14a9454a85"
       }
     },
     {
@@ -396,7 +396,7 @@
       "checkpoint": "verified",
       "representation": "rendered-command-transcript",
       "file": "daily/cli/verified.png",
-      "sha256": "fae1111e83f4c598444eefc52d48f4465882391f6aeb76c50f64614a5bd48246",
+      "sha256": "9d92f46c356e83e6f1555fb4f84749e2f0b06e0f7d4bc3478660a35f472cfc26",
       "dimensions": {
         "width": 1200,
         "height": 1800
@@ -410,7 +410,7 @@
       "result": "passed",
       "text": {
         "file": "daily/cli/verified.txt",
-        "sha256": "8c16e14265fec394fd0c05fb2df3b8d74122c6d4c8c6cb0d5641ae8a691769d3"
+        "sha256": "a6273cc1c175bd15f8d69c0bd55be341174fc380b6c5c133b5ecca2ca4b2dd9a"
       }
     },
     {
@@ -419,7 +419,7 @@
       "checkpoint": "entry",
       "representation": "web-screenshot",
       "file": "daily/web/entry.png",
-      "sha256": "2300f13ac89a158a39caa66b2b12f913fcf4e9b7ab2909aead6d69b32799cc91",
+      "sha256": "a3c80874bd73b80fd3190dc541602e5e02ea3b25c79e19d737d3441b0cdb8968",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -438,7 +438,7 @@
       "checkpoint": "action",
       "representation": "web-screenshot",
       "file": "daily/web/action.png",
-      "sha256": "15d8164607e7df3f36442b2b6da944fafb54e1fbfa5797db6c9f8e5bf3e77cd6",
+      "sha256": "3713decb7ad826875dda38312c8bd39f3c0a983c72396d44c590b7760c9984f8",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -461,7 +461,7 @@
       "checkpoint": "verified",
       "representation": "web-screenshot",
       "file": "daily/web/verified.png",
-      "sha256": "1d71b2b76677470114a05c0f5d35c93b96d0ade4ff372ccb680dd05a680e6f81",
+      "sha256": "1bb59a352cf57efaf6da5a0ff1432bf8539acdc6888b96712843a47a7e2b9db5",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -557,7 +557,7 @@
       "checkpoint": "entry",
       "representation": "web-screenshot",
       "file": "configuration/web/entry.png",
-      "sha256": "f5f7ece928161716d8b2843e9128f2125c046a1afd5b431f00ea050a721a60c0",
+      "sha256": "5394b9c606f0da996a74bca8160baef692538359dcd7a7a936b91c29b26e00db",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -599,7 +599,7 @@
       "checkpoint": "verified",
       "representation": "web-screenshot",
       "file": "configuration/web/verified.png",
-      "sha256": "c616922d07a1ce1b7c6f06a47bb84b7f3a756a9c696a5703c7e947c4df03c6f3",
+      "sha256": "c1acf0cc76b414bf5921c2ad8dcee8a39439d0d7ff10263a2d59217ab91257e7",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -641,7 +641,7 @@
       "checkpoint": "action",
       "representation": "rendered-command-transcript",
       "file": "extensions/cli/action.png",
-      "sha256": "9e68f82ba190e10feacec2912279f734d05ab1f25d30b33544313c25e198280b",
+      "sha256": "de16344581494ce739e226e89bca5d0d69289f6c760186ef79b7469d73886a7d",
       "dimensions": {
         "width": 1200,
         "height": 1800
@@ -655,7 +655,7 @@
       "result": "passed",
       "text": {
         "file": "extensions/cli/action.txt",
-        "sha256": "c8ed5a25dd75ae0a21af625b4ebf1ab987c898851d3ade01322900a75a4bc622"
+        "sha256": "e5b8c03dc5a9998d344e244711cd8ed2ef1e875ae4415e77370aaa4a514e63a1"
       }
     },
     {
@@ -664,7 +664,7 @@
       "checkpoint": "verified",
       "representation": "rendered-command-transcript",
       "file": "extensions/cli/verified.png",
-      "sha256": "dc5f6623036f91d5d0a0731a5389308757d370178a56f14d1aff4f9ad8d5fa00",
+      "sha256": "5a931b8871d404fd450f49ad21d8b7bf09e2079dabf24a1ecd061fca17cadc34",
       "dimensions": {
         "width": 1200,
         "height": 1800
@@ -678,7 +678,7 @@
       "result": "passed",
       "text": {
         "file": "extensions/cli/verified.txt",
-        "sha256": "ff4a97f8555df2645ac21a266876e2b088403c4ce091fbfd8a916f91a008bfa2"
+        "sha256": "0d5025f2d2fb0b6176370533d452c7b795dc33b0aa511def88570d9a496fb508"
       }
     },
     {
@@ -706,7 +706,7 @@
       "checkpoint": "action",
       "representation": "web-screenshot",
       "file": "extensions/web/action.png",
-      "sha256": "93ec79fc3770bb51253c401f0d2cb7cd072e895261041655c1c0b96da5dd8704",
+      "sha256": "0f066aa509d9780f1a930240e5ea4b52cec6ec1aa8d273ffb9e0f4dc751346ce",
       "dimensions": {
         "width": 1280,
         "height": 900
@@ -725,7 +725,7 @@
       "checkpoint": "verified",
       "representation": "web-screenshot",
       "file": "extensions/web/verified.png",
-      "sha256": "63e42b8450bdc074b09b1dafc25b6dfb60b93cfb91bd3960316a99900d28aedc",
+      "sha256": "46c9f74bd438ad4aef3dd8465956d84d6033fdf06a2910eec104afef5c1ceebe",
       "dimensions": {
         "width": 1280,
         "height": 900

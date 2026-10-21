@@ -23,7 +23,7 @@ exit: 0
 $ evener --list-sessions
 cwd: daily-workspace
 stdout:
-034jVG6JqgTVk6qqrLlWV0  fake-test-model   -                     2026-10-21 01:34:34   turns=2
+034jVwUMvGMvqfALYeWHTs  fake-test-model   -                     2026-10-21 02:02:25   turns=2
 
 stderr:
 
