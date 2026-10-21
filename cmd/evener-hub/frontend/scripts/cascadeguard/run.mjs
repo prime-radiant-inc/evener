@@ -1008,7 +1008,21 @@ async function assertOverlap(ref, text, label) {
   assert.deepEqual(atoms, overlapMentions(text), `${label}, atom kind and exact text-owned offsets`);
   const stored = await read(`JSON.parse(localStorage.getItem(${q(`evener.composer.draft.v2.${ref}`)}))`);
   const { editedAt, ...record } = stored;
-  assert.deepEqual(record, { text, skillNames:['cascade-overlap'], commandNames:['cascade-overlap'], mentions:overlapMentions(text) }, `${label}, complete real persisted draft`);
+  assert.deepEqual(record, {
+    text,
+    skillNames:['cascade-overlap'],
+    commandNames:['cascade-overlap'],
+    mentions:overlapMentions(text),
+    revisionId: record.revisionId,
+  }, `${label}, complete real persisted draft`);
+  assert.equal(typeof record.revisionId, 'string', `${label}, draft record carries its revision identity`);
+  assert.ok(record.revisionId.length > 0, `${label}, revision identity is non-empty`);
+  const priorRevisionId = assertOverlap.revisionIds?.get(ref);
+  if (priorRevisionId !== undefined) {
+    assert.notEqual(record.revisionId, priorRevisionId, `${label}, changed persisted draft has a new revision identity`);
+  }
+  assertOverlap.revisionIds ??= new Map();
+  assertOverlap.revisionIds.set(ref, record.revisionId);
   assert.equal(typeof editedAt, 'number', `${label}, draft record carries its write stamp`);
 }
 

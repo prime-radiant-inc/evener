@@ -2671,7 +2671,9 @@ export function ConversationScreen({
 		if (!service || kind === null) return;
 		setActionError(null);
 		try {
-			await document.submitText(TURN_CONTINUATION_TEXT, async (text, images) => deliver(service, kind, text, images));
+			await document.submitText(TURN_CONTINUATION_TEXT, async (text, images, context) =>
+				deliver(service, kind, text, images, context),
+			);
 		} catch {
 			// As with Send, a refusal leaves the unconfirmed ghost to say so.
 		}

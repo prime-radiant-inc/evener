@@ -68,6 +68,74 @@ it.each(["queue", "steer"] as const)("captures /%s body metadata before encoding
 	}
 });
 
+it.each(["queue", "steer"] as const)("persists distinct captured tokens for two /%s admissions", async (kind) => {
+	const drafts = openSqliteSyncDouble();
+	const mutations = openSqliteSyncDouble();
+	const destination = { hubId: "hub-1", sessionRef: "ref-1" };
+	const targetKey = nativeMutationTargetKey(destination.hubId, destination.sessionRef);
+	const client = new FakeClient("closed");
+	let nextMutation = 0;
+	const runtime = new NativeMutationRuntime(mutations.port, {
+		createMutationId: () => `lineage-mutation-${++nextMutation}`,
+		setInterval: () => 1,
+		clearInterval: () => {},
+	});
+	const repository = new DraftRepository(drafts.port);
+	let nextCapture = 0;
+	const document = new DraftDocument(
+		() => repository,
+		destination,
+		undefined,
+		() => `capture-${++nextCapture}`,
+	);
+	runtime.registerTarget(destination.hubId, destination.sessionRef, client, {
+		threadId: "thread-1",
+		instanceId: "instance-1",
+	});
+	try {
+		const capturedTokens: string[] = [];
+		for (const body of ["first", "second"]) {
+			document.edit(`/${kind} ${body}`);
+			await submitComposerCommand(document, {} as Parameters<typeof submitComposerCommand>[1], {
+				isCurrent: () => true,
+				local: async () => {},
+				openAside: () => {},
+				cleared: () => {},
+				turn: () => conversation({ queue: true, steer: true }, "active"),
+				drainQueue: async () => {},
+				drainRefusal: () => null,
+				submit: async (submittedKind, input, context) => {
+					capturedTokens.push(repository.read(destination).unconfirmedCaptureToken ?? "");
+					await runtime.submit({
+						hubId: destination.hubId,
+						targetRef: destination.sessionRef,
+						threadId: "thread-1",
+						instanceId: "instance-1",
+						kind: submittedKind,
+						input,
+						composer: context?.composer,
+						draftCaptureToken: context?.draftCaptureToken,
+					});
+				},
+				stop: async () => {},
+				reasoning: () => null,
+			});
+		}
+
+		const rows = (await runtime.read(targetKey)).outbox;
+		expect(rows).toHaveLength(2);
+		expect(rows.map((row) => row.composerText)).toEqual(["first", "second"]);
+		const admittedTokens = rows.map((row) => row.draftCaptureToken);
+		expect(capturedTokens).toEqual(["capture-1", "capture-2"]);
+		expect(admittedTokens).toEqual(capturedTokens);
+		expect(new Set(admittedTokens).size).toBe(2);
+	} finally {
+		await runtime.stop();
+		drafts.database.close();
+		mutations.database.close();
+	}
+});
+
 it.each(["queue", "steer"] as const)(
 	"/%s retains an edited source until the real resend receipt settles",
 	async (kind) => {

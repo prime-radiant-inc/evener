@@ -9,7 +9,11 @@ import { DraftRepository } from "./draftRepository";
 import { MutationOutboxSQLite } from "./mutationOutboxStorage";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
-vi.mock("expo-crypto", () => ({}));
+const cryptoTestState = vi.hoisted(() => ({ nextToken: 0 }));
+vi.mock("expo-crypto", () => ({
+	randomUUID: () => `draft-capture-${++cryptoTestState.nextToken}`,
+	getRandomValues: (array: Uint8Array) => array,
+}));
 
 let directory: string;
 let database: SqliteDoubleDatabase;
@@ -33,6 +37,7 @@ function reopen() {
 	open();
 }
 beforeEach(() => {
+	cryptoTestState.nextToken = 0;
 	directory = mkdtempSync(join(process.env.EVENER_SCRATCH_DIR ?? tmpdir(), "draft-ownership-"));
 	open();
 });
@@ -354,6 +359,7 @@ it("captures full original context and exact source set, preserving newer recove
 	document.appendEditedRecovery(recovery("b"));
 	await document.submit(async (text, images, context) => {
 		expect(context).toEqual({
+			draftCaptureToken: "draft-capture-1",
 			composer: {
 				text: "[image 1] tail\n\n[image 2] tail",
 				attachments: images,
@@ -366,6 +372,7 @@ it("captures full original context and exact source set, preserving newer recove
 			},
 			recoverySourceIds: ["a", "b"],
 		});
+		expect(repository.read(destination).unconfirmedCaptureToken).toBe(context.draftCaptureToken);
 		expect(text).toBe(context.composer?.text);
 		expect(images.map((i) => [i.marker, i.data])).toEqual([
 			[1, "AP8H"],

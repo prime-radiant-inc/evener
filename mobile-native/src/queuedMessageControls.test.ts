@@ -410,6 +410,7 @@ async function richSource(f: Fixture) {
 async function explicitSend(f: Fixture) {
 	await f.document.submit(async (text, images, context) => {
 		expect(f.repository.read(destination).unconfirmed).toBe(text);
+		expect(f.repository.read(destination).unconfirmedCaptureToken).toBe(context.draftCaptureToken);
 		expect(f.repository.read(destination).unconfirmedComposer?.recoveryIds).toEqual(context.recoverySourceIds);
 		await f.runtime.submit(
 			request({
@@ -423,6 +424,7 @@ async function explicitSend(f: Fixture) {
 				...context,
 			}),
 		);
+		expect((await f.runtime.read(key)).outbox[0].draftCaptureToken).toBe(context.draftCaptureToken);
 		return true;
 	});
 }
@@ -518,6 +520,9 @@ test.each(cuts)("editedResendSurvivesEveryDatabaseCutPoint: %s", async (cut) => 
 	expect((await f.runtime.read(key)).recovery).toEqual([]);
 	expect((await f.runtime.read(key)).outbox.map((r) => r.clientMutationId)).toEqual(["mutation-4"]);
 	expect(f.document.getSnapshot().record.unconfirmed).toBe(captured.draft);
+	const captureToken = f.repository.read(destination).unconfirmedCaptureToken;
+	expect(captureToken).toEqual(expect.any(String));
+	expect((await f.runtime.read(key)).outbox[0].draftCaptureToken).toBe(captureToken);
 	expect(f.document.getSnapshot().record.unconfirmedComposer).toEqual(captured.composer);
 	expect(f.document.imagePreviews(f.document.getSnapshot().record.unconfirmedImages).map((i) => i.data)).toEqual([
 		"AP8H",
@@ -541,6 +546,7 @@ test.each(cuts)("editedResendSurvivesEveryDatabaseCutPoint: %s", async (cut) => 
 		f.mutations.exec("PRAGMA query_only = ON");
 		await expect(reconcileEditedResends(f.runtime, key, f.document)).rejects.toBeInstanceOf(Error);
 		expect(f.repository.read(destination).unconfirmed).toBeNull();
+		expect(f.repository.read(destination).unconfirmedCaptureToken).toBeUndefined();
 		expect(f.repository.read(destination).recoveryResendAcks).toEqual(["mutation-4"]);
 		expect(await f.runtime.readRecoveryResend(key, [a, b])).toEqual(receipt);
 		await f.reopen();
@@ -550,6 +556,7 @@ test.each(cuts)("editedResendSurvivesEveryDatabaseCutPoint: %s", async (cut) => 
 		unsubscribe();
 		expect(await f.runtime.readRecoveryResend(key, [a, b])).toBeUndefined();
 		expect(f.repository.read(destination).unconfirmed).toBeNull();
+		expect(f.repository.read(destination).unconfirmedCaptureToken).toBeUndefined();
 		expect(f.repository.read(destination).recoveryResendAcks).toEqual(["mutation-4"]);
 		await f.reopen();
 	}
@@ -563,6 +570,7 @@ test.each(cuts)("editedResendSurvivesEveryDatabaseCutPoint: %s", async (cut) => 
 	expect(f.document.getSnapshot().record).toEqual({
 		...newer,
 		unconfirmed: null,
+		unconfirmedCaptureToken: undefined,
 		unconfirmedImages: undefined,
 		unconfirmedComposer: undefined,
 	});
@@ -939,6 +947,53 @@ test("ordinary enqueue followed by failed draft confirmation and reopen clears d
 	expect(f.repository.read(destination)).toMatchObject({ draft: "", unconfirmed: null });
 	expect(f.repository.read(destination).unconfirmedCaptureToken).toBeUndefined();
 	expect(f.calls).toEqual([]);
+});
+
+test("matching Remove keeps the row when durable capture cannot be cleared before retry or reopen", async () => {
+	const f = fixture();
+	f.document.edit("ordinary queued message");
+	f.drafts.exec(`CREATE TRIGGER reject_confirmation BEFORE DELETE ON drafts
+		WHEN OLD.unconfirmed IS NOT NULL
+		BEGIN SELECT RAISE(ABORT, 'draft confirmation rejected'); END`);
+	await expect(
+		f.document.submit(async (text, _images, context) => {
+			await f.runtime.submit({ ...request({ input: [{ type: "text", text }] }), ...context });
+			return true;
+		}),
+	).rejects.toBeInstanceOf(Error);
+	const [queued] = (await f.runtime.read(key)).outbox;
+	expect(queued.draftCaptureToken).toEqual(expect.any(String));
+	expect(f.document.getSnapshot().record).toMatchObject({ unconfirmed: null });
+	expect(f.document.getSnapshot().record.unconfirmedCaptureToken).toBeUndefined();
+	expect(f.repository.read(destination)).toMatchObject({
+		unconfirmed: "ordinary queued message",
+		unconfirmedCaptureToken: queued.draftCaptureToken,
+	});
+
+	expect(await removeQueuedMessageWithDraftCapture(f.runtime, key, queued.clientMutationId, f.document)).toBe(false);
+	expect(await f.runtime.storage.getOutbox(queued.clientMutationId)).toMatchObject({
+		draftCaptureToken: queued.draftCaptureToken,
+	});
+	expect(f.repository.read(destination)).toMatchObject({
+		unconfirmed: "ordinary queued message",
+		unconfirmedCaptureToken: queued.draftCaptureToken,
+	});
+
+	await f.reopen();
+	expect(f.document.getSnapshot().record).toMatchObject({
+		unconfirmed: "ordinary queued message",
+		unconfirmedCaptureToken: queued.draftCaptureToken,
+	});
+	expect(await f.runtime.storage.getOutbox(queued.clientMutationId)).toBeDefined();
+	f.drafts.exec("DROP TRIGGER reject_confirmation");
+	f.document.edit("newer composition");
+	expect(await removeQueuedMessageWithDraftCapture(f.runtime, key, queued.clientMutationId, f.document)).toBe(true);
+	expect(await f.runtime.storage.getOutbox(queued.clientMutationId)).toBeUndefined();
+	expect(f.repository.read(destination)).toMatchObject({
+		draft: "newer composition",
+		unconfirmed: null,
+	});
+	expect(f.repository.read(destination).unconfirmedCaptureToken).toBeUndefined();
 });
 
 test("matching capture preclear preserves newer composition and cleanup markers", async () => {

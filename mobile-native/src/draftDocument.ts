@@ -353,7 +353,7 @@ export class DraftDocument {
 	 * and the guard counts them, so an image-only re-issue can send. */
 	async submitText(
 		text: string,
-		operation: (text: string, images: InputAttachment[]) => Promise<boolean>,
+		operation: (text: string, images: InputAttachment[], context: ConversationMutationContext) => Promise<boolean>,
 		reissued?: InputAttachment[],
 	) {
 		return this.submitContent(text, true, operation, reissued);
@@ -471,19 +471,27 @@ export class DraftDocument {
 	 * durable mutation row proved it owns. Other captures and current draft work
 	 * remain untouched. A failed local write must stop the caller's action. */
 	clearMatchingUnconfirmedCapture(token: string): boolean {
-		const record = this.snapshot.record;
-		if (record.unconfirmed === null || record.unconfirmedCaptureToken !== token) return true;
+		let durable: DraftRecord;
 		try {
-			this.persist(
-				{
-					...record,
-					unconfirmed: null,
-					unconfirmedImages: undefined,
-					unconfirmedComposer: undefined,
-					unconfirmedCaptureToken: undefined,
-				},
-				false,
-			);
+			durable = this.repository().read(this.destination);
+		} catch {
+			return false;
+		}
+		if (durable.unconfirmed === null || durable.unconfirmedCaptureToken !== token) return true;
+
+		const current = this.snapshot.record;
+		const record =
+			current.unconfirmed === null || current.unconfirmedCaptureToken === token
+				? {
+						...current,
+						unconfirmed: null,
+						unconfirmedImages: undefined,
+						unconfirmedComposer: undefined,
+						unconfirmedCaptureToken: undefined,
+					}
+				: current;
+		try {
+			this.persist(record, false);
 			return true;
 		} catch {
 			return false;

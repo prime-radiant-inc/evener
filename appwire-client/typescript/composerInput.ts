@@ -24,6 +24,15 @@ export function sharedSuffixLength(before: string, after: string, prefix: number
   return count;
 }
 
+function hasCompleteComposerReference(text: string, mention: ComposerMention): boolean {
+  const end = mention.offset + mention.name.length + 1;
+  return (
+    mention.offset >= 0 &&
+    text.slice(mention.offset, end) === `/${mention.name}` &&
+    (end === text.length || /\s/u.test(text[end] ?? ""))
+  );
+}
+
 /** Shift existing identities across a text splice, dropping edited labels, never selecting new prose. */
 export function reconcileComposerMentions(
   before: string,
@@ -35,8 +44,11 @@ export function reconcileComposerMentions(
   const oldEnd = before.length - suffix;
   const delta = after.length - before.length;
   return mentions.flatMap((item) => {
-    if (item.offset + item.name.length + 1 <= prefix) return [item];
-    if (item.offset >= oldEnd) return [{ ...item, offset: item.offset + delta }];
+    if (item.offset + item.name.length + 1 <= prefix) return hasCompleteComposerReference(after, item) ? [item] : [];
+    if (item.offset >= oldEnd) {
+      const shifted = { ...item, offset: item.offset + delta };
+      return hasCompleteComposerReference(after, shifted) ? [shifted] : [];
+    }
     return [];
   });
 }

@@ -2498,15 +2498,31 @@ it.each(["idle", "active"] as const)(
 		await type(tree, "keep this");
 		const destination = { hubId: "hub-1", sessionRef: ref };
 		const document = drafts.open(destination);
+		const draftWrites = vi.spyOn(nativeDrafts(), "write");
 		act(() =>
 			document.addImage({ id: "draft-image", marker: 1, mediaType: "image/png", name: "draft.png", data: "AQID" }),
 		);
 		const before = document.getSnapshot().record;
 		const imagesBefore = nativeDrafts().imageInputs(destination, before.images ?? []);
+		const method = status === "idle" ? "turn/start" : "turn/queue";
+		const client = hub.client as { request: (method: string, params: Record<string, unknown>) => Promise<unknown> };
+		const request = client.request;
+		client.request = async (requested, params) => {
+			const answer = await request(requested, params);
+			if (requested === method) throw new Error("connection lost after admission");
+			return answer;
+		};
 		playedHaptics.length = 0;
 		await press(tree, "Retry");
-		const method = status === "idle" ? "turn/start" : "turn/queue";
 		expect(hub.mutations()).toEqual([method]);
+		const retryCapture = draftWrites.mock.calls.find(([, record]) => record.unconfirmed === "continue")?.[1];
+		expect(retryCapture?.unconfirmedCaptureToken).toBeTruthy();
+		const runtime = getNativeMutationRuntime();
+		const targetKey = nativeMutationTargetKey("hub-1", ref);
+		const admittedRetry = (await runtime.read(targetKey)).outbox.find(
+			(row) => row.method === method && row.composerText === "continue",
+		);
+		expect(admittedRetry).toMatchObject({ draftCaptureToken: retryCapture?.unconfirmedCaptureToken });
 		// Spec 16.6: a light impact on send, a retry's included.
 		expect(playedHaptics).toEqual(["impact:light"]);
 		const start = hub.requests.find((request) => request.method === method);

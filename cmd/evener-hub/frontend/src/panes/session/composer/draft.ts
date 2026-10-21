@@ -19,6 +19,7 @@
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
 import { canonicalSkillNames } from "@evener/appwire-client";
+import { createSecureUUID } from "../../../stores/secureUUID";
 import { patchSelectionText, type SkillEditorValue } from "./skillDocument";
 
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
@@ -175,7 +176,7 @@ export function writeComposerDraft(ref: string, value: ComposerDraft): string | 
     } else {
       // The one choke point every persisted draft edit goes through, so the stamp
       // is the draft's actual last-write time.
-      const revisionId = crypto.randomUUID();
+      const revisionId = createSecureUUID();
       localStorage.setItem(
         composerDraftStorageKey(ref),
         JSON.stringify({ ...value, revisionId, editedAt: Date.now() }),

@@ -149,7 +149,7 @@ export async function submitComposerCommand(
 	if (!snapshot.loaded || snapshot.error || snapshot.submitting || record.unconfirmed !== null) return null;
 	const match = composerCommand(record.draft, record.images?.length, record.composer);
 	if (!match || !context.isCurrent()) return null;
-	let operation: () => Promise<unknown>;
+	let operation: (captureContext?: ConversationMutationContext) => Promise<unknown>;
 	let afterSubmit = () => {};
 	const id = match.command.id;
 	if (isLocalComposerCommand(id)) {
@@ -217,7 +217,13 @@ export async function submitComposerCommand(
 				composer,
 				...(record.composer?.recoveryIds === undefined ? {} : { recoverySourceIds: record.composer.recoveryIds }),
 			};
-			operation = () => context.submit(id, input, mutationContext);
+			operation = (captureContext) =>
+				context.submit(id, input, {
+					...mutationContext,
+					...(captureContext?.draftCaptureToken === undefined
+						? {}
+						: { draftCaptureToken: captureContext.draftCaptureToken }),
+				});
 		}
 	} else if (id === "model") {
 		const catalog = await service.models();
@@ -261,9 +267,9 @@ export async function submitComposerCommand(
 	try {
 		const submit =
 			id === "steer" || id === "queue" ? document.submit.bind(document) : document.submitBuiltinCommand.bind(document);
-		await submit(async () => {
+		await submit(async (_text, _images, captureContext) => {
 			if (!context.isCurrent()) return false;
-			await operation();
+			await operation(captureContext);
 			completed = match.command.id;
 			return true;
 		});
