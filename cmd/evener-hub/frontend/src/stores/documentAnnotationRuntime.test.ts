@@ -4,7 +4,12 @@ import type { PreparedAnnotation } from "@evener/appwire-client";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation } from "../panes/session/composer/composerContract";
 import { createDocumentAnnotationRuntime } from "./documentAnnotationRuntime";
-import { type AnnotationFixture, deferred, openAnnotationFixture } from "./testing/annotationFixture";
+import {
+  type AnnotationFixture,
+  currentPreparation,
+  deferred,
+  openAnnotationFixture,
+} from "./testing/annotationFixture";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -251,8 +256,7 @@ test("a storage success during two direct handoffs recovers the first refusal af
       }
       // A fresh preparation for each later append: a committed append advances
       // the draft's session token, so the retained trigger's pass prepares again.
-      const loaded = fixture === undefined ? null : await fixture.drafts.load(fixture.key);
-      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+      return currentPreparation(() => fixture)();
     },
   });
   const destination = fixture.operation.destination;

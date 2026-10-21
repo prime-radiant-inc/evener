@@ -7,8 +7,13 @@ import {
   ANNOTATION_NAMESPACES_STORE,
   ANNOTATION_OPERATIONS_STORE,
 } from "./localCompositionSchema";
-import { openAnnotationStore, pollUntil } from "./testing/annotationFixture";
-import { holdIndexedDBEvent, holdNextTransactionEvent, holdNextWriteTransaction } from "./testing/stalledIndexedDB";
+import { openAnnotationStore } from "./testing/annotationFixture";
+import {
+  holdIndexedDBEvent,
+  holdNextTransactionEvent,
+  holdNextWriteTransaction,
+  settleRealTasks,
+} from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -118,7 +123,7 @@ test("a stalled retry outcome scan stops waiting and a later retry proceeds", as
   repository.retryPendingWithOutcome("storage-recovered").catch((error: unknown) => {
     failure = error;
   });
-  await pollUntil(() => hold !== undefined, 25);
+  await settleRealTasks(() => hold !== undefined, 25);
   if (!hold) throw new Error("outcome scan did not reach IndexedDB");
   await hold.reached;
   await vi.advanceTimersByTimeAsync(10_001);
@@ -173,7 +178,7 @@ test("an outcome scan body rejection with a stalled abort event still settles wi
   // scan's transaction to the point of its held abort - fake timers do not
   // reach fake-indexeddb's event delivery. The hop count is fixed because the
   // abort is held, so no condition can observe it.
-  await pollUntil(() => false, 25);
+  await settleRealTasks(() => false, 25);
   await vi.advanceTimersByTimeAsync(10_001);
   // The shared retry pass must settle by the watchdog deadline even though
   // its rollback event never arrived.

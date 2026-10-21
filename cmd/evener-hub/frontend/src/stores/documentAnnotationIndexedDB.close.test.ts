@@ -1,11 +1,15 @@
 // @vitest-environment node
 
-import type { DocFileContent } from "@evener/appwire-client";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation } from "../panes/session/composer/composerContract";
 import { createDocumentAnnotationRepository } from "./documentAnnotationIndexedDB";
 import { ANNOTATION_OPERATIONS_STORE, ANNOTATION_PAYLOADS_STORE } from "./localCompositionSchema";
-import { type AnnotationFixture, deferred, openAnnotationFixture } from "./testing/annotationFixture";
+import {
+  type AnnotationFixture,
+  deferred,
+  openAnnotationFixture,
+  sampleChangedContent,
+} from "./testing/annotationFixture";
 import { holdNextTransactionEvent } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
@@ -145,13 +149,7 @@ test("close between a changed read's validation and its expiry fence stops the f
       return fenceGate.promise;
     },
   });
-  const changed: DocFileContent = {
-    text: "Changed content\n",
-    binary: false,
-    mediaType: "text/markdown",
-    truncated: false,
-    sizeBytes: 17,
-  };
+  const changed = sampleChangedContent();
   const ticket = await fixture.repository.beginRead(fixture.document);
   const acceptance = fixture.repository.acceptRead(ticket, changed);
   await fenceReached.promise;

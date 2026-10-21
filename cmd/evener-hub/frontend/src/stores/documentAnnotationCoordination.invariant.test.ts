@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import type { DocFileContent, DocumentKey, PreparedAnnotation } from "@evener/appwire-client";
+import type { DocumentKey, PreparedAnnotation } from "@evener/appwire-client";
 import { IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation, ComposerSourceState } from "../panes/session/composer/composerContract";
@@ -18,11 +18,12 @@ import {
   type AnnotationFixture,
   type AnnotationFixtureWithRuntime,
   buildAnnotationOperation,
+  currentPreparation,
   deferred,
   openAnnotationFixture,
-  pollUntil,
+  sampleChangedContent,
 } from "./testing/annotationFixture";
-import { holdNextWriteTransaction, nextRealTask } from "./testing/stalledIndexedDB";
+import { holdNextWriteTransaction, nextRealTask, settleRealTasks } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -56,7 +57,7 @@ test("a storage success during an outstanding save starts the recovery pass its 
     reached = true;
   });
   const save = fixture.runtime.save(operation);
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
 
   // A drafts commit publishes while the save is outstanding. The annotation
@@ -131,11 +132,7 @@ test("a retry during a cancelled save's held completion cannot append the dismis
     // Every handoff prepares against the draft's current token: the sweep
     // visits the fixture's own pending operation first, and its append must not
     // make the dismissed operation's preparation stale.
-    prepareAnnotation: async () => {
-      if (fixture === undefined) return null;
-      const loaded = await fixture.drafts.load(fixture.key);
-      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
-    },
+    prepareAnnotation: currentPreparation(() => fixture),
   });
   const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
   const handoff = vi.spyOn(fixture.repository, "handoff");
@@ -209,11 +206,7 @@ test("a faulted cancelled-save discard stays fenced and a later trigger complete
     // Every handoff prepares against the draft's current token: the fixture's
     // own operation is applied first, and its append must not leave the
     // dismissed operation's preparation stale.
-    prepareAnnotation: async () => {
-      if (fixture === undefined) return null;
-      const loaded = await fixture.drafts.load(fixture.key);
-      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
-    },
+    prepareAnnotation: currentPreparation(() => fixture),
     beforeCommit: (operation) => {
       if (operation !== "discard") return;
       discardAttempts += 1;
@@ -319,7 +312,7 @@ test("a reconciled append does not skip a same-id pending operation in another n
     reached = true;
   });
   const appendA = fixture.repository.handoff(fixture.document, fixture.operation.operationId);
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
   expect(await appendA).toEqual({ state: "pending", reason: "owner-unavailable" });
@@ -400,7 +393,7 @@ test("a reconciliation's acknowledgment signals the runtime so a refused handoff
     reached = true;
   });
   const appendA = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
   expect(await appendA).toEqual({ state: "pending", reason: "owner-unavailable" });
@@ -652,16 +645,6 @@ test("a trigger retained across an outstanding save never schedules after dispos
 // suppression through that path, and asserts the release itself reached the
 // runtime trigger and started exactly one pass.
 
-function changedContent(): DocFileContent {
-  return {
-    text: "Changed content\n",
-    binary: false,
-    mediaType: "text/markdown",
-    truncated: false,
-    sizeBytes: 17,
-  };
-}
-
 test("a stale validation's release reaches the runtime trigger", async () => {
   const fixture = await openAnnotationFixture({
     databaseName: "annotation-coordination",
@@ -683,8 +666,8 @@ test("a stale validation's release reaches the runtime trigger", async () => {
   fixture.storageSuccess.mockClear();
   fixture.runtime.registerRetryNeed();
 
-  expect(await fixture.repository.acceptRead(ticket, changedContent())).toEqual({ state: "stale-ticket" });
-  await pollUntil(() => passes.mock.calls.length > 0, 50);
+  expect(await fixture.repository.acceptRead(ticket, sampleChangedContent())).toEqual({ state: "stale-ticket" });
+  await settleRealTasks(() => passes.mock.calls.length > 0, 50);
   expect(fixture.storageSuccess).toHaveBeenCalled();
   await fixture.runtime.whenIdle();
   expect(passes).toHaveBeenCalledTimes(1);
@@ -713,13 +696,13 @@ test("an unchanged acceptance's release reaches the runtime trigger", async () =
     targetFor: () => null,
   });
   const siblingTicket = await sibling.beginRead(fixture.document);
-  expect(await sibling.acceptRead(siblingTicket, changedContent())).toMatchObject({ state: "expiry-pending" });
+  expect(await sibling.acceptRead(siblingTicket, sampleChangedContent())).toMatchObject({ state: "expiry-pending" });
   const ticket = await fixture.repository.beginRead(fixture.document);
   fixture.storageSuccess.mockClear();
   fixture.runtime.registerRetryNeed();
 
-  expect((await fixture.repository.acceptRead(ticket, changedContent())).state).toBe("accepted");
-  await pollUntil(() => passes.mock.calls.length > 0, 50);
+  expect((await fixture.repository.acceptRead(ticket, sampleChangedContent())).state).toBe("accepted");
+  await settleRealTasks(() => passes.mock.calls.length > 0, 50);
   expect(fixture.storageSuccess).toHaveBeenCalled();
   await fixture.runtime.whenIdle();
   expect(passes).toHaveBeenCalledTimes(1);
@@ -756,9 +739,9 @@ test("a validation fault's release reaches the runtime trigger", async () => {
   fixture.storageSuccess.mockClear();
   fixture.runtime.registerRetryNeed();
 
-  await expect(fixture.repository.acceptRead(ticket, changedContent())).rejects.toThrow("validation fault");
+  await expect(fixture.repository.acceptRead(ticket, sampleChangedContent())).rejects.toThrow("validation fault");
   getAllSpy.mockRestore();
-  await pollUntil(() => passes.mock.calls.length > 0, 50);
+  await settleRealTasks(() => passes.mock.calls.length > 0, 50);
   expect(fixture.storageSuccess).toHaveBeenCalled();
   await fixture.runtime.whenIdle();
   expect(passes).toHaveBeenCalledTimes(1);
@@ -788,7 +771,7 @@ test("a reset rollback's release reaches the runtime trigger", async () => {
   await expect(fixture.repository.resetOwnedNamespace(fixture.key.namespace, fixture.incarnation)).rejects.toThrow(
     "reset fault",
   );
-  await pollUntil(() => passes.mock.calls.length > 0, 50);
+  await settleRealTasks(() => passes.mock.calls.length > 0, 50);
   expect(fixture.storageSuccess).toHaveBeenCalled();
   await fixture.runtime.whenIdle();
   expect(passes).toHaveBeenCalledTimes(1);
@@ -823,7 +806,7 @@ test("a stale-incarnation reset's release reaches the runtime trigger", async ()
     committed: false,
     incarnation: rotated.incarnation,
   });
-  await pollUntil(() => passes.mock.calls.length > 0, 50);
+  await settleRealTasks(() => passes.mock.calls.length > 0, 50);
   expect(fixture.storageSuccess).toHaveBeenCalled();
   await fixture.runtime.whenIdle();
   expect(passes).toHaveBeenCalledTimes(1);
@@ -836,19 +819,6 @@ test("a stale-incarnation reset's release reaches the runtime trigger", async ()
 // ---------------------------------------------------------------------------
 // The dismissal lifecycle of a saved note.
 // ---------------------------------------------------------------------------
-
-// Every handoff prepares against the draft's CURRENT token: an earlier append
-// in the same test advances the session revision, and a stale fixture
-// preparation would refuse revision-conflict instead of exercising the
-// dismissal.
-function currentPreparation(fixture: () => AnnotationFixture | undefined) {
-  return async (): Promise<ComposerPreparation | null> => {
-    const current = fixture();
-    if (current === undefined) return null;
-    const loaded = await current.drafts.load(current.key);
-    return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
-  };
-}
 
 // Apply the fixture's own pending operation first: a later pending operation
 // for the same draft would otherwise refuse a direct handoff as a dirty draft,
@@ -883,14 +853,11 @@ test("a dismissal during an outstanding preparation cancels the resumed handoff"
       }
     },
     prepareAnnotation: async () => {
-      const current = fixture;
-      if (current === undefined) return null;
       if (holdPreparation) {
         preparationStarted.resolve();
         await preparationReleased.promise;
       }
-      const loaded = await current.drafts.load(current.key);
-      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+      return currentPreparation(() => fixture)();
     },
   });
   const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
@@ -987,7 +954,7 @@ test("a dismissal of a settled-failed save keeps the next pass from appending it
     reached = true;
   });
   const save = fixture.runtime.save(operation);
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
   expect(await save).toBeNull();
@@ -1076,7 +1043,7 @@ test("a dismissed append with an unobserved completion is dropped, not reconcile
     reached = true;
   });
   const append = fixture.runtime.handoff(fixture.document, operation.operationId);
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
   expect(await append).toEqual({ state: "pending", reason: "owner-unavailable" });
@@ -1264,7 +1231,7 @@ test("a committed dismissal flip starts the pass that completes a FIFO-blocked s
 
   // No further external activity: the committed flip's own signal must start the
   // pass that applies B.
-  await pollUntil(() => passes.mock.calls.length > 0, 50);
+  await settleRealTasks(() => passes.mock.calls.length > 0, 50);
   expect(passes).toHaveBeenCalledTimes(1);
   await fixture.runtime.whenIdle();
 
@@ -1323,10 +1290,7 @@ test("a retained discard that observes an already-terminal row publishes the los
       // against a composer that is not ready yet; only the follow-up the lost
       // publication must start sees the current preparation.
       if (preparations === 1) return null;
-      const current = fixture;
-      if (current === undefined) return null;
-      const loaded = await current.drafts.load(current.key);
-      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+      return currentPreparation(() => fixture)();
     },
   });
   // B belongs to the same session as A but another document, so only the
@@ -1355,12 +1319,12 @@ test("a retained discard that observes an already-terminal row publishes the los
     reached = true;
   });
   fixture.runtime.retireAttempted(fixture.operation);
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
   hold.release();
   vi.useRealTimers();
-  await pollUntil(() => fixture?.cancelledDiscardRetained.mock.calls.length === 1, 50);
+  await settleRealTasks(() => fixture?.cancelledDiscardRetained.mock.calls.length === 1, 50);
   expect(fixture.cancelledDiscardRetained).toHaveBeenCalledTimes(1);
 
   // No pass starts on its own after the lost completion. This one pass
@@ -1395,7 +1359,7 @@ test("a finishExpiry whose completion was lost releases its suppression and wake
     origin: "https://coordination.example",
   });
   const ticket = await fixture.repository.beginRead(fixture.document);
-  const acceptance = await fixture.repository.acceptRead(ticket, changedContent());
+  const acceptance = await fixture.repository.acceptRead(ticket, sampleChangedContent());
   if (acceptance.state !== "expiry-pending" || acceptance.receipt === undefined) {
     throw new Error(`changed read did not fence: ${acceptance.state}`);
   }
@@ -1424,7 +1388,7 @@ test("a finishExpiry whose completion was lost releases its suppression and wake
   const finish = fixture.repository.finishExpiry(acceptance.receipt).catch((error: unknown) => {
     finishFailure = error;
   });
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
   await finish;
@@ -1457,7 +1421,7 @@ test("a sweep that meets an already-deleted expiry releases the suppression it s
     origin: "https://coordination.example",
   });
   const ticket = await fixture.repository.beginRead(fixture.document);
-  const acceptance = await fixture.repository.acceptRead(ticket, changedContent());
+  const acceptance = await fixture.repository.acceptRead(ticket, sampleChangedContent());
   if (acceptance.state !== "expiry-pending" || acceptance.receipt === undefined) {
     throw new Error(`changed read did not fence: ${acceptance.state}`);
   }
@@ -1524,7 +1488,7 @@ test("a reset whose completion was lost publishes its namespace wake and retires
     .catch((error: unknown) => {
       resetFailure = error;
     });
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
   await reset;
@@ -1560,12 +1524,7 @@ test("retiring an uncertain append at the dismissal fence publishes its applied 
     databaseName: "annotation-coordination",
     origin: "https://coordination.example",
     runtime: true,
-    prepareAnnotation: async () => {
-      const current = fixture;
-      if (current === undefined) return null;
-      const loaded = await current.drafts.load(current.key);
-      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
-    },
+    prepareAnnotation: currentPreparation(() => fixture),
   });
   const listener = vi.fn();
   fixture.repository.subscribe(fixture.document, listener);
@@ -1579,7 +1538,7 @@ test("retiring an uncertain append at the dismissal fence publishes its applied 
     reached = true;
   });
   const append = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
   expect(await append).toEqual({ state: "pending", reason: "owner-unavailable" });
@@ -1619,7 +1578,7 @@ test("close publishes a retained uncertain append before clearing it", async () 
     reached = true;
   });
   const append = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
   expect(await append).toEqual({ state: "pending", reason: "owner-unavailable" });
@@ -1644,12 +1603,7 @@ test("a dismissal of an already-applied row wakes the same-adapter reader once",
     databaseName: "annotation-coordination",
     origin: "https://coordination.example",
     runtime: true,
-    prepareAnnotation: async () => {
-      const current = fixture;
-      if (current === undefined) return null;
-      const loaded = await current.drafts.load(current.key);
-      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
-    },
+    prepareAnnotation: currentPreparation(() => fixture),
   });
   expect(await fixture.repository.handoff(fixture.document, fixture.operation.operationId)).toMatchObject({
     state: "applied",
@@ -1688,12 +1642,7 @@ test("a throwing acknowledgment is retained and retried by a later pass", async 
     origin: "https://coordination.example",
     runtime: true,
     routeStorageSuccessIntoRuntime: true,
-    prepareAnnotation: async () => {
-      const current = fixture;
-      if (current === undefined) return null;
-      const loaded = await current.drafts.load(current.key);
-      return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
-    },
+    prepareAnnotation: currentPreparation(() => fixture),
     acknowledgeAnnotation: () => {
       if (acknowledgeFaults > 0) {
         acknowledgeFaults -= 1;
@@ -1737,17 +1686,8 @@ test("a reloading preparation adopts the committed token after a withheld acknow
     origin: "https://coordination.example",
     runtime: true,
     prepareAnnotation: async () => {
-      const current = fixture;
-      if (current === undefined) return null;
-      const loaded = await current.drafts.load(current.key);
-      if (!loaded) return null;
-      const preparation: ComposerPreparation = {
-        key: loaded.key,
-        token: loaded.token,
-        backing: { kind: "draft" },
-        localGeneration: 0,
-      };
-      preparations.push(preparation);
+      const preparation = await currentPreparation(() => fixture)();
+      if (preparation !== null) preparations.push(preparation);
       return preparation;
     },
   });
@@ -1770,6 +1710,7 @@ test("a reloading preparation adopts the committed token after a withheld acknow
   const beforeB = await fixture.drafts.load(fixture.key);
   if (!beforeB) throw new Error("fixture seeded no draft");
   const firstPreparation = preparations[0];
+  if (firstPreparation === undefined) throw new Error("no appended preparation");
   expect(beforeB.token.sessionRevision).toBeGreaterThan(firstPreparation.token.sessionRevision);
   const operationB: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
   await fixture.repository.saveAnnotation(operationB);

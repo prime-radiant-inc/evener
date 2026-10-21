@@ -207,7 +207,7 @@ export function nextRealTask(): Promise<void> {
 
 // Yield to the real task queue until `ready()`, bounded, so parked work can
 // progress without its fake watchdog firing first. The bound is a tripwire, not
-// the mechanism.
-export async function settleRealTasks(ready: () => boolean): Promise<void> {
-  for (let i = 0; i < 20 && !ready(); i += 1) await nextRealTask();
+// the mechanism: a fixed hop count passes () => false.
+export async function settleRealTasks(ready: () => boolean, maxHops = 20): Promise<void> {
+  for (let i = 0; i < maxHops && !ready(); i += 1) await nextRealTask();
 }

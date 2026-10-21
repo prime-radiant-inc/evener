@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import type { DocFileContent, HandoffResult, PreparedAnnotation } from "@evener/appwire-client";
+import type { HandoffResult, PreparedAnnotation } from "@evener/appwire-client";
 import { IDBDatabase, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ComposerPreparation } from "../panes/session/composer/composerContract";
@@ -16,9 +16,9 @@ import {
   type AnnotationFixtureWithRuntime,
   deferred,
   openAnnotationFixture,
-  pollUntil,
+  sampleChangedContent,
 } from "./testing/annotationFixture";
-import { holdIndexedDBEvent, holdNextWriteTransaction } from "./testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction, settleRealTasks } from "./testing/stalledIndexedDB";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -74,13 +74,7 @@ test("a stale validation that releases provisional suppression signals the pendi
   await preparing.promise;
   // The handoff is mid-preparation. The overlapping acceptance installs its
   // provisional suppression synchronously at entry, before its first await.
-  const changed: DocFileContent = {
-    text: "Changed content\n",
-    binary: false,
-    mediaType: "text/markdown",
-    truncated: false,
-    sizeBytes: 17,
-  };
+  const changed = sampleChangedContent();
   const acceptance = fixture.repository.acceptRead(ticket, changed);
   preparationReleased.resolve();
 
@@ -135,7 +129,7 @@ test("a save replay whose first completion went unobserved wakes subscribed read
     reached = true;
   });
   const firstSave = fixture.runtime.save(operation);
-  await pollUntil(() => reached, 25);
+  await settleRealTasks(() => reached, 25);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
 
@@ -200,7 +194,7 @@ test("an unobserved append reconciles before the pending sweep so a later handof
     reached = true;
   });
   const appendA = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
 
@@ -298,21 +292,15 @@ test("an overlapping handoff completes automatically after a validation fault re
     }
     return getAll.apply(this, args);
   });
-  const changed: DocFileContent = {
-    text: "Changed content\n",
-    binary: false,
-    mediaType: "text/markdown",
-    truncated: false,
-    sizeBytes: 17,
-  };
+  const changed = sampleChangedContent();
   const acceptance = fixture.repository.acceptRead(ticket, changed);
-  await pollUntil(() => validationHold !== undefined, 50);
+  await settleRealTasks(() => validationHold !== undefined, 50);
   if (!validationHold) throw new Error("validation did not reach IndexedDB");
   await validationHold.reached;
   // The stalled validation transaction commits empty (the changed read's write
   // belongs to its separate fence transaction), so the handoff's reads are not
   // queued behind it.
-  await pollUntil(() => validationSettled, 50);
+  await settleRealTasks(() => validationSettled, 50);
   expect(validationSettled).toBe(true);
 
   const handoff = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
@@ -390,7 +378,7 @@ test("an overlapping handoff completes automatically after an aborted namespace 
   const resetSettled = reset.catch((error: unknown) => {
     resetFailure = error;
   });
-  await pollUntil(() => resetHold !== undefined, 100);
+  await settleRealTasks(() => resetHold !== undefined, 100);
   if (!resetHold) throw new Error("reset transaction did not reach IndexedDB");
   // The reset has ABORTED - its rollback is durable - but the held event keeps
   // the reset call from observing it, so provisional suppression is still
@@ -402,7 +390,7 @@ test("an overlapping handoff completes automatically after an aborted namespace 
   void handoff.then((result) => {
     handoffResult = result;
   });
-  await pollUntil(() => handoffResult !== undefined, 100);
+  await settleRealTasks(() => handoffResult !== undefined, 100);
   expect(handoffResult).toEqual({ state: "pending", reason: "owner-unavailable" });
 
   await vi.advanceTimersByTimeAsync(10_001);
@@ -451,7 +439,7 @@ test("a drafts write whose completion was lost publishes its commit to subscribe
     reached = true;
   });
   const edit = fixture.drafts.commitEdit(fixture.key, draft.token, { text: "lost", skillNames: [] }, () => true);
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
   await vi.advanceTimersByTimeAsync(10_001);
   expect(await edit).toEqual({ state: "unavailable" });
@@ -460,7 +448,7 @@ test("a drafts write whose completion was lost publishes its commit to subscribe
 
   // The late completion is the commit's observation: it publishes the changed
   // key, and the annotation adapter forwards that storage progress.
-  await pollUntil(() => fixture.storageSuccess.mock.calls.length > 0, 50);
+  await settleRealTasks(() => fixture.storageSuccess.mock.calls.length > 0, 50);
   expect(published).toHaveBeenCalledWith(expect.objectContaining({ sessionRef: fixture.key.sessionRef }));
   expect(fixture.storageSuccess).toHaveBeenCalled();
 
@@ -501,7 +489,7 @@ test("a save that commits past abort during teardown announces its ownerless row
     reached = true;
   });
   const save = fixture.runtime.save(operation);
-  await pollUntil(() => reached, 50);
+  await settleRealTasks(() => reached, 50);
   expect(reached).toBe(true);
   fixture.runtime.dispose();
   await vi.advanceTimersByTimeAsync(10_001);

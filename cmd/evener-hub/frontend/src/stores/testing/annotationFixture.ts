@@ -31,7 +31,6 @@ import {
   type DocumentAnnotationOptions,
 } from "../documentAnnotationIndexedDB";
 import { createDocumentAnnotationRuntime, type DocumentAnnotationRuntime } from "../documentAnnotationRuntime";
-import { nextRealTask } from "./stalledIndexedDB";
 
 // A one-shot gate: the test waits on `promise` and releases or answers it from
 // any later boundary.
@@ -51,14 +50,6 @@ export function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-// Yield to the real task queue until `condition` holds, bounded, so work parked
-// behind fake-indexeddb's delivery can progress without its fake watchdog
-// firing first. The bound is a tripwire, not the mechanism: a fixed hop count
-// passes () => false.
-export async function pollUntil(condition: () => boolean, maxHops: number): Promise<void> {
-  for (let hop = 0; hop < maxHops && !condition(); hop += 1) await nextRealTask();
-}
-
 export function sampleAnnotationContent(): DocFileContent {
   return {
     text: "A note with an [image 1] marker\n",
@@ -66,6 +57,18 @@ export function sampleAnnotationContent(): DocFileContent {
     mediaType: "text/markdown",
     truncated: false,
     sizeBytes: 29,
+  };
+}
+
+// The changed source every fence suite accepts: byte-identical to the
+// "Changed content\n" fixture the four suites used to spell out.
+export function sampleChangedContent(): DocFileContent {
+  return {
+    text: "Changed content\n",
+    binary: false,
+    mediaType: "text/markdown",
+    truncated: false,
+    sizeBytes: 17,
   };
 }
 
@@ -201,6 +204,18 @@ export interface AnnotationFixture extends AnnotationStore {
   incarnation: string;
   content: DocFileContent;
   operation: PreparedAnnotation;
+}
+
+// Every handoff in these suites prepares against the draft's CURRENT token: an
+// earlier append advances the session revision, and a stale fixture preparation
+// would refuse revision-conflict instead of exercising the case under test.
+export function currentPreparation(fixture: () => AnnotationFixture | undefined) {
+  return async (): Promise<ComposerPreparation | null> => {
+    const current = fixture();
+    if (current === undefined) return null;
+    const loaded = await current.drafts.load(current.key);
+    return loaded ? { key: loaded.key, token: loaded.token, backing: { kind: "draft" }, localGeneration: 0 } : null;
+  };
 }
 
 export interface AnnotationFixtureWithRuntime extends AnnotationFixture {
