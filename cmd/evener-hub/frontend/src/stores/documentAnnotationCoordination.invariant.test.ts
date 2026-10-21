@@ -1168,3 +1168,62 @@ test("a no-op discard for an applied row keeps the dismissal fence", async () =>
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// A dismissal can lose the race against an append that already committed: the
+// flip finds the applied row and keeps the fence, by design, because the
+// repository offers no abort for committed work. The DELIVERY is still ours to
+// refuse. The handoff's applied branch acknowledged the composer
+// unconditionally, so the dismissed note landed in the very editor it was
+// dismissed from. The row stays applied and readers are woken (both are
+// true), and only the acknowledgment is withheld.
+test("a dismissal that loses the append's commit race withholds the acknowledgment", async () => {
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+  });
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  fixture.acknowledge.mockClear();
+  fixture.storageSuccess.mockClear();
+
+  // The append transaction commits, but its completion event is held: the row is
+  // applied while the handoff has not resumed past appendAnnotation.
+  const hold = holdNextWriteTransaction(APPEND_STORES);
+  const append = fixture.runtime.handoff(fixture.document, fixture.operation.operationId);
+  await hold.reached;
+  fixture.runtime.retireAttempted(fixture.operation);
+  hold.release();
+
+  // The append committed, so the handoff's honest answer is applied, with the
+  // revision the durable draft now carries.
+  const result = await append;
+  expect(result).toMatchObject({ state: "applied" });
+  if (result.state !== "applied") throw new Error("append did not apply");
+  const draft = await fixture.drafts.load(fixture.key);
+  expect(result.draftRevision).toBe(draft?.token.sessionRevision);
+  // The composer never received the dismissed note.
+  expect(fixture.acknowledge).not.toHaveBeenCalled();
+  // The commit itself is still reported: the runtime hears the storage success
+  // and readers wake for the now-applied row.
+  expect(fixture.storageSuccess).toHaveBeenCalled();
+  expect(listener).toHaveBeenCalled();
+
+  // The durable row is honestly applied: an adapter sharing no fence lists it.
+  const sibling = createDocumentAnnotationRepository({
+    indexedDB: fixture.factory,
+    databaseName: "annotation-coordination",
+    drafts: fixture.drafts,
+    targetFor: () => null,
+  });
+  const views = await sibling.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+
+  sibling.close();
+  fixture.repository.close();
+  fixture.drafts.close();
+});

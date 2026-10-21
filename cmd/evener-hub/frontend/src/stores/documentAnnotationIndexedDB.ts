@@ -1954,7 +1954,15 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     if (refused()) return { state: "pending", reason: "owner-unavailable" };
     if (result.state === "applied") {
       invokeObserver(() => this.#options.afterCommit?.());
-      invokeObserver(() => source.acknowledgeAnnotation(preparation, result.token, result.value));
+      // A dismissal that lost the commit race still owns the composer delivery.
+      // The flip found the applied row and kept the fence, by design - committed
+      // work cannot be aborted - so the durable state is honestly applied and
+      // the commit below is still reported. Only the delivery is ours to
+      // refuse: acknowledging here would insert the dismissed note into the
+      // very editor the user dismissed it from.
+      if (!this.#pendingCancelledDiscards.has(operationKey)) {
+        invokeObserver(() => source.acknowledgeAnnotation(preparation, result.token, result.value));
+      }
       this.#notifyStorageSuccess();
       // The append committed; wake matching readers (and peers) after commit.
       this.#publishDocumentWake(annotationDocumentKey(key));
