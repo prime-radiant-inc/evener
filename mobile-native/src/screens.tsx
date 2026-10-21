@@ -681,12 +681,10 @@ export function ConversationScreen({
 	}
 	// The recovery surface: this exact hub/conversation target's durable
 	// recovery rows, shown as ghosts at the transcript's end. useRecoveryPanel
-	// acquires the runtime only once the conversation is connected (the
-	// singleton opens the mutations database), so a screen that never reaches a
-	// live conversation never constructs one - what the landed render fence
-	// (useNativeMutationRecovery.render.test.tsx) requires of this screen.
+	// acquires the local runtime in an effect even while offline; the render fence
+	// (useNativeMutationRecovery.render.test.tsx) keeps construction and reads out
+	// of render while allowing durable recovery after recreation.
 	const recovery = useRecoveryPanel({
-		connected,
 		hubId: route.params.hubId,
 		targetRef: route.params.ref,
 	});

@@ -7,8 +7,8 @@
 //
 // Detectors, armed at the module boundaries every production path crosses:
 // - the only production runtime construction is the getNativeMutationRuntime
-//   singleton, whose openDatabaseSync("evener-mutations.db") is the one db the
-//   screen must never open at any point of its lifecycle; the expo-sqlite mock
+//   singleton, whose openDatabaseSync("evener-mutations.db") is acquired by
+//   the offline recovery effect, never during render; the expo-sqlite mock
 //   records every open with the phase it happened in (the screen's memoized
 //   draft library legitimately opens evener-drafts.db during render).
 // - the probe's runtime is the REAL NativeMutationRuntime over the testkit
@@ -297,8 +297,8 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	const renderer = render(tree());
 
 	// THE RENDER-PASS FENCE: no runtime construction, no target registration,
-	// no subscribe and no read during the render pass - and the mutations
-	// database is never opened at any phase of the screen's lifecycle. The
+	// no subscribe and no read during the render pass - and mutations storage is
+	// acquired only by the recovery effect, including while disconnected. The
 	// drafts database the screen's render pass legitimately opens is
 	// classified "render" (the detector's own arming proof: it sees render
 	// passes), while the hook's subscribe/read land "effect" only.
@@ -309,8 +309,12 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	});
 	expect(recordedCalls.find((call) => call.method === "subscribeStorage")?.phase).toBe("effect");
 	expect(recordedCalls.find((call) => call.method === "read")?.phase).toBe("effect");
-	expect(recorder.opens.map((open) => open.database)).not.toContain("evener-mutations.db");
-	expect(new Set(recorder.opens.map((open) => open.database))).toEqual(new Set(["evener-drafts.db"]));
+	expect(recorder.opens.filter((open) => open.database === "evener-mutations.db")).toEqual([
+		{ database: "evener-mutations.db", phase: "effect" },
+	]);
+	expect(recorder.opens.filter((open) => open.phase === "render").map((open) => open.database)).toEqual([
+		"evener-drafts.db",
+	]);
 
 	// EFFECT-OWNED: subscribe and read happen in the mount effects, with the
 	// read captured to the route's exact composite target key.
@@ -373,7 +377,9 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 
 	// The render-pass fence held across the route-change render too.
 	expect(recordedCalls.filter((call) => call.phase === "render")).toEqual([]);
-	expect(recorder.opens.map((open) => open.database)).not.toContain("evener-mutations.db");
+	expect(recorder.opens.filter((open) => open.database === "evener-mutations.db")).toEqual([
+		{ database: "evener-mutations.db", phase: "effect" },
+	]);
 });
 
 it("classifies a deliberate render-time runtime call as render-pass, proving the detector is armed", () => {
