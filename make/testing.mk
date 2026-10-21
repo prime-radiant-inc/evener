@@ -230,13 +230,28 @@ test-short:
 ##   installed; no provider, network service, or fuzz-family test. BASE=<ref>
 ##   measures the change set from another ref; RACE=1 adds -race. It exits 0
 ##   with an explicit message when the diff selects no Go package.
-##   It does NOT run the repo-root audit suite, which reads repository-wide
-##   state and costs about 40s on its own; a file whose only consumer is that
-##   suite is reported as audit-only. The full gate in CI owns those audits.
+##   It does NOT run the repo-root package (audits, install, and script tests),
+##   which reads repository-wide state and costs about 40s on its own; a file
+##   whose only consumer is that package is reported as skipped. The full gate
+##   in CI owns the root package. -run and -skip come from the gate's own
+##   GATE_TEST_RUN and GATE_FUZZ_TEST_SKIP, so fuzz-family tests are excluded
+##   here exactly as `make test` excludes them.
 ## fails-when: Any selected package fails, `go list` or git fails, the diff
 ##   contains Go changes but selects no package, or RACE is neither 0 nor 1.
 test-changed:
-	@go run ./internal/devtool/testchanged -base "$(or $(BASE),main)" -race "$(or $(RACE),0)" -modules "$(GO_MODULES)"
+	@set -eu; \
+		. scripts/lib/gate-surface-lib.sh; \
+		. scripts/lib/private-go-home.sh; \
+		tmp="$$(mktemp -d "$${TMPDIR:-/tmp}/evener-test-changed.XXXXXX")"; \
+		trap 'rm -rf "$$tmp"' EXIT HUP INT TERM; \
+		export TMPDIR="$$tmp"; \
+		evener_prepare_private_go_home "$$tmp"; \
+		go run ./internal/devtool/testchanged \
+			-base "$(or $(BASE),main)" \
+			-race "$(or $(RACE),0)" \
+			-modules "$(GO_MODULES)" \
+			-run "$$GATE_TEST_RUN" \
+			-skip "$$GATE_FUZZ_TEST_SKIP"
 
 # merge-approval-gate is the canonical serial post-merge gate. Keep the
 # explicit expansion in docs/developing-evener/testing.md for diagnosis and evidence. Sandboxed

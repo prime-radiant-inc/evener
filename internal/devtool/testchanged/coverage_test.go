@@ -535,13 +535,48 @@ func TestRunExitStatus(t *testing.T) {
 			// output of the case that expects one, and that output is itself
 			// the evidence the failure was reported.
 			var stdout, stderr bytes.Buffer
-			if got := run(&stdout, &stderr, root, "HEAD", []string{"."}, false); got != c.want {
+			if got := run(&stdout, &stderr, root, "HEAD", []string{"."}, false, "", ""); got != c.want {
 				t.Fatalf("run() = %d, want %d\nstdout:\n%s\nstderr:\n%s", got, c.want, stdout.String(), stderr.String())
 			}
 			if c.want != 0 && !strings.Contains(stderr.String(), "FAIL") {
 				t.Errorf("exit %d without a FAIL verdict on stderr; stderr:\n%s", c.want, stderr.String())
 			}
 		})
+	}
+}
+
+// test-changed must run the same surface `make test` does. A native Fuzz
+// target's committed seed corpus is make fuzz's job, so a passing --run filter
+// must keep a failing seed out of this target's result.
+func TestRunHonorsTheGateSurfaceFilters(t *testing.T) {
+	root := newTestModule(t)
+	writeFile(t, filepath.Join(root, "pkg", "seed_test.go"), `package pkg
+
+import "testing"
+
+func FuzzSeed(f *testing.F) {
+	f.Add(byte(0))
+	f.Fuzz(func(t *testing.T, b byte) { t.Fatal("seed run must not happen here") })
+}
+`)
+	gitIn(t, root, "add", ".")
+	gitIn(t, root, "commit", "-q", "-m", "base")
+	base, err := gitOutput(root, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("resolving base: %v", err)
+	}
+	// A real change in a runnable package, so a selection exists to run.
+	writeFile(t, filepath.Join(root, "pkg", "more_test.go"), "package pkg\n\nimport \"testing\"\n\nfunc TestMore(t *testing.T) {}\n")
+	gitIn(t, root, "add", ".")
+	gitIn(t, root, "commit", "-q", "-m", "work")
+
+	var stdout, stderr bytes.Buffer
+	got := run(&stdout, &stderr, root, strings.TrimSpace(base), []string{"."}, false, "^(Test|Example)", "")
+	if got != 0 {
+		t.Fatalf("run() = %d with a Fuzz seed present, want 0\nstdout:\n%s\nstderr:\n%s", got, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "-run ^(Test|Example)") {
+		t.Errorf("the gate's -run filter is missing from the go test invocation; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }
 

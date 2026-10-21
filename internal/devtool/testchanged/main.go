@@ -32,6 +32,8 @@ func main() {
 	race := flag.String("race", "0", `"1" adds -race to each go test run`)
 	modules := flag.String("modules", "", "space-separated module roots from GO_MODULES")
 	root := flag.String("root", ".", "repository root")
+	testRun := flag.String("run", "", "go test -run regex, from the gate's GATE_TEST_RUN")
+	testSkip := flag.String("skip", "", "go test -skip regex, from the gate's GATE_FUZZ_TEST_SKIP")
 	flag.Parse()
 
 	switch *race {
@@ -47,13 +49,17 @@ func main() {
 		os.Exit(2)
 	}
 
-	os.Exit(run(os.Stdout, os.Stderr, *root, *base, moduleRoots, *race == "1"))
+	os.Exit(run(os.Stdout, os.Stderr, *root, *base, moduleRoots, *race == "1", *testRun, *testSkip))
 }
 
 // run is main's testable body: it writes to the given streams and returns the
 // process exit status. Tests capture the streams so a passing suite cannot
 // print a FAIL line that nothing asserts.
-func run(stdout, stderr io.Writer, root, base string, modules []string, race bool) int {
+//
+// testRun and testSkip carry the gate's own -run/-skip regexes so this target
+// runs the same surface `make test` does: ordinary Test/Example functions, not
+// the fuzz-family tests the regular gate excludes.
+func run(stdout, stderr io.Writer, root, base string, modules []string, race bool, testRun, testSkip string) int {
 	changed, err := changedFiles(root, base)
 	if err != nil {
 		sayf(stderr, "test-changed: collecting the diff against %s: %v\n", base, err)
@@ -85,7 +91,7 @@ func run(stdout, stderr io.Writer, root, base string, modules []string, race boo
 		sayf(stdout, "test-changed: skipped %s\n", p)
 	}
 	for _, f := range res.AuditOnly {
-		sayf(stdout, "test-changed: skipped %s: only the repo-root audit suite reads it, which this target does not run\n", f)
+		sayf(stdout, "test-changed: skipped %s: only the repo-root package reads it, and this target does not run the root package\n", f)
 	}
 	if len(res.Selected) == 0 {
 		// GoChanged already counts only changes test-changed could have run;
@@ -114,6 +120,12 @@ func run(stdout, stderr io.Writer, root, base string, modules []string, race boo
 		args := []string{"test", "-short", "-count=1"}
 		if race {
 			args = append(args, "-race")
+		}
+		if testRun != "" {
+			args = append(args, "-run", testRun)
+		}
+		if testSkip != "" {
+			args = append(args, "-skip", testSkip)
 		}
 		for _, s := range sels {
 			args = append(args, packageArg(g, s))
