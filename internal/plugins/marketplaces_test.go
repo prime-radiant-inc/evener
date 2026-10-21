@@ -2755,6 +2755,32 @@ func TestAddMarketplace_BranchAndPathShareAName(t *testing.T) {
 	}
 }
 
+// The clone helpers must not depend on the ambient clone.defaultRemoteName:
+// their ref resolution names origin explicitly.
+func TestAddMarketplace_NonDefaultCloneRemoteName(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "clone.defaultRemoteName")
+	t.Setenv("GIT_CONFIG_VALUE_0", "upstream")
+
+	repo := makeMarketplaceRepo(t, "remotename")
+	gitIn(t, repo, "checkout", "--quiet", "-b", "docs")
+	advanceGitRepo(t, repo, "README.md", "on the docs branch")
+	docsTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "docs"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != docsTip {
+		t.Fatalf("HEAD = %s, want the docs branch tip %s", got, docsTip)
+	}
+}
+
 // The plugin store's own directories are its to rewrite: a fetch clears
 // .staging, a swap deletes .old, the marketplaces dir holds every other
 // marketplace's clone, and the cache holds materialized plugins. A directory

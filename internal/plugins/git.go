@@ -120,10 +120,11 @@ func checkoutRevision(ctx context.Context, dir, target string) error {
 // named. show-ref, unlike rev-parse, does not expand an input like
 // refs/heads/x to a tag or another namespace that happens to share the name.
 func exactRefNamesCommit(ctx context.Context, dir, ref string) bool {
-	if _, err := gitRun(ctx, dir, "show-ref", "--verify", "--quiet", ref); err != nil {
+	exists, err := gitRefExists(ctx, dir, ref)
+	if err != nil || !exists {
 		return false
 	}
-	_, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	_, err = gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
 	return err == nil
 }
 
@@ -142,7 +143,7 @@ func gitClone(ctx context.Context, url, dir, ref, sha string) error {
 	if err := gitMkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return err
 	}
-	args := []string{"clone", "--quiet"}
+	args := []string{"clone", "--quiet", "--origin", "origin"}
 	if sha == "" && ref == "" {
 		args = append(args, "--depth=1")
 	}
@@ -174,7 +175,7 @@ func gitSparseClone(ctx context.Context, url, dir, subdir, ref, sha string) erro
 	if err := gitMkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return err
 	}
-	args := []string{"clone", "--quiet", "--filter=blob:none", "--no-checkout", "--", url, dir}
+	args := []string{"clone", "--quiet", "--origin", "origin", "--filter=blob:none", "--no-checkout", "--", url, dir}
 	if _, err := gitRun(ctx, "", args...); err != nil {
 		return err
 	}
@@ -228,7 +229,7 @@ func gitRefNamesBranch(ctx context.Context, dir, name string) (bool, error) {
 // gitRefExists reports whether ref exists in the clone at dir. Git's exit
 // status 1 says it does not; any other failure is an error.
 func gitRefExists(ctx context.Context, dir, ref string) (bool, error) {
-	_, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", ref)
+	_, err := gitRun(ctx, dir, "show-ref", "--verify", "--quiet", ref)
 	if exitErr := (*exec.ExitError)(nil); errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 		return false, nil
 	}
@@ -239,6 +240,11 @@ func gitRefExists(ctx context.Context, dir, ref string) (bool, error) {
 func gitResolveCommit(ctx context.Context, dir, rev string) (string, error) {
 	if err := guardGitArg("ref", rev); err != nil {
 		return "", err
+	}
+	if strings.HasPrefix(rev, "refs/") {
+		if _, err := gitRun(ctx, dir, "show-ref", "--verify", "--quiet", rev); err != nil {
+			return "", err
+		}
 	}
 	out, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
 	if err != nil {

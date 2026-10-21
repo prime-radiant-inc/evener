@@ -61,6 +61,20 @@ func TestGitClone_CopiesRepoAtSha(t *testing.T) {
 	}
 }
 
+func TestGitRefNamesBranch_IgnoresATagInTheBranchNamespace(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "src")
+	makeGitRepo(t, dir, "file.txt", "hello")
+	gitIn(t, dir, "tag", "refs/heads/x")
+
+	branch, err := gitRefNamesBranch(context.Background(), dir, "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch {
+		t.Fatal("a tag named refs/heads/x is not a local branch")
+	}
+}
+
 func TestGitClone_RejectsFlagLikeArgs(t *testing.T) {
 	dst := filepath.Join(t.TempDir(), "dst")
 	if err := gitClone(context.Background(), "--upload-pack=evil", dst, "", ""); err == nil {
