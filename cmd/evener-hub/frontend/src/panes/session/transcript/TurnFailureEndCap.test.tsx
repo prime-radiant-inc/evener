@@ -549,6 +549,79 @@ test("a reflected ordinary send keeps Retry closed until its new turn is observe
   }
 });
 
+test("a reflected ordinary send whose new turn is already the tail creates no marker", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "ordinary_turn", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+
+    // The new turn is already the observed tail when the receipt reflects.
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("thread went away");
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          [
+            "ref_a",
+            {
+              ...model,
+              runningTurnId: "ordinary_turn",
+              status: { type: "active" as const },
+              turns: [...model.turns, { id: "ordinary_turn", status: "inProgress" as const, items: [] }],
+            },
+          ],
+        ]),
+      });
+    });
+    await act(async () => {
+      await submitWithPendingTracking(
+        { ref: "ref_a", text: "ordinary follow-up", skillNames: [], onFailure: () => {} },
+        () => threadsStore.getState().send("ref_a", "ordinary follow-up"),
+      );
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(retryReflectionForTests("ref_a")).toBeUndefined();
+
+    // That same turn later fails: it is now the latest failure and must offer
+    // Retry rather than inherit a marker for a turn that was never stale.
+    const afterSend = threadsStore.getState().threads.get("ref_a");
+    if (!afterSend) throw new Error("thread went away");
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          [
+            "ref_a",
+            {
+              ...afterSend,
+              runningTurnId: undefined,
+              status: { type: "idle" as const },
+              turns: [
+                ...afterSend.turns.slice(0, -1),
+                { id: "ordinary_turn", status: "failed" as const, items: [], error: { message: "boom ordinary" } },
+              ],
+            },
+          ],
+        ]),
+      });
+    });
+    await flushPendingTurnsProjectionForTests();
+    const view = render(
+      <TurnFailureEndCap error={{ message: "boom ordinary" }} sessionRef="ref_a" turnId="ordinary_turn" />,
+    );
+    const ordinaryRetry = within(view.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+    await waitFor(() => expect(ordinaryRetry.disabled).toBe(false));
+  } finally {
+    storage.close();
+  }
+});
+
 test("a conversation advanced while Retry's durable write is paused creates no Retry row", async () => {
   const turn = failedTurn();
   vi.stubGlobal("indexedDB", new IDBFactory());

@@ -48,7 +48,6 @@ import {
   issueLatestWindowRead,
   isTranscriptHistoryFailedError,
   isTranscriptIndexRebuildingError,
-  latestTurnId,
   mergeOlderItemPage,
   mergeTailTurns,
   mutationErrorData,
@@ -2571,9 +2570,14 @@ function getMutationRuntime(): MutationRuntime | null {
     if (projectionState === "reflected") {
       const record = await storage.getOutbox(clientMutationId);
       if (record !== undefined && (record.method === "turn/start" || record.method === "turn/queue")) {
-        const latest = latestTurnId(threadsStore.getState().threads.get(record.targetRef));
-        if (latest !== undefined) {
-          retryPendingProjection?.markSubmitted(record.targetRef, latest, clientMutationId);
+        const model = threadsStore.getState().threads.get(record.targetRef);
+        const latest = model === undefined ? undefined : model.turns[model.turns.length - 1];
+        // Only a failed tail offers Retry. If the ordinary send's new turn is
+        // already the tail (running or completed), there is no stale failure
+        // to keep closed; opening a marker keyed to that turn would block a
+        // later failure of the same turn.
+        if (latest?.status === "failed" && latest.error !== undefined) {
+          retryPendingProjection?.markSubmitted(record.targetRef, latest.id, clientMutationId);
         }
       }
     }
