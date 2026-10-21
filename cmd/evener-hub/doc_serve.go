@@ -77,7 +77,9 @@ func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request
 	// outlives the working directory: that is why it is tried for an absolute
 	// path even when the cwd itself cannot be resolved at all (a removed
 	// worktree, or a session whose live source is momentarily unavailable).
-	if absolute {
+	// A deletion refusal is not one of those cases: it says this session's
+	// files must not be served, so it stands before anything is tried.
+	if absolute && !isTargetDeletedError(err) {
 		if root, resolved, ok := s.resolveArtifactsDocTarget(r.Context(), session, rel); ok {
 			return root, resolved, true
 		}
@@ -104,6 +106,12 @@ func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request
 // report not-served, so the caller answers them as any other miss.
 func (s *WebServer) resolveArtifactsDocTarget(ctx context.Context, session, rel string) (string, string, bool) {
 	if !filepath.IsAbs(strings.TrimSpace(rel)) {
+		return "", "", false
+	}
+	// A session fenced for deletion must not serve retained files through this
+	// root either. The cwd path gets this from sessionCWD's deletion check;
+	// artifacts resolve from the roster or the past index, which do not.
+	if err := deletionFenceError(s.cfg, appRefFromRouteID(session), canonicalRouteID(session), ""); err != nil {
 		return "", "", false
 	}
 	root := sessionArtifactsRoot(ctx, s.cfg, session)
@@ -378,16 +386,26 @@ func sessionDocumentFromHub(ctx context.Context, cfg hubcore.WebConfig, sources 
 	// resolved right now. A relative name keeps its one meaning, so an
 	// escaping symlink in cwd is refused rather than silently served from an
 	// unrelated artifacts file of the same name.
-	if absolute {
+	// A deletion refusal stands: it is a decision about this session's files,
+	// not a cwd failure the artifacts root may work around.
+	deleted := isTargetDeletedError(cwdErr)
+	if absolute && !deleted {
 		if root := sessionArtifactsRoot(ctx, cfg, session); root != "" {
-			// The artifacts attempt may fail for its own reason (no such file
-			// under that root). The refusal must still name the escape, so the
-			// original error stays unless the second root actually served it.
-			if artifactsDoc, artifactsErr := readSessionDocument(root, params.Path); artifactsErr == nil {
-				doc = artifactsDoc
-				err, cwdErr = nil, nil
+			// The artifacts root carries the same deletion fence the cwd path
+			// does; it reads the roster and past index, which do not.
+			if fenceErr := deletionFenceError(cfg, appRefFromRouteID(session), session, ""); fenceErr == nil {
+				// The artifacts attempt may fail for its own reason (no such file
+				// under that root). The refusal must still name the escape, so the
+				// original error stays unless the second root actually served it.
+				if artifactsDoc, artifactsErr := readSessionDocument(root, params.Path); artifactsErr == nil {
+					doc = artifactsDoc
+					err, cwdErr = nil, nil
+				}
 			}
 		}
+	}
+	if deleted {
+		return appwire.SessionDocumentResponse{}, cwdErr
 	}
 	// A cwd that could not be resolved at all is reported as itself, not as a
 	// missing document, once the artifacts root has had its chance.

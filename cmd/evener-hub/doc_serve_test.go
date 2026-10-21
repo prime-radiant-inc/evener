@@ -994,3 +994,35 @@ func TestDocFile_Raw_ServesArtifactsForAStableRef(t *testing.T) {
 		t.Fatalf("body=%q, want %q", rec.Body.Bytes(), content)
 	}
 }
+
+// A session fenced for deletion must not serve retained files through the
+// artifacts root. That root resolves from the roster and the past index, which
+// know nothing about deletion, so it applies the same fence the cwd path gets.
+func TestDocFile_ArtifactsRefuseADeletionFencedSession(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("retained report")
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projectKey := "project-docs-0000000000"
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	web.cfg.DeletionStore = store
+	if _, err := store.Begin(projectKey, []hubcore.DeletionTarget{{Ref: "local:" + session, ThreadID: session}}); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, target)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("a deletion-fenced session served %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "retained report") {
+		t.Fatalf("SECURITY: a deletion-fenced session served its retained file")
+	}
+}
