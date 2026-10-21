@@ -310,18 +310,23 @@ function occursMoreThanOnce(source: string, needle: string): boolean {
 export function formatAnnotationReference(capture: CapturedPassage, path: string, note: string): string {
   const { start, endInclusive } = capture;
   const locator = `${literalPath(path)}:${start.line}:${start.column}-${endInclusive.line}:${endInclusive.column}`;
-  const selection = needsJSONSelection(capture.selectedRenderedText)
-    ? JSON.stringify(capture.selectedRenderedText)
-    : `“${capture.selectedRenderedText}”`;
+  const selected = encodeAttachmentTokens(capture.selectedRenderedText);
+  const selection = needsJSONSelection(selected) ? JSON.stringify(selected) : `“${selected}”`;
   const evidence = capture.evidence.wholeRevision
-    ? `Captured whole-file revision: ${JSON.stringify(capture.evidence.wholeRevision)}.`
+    ? `Captured whole-file revision: ${JSON.stringify(encodeAttachmentTokens(capture.evidence.wholeRevision))}.`
     : fingerprintReference(capture.evidence.fingerprint);
   return [
-    `A note on ${markdownCode(locator)} (captured source positions), selecting ${selection}: ${JSON.stringify(note)}`,
+    `A note on ${markdownCode(locator)} (captured source positions), selecting ${selection}: ${JSON.stringify(encodeAttachmentTokens(note))}`,
     evidence,
-    `Context before: ${JSON.stringify(capture.contextBefore)}; after: ${JSON.stringify(capture.contextAfter)}.`,
+    `Context before: ${JSON.stringify(encodeAttachmentTokens(capture.contextBefore))}; after: ${JSON.stringify(encodeAttachmentTokens(capture.contextAfter))}.`,
     "Verify the quotation and context against current content before relying on these captured coordinates.",
   ].join("\n");
+}
+
+// Breaks markerPattern()'s /\[image (\d+)\]/g match with an invisible U+200B
+// after the bracket; the captured text still reads identically.
+function encodeAttachmentTokens(value: string): string {
+  return value.replace(/\[image (\d+)\]/g, "[\u200bimage $1]");
 }
 
 function needsJSONSelection(selection: string): boolean {

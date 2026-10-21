@@ -289,7 +289,9 @@ then compares the actual raw source covered by both reads. A hash match is never
 proof of equality, and compatible unequal prefix coverage is insufficient
 evidence of an edit. `formatAnnotationReference` emits literal captured data for
 an ordinary composer draft, including a Markdown-safe locator and escaped user
-text. Comment-work helpers freeze the first captured passage when note editing
+text; marker-shaped captured text is neutralized with an invisible character so
+send-time attachment-marker translation cannot rewrite it. Comment-work helpers
+freeze the first captured passage when note editing
 begins and retain note bytes when source expiry invalidates that capture.
 
 ## Older-history demand
