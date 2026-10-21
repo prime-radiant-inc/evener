@@ -51,4 +51,23 @@ describe("annotation reference append and send boundary", () => {
     // send-time translation to rewrite.
     expect(markerPattern().test(reference)).toBe(false);
   });
+
+  it("keeps a marker-shaped filename literal in the locator at the send boundary", () => {
+    // The locator sits inside a code span, but send-time translation matches
+    // markers there too, so a path shaped like a staged marker corrupts the
+    // filename unless the formatter neutralizes it like every other field.
+    const path = "notes [image 1].md";
+    const reference = formatAnnotationReference(passage(), path, "note");
+    expect(reference.replaceAll("\u200b", "")).toContain("notes [image 1].md:1:1-1:5");
+
+    const composed = appendLiteralReference({ text: "[image 1]", skillNames: [] }, reference);
+    const input = buildComposerInput(composed.text, [{ marker: 1, mediaType: "image/png", data: "AAAA" }]);
+    const text = input.find((item) => item.type === "text")?.text ?? "";
+    const staged = "(attached image 1)\n\n";
+    // The appended reference reaches the agent byte for byte: the filename is
+    // not rewritten into an attachment reference.
+    expect(text.slice(staged.length)).toBe(reference);
+    expect(text.match(/\(attached image 1\)/g)).toHaveLength(1);
+    expect(input.filter((item) => item.type === "image")).toHaveLength(1);
+  });
 });

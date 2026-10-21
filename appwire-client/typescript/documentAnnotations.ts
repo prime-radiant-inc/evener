@@ -309,7 +309,10 @@ function occursMoreThanOnce(source: string, needle: string): boolean {
 
 export function formatAnnotationReference(capture: CapturedPassage, path: string, note: string): string {
   const { start, endInclusive } = capture;
-  const locator = `${literalPath(path)}:${start.line}:${start.column}-${endInclusive.line}:${endInclusive.column}`;
+  // The locator sits inside a code span, but send-time marker translation
+  // matches there too: a filename shaped like a staged marker would be
+  // rewritten into an attachment reference and corrupt the locator.
+  const locator = `${literalPath(encodeAttachmentTokens(path))}:${start.line}:${start.column}-${endInclusive.line}:${endInclusive.column}`;
   const selected = encodeAttachmentTokens(capture.selectedRenderedText);
   const selection = needsJSONSelection(selected) ? JSON.stringify(selected) : `“${selected}”`;
   const evidence = capture.evidence.wholeRevision
