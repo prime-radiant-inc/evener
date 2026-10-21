@@ -4516,6 +4516,10 @@ async function enqueueMutationIntent(
   admission?: MutationEnqueueAdmission,
 ): Promise<MutationOutboxRecord | undefined> {
   const ref = intent.targetRef;
+  // The conversation tail as it stood at the synchronous press. Captured
+  // before runtime.start/barrierRead/any await so a turn that arrives while
+  // the enqueue is in flight cannot become this submission's baseline.
+  const baselineTail = latestTurnId(threadsStore.getState().threads.get(ref));
   // The recovery fence, enforced at the one funnel every durable action
   // passes through: a fenced local session's durable intent could only park
   // (the hub refuses these methods for the obligation's whole window), so it
@@ -4741,7 +4745,7 @@ async function enqueueMutationIntent(
     dispatchableMutationRefs.add(ref);
   }
   if (record.method === "turn/start" || record.method === "turn/queue") {
-    rememberSubmittedTail(record.clientMutationId, latestTurnId(threadsStore.getState().threads.get(ref)));
+    rememberSubmittedTail(record.clientMutationId, baselineTail);
   }
   notifyMutationPersistence([ref], { record });
   return record;

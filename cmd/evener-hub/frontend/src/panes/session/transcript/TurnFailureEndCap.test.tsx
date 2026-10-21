@@ -755,6 +755,66 @@ test("a live submission's baseline survives hundreds of later submissions", asyn
   }
 });
 
+test("a turn arriving during the held enqueue cannot become the submission's baseline", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "new_failed", status: "failed", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+
+    const barrier = holdNextTransaction(["sequences"], "readonly");
+    let send!: Promise<void>;
+    await act(async () => {
+      send = submitWithPendingTracking(
+        { ref: "ref_a", text: "ordinary follow-up", skillNames: [], onFailure: () => {} },
+        () => threadsStore.getState().send("ref_a", "ordinary follow-up"),
+      );
+    });
+    await barrier.reached;
+
+    // A new failed turn arrives while the enqueue is between its click-time
+    // read and its commit. It must not become this submission's baseline.
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("thread went away");
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          [
+            "ref_a",
+            {
+              ...model,
+              runningTurnId: undefined,
+              status: { type: "idle" as const },
+              turns: [
+                ...model.turns,
+                { id: "new_failed", status: "failed" as const, items: [], error: { message: "boom new" } },
+              ],
+            },
+          ],
+        ]),
+      });
+    });
+    barrier.release();
+    await act(async () => {
+      await send;
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(retryReflectionForTests("ref_a")).toBeUndefined();
+
+    const view = render(<TurnFailureEndCap error={{ message: "boom new" }} sessionRef="ref_a" turnId="new_failed" />);
+    const newRetry = within(view.container).getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+    await waitFor(() => expect(newRetry.disabled).toBe(false));
+  } finally {
+    storage.close();
+  }
+});
+
 test("a conversation advanced while Retry's durable write is paused creates no Retry row", async () => {
   const turn = failedTurn();
   vi.stubGlobal("indexedDB", new IDBFactory());
