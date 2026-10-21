@@ -567,12 +567,21 @@ var liveStackBuild struct {
 }
 
 // repoRootForTestMain is the repo root from this package's working directory,
-// which `go test` sets to cmd/evener-hub.
+// which `go test` sets to cmd/evener-hub. It returns "" unless the result
+// really is the checkout: filepath.Abs succeeds from any readable directory, so
+// a helper launched from a temp workspace would otherwise "resolve" a root and
+// build from it.
 func repoRootForTestMain() string {
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		// The only caller is TestMain, which reports the error itself; an
 		// unreadable working directory would fail far earlier than this.
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.mod")); err != nil {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(root, "cmd", "evener")); err != nil {
 		return ""
 	}
 	return root

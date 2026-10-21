@@ -43,6 +43,39 @@ const detachHelperRunDirEnv = "EVENER_HUB_DETACH_HELPER_RUN_DIR"
 // tripwire.
 const liveStackWarmEnv = "EVENER_HUB_LIVE_STACK_WARM"
 
+// outsideCheckoutHelperEnv marks the subprocess TestTestMainWarmsNothingOutside-…
+// launches. That case proves TestMain does not need a checkout to start a
+// helper: it is what the browser guard's paging producer looked like when the
+// warm build killed it.
+const outsideCheckoutHelperEnv = "EVENER_HUB_OUTSIDE_CHECKOUT_HELPER"
+
+// TestTestMainSurvivesOutsideTheCheckout runs this binary from a temp directory
+// with the warm marker unset, as a helper launched from a session workspace is.
+// TestMain must not fail there: a build it cannot locate is not a helper's
+// problem, and failing killed a producer that only needed to write bytes.
+func TestTestMainSurvivesOutsideTheCheckout(t *testing.T) {
+	if os.Getenv(outsideCheckoutHelperEnv) == "1" {
+		// Reached only if TestMain let this process boot. Reaching here is the
+		// assertion.
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^TestTestMainSurvivesOutsideTheCheckout$")
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(),
+		outsideCheckoutHelperEnv+"=1",
+		// Unset the marker the parent set, so this really exercises the
+		// no-warm-build path.
+		liveStackWarmEnv+"=",
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("helper outside the checkout failed to run: %v\n%s", err, out)
+	}
+}
+
 func TestMain(m *testing.M) {
 	// The remote startup probe must observe its supplied environment before
 	// the suite redirects HOME and XDG roots.
