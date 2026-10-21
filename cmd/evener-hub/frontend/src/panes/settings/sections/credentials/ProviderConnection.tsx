@@ -374,6 +374,11 @@ interface SettingsDraft {
   credentialHeader: string;
 }
 
+interface WriteReceipt {
+  authored: InstanceEntry;
+  submitted?: string;
+}
+
 const SETTINGS_FIELDS = [
   "protocol",
   "surface",
@@ -438,10 +443,11 @@ function SelectedConnection({
   // A credential write the card confirmed for a destination. A failed listing
   // refresh must not make the card forget that key.
   const confirmedStore = useRef<DestinationClaim | undefined>(undefined);
-  // The row the last successful write authored. It is used only to reconcile a
-  // retry: confirm the row has appeared and edit it, instead of issuing a
-  // duplicate mutation. It never suppresses a later edit.
-  const writeReceipt = useRef<InstanceEntry | undefined>(undefined);
+  // The row the last successful write authored, with the raw endpoint the save
+  // submitted. It is used only to reconcile a retry: confirm the row has
+  // appeared and edit it, instead of issuing a duplicate mutation. It never
+  // suppresses a later edit.
+  const writeReceipt = useRef<WriteReceipt | undefined>(undefined);
   const [endpointClaim, setEndpointClaim] = useState<DestinationClaim | undefined>(undefined);
   const [settingsClaim, setSettingsClaim] = useState<DestinationClaim | undefined>(undefined);
   const adoptBaselineRef = useRef<(next: InstanceEntry | undefined) => void>(() => {});
@@ -664,6 +670,15 @@ function SelectedConnection({
     setStoredAccess(next);
   }
 
+  /** anchorSettings makes row the settings editor's claim and baseline. The
+   * draft is reseeded only when the disclosure opens, never when a reconciled
+   * save keeps the user's current values. */
+  function anchorSettings(row: InstanceEntry | undefined, keepDraft = false) {
+    if (!keepDraft) setSettingsDraft(settingsOf(row));
+    setSettingsBaseline(settingsOf(row));
+    setSettingsClaim(claimOf(row));
+  }
+
   type EditConfirmation =
     | { kind: "confirmed"; row: InstanceEntry }
     | { kind: "moved" }
@@ -717,8 +732,9 @@ function SelectedConnection({
     return listedInstance(name) ? () => confirmEdit(editParams) : () => confirmCreate(createParams);
   }
 
-  function receiptFor(name: string): InstanceEntry | undefined {
-    return writeReceipt.current?.name === name ? writeReceipt.current : undefined;
+  function receiptFor(name: string): WriteReceipt | undefined {
+    const receipt = writeReceipt.current;
+    return receipt?.authored.name === name ? receipt : undefined;
   }
 
   function writeTarget(base: InstanceEntry | undefined, claim: DestinationClaim, row: InstanceEntry) {
@@ -728,8 +744,8 @@ function SelectedConnection({
     };
   }
 
-  function reportUnconfirmed(authored?: InstanceEntry) {
-    if (authored) writeReceipt.current = authored;
+  function reportUnconfirmed(authored?: InstanceEntry, submitted?: string) {
+    if (authored) writeReceipt.current = { authored, submitted };
     selfMutation.current = false;
     setPhase("idle");
     setError({ reason: "save-unconfirmed", message: SAVE_UNCONFIRMED_ERROR });
@@ -746,8 +762,10 @@ function SelectedConnection({
     name: string,
     claim: DestinationClaim,
     row: InstanceEntry,
+    submitted: string | undefined,
     write: (base: InstanceEntry | undefined, receipt: InstanceEntry | undefined) => Promise<EditConfirmation>,
     settled: (row: InstanceEntry) => boolean,
+    reconcileEditor: (row: InstanceEntry) => void,
     closeEditor: () => void,
     saveFailedMessage: string,
   ): Promise<void> {
@@ -781,7 +799,7 @@ function SelectedConnection({
           return;
         }
         const found = findSetup(name);
-        const receiptClaim = claimOf(receipt);
+        const receiptClaim = claimOf(receipt.authored);
         if (!found) {
           // The applied listing proves the authored row is not there; the
           // retry is a fresh write again.
@@ -803,14 +821,15 @@ function SelectedConnection({
             setPhase("idle");
             return;
           }
+          reconcileEditor(found);
           base = found;
         }
       }
-      const outcome = await write(base, activeReceipt);
+      const outcome = await write(base, activeReceipt?.authored);
       selfMutation.current = false;
       if (!current(token)) return;
       if (outcome.kind === "unconfirmed") {
-        reportUnconfirmed(outcome.authored);
+        reportUnconfirmed(outcome.authored, submitted);
         return;
       }
       writeReceipt.current = undefined;
@@ -1189,13 +1208,19 @@ function SelectedConnection({
         { name: row.name, base: target.base || target.providerId, baseUrl: next },
       )();
     };
-    const settled = (found: InstanceEntry) => (found.baseUrl ?? "").trim() === next;
+    const settled = (found: InstanceEntry) => (receipt?.submitted ?? (found.baseUrl ?? "").trim()) === next;
+    const reconcileEditor = (found: InstanceEntry) => {
+      setEndpointClaim(claimOf(found));
+      setEndpointSeed(found.baseUrl ?? "");
+    };
     await saveClaimed(
       row.name,
       claim,
       row,
+      next,
       write,
       settled,
+      reconcileEditor,
       closeEndpointEditor,
       "The endpoint could not be saved. Your value is kept.",
     );
@@ -1241,14 +1266,17 @@ function SelectedConnection({
     };
     const settled = (found: InstanceEntry) => {
       const currentSettings = settingsOf(found);
-      return SETTINGS_FIELDS.every((field) => currentSettings[field] === settingsDraft[field]);
+      return SETTINGS_FIELDS.every((field) => currentSettings[field] === settingsDraft[field].trim());
     };
+    const reconcileEditor = (found: InstanceEntry) => anchorSettings(found, true);
     await saveClaimed(
       row.name,
       claim,
       row,
+      undefined,
       write,
       settled,
+      reconcileEditor,
       closeSettings,
       "The settings could not be saved. Your values are kept.",
     );
@@ -1747,9 +1775,7 @@ function SelectedConnection({
             open={settingsOpen}
             onOpenChange={(open) => {
               if (open) {
-                setSettingsDraft(settingsOf(row));
-                setSettingsBaseline(settingsOf(row));
-                setSettingsClaim(claimOf(row));
+                anchorSettings(row);
               } else setSettingsClaim(undefined);
               setSettingsOpen(open);
             }}

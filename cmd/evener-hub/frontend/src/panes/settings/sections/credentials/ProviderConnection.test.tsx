@@ -1670,9 +1670,9 @@ test("returning the endpoint draft to its seed edits the authored row back", asy
   expect(createCalls(client)).toHaveLength(1);
 });
 
-test("a sanitized endpoint draft settles at the authored destination", async () => {
+test("a sanitized endpoint draft still reaches the host after a lost write", async () => {
   const { user, client } = setup();
-  const { listing } = await unconfirmedEndpointCreate(
+  const { created, listing } = await unconfirmedEndpointCreate(
     user,
     client,
     "https://host.example/v1?tenant=a",
@@ -1683,13 +1683,57 @@ test("a sanitized endpoint draft settles at the authored destination", async () 
   const field = screen.getByLabelText("Endpoint URL");
   await user.clear(field);
   await enterText(user, field, "https://host.example/v1");
-  client.on("evener/instance/list", () => structuredClone(listing));
+  const removed: InstanceEntry = { ...created, endpointFingerprint: "fp-plain" };
+  const removedListing: InstanceListResponse = { instances: [removed], availableProviders: structuredClone(catalogue) };
+  scriptListingSequence(client, listing, removedListing);
+  scriptEdit(client, removedListing);
 
   await user.click(screen.getByRole("button", { name: "Save" }));
 
-  await waitFor(() => expect(screen.queryByLabelText("Endpoint URL")).toBeNull());
+  await waitFor(() => expect(editCalls(client)).toHaveLength(1));
+  expect(editCalls(client)[0]!.params).toMatchObject({
+    name: "anthropic",
+    baseUrl: "https://host.example/v1",
+    expectedEndpointFingerprint: "fp-query",
+  });
   expect(createCalls(client)).toHaveLength(1);
-  expect(editCalls(client)).toHaveLength(0);
+});
+
+// Reconciliation re-anchors the editor on the authored row. A follow-up write
+// that fails must not leave the old claim behind, or the next retry would read
+// the authored row as an external move and discard the newer draft.
+test("a failed follow-up after reconciliation keeps the reconciled claim", async () => {
+  const { user, client } = setup();
+  const { created, listing } = await unconfirmedEndpointCreate(user, client, "https://proxy.example/v1");
+  const field = screen.getByLabelText("Endpoint URL");
+  await user.clear(field);
+  await enterText(user, field, "https://second.example/v1");
+
+  const second: InstanceEntry = {
+    ...created,
+    baseUrl: "https://second.example/v1",
+    endpointFingerprint: "fp-second",
+  };
+  const secondListing: InstanceListResponse = { instances: [second], availableProviders: structuredClone(catalogue) };
+  scriptListingSequence(client, listing, secondListing);
+  client.on("evener/instance/edit", () => {
+    throw new Error("write refused");
+  });
+
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(editCalls(client)).toHaveLength(1));
+  expect(await alertReason()).toBe("save-failed");
+
+  scriptEdit(client, secondListing);
+  await user.click(screen.getByRole("button", { name: "Save" }));
+
+  await waitFor(() => expect(editCalls(client)).toHaveLength(2));
+  expect(editCalls(client)[1]!.params).toMatchObject({
+    name: "anthropic",
+    baseUrl: "https://second.example/v1",
+    expectedEndpointFingerprint: "fp-proxy",
+  });
+  expect(createCalls(client)).toHaveLength(1);
 });
 
 test("a settings edit retry clears the field the unconfirmed write set", async () => {
