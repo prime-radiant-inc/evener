@@ -3412,6 +3412,9 @@ export async function resendRecoveryMutation(
   commandNames?: readonly string[],
   mentions?: readonly ComposerMention[],
 ): Promise<MutationOutboxRecord | undefined> {
+  // Captured before runtime.start: a turn arriving during the waits must not
+  // become this resend's baseline.
+  const baselineTail = latestTurnId(threadsStore.getState().threads.get(targetRef));
   const runtime = requireMutationRuntime();
   await runtime.start;
   const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions);
@@ -3427,6 +3430,9 @@ export async function resendRecoveryMutation(
         : { clientMutationId: resent.clientMutationId, undelivered: resent.state !== "canceled" },
   );
   if (!record) return undefined;
+  if (record.method === "turn/start" || record.method === "turn/queue") {
+    rememberSubmittedTail(record.clientMutationId, baselineTail);
+  }
   // The resend mints a new row and removes the recovery row it came from, so
   // the old id is resolved: keep the new one (trackOutboxWrite registered it)
   // and drop the old, so a later settle of the new row or unreadable storage
@@ -3929,6 +3935,25 @@ const submittedTailBaselines = new Map<string, string>();
 function rememberSubmittedTail(clientMutationId: string, tail: string | undefined): void {
   if (tail === undefined) return;
   submittedTailBaselines.set(clientMutationId, tail);
+}
+
+// A direct fallback has no durable row for settleReceipt to observe, so the
+// send itself registers its baseline and opens the same observation marker
+// when the conversation still names the pre-send failed tail.
+function noteDirectSubmission(
+  ref: string,
+  method: string,
+  baselineTail: string | undefined,
+  clientMutationId: string,
+): void {
+  if (method !== "turn/start" && method !== "turn/queue") return;
+  if (baselineTail === undefined) return;
+  rememberSubmittedTail(clientMutationId, baselineTail);
+  const model = threadsStore.getState().threads.get(ref);
+  const latest = model === undefined ? undefined : model.turns[model.turns.length - 1];
+  if (latestTurnId(model) === baselineTail && latest?.status === "failed" && latest.error !== undefined) {
+    retryPendingProjection?.markSubmitted(ref, baselineTail, clientMutationId);
+  }
 }
 
 interface SendMutationOptions {
@@ -4567,7 +4592,9 @@ async function enqueueMutationIntent(
       throw new Error(INDEXEDDB_UNAVAILABLE);
     }
     beforeDurableWrite?.();
-    await dispatchMutationDirectly(dispatchClient, intent);
+    await dispatchMutationDirectly(dispatchClient, intent, (clientMutationId) =>
+      noteDirectSubmission(ref, intent.method, baselineTail, clientMutationId),
+    );
     return undefined;
   }
   // §4's stop barrier, the click-time half: the capture's read transaction is
@@ -4716,7 +4743,9 @@ async function enqueueMutationIntent(
     // window therefore cannot be honoured for it; the composer's draft is
     // untouched (it lives in localStorage), and a send is retryable by hand -
     // the trade the fallback makes against failing closed.
-    await dispatchMutationDirectly(dispatchClient, intent);
+    await dispatchMutationDirectly(dispatchClient, intent, (clientMutationId) =>
+      noteDirectSubmission(ref, intent.method, baselineTail, clientMutationId),
+    );
     return undefined;
   }
   // The success path releases exactly once, here, BEFORE the post-commit
@@ -4856,7 +4885,11 @@ const MUTATION_FALLBACK_SEND_READY_WAIT_MS = 10_000;
 // action mints a different id and the daemon cannot recognise the duplicate
 // (the same gap Jesse's ruling documents in issue #3313). A rejection maps a
 // conflict the same way the non-durable operations do.
-async function dispatchMutationDirectly(client: AppwireClientLike, intent: MutationIntent): Promise<void> {
+async function dispatchMutationDirectly(
+  client: AppwireClientLike,
+  intent: MutationIntent,
+  onSent?: (clientMutationId: string) => void,
+): Promise<void> {
   const clientMutationId = createSecureUUID();
   let target = client;
   for (let attempt = 1; ; attempt += 1) {
@@ -4869,6 +4902,7 @@ async function dispatchMutationDirectly(client: AppwireClientLike, intent: Mutat
         params: Record<string, unknown>,
       ) => Promise<unknown>;
       await request.call(target, intent.method, { ...intent.payload, clientMutationId });
+      onSent?.(clientMutationId);
       return;
     } catch (err) {
       if (err instanceof WireError || attempt >= MUTATION_FALLBACK_SEND_ATTEMPTS) throw mapConflict(err);

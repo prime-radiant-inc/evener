@@ -21,6 +21,7 @@ import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store
 import {
   pendingTurnEntries,
   refreshPendingTurnsProjection,
+  resendRecoveryPendingTurn,
   resetPendingTurnsStoreForTests,
   retryReflectionForTests,
   submitWithPendingTracking,
@@ -1263,6 +1264,82 @@ test("a definitive refusal restores a usable Retry without duplicating the input
   }
 });
 
+test("a reflected recovery resend opens the observation marker", async () => {
+  const turn = failedTurn();
+  const { fake, storage } = await loadThread("ref_a", [turn]);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  let refuse = true;
+  fake.on("turn/start", ({ clientMutationId }) => {
+    if (refuse) {
+      throw new WireError("validation failed", -32602, {
+        clientMutationId,
+        mutationOutcome: "notAccepted",
+        retryDisposition: "none",
+      });
+    }
+    return {
+      receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+      turn: { id: "resent_turn", status: "inProgress", itemsView: "" },
+    };
+  });
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    fireEvent.click(retryButton() as HTMLButtonElement);
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+    await flushPendingTurnsProjectionForTests();
+    const recovery = (await storage.listRecovery("ref_a"))[0];
+    if (!recovery) throw new Error("the refused retry left no recovery row");
+
+    refuse = false;
+    await act(async () => {
+      await resendRecoveryPendingTurn(recovery.clientMutationId, "ref_a", "send", "continue", []);
+    });
+    await flushPendingTurnsProjectionForTests();
+    const resent = (await storage.listOutbox("ref_a")).find(
+      (record) => record.clientMutationId !== recovery.clientMutationId,
+    );
+    if (!resent) throw new Error("the resend created no replacement row");
+    expect(submittedTailBaselineForTests(resent.clientMutationId)).toBe(turn.id);
+    await act(async () => {
+      await storage.settleReceipt(resent.clientMutationId, "reflected");
+    });
+    await flushPendingTurnsProjectionForTests();
+    // The resent row reflected but its new turn is not observed: the old
+    // failure must stay closed.
+    expect(retryReflectionForTests("ref_a")?.failedTurnId).toBe(turn.id);
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("thread went away");
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          [
+            "ref_a",
+            {
+              ...model,
+              runningTurnId: "resent_turn",
+              status: { type: "active" as const },
+              turns: [...model.turns, { id: "resent_turn", status: "inProgress" as const, items: [] }],
+            },
+          ],
+        ]),
+      });
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(retryReflectionForTests("ref_a")).toBeUndefined();
+  } finally {
+    storage.close();
+  }
+});
+
 // --- review round 1: reflected acceptance and automatic history recovery ----
 
 test("a reflected acceptance with held turn events cannot reopen the old Retry", async () => {
@@ -1397,13 +1474,77 @@ test("a storage-refused continuation uses the direct fallback and still opens th
     expect(await storage.listOutbox("ref_a")).toEqual([]);
     const marker = retryReflectionForTests("ref_a");
     expect(marker?.failedTurnId).toBe(turn.id);
-    expect(marker?.clientMutationId).toBeUndefined();
+    const direct = fake.calls.find((call) => call.method === "turn/start");
+    if (!direct) throw new Error("the direct fallback never reached transport");
+    expect(marker?.clientMutationId).toBe((direct.params as { clientMutationId: string }).clientMutationId);
     await waitFor(() => expect(retryButton()?.disabled).toBe(true));
     await act(async () => {
       await threadsStore.getState().continueTurn("ref_a", turn.id);
     });
     await flushPendingTurnsProjectionForTests();
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+  } finally {
+    storage.close();
+  }
+});
+
+test("a storage-refused ordinary send still opens the observation marker", async () => {
+  const turn = failedTurn();
+  vi.stubGlobal("indexedDB", new IDBFactory());
+  const storage = new MutationOutboxIndexedDB({
+    beforeCommit: (operation) => {
+      if (operation === "enqueueIntent") throw new DOMException("full", "QuotaExceededError");
+    },
+  });
+  const { fake } = await loadThread("ref_a", [turn], {}, storage);
+  fake.on("thread/read", () => new Promise<never>(() => undefined));
+  fake.on("turn/start", ({ clientMutationId }) => ({
+    receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
+    turn: { id: "ordinary_turn", status: "inProgress", itemsView: "" },
+  }));
+  try {
+    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turn.id} />);
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
+    await act(async () => {
+      await submitWithPendingTracking(
+        { ref: "ref_a", text: "ordinary follow-up", skillNames: [], onFailure: () => {} },
+        () => threadsStore.getState().send("ref_a", "ordinary follow-up"),
+      );
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+    const marker = retryReflectionForTests("ref_a");
+    expect(marker?.failedTurnId).toBe(turn.id);
+    expect(marker?.clientMutationId).toEqual(expect.any(String));
+    await waitFor(() => expect(retryButton()?.disabled).toBe(true));
+    await act(async () => {
+      await threadsStore.getState().continueTurn("ref_a", turn.id);
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+
+    // The ordinary turn is finally observed: the marker clears and the old
+    // failure no longer offers Retry.
+    const model = threadsStore.getState().threads.get("ref_a");
+    if (!model) throw new Error("thread went away");
+    act(() => {
+      threadsStore.setState({
+        threads: new Map([
+          [
+            "ref_a",
+            {
+              ...model,
+              runningTurnId: "ordinary_turn",
+              status: { type: "active" as const },
+              turns: [...model.turns, { id: "ordinary_turn", status: "inProgress" as const, items: [] }],
+            },
+          ],
+        ]),
+      });
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(retryReflectionForTests("ref_a")).toBeUndefined();
   } finally {
     storage.close();
   }
