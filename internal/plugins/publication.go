@@ -125,10 +125,15 @@ func relForDiagnostic(root, path string) string {
 // runtime.
 const managedGitArchiveDirName = "managed-git-archive"
 
-// managedGitArchivePendingSuffix names the private journal marker written
-// beside a completed archive copy before the source is removed. It lives in
-// the archive area, never inside a managed content root.
-const managedGitArchivePendingSuffix = ".evener-pending"
+// managedGitJournalDirName names the journal tree inside the archive area.
+// Markers live under it, never beside or inside an archive payload, so a walk
+// of the journal cannot mistake archived refs for markers.
+const managedGitJournalDirName = ".journal"
+
+// managedGitArchivePendingSuffix names the private journal marker written for a
+// completed archive copy before the source is removed. It lives in the journal
+// tree, never inside a managed content root or an archive payload.
+const managedGitArchivePendingSuffix = ".pending"
 
 const (
 	// publishScratchPrefix names the temporary sibling of a destination used
@@ -149,16 +154,22 @@ func (m *Manager) managedGitArchiveDir(rootName, rel string) string {
 	return filepath.Join(m.Root, managedGitArchiveDirName, rootName, rel)
 }
 
+// managedGitJournalPath names the marker that records one interrupted archive
+// move of rootName's entry at rel.
+func (m *Manager) managedGitJournalPath(rootName, rel string) string {
+	return filepath.Join(m.Root, managedGitArchiveDirName, managedGitJournalDirName, rootName, rel+managedGitArchivePendingSuffix)
+}
+
 // moveNoReplace renames src to dst, or to a numbered sibling when dst is
 // already taken. It never overwrites an archive entry.
-func moveNoReplace(src, dst string) error {
+func moveNoReplace(src, dst, marker string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
 	candidate := dst
 	for i := 1; ; i++ {
 		if _, err := os.Lstat(candidate); errors.Is(err, fs.ErrNotExist) {
-			return moveEntry(src, candidate)
+			return moveEntry(src, candidate, marker)
 		} else if err != nil {
 			return err
 		}
@@ -168,7 +179,7 @@ func moveNoReplace(src, dst string) error {
 
 var moveRename = os.Rename
 
-func moveEntry(src, dst string) error {
+func moveEntry(src, dst, marker string) error {
 	err := moveRename(src, dst)
 	if err == nil || !isCrossDevice(err) {
 		return err
@@ -180,7 +191,9 @@ func moveEntry(src, dst string) error {
 	// Record ownership by source path only after a complete copy exists. A
 	// crash during the removal leaves this marker for the next migration to
 	// finish; the copy itself is never proof enough to delete content.
-	marker := dst + managedGitArchivePendingSuffix
+	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+		return err
+	}
 	if err := os.WriteFile(marker, []byte(src), 0o600); err != nil {
 		return err
 	}

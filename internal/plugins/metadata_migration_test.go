@@ -116,12 +116,12 @@ func TestManagedMetadataMigrationRetriesAfterInterruption(t *testing.T) {
 	oldMove := migrationMove
 	t.Cleanup(func() { migrationMove = oldMove })
 	failed := false
-	migrationMove = func(from, to string) error {
+	migrationMove = func(from, to, marker string) error {
 		if !failed {
 			failed = true
 			return errors.New("interrupted")
 		}
-		return oldMove(from, to)
+		return oldMove(from, to, marker)
 	}
 	m.ensureManagedContentMigrated(context.Background())
 	if m.managedContentClean() {
@@ -372,7 +372,10 @@ func TestManagedMetadataMigrationFinishesInterruptedCrossDeviceArchive(t *testin
 	base := m.managedGitArchiveDir("cache", "acme/widget/aaa/.git")
 	writeGitAdministration(t, base)
 	writeTestFile(t, filepath.Join(base, "marker.txt"), "archived bytes")
-	pending := base + ".evener-pending"
+	pending := m.managedGitJournalPath("cache", "acme/widget/aaa/.git")
+	if err := os.MkdirAll(filepath.Dir(pending), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(pending, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -445,7 +448,10 @@ func TestManagedMetadataMigrationRemovesStalePendingMarkers(t *testing.T) {
 	missingSource := filepath.Join(m.cacheDir(), "acme", "widget", "gone", ".git")
 	base := m.managedGitArchiveDir("cache", "acme/widget/gone/.git")
 	writeGitAdministration(t, base)
-	pending := base + ".evener-pending"
+	pending := m.managedGitJournalPath("cache", "acme/widget/gone/.git")
+	if err := os.MkdirAll(filepath.Dir(pending), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(pending, []byte(missingSource), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +475,10 @@ func TestManagedMetadataMigrationFindsANumberedArchiveMarker(t *testing.T) {
 	base := m.managedGitArchiveDir("cache", "acme/widget/aaa/.git")
 	numbered := base + "-1"
 	writeGitAdministration(t, numbered)
-	pending := numbered + ".evener-pending"
+	pending := m.managedGitJournalPath("cache", "acme/widget/aaa/.git")
+	if err := os.MkdirAll(filepath.Dir(pending), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(pending, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -525,6 +534,47 @@ func TestManagedMetadataMigrationKeepsArchivedRefs(t *testing.T) {
 	assertRef("the second pass")
 	if !m.managedContentClean() {
 		t.Fatal("store with archived refs was not reported clean after the second pass")
+	}
+	if second := stateBytes(); !bytes.Equal(first, second) {
+		t.Fatalf("store state changed on the second pass: %q then %q", first, second)
+	}
+}
+
+func TestManagedMetadataMigrationKeepsArchivedRefsInNumberedPayload(t *testing.T) {
+	m := NewManager(t.TempDir())
+	// A numbered archive copy is a payload, not a journal. Its archived ref name
+	// ends in the marker suffix but records a commit id, so no pass may treat it
+	// as a stale marker or descend into it.
+	archive := m.managedGitArchiveDir("cache", "acme/widget/aaa/.git") + "-1"
+	writeGitAdministration(t, archive)
+	ref := filepath.Join(archive, "refs", "heads", "topic.evener-pending")
+	const commitID = "0123456789abcdef0123456789abcdef01234567"
+	writeTestFile(t, ref, commitID)
+
+	stateBytes := func() []byte {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(m.Root, storeFormatFileName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+
+	m.ensureManagedContentMigrated(context.Background())
+	if got, err := os.ReadFile(ref); err != nil || string(got) != commitID {
+		t.Fatalf("archived ref after the first pass = %q, %v", got, err)
+	}
+	if !m.managedContentClean() {
+		t.Fatal("store with a numbered archive payload was not reported clean")
+	}
+	first := stateBytes()
+
+	m.ensureManagedContentMigrated(context.Background())
+	if got, err := os.ReadFile(ref); err != nil || string(got) != commitID {
+		t.Fatalf("archived ref after the second pass = %q, %v", got, err)
+	}
+	if !m.managedContentClean() {
+		t.Fatal("store with a numbered archive payload was not reported clean after the second pass")
 	}
 	if second := stateBytes(); !bytes.Equal(first, second) {
 		t.Fatalf("store state changed on the second pass: %q then %q", first, second)

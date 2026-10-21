@@ -173,7 +173,8 @@ func TestMetadataArchiveFallsBackAcrossFilesystems(t *testing.T) {
 		}
 		return oldRename(from, to)
 	}
-	if err := moveNoReplace(src, dst); err != nil {
+	marker := filepath.Join(t.TempDir(), managedGitJournalDirName, "cache", "acme", "widget", "aaa", ".git"+managedGitArchivePendingSuffix)
+	if err := moveNoReplace(src, dst, marker); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(src); !os.IsNotExist(err) {
@@ -184,6 +185,9 @@ func TestMetadataArchiveFallsBackAcrossFilesystems(t *testing.T) {
 	}
 	if link, err := os.Readlink(filepath.Join(dst, "alias")); err != nil || link != "config" {
 		t.Fatalf("archive symlink = %q, %v", link, err)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("journal marker survived the completed archive: %v", err)
 	}
 }
 

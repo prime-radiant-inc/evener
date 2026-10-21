@@ -53,18 +53,17 @@ func (m *Manager) migrateManagedGitMetadata() []string {
 			// stays and the store remains unverified.
 			if info.IsDir() && !looksLikeGitAdministration(entry) {
 				if rel, relErr := filepath.Rel(root.path, entry); relErr == nil {
-					if markers := m.pendingArchiveMarkers(root.name, rel, entry); len(markers) > 0 {
-						// A complete copy plus a marker naming this exact source
-						// proves the interrupted archive owns it, so finish the
-						// removal and clear the journal.
+					marker := m.managedGitJournalPath(root.name, rel)
+					if recorded, readErr := os.ReadFile(marker); readErr == nil && string(recorded) == entry {
+						// A complete copy plus a journal marker naming this exact
+						// source proves the interrupted archive owns it, so finish
+						// the removal and clear the journal.
 						if err := os.RemoveAll(entry); err != nil {
 							problems = append(problems, "removing "+rootRelative(root.path, entry)+": "+err.Error())
 							continue
 						}
-						for _, marker := range markers {
-							if err := os.Remove(marker); err != nil {
-								problems = append(problems, "removing an archive marker: "+err.Error())
-							}
+						if err := os.Remove(marker); err != nil {
+							problems = append(problems, "removing an archive marker: "+err.Error())
 						}
 						moved = append(moved, entry)
 						continue
@@ -86,7 +85,8 @@ func (m *Manager) migrateManagedGitMetadata() []string {
 				problems = append(problems, "could not locate a .git entry in "+root.name)
 				continue
 			}
-			if err := migrationMove(entry, m.managedGitArchiveDir(root.name, rel)); err != nil {
+			marker := m.managedGitJournalPath(root.name, rel)
+			if err := migrationMove(entry, m.managedGitArchiveDir(root.name, rel), marker); err != nil {
 				problems = append(problems, "moving "+rootRelative(root.path, entry)+": "+err.Error())
 				continue
 			}
@@ -96,67 +96,20 @@ func (m *Manager) migrateManagedGitMetadata() []string {
 	return problems
 }
 
-// pendingArchiveMarkers returns the journal markers beside this archive
-// destination that record source as their interrupted move.
-func (m *Manager) pendingArchiveMarkers(rootName, rel, source string) []string {
-	base := m.managedGitArchiveDir(rootName, rel)
-	parent := filepath.Dir(base)
-	name := filepath.Base(base)
-	entries, err := os.ReadDir(parent)
-	if err != nil {
-		return nil
-	}
-	var markers []string
-	for _, entry := range entries {
-		entryName := entry.Name()
-		stem, ok := strings.CutSuffix(entryName, managedGitArchivePendingSuffix)
-		if !ok || (stem != name && !numberedArchiveName(stem, name)) {
-			continue
-		}
-		path := filepath.Join(parent, entryName)
-		recorded, err := os.ReadFile(path)
-		if err != nil || string(recorded) != source {
-			continue
-		}
-		markers = append(markers, path)
-	}
-	return markers
-}
-
-// numberedArchiveName reports whether name is base followed by a dash and one
-// or more digits.
-func numberedArchiveName(name, base string) bool {
-	rest, ok := strings.CutPrefix(name, base+"-")
-	if !ok || rest == "" {
-		return false
-	}
-	for _, r := range rest {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
 // reclaimPendingArchiveMarkers removes journal markers whose recorded source
 // no longer exists, so a later publication at that path is not treated as an
-// interrupted cleanup.
+// interrupted cleanup. It walks only the journal tree, never archive payloads:
+// an archived ref such as refs/heads/topic.pending records a commit id, not a
+// source path.
 func (m *Manager) reclaimPendingArchiveMarkers() []string {
 	var problems []string
-	archive := filepath.Join(m.Root, managedGitArchiveDirName)
-	if _, err := os.Stat(archive); os.IsNotExist(err) {
+	journal := filepath.Join(m.Root, managedGitArchiveDirName, managedGitJournalDirName)
+	if _, err := os.Stat(journal); os.IsNotExist(err) {
 		return nil
 	}
-	err := filepath.Walk(archive, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(journal, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
-		}
-		// Markers are siblings of an archive destination, never inside archived
-		// metadata. An archived ref such as refs/heads/topic.evener-pending
-		// carries a commit id, not a source path, so do not descend into a .git
-		// subtree and mistake its contents for the journal.
-		if info.IsDir() && isGitName(info.Name()) {
-			return filepath.SkipDir
 		}
 		if info.IsDir() || !strings.HasSuffix(info.Name(), managedGitArchivePendingSuffix) {
 			return nil
@@ -175,7 +128,7 @@ func (m *Manager) reclaimPendingArchiveMarkers() []string {
 		return nil
 	})
 	if err != nil && !os.IsNotExist(err) {
-		problems = append(problems, "reading the metadata archive: "+err.Error())
+		problems = append(problems, "reading the metadata journal: "+err.Error())
 	}
 	return problems
 }
