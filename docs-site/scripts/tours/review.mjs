@@ -34,12 +34,14 @@ export async function reviewCandidate({candidate, published=join(repositoryRoot,
  const sourceChanged = fresh.sourceTreeDigest !== previous.sourceTreeDigest;
  const {sourceRevision: freshRevision, ...freshContent} = fresh;
  const {sourceRevision: previousRevision, ...previousContent} = previous;
+ const manifestContentChanged = JSON.stringify(freshContent) !== JSON.stringify(previousContent);
+ const manifestBytesChanged = !before.get('manifest.json').equals(after.get('manifest.json'));
  const changed = paths.filter(path => path === 'manifest.json'
-  ? JSON.stringify(freshContent) !== JSON.stringify(previousContent)
+  ? manifestContentChanged
   : !before.get(path).equals(after.get(path)));
  // A revision-only capture keeps the published set, including its provenance.
  // Otherwise the proposed manifest is byte-for-byte the validated candidate.
- if (changed.length && !changed.includes('manifest.json') && !before.get('manifest.json').equals(after.get('manifest.json'))) changed.push('manifest.json');
+ if (changed.length && !manifestContentChanged && manifestBytesChanged) changed.push('manifest.json');
  const summary = {status:changed.length ? 'review-required' : 'unchanged',sourceChanged,changedFiles:changed.map(path=>`${canonical}/${path}`).sort()};
  await mkdir(out,{mode:0o700});
  const scratch = await mkdtemp(join(tmpdir(),'evener-tour-review-'));
@@ -52,7 +54,7 @@ export async function reviewCandidate({candidate, published=join(repositoryRoot,
    const destination=join(tree,canonical,path);await mkdir(dirname(destination),{recursive:true});await writeFile(destination,before.get(path));
   }
   git('add','--',canonical);
-  if (changed.length) for (const path of paths) await writeFile(join(tree,canonical,path),after.get(path));
+  for (const path of changed) await writeFile(join(tree,canonical,path),after.get(path));
   const patch=git('diff','--binary','--full-index','--no-ext-diff','--no-textconv','--',canonical);
   await writeFile(join(out,'refresh.patch'),patch,{mode:0o600});
   await writeFile(join(out,'summary.json'),JSON.stringify(summary,null,2)+'\n',{mode:0o600});

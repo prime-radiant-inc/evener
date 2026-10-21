@@ -159,13 +159,15 @@ export async function open(options) {
       await page.getByRole('button',{name:/^(?:\+ )?New session$/}).click();
       await page.waitForURL(u=>u.pathname==='/new');
      }
-     await page.evaluate(installProjectNavigationProbe,(args.workspace??workspace).split('/').at(-1));
-     const menu=page.getByRole('button',{name:`Actions for ${(args.workspace??workspace).split('/').at(-1)}`,exact:true});
+     const selectedWorkspace=args.workspace??workspace;
+     const projectName=selectedWorkspace.split('/').at(-1);
+     await page.evaluate(installProjectNavigationProbe,projectName);
+     const menu=page.getByRole('button',{name:`Actions for ${projectName}`,exact:true});
      // The menu is visibility:hidden until its visible project row is hovered.
-     await page.getByRole('treeitem').filter({has:page.getByRole('button',{name:`Actions for ${(args.workspace??workspace).split('/').at(-1)}`,exact:true,includeHidden:true})}).hover();
+     await page.getByRole('treeitem').filter({has:page.getByRole('button',{name:`Actions for ${projectName}`,exact:true,includeHidden:true})}).hover();
      await menu.click();
      await page.getByRole('menuitem',{name:'Project settings',exact:true}).click();
-     await page.waitForURL(u=>u.pathname==='/settings/project'&&workspaceLabels(args.workspace??workspace).includes(u.searchParams.get('cwd')));
+     await page.waitForURL(u=>u.pathname==='/settings/project'&&workspaceLabels(selectedWorkspace).includes(u.searchParams.get('cwd')));
      await page.getByRole('spinbutton', { name: 'Max rounds', exact: true }).fill(String(args.value));
      await page.getByRole('button', { name: 'Save launch defaults', exact: true }).click();
      await page.locator('[data-testid="launch-config-status"][data-state="saved"]').waitFor();

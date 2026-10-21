@@ -113,8 +113,10 @@ or `review-required`. Matching relevant source and artifact content need no
 replacement merely because the capture revision changed. A changed source
 digest or evidence requires review even if the pixels match.
 
-Inspect all 24 images and 12 selectable transcripts, not just changed files.
-After independent evidence review and image inspection, apply the proposed patch
+Check `summary.json` first. If its status is `unchanged`, stop without applying:
+the patch is empty and no replacement is needed. For `review-required`, inspect
+all 24 images and 12 selectable transcripts, not just changed files.
+After independent evidence review and approval, apply the proposed patch
 locally with `git apply --check /ABS/OWNED-SCRATCH/new-review/refresh.patch`, then
 `git apply /ABS/OWNED-SCRATCH/new-review/refresh.patch`. The patch touches only
 canonical tutorial assets and their manifest. Keep their explicit entries in

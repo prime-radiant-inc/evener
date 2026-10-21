@@ -52,11 +52,11 @@ For each code correction, add the failing behavioral test, observe failure, make
 - Consumes the actual first shell fence in `docs/daily-work.md`, not a duplicated command.
 - Test-local `runDailyBlock(t, {collision, failGit})` returns `{status, callerCwd, agentCwds, gitRoots, preserved}` from an owned fixture. Use real Git except the explicit Git-failure case. The agent process probe records invocation only; this is a shell-safety check, not an agent execution test.
 
-- [ ] Add cases named `fresh workspace runs only inside its new directory`, `colliding destinations preserve contents and do not launch`, `unwritable parent does not launch`, and `Git failure prevents launch`. Assert exit status, working directories, Git metadata locations, and preserved bytes. Include an existing directory, file, ordinary symlink, and dangling symlink.
-- [ ] Run `node --test docs-site/scripts/documented-shell.test.mjs`. Confirm the unsafe current block reaches the invocation probe in collision cases.
-- [ ] Put workspace creation, directory change, Git initialization, and invocation in one failure-propagating subshell. Preserve the current Retry guidance and unrelated prose.
-- [ ] Rerun the file. All cases pass; failed setup leaves the caller's working directory and existing contents unchanged.
-- [ ] Review and commit the two named files as `docs: guard the daily-work workspace setup`.
+- [x] Add cases named `fresh workspace runs only inside its new directory`, `colliding destinations preserve contents and do not launch`, `unwritable parent does not launch`, and `Git failure prevents launch`. Assert exit status, working directories, Git metadata locations, and preserved bytes. Include an existing directory, file, ordinary symlink, and dangling symlink.
+- [x] Run `node --test docs-site/scripts/documented-shell.test.mjs`. Confirm the unsafe current block reaches the invocation probe in collision cases.
+- [x] Put workspace creation, directory change, Git initialization, and invocation in one failure-propagating subshell. Preserve the current Retry guidance and unrelated prose.
+- [x] Rerun the file. All cases pass; failed setup leaves the caller's working directory and existing contents unchanged.
+- [x] Review and commit the two named files as `docs: guard the daily-work workspace setup`.
 
 ### Task 2: Verify operator recovery and incident procedures
 
@@ -72,12 +72,12 @@ For each code correction, add the failing behavioral test, observe failure, make
 - `TestUpgradeRunbookPreservesHistoryAndContinuesInFreshRoot(t *testing.T)` exercises rejected and compatible saved-state fixtures, then a fresh-root task at the scripted-provider boundary.
 - Existing public contracts remain `LoadOrCreateAuthToken(hubStateRoot string) (string, error)`, the actual hub service lifecycle, and doctor commands. Do not invent a new recovery API.
 
-- [ ] Read the service and doctor dispatch code. Write the three procedures from those actual commands, naming prerequisites, affected clients, checkpoints, and stop conditions. Verify the token location respects `hub_state_root`; keep secrets out of argv, shell history, logs, and examples.
-- [ ] Add the acceptance tests. Rotation asserts old bearer/cookie rejection after restart, old connection termination, replacement acceptance, and a successful trusted-client request. Also demonstrate that replacing the token file does not change an already running guard. Never use unauthenticated `/api/health` as proof of revocation.
-- [ ] Add recovery assertions: unchanged source bytes; readable staged history; structured recovery boundary and omissions; legacy rejection without source mutation; compatible restoration; a fresh-root task that completes without reusing the incompatible root. Do not assert error prose.
-- [ ] Run `go test ./cmd/evener-hub -run '^TestTutorialHubTokenRotationRunbook$' -count=1`, `go test ./cmd/evener-doctor -run 'Test(BackupRestoreRunbook|ReconstructionRunbook|Reconstruct)' -count=1`, and `go test ./agent -run 'Test(UpgradeRunbook|DelegateResourceBootstrap_)' -count=1`. Record what the real operations establish; unsupported recovery paths must be corrected in the guide, not simulated.
-- [ ] Finish the guides: put the legacy warning before shutdown; distinguish full backup, history restoration, and specialized AgentsView reconstruction; link the shared-token rotation runbook from pairing and native recovery; replace “encrypted transport” with precise bootstrap-envelope wording where applicable.
-- [ ] Review and commit only the files changed by this task as `docs: verify upgrade, revocation, and recovery procedures`.
+- [x] Read the service and doctor dispatch code. Write the three procedures from those actual commands, naming prerequisites, affected clients, checkpoints, and stop conditions. Verify the token location respects `hub_state_root`; keep secrets out of argv, shell history, logs, and examples.
+- [x] Add the acceptance tests. Rotation asserts old bearer/cookie rejection after restart, old connection termination, replacement acceptance, and a successful trusted-client request. Also demonstrate that replacing the token file does not change an already running guard. Never use unauthenticated `/api/health` as proof of revocation.
+- [x] Add recovery assertions: unchanged source bytes; readable staged history; structured recovery boundary and omissions; legacy rejection without source mutation; compatible restoration; a fresh-root task that completes without reusing the incompatible root. Do not assert error prose.
+- [x] Run `go test ./cmd/evener-hub -run '^TestTutorialHubTokenRotationRunbook$' -count=1`, `go test ./cmd/evener-doctor -run 'Test(BackupRestoreRunbook|ReconstructionRunbook|Reconstruct)' -count=1`, and `go test ./agent -run 'Test(UpgradeRunbook|DelegateResourceBootstrap_)' -count=1`. Record what the real operations establish; unsupported recovery paths must be corrected in the guide, not simulated.
+- [x] Finish the guides: put the legacy warning before shutdown; distinguish full backup, history restoration, and specialized AgentsView reconstruction; link the shared-token rotation runbook from pairing (the native recovery link remains in deferred Task 7); replace “encrypted transport” with precise bootstrap-envelope wording where applicable.
+- [x] Review and commit only the files changed by this task as `docs: verify upgrade, revocation, and recovery procedures`.
 
 ### Task 3: Repair contributor onboarding and test recipes
 
@@ -89,12 +89,12 @@ For each code correction, add the failing behavioral test, observe failure, make
 - The existing `make docs-check` behavior stays unchanged. Its prerequisites must include installed Chromium.
 - Retained live-test recipes must identify actual Go packages, selectors, opt-in variables, and credential requirements. An empty `go test -list` selection is failure of a recipe, not a passing test.
 
-- [ ] Enumerate the current provider test declarations and their opt-in gates. Remove the absent `llm/providers/openai` recipe and `TestAdapter_E2E_Codex`/`TestAdapter_E2E_Anthropic` claims unless a real maintained replacement is established. Keep historical observations explicitly historical.
-- [ ] Replace current-reference `evener dev` commands with their owning make targets or `go run ./cmd/evener-dev/bin dev ...`. Check dispatch and retain the warning about root `./...` missing sibling modules.
-- [ ] Add one concise contributor walkthrough: prerequisites, isolated checkout, `make build-runtime`, `./evener --version`, a small canonical Markdown edit, the documentation gate, generation when required, and review/CI expectations. Link the existing build and testing references.
-- [ ] Show `npm --prefix docs-site ci` and `(cd docs-site && npx playwright install chromium)` before the docs gate. Correct the prerequisite metadata in `make/repo.mk`, then run `make generate`; inspect the diff and keep only intended generated changes.
-- [ ] With `PLAYWRIGHT_BROWSERS_PATH` set to a new owned directory, follow the documented install sequence and run `make docs-check`. The Chromium-dependent renderer must actually run. For each retained provider recipe, run `go list <documented-package>` and `go test <documented-package> -list '<documented-selector>'`; verify at least one declaration and source-confirmed opt-in without making live requests.
-- [ ] Rehearse the first-contribution path in an owned disposable checkout, then remove only that rehearsal's scratch. Review and commit the named source/generated files as `docs: repair contributor setup and executable recipes`.
+- [x] Enumerate the current provider test declarations and their opt-in gates. Remove the absent `llm/providers/openai` recipe and `TestAdapter_E2E_Codex`/`TestAdapter_E2E_Anthropic` claims unless a real maintained replacement is established. Keep historical observations explicitly historical.
+- [x] Replace current-reference `evener dev` commands with their owning make targets or `go run ./cmd/evener-dev/bin dev ...`. Check dispatch and retain the warning about root `./...` missing sibling modules.
+- [x] Add one concise contributor walkthrough: prerequisites, isolated checkout, `make build-runtime`, `./evener --version`, a small canonical Markdown edit, the documentation gate, generation when required, and review/CI expectations. Link the existing build and testing references.
+- [x] Show `npm --prefix docs-site ci` and `(cd docs-site && npx playwright install chromium)` before the docs gate. Correct the prerequisite metadata in `make/repo.mk`, then run `make generate`; inspect the diff and keep only intended generated changes.
+- [x] With `PLAYWRIGHT_BROWSERS_PATH` set to a new owned directory, follow the documented install sequence and run `make docs-check`. The Chromium-dependent renderer must actually run. For each retained provider recipe, run `go list <documented-package>` and `go test <documented-package> -list '<documented-selector>'`; verify at least one declaration and source-confirmed opt-in without making live requests.
+- [x] Rehearse the first-contribution path in an owned disposable checkout, then remove only that rehearsal's scratch. Review and commit the named source/generated files as `docs: repair contributor setup and executable recipes`.
 
 ### Task 4: Fix anchors and Job control navigation
 
@@ -106,12 +106,12 @@ For each code correction, add the failing behavioral test, observe failure, make
 - Preserve `headings(tree)` and `prepare({root, manifest, out})` signatures. Reuse the already imported Cheerio parser to collect decoded IDs from raw HTML nodes.
 - Use a compact index beside “Model-facing tools,” with existing fragment targets. No global outline-depth change or page split.
 
-- [ ] Add a source and rendered fixture with `<a id="a&amp;b"></a>` and `#a%26b`, plus a missing-target negative case. Assert target resolution, not output wording.
-- [ ] Run `node --test docs-site/scripts/prepare.test.mjs` and observe the valid fixture fail before the decoding fix.
-- [ ] Extract decoded IDs through HTML parsing and rerun the file. Existing heading and link checks remain strict.
-- [ ] Add browser cases starting at the top of Job control and using page navigation to reach `#job_stop`, `#job_status`, and `#job_watch`. Cover pointer and keyboard at widths 1200, 320, and 390. Assert the resulting fragment and target geometry beneath sticky navigation.
-- [ ] Observe the missing-navigation case, add the compact tool index, build with `npm --prefix docs-site run build`, and run `(cd docs-site && npx playwright test)`. Preserve search and Mermaid checks.
-- [ ] Review and commit the named files as `fix(docs): resolve encoded anchors and expose tool navigation`.
+- [x] Add a source and rendered fixture with `<a id="a&amp;b"></a>` and `#a%26b`, plus a missing-target negative case. Assert target resolution, not output wording.
+- [x] Run `node --test docs-site/scripts/prepare.test.mjs` and observe the valid fixture fail before the decoding fix.
+- [x] Extract decoded IDs through HTML parsing and rerun the file. Existing heading and link checks remain strict.
+- [x] Add browser cases starting at the top of Job control and using page navigation to reach `#job_stop`, `#job_status`, and `#job_watch`. Cover pointer and keyboard at widths 1200, 320, and 390. Assert the resulting fragment and target geometry beneath sticky navigation.
+- [x] Observe the missing-navigation case, add the compact tool index, build with `npm --prefix docs-site run build`, and run `(cd docs-site && npx playwright test)`. Preserve search and Mermaid checks.
+- [x] Review and commit the named files as `fix(docs): resolve encoded anchors and expose tool navigation`.
 
 ### Task 5: Verify web menu navigation and first-provider setup
 
@@ -124,12 +124,14 @@ For each code correction, add the failing behavioral test, observe failure, make
 - Add a `setup-provider` action with `{baseURL:string, credential:string, providerID:string, modelID:string}` in the private driver channel. Values refer only to the isolated scripted provider. The credential must never reach candidate captures or public diagnostics.
 - `TestTutorialFirstProviderWeb(t *testing.T)` starts with no configured provider, uses the real setup UI, and proves a subsequent task reaches the intended local provider and completes.
 
-- [ ] Add a real-browser navigation assertion: the configuration action must activate the visible settings menu and project entry before editing Max rounds, with no direct settings-route navigation. Observe actual browser events, not a driver-reported success flag. Retain independent layer, provenance, old-launch, and file-effect assertions in `runConfigWeb`.
-- [ ] Run `node docs-site/scripts/tours/refresh.mjs check --surfaces web --scenario configuration` with that new assertion and observe the current direct-route driver fail it. Replace the route jump with actual menu actions, then rerun. Do not weaken project-isolation assertions to accommodate a different starting page.
-- [ ] Add first-provider setup from an empty configuration. Use actual UI forms and a local provider endpoint; independently verify saved provider configuration, model discovery, and the resulting real session. Keep this explicit browser journey gated with the tutorial opt-in.
-- [ ] Run `EVENER_TUTORIAL_TOURS=1 go test ./cmd/evener-hub -run '^TestTutorialFirstProviderWeb$' -count=1 -timeout=10m`, then the configuration tour again. Require actual execution rather than a skipped test.
-- [ ] Update the two guides to describe the now-tested starting state and menu path. State that local scripted-provider evidence does not qualify external login, billing, or live model behavior.
-- [ ] Review and commit the named files as `test(docs): exercise visible setup and settings journeys`.
+- [x] Add a real-browser navigation assertion: the configuration action must activate the visible settings menu and project entry before editing Max rounds, with no direct settings-route navigation. Observe actual browser events, not a driver-reported success flag. Retain independent layer, provenance, old-launch, and file-effect assertions in `runConfigWeb`.
+- [x] Run `node docs-site/scripts/tours/refresh.mjs check --surfaces web --scenario configuration` with that new assertion and observe the current direct-route driver fail it. Replace the route jump with actual menu actions, then rerun. Do not weaken project-isolation assertions to accommodate a different starting page.
+- [x] Add first-provider setup from an empty configuration. Use actual UI forms and a local provider endpoint; independently verify saved provider configuration, model discovery, and the resulting real session. Keep this explicit browser journey gated with the tutorial opt-in.
+- [x] Run `EVENER_TUTORIAL_TOURS=1 go test ./cmd/evener-hub -run '^TestTutorialFirstProviderWeb$' -count=1 -timeout=10m`, then the configuration tour again. Require actual execution rather than a skipped test.
+- [x] Update the two guides to describe the now-tested starting state and menu path. State that local scripted-provider evidence does not qualify external login, billing, or live model behavior.
+- [x] Review and commit the named files as `test(docs): exercise visible setup and settings journeys`.
+
+Completed Tasks 1–5 are supported by the execution ledger and accepted task reports: `f3b6fd1f38` (safe shell), `99016cfc36` (recovery), `921c80cb2d` (contributor recipes), `461781fd37` (anchors/navigation), and `dd6497f5d3` (web journeys). Task 5 retains its recorded early parallel-check deviation and out-of-scope dependency advisories; final qualification ran serially.
 
 ### Task 6: Prove one real native tour
 
@@ -186,13 +188,15 @@ For each code correction, add the failing behavioral test, observe failure, make
 
 - [ ] Add behavioral tests for native rows and provenance, all 36 checkpoints, honest subset completeness, native-source changes, non-relevant documentation changes, failed evidence, stale source, malformed images, unsafe paths, and private data. Preserve existing security and strict-coverage cases.
 - [ ] Observe rejection of native candidates in current validation, then extend the schema and collectors. Include `mobile-native/`, `mobile/src/`, native driver, and XCTest inputs in source hashing. Record tool/runtime/build identity from executed tools, not guessed version strings.
-- [ ] Add the review-directory generator. Tests require no changes to the candidate, publication tree, or source tree; refuse existing output paths and symlinks; ensure the binary patch reconstructs exactly the reviewed candidate in a disposable copy. An unchanged source digest plus unchanged content yields `unchanged`, regardless of commit distance.
-- [ ] Retain CLI/web candidates from `.github/workflows/docs.yml` through `check --surfaces cli,web --out "$RUNNER_TEMP/tutorial-candidate"`. Upload only a successfully validated sanitized candidate, never private raw logs. Preserve the existing publication build and browser gates.
+- [x] Add the review-directory generator. Tests require no changes to the candidate, publication tree, or source tree; refuse existing output paths and symlinks; ensure the binary patch reconstructs exactly the reviewed candidate in a disposable copy. An unchanged source digest plus unchanged content yields `unchanged`, regardless of commit distance.
+- [x] Retain CLI/web candidates from `.github/workflows/docs.yml` through `check --surfaces cli,web --out "$RUNNER_TEMP/tutorial-candidate"`. Upload only a successfully validated sanitized candidate, never private raw logs. Preserve the existing publication build and browser gates.
 - [ ] Add a manually dispatched native workflow on `macos-26`, reusing the native workflow's Node 22.13.1, Ruby 3.3.6, Bundler 2.7.2, and Xcode 26.6 setup after confirming runner availability. Use the existing `secrets.APPLE_TEAM_ID` input only for the simulator build. No TestFlight/distribution steps. Missing tools/team/runtime fail the requested run visibly. Run all surfaces there when producing a complete refresh candidate, avoiding any merge of evidence from different source digests.
 - [ ] Run `node --test docs-site/scripts/tours/*.test.mjs docs-site/scripts/tutorial-artifacts.test.mjs`, all CLI/web scenarios, then `node docs-site/scripts/tours/refresh.mjs check --surfaces native`. Generate a full refresh with `node docs-site/scripts/tours/refresh.mjs refresh --surfaces cli,web,native --out "$OWNED_CANDIDATE"`.
-- [ ] Run `node docs-site/scripts/tours/review.mjs --candidate "$OWNED_CANDIDATE" --out "$OWNED_REVIEW"`. Review every image and selectable transcript against its evidence, privacy, and source. Apply the proposed patch only after that review; update canonical asset references and publication entries. Preserve provenance exactly.
+- [x] Run `node docs-site/scripts/tours/review.mjs --candidate "$OWNED_CANDIDATE" --out "$OWNED_REVIEW"`. Review every image and selectable transcript against its evidence, privacy, and source. Apply the proposed patch only after that review; update canonical asset references and publication entries. Preserve provenance exactly.
 - [ ] Update the developer and user coverage notes from observed results. Build with `npm --prefix docs-site run build` and run `(cd docs-site && npx playwright test)`. The validator, schema tests, and all committed assets must move together; never leave the published set declaring nonexistent native evidence.
-- [ ] Review and commit the exact tooling, workflow, documentation, and reviewed asset files as `feat(docs): retain reviewable cross-surface tutorial captures`.
+- [x] Review and commit the exact tooling, workflow, documentation, and reviewed asset files as `feat(docs): retain reviewable cross-surface tutorial captures`.
+
+Task 8 checked steps cover only the accepted version 1 CLI/web subset (`1c879486a5` tooling, `425b58628b` assets), under the ledger ruling. All 24 images and 12 transcripts were reviewed, with an exact 37-file patch reconstruction, 99 focused tests, 144 build tests, and 9 browser checks. Native schema, source hashing, workflow, and 36-row activation remain unchecked. No remote workflow execution is claimed.
 
 ### Task 9: Verify the complete branch and hand it back
 
@@ -206,6 +210,8 @@ For each code correction, add the failing behavioral test, observe failure, make
 - [ ] Inspect exact source and manifest correspondence and the proposed workflow artifacts. Do not claim remote CI execution unless a workflow actually ran; preserve any missing native prerequisite as an explicit blocker.
 - [ ] Remove owned scratch, stopped test processes, and owned simulator instances after retaining only artifacts the report links. Leave installed dependencies and deliverables needed to inspect the work. Do not delete pre-existing devices or another session's scratch.
 - [ ] Report the changed guides/tooling, verification commands, reviewed asset provenance, and any limits. Ask separately before pushing or merging; this plan carries no new publication or merge authorization.
+
+Task 9 is ongoing. The four accepted simplifications and unchanged-review procedure correction are implemented; the optional unchanged-output Git bypass was skipped because it would change environmental failure behavior. Fresh verification and capture follow the tooling commit. Final Astra review and overall cleanup remain the parent’s responsibility; no whole-plan acceptance is claimed.
 
 ## Self-review before handoff
 

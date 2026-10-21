@@ -4,7 +4,7 @@ import { dirname, join, posix, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { visit } from "unist-util-visit";
 import { load } from "cheerio";
-import { validateCandidate, fullMatrix, repositoryRoot, provenanceMatches, sourceTreeDigest } from "./tours/artifacts.mjs";
+import { validateCandidate, fullMatrix, repositoryRoot, revision, sourceTreeDigest } from "./tours/artifacts.mjs";
 
 // Dated design records and research are kept for provenance, not maintained as
 // current references: their links point at paths and line numbers from the
@@ -254,8 +254,9 @@ export async function checkTutorialAssets({root=repositoryRoot, assetRoot=join(r
   }
   // Keep strict correspondence available to callers. Publication warnings use
   // relevant working bytes, not commit distance or unrelated documentation.
-  return { manifest, current: await provenanceMatches(manifest, root),
-    sourceCurrent: manifest.sourceTreeDigest === await sourceTreeDigest(root) };
+  const revisionCurrent = manifest.sourceRevision === revision(root);
+  const sourceCurrent = manifest.sourceTreeDigest === await sourceTreeDigest(root);
+  return { manifest, current: revisionCurrent && sourceCurrent, sourceCurrent };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

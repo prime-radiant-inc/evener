@@ -4,7 +4,7 @@ import { cp, mkdir, readFile, readdir, writeFile, rm, symlink } from 'node:fs/pr
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { candidateFixture, independentPNG } from './artifact-test-support.mjs';
+import { candidateFixture, independentPNG, chunk } from './artifact-test-support.mjs';
 import { fileURLToPath } from 'node:url';
 import { reviewCandidate } from './review.mjs';
 
@@ -69,10 +69,7 @@ for(const change of ['source','text','image','evidence']) test(`review and exact
   const {deflateSync,inflateSync}=await import('node:zlib');
   const bytes=independentPNG(1200,1800);const old=bytes.readUInt32BE(33);
   const raw=inflateSync(bytes.subarray(41,41+old));raw[1]=127;
-  const data=deflateSync(raw);const body=Buffer.concat([Buffer.from('IDAT'),data]);let crc=0xffffffff;
-  for(const b of body){crc^=b;for(let i=0;i<8;i++)crc=(crc>>>1)^(crc&1?0xedb88320:0);}
-  const size=Buffer.alloc(4);size.writeUInt32BE(data.length);const end=Buffer.alloc(4);end.writeUInt32BE((crc^0xffffffff)>>>0);
-  const changed=Buffer.concat([bytes.subarray(0,33),size,body,end,bytes.subarray(45+old)]);
+  const changed=Buffer.concat([bytes.subarray(0,33),chunk('IDAT',deflateSync(raw)),bytes.subarray(45+old)]);
   await writeFile(join(f.root,row.file),changed);row.sha256=hash(changed);
  } else row.assertions.push({name:'second-independent-oracle',passed:true});
  await f.save();

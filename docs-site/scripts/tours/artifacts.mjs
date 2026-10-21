@@ -61,11 +61,8 @@ export async function sourceTreeDigest(root = repositoryRoot) {
  return digest.digest('hex');
 }
 
-// provenanceMatches is the single definition of "this evidence belongs to the
-// current tree": both the revision and the working-tree digest must agree.
-// validateCandidate enforces it for a candidate; a published capture is kept
-// from an older revision deliberately, so the caller decides what to do with
-// the answer rather than re-deriving it.
+// Current evidence requires both the revision and working-tree digest to agree.
+// Published captures deliberately preserve their historical provenance.
 export async function provenanceMatches(manifest, root = repositoryRoot) {
  return manifest.sourceRevision === revision(root) && manifest.sourceTreeDigest === await sourceTreeDigest(root);
 }
