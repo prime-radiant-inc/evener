@@ -129,3 +129,63 @@ func TestSetModel_SwitchesToLiveListedCodexModel(t *testing.T) {
 		t.Fatalf("profile = %s/%s, want codex-target/gpt-reserve", got.ID(), got.Model())
 	}
 }
+
+// TestSetModel_DisabledNamespacedRowDoesNotMaskSwitch pins the classifier
+// against a disabled row on the current instance whose name looks like another
+// instance's model. The row cannot serve the id, so CrossProviderRef calls it a
+// provider switch; priming must still fetch the target's live roster.
+func TestSetModel_DisabledNamespacedRowDoesNotMaskSwitch(t *testing.T) {
+	const protocolID = "test-proto-agent-codex-disabled-namespace"
+	proto := stagedCodexProtocol(protocolID)
+
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"codex-home": {
+				Base:     "openai-codex",
+				Protocol: protocolID,
+				Models: map[string]registry.Model{
+					"codex-target/gpt-reserve": {Disabled: new(true)},
+				},
+			},
+			"codex-target": {Base: "openai-codex", Protocol: protocolID},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	for _, inst := range r.Instances() {
+		if inst.Name != "codex-home" && inst.Name != "codex-target" {
+			client.Register(&fakeAdapter{name: inst.Name})
+		}
+	}
+	profile, err := provider.Resolve(r, "codex-home/gpt-5.6")
+	if err != nil {
+		t.Fatalf("home profile: %v", err)
+	}
+
+	sess := newSession(t,
+		withClient(client),
+		withProfile(profile),
+		withConfig(SessionConfig{
+			MaxSubagentDepth: 1,
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				return provider.Resolve(r, ref)
+			},
+			testOnly: testConfig{skipGitSnapshot: true},
+		}),
+	)
+	before := proto.callCount("codex-target")
+	if err := sess.SetModel("codex-target/gpt-reserve"); err != nil {
+		t.Fatalf("a disabled namespaced row masked a provider switch: %v", err)
+	}
+	if got := proto.callCount("codex-target") - before; got != 1 {
+		t.Fatalf("target listed %d times during the switch, want the primed listing reused", got)
+	}
+	if got := sess.currentProfile(); got.ID() != "codex-target" || got.Model() != "gpt-reserve" {
+		t.Fatalf("profile = %s/%s, want codex-target/gpt-reserve", got.ID(), got.Model())
+	}
+}

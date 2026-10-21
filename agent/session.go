@@ -1783,7 +1783,7 @@ func (s *Session) primeCodexRoster(ref string) (string, *llm.ModelListing) {
 	}
 	r := s.client.Registry()
 	if base != nil {
-		if res, err := r.ResolveInstanceModelFacts(base.ID(), ref); err == nil && !res.Synthesized {
+		if res, err := r.ResolveInstanceModelFacts(base.ID(), ref); err == nil && !res.Synthesized && !registry.BoolValue(res.Model.Disabled) {
 			// The current instance already serves this namespaced id; the
 			// first segment is a model namespace, not a provider switch.
 			return "", nil
