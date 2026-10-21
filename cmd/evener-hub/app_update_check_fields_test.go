@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -111,7 +112,7 @@ func TestHubUpdateCheckPopulatesDevFieldsBeforeEarlyReturn(t *testing.T) {
 		t.Fatal("dev build reached the network check")
 		return selfupdate.CheckResult{}, nil
 	})
-	setRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	setRestartProbe(t, "echo 'evener def5678 (2026-10-21T00:00:00Z)'")
 
 	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
 	if err != nil {
@@ -123,14 +124,17 @@ func TestHubUpdateCheckPopulatesDevFieldsBeforeEarlyReturn(t *testing.T) {
 	if resp.Applicable || resp.UpdateAvailable {
 		t.Fatalf("dev check = applicable:%v updateAvailable:%v, want both false", resp.Applicable, resp.UpdateAvailable)
 	}
-	if resp.OnDiskCommit != "abc1234" {
-		t.Fatalf("on-disk commit = %q, want abc1234", resp.OnDiskCommit)
+	if resp.OnDiskCommit != "def5678" {
+		t.Fatalf("on-disk commit = %q, want def5678", resp.OnDiskCommit)
 	}
 	if !resp.RestartSupported {
 		t.Fatal("restartSupported = false on a usable dev build")
 	}
 	if resp.InstallAvailable {
 		t.Fatal("installAvailable = true on a dev build")
+	}
+	if !resp.RestartPending {
+		t.Fatal("restartPending = false although the dev build on disk differs")
 	}
 }
 
@@ -158,6 +162,40 @@ func TestHubUpdateCheckKeepsDirtyOnDiskBuildPending(t *testing.T) {
 	}
 	if !resp.RestartPending {
 		t.Fatal("restartPending = false although the on-disk build is dirty")
+	}
+}
+
+func TestHubUpdateCheckDetectsSameVersionRebuild(t *testing.T) {
+	setBuild(t, "abc1234", "release")
+	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       "release",
+			LatestCommit:    "ffffffffffffffffffffffffffffffffffffffff",
+			UpdateAvailable: true,
+		}, nil
+	})
+	setRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	pin, err := pinInstalledBinary(hubLaunchEntrypoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousHash := hubLaunchBinarySHA256
+	hubLaunchBinarySHA256 = pin.sha256Hex
+	t.Cleanup(func() { hubLaunchBinarySHA256 = previousHash })
+	if err := os.WriteFile(hubLaunchEntrypoint, []byte("#!/bin/sh\necho 'evener abc1234 (2026-10-21T00:00:00Z)'\n# rebuilt\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if resp.OnDiskCommit != "abc1234" {
+		t.Fatalf("on-disk commit = %q, want abc1234", resp.OnDiskCommit)
+	}
+	if !resp.RestartPending {
+		t.Fatal("restartPending = false although the on-disk binary changed")
 	}
 }
 

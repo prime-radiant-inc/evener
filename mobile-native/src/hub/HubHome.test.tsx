@@ -401,6 +401,16 @@ it("hides Restart on a hub that does not report restart support", async () => {
 	expect(find("Restart hub")).toBeNull();
 });
 
+it("shows the on-disk build and its probe error", async () => {
+	const { tree } = await mount({ check: UP_TO_DATE });
+	expect(renderedText(tree)).toContain("On disk abc1234");
+
+	const failed = await mount({
+		check: { ...UP_TO_DATE, onDiskCommit: undefined, onDiskError: "probe failed" },
+	});
+	expect(renderedText(failed.tree)).toContain("probe failed");
+});
+
 it("shows a failed check as a line, with nothing to press", async () => {
 	const { tree } = await mount({ check: new Error("socket hung up") });
 	expect(renderedText(tree)).toMatch(/\S/);

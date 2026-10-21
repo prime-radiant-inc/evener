@@ -98,6 +98,33 @@ test("dev build shows the rebuild note, the on-disk build, and Restart without I
   expect(screen.queryByRole("button", { name: "Check for updates" })).toBeNull();
 });
 
+test("dev build shows restart progress, timeout, and failure states", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => overview("dev"));
+  fake.on("evener/update/check", () => ({
+    ...UP_TO_DATE,
+    buildChannel: "dev",
+    applicable: false,
+    updateAvailable: false,
+    installAvailable: false,
+    restartSupported: true,
+  }));
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+  expect(await screen.findByTestId("hub-update-dev-note")).toBeTruthy();
+
+  const { hubUpdateStore } = await import("../../../stores/hubUpdate");
+  act(() => hubUpdateStore.setState({ restarting: true }));
+  expect(await screen.findByTestId("hub-dev-restarting")).toBeTruthy();
+
+  act(() => hubUpdateStore.setState({ restarting: false, restartTimedOut: true }));
+  expect(await screen.findByTestId("hub-dev-restart-timeout")).toBeTruthy();
+
+  act(() => hubUpdateStore.setState({ restartTimedOut: false, restartError: "no launch path" }));
+  expect(await screen.findByTestId("hub-dev-restart-error")).toBeTruthy();
+});
+
 test("release build checks on mount and separates Install from Restart", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
@@ -111,6 +138,27 @@ test("release build checks on mount and separates Install from Restart", async (
   expect(screen.getByRole("radio", { name: "Snapshot" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("button", { name: "Install update" })).toHaveProperty("disabled", true);
   expect(screen.getByRole("button", { name: "Restart hub" })).toHaveProperty("disabled", false);
+});
+
+test("shows dirty build versions and never falls back to the product version", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => ({
+    hub: { ...overview("snapshot").hub!, version: "0.1.0", commit: "3b1c5f8" },
+  }));
+  fake.on("evener/update/check", () => ({
+    ...UP_TO_DATE,
+    currentVersion: "3b1c5f8-dirty",
+    currentCommit: "3b1c5f8",
+    onDiskCommit: "3b1c5f8-dirty",
+  }));
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+  await updateStateIs("up-to-date");
+
+  const updates = screen.getByRole("region", { name: "Updates" });
+  expect(updates.textContent).toContain("3b1c5f8-dirty");
+  expect(updates.textContent).not.toContain("0.1.0");
 });
 
 test("switching channel re-checks with the new channel", async () => {

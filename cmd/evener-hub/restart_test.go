@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -144,7 +145,7 @@ func TestWaitForNewIncarnationTimesOut(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	if err := waitForNewIncarnation(ctx, addr, "", fixed); err == nil {
+	if err := waitForNewIncarnation(ctx, addr, fixed); err == nil {
 		t.Fatal("waitForNewIncarnation accepted an unchanged process")
 	}
 }
@@ -155,5 +156,45 @@ func TestIsAmbiguousRestartFailure(t *testing.T) {
 	}
 	if isAmbiguousRestartFailure(appwire.WireError{}) {
 		t.Fatal("server refusal was treated as ambiguous")
+	}
+	if isAmbiguousRestartFailure(appwire.RequestNotSentError{Err: errors.New("context canceled")}) {
+		t.Fatal("a request that never left was treated as ambiguous")
+	}
+	if !isAmbiguousRestartFailure(errors.New("write: broken pipe")) {
+		t.Fatal("a raw transport send failure was treated as final")
+	}
+}
+
+func TestHubRestartCommandRefusesNonLoopbackBeforeSendingToken(t *testing.T) {
+	root := t.TempDir()
+	if _, err := hubedge.LoadOrCreateAuthToken(root); err != nil {
+		t.Fatal(err)
+	}
+	deps := defaultMainDeps()
+	deps.loadConfig = func(string, bool) (Config, error) {
+		return Config{Addr: "192.168.1.5:9180", HubStateRoot: root}, nil
+	}
+	deps.stdout = io.Discard
+	var stderr bytes.Buffer
+	err := runHubRestart([]string{"--addr", "192.168.1.5:9180", "--timeout", "1s"}, &stderr, deps)
+	if !errors.Is(err, errNonLoopbackAddr) {
+		t.Fatalf("runHubRestart error = %v, want %v", err, errNonLoopbackAddr)
+	}
+}
+
+func TestHubRestartCommandRefusesUserinfoAddress(t *testing.T) {
+	root := t.TempDir()
+	if _, err := hubedge.LoadOrCreateAuthToken(root); err != nil {
+		t.Fatal(err)
+	}
+	deps := defaultMainDeps()
+	deps.loadConfig = func(string, bool) (Config, error) {
+		return Config{Addr: "127.0.0.1:9180@evil.example", HubStateRoot: root}, nil
+	}
+	deps.stdout = io.Discard
+	var stderr bytes.Buffer
+	err := runHubRestart([]string{"--addr", "127.0.0.1:9180@evil.example", "--timeout", "1s"}, &stderr, deps)
+	if !errors.Is(err, errNonLoopbackAddr) {
+		t.Fatalf("runHubRestart error = %v, want %v", err, errNonLoopbackAddr)
 	}
 }

@@ -71,7 +71,9 @@ meaning:
   for `updateAvailable`, computed against `onDiskCommit` with the `-dirty`
   suffix removed. False when the probe fails, when the on-disk commit is empty,
   or on a dev build.
-- `restartPending`: true when `onDiskCommit` differs from `currentVersion`.
+- `restartPending`: true when `onDiskCommit` differs from `currentVersion`, or
+  when the launch binary's digest differs from the digest recorded at startup
+  (a same-version rebuild).
 - `started_at`: the hub process incarnation, exactly the string `/api/health`
   reports.
 - `restartSupported`: true only when the platform supports in-place exec and the
@@ -109,11 +111,15 @@ as such; the package version bumps to `0.2.0` so an out-of-tree host compiled
 against the old signature fails to compile rather than silently comparing a
 timestamp as a version. `apply()` stays as a deprecated wrapper around the
 retained `evener/update/apply` RPC, preserving the old behavior against older
-hubs; the web and phone stop calling it.
+hubs; the web and phone stop calling it. `restart()` uses the restart
+response's incarnation when it arrives and falls back to the check after a
+lost response.
 
 `evener hub restart` reuses `attach`'s config, loopback, and token resolution,
 captures `started_at`, sends the RPC, and waits for the new incarnation. It
 prints the target version and exits zero only when the new process answers.
+It validates the loopback address before reading the token, and the health
+probe carries no credential.
 
 ## Non-goals
 

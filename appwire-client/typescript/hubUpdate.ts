@@ -126,10 +126,6 @@ export function createHubUpdateController(
   // setChannel bumps it too, which retires any check still in flight.
   let checkSequence = 0;
 
-  function baseline(check: UpdateCheckResponse | null): RestartBaseline {
-    return { version: check?.currentVersion ?? null, incarnation: check?.started_at ?? null };
-  }
-
   function isStale(check: UpdateCheckResponse): boolean {
     return get().channel !== null && check.channel !== get().channel;
   }
@@ -197,7 +193,15 @@ export function createHubUpdateController(
     try {
       await client.request("evener/upgrade", { requested: get().channel ?? "" }, { timeoutMs: APPLY_TIMEOUT_MS });
     } catch (err) {
-      set({ installing: false, installError: friendlyErrorMessage(err) });
+      if (requestOutcome(err) !== "lost") {
+        set({ installing: false, installError: friendlyErrorMessage(err) });
+        return;
+      }
+      // The hub may have installed the artifact before the response frame was
+      // lost. Re-check so the section reflects the on-disk build instead of
+      // claiming a failure.
+      set({ installing: false });
+      await runCheck();
       return;
     }
     if (disposed) return;
@@ -224,7 +228,6 @@ export function createHubUpdateController(
       set({ restartError: NO_RESTART });
       return;
     }
-    const previous = baseline(check);
     set({ restarting: true, restartError: null, restartTimedOut: false });
     let client: Pick<AppwireClientLike, "request">;
     try {
@@ -233,8 +236,11 @@ export function createHubUpdateController(
       set({ restarting: false, restartError: friendlyErrorMessage(err) });
       return;
     }
+    let responseIncarnation: string | null = null;
     try {
-      await client.request("evener/hub/restart", {}, { timeoutMs: RESTART_REQUEST_TIMEOUT_MS });
+      const resp: unknown = await client.request("evener/hub/restart", {}, { timeoutMs: RESTART_REQUEST_TIMEOUT_MS });
+      const raw = (resp as { incarnation?: unknown } | null)?.incarnation;
+      if (typeof raw === "string") responseIncarnation = raw;
     } catch (err) {
       if (requestOutcome(err) !== "lost") {
         set({ restarting: false, restartError: friendlyErrorMessage(err) });
@@ -242,6 +248,13 @@ export function createHubUpdateController(
       }
     }
     if (disposed) return;
+    // The response names the process that is being replaced. Use it instead
+    // of a possibly stale check baseline; a lost response falls back to the
+    // check.
+    const previous: RestartBaseline = {
+      version: check.currentVersion,
+      incarnation: responseIncarnation ?? check.started_at ?? null,
+    };
     await waitForRestart(previous);
   }
 

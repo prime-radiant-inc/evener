@@ -3,10 +3,15 @@ package hub
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -95,6 +100,11 @@ func TestHubRestartSchedulesAtLaunchPath(t *testing.T) {
 	hubProcessStartedAt = startedAt
 	t.Cleanup(func() { hubProcessStartedAt = previousStarted })
 
+	shareDir := t.TempDir()
+	previousShare := hubLaunchShareBinDir
+	hubLaunchShareBinDir = shareDir
+	t.Cleanup(func() { hubLaunchShareBinDir = previousShare })
+
 	type scheduleCall struct {
 		pin    restartPin
 		binary string
@@ -126,7 +136,7 @@ func TestHubRestartSchedulesAtLaunchPath(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("scheduled %d restarts, want 1", len(calls))
 	}
-	if calls[0].binary != path || calls[0].pin.path != path || calls[0].pin.sha256Hex == "" {
+	if calls[0].binary != path || calls[0].pin.path != path || calls[0].pin.sha256Hex == "" || calls[0].pin.shareBinDir != shareDir {
 		t.Fatalf("scheduled call = %+v, want the pinned launch path", calls[0])
 	}
 	if len(calls[0].args) != 3 || calls[0].args[0] != "hub" {
@@ -149,6 +159,36 @@ func TestHubRestartRefusesWhenUpdateInProgress(t *testing.T) {
 	hubUpdateMu.Lock()
 	if _, err := hubRestart(context.Background(), appwire.HubRestartParams{}); !errors.Is(err, errHubUpdateInProgress) {
 		t.Fatalf("hubRestart error = %v, want %v", err, errHubUpdateInProgress)
+	}
+}
+
+func TestHubRestartAbortsWhenTargetChangesDuringProbe(t *testing.T) {
+	setBuild(t, "abc1234", "release")
+	t.Cleanup(func() { hubUpdateMu = sync.Mutex{} })
+
+	previousSupported := hubRestartSupported
+	hubRestartSupported = func() bool { return true }
+	t.Cleanup(func() { hubRestartSupported = previousSupported })
+
+	path := writeProbeScript(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	previousPath := hubLaunchEntrypoint
+	hubLaunchEntrypoint = path
+	t.Cleanup(func() { hubLaunchEntrypoint = previousPath })
+	previousErr := hubLaunchEntrypointErr
+	hubLaunchEntrypointErr = nil
+	t.Cleanup(func() { hubLaunchEntrypointErr = previousErr })
+
+	previousProbe := probeHubBinaryFn
+	probeHubBinaryFn = func(path string) (string, error) {
+		if err := os.WriteFile(path, []byte("changed"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return "abc1234", nil
+	}
+	t.Cleanup(func() { probeHubBinaryFn = previousProbe })
+
+	if _, err := hubRestart(context.Background(), appwire.HubRestartParams{}); err == nil {
+		t.Fatal("hubRestart accepted a target that changed during its probe")
 	}
 }
 
@@ -182,6 +222,39 @@ func TestHubRestartOnlyExecFailureReleasesLock(t *testing.T) {
 		t.Fatal("failed exec left the update mutex locked")
 	}
 	hubUpdateMu.Unlock()
+}
+
+func TestHubRestartOnlyUsesManagedInstallLock(t *testing.T) {
+	previousDelay := hubRestartDelay
+	hubRestartDelay = 0
+	t.Cleanup(func() { hubRestartDelay = previousDelay })
+
+	previousExec := execHubBinary
+	execHubBinary = func(string, []string) error { return errors.New("exec failed") }
+	t.Cleanup(func() { execHubBinary = previousExec })
+
+	stderr := newSyncWriter("restart failed")
+	previousStderr := hubUpdateStderr
+	hubUpdateStderr = stderr
+	t.Cleanup(func() { hubUpdateStderr = previousStderr })
+
+	hubUpdateMu = sync.Mutex{}
+	hubUpdateMu.Lock()
+	t.Cleanup(func() { hubUpdateMu = sync.Mutex{} })
+
+	path := writeProbeScript(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+	pin, err := pinInstalledBinary(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shareDir := t.TempDir()
+	pin.shareBinDir = shareDir
+	scheduleHubRestartOnlyAfterResponse(context.Background(), pin, path, []string{"hub"})
+
+	<-stderr.done
+	if _, err := os.Stat(filepath.Join(shareDir, ".install.lock")); err != nil {
+		t.Fatalf("managed restart did not use the install lock: %v", err)
+	}
 }
 
 func TestHubRestartOnlyAbortsWhenBinarySwapped(t *testing.T) {
@@ -256,6 +329,70 @@ func TestResolveLaunchEntrypoint(t *testing.T) {
 			t.Fatal("resolveLaunchEntrypoint accepted empty argv")
 		}
 	})
+}
+
+func TestProbeHubBinaryAcceptsVersionWithStderrDiagnostics(t *testing.T) {
+	path := writeProbeScript(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'\necho 'diagnostic' >&2")
+	got, err := probeHubBinary(path)
+	if err != nil {
+		t.Fatalf("probeHubBinary: %v", err)
+	}
+	if got != "abc1234" {
+		t.Fatalf("probeHubBinary = %q, want abc1234", got)
+	}
+}
+
+func TestRestartExecHelperProcess(t *testing.T) {
+	if os.Getenv("EVENER_RESTART_HELPER") != "1" {
+		return
+	}
+	target := os.Getenv("EVENER_RESTART_TARGET")
+	pin, err := pinInstalledBinary(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hubRestartDelay = 0
+	hubUpdateStderr = io.Discard
+	hubUpdateMu.Lock()
+	scheduleHubRestartOnlyAfterResponse(context.Background(), pin, target, []string{"hub"})
+	// The goroutine should exec the target and replace this process.
+	time.Sleep(5 * time.Second)
+	t.Fatal("exec did not replace the helper process")
+}
+
+func TestRestartExecRunsTheTargetInTheSamePID(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("in-place exec is Unix-only")
+	}
+	dir := t.TempDir()
+	out := filepath.Join(dir, "pid")
+	target := filepath.Join(dir, "target.sh")
+	if err := os.WriteFile(target, []byte("#!/bin/sh\nprintf '%s' \"$$\" > \"$EVENER_RESTART_OUT\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestRestartExecHelperProcess")
+	cmd.Env = append(os.Environ(),
+		"EVENER_RESTART_HELPER=1",
+		"EVENER_RESTART_TARGET="+target,
+		"EVENER_RESTART_OUT="+out,
+	)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	childPID := cmd.Process.Pid
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("helper process: %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != strconv.Itoa(childPID) {
+		t.Fatalf("executed PID = %q, want the helper PID %d", got, childPID)
+	}
 }
 
 func TestHubRestartRPCIsRegistered(t *testing.T) {

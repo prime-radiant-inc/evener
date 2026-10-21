@@ -19,6 +19,8 @@ import (
 // changed PATH or working directory cannot redirect the exec.
 var hubLaunchEntrypoint string
 var hubLaunchEntrypointErr error
+var hubLaunchShareBinDir string
+var hubLaunchBinarySHA256 string
 
 var errHubRestartLaunchPath = errors.New("hub launch path is unavailable")
 var errHubProbeTimeout = errors.New("version probe timed out")
@@ -30,6 +32,10 @@ var hubProcessStartedAt = time.Now().UTC()
 // scheduleHubRestartOnly is the post-response exec seam. Tests replace it to
 // observe the scheduled target without replacing the process.
 var scheduleHubRestartOnly = scheduleHubRestartOnlyAfterResponse
+
+// probeHubBinaryFn is the version-probe seam. Tests replace it to model a
+// target changing between the pin and the probe.
+var probeHubBinaryFn = probeHubBinary
 
 func scheduleHubRestartOnlyAfterResponse(ctx context.Context, pin restartPin, binary string, args []string) {
 	scheduleRestartAfterResponse(ctx, pin, binary, args, "restart", pin.shareBinDir != "")
@@ -53,15 +59,21 @@ func hubRestart(ctx context.Context, _ appwire.HubRestartParams) (appwire.HubRes
 	if hubLaunchEntrypoint == "" {
 		return appwire.HubRestartResponse{}, errHubRestartLaunchPath
 	}
-	targetVersion, err := probeHubBinary(hubLaunchEntrypoint)
-	if err != nil {
-		return appwire.HubRestartResponse{}, err
-	}
 	pin, err := pinInstalledBinary(hubLaunchEntrypoint)
 	if err != nil {
 		return appwire.HubRestartResponse{}, err
 	}
-	_, _, pin.shareBinDir = hubInstallDirs()
+	targetVersion, err := probeHubBinaryFn(hubLaunchEntrypoint)
+	if err != nil {
+		return appwire.HubRestartResponse{}, err
+	}
+	// The probe runs the file, so a concurrent build can replace it between
+	// the pin and the probe. The response must name the bytes the scheduler
+	// will later exec.
+	if err := verifyPinnedBinary(hubLaunchEntrypoint, pin); err != nil {
+		return appwire.HubRestartResponse{}, err
+	}
+	pin.shareBinDir = hubLaunchShareBinDir
 	if err := tryLockHubUpdate(); err != nil {
 		return appwire.HubRestartResponse{}, err
 	}
@@ -112,9 +124,10 @@ func probeHubBinary(path string) (string, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path, "--version")
 	cmd.Stdin = nil
-	out := &cappedBuffer{limit: hubProbeOutputLimit}
-	cmd.Stdout = out
-	cmd.Stderr = out
+	stdout := &cappedBuffer{limit: hubProbeOutputLimit}
+	stderr := &cappedBuffer{limit: hubProbeOutputLimit}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	err := cmd.Run()
 	if ctx.Err() != nil {
 		return "", errHubProbeTimeout
@@ -122,9 +135,9 @@ func probeHubBinary(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("version probe: %w", err)
 	}
-	line := strings.TrimSpace(out.String())
-	if i := strings.IndexByte(line, '\n'); i >= 0 {
-		line = strings.TrimSpace(line[:i])
+	line := versionLine(stdout.String())
+	if line == "" {
+		line = versionLine(stderr.String())
 	}
 	const prefix = "evener "
 	if !strings.HasPrefix(line, prefix) {
@@ -139,6 +152,21 @@ func probeHubBinary(path string) (string, error) {
 		return "", errors.New("target reported an empty version")
 	}
 	return token, nil
+}
+
+// versionLine returns the first line when it is an Evener version banner, and
+// the empty string otherwise. The probe reads stdout first, then stderr, so a
+// target that writes diagnostics to stderr does not have to interleave safely
+// with the banner.
+func versionLine(out string) string {
+	out = strings.TrimSpace(out)
+	if i := strings.IndexByte(out, '\n'); i >= 0 {
+		out = strings.TrimSpace(out[:i])
+	}
+	if !strings.HasPrefix(out, "evener ") {
+		return ""
+	}
+	return out
 }
 
 // cappedBuffer keeps writes bounded while reporting success, so a target that

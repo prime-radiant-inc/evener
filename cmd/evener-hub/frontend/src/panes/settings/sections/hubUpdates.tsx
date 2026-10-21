@@ -22,8 +22,11 @@ function isChannel(value: string | undefined): value is UpdateChannel {
   return value === "release" || value === "snapshot";
 }
 
-function shortCommit(sha: string | undefined): string {
-  return sha === undefined || sha === "" ? "unknown" : sha.slice(0, 7);
+function displayBuild(version: string | undefined): string {
+  if (version === undefined || version === "") return "unknown";
+  const dirty = version.endsWith("-dirty");
+  const sha = dirty ? version.slice(0, -"-dirty".length) : version;
+  return sha.slice(0, 7) + (dirty ? "-dirty" : "");
 }
 
 /**
@@ -73,7 +76,7 @@ export function HubUpdates() {
 
   if (!hub) return null;
 
-  const running = check?.currentCommit ?? hub.commit ?? hub.version;
+  const running = check?.currentVersion ?? hub.commit;
   const onDisk = check?.onDiskCommit;
   const restartSupported = check?.restartSupported === true;
   const installAvailable = check?.installAvailable ?? check?.updateAvailable ?? false;
@@ -105,7 +108,7 @@ export function HubUpdates() {
       }}
       onCancel={() => setConfirming(false)}
     >
-      The hub restarts into {shortCommit(onDisk ?? running)} (running {shortCommit(running)}). Open panes reconnect;
+      The hub restarts into {displayBuild(onDisk ?? running)} (running {displayBuild(running)}). Open panes reconnect;
       running sessions keep going.
     </ConfirmDialog>
   );
@@ -116,12 +119,12 @@ export function HubUpdates() {
         Updates
       </h3>
       <p className={CLASS.status}>
-        Running {shortCommit(running)}
+        Running {displayBuild(running)}
         {buildChannel !== undefined && <FieldDim> · {buildChannel}</FieldDim>}
       </p>
       {check !== null && (
         <p className={CLASS.status} data-testid="hub-on-disk-build">
-          On disk {shortCommit(onDisk)}
+          On disk {displayBuild(onDisk)}
           {check.restartPending && <FieldDim> · restart pending</FieldDim>}
         </p>
       )}
@@ -131,7 +134,7 @@ export function HubUpdates() {
 
       {check?.restartPending === true && (
         <InlineNotice data-testid="hub-restart-pending">
-          Installed {shortCommit(onDisk)}, running {shortCommit(running)}. Restart to apply.
+          Installed {displayBuild(onDisk)}, running {displayBuild(running)}. Restart to apply.
         </InlineNotice>
       )}
 
@@ -170,8 +173,8 @@ export function HubUpdates() {
               checkError === null &&
               check !== null &&
               (check.updateAvailable
-                ? `Update available: ${check.channel} ${shortCommit(check.latestCommit ?? "")}, running ${shortCommit(check.currentCommit)}`
-                : `Up to date on ${check.channel} (${shortCommit(check.latestCommit ?? "")})`)}
+                ? `Update available: ${check.channel} ${displayBuild(check.latestCommit ?? "")}, running ${displayBuild(check.currentVersion)}`
+                : `Up to date on ${check.channel} (${displayBuild(check.latestCommit ?? "")})`)}
           </InlineNotice>
           {installing && <Loader label="Installing update" />}
           {installError !== null && <InlineNotice tone="danger">Install failed: {installError}</InlineNotice>}
@@ -198,11 +201,28 @@ export function HubUpdates() {
       )}
 
       {isDev && restartSupported && (
-        <div className={CLASS.actions}>
-          <Button size="sm" onClick={() => setConfirming(true)} disabled={busy}>
-            Restart hub
-          </Button>
-        </div>
+        <>
+          <div className={CLASS.actions}>
+            <Button size="sm" onClick={() => setConfirming(true)} disabled={busy}>
+              Restart hub
+            </Button>
+          </div>
+          {restarting && (
+            <div data-testid="hub-dev-restarting">
+              <Loader label="Restarting hub" />
+            </div>
+          )}
+          {!restarting && restartTimedOut && (
+            <InlineNotice tone="danger" data-testid="hub-dev-restart-timeout">
+              The hub didn't come back within {RESTART_TIMEOUT_MS / 1000}s. Check its logs.
+            </InlineNotice>
+          )}
+          {restartError !== null && (
+            <InlineNotice tone="danger" data-testid="hub-dev-restart-error">
+              Restart failed: {restartError}
+            </InlineNotice>
+          )}
+        </>
       )}
 
       {restartDialog}

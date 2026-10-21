@@ -53,6 +53,12 @@ func setBuild(t *testing.T, sha, channel string) {
 	// hubUpdateApply deliberately leaves hubUpdateMu locked after a
 	// successful apply; reset it so tests stay independent of run order.
 	hubUpdateMu = sync.Mutex{}
+	// The launch path and its install layout are process state; a test that
+	// ran runMain must not leave them behind for a check or restart test.
+	hubLaunchEntrypoint = ""
+	hubLaunchEntrypointErr = nil
+	hubLaunchShareBinDir = ""
+	hubLaunchBinarySHA256 = ""
 	// Default the check seam to an offline "update available" stub so
 	// hubUpdateApply's pre-install guard never hits live GitHub (AGENTS.md
 	// forbids network in default tests). Tests that need a specific check

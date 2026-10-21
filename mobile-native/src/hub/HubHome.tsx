@@ -192,6 +192,14 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 					/>
 				) : null}
 			</Group>
+			{check?.onDiskCommit ? (
+				<GroupFooter testID="hub-update-on-disk">{`On disk ${check.onDiskCommit}`}</GroupFooter>
+			) : null}
+			{check?.onDiskError ? (
+				<GroupFooter tone="danger" testID="hub-update-on-disk-error">
+					{`Can't read the on-disk build: ${check.onDiskError}`}
+				</GroupFooter>
+			) : null}
 			{check?.restartPending ? (
 				<GroupFooter testID="hub-update-pending">
 					{`Installed ${check.onDiskCommit ?? "a new build"}, running ${check.currentCommit}. Restart to apply.`}

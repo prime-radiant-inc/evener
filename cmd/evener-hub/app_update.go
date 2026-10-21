@@ -115,9 +115,15 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 	}
 	resp.StartedAt = hubProcessStartedAt
 	resp.RestartSupported = hubRestartUsable() && onDiskErr == nil
+	binaryChanged := false
+	if hubLaunchBinarySHA256 != "" {
+		if pin, err := pinInstalledBinary(hubLaunchEntrypoint); err == nil {
+			binaryChanged = pin.sha256Hex != hubLaunchBinarySHA256
+		}
+	}
+	resp.RestartPending = onDiskCommit != "" && (onDiskCommit != resp.CurrentVersion || binaryChanged)
 	if isDevBuild() {
 		resp.InstallAvailable = false
-		resp.RestartPending = false
 		return resp, nil
 	}
 	result, err := runHubUpdateCheck(ctx, selfupdate.CheckOptions{
@@ -132,7 +138,6 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 	resp.UpdateAvailable = result.UpdateAvailable
 	resp.Applicable = true
 	resp.InstallAvailable = result.UpdateAvailable && onDiskCommit != "" && !selfupdate.CommitIsCurrent(result.LatestCommit, commitToken(onDiskCommit))
-	resp.RestartPending = onDiskCommit != "" && onDiskCommit != resp.CurrentVersion
 	return resp, nil
 }
 

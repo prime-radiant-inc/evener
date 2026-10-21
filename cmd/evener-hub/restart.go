@@ -72,6 +72,13 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 		addr = cfg.Addr
 	}
 	addr = loopbackAddr(addr)
+	// Validate the dialable address before reading the credential or sending
+	// the health probe: resolveHubURL is what rejects userinfo and non-loopback
+	// hosts, and the health probe carries the bearer token.
+	if _, err := resolveHubURL(addr); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+		return err
+	}
 	token, err := readAuthToken(cfg.HubStateRoot)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
@@ -80,7 +87,7 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), opts.timeout)
 	defer cancel()
-	baseline, err := readHubStartedAt(ctx, addr, token)
+	baseline, err := readHubStartedAt(ctx, addr)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] health: %v\n", err)
 		return err
@@ -108,7 +115,7 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stdout, "restarting hub into %s\n", resp.TargetVersion)
 	}
 
-	if err := waitForNewIncarnation(ctx, addr, token, baseline); err != nil {
+	if err := waitForNewIncarnation(ctx, addr, baseline); err != nil {
 		if requestErr != nil {
 			return fmt.Errorf("%w; %v", requestErr, err)
 		}
@@ -120,10 +127,22 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 
 // isAmbiguousRestartFailure reports a transport loss: the request may have
 // reached the hub and the response may have been lost while the process
-// exec'd. Server refusals are not ambiguous.
+// exec'd. Server refusals and requests that never left are not ambiguous;
+// every other error is, because the client cannot prove the frame stayed put.
 func isAmbiguousRestartFailure(err error) bool {
 	var transport appwire.TransportFailureError
-	return errors.As(err, &transport)
+	if errors.As(err, &transport) {
+		return true
+	}
+	var notSent appwire.RequestNotSentError
+	if errors.As(err, &notSent) {
+		return false
+	}
+	var wire appwire.WireError
+	if errors.As(err, &wire) {
+		return false
+	}
+	return true
 }
 
 func dialHubControl(ctx context.Context, addr, token string) (*appwire.Client, error) {
@@ -150,13 +169,13 @@ func dialHubControl(ctx context.Context, addr, token string) (*appwire.Client, e
 	return client, nil
 }
 
-func readHubStartedAt(ctx context.Context, addr, token string) (time.Time, error) {
+// readHubStartedAt probes the auth-exempt health endpoint. It deliberately
+// sends no credential: there is nothing to authenticate, and a misconfigured
+// address must never receive the hub token.
+func readHubStartedAt(ctx context.Context, addr string) (time.Time, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/api/health", nil)
 	if err != nil {
 		return time.Time{}, err
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := attachDialClient.Do(req)
 	if err != nil {
@@ -173,7 +192,7 @@ func readHubStartedAt(ctx context.Context, addr, token string) (time.Time, error
 	return health.StartedAt, nil
 }
 
-func waitForNewIncarnation(ctx context.Context, addr, token string, previous time.Time) error {
+func waitForNewIncarnation(ctx context.Context, addr string, previous time.Time) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -181,7 +200,7 @@ func waitForNewIncarnation(ctx context.Context, addr, token string, previous tim
 		case <-ctx.Done():
 			return fmt.Errorf("hub did not restart: %w", ctx.Err())
 		case <-ticker.C:
-			next, err := readHubStartedAt(ctx, addr, token)
+			next, err := readHubStartedAt(ctx, addr)
 			if err == nil && !next.Equal(previous) {
 				return nil
 			}

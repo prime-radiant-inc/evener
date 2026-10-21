@@ -395,6 +395,21 @@ describe("install", () => {
     hub.take("evener/update/check").resolve({ ...WAITING, installAvailable: false });
     await first;
   });
+
+  test("re-checks after a lost install response instead of claiming failure", async () => {
+    const hub = await checked(WAITING);
+    const installing = hub.controller.install();
+    hub.take("evener/upgrade").reject(new Error("socket hung up"));
+    await settle();
+    const recheck = hub.take("evener/update/check");
+    recheck.resolve({ ...WAITING, installAvailable: false, restartPending: true });
+    await installing;
+    expect(hub.controller.getState()).toMatchObject({
+      installing: false,
+      installError: null,
+      check: { installAvailable: false, restartPending: true },
+    });
+  });
 });
 
 describe("restart", () => {
@@ -405,10 +420,10 @@ describe("restart", () => {
     expect(request.params).toEqual({});
     expect(request.opts).toEqual({ timeoutMs: RESTART_REQUEST_TIMEOUT_MS });
     expect(hub.controller.getState().restarting).toBe(true);
-    request.resolve({ restarting: true });
+    request.resolve({ restarting: true, incarnation: "2026-10-21T11:00:00Z" });
     await settle();
     expect(hub.controller.getState().restarting).toBe(true);
-    expect(hub.restarts.map((r) => r.previous)).toEqual([{ version: "be70029", incarnation: "2026-10-21T12:00:00Z" }]);
+    expect(hub.restarts.map((r) => r.previous)).toEqual([{ version: "be70029", incarnation: "2026-10-21T11:00:00Z" }]);
     hub.restarts[0]?.resolve(true);
     await restarting;
     expect(hub.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: false });
