@@ -121,6 +121,26 @@ describe("client replacement", () => {
 });
 
 describe("refresh", () => {
+  test("Connect and refresh preserve the remote build or its absence", async () => {
+    const fake = connectFakeClient();
+    connectionStore.setState({
+      serverInfo: { name: "controller", version: "package-sentinel", buildVersion: "controller-sentinel" },
+    });
+    let hubVersion: string | undefined = "remote-build-a";
+    fake.on("evener/host/attach", () => ({ host: "alpha", attached: true, hubVersion }));
+    fake.on("evener/host/list", () => ({ hosts: [{ ...row("alpha"), attached: true, hubVersion }] }));
+    for (const version of ["remote-build-a", undefined, "remote-build-b"]) {
+      hubVersion = version;
+      await hostsStore.getState().connect("alpha");
+      await hostsStore.getState().refresh();
+      const load = hostsStore.getState().load;
+      if (load.phase !== "ready") throw new Error("host list is not ready");
+      expect(load.hosts[0]).toMatchObject({ attached: true, hubVersion: version });
+    }
+    expect(fake.calls.filter((call) => call.method === "evener/host/attach")).toHaveLength(3);
+    expect(fake.calls.some((call) => call.method === "evener/host/deploy")).toBe(false);
+  });
+
   test("refresh without a connected client does not wedge the in-flight gate", async () => {
     // The quiet refresh swallows the no-client refusal (rows keep their last
     // snapshot; the next tick retries) — and must not leave its settled

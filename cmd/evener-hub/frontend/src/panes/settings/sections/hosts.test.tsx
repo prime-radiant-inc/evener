@@ -155,6 +155,38 @@ test("an offline row keeps rendering its retained facts", async () => {
   expect(screen.getByText(/linux\/arm64/)).toBeTruthy();
 });
 
+test("Connect renders the remote build and clears it when a later connection has no metadata", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  connectionStore.setState({
+    serverInfo: { name: "controller", version: "package-sentinel", buildVersion: "controller-sentinel" },
+  });
+  let attached = false;
+  let hubVersion: string | undefined = "remote-build-a";
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", attached, hubVersion })] }));
+  fake.on("evener/host/attach", () => {
+    attached = true;
+    return { host: "beta", attached, hubVersion };
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const sheet = await openHost("beta");
+  for (const version of ["remote-build-a", undefined, "remote-build-b"]) {
+    attached = false;
+    hubVersion = version;
+    await act(async () => hostsStore.getState().refresh());
+    await user.click(within(sheet).getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(within(sheet).queryByRole("button", { name: "Connect" })).toBeNull());
+    await act(async () => hostsStore.getState().refresh());
+    const field = sheet.querySelector('[data-field="hub-version"]');
+    if (version === undefined) expect(field).toBeNull();
+    else expect(field?.textContent).toBe(version);
+    expect(sheet.textContent).not.toContain("controller-sentinel");
+    expect(sheet.textContent).not.toContain("package-sentinel");
+  }
+  expect(fake.calls.filter((call) => call.method === "evener/host/attach")).toHaveLength(3);
+  expect(fake.calls.some((call) => call.method === "evener/host/deploy")).toBe(false);
+});
+
 test("the add dialog submits every entry field", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

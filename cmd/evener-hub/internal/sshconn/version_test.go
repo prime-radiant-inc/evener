@@ -190,10 +190,9 @@ func TestEnsureVersionMatchesAttachesWithoutDeploy(t *testing.T) {
 	}
 }
 
-// TestEnsureVersionDiffersDeploysRestartsThenAttaches covers acceptance
-// criterion 3's second half: a differing version deploys, restarts, then
-// attaches, in that order.
-func TestEnsureVersionDiffersDeploysRestartsThenAttaches(t *testing.T) {
+// A positive live protocol mismatch requires deployment, verified restart, and
+// a final compatible attachment, in that order.
+func TestEnsureProtocolUpgradeDeploysRestartsThenAttaches(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 
 	var mu sync.Mutex
@@ -256,6 +255,7 @@ func TestEnsureVersionDiffersDeploysRestartsThenAttaches(t *testing.T) {
 			return newFakeBridge(appwire.ProtocolVersion).stdio, nil
 		},
 	}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		OnEvent: func(ev Event) {
@@ -304,7 +304,7 @@ func TestEnsureVersionDiffersDeploysRestartsThenAttaches(t *testing.T) {
 		t.Fatalf("phases out of order (build<push<restart<start): %v", events)
 	}
 
-	wantStates := []State{StatePreflighting, StateDeploying, StateRestarting, StateAttaching}
+	wantStates := []State{StatePreflighting, StateAttaching, StateDeploying, StateRestarting, StateAttaching}
 	if !reflect.DeepEqual(states, wantStates) {
 		t.Fatalf("state sequence = %v, want %v", states, wantStates)
 	}
@@ -334,12 +334,8 @@ func TestEnsureUnsupportedTargetDoesNotDeploy(t *testing.T) {
 	}
 }
 
-// TestEnsureDeploysBeforeEnforcingLaunchContract proves version auto-match runs
-// before the launch-flag gate: a 04a-era host binary that predates a required
-// flag (and whose version therefore differs) must be upgraded by the deploy, and
-// the contract judged on the deployed build, not the one just replaced. Before
-// the fix preflight returned ErrLaunchContract on the first launch-check and no
-// deploy was ever attempted, permanently rejecting the host.
+// Protocol recovery judges startup capabilities on the deployed binary. A
+// missing disk flag does not prevent a required upgrade over SSH.
 func TestEnsureDeploysBeforeEnforcingLaunchContract(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	launchChecks := 0
@@ -388,6 +384,7 @@ func TestEnsureDeploysBeforeEnforcingLaunchContract(t *testing.T) {
 		},
 		startFn: goodStartFn(t),
 	}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		BuildBinary: func(_ context.Context, _, _, out string) error {
@@ -459,7 +456,7 @@ func TestRestartBareRecoversPidArgvAndLog(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	wantRemote := "nohup /opt/evener/bin/evener hub -addr 0.0.0.0:9180 -evener /opt/evener/bin/evener >>/home/dev/evener-hub.log 2>&1 </dev/null &"
@@ -477,7 +474,7 @@ func TestRestartBareNoHubIsErrRestart(t *testing.T) {
 		return []byte(noListenerMarker + "\n"), nil
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); !errors.Is(err, ErrRestart) {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil); !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart", err)
 	}
 	if got := len(fr.recordedRuns()); got != 1 {
@@ -528,7 +525,7 @@ func TestRestartBarePSInvocationSuppressesHeader(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	var psArgv []string
@@ -589,7 +586,7 @@ func TestRestartBareStripsLeadingPSHeader(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	want := rawCommandArgv(m.opts, host, relaunchCommand([]string{"/opt/evener/bin/evener", "hub", "-addr", "0.0.0.0:9180"}, ""))
@@ -645,7 +642,7 @@ func TestRestartBareQuotesRecoveredLogPath(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	// The remote command is one ssh argument; join it so the assertion reads the
@@ -737,7 +734,7 @@ func TestRestartHubRejectsAmbiguousSupervisor(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an ambiguous supervisor", err)
 	}
@@ -793,7 +790,7 @@ func TestRestartHubRejectsStaleVersion(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart (stale version must fail the restart)", err)
 	}
@@ -816,7 +813,7 @@ func TestRestartHubSurfacesFailedRestartCommand(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart (failed restart command must surface)", err)
 	}
@@ -842,7 +839,7 @@ func TestRestartHubWaitsForOldHubToHandOver(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v", err)
 	}
 	if *probes < 2 {
@@ -899,7 +896,7 @@ func TestHostAddrDrivesRestartAndHealthProbes(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	if err := m.waitHealthy(context.Background(), host, "newsha", "", hubIdentity{}); err != nil {
@@ -961,7 +958,7 @@ func TestRestartBareRefusesForeignProcessOnHubPort(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a foreign listener", err)
 	}
@@ -1003,7 +1000,7 @@ func TestRestartBareRefusesListenerOwnedByAnotherUser(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a listener owned by another user", err)
 	}
@@ -1052,7 +1049,7 @@ func TestRestartBareRefusesWhenListenerOwnerIsNotTheProbedLoginUser(t *testing.T
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a listener not owned by the probed login user", err)
 	}
@@ -1113,7 +1110,7 @@ func TestRestartBareRestartsAListenerOwnedByTheEffectiveUser(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil); err != nil {
 		t.Fatalf("restartBare: %v (a hub owned by the effective user must restart)", err)
 	}
 	var probedUser, probedOwner, relaunched bool
@@ -1189,7 +1186,7 @@ func TestRestartBareRefusesCompoundCommandLine(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an untokenizable command line", err)
 	}
@@ -1225,7 +1222,7 @@ func TestRestartBareRefusesAddrMismatch(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an --addr mismatch", err)
 	}
@@ -1259,7 +1256,7 @@ func TestRestartBareRefusesSamePortDifferentHost(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a hub bound to a different loopback address", err)
 	}
@@ -1298,7 +1295,7 @@ func TestRestartBareRefusesDefaultAddrAtNonDefaultEndpoint(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a no---addr hub at a non-default endpoint", err)
 	}
@@ -1359,7 +1356,7 @@ func TestRestartBareInspectsListenerAddress(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil); err != nil {
 		t.Fatalf("restartBare: %v (a listener owning the configured endpoint must restart)", err)
 	}
 	if !killed {
@@ -1396,7 +1393,7 @@ func TestRestartBareListenerAddressBeatsRecoveredAddr(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart when the socket does not own the configured endpoint", err)
 	}
@@ -1677,7 +1674,7 @@ func TestRestartHubLaunchdKickstartStatusIsAdvisory(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v (a failed kickstart status must not mask a successful restart)", err)
 	}
 	if probes == 0 {
@@ -1714,7 +1711,7 @@ func TestRestartHubLaunchdKickstartFailureSurfacesWhenHealthFails(t *testing.T) 
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, hubIdentity{})
+	err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{})
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart", err)
 	}
@@ -1784,16 +1781,9 @@ func TestHubHealthRemoteNormalizesWildcardBinds(t *testing.T) {
 	}
 }
 
-// TestEnsureRestartsWhenTheRunningHubVersionDiffers proves version auto-match
-// keys off the RUNNING hub, not the on-disk binary. A prior deploy can leave the
-// new binary installed while the old process keeps serving (a restart that failed
-// without polkit, an ambiguous unit listing, a bare relaunch failure), so the
-// on-disk launch-check now reports the controller's version. Keying the gate off
-// disk then skips deploy/restart entirely and attaches to the stale hub, silently
-// losing the feature's core guarantee that the attached runtime matches the
-// controller. Before the fix the on-disk version matched and no restart was ever
-// issued; after it the differing /api/health version forces the restart path.
-func TestEnsureRestartsWhenTheRunningHubVersionDiffers(t *testing.T) {
+// A different live build is preserved even when the on-disk binary already
+// matches the controller. Build skew alone grants no restart authority.
+func TestEnsurePreservesRunningHubWhenBuildDiffers(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	restarts := 0
 	healthProbes := 0
@@ -1844,8 +1834,8 @@ func TestEnsureRestartsWhenTheRunningHubVersionDiffers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ensure: %v", err)
 	}
-	if restarts == 0 {
-		t.Fatal("no restart: a running hub whose /api/health version differs from the controller must enter the restart path even when the on-disk binary matches")
+	if restarts != 0 {
+		t.Fatal("Connect restarted a compatible running hub")
 	}
 	if got := ch.Preflight().Version; got != "newsha" {
 		t.Fatalf("channel preflight version = %q, want %q", got, "newsha")
@@ -2062,7 +2052,7 @@ func TestPendingStartRecoveryAcceptsTheHostsOwnBuild(t *testing.T) {
 	})
 	testRestartRecorder(t, m)
 	// The recorded start an interrupted first attach leaves behind.
-	m.setPendingStart(host.Name, relaunch)
+	m.setPendingStart(host.Name, relaunch, "oldsha", "", nil)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure = %v, want nil: recovering a recorded start must accept the host's own build", err)
@@ -2123,7 +2113,7 @@ func TestRestartOnlyMismatchOnAnotherBuildAttaches(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 	testRestartRecorder(t, m)
-	m.setPendingStart(host.Name, relaunch)
+	m.setPendingStart(host.Name, relaunch, "oldsha", "", nil)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure = %v, want nil: a recorded start must be settled against the host's own build", err)
@@ -2176,7 +2166,7 @@ func TestPendingStartOnHealthySupervisorlessHostAttaches(t *testing.T) {
 	})
 	// An interrupted first attach on a supervisorless host leaves a pending start
 	// behind; the launched hub came up healthy afterwards.
-	m.setPendingStart(host.Name, relaunch)
+	m.setPendingStart(host.Name, relaunch, "newsha", "", nil)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure = %v, want nil: a healthy hub must settle a recorded start, not be refused as a supervisorless restart", err)
@@ -2222,7 +2212,7 @@ func TestPendingStartOnHealthyHostKeepingItsOwnBuildAttaches(t *testing.T) {
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
-	m.setPendingStart(host.Name, relaunch)
+	m.setPendingStart(host.Name, relaunch, "oldsha", "", nil)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure = %v, want nil: a recorded start must be settled against the host's own build", err)
@@ -2272,7 +2262,7 @@ func TestPendingStartNotSettledForWrongSnapshotCommit(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 	testRestartRecorder(t, m)
-	m.setPendingStart(host.Name, relaunch)
+	m.setPendingStart(host.Name, relaunch, "newsha", "expectedsha", nil)
 
 	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrRestart) {
 		t.Fatalf("Ensure = %v, want ErrRestart (a wrong-commit hub must not settle a recorded start)", err)
@@ -2385,6 +2375,7 @@ func TestBootstrapRefusesWhenTheAddressIsOwned(t *testing.T) {
 // attaches nothing and fails with ErrRestart.
 func TestBootstrapUnhealthyIsErrRestart(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	healthProbes := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
@@ -2399,6 +2390,10 @@ func TestBootstrapUnhealthyIsErrRestart(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "api/health"):
+			healthProbes++
+			if healthProbes == 1 {
+				return nil, errors.New("no listener")
+			}
 			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(joined, "list-units"):
 			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
@@ -2450,7 +2445,7 @@ func TestFirstAttachAfterDeployBootstrapsStoppedHost(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
 			}
 			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "test -d /opt/evener/bin"):
@@ -2536,7 +2531,7 @@ func TestDeployThenExplicitAttachStartsDormantUnit(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
 			}
 			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "test -d /opt/evener/bin"):
@@ -2615,7 +2610,7 @@ func TestReconnectDeployDoesNotStartAStoppedHub(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
 			}
 			return []byte(`{"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "test -d /opt/evener/bin"):
@@ -2721,11 +2716,8 @@ func TestParseHubHealthRejectsBodyWithoutVersion(t *testing.T) {
 	}
 }
 
-// TestEnsureDevBuildDeploysOncePerManager pins the dev-identity rule: "dev" is not
-// an identity, so an unstamped controller cannot prove an unstamped host matches.
-// With a deploy configured it installs its own build once, then trusts the host
-// for this process's lifetime instead of rebuilding on every reconnect.
-func TestEnsureDevBuildDeploysOncePerManager(t *testing.T) {
+// Compatible unstamped builds remain untouched on first Connect and reconnect.
+func TestEnsureDevBuildSurvivesReconnectWithoutDeployment(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	builds := 0
 	fr := deployRunner(t,
@@ -2756,8 +2748,8 @@ func TestEnsureDevBuildDeploysOncePerManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ensure 1: %v", err)
 	}
-	if builds != 1 {
-		t.Fatalf("builds after first Ensure = %d, want 1 (a dev host cannot prove it matches)", builds)
+	if builds != 0 {
+		t.Fatalf("builds after first Ensure = %d, want 0 (compatible live hub)", builds)
 	}
 
 	// The next Ensure (after a dropped link) must not rebuild or restart again.
@@ -2765,8 +2757,8 @@ func TestEnsureDevBuildDeploysOncePerManager(t *testing.T) {
 	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Ensure 2: %v", err)
 	}
-	if builds != 1 {
-		t.Fatalf("builds after second Ensure = %d, want 1 (the dev build is already installed)", builds)
+	if builds != 0 {
+		t.Fatalf("builds after second Ensure = %d, want 0 (reconnect preserves the installed build)", builds)
 	}
 }
 
@@ -2847,6 +2839,7 @@ func TestEnsureRestartRecoveryRetriesRelaunch(t *testing.T) {
 		}
 	}, startFn: goodStartFn(t)}
 
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		BuildBinary:               writeStageBinary,
@@ -2924,7 +2917,7 @@ func TestRestartBarePrefersNullDelimitedArgv(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); err != nil {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil); err != nil {
 		t.Fatalf("restartBare: %v", err)
 	}
 	for _, argv := range fr.recordedRuns() {
@@ -2974,7 +2967,7 @@ func TestRestartBareRefusesAmbiguousSplitValue(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an ambiguous command line", err)
 	}
@@ -3121,6 +3114,7 @@ func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
@@ -3266,6 +3260,7 @@ func TestEnsureKeepsPendingRestartWhenOldProcessStillServes(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "dev",
 		BuildBinary:               writeStageBinary,
@@ -3288,9 +3283,7 @@ func TestEnsureKeepsPendingRestartWhenOldProcessStillServes(t *testing.T) {
 	if restarts != 2 {
 		t.Fatalf("systemctl restarts after Ensure 2 = %d, want 2 (the pending restart must be retried)", restarts)
 	}
-	if got := len(fr.recordedStarts()); got != 0 {
-		t.Fatalf("bridge Start calls = %d, want 0 (never attach to the process the restart replaces)", got)
-	}
+	requireNoAttach(t, fr)
 }
 
 // TestWaitHealthyRejectsThePreRestartProcess pins restart verification's use of
@@ -3365,7 +3358,7 @@ func TestRestartBareRecordsRelaunchBeforePortClearFails(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartBare(context.Background(), host, hubIdentity{}); !errors.Is(err, ErrRestart) {
+	if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil); !errors.Is(err, ErrRestart) {
 		t.Fatalf("restartBare err = %v, want ErrRestart (the port stayed held)", err)
 	}
 	if relaunches != 0 {
@@ -3400,7 +3393,7 @@ func TestRestartBareRefusesUnparsableRecoveredAddr(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for an unparsable recovered --addr", err)
 	}
@@ -3480,12 +3473,8 @@ func TestSplitNullArgvKeepsTrailingEmptyElement(t *testing.T) {
 	}
 }
 
-// TestEnsureCorruptLaunchCheckReachesTheDeployPath pins the Medium finding that a
-// launch-check decode failure was terminal before the decision ladder, so a
-// corrupt on-disk binary never got the deploy path even though ensureDecision
-// treats an unknown contract as a deploy trigger. With a deploy configured the
-// contract is recorded as unknown; with none it stays terminal (covered by
-// TestEnsurePreflightDecodeFailure).
+// A corrupt disk contract does not prevent recovery from a positive live
+// protocol mismatch. The deployed artifact must still pass its launch-check.
 func TestEnsureCorruptLaunchCheckReachesTheDeployPath(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
@@ -3499,6 +3488,7 @@ func TestEnsureCorruptLaunchCheckReachesTheDeployPath(t *testing.T) {
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		},
 	)
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
 		BuildBinary:               writeStageBinary,
@@ -3630,7 +3620,7 @@ func TestRestartHubStartsAnInactiveSupervisorWhenThePortIsFree(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v (a stopped hub unit with a free port must be started)", err)
 	}
 	if !restarted {
@@ -3692,7 +3682,7 @@ func TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartHub: %v", err)
 	}
 	if restarted {
@@ -3756,7 +3746,7 @@ func TestRestartHubFallsThroughOnUnsafeLaunchdLabel(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "darwin", UID: "1000"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartHub = %v, want nil (an unbuildable launchd command must fall through to the ad hoc path)", err)
 	}
 	if !killed {
@@ -3824,7 +3814,7 @@ func TestRestartHubRestartsAdHocOnSupervisorlessHost(t *testing.T) {
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
 
-	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, hubIdentity{}); err != nil {
+	if err := m.restartHub(context.Background(), host, Preflight{OS: "linux"}, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}); err != nil {
 		t.Fatalf("restartHub = %v, want nil (a supervisorless hub must restart through the ad hoc path)", err)
 	}
 	if !killed {
@@ -3865,7 +3855,7 @@ func TestRestartBareFailsClosedOnUnusableProcArgv(t *testing.T) {
 		sleep: func(context.Context, time.Duration) error { return nil },
 	})
 
-	err := m.restartBare(context.Background(), host, hubIdentity{})
+	err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
 	if !errors.Is(err, ErrRestart) {
 		t.Fatalf("err = %v, want ErrRestart for a readable but unusable /proc argv", err)
 	}
@@ -3883,16 +3873,8 @@ func TestRestartBareFailsClosedOnUnusableProcArgv(t *testing.T) {
 	}
 }
 
-// TestEnsureAttachesToAnotherBuildWhenProtocolMatches pins the rule: a host that
-// answers the controller's launch-check is protocol-compatible by construction
-// (launch-check refuses any protocol but its own, launchcheck.go:72-74), so a
-// build whose version LABEL differs — an unstamped "dev" host against a stamped
-// controller, or a host built from another checkout — must attach rather than be
-// refused. The build label is not a compatibility signal; the protocol version
-// is, and the wire layer enforces it independently at Initialize
-// (appwire.ProtocolVersionMismatchError), with the preflight protocol refusal
-// covering the host that cannot answer at all. Attaching is reported, not silent:
-// the notice this asserts is how an operator learns which build the host kept.
+// Live initialize is the compatibility authority. The channel keeps the
+// separately observed disk build without synchronizing it to the controller.
 func TestEnsureAttachesToAnotherBuildWhenProtocolMatches(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{
@@ -3901,27 +3883,19 @@ func TestEnsureAttachesToAnotherBuildWhenProtocolMatches(t *testing.T) {
 		}),
 		startFn: goodStartFn(t),
 	}
-	var logged []string
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
-		Logger: func(format string, args ...any) {
-			logged = append(logged, fmt.Sprintf(format, args...))
-		},
 	})
 
-	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
 		t.Fatalf("Ensure = %v, want nil: a protocol-compatible host must attach whatever build it runs", err)
 	}
 	if got := len(fr.recordedStarts()); got != 1 {
 		t.Fatalf("Start calls = %d, want 1 (the bridge must attach to the running host)", got)
 	}
-	// Accepting another build must not be silent: the operator sees which build
-	// the host kept and which one this controller runs.
-	reported := slices.ContainsFunc(logged, func(line string) bool {
-		return strings.Contains(line, `"oldsha"`) && strings.Contains(line, `"newsha"`)
-	})
-	if !reported {
-		t.Fatalf("attaching to another build was not reported: logged %q", logged)
+	if ch.Handshake().ProtocolVersion != appwire.ProtocolVersion || ch.Preflight().Version != "oldsha" {
+		t.Fatal("the channel lost the live protocol or observed disk build")
 	}
 	// No deploy path is configured, so nothing may be pushed or installed: the
 	// host's own binary stays, and the difference is reported rather than repaired.
