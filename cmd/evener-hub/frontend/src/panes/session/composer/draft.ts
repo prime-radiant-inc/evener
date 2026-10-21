@@ -79,6 +79,31 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
   );
 }
 
+function decodeStructuredComposerDraft(structured: string | null): ComposerDraft | null {
+  if (structured === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(structured);
+  } catch {
+    return null;
+  }
+  if (!isStoredComposerDraft(parsed)) return null;
+  return {
+    text: parsed.text,
+    skillNames: canonicalSkillNames(parsed.skillNames),
+    ...(parsed.commandNames ? { commandNames: canonicalSkillNames(parsed.commandNames) } : {}),
+    ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
+    // The validated wall-clock stamp travels with the draft: the legacy
+    // transfer orders later cross-session carries by it, so a migration-wide
+    // restamp would order by import order instead of edit order.
+    ...(parsed.editedAt !== undefined ? { editedAt: parsed.editedAt } : {}),
+  };
+}
+
+export function decodeSupportedComposerDraft(structured: string | null, legacy: string | null): ComposerDraft {
+  return decodeStructuredComposerDraft(structured) ?? { text: legacy ?? "", skillNames: [] };
+}
+
 // Every localStorage access is guarded: private-mode/disabled/full storage
 // degrades silently to "no draft" rather than ever breaking the composer,
 // same convention as shell/rail/Rail.tsx's own collapsed-state persistence.
@@ -87,39 +112,41 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
 // v1 PLAIN-TEXT value is read as literal text with skillNames: []. The v1
 // value is never JSON-decoded to guess selections and no slash mention in it
 // is ever inferred as a selection - an old draft is exactly the text it was.
+// The runtime read projection: no durable write, one live value per ref,
+// published by the source that currently owns the visible draft. The owner id
+// lets a retiring source avoid erasing a newer same-ref source's value.
+const runtimeDrafts = new Map<string, { value: ComposerDraft; ownerId: string }>();
+
+export function publishRuntimeDraft(ref: string, value: ComposerDraft, ownerId: string): void {
+  runtimeDrafts.set(ref, { value, ownerId });
+}
+
+export function clearRuntimeDraft(ref: string, ownerId: string): void {
+  const entry = runtimeDrafts.get(ref);
+  if (entry !== undefined && entry.ownerId === ownerId) runtimeDrafts.delete(ref);
+}
+
 export function readComposerDraft(ref: string): ComposerDraft {
+  // A live source's projection is authoritative while it exists: it is the
+  // draft currently visible in the composer, updated from durable loads and
+  // accepted edits without a localStorage write.
+  const projected = runtimeDrafts.get(ref);
+  if (projected !== undefined) return projected.value;
   try {
     const structured = localStorage.getItem(composerDraftStorageKey(ref));
-    if (structured !== null) {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(structured);
-      } catch {
-        parsed = null;
-      }
-      // The draft is the one selection source the composer reads verbatim, so
-      // it is also the one place a corrupted or hand-edited v2 record could
-      // hand padded, empty or repeated names straight to the chips. Canonical
-      // names are the contract everywhere else; enforce it here too.
-      if (isStoredComposerDraft(parsed)) {
-        return {
-          text: parsed.text,
-          skillNames: canonicalSkillNames(parsed.skillNames),
-          ...(parsed.commandNames ? { commandNames: canonicalSkillNames(parsed.commandNames) } : {}),
-          ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
-        };
-      }
-    }
-    return { text: localStorage.getItem(draftStorageKey(ref)) ?? "", skillNames: [] };
+    const decoded = decodeStructuredComposerDraft(structured);
+    if (decoded !== null) return decoded;
+    return decodeSupportedComposerDraft(null, localStorage.getItem(draftStorageKey(ref)));
   } catch {
     return { text: "", skillNames: [] };
   }
 }
 
 // A draft with nothing to send: no prose and no selections. The one predicate
-// the writer and the carry share, so an empty draft is never persisted and a
-// blank source never moves.
-function isBlankDraft(value: ComposerDraft): boolean {
+// the durable write paths and the cross-ref carry share, so an empty draft is
+// never persisted and a blank source or destination never blocks a move.
+// Exported for the browser draft repository's carryDraft.
+export function isBlankDraft(value: ComposerDraft): boolean {
   return value.text.trim() === "" && value.skillNames.length === 0 && !value.commandNames?.length;
 }
 
@@ -128,6 +155,10 @@ function isBlankDraft(value: ComposerDraft): boolean {
 export function readDraft(ref: string): string {
   return readComposerDraft(ref).text;
 }
+
+// The legacy localStorage writers below are staged for the panes callers that
+// still use them; the composer's migration to the durable browser draft
+// repository retires them with their callers.
 
 // A persisted draft's last-write stamp, 0 when it carries none (an older build
 // wrote it, or there is no record). Kept out of readComposerDraft's own value:

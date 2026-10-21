@@ -5,7 +5,9 @@ interface IDBConnectionOptions {
   databaseName: string;
   databaseVersion: number;
   waitMs: number;
-  upgrade: (database: IDBDatabase) => void;
+  // The version-change transaction lets an upgrade add indexes to stores that
+  // already exist, not only create new stores.
+  upgrade: (database: IDBDatabase, transaction: IDBTransaction | null) => void;
   // The cache sweeps expired rows before installing a connection. The outbox
   // installs immediately; neither adapter closes a healthy connection per call.
   prepare?: (database: IDBDatabase) => Promise<void>;
@@ -135,7 +137,7 @@ export class IDBConnection {
             options.reportDiagnostic("upgrade-abandoned", Boolean(request.transaction));
           }
           try {
-            options.upgrade(request.result);
+            options.upgrade(request.result, request.transaction);
           } catch (error) {
             // Rethrow so the engine aborts the half-built schema.
             upgradeFailure = new IDBUpgradeError(error);

@@ -51,7 +51,13 @@ function settledSource(overrides: Record<string, unknown> = {}): MutationRecord 
 
 test("acceptedRecord carries the accepted whitelist and drops outbox/recovery-only fields", () => {
   const accepted = acceptedRecord(
-    settledSource({ state: "submitting", attempted: true, recoveryKind: "rejected", recoveryReason: "nope" }),
+    settledSource({
+      state: "submitting",
+      attempted: true,
+      recoveryKind: "rejected",
+      recoveryReason: "nope",
+      transferredSessionToken: { namespaceIncarnation: "inc-1", sessionRevision: 4 },
+    }),
   );
   expect(accepted).toEqual({
     version: 1,
@@ -72,6 +78,7 @@ test("acceptedRecord carries the accepted whitelist and drops outbox/recovery-on
   expect(accepted).not.toHaveProperty("recoveryKind");
   expect(accepted).not.toHaveProperty("recoveryReason");
   expect(accepted).not.toHaveProperty("composerText");
+  expect(accepted).not.toHaveProperty("transferredSessionToken");
 });
 
 test("carriesOptimisticInput reports an input array and nothing else", () => {
