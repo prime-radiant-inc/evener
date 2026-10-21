@@ -71,6 +71,18 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
   // no follow-up is ever scheduled after close.
   let followUpRequested = false;
   let followUpReason: AnnotationRetryReason | null = null;
+  // A direct handoff records an outcome only when it RETURNS: while its
+  // preparation is outstanding the refusal that sets retryNeeded has not
+  // happened, and no pass exists to keep an observation for. A storage commit
+  // landing then names work this commit may have made claimable, so dropping
+  // the trigger leaves the annotation pending until unrelated activity
+  // arrives. Retain one trigger across EVERY outstanding handoff - queued ones
+  // included, because a queued handoff runs before any pass's sweep and can
+  // refuse the same way - and let the last one to settle spend it: one
+  // serialized pass if any of them left work pending, nothing if they all
+  // applied. Disposal clears it, so nothing schedules after close.
+  let outstandingHandoffs = 0;
+  let handoffRecoveryTriggered = false;
   let alive = true;
   // The pass hands off through the repository's own sweep, so disposal must be
   // observable between those handoffs and not only at this pass's outer
@@ -211,6 +223,20 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
     }
     return startPass(reason);
   };
+  // Settlement bookkeeping for one direct handoff. Only the last outstanding
+  // handoff can spend the retained trigger: a pending one has already called
+  // needRetry(), and one settling success never cancels the refusal another
+  // queued handoff has still to record. At the moment this schedules, no other
+  // handoff is in flight or queued and this handoff's own chain entry has
+  // settled, so the pass waits only on settled work.
+  const settleHandoff = (leftPending: boolean): void => {
+    outstandingHandoffs -= 1;
+    if (outstandingHandoffs > 0) return;
+    const retained = handoffRecoveryTriggered;
+    handoffRecoveryTriggered = false;
+    if (!alive || !retained || !leftPending) return;
+    void retryPending("storage-recovered");
+  };
   return {
     save,
     retryPending,
@@ -222,6 +248,9 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       // connection can reopen and appending to a retained composer after
       // application teardown.
       if (!alive) return Promise.resolve<HandoffResult>({ state: "cancelled" });
+      // Counted from the call rather than from the moment the chain reaches it:
+      // a queued handoff's outcome is just as unrecorded as a running one's.
+      outstandingHandoffs += 1;
       const prior = sweep ? Promise.all([sweep, handoffChain]) : handoffChain;
       const run = prior.then(
         () =>
@@ -237,10 +266,20 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
         () => undefined,
         () => undefined,
       );
-      return run.then((result) => {
-        if (result.state === "pending") needRetry();
-        return result;
-      });
+      return run.then(
+        (result) => {
+          const leftPending = result.state === "pending";
+          if (leftPending) needRetry();
+          settleHandoff(leftPending);
+          return result;
+        },
+        (error) => {
+          // A rejected handoff is an unobserved outcome the retry map cannot
+          // show: spend a retained trigger on the pass that can record it.
+          settleHandoff(true);
+          throw error;
+        },
+      );
     },
     storageSucceeded: () => {
       if (!alive) return;
@@ -252,7 +291,13 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
         followUpReason ??= "storage-recovered";
         return;
       }
-      if (retryNeeded) void retryPending("storage-recovered");
+      if (retryNeeded) {
+        void retryPending("storage-recovered");
+        return;
+      }
+      // Nothing recorded a need and no pass runs: an outstanding direct handoff
+      // is the only work whose outcome this notification cannot see yet.
+      if (outstandingHandoffs > 0) handoffRecoveryTriggered = true;
     },
     registerRetryNeed: () => {
       needRetry();
@@ -283,6 +328,7 @@ export function createDocumentAnnotationRuntime(repo: BrowserDocumentAnnotationR
       pendingDuringPass = false;
       followUpRequested = false;
       followUpReason = null;
+      handoffRecoveryTriggered = false;
     },
   };
 }

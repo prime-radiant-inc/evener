@@ -282,3 +282,51 @@ test("a direct handoff queued during an active pass settles when the pass runs a
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// A direct handoff records its refusal only when it RETURNS, so a storage
+// commit arriving while its preparation is outstanding finds retryNeeded still
+// false and no pass running. Dropping that trigger strands the annotation: the
+// handoff then refuses, and nothing starts the pass the recovered composer
+// needs until unrelated activity arrives.
+test("a storage success during a direct handoff's preparation recovers the refused handoff", async () => {
+  let markHandoffPreparing: () => void = () => undefined;
+  const handoffPreparing = new Promise<void>((resolve) => {
+    markHandoffPreparing = resolve;
+  });
+  let releasePreparation: () => void = () => undefined;
+  const preparationReleased = new Promise<void>((resolve) => {
+    releasePreparation = resolve;
+  });
+  let preparations = 0;
+  let fixture: Fixture | undefined;
+  fixture = await openFixture(async () => {
+    preparations += 1;
+    // Hold the direct handoff's preparation open while the composer's storage
+    // commits land, then refuse: the composer is unavailable to THIS handoff.
+    if (preparations === 1) {
+      markHandoffPreparing();
+      await preparationReleased;
+      return null;
+    }
+    // The retained trigger's pass sees the composer, now that it recovered.
+    return fixture?.preparation ?? null;
+  });
+  const runtime = createDocumentAnnotationRuntime(fixture.repository);
+
+  const handoff = runtime.handoff(fixture.document, fixture.operation.operationId);
+  await handoffPreparing;
+  runtime.storageSucceeded();
+  releasePreparation();
+
+  expect(await handoff).toEqual({ state: "pending", reason: "owner-unavailable" });
+  // No further external trigger: the retained storage success must be what
+  // starts the pass that completes the now-claimable handoff.
+  await runtime.whenIdle();
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
