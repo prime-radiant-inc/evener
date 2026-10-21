@@ -38,6 +38,7 @@ import { initNotifications, resetNotificationsForTests } from "../notifications"
 import { openDocBeside } from "../panes/doc/openDoc";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
+import { retainedTranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { installJobLogRangeGeometry } from "../panes/transcript/JobLogTestUtils";
 import { enterAgentCascade, returnFromAgentCascade } from "../panes/zoom/actions";
 import { cascadeClient, cascadeContext } from "../panes/zoom/cascadeTestUtils";
@@ -48,6 +49,7 @@ import { resetAuthStatusesStoreForTests } from "../stores/authStatuses";
 import * as backgroundTranscriptsModule from "../stores/backgroundTranscripts";
 import { connectionStore } from "../stores/connection";
 import { credentialsStore } from "../stores/credentials";
+import { selectNeedsYouRows } from "../stores/navigation/selectors";
 import {
   initNavigation,
   type NavigationStoreState,
@@ -70,6 +72,7 @@ import { resetThreadsStoreForTests, setProductionEntryCacheForTests, threadsStor
 import { emptyStateReasons } from "../widgets/emptystate/emptyStateTestUtils";
 import { AppShell } from "./AppShell";
 import { activitySidebarStore, resetActivitySidebarStoreForTests } from "./activitybar/activitySidebarStore";
+import { currentAttentionEntryToken, openAttentionSession } from "./attentionHistory";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
 import { resetDockChunkForTests } from "./DockRegion";
@@ -345,12 +348,15 @@ function installFailedLocation(ref: string): void {
   navigationStore.setState({ mode: "v3", resources });
 }
 
-function installNeedsYouRows(): void {
+function installNeedsYouRows(refs = ["local:ny1", "local:ny2"]): void {
   const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
-  const rows = [
-    { ...TREE_SESSION, ref: "local:ny1", session_id: "ny1", title: "Needs you one", state: "awaiting" },
-    { ...TREE_SESSION, ref: "local:ny2", session_id: "ny2", title: "Needs you two", state: "awaiting" },
-  ];
+  const rows = refs.map((ref, index) => ({
+    ...TREE_SESSION,
+    ref,
+    session_id: ref,
+    title: `Needs you ${index + 1}`,
+    state: "awaiting",
+  }));
   const resources = new Map(navigationStore.getState().resources);
   resources.set(keyID(key), {
     key,
@@ -2126,6 +2132,522 @@ test("Mod+J history Back and Forward restore the exact routed readers", async ()
   expect(workspaceStore.getState().panes).toContain(destination);
   expect(conversationPaneLifetime(destination)).toBe(destinationLifetime);
   expect(destinationLifetime.alive).toBe(true);
+});
+
+test("mobile initial mount restores a valid attention entry before StackHost publishes the stale focused URL", async () => {
+  const setMobile = installSwitchableViewport();
+  setMobile(true);
+  window.history.replaceState({}, "", "/s/local%3Aorigin");
+  installLocationForRoute("local:origin");
+  const firstMount = render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:origin" }));
+  const origin = workspaceStore.getState().mainPane();
+  if (!origin) throw new Error("missing initial routed reader");
+  const originLifetime = conversationPaneLifetime(origin);
+  const originView = retainedTranscriptReadView(originLifetime, "local:origin", "session");
+  if (!originView) throw new Error("missing initial retained read view");
+  let staleReader = "";
+  act(() => {
+    staleReader = workspaceStore.getState().openPane("session", { ref: "local:stale" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(origin.id);
+    openAttentionSession("local:destination");
+  });
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:destination" }));
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+  firstMount.unmount();
+
+  act(() => workspaceStore.getState().focusPane(staleReader));
+  const token = currentAttentionEntryToken();
+  if (!token) throw new Error("origin history entry lost its valid runtime token before remount");
+  const entryURL = window.location.pathname;
+  const entryState = window.history.state;
+  const historyLength = window.history.length;
+
+  render(<AppShell client={navClient()} />);
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+  expect(currentAttentionEntryToken()).toBe(token);
+  expect(window.location.pathname).toBe(entryURL);
+  expect(window.history.length).toBe(historyLength);
+  expect(window.history.state).toEqual(entryState);
+  expect(workspaceStore.getState().panes).toContain(origin);
+  expect(conversationPaneLifetime(origin)).toBe(originLifetime);
+  expect(originLifetime.alive).toBe(true);
+  expect(retainedTranscriptReadView(originLifetime, "local:origin", "session")).toBe(originView);
+
+  act(() => workspaceStore.getState().focusPane(staleReader));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Astale"));
+});
+
+test("a secondary departure restores the exact reader without replacing its main or neighbors", async () => {
+  window.history.replaceState({}, "", "/s/local%3Aowner");
+  installLocationForRoute("local:owner");
+  render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:owner" }));
+  const main = workspaceStore.getState().mainPane();
+  if (!main) throw new Error("missing owner reader");
+  let secondaryId = "";
+  act(() => {
+    secondaryId = workspaceStore.getState().openPane("session", { ref: "local:secondary" }, { slot: "secondary" });
+  });
+  await waitFor(() =>
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === secondaryId)?.type).toBe("session"),
+  );
+  const secondary = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
+  if (!secondary) throw new Error("missing secondary reader");
+  const lifetime = conversationPaneLifetime(secondary);
+  const view = retainedTranscriptReadView(lifetime, "local:secondary", "session");
+  if (!view) throw new Error("missing secondary read view");
+  act(() => {
+    workspaceStore.getState().focusPane(secondaryId);
+    openAttentionSession("local:destination");
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Adestination"));
+  const destination = workspaceStore.getState().focusedPaneId;
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(secondaryId));
+  expect(workspaceStore.getState().mainPane()).toBe(main);
+  expect(workspaceStore.getState().panes).toContain(secondary);
+  expect(workspaceStore.getState().focusedPaneId).not.toBe(destination);
+  expect(conversationPaneLifetime(secondary)).toBe(lifetime);
+  expect(retainedTranscriptReadView(lifetime, "local:secondary", "session")).toBe(view);
+});
+
+test("same-URL attention entries restore distinct cascade and session readers on Back and Forward", async () => {
+  window.history.replaceState({}, "", "/s/local%3Asame");
+  installLocationForRoute("local:same");
+  render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:same" }));
+  const session = workspaceStore.getState().mainPane();
+  if (!session) throw new Error("missing same-URL session reader");
+  let sourceId = "";
+  let cascadeId = "";
+  act(() => {
+    sourceId = workspaceStore.getState().openPane("session", { ref: "local:source" }, { slot: "secondary" });
+  });
+  await waitFor(() =>
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === sourceId)?.type).toBe("session"),
+  );
+  act(() => {
+    cascadeId = enterAgentCascade(
+      activityDelegate({ ownerRef: "local:source", childRef: "local:same", delegateId: "same-url-edge" }),
+      sourceId,
+    );
+    workspaceStore.getState().focusPane(cascadeId);
+  });
+  await waitFor(() => {
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === cascadeId)?.type).toBe("sessionZoom");
+    expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  });
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade) throw new Error("missing same-URL cascade reader");
+  expect(cascade.params).toMatchObject({
+    ref: "local:same",
+    source: { type: "session", params: { ref: "local:source" } },
+    edges: [{ ownerRef: "local:source", childRef: "local:same", delegateId: "same-url-edge" }],
+  });
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === sourceId)).toMatchObject({
+    type: "session",
+    params: { ref: "local:source" },
+  });
+  expect(focusedSessionRef()).toBe("local:same");
+  const cascadeLifetime = conversationPaneLifetime(cascade);
+  const cascadeView = retainedTranscriptReadView(cascadeLifetime, "local:same", "cascade");
+  const sessionLifetime = conversationPaneLifetime(session);
+  const sessionView = retainedTranscriptReadView(sessionLifetime, "local:same", "session");
+  if (!cascadeView || !sessionView) throw new Error("missing same-URL reader views");
+  const initialHistoryLength = window.history.length;
+  act(() => openAttentionSession("local:same"));
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(session.id));
+  expect(window.location.pathname).toBe("/s/local%3Asame");
+  expect(window.history.length).toBe(initialHistoryLength + 1);
+
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId));
+  expect(window.location.pathname).toBe("/s/local%3Asame");
+  expect(workspaceStore.getState().panes).toContain(cascade);
+  expect(conversationPaneLifetime(cascade)).toBe(cascadeLifetime);
+  expect(retainedTranscriptReadView(cascadeLifetime, "local:same", "cascade")).toBe(cascadeView);
+
+  const forward = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.forward();
+    await forward;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(session.id));
+  expect(window.location.pathname).toBe("/s/local%3Asame");
+  expect(workspaceStore.getState().panes).toContain(session);
+  expect(conversationPaneLifetime(session)).toBe(sessionLifetime);
+  expect(retainedTranscriptReadView(sessionLifetime, "local:same", "session")).toBe(sessionView);
+});
+
+test.each(["session", "cascade"] as const)(
+  "mobile browser and StackHost Back preserve the exact %s reader without phantom steps",
+  async (readerKind) => {
+    const setMobile = installSwitchableViewport();
+    setMobile(true);
+    window.history.replaceState({}, "", "/s/local%3Aorigin");
+    installLocationForRoute("local:origin");
+    render(<AppShell client={navClient()} />);
+    await screen.findByText(/loading transcript/i);
+    await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:origin" }));
+    const originOwner = workspaceStore.getState().mainPane();
+    if (!originOwner) throw new Error("missing origin owner session");
+    let originId = workspaceStore.getState().mainPane()?.id;
+    if (readerKind === "cascade") {
+      act(() => {
+        originId = enterAgentCascade(
+          activityDelegate({ ownerRef: "local:origin", childRef: "local:leaf", delegateId: "origin-leaf" }),
+          originId,
+        );
+        workspaceStore.getState().focusPane(originId as string);
+      });
+      await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(originId));
+    }
+    const origin = workspaceStore.getState().panes.find((pane) => pane.id === originId);
+    if (!origin) throw new Error(`missing ${readerKind} origin reader`);
+    if (readerKind === "cascade") {
+      expect(origin).toMatchObject({
+        type: "sessionZoom",
+        params: {
+          ref: "local:leaf",
+          source: { type: "session", params: { ref: "local:origin" } },
+          edges: [{ ownerRef: "local:origin", childRef: "local:leaf", delegateId: "origin-leaf" }],
+        },
+      });
+      expect(focusedSessionRef()).toBe("local:leaf");
+    }
+    const originLifetime = conversationPaneLifetime(origin);
+    const readerRef = readerKind === "cascade" ? "local:leaf" : "local:origin";
+    const role = readerKind === "cascade" ? "cascade" : "session";
+    const originView = retainedTranscriptReadView(originLifetime, readerRef, role);
+    if (!originView) throw new Error(`missing ${readerKind} read view`);
+    const initialHistoryLength = window.history.length;
+    act(() => openAttentionSession("local:destination"));
+    await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Adestination"));
+    const destination = workspaceStore
+      .getState()
+      .panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId);
+    if (!destination) throw new Error("missing destination reader");
+    const destinationLifetime = conversationPaneLifetime(destination);
+    expect(window.history.length).toBe(initialHistoryLength + 1);
+
+    const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+    await act(async () => {
+      window.history.back();
+      await back;
+    });
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+    expect(workspaceStore.getState().panes).toContain(origin);
+    expect(conversationPaneLifetime(origin)).toBe(originLifetime);
+    expect(retainedTranscriptReadView(originLifetime, readerRef, role)).toBe(originView);
+
+    const forward = new Promise<void>((resolve) =>
+      window.addEventListener("popstate", () => resolve(), { once: true }),
+    );
+    await act(async () => {
+      window.history.forward();
+      await forward;
+    });
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(destination.id));
+    expect(conversationPaneLifetime(destination)).toBe(destinationLifetime);
+
+    const lengthBeforeBack = window.history.length;
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+    expect(window.history.length).toBe(lengthBeforeBack);
+    expect(window.location.pathname).toBe("/s/local%3Aorigin");
+
+    const toolbarForward = new Promise<void>((resolve) =>
+      window.addEventListener("popstate", () => resolve(), { once: true }),
+    );
+    await act(async () => {
+      window.history.forward();
+      await toolbarForward;
+    });
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(destination.id));
+    expect(window.history.length).toBe(lengthBeforeBack);
+
+    const returnToOrigin = new Promise<void>((resolve) =>
+      window.addEventListener("popstate", () => resolve(), { once: true }),
+    );
+    await act(async () => {
+      window.history.back();
+      await returnToOrigin;
+    });
+    await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+    const lengthBeforeExhaustedBack = window.history.length;
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => {
+      const focused = workspaceStore
+        .getState()
+        .panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId);
+      expect(focused?.type).toBe(readerKind === "cascade" ? "session" : "welcome");
+      if (readerKind === "cascade") expect(focused).toBe(originOwner);
+    });
+    expect(workspaceStore.getState().focusedPaneId).not.toBe(destination.id);
+    expect(window.location.pathname).toBe(readerKind === "cascade" ? "/s/local%3Aorigin" : "/");
+    expect(window.history.length).toBe(lengthBeforeExhaustedBack + (readerKind === "cascade" ? 0 : 2));
+  },
+);
+
+test("attention restoration survives desktop→mobile→desktop host remount with the same reader and view", async () => {
+  const setMobile = installSwitchableViewport();
+  window.history.replaceState({}, "", "/s/local%3Aorigin");
+  installLocationForRoute("local:origin");
+  render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:origin" }));
+  const origin = workspaceStore.getState().mainPane();
+  if (!origin) throw new Error("missing desktop origin reader");
+  const lifetime = conversationPaneLifetime(origin);
+  const view = retainedTranscriptReadView(lifetime, "local:origin", "session");
+  if (!view) throw new Error("missing desktop origin read view");
+  act(() => openAttentionSession("local:destination"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Adestination"));
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(origin.id));
+
+  act(() => setMobile(true));
+  await screen.findByRole("button", { name: "Back" });
+  expect(workspaceStore.getState().focusedPaneId).toBe(origin.id);
+  act(() => setMobile(false));
+  await waitFor(() => expect(getDockviewApi()).not.toBeNull());
+  expect(workspaceStore.getState().focusedPaneId).toBe(origin.id);
+  expect(workspaceStore.getState().panes).toContain(origin);
+  expect(conversationPaneLifetime(origin)).toBe(lifetime);
+  expect(retainedTranscriptReadView(lifetime, "local:origin", "session")).toBe(view);
+});
+
+test("restored secondary survives successful, failed, and refreshed location reads without main reconstruction", async () => {
+  window.history.replaceState({}, "", "/s/local%3Aowner");
+  installLocationForRoute("local:owner");
+  render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:owner" }));
+  const owner = workspaceStore.getState().mainPane();
+  if (!owner) throw new Error("missing location owner");
+  let secondaryId = "";
+  act(() => {
+    secondaryId = workspaceStore.getState().openPane("session", { ref: "local:secondary" }, { slot: "secondary" });
+  });
+  await waitFor(() =>
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === secondaryId)?.type).toBe("session"),
+  );
+  const secondary = workspaceStore.getState().panes.find((pane) => pane.id === secondaryId);
+  if (!secondary) throw new Error("missing location secondary");
+  const lifetime = conversationPaneLifetime(secondary);
+  const view = retainedTranscriptReadView(lifetime, "local:secondary", "session");
+  if (!view) throw new Error("missing location secondary view");
+  act(() => {
+    workspaceStore.getState().focusPane(secondaryId);
+    openAttentionSession("local:destination");
+  });
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Adestination"));
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(secondaryId));
+  const assertExact = () => {
+    expect(workspaceStore.getState().mainPane()).toBe(owner);
+    expect(workspaceStore.getState().focusedPaneId).toBe(secondaryId);
+    expect(workspaceStore.getState().panes).toContain(secondary);
+    expect(conversationPaneLifetime(secondary)).toBe(lifetime);
+    expect(retainedTranscriptReadView(lifetime, "local:secondary", "session")).toBe(view);
+  };
+
+  act(() =>
+    installLocation({
+      generation_id: "generation_test",
+      revision: 2,
+      ref: "local:owner",
+      top_level_ref: "local:other-owner",
+      top_level: false,
+      session: { ...TREE_SESSION, ref: "local:owner", kind: "subagent" },
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      navigationStore.getState().resources?.get(keyID({ kind: "location", ref: "local:owner" }))?.loadedRevision,
+    ).toBe(2),
+  );
+  assertExact();
+
+  act(() => installFailedLocation("local:owner"));
+  await waitFor(() =>
+    expect(
+      navigationStore.getState().resources?.get(keyID({ kind: "location", ref: "local:owner" }))?.error,
+    ).toBeInstanceOf(Error),
+  );
+  assertExact();
+
+  const key = { kind: "location", ref: "local:owner" } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  const prior = resources.get(keyID(key));
+  if (!prior) throw new Error("missing refreshed location resource");
+  resources.set(keyID(key), {
+    ...prior,
+    data: { ...(prior.data as NavigationSessionLocation), top_level_ref: "local:stale-owner" },
+    stale: true,
+    error: null,
+  });
+  act(() => navigationStore.setState({ resources }));
+  await waitFor(() => expect(navigationStore.getState().resources?.get(keyID(key))?.stale).toBe(true));
+  assertExact();
+  act(() =>
+    installLocation({
+      generation_id: "generation_test",
+      revision: 3,
+      ref: "local:owner",
+      top_level_ref: "local:owner",
+      top_level: true,
+      session: { ...TREE_SESSION, ref: "local:owner" },
+    }),
+  );
+  await waitFor(() => expect(navigationStore.getState().resources?.get(keyID(key))?.loadedRevision).toBe(3));
+  assertExact();
+});
+
+test("generic route placement does not focus a parked same-ref attention reader", async () => {
+  window.history.replaceState({}, "", "/s/local%3Aorigin");
+  installLocationForRoute("local:origin");
+  render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:origin" }));
+  const parkedOrigin = workspaceStore.getState().mainPane();
+  if (!parkedOrigin) throw new Error("missing routed origin");
+  act(() => openAttentionSession("local:destination"));
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Adestination"));
+  expect(parkedOrigin.slot).toBe("parked");
+  act(() => navigate("/s/local%3Aorigin"));
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:origin" }));
+  const generic = workspaceStore.getState().mainPane();
+  expect(generic).not.toBe(parkedOrigin);
+  expect(generic?.id).not.toBe(parkedOrigin.id);
+  expect(parkedOrigin.slot).toBe("parked");
+});
+
+test("focus-only attention departures restore a changed cascade leaf with exactly two pushes", async () => {
+  const user = userEvent.setup();
+  installNeedsYouRows(["local:origin", "local:leaf-one", "local:leaf-two", "local:ny2"]);
+  window.history.replaceState({}, "", "/s/local%3Aorigin");
+  installLocationForRoute("local:origin");
+  render(<AppShell client={navClient()} />);
+  await screen.findByText(/loading transcript/i);
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:origin" }));
+  expect(selectNeedsYouRows(navigationStore.getState()).map((row) => row.ref)).toEqual([
+    "local:origin",
+    "local:leaf-one",
+    "local:leaf-two",
+    "local:ny2",
+  ]);
+  expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
+  expect(focusedSessionRef()).toBe("local:origin");
+  expect(window.location.pathname).toBe("/s/local%3Aorigin");
+  expect(currentAttentionEntryToken()).toBeNull();
+  let sourceId = "";
+  act(() => {
+    sourceId = workspaceStore.getState().openPane("session", { ref: "local:focus" }, { slot: "secondary" });
+  });
+  await waitFor(() =>
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === sourceId)?.type).toBe("session"),
+  );
+  const historyLength = window.history.length;
+
+  await user.keyboard("{Meta>}j{/Meta}");
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:leaf-one" }));
+  expect(window.history.length).toBe(historyLength + 1);
+  expect(window.location.pathname).toBe("/s/local%3Aleaf-one");
+  const firstEntryToken = currentAttentionEntryToken();
+  if (!firstEntryToken) throw new Error("first keyboard hop did not retain its attention token");
+  let cascadeId = "";
+  act(() => {
+    cascadeId = enterAgentCascade(
+      activityDelegate({ ownerRef: "local:focus", childRef: "local:leaf-one", delegateId: "leaf-one" }),
+      sourceId,
+    );
+    workspaceStore.getState().focusPane(cascadeId);
+  });
+  await waitFor(() => {
+    expect(workspaceStore.getState().panes.find((pane) => pane.id === cascadeId)?.type).toBe("sessionZoom");
+    expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  });
+  act(() => {
+    const currentCascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+    if (!currentCascade) throw new Error("missing cascade reader before leaf change");
+    if (
+      !workspaceStore.getState().retypePane(currentCascade, "sessionZoom", {
+        ref: "local:leaf-two",
+        source: { type: "session", params: { ref: "local:focus" } },
+        edges: [
+          { ownerRef: "local:focus", childRef: "local:leaf-one", delegateId: "leaf-one" },
+          { ownerRef: "local:leaf-one", childRef: "local:leaf-two", delegateId: "leaf-two" },
+        ],
+      })
+    )
+      throw new Error("cascade leaf did not change");
+    workspaceStore.getState().focusPane(cascadeId);
+  });
+  const changedCascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!changedCascade) throw new Error("missing changed cascade reader");
+  expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId);
+  expect(focusedSessionRef()).toBe("local:leaf-two");
+  expect(window.location.pathname).toBe("/s/local%3Aleaf-one");
+  expect(currentAttentionEntryToken()).toBe(firstEntryToken);
+  expect(selectNeedsYouRows(navigationStore.getState()).map((row) => row.ref)).toEqual([
+    "local:origin",
+    "local:leaf-one",
+    "local:leaf-two",
+    "local:ny2",
+  ]);
+  const changedLifetime = conversationPaneLifetime(changedCascade);
+  const changedView = retainedTranscriptReadView(changedLifetime, "local:leaf-two", "cascade");
+  if (!changedView) throw new Error("missing changed cascade view");
+
+  await user.keyboard("{Meta>}j{/Meta}");
+  await waitFor(() => expect(focusedSessionRef()).toBe("local:ny2"));
+  expect(window.location.pathname).toBe("/s/local%3Any2");
+  expect(window.history.length).toBe(historyLength + 2);
+  expect((window.history.state as Record<string, unknown>).__evenerAttention).toBeDefined();
+
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(cascadeId));
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === cascadeId)).toEqual(changedCascade);
+  expect((changedCascade.params as { ref: string }).ref).toBe("local:leaf-two");
+  expect(conversationPaneLifetime(changedCascade)).toBe(changedLifetime);
+  expect(retainedTranscriptReadView(changedLifetime, "local:leaf-two", "cascade")).toBe(changedView);
+
+  const forward = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.forward();
+    await forward;
+  });
+  await waitFor(() => expect(focusedSessionRef()).toBe("local:ny2"));
 });
 
 test("v1 Mod+J cold-demand requests page zero once and opens its first ref", async () => {
@@ -5240,7 +5762,11 @@ function installSwitchableViewport(): (mobile: boolean) => void {
   } as MediaQueryList;
   vi.stubGlobal(
     "matchMedia",
-    vi.fn(() => mediaQuery),
+    vi.fn((query: string) =>
+      query === mediaQuery.media
+        ? mediaQuery
+        : { matches: false, media: query, addEventListener: () => {}, removeEventListener: () => {} },
+    ),
   );
   return (nextMobile: boolean) => {
     mobile = nextMobile;

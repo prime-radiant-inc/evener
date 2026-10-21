@@ -1045,7 +1045,11 @@ export function AppShell({ client: injectedClient, bannerDelayMs, bannerCreateCl
   // would otherwise overwrite the deep link with its own fallback pane's "/"
   // mid-wait (kata bbsv). Desktop needs nothing: DockHost never writes to the
   // address bar, so a deferred route simply sits there until it can be placed.
-  const routeDeferred = route?.type === "session" && pendingSessionRef.current !== null;
+  const attentionToken = currentAttentionEntryToken();
+  const routeDeferred =
+    route?.type === "session" &&
+    (pendingSessionRef.current !== null ||
+      (attentionToken !== null && restoredAttentionTokenRef.current !== attentionToken));
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: workspacePanesVersion is a deliberate trigger-only dep for route-owned primary replacement ordering
   useEffect(() => {
