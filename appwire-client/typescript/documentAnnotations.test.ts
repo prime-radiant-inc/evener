@@ -1,6 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { appendLiteralReference } from "../../cmd/evener-hub/frontend/src/panes/session/composer/skillDocument";
-import { buildComposerInput } from "./composerInput";
 import {
   type AnnotationCommentWork,
   type CapturedPassage,
@@ -264,7 +262,7 @@ describe("annotation reference formatting", () => {
     );
   });
 
-  it("keeps captured attachment-marker text literal at the send boundary", () => {
+  it("neutralizes attachment markers in every captured field it prints", () => {
     const capture = passage(FIRST, "click [image 1] now");
     capture.contextBefore = "before [image 1] ";
     capture.contextAfter = " after [image 1]";
@@ -275,22 +273,12 @@ describe("annotation reference formatting", () => {
     const note = "keep [image 1] as text";
     const reference = formatAnnotationReference(capture, "NOTES.md", note);
 
-    // The real append and the real send boundary: the composer stages
-    // attachment 1 under its own marker, appends the reference, and then builds
-    // the input the agent receives.
-    const composed = appendLiteralReference({ text: "[image 1]", skillNames: [] }, reference);
-    const input = buildComposerInput(composed.text, [{ marker: 1, mediaType: "image/png", data: "AAAA" }]);
-    const text = input.find((item) => item.type === "text")?.text ?? "";
-    const staged = "(attached image 1)\n\n";
-    expect(text.startsWith(staged)).toBe(true);
-    // Only the composer's own staged marker translates; the appended reference
-    // reaches the agent byte for byte.
-    expect(text.slice(staged.length)).toBe(reference);
-    expect(text.match(/\(attached image 1\)/g)).toHaveLength(1);
-    expect(input.filter((item) => item.type === "image")).toHaveLength(1);
-    // The formatter's own output must contain no attachment marker for the
-    // send-time translation to rewrite.
+    // Send-time translation rewrites marker-shaped text, including inside a
+    // code span, so the formatter itself must leave no marker to match. The
+    // append-and-send boundary is exercised in the app tree, where the
+    // composer's own append lives.
     expect(markerPattern().test(reference)).toBe(false);
+    expect(reference.replaceAll("\u200b", "")).toContain("selecting “click [image 1] now”");
   });
 });
 
