@@ -187,7 +187,7 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	web := &WebServer{
 		cfg:                       cfg,
 		sources:                   sources,
-		startedAt:                 time.Now().UTC(),
+		startedAt:                 hubProcessStartedAt,
 		lastGoodThreads:           map[string][]appwire.Thread{},
 		liveModels:                &modelsCache{},
 		launchModels:              &launchModelsCache{entries: map[string]*launchModelsEntry{}, refreshing: map[string]bool{}},

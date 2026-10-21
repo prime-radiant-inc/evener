@@ -14,7 +14,6 @@ function updateStatus(): HTMLElement {
   return screen.getByTestId("hub-update-status");
 }
 
-/** Waits for the Updates status line to reach `state`. */
 async function updateStateIs(state: string): Promise<void> {
   await waitFor(() => expect(updateStatus().getAttribute("data-state")).toBe(state));
 }
@@ -48,6 +47,26 @@ const UP_TO_DATE: UpdateCheckResponse = {
   latestCommit: "3b1c5f8ffffffff",
   updateAvailable: false,
   applicable: true,
+  onDiskCommit: "3b1c5f8",
+  installAvailable: false,
+  restartPending: false,
+  started_at: "2026-10-21T12:00:00Z",
+  restartSupported: true,
+};
+
+const UPDATE_AVAILABLE: UpdateCheckResponse = {
+  ...UP_TO_DATE,
+  updateAvailable: true,
+  installAvailable: true,
+  latestCommit: "be7002918fdc",
+};
+
+const INSTALLED: UpdateCheckResponse = {
+  ...UP_TO_DATE,
+  onDiskCommit: "be70029",
+  installAvailable: false,
+  restartPending: true,
+  latestCommit: "be7002918fdc",
 };
 
 beforeEach(() => {
@@ -57,24 +76,29 @@ beforeEach(() => {
   resetDaemonResidentsStoreForTests();
 });
 
-test("dev build shows the rebuild note and no update controls", async () => {
+test("dev build shows the rebuild note, the on-disk build, and Restart without Install", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => overview("dev"));
-  // HubResidents now mounts inside HubSection after settings load and makes a
-  // daemon/list call. Add a handler so the request succeeds and doesn't show
-  // a spurious error banner; update the call assertion to include it.
+  fake.on("evener/update/check", () => ({
+    ...UP_TO_DATE,
+    buildChannel: "dev",
+    applicable: false,
+    updateAvailable: false,
+    installAvailable: false,
+    restartSupported: true,
+  }));
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
   render(<HubSection />);
 
   expect(await screen.findByTestId("hub-update-dev-note")).toBeTruthy();
+  expect(screen.getByTestId("hub-on-disk-build").textContent).toContain("3b1c5f8");
+  expect(screen.getByRole("button", { name: "Restart hub" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Install update" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Check for updates" })).toBeNull();
-  await waitFor(() =>
-    expect(fake.calls.map((c) => c.method)).toEqual(["evener/settings/overview", "evener/daemon/list"]),
-  );
 });
 
-test("release build checks on mount with the build channel and reports up to date", async () => {
+test("release build checks on mount and separates Install from Restart", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
   fake.on("evener/update/check", () => UP_TO_DATE);
@@ -83,13 +107,10 @@ test("release build checks on mount with the build channel and reports up to dat
   render(<HubSection />);
 
   await updateStateIs("up-to-date");
-  // The status line lives in the Updates region, and names the checked channel.
-  const updatesRegion = screen.getByRole("region", { name: "Updates" });
-  expect(updatesRegion.contains(updateStatus())).toBe(true);
-  expect(updateStatus().textContent).toContain("snapshot");
   expect(fake.calls).toContainEqual({ method: "evener/update/check", params: { channel: "snapshot" } });
   expect(screen.getByRole("radio", { name: "Snapshot" }).getAttribute("aria-checked")).toBe("true");
-  expect(screen.getByRole("button", { name: "Update and restart" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Install update" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Restart hub" })).toHaveProperty("disabled", false);
 });
 
 test("switching channel re-checks with the new channel", async () => {
@@ -112,29 +133,75 @@ test("switching channel re-checks with the new channel", async () => {
   expect(fake.calls).toContainEqual({ method: "evener/update/check", params: { channel: "release" } });
 });
 
-test("update available enables the button; confirming applies and shows restarting", async () => {
+test("Install sends evener/upgrade, re-checks, and shows the installed-but-not-running state", async () => {
   const fake = connectFakeClient();
+  let checks = 0;
   fake.on("evener/settings/overview", () => overview("snapshot"));
-  fake.on("evener/update/check", () => ({ ...UP_TO_DATE, updateAvailable: true, latestCommit: "be7002918fdc" }));
-  fake.on("evener/update/apply", () => new Promise(() => {})); // stays pending: we only assert the request and the busy state
+  fake.on("evener/update/check", () => {
+    checks += 1;
+    return checks === 1 ? UPDATE_AVAILABLE : INSTALLED;
+  });
+  fake.on("evener/upgrade", () => ({}) as never);
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
   render(<HubSection />);
   await updateStateIs("update-available");
-  expect(updateStatus().textContent).toContain("be70029");
 
-  const button = screen.getByRole("button", { name: "Update and restart" });
-  expect(button).toHaveProperty("disabled", false);
-  await userEvent.click(button);
-  await userEvent.click(await screen.findByRole("button", { name: "Yes, update and restart" }));
+  await userEvent.click(screen.getByRole("button", { name: "Install update" }));
 
   await waitFor(() =>
     expect(fake.calls).toContainEqual({
-      method: "evener/update/apply",
-      params: { channel: "snapshot" },
+      method: "evener/upgrade",
+      params: { requested: "snapshot" },
       opts: { timeoutMs: APPLY_TIMEOUT_MS },
     }),
   );
+  await waitFor(() => expect(screen.getByTestId("hub-restart-pending").textContent).toContain("be70029"));
+  expect(screen.getByRole("button", { name: "Install update" })).toHaveProperty("disabled", true);
+  expect(screen.getByRole("button", { name: "Restart hub" })).toHaveProperty("disabled", false);
+});
+
+test("Restart confirms the target build and sends evener/hub/restart", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => overview("snapshot"));
+  fake.on("evener/update/check", () => INSTALLED);
+  fake.on("evener/hub/restart", () => new Promise(() => {})); // pending: assert the request and the busy state
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+  await updateStateIs("up-to-date");
+  expect(screen.getByTestId("hub-restart-pending").textContent).toContain("be70029");
+
+  await userEvent.click(screen.getByRole("button", { name: "Restart hub" }));
+  const confirm = await screen.findByRole("button", { name: "Yes, restart" });
+  expect(screen.getByRole("dialog").textContent).toContain("be70029");
+  await userEvent.click(confirm);
+
+  await waitFor(() =>
+    expect(fake.calls).toContainEqual({
+      method: "evener/hub/restart",
+      params: {},
+      opts: { timeoutMs: 30_000 },
+    }),
+  );
+  expect(screen.getByRole("button", { name: "Restart hub" })).toHaveProperty("disabled", true);
+});
+
+test("an older hub without restart support hides Restart and keeps the install fallback", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => overview("snapshot"));
+  fake.on("evener/update/check", () => ({
+    ...UPDATE_AVAILABLE,
+    installAvailable: undefined as unknown as boolean,
+    restartSupported: undefined as unknown as boolean,
+  }));
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+  await updateStateIs("update-available");
+
+  expect(screen.queryByRole("button", { name: "Restart hub" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Install update" })).toHaveProperty("disabled", false);
 });
 
 test("restarting and timed-out states render their messages", async () => {

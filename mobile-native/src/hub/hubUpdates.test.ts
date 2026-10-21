@@ -1,11 +1,14 @@
 import type { UpdateCheckResponse } from "@evener/appwire-client";
 import { expect, it, vi } from "vitest";
 import { renderHook } from "../renderNative.testkit";
-import { createPhoneHubUpdates, createReadiness, useHubUpdates } from "./hubUpdates";
+import { createPhoneHubUpdates, createReadiness, RESTART_DEADLINE_MS, useHubUpdates } from "./hubUpdates";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
+
+const FIRST_START = "2026-10-21T12:00:00Z";
+const SECOND_START = "2026-10-21T12:00:01Z";
 
 const check = (over: Partial<UpdateCheckResponse> = {}): UpdateCheckResponse => ({
 	channel: "release",
@@ -13,60 +16,113 @@ const check = (over: Partial<UpdateCheckResponse> = {}): UpdateCheckResponse => 
 	currentVersion: "0.9.412",
 	currentCommit: "abc1234",
 	latestTag: "v0.9.413",
+	latestCommit: "def5678ffffffff",
 	updateAvailable: true,
 	applicable: true,
+	onDiskCommit: "abc1234",
+	installAvailable: true,
+	restartPending: false,
+	started_at: FIRST_START,
+	restartSupported: true,
 	...over,
 });
 
-/** A hub that answers every update check from `version` and every apply by
- * restarting. */
+/** A hub that answers update checks from its state, installs on upgrade, and
+ * restarts on restart. */
 function hub() {
 	const calls: string[] = [];
-	const state = { version: "0.9.412", failNextCheck: false };
+	const state = { version: "0.9.412", startedAt: FIRST_START, installed: false, failNextCheck: false };
 	const client = {
 		request: (async (method: string) => {
 			calls.push(method);
-			if (method === "evener/update/apply") return { restarting: true };
+			if (method === "evener/upgrade") {
+				state.installed = true;
+				return {};
+			}
+			if (method === "evener/hub/restart") return { restarting: true };
 			if (state.failNextCheck) {
 				state.failNextCheck = false;
 				throw new Error("the hub is still starting");
 			}
-			return check({ currentVersion: state.version, updateAvailable: state.version === "0.9.412" });
+			return check({
+				currentVersion: state.version,
+				started_at: state.startedAt,
+				updateAvailable: !state.installed,
+				installAvailable: !state.installed,
+				restartPending: state.installed,
+				onDiskCommit: state.installed ? "def5678" : "abc1234",
+			});
 		}) as never,
 	};
 	return { client, calls, state };
 }
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-it("checks, applies, and clears the restart once the hub is back on a new version", async () => {
+it("checks, installs, and re-checks without restarting the hub", async () => {
 	const h = hub();
 	const readiness = createReadiness();
 	readiness.set(true);
 	const updates = createPhoneHubUpdates(h.client, readiness);
 	await updates.controller.runCheck();
-	const applying = updates.controller.apply();
+	await updates.controller.install();
+	expect(h.calls).toEqual(["evener/update/check", "evener/upgrade", "evener/update/check"]);
+	expect(updates.controller.getState()).toMatchObject({
+		installing: false,
+		installError: null,
+		check: { installAvailable: false, restartPending: true },
+	});
+});
+
+it("clears the restart once the hub is back on a new incarnation, even at the same version", async () => {
+	const h = hub();
+	const readiness = createReadiness();
+	readiness.set(true);
+	const updates = createPhoneHubUpdates(h.client, readiness);
+	await updates.controller.runCheck();
+	const restarting = updates.controller.restart();
 	await settle();
 	expect(updates.controller.getState().restarting).toBe(true);
-	// The hub drops the connection while it restarts, then comes back new.
-	h.state.version = "0.9.413";
+	// The hub drops the connection while it restarts, then comes back on the
+	// same build in a new process.
+	h.state.startedAt = SECOND_START;
 	readiness.set(false);
 	readiness.set(true);
-	await applying;
+	await restarting;
 	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: false });
 });
 
-it("ends the restart when the hub comes back on the same version, rather than waiting forever", async () => {
+it("ends the restart as timed out when the hub comes back on the same process", async () => {
 	const h = hub();
 	const readiness = createReadiness();
 	readiness.set(true);
 	const updates = createPhoneHubUpdates(h.client, readiness);
 	await updates.controller.runCheck();
-	const applying = updates.controller.apply();
+	const restarting = updates.controller.restart();
 	await settle();
 	readiness.set(false);
 	readiness.set(true);
-	await applying;
+	await restarting;
 	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: true });
+});
+
+it("times out when the hub never reconnects", async () => {
+	vi.useFakeTimers();
+	try {
+		const h = hub();
+		const readiness = createReadiness();
+		readiness.set(true);
+		const updates = createPhoneHubUpdates(h.client, readiness);
+		await updates.controller.runCheck();
+		const restarting = updates.controller.restart();
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		vi.advanceTimersByTime(RESTART_DEADLINE_MS);
+		await restarting;
+		expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: true });
+	} finally {
+		vi.useRealTimers();
+	}
 });
 
 it("stops waiting when the sheet lets go of it", async () => {
@@ -75,11 +131,11 @@ it("stops waiting when the sheet lets go of it", async () => {
 	readiness.set(true);
 	const updates = createPhoneHubUpdates(h.client, readiness);
 	await updates.controller.runCheck();
-	const applying = updates.controller.apply();
+	const restarting = updates.controller.restart();
 	await settle();
 	updates.dispose();
-	await applying;
-	h.state.version = "0.9.413";
+	await restarting;
+	h.state.startedAt = SECOND_START;
 	readiness.set(false);
 	readiness.set(true);
 	await settle();
@@ -152,29 +208,29 @@ it("lets go of a replaced connection's controller and checks through the new cli
 	expect(first.calls).toEqual(["evener/update/check"]);
 	expect(second.calls).toEqual(["evener/update/check"]);
 	expect(hook.result.current.getState().check?.currentVersion).toBe("0.9.413");
-	await replaced.apply();
+	await replaced.restart();
 	expect(first.calls).toEqual(["evener/update/check"]);
 	hook.unmount();
 });
 
-it("asks once when the hub comes back from an update, and shows what that answer says", async () => {
+it("asks once when the hub comes back from a restart, and shows what that answer says", async () => {
 	const h = hub();
 	const current = { client: h.client, ready: true };
 	const hook = renderHook(() => useHubUpdates(current.client, current.ready));
 	await settle();
-	const applying = hook.result.current.apply();
+	const restarting = hook.result.current.restart();
 	await settle();
 	expect(hook.result.current.getState().restarting).toBe(true);
 	h.calls.length = 0;
-	h.state.version = "0.9.413";
+	h.state.startedAt = SECOND_START;
 	current.ready = false;
 	hook.rerender();
 	current.ready = true;
 	hook.rerender();
-	await applying;
+	await restarting;
 	await settle();
 	expect(h.calls).toEqual(["evener/update/check"]);
-	expect(hook.result.current.getState()).toMatchObject({ restarting: false, check: { currentVersion: "0.9.413" } });
+	expect(hook.result.current.getState()).toMatchObject({ restarting: false, check: { started_at: SECOND_START } });
 	hook.unmount();
 });
 
@@ -184,11 +240,11 @@ it("ends the restart when the hub is back but its first answer fails, rather tha
 	readiness.set(true);
 	const updates = createPhoneHubUpdates(h.client, readiness);
 	await updates.controller.runCheck();
-	const applying = updates.controller.apply();
+	const restarting = updates.controller.restart();
 	await settle();
 	h.state.failNextCheck = true;
 	readiness.set(false);
 	readiness.set(true);
-	await applying;
+	await restarting;
 	expect(updates.controller.getState()).toMatchObject({ restarting: false, restartTimedOut: true });
 });

@@ -108,7 +108,16 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 		CurrentVersion: buildinfo.Version(),
 		CurrentCommit:  buildinfo.GitSHA,
 	}
+	onDiskCommit, onDiskErr := probeLaunchBuild()
+	resp.OnDiskCommit = onDiskCommit
+	if onDiskErr != nil {
+		resp.OnDiskError = onDiskErr.Error()
+	}
+	resp.StartedAt = hubProcessStartedAt
+	resp.RestartSupported = hubRestartUsable() && onDiskErr == nil
 	if isDevBuild() {
+		resp.InstallAvailable = false
+		resp.RestartPending = false
 		return resp, nil
 	}
 	result, err := runHubUpdateCheck(ctx, selfupdate.CheckOptions{
@@ -122,7 +131,32 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 	resp.LatestCommit = result.LatestCommit
 	resp.UpdateAvailable = result.UpdateAvailable
 	resp.Applicable = true
+	resp.InstallAvailable = result.UpdateAvailable && onDiskCommit != "" && !selfupdate.CommitIsCurrent(result.LatestCommit, commitToken(onDiskCommit))
+	resp.RestartPending = onDiskCommit != "" && onDiskCommit != resp.CurrentVersion
 	return resp, nil
+}
+
+// commitToken strips a dirty suffix for commit comparison, preserving the
+// distinction between clean and dirty builds elsewhere.
+func commitToken(version string) string {
+	return strings.TrimSuffix(version, "-dirty")
+}
+
+// probeLaunchBuild reads the on-disk build at the recorded launch path. The
+// probe is bounded by probeHubBinary's deadline.
+func probeLaunchBuild() (string, error) {
+	if hubLaunchEntrypointErr != nil {
+		return "", hubLaunchEntrypointErr
+	}
+	if hubLaunchEntrypoint == "" {
+		return "", errHubRestartLaunchPath
+	}
+	return probeHubBinary(hubLaunchEntrypoint)
+}
+
+// hubRestartUsable reports whether a restart could be attempted at all.
+func hubRestartUsable() bool {
+	return hubRestartSupported() && hubLaunchEntrypointErr == nil && hubLaunchEntrypoint != ""
 }
 
 // hubUpdateApply answers evener/update/apply: install the channel's build,
@@ -353,13 +387,21 @@ func evenerBinaryFrom(channel string, installed []string) (string, error) {
 // failure the old hub keeps running, so the lock is released here too, or
 // every later apply/upgrade would be refused forever.
 func scheduleHubRestartAfterResponse(ctx context.Context, pin restartPin, binary string, args []string) {
+	scheduleRestartAfterResponse(ctx, pin, binary, args, "self-update", true)
+}
+
+// scheduleRestartAfterResponse execs binary once the response has been
+// written. useInstallLock is false for an ad-hoc or worktree launch path where
+// no managed install directory exists; the pinned digest is still re-verified
+// immediately before Exec.
+func scheduleRestartAfterResponse(ctx context.Context, pin restartPin, binary string, args []string, label string, useInstallLock bool) {
 	restart := func() {
 		go func() {
 			time.Sleep(hubRestartDelay)
-			_, _ = fmt.Fprintf(hubUpdateStderr, "[hub] self-update: restarting as %s\n", binary)
+			_, _ = fmt.Fprintf(hubUpdateStderr, "[hub] %s: restarting as %s\n", label, binary)
 			abort := func(format string, args ...any) {
 				hubUpdateMu.Unlock()
-				_, _ = fmt.Fprintf(hubUpdateStderr, "[hub] self-update: "+format+"\n", args...)
+				_, _ = fmt.Fprintf(hubUpdateStderr, "[hub] "+label+": "+format+"\n", args...)
 			}
 			// Re-acquire the cross-process install lock for the
 			// verify+exec critical section: the install lock released
@@ -372,12 +414,16 @@ func scheduleHubRestartAfterResponse(ctx context.Context, pin restartPin, binary
 			// stays well under the frontend's 30s restart poll (plus the
 			// post-response delay above) so a contended-but-successful
 			// restart still lands before the UI declares a timeout.
-			relockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			release, err := selfupdate.AcquireInstallLockForVerify(relockCtx, pin.shareBinDir)
-			cancel()
-			if err != nil {
-				abort("restart aborted: install lock unavailable: %v", err)
-				return
+			release := func() {}
+			if useInstallLock {
+				relockCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				var err error
+				release, err = selfupdate.AcquireInstallLockForVerify(relockCtx, pin.shareBinDir)
+				cancel()
+				if err != nil {
+					abort("restart aborted: install lock unavailable: %v", err)
+					return
+				}
 			}
 			// The install lock released at Upgrade return; re-verify the
 			// binary is still the one just installed before exec'ing --

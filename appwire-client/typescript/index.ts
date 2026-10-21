@@ -284,9 +284,15 @@ export type {
   HubUpdatePorts,
   HubUpdateState,
   HubUpdateStateStore,
+  RestartBaseline,
   UpdateChannel,
 } from "./hubUpdate";
-export { APPLY_TIMEOUT_MS, createHubUpdateController, INITIAL_HUB_UPDATE_STATE } from "./hubUpdate";
+export {
+  APPLY_TIMEOUT_MS,
+  createHubUpdateController,
+  INITIAL_HUB_UPDATE_STATE,
+  RESTART_REQUEST_TIMEOUT_MS,
+} from "./hubUpdate";
 export type { ItemFailureSignals } from "./itemFailure";
 export {
   displayTurnStatus,

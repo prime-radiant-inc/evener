@@ -9,6 +9,11 @@ const check = (over: Partial<UpdateCheckResponse> = {}): UpdateCheckResponse => 
 	currentCommit: "abc1234",
 	updateAvailable: false,
 	applicable: true,
+	onDiskCommit: "abc1234",
+	installAvailable: false,
+	restartPending: false,
+	started_at: "2026-10-21T12:00:00Z",
+	restartSupported: true,
 	...over,
 });
 

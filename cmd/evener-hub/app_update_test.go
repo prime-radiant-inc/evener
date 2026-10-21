@@ -177,6 +177,7 @@ func TestHubUpdateCheckDevBuildIsNotApplicable(t *testing.T) {
 
 func TestHubUpdateCheckDefaultsToBuildChannelAndFillsCurrent(t *testing.T) {
 	setBuild(t, "3b1c5f8", "snapshot")
+	setRestartProbe(t, "echo 'evener 3b1c5f8 (2026-10-21T00:00:00Z)'")
 	var gotOpts selfupdate.CheckOptions
 	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
 		gotOpts = opts
@@ -192,6 +193,7 @@ func TestHubUpdateCheckDefaultsToBuildChannelAndFillsCurrent(t *testing.T) {
 	want := appwire.UpdateCheckResponse{
 		Channel: "snapshot", BuildChannel: "snapshot", CurrentVersion: "3b1c5f8", CurrentCommit: "3b1c5f8",
 		LatestTag: "snapshot", LatestCommit: "be70029abc", UpdateAvailable: true, Applicable: true,
+		OnDiskCommit: "3b1c5f8", InstallAvailable: true, StartedAt: hubProcessStartedAt, RestartSupported: true,
 	}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)

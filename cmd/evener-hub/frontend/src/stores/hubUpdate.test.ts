@@ -28,6 +28,11 @@ const UP_TO_DATE: UpdateCheckResponse = {
   latestCommit: "be7002918fdc60dbdeab71d9dd17e00d3d006c56",
   updateAvailable: false,
   applicable: true,
+  onDiskCommit: "be70029",
+  installAvailable: false,
+  restartPending: false,
+  started_at: "2026-10-21T12:00:00Z",
+  restartSupported: true,
 };
 
 function healthFetch(versions: string[]): typeof fetch {

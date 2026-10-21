@@ -260,6 +260,17 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if len(args) > 0 && args[0] == "attach" {
 		return runAttach(args[1:], stderr, deps)
 	}
+	if len(args) > 0 && args[0] == "restart" {
+		return runHubRestart(args[1:], stderr, deps)
+	}
+
+	// Record the launch entrypoint once, before any request can resolve it
+	// against a changed PATH or working directory. A failure disables restart
+	// without preventing the hub from starting.
+	hubLaunchEntrypoint, hubLaunchEntrypointErr = resolveLaunchEntrypoint(hubProcessArgs(), hubExecutable)
+	if hubLaunchEntrypointErr != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] launch path: %v\n", hubLaunchEntrypointErr)
+	}
 
 	opts, err := parseHubOptions(args, stderr)
 	if err != nil {

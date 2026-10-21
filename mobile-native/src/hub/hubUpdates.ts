@@ -8,6 +8,9 @@
 import { type AppwireClientLike, createHubUpdateController, type HubUpdateController } from "@evener/appwire-client";
 import { useEffect, useMemo, useState } from "react";
 
+/** A restarted hub that never reconnects must not leave the sheet waiting forever. */
+export const RESTART_DEADLINE_MS = 30_000;
+
 /** Whether the sheet's connection is ready, and a signal each time it turns
  * ready. The sheet sets it from the connection it renders. */
 export interface Readiness {
@@ -52,27 +55,33 @@ export function createPhoneHubUpdates(
 			if (!client) throw new Error("The hub isn't connected.");
 			return client;
 		},
-		awaitRestart: (previousVersion) =>
+		awaitRestart: (previous) =>
 			new Promise<boolean>((resolve) => {
 				let done = false;
+				let timer: ReturnType<typeof setTimeout>;
 				const finish = (back: boolean) => {
 					if (done) return;
 					done = true;
+					clearTimeout(timer);
 					unsubscribe();
 					endWaits.delete(end);
 					resolve(back);
 				};
 				const end = () => finish(false);
+				timer = setTimeout(end, RESTART_DEADLINE_MS);
 				// The wait owns the check the return to ready makes (useHubUpdates
 				// skips its own while restarting), so one answer both shows the
-				// hub's version and ends the wait. A check that fails ends it as
-				// not updated: nothing else would ask again while the connection
-				// stays up, and the sheet's next check shows where the hub stands.
+				// hub's identity and ends the wait. An incarnation comparison is
+				// what makes a same-version rebuild visible.
 				const unsubscribe = readiness.subscribe(() => {
 					if (!readiness.isReady()) return;
 					void controller.runCheck().then(() => {
 						const check = controller.getState().check;
-						finish(check !== null && check.currentVersion !== previousVersion);
+						const sameProcess =
+							previous.incarnation !== null
+								? check?.started_at === previous.incarnation
+								: check?.currentVersion === previous.version;
+						finish(check !== null && !sameProcess);
 					});
 				});
 				endWaits.add(end);
