@@ -13,11 +13,11 @@
 
 import { NO_ACTIVE_TURN, type SessionControls, sessionControls, type ThreadModel } from "@evener/appwire-client";
 import {
-  isLocalRecoveryFenced,
-  isResumeOnlyLocal,
-  isSendResumesLocal,
+  isRecoveryFenced,
+  isResumeOnly,
+  isSendResumes,
   type ResumeOnlySignals,
-  sendDrivenLocalModel,
+  sendDrivenModel,
   threadsStore,
 } from "./threads";
 
@@ -43,11 +43,11 @@ export function liveThreadModel(ref: string): ThreadModel | undefined {
 export function pressRefusal(ref: string, control: SessionControl): string | undefined {
   const model = liveThreadModel(ref);
   if (!model) return NO_ACTIVE_TURN;
-  // The store-wide predicate, not isResumeOnlyLocal over this model: it reads
+  // The store-wide predicate, not isResumeOnly over this model: it reads
   // the delivery-uncertain signal from the pending-turns projection too, so a
   // press that lands with blockedUnknown rows fences exactly as the composer's
   // blockedMutations selector would have.
-  if (control === "send" && sendDrivenLocalModel(ref)) return undefined;
+  if (control === "send" && sendDrivenModel(ref)) return undefined;
   return controlsFor(model).reason[control];
 }
 
@@ -59,12 +59,12 @@ export function pressRefusal(ref: string, control: SessionControl): string | und
 // press handlers derive from this one predicate (the composer module cannot
 // lend QueueStrip its copy: Composer imports QueueStrip), and each call site
 // adds the shape its own surface needs.
-export { isLocalRecoveryFenced, isResumeOnlyLocal, isSendResumesLocal };
+export { isRecoveryFenced, isResumeOnly, isSendResumes };
 
 // The recovery fence as one reading, so its three consumers cannot drift:
 //   sendResumes - a fenced local session whose Send drives the resume: Send is
 //                 offered and the store's driver resumes before dispatch.
-//   resumeOnly  - the hub admits a folded turn/start (isResumeOnlyLocal).
+//   resumeOnly  - the hub admits a folded turn/start (isResumeOnly).
 //   sendDriven  - the union of the two above: the shapes whose only recovery
 //                 action is a Send, so the pane/composer sites can ask the one
 //                 question instead of recombining the pair.
@@ -72,7 +72,7 @@ export { isLocalRecoveryFenced, isResumeOnlyLocal, isSendResumesLocal };
 //   fencedLocal - a stopped local snapshot still fenced, whose follow-up card
 //                 keeps the control row reachable for the retained draft.
 // `signals` is the store's delivery-uncertain / in-flight-Stop reading (see
-// isResumeOnlyLocal): a caller that can see it passes it so a resumable session
+// isResumeOnly): a caller that can see it passes it so a resumable session
 // whose reconciliation is pending keeps the fence and the Resume affordance.
 export interface RecoveryFenceReading {
   sendResumes: boolean;
@@ -83,25 +83,24 @@ export interface RecoveryFenceReading {
 }
 
 export function recoveryFence(
-  ref: string,
   model: Pick<ThreadModel, "resumeOnlyFoldable" | "status" | "parentRef">,
   restartObligated: boolean,
   signals: ResumeOnlySignals = {},
 ): RecoveryFenceReading {
-  const resumeOnly = isResumeOnlyLocal(ref, model, signals);
-  const sendResumes = isSendResumesLocal(ref, model, restartObligated, signals);
+  const resumeOnly = isResumeOnly(model, signals);
+  const sendResumes = isSendResumes(model, restartObligated, signals);
   // A Stop this page started is its OWN fence while it drains, independent of
   // the restart obligation: a stale thread refresh can clear
   // restartBlockingObligations while the forceStop RPC is still in flight, and
   // the hub holds Stopping > 0 (refusing even turn/start) for that whole
   // window. So stillFenced reads stopInFlight as its own clause rather than
-  // only as a blocker of the resume-only carve-out (which isResumeOnlyLocal
+  // only as a blocker of the resume-only carve-out (which isResumeOnly
   // already applies, making the two mutually exclusive).
   // The Send-resumes face is deliberately NOT stillFenced: it blocks Queue but
   // offers Send, which the store's driver backs. stillFenced stays "the fence
   // blocks Send/Queue".
   const stillFenced =
-    isLocalRecoveryFenced(ref, restartObligated || signals.stopInFlight === true) && !resumeOnly && !sendResumes;
+    isRecoveryFenced(restartObligated || signals.stopInFlight === true) && !resumeOnly && !sendResumes;
   return {
     sendResumes,
     resumeOnly,
@@ -130,5 +129,5 @@ export function recoveryFence(
 // ends a drain never passes through this fence.
 export function pressLocalRecoveryFenced(ref: string): boolean {
   const state = threadsStore.getState();
-  return isLocalRecoveryFenced(ref, state.restartBlockingObligations.has(ref) || state.stoppingRefs.has(ref));
+  return isRecoveryFenced(state.restartBlockingObligations.has(ref) || state.stoppingRefs.has(ref));
 }
