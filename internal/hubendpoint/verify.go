@@ -23,7 +23,8 @@ type VerifiedHealth struct {
 	BackendGitSha string    `json:"backend_git_sha"`
 }
 
-// VerifyLocalConn verifies identity without a token on the supplied connection.
+// VerifyLocalConn verifies the published instance identity without a token on the
+// supplied connection. It is not proof that the answering process holds the token.
 // A successful verification drains health and leaves the exact connection reusable.
 // The caller must close a connection after any failure.
 func VerifyLocalConn(ctx context.Context, conn net.Conn, origin Origin, expected Record) error {
@@ -31,7 +32,8 @@ func VerifyLocalConn(ctx context.Context, conn net.Conn, origin Origin, expected
 	return err
 }
 
-// VerifiedLocalHealth also returns the version reported by the verified process.
+// VerifiedLocalHealth verifies the published instance identity on the supplied
+// connection and returns its reported version. It is not proof of token possession.
 func VerifiedLocalHealth(ctx context.Context, conn net.Conn, origin Origin, expected Record) (VerifiedHealth, error) {
 	if ctx.Err() != nil {
 		return VerifiedHealth{}, ctx.Err()
