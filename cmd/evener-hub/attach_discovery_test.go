@@ -219,6 +219,17 @@ func assertAttachErrorReportedOnce(t *testing.T, err error, stdout, stderr *byte
 	}
 }
 
+func TestAttachParserRejectsRemovedAddr(t *testing.T) {
+	// Otherwise-valid input isolates syntax rejection from config/token failures.
+	var stderr bytes.Buffer
+	if _, err := parseAttachOptions([]string{"--stdio", "--addr", "127.0.0.1:9180"}, &stderr); err == nil {
+		t.Fatal("parser accepted removed listener flag")
+	}
+	if opts, err := parseAttachOptions([]string{"--stdio", "--hub-url", "http://127.0.0.1:9180"}, &stderr); err != nil || !opts.stdio || !opts.urlPresent {
+		t.Fatalf("surviving client option rejected: %+v %v", opts, err)
+	}
+}
+
 func TestAttachEarlyDiagnostics(t *testing.T) {
 	root, state := endpointTestRoot(t)
 	path := endpointTestConfig(t, root, state, "127.0.0.1:0")

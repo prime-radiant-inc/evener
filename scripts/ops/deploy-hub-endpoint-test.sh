@@ -187,8 +187,8 @@ elif cmd == 'evener':
             if new and f.get('old_boot'): boot='old-boot'
             s['reports']=s.get('reports',0)+1; save()
             port=19472+s['reports'] if new else 19471
-            local='http://[::1]:'+str(port) if f.get('listener','[::]:0').startswith('[') else 'http://127.0.0.1:'+str(port)
-            report['running']={'schema_version':1,'pid':pid,'boot_id':boot,'started_at':'2026-10-16T08:00:00Z','config_path':str(p/'alias.toml') if f.get('running_alias') else ('../alias.toml' if f.get('running_relative') else str(config)),'hub_state_root':str(root),'requested_listen_addr':f.get('listener','[::]:0'),'listen_source':source,'bound_addr':'[::]:'+str(port),'local_url':local,'loopback_url':local,'version':f['version'] if new else 'old','backend_git_sha':f['sha'] if new else 'old'}
+            local='http://'+f.get('local_host','[::1]')+':'+str(port)
+            report['running']={'schema_version':1,'pid':pid,'boot_id':boot,'started_at':'2026-10-16T08:00:00Z','config_path':str(p/'alias.toml') if f.get('running_alias') else ('../alias.toml' if f.get('running_relative') else str(config)),'hub_state_root':str(root),'requested_listen_addr':f.get('listener','[::]:0'),'listen_source':source,'bound_addr':f.get('bound_host','[::]')+':'+str(port),'local_url':local,'loopback_url':local,'version':f['version'] if new else 'old','backend_git_sha':f['sha'] if new else 'old'}
             if new and f.get('stale'): report['running'].update(pid=101,boot_id='old-boot')
             if new and f.get('wrong_build'): report['running']['version']='wrong'
             if new and f.get('wrong_sha'): report['running']['backend_git_sha']='wrong'
@@ -202,7 +202,15 @@ elif cmd == 'evener':
             if f.get('injection'): report['running']['boot_id']=('new-' if new else 'old-')+'$(touch '+str(p/'executed')+')'
         if f.get('bad_state'): report['state']='unknown'
         if f.get('wrong_config'): report['config_path']=str(p/'other.toml')
+        if f.get('toml_edit') and s['built']:
+            # The test-owned edit changes config immediately, the running
+            # listener only after restart. Declare these facts, do not parse TOML.
+            report['configured_listen_addr']='0.0.0.0:0'
+            report.pop('public_url')
+            if new:
+                report['running'].update(requested_listen_addr='0.0.0.0:0',bound_addr='0.0.0.0:'+str(port),local_url='http://127.0.0.1:'+str(port),loopback_url='http://127.0.0.1:'+str(port))
         if f.get('stdout_large'): report['padding']='x'*70000
+        with (p/'reports.jsonl').open('a') as reports: reports.write(json.dumps(report)+'\n')
         print(json.dumps(report))
     else: refuse()
 elif cmd == 'curl':
@@ -230,10 +238,10 @@ cases=[
  ('separate_service_flags',{'separate_flags':True},[],True,(1,1)),
  ('default_config',{'default_config':True,'toml_listener':True},[],True,(1,1)),
  ('default_explicit_config',{'default_config':True},['--config','@default'],True,(1,1)),
- ('wildcard_ipv4',{'listener':'0.0.0.0:0'},[],True,(1,1)),
+ ('wildcard_ipv4',{'listener':'0.0.0.0:0','bound_host':'0.0.0.0','local_host':'127.0.0.1'},[],True,(1,1)),
  ('ipv6',{'listener':'[::]:0'},[],True,(1,1)),
  ('port_zero_refresh',{'port_refresh':True},[],True,(1,1)),
- ('environment_listener',{'env_listener':True},[],True,(1,1)),
+ ('environment_listener',{'env_listener':True,'listener':'0.0.0.0:0','bound_host':'0.0.0.0','local_host':'127.0.0.1'},[],True,(1,1)),
  ('flag_over_environment',{'flag_and_env':True},[],True,(1,1)),
  ('intentional_toml_edit',{'toml_listener':True,'toml_edit':True},[],True,(1,1)),
  ('unresponsive',{'unavailable':True},[],True,(1,1)),
@@ -374,6 +382,32 @@ with tempfile.TemporaryDirectory(prefix='task7c-', dir=os.environ.get('EVENER_SC
             assert (returncode==0)==success, f'exit={returncode}, expected success={success}'
             assert not any(c['cmd']=='curl' for c in calls), 'guessed health destination probed'
             endpoints=[c for c in calls if c['cmd']=='evener' and c['args'][:3]==['hub','endpoint','--json']]
+            # Literal independent report oracles for the two corrected positives.
+            # This is not another production parser or a value copied from facts.
+            expected_reports={'wildcard_ipv4':('0.0.0.0:0','0.0.0.0','127.0.0.1','flag'),
+                              'environment_listener':('0.0.0.0:0','0.0.0.0','127.0.0.1','env')}
+            if name in expected_reports:
+                requested,bound_host,local_host,listen_source=expected_reports[name]
+                reports=[json.loads(line) for line in (p/'reports.jsonl').read_text().splitlines()]
+                assert len(reports)>=3
+                for report in reports:
+                    running=report['running']; port=running['bound_addr'].rsplit(':',1)[1]
+                    assert report['configured_listen_addr']==running['requested_listen_addr']==requested
+                    assert report['listen_source']==running['listen_source']==listen_source
+                    assert running['bound_addr']==bound_host+':'+port and port!='0'
+                    assert running['local_url']==running['loopback_url']=='http://'+local_host+':'+port
+            if name=='intentional_toml_edit':
+                reports=[json.loads(line) for line in (p/'reports.jsonl').read_text().splitlines()]
+                assert any(r['configured_listen_addr']=='0.0.0.0:0' and r['running']['requested_listen_addr']=='[::]:0' for r in reports), 'edited config not observed before restart'
+                successors=[r for r in reports if r['running']['pid']==303]
+                assert successors, 'edited listener successor not observed'
+                for report in successors:
+                    running=report['running']; port=running['bound_addr'].rsplit(':',1)[1]
+                    assert report['configured_listen_addr']==running['requested_listen_addr']=='0.0.0.0:0'
+                    assert report['listen_source']==running['listen_source']=='config'
+                    assert running['bound_addr']=='0.0.0.0:'+port and port!='0'
+                    assert running['local_url']==running['loopback_url']=='http://127.0.0.1:'+port
+                    assert 'public_url' not in report
             if effects==(1,1):
                 assert len(endpoints)>=3, 'selected endpoint not re-resolved before/after restart'
                 build=next(i for i,c in enumerate(calls) if c['cmd']=='make')

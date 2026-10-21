@@ -28,6 +28,14 @@ reference also includes internal processes and test controls.
 | `LLM_MODEL` | Model for `llmcall` when `--model` is unset; checked before `EVENER_MODEL`. |
 | `LLM_PROVIDER` | Provider for `llmcall` when `--provider` is unset; checked before `EVENER_PROVIDER`. |
 
+Endpoint variables are not interchangeable. `EVENER_HUB_LISTEN_ADDR` is a
+`host:port` listener and may use port zero. `EVENER_HUB_URL` is a concrete HTTP(S)
+origin with no credentials, query, fragment, or non-root path. TOML `public_url`
+advertises an origin without changing either setting. Explicit empty listener or
+client values are invalid, and retired `EVENER_HUB_ADDR` is rejected even when a replacement is set.
+Disposable browser fixtures must remove inherited endpoint settings before
+installing their owned `EVENER_HUB_URL`. See [hub endpoints](../evener-hub-endpoints.md).
+
 ## Evener Internals
 
 These are set or consumed by Evener-managed processes. Users normally should not

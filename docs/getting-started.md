@@ -72,13 +72,17 @@ Start the hub in a terminal you can leave open:
 evener hub
 ```
 
-By default it listens on `127.0.0.1:9180`, reachable only from the same computer. Open the authorization URL printed at startup. It has this shape, with a real token in place of the placeholder:
+By default it listens on `127.0.0.1:9180`, reachable only from the same computer. Open the authorization URL printed when startup output goes directly to an interactive terminal. It has this shape, with a real token in place of the placeholder:
 
 ```text
 http://127.0.0.1:9180/auth/<token>
 ```
 
 The URL signs this browser in. Treat it as a credential: do not paste it into a conversation, screenshot, or bug report. After signing in, use `http://127.0.0.1:9180` normally.
+
+Redirected output and service logs contain only the safe browser address. Retrieve the private sign-in link explicitly from another terminal with `evener hub login-url`. If you started with `--config`, pass that same config path to `login-url`.
+
+For a configured listener such as TOML `addr = "0.0.0.0:0"`, run `evener hub endpoint --json` to discover the actual bound port. Port zero selects a port at startup; do not use `:0` as a browser or client destination. See [hub endpoints](evener-hub-endpoints.md) for listener, client, and public-origin settings.
 
 Leave the hub running. Closing a browser tab is not a stop command for the agent. If the port is occupied or the page will not open, use [troubleshooting](troubleshooting.md) rather than launching more hub instances. For another bind address or a supervised service, use the [hub runbook](evener-hub.md).
 

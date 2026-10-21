@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/netip"
@@ -109,7 +110,7 @@ func TestEndpointVerifyLocalConnReusableForAuthenticatedRequest(t *testing.T) {
 }
 
 func TestEndpointVerifyRejectsRedirectAndOversizeHealth(t *testing.T) {
-	for _, name := range []string{"redirect", "oversize-header", "oversize-body"} {
+	for _, name := range []string{"redirect", "oversize-header", "oversize-body", "started_at", "hub_addr"} {
 		t.Run(name, func(t *testing.T) {
 			ln, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
@@ -131,6 +132,14 @@ func TestEndpointVerifyRejectsRedirectAndOversizeHealth(t *testing.T) {
 				case "oversize-body":
 					w.WriteHeader(http.StatusOK)
 					_, _ = w.Write([]byte(strings.Repeat("x", maxEndpointBytes+1)))
+				case "started_at", "hub_addr":
+					health := VerifiedHealth{BootID: record.BootID, HubAddr: record.BoundAddr, StartedAt: record.StartedAt}
+					if name == "started_at" {
+						health.StartedAt = health.StartedAt.Add(time.Second)
+					} else {
+						health.HubAddr = "127.0.0.1:1"
+					}
+					_ = json.NewEncoder(w).Encode(health)
 				}
 			})}
 			done := make(chan error, 1)
@@ -147,6 +156,8 @@ func TestEndpointVerifyRejectsRedirectAndOversizeHealth(t *testing.T) {
 			}
 			if err := VerifyLocalConn(context.Background(), conn, origin, record); err == nil {
 				t.Fatal("untrusted health accepted")
+			} else if (name == "started_at" || name == "hub_addr") && !errors.Is(err, ErrIdentityMismatch) {
+				t.Fatalf("identity mismatch returned %T: %v", err, err)
 			}
 			select {
 			case headers := <-seen:
@@ -157,5 +168,82 @@ func TestEndpointVerifyRejectsRedirectAndOversizeHealth(t *testing.T) {
 				t.Fatal("probe did not reach listener")
 			}
 		})
+	}
+}
+
+type deadlineObservedConn struct {
+	net.Conn
+	deadlines chan time.Time
+}
+
+func (c *deadlineObservedConn) SetDeadline(deadline time.Time) error {
+	c.deadlines <- deadline
+	return c.Conn.SetDeadline(deadline)
+}
+
+func TestEndpointVerifyCancellationDuringRequest(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := testRecord(t.TempDir())
+	record.BoundAddr = ln.Addr().String()
+	record.LocalURL = "http://" + record.BoundAddr
+	requested := make(chan http.Header, 1)
+	disconnected := make(chan struct{})
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested <- r.Header.Clone()
+		<-r.Context().Done() // No response, only cancellation can end the client read.
+		close(disconnected)
+	})}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(ln) }()
+	defer func() { _ = server.Close(); <-done }()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	observed := &deadlineObservedConn{Conn: conn, deadlines: make(chan time.Time, 4)}
+	origin, err := ParseOrigin(record.LocalURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- VerifyLocalConn(ctx, observed, origin, record) }()
+	select {
+	case headers := <-requested:
+		if headers.Get("Authorization") != "" {
+			t.Fatal("verification sent a token")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("verification request not observed")
+	}
+	<-observed.deadlines // Initial bounded network deadline.
+	cancel()
+	select {
+	case deadline := <-observed.deadlines:
+		if deadline.After(time.Now()) {
+			t.Fatal("cancellation did not interrupt the real socket")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not change the socket deadline")
+	}
+	select {
+	case err := <-result:
+		var network net.Error
+		if !errors.As(err, &network) || !network.Timeout() || !errors.Is(ctx.Err(), context.Canceled) {
+			t.Fatalf("cancelled read=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled verification still blocked")
+	}
+	_ = conn.Close() // Failure contract requires the caller to close, not reuse.
+	select {
+	case <-disconnected:
+	case <-time.After(time.Second):
+		t.Fatal("server did not observe connection closure")
 	}
 }

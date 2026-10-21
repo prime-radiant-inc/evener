@@ -22,12 +22,15 @@ At startup it loads
 `${XDG_STATE_HOME:-$HOME/.local/state}/evener`, and `hub.toml` may override it.
 It creates a fresh 256-bit token when the file is absent. A newly created token
 file is written mode 0600; a non-empty existing file is accepted after
-surrounding whitespace is trimmed, without format or mode enforcement. The hub
-logs an authorization URL:
+surrounding whitespace is trimmed, without format or mode enforcement. With startup
+output directly on an interactive terminal, the hub prints an authorization URL:
 
 ```
-[hub] auth URL (visit once per browser): http://127.0.0.1:9180/auth/<token>
+[hub] Private sign-in link (treat as a password): http://127.0.0.1:9180/auth/<token>
 ```
+
+Routine logs contain only a safe browser address. To request the credential-bearing
+URL explicitly, use `evener hub login-url` with the running hub's config and environment.
 
 A browser authorizes by visiting that URL once; the hub sets a long-lived
 `SameSite=Lax` cookie and slides its expiry forward on each visit. Scripted
@@ -100,8 +103,9 @@ itself is compromised, isolate and recover it before issuing a replacement.
    recorded registration/foreground command. Restore only the restart sources
    you deliberately disabled. The absent token file makes startup generate a
    new 256-bit credential at `<hub_state_root>/auth-token`. Check that it is
-   owned by the service user and mode `0600`. Keep supervisor output private:
-   the hub logs a credential-bearing authorization URL on startup.
+   owned by the service user and mode `0600`. Request the new authorization URL
+   privately with `evener hub login-url` using that service's config and environment.
+   Supervisor output does not contain the private sign-in link.
 5. **Verify revocation before distributing the replacement.** Existing clients
    must disconnect. In a browser still holding only the old cookie, open the
    plain `/api/debug/subscriptions` URL and require HTTP 401. Do not visit the
@@ -287,7 +291,7 @@ field is absent.
 | `host_min_free_space_bytes` | 512 MiB | Free space each state root needs before the hub reports itself healthy. |
 | `host_tombstone_retention` | `"168h"` | How long a removed host's tombstone is retained before pruning. |
 | `status_poll_interval` | `"2s"` | How often the hub polls session state. |
-| `mobile_base_url` | unset | Default hub address offered to paired phones; otherwise the browser's own origin is used. |
+| `public_url` | unset | HTTP(S) origin advertised for pairing and browser login; otherwise use the observed browser origin for pairing and the bound listener for startup login. |
 
 Write every duration as a TOML string, such as `"30s"` or `"1h"`. A bare integer
 is read by TOML as a nanosecond count, so `spawn_timeout = 30` arms 30ns rather
@@ -411,6 +415,14 @@ then verifies health; see
 
 The hub acquires a `flock` on `hub.lock` in its state root, so one hub process runs
 per `hub_state_root` — one per user under the default layout.
+
+To inspect that selected instance without starting one, run
+`evener hub endpoint --json --config "$hub_config"` in the same environment.
+Its running report includes the actual bound address and local origin, including
+the chosen port for `addr = "0.0.0.0:0"`. A restart can choose another port:
+rediscover rather than cache the old address. `evener hub attach --stdio` uses
+this discovery for authenticated AppWire; `--hub-url` selects a client origin,
+not a listener or permission to start a hub. See [hub endpoints](evener-hub-endpoints.md).
 
 ### Updating the hub from Settings
 

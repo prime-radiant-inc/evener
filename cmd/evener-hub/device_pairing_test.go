@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"golang.org/x/crypto/nacl/box"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/hubendpoint"
 )
 
 func TestDevicePairingRejectsMalformedNumericHosts(t *testing.T) {
@@ -367,6 +369,7 @@ func TestDevicePairingCanonicalDestinationMatchesEnvelope(t *testing.T) {
 	for _, tc := range []struct{ input, origin string }{
 		{"http://MAGIC-KINGDOM:80/", "http://magic-kingdom"},
 		{"https://BÜCHER.example:443", "https://xn--bcher-kva.example"},
+		{"https://EXAMPLE.TEST.:443/", "https://example.test."},
 		{"https://[fd7a:115c:a1e0:0:0:0:0:1]:9180", "https://[fd7a:115c:a1e0::1]:9180"},
 	} {
 		t.Run(tc.input, func(t *testing.T) {
@@ -392,6 +395,20 @@ func TestDevicePairingCanonicalDestinationMatchesEnvelope(t *testing.T) {
 			origin, _ := url.Parse(tc.origin)
 			if string(plain[8:8+int(plain[4])]) != origin.Hostname() {
 				t.Fatal("envelope destination differs from invitation")
+			}
+			hostEnd := 8 + int(plain[4])
+			pathEnd := hostEnd + int(plain[5])
+			if plain[0] != 1 || plain[1]&1 != 1 || string(plain[hostEnd:pathEnd]) != "/rpc" || string(plain[pathEnd:]) != "credential" {
+				t.Fatal("pairing wire fields changed")
+			}
+			scheme := "http"
+			if plain[1]&2 != 0 {
+				scheme = "https"
+			}
+			port := int(plain[2])<<8 | int(plain[3])
+			decoded, err := hubendpoint.ParseOrigin(scheme + "://" + net.JoinHostPort(string(plain[8:hostEnd]), strconv.Itoa(port)))
+			if err != nil || decoded.String() != tc.origin {
+				t.Fatalf("decoded origin=%v err=%v", decoded, err)
 			}
 		})
 	}

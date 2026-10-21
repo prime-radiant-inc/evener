@@ -6,10 +6,12 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/hubendpoint"
@@ -296,7 +298,7 @@ func TestEndpointConfigValidationBeforeEffects(t *testing.T) {
 func TestEndpointConfigPreservesOperatorKeys(t *testing.T) {
 	// A machine-managed host rewrite must not erase operator TOML or host entries.
 	path := filepath.Join(t.TempDir(), "hub.toml")
-	contents := "addr = \"0.0.0.0:9180\"\npublic_url = \"https://example.test\"\noperator_custom = \"kept\"\n\n[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n"
+	contents := "addr = \"0.0.0.0:9180\"\npublic_url = \"https://example.test\"\noperator_custom = \"kept\"\n\n[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\naddr = \"127.0.0.1:0\"\n"
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -315,7 +317,80 @@ func TestEndpointConfigPreservesOperatorKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Hosts) != 2 || cfg.Hosts[0].Name != "alpha" || cfg.Hosts[1].Name != "beta" {
+	if cfg.Addr != "0.0.0.0:9180" || len(cfg.Hosts) != 2 || cfg.Hosts[0].Name != "alpha" || cfg.Hosts[0].Addr != "127.0.0.1:0" || cfg.Hosts[1].Name != "beta" {
 		t.Fatalf("host rewrite changed existing host: %+v", cfg.Hosts)
+	}
+}
+
+func TestEndpointConfigEmptyAndRetiredStartupEffects(t *testing.T) {
+	bin := filepath.Join(liveStackBinaries(t, repoRootForTestMain()), "evener")
+	for _, tc := range []struct {
+		name, document, env string
+		args                []string
+		migration           bool
+	}{
+		{name: "empty flag", args: []string{"--addr="}},
+		{name: "empty environment", env: "EVENER_HUB_LISTEN_ADDR"},
+		{name: "empty TOML", document: "addr = \"\"\n"},
+		{name: "retired empty environment", env: "EVENER_HUB_ADDR", migration: true},
+		{name: "retired populated environment", env: "EVENER_HUB_ADDR=TASK8_RETIRED_72c9", migration: true},
+		{name: "retired TOML beside replacement", document: "addr = \"127.0.0.1:0\"\npublic_url = \"https://example.test\"\nmobile_base_url = \"https://retired.test\"\n", migration: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, state := endpointTestRoot(t)
+			config := endpointTestConfig(t, root, state, "127.0.0.1:0")
+			if tc.document != "" {
+				data, err := os.ReadFile(config)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, rest, _ := strings.Cut(string(data), "\n")
+				if err := os.WriteFile(config, []byte(tc.document+rest), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.env != "" {
+				key, value, _ := strings.Cut(tc.env, "=")
+				t.Setenv(key, value)
+			}
+			before, err := os.ReadFile(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var effects []string
+			deps := defaultMainDeps()
+			deps.ensureDirs = func() error { effects = append(effects, "dirs"); return nil }
+			deps.acquireLock = func(string) (func(), error) { effects = append(effects, "lock"); return func() {}, nil }
+			deps.loadAuthToken = func(string) (string, error) { effects = append(effects, "token"); return "", nil }
+			deps.listen = func(context.Context, string, string) (net.Listener, error) {
+				effects = append(effects, "listen")
+				return nil, errors.New("unexpected listener")
+			}
+			args := append([]string{"--config", config}, tc.args...)
+			var stderr bytes.Buffer
+			err = runMain(args, &stderr, deps)
+			var invalid *hubendpoint.ValidationError
+			var migration *EndpointMigrationError
+			if (tc.migration && !errors.As(err, &migration)) || (!tc.migration && (!errors.As(err, &invalid) || invalid.Code != "empty")) || len(effects) != 0 {
+				t.Fatalf("error=%v effects=%v", err, effects)
+			}
+			// Repeat through the shipped entrypoint with real filesystem dependencies.
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			cmd := exec.CommandContext(ctx, bin, append([]string{"hub"}, args...)...)
+			err = cmd.Run()
+			cancel()
+			var exited *exec.ExitError
+			if !errors.As(err, &exited) || exited.ExitCode() != 1 {
+				t.Fatalf("startup exit=%v", err)
+			}
+			entries, err := os.ReadDir(state)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("invalid startup mutated state: %v %v", entries, err)
+			}
+			after, err := os.ReadFile(config)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("invalid startup rewrote config")
+			}
+		})
 	}
 }

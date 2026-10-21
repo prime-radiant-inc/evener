@@ -986,7 +986,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if origin, originErr := browserLoginOrigin(record, hubHostname); originErr == nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] Browser address: %s (local: %s)\n", origin, record.LocalURL)
 		if isTerminalWriter(stderr) {
-			link, _ := browserLoginURL(record, hubHostname, authToken)
+			link := hubedge.AuthURLFor(origin, authToken)
 			_, _ = fmt.Fprintf(stderr, "[hub] Private sign-in link (treat as a password): %s\n", link)
 		}
 	} else {
