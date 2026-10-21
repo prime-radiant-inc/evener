@@ -254,6 +254,8 @@ func TestEmbedPatternCovers(t *testing.T) {
 		{"agents", "agents/doctor.md", true},
 		{"all:agents/*.md", "agents/doctor.md", true},
 		{"agents/*.md", "skills/x.md", false},
+		{"assets/*", "assets/icons/a.png", true},
+		{"assets/*", "other/a.png", false},
 		{"prompts/system.md.tmpl", "prompts/system.md.tmpl", true},
 		{"", "anything", false},
 	}

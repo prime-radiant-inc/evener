@@ -497,5 +497,16 @@ func embedPatternCovers(pattern, rel string) bool {
 	if strings.HasPrefix(rel, pattern+"/") {
 		return true
 	}
+	// The go command also embeds a directory's whole subtree when a glob
+	// matches the directory itself: `assets/*` covers assets/icons/a.png when
+	// assets/icons is a directory. Test each leading directory prefix.
+	for i := 0; i < len(rel); i++ {
+		if rel[i] != '/' {
+			continue
+		}
+		if ok, err := path.Match(pattern, rel[:i]); err == nil && ok {
+			return true
+		}
+	}
 	return false
 }
