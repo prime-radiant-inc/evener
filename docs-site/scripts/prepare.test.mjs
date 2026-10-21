@@ -11,6 +11,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { prepare } from "./prepare.mjs";
+import { checkBuilt } from "./check-built.mjs";
 
 async function fixture(
   t,
@@ -182,4 +183,54 @@ test("retains Mermaid language and source in complete Markdown exports", async (
     assert.equal(code.lang, "mermaid");
     assert.equal(code.value, diagram);
   }
+});
+
+test("resolves entity-encoded HTML ids to percent-encoded source and rendered fragments", async (t) => {
+  const source = await readFile(
+    new URL("../fixtures/anchors/source.md", import.meta.url),
+    "utf8",
+  );
+  const rendered = await readFile(
+    new URL("../fixtures/anchors/rendered.html", import.meta.url),
+    "utf8",
+  );
+  const f = await fixture(t, "");
+  await writeFile(path.join(f.root, "docs/start.md"), source);
+  await prepare(f);
+
+  const { unified } = await import("unified");
+  const { default: parse } = await import("remark-parse");
+  const { visit } = await import("unist-util-visit");
+  for (const [file, expected] of [
+    ["index.md", "/index.html#a%26b"],
+    [
+      "public/markdown/index.md",
+      "https://primeradiant.com/evener/markdown/index.md#a%26b",
+    ],
+  ]) {
+    const tree = unified()
+      .use(parse)
+      .parse(await readFile(path.join(f.out, file), "utf8"));
+    const links = [];
+    visit(tree, "link", (node) => links.push(node.url));
+    assert.deepEqual(links, [expected]);
+  }
+
+  const built = path.join(f.root, "rendered");
+  await mkdir(path.join(built, "markdown"), { recursive: true });
+  await writeFile(path.join(built, "markdown/index.md"), source);
+  await writeFile(path.join(built, "llms.txt"), "# Index\n");
+  await writeFile(path.join(built, "index.html"), rendered);
+  await checkBuilt(built, { pages: [{ path: "index.md" }] });
+
+  await writeFile(
+    path.join(f.root, "docs/start.md"),
+    source.replace("#a%26b", "#a%26c"),
+  );
+  await assert.rejects(prepare(f));
+  await writeFile(
+    path.join(built, "index.html"),
+    rendered.replace("#a%26b", "#a%26c"),
+  );
+  await assert.rejects(checkBuilt(built, { pages: [{ path: "index.md" }] }));
 });

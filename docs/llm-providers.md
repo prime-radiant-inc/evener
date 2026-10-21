@@ -204,7 +204,9 @@ previously healthy live snapshot.
 For facts on a visible ID, the live layer sits between the curated overlay and
 the user config. It supplies `Tools`, `InputModalities`, `ContextWindow`,
 `MaxOutputTokens`, `EffortValues`, `DefaultEffort`, `Cost`, `Reasoning`, plus
-`ThinkingAlwaysOn` (only when OpenRouter's `reasoning.mandatory` is `true`).
+`ThinkingAlwaysOn` (only when OpenRouter's `reasoning.mandatory` is `true`)
+and, from a gateway's per-model compat block, `ReasoningControls`,
+`ThinkingFormat`, and `MaxTokensField`.
 `InputModalities` comes from OpenRouter's `architecture.input_modalities`, or,
 when that list carries no entry, from a gateway's `capabilities.vision` (an
 advertised vision capability is `["text", "image"]`); the Codex backend states
@@ -222,15 +224,23 @@ ladder is itself evidence the model tunes effort and raises a verdict inferred
 from a provider-wide parameter list. A model whose listing carries no map at
 all keeps whatever ladder its curated row supplies, and an uncatalogued one
 resolves with none, so the request builder sends no effort name it cannot
-vouch for. The gateway's `thinkingFormat`, `maxTokensField`, and
-`supportsReasoningEffort` fields are not read yet; the dialect comes from the
-row's `thinking_format`.
+vouch for.
+
+The same per-model block states two wire-shaping facts, applied through the
+live layer on every protocol though only the two OpenAI-shaped listings report
+them: `thinkingFormat` becomes the row's `ThinkingFormat` dialect, and
+`maxTokensField` its `MaxTokensField` spelling. A value outside the load-time
+vocabulary is dropped rather than carried, because an unknown dialect writes no
+reasoning control at all and an unknown output spelling reaches no field. An
+explicit `capabilities.reasoning: false` wins over both.
+
 
 The live layer overrides catalog and curated facts but **never a field the
-user layer (layer 4) set**, and it never touches any other wire-shaping cap.
-Live rows matching the non-chat pattern list (`embedding`, `whisper`, `tts`,
-`dall-e`, `moderation`, `audio`, `transcribe`, `image`, `realtime`, `davinci`,
-`babbage`, `sora`) are unusable for model selection and are dropped.
+user layer (layer 4) set**. Beyond the facts listed above it touches no other
+cap. Live rows matching the non-chat pattern list (`embedding`, `whisper`,
+`tts`, `dall-e`, `moderation`, `audio`, `transcribe`, `image`, `realtime`,
+`davinci`, `babbage`, `sora`) are unusable for model selection and are
+dropped.
 
 ## Instances
 

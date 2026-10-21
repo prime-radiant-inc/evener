@@ -39,7 +39,18 @@ Use your actual hub address, not a daemon endpoint. Success prints the negotiate
 
 The hub's HTTP guard accepts its auth cookie or `Authorization: Bearer …`. The Node example supplies a header through a `ws` socket factory. Browser WebSocket APIs cannot set that header; authorize the browser through the hub's `/auth/<token>` URL and use its cookie. Do not use a token query parameter as a WebSocket authentication API: the HTTP guard can redirect such requests after setting a cookie.
 
-Use TLS (`wss:`) or a trusted private transport for remote connections. A bearer token grants hub access; it is not a model-provider API key. The SDK's optional device-pairing support has a separate encrypted transport and does not replace ordinary hub authentication. Read the [SDK README](../appwire-client/typescript/README.md) before building a paired client.
+Use TLS (`wss:`) or an encrypted, access-controlled private transport for remote
+connections. A bearer token grants hub access; it is not a model-provider API
+key. Optional device pairing delivers that shared credential in an encrypted
+bootstrap envelope bound to the approved device's ephemeral key. The envelope
+does not encrypt subsequent RPC traffic or replace ordinary hub authentication.
+Read [device pairing](device-pairing.md) and the
+[SDK README](../appwire-client/typescript/README.md) before building a paired client.
+
+After [shared-token rotation](evener-hub.md#rotate-a-leaked-token-or-revoke-a-lost-device),
+replace the integration's secret and reconnect. Invitation expiry does not
+revoke a delivered credential. Never place the replacement in command-line
+arguments or diagnostic output.
 
 ## Understand the connection lifecycle
 

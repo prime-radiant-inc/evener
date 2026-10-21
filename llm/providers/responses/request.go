@@ -144,8 +144,9 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	return body, nil
 }
 
-func reconcilePreparedOutput(body map[string]any, req llm.Request, caps registry.Caps) {
-	if !requestutil.WireFieldEnabled(caps, "max_output_tokens") {
+func reconcilePreparedOutput(body map[string]any, req llm.Request, res registry.Resolved) {
+	caps := res.Caps
+	if !requestutil.WireFieldEnabled(caps, "max_output_tokens", res.Protocol) {
 		delete(body, "max_output_tokens")
 		return
 	}
@@ -192,10 +193,12 @@ func reasoningObject(req llm.Request, caps registry.Caps) map[string]any {
 }
 
 // reasoningRequested reports whether the request asks the model to reason,
-// even when the row's ladder cannot vouch for the requested level. An
-// uncatalogued gateway row still reasons; keeping this true lets the
-// encrypted-reasoning include and a configured summary survive without
-// sending an effort name the row cannot accept.
+// even when the row cannot take an effort parameter or its ladder cannot vouch
+// for the requested level. An uncatalogued gateway row and a toggle-only row
+// both still reason; keeping this true lets the encrypted-reasoning include and
+// a configured summary survive without sending an effort name the row cannot
+// accept. It deliberately does not test EffortCapable: that answers "may I
+// spell a level", which is a narrower question than "will this model reason".
 func reasoningRequested(req llm.Request, caps registry.Caps) bool {
 	if caps.Reasoning != nil && !*caps.Reasoning {
 		return false
@@ -203,7 +206,7 @@ func reasoningRequested(req llm.Request, caps registry.Caps) bool {
 	if req.ReasoningEffort == nil || *req.ReasoningEffort == "none" {
 		return false
 	}
-	return caps.EffortCapable()
+	return true
 }
 
 func appendUnique(values []string, value string) []string {

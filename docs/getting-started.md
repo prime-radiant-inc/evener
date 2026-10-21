@@ -106,8 +106,9 @@ which pre-existing changes are safe to overwrite.
 
 ## Connect a provider in New session
 
-Open **New session** at `/new`. The working directory, task draft, provider, and
-model all belong to this launch form:
+Open **New session** at `/new`. On a fresh configuration with no provider or
+credential saved, connect a provider here before choosing a model. The working
+directory, task draft, provider, and model all belong to this launch form:
 
 1. Choose the project directory reported by `pwd` and write your bounded task.
    Your directory and task remain in the form while provider setup opens and
@@ -128,11 +129,36 @@ model all belong to this launch form:
    If listing fails, use **Retry models**. If the provider cannot support a list
    check, **Continue without verification** is an unverified route, not a pass.
 
+For a custom endpoint, choose **Show all providers**, then **OpenAI-compatible
+endpoint** and **Configure provider**. Enter a connection **Name** and the server's
+**Base URL**, then choose **Create**. Continue with the API-key field and **Save
+and check** above. Use the endpoint's documented API base URL, not its website
+address; confirm that you trust that destination before sending it a credential.
+
 The default credential file is `~/.config/evener/credentials.toml` (under
 `XDG_CONFIG_HOME` when set). Evener writes it with owner-only permissions. Do not
 put keys in your project, task, screenshot, or bug report. Custom paths,
 environment fallbacks, and provider-specific rules are covered in
 [configuration](configuration.md) and [Connecting a provider](connecting-a-provider.md).
+
+### First-provider verification
+
+Contributors can run the empty-configuration browser journey from the checkout
+root after completing the [build setup](developing-evener/building.md) and
+[browser prerequisites](developing-evener/testing.md):
+
+```sh
+EVENER_TUTORIAL_TOURS=1 go test ./cmd/evener-hub -run '^TestTutorialFirstProviderWeb$' -count=1 -timeout=10m
+```
+
+This opt-in check starts with no saved provider or credential. It uses the real
+forms to add an OpenAI-compatible loopback endpoint and a synthetic key, then
+independently reads the saved configuration, verifies authenticated model
+discovery, and checks a completed session and its file output. It uses the real
+hub, runtime, and tools; only the HTTP model provider is scripted. Without the
+opt-in, the test skips; a requested run fails if its prerequisites are missing.
+It produces no provider-setup screenshots and does not qualify external login,
+billing, or live model behavior. Native verification remains deferred.
 
 ## Review the task and permissions, then Start
 

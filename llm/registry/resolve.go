@@ -133,7 +133,8 @@ func liveFacts(m Model) Model {
 	out := Model{ID: m.ID, WireID: m.ID, Caps: Caps{
 		Tools: m.Caps.Tools, InputModalities: m.Caps.InputModalities, ContextWindow: m.Caps.ContextWindow,
 		MaxInputTokens: m.Caps.MaxInputTokens, MaxOutputTokens: m.Caps.MaxOutputTokens, EffortValues: m.Caps.EffortValues, Cost: m.Caps.Cost, Reasoning: m.Caps.Reasoning,
-		DefaultEffort: m.Caps.DefaultEffort,
+		DefaultEffort: m.Caps.DefaultEffort, ReasoningControls: m.Caps.ReasoningControls,
+		ThinkingFormat: m.Caps.ThinkingFormat, MaxTokensField: m.Caps.MaxTokensField,
 	}}
 	if m.Caps.ThinkingAlwaysOn != nil && *m.Caps.ThinkingAlwaysOn {
 		out.Caps.ThinkingAlwaysOn = new(true)

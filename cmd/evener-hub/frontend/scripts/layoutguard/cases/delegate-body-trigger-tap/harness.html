@@ -46,7 +46,7 @@
        <div class="row" data-intent="true" data-intent-trailing="true"
             data-body-trigger-intent="true">
          <span class="intentLine">
-           <span class="rowIcon">…</span>
+           <span class="rowIconSlot"><span class="rowIcon">…</span></span>
            <span class="status">…</span>
            <span class="intent">{statedIntent}</span>
          </span>
@@ -62,7 +62,7 @@ function rowHtml(id, intent) {
   return `
     <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true" data-body-trigger-intent="true">
       <span class="intentLine" id="line-${id}">
-        <span class="rowIcon" id="icon-${id}" aria-hidden="true">${ICON_SVG}</span>
+        <span class="rowIconSlot" id="slot-${id}"><span class="rowIcon" id="icon-${id}" aria-hidden="true">${ICON_SVG}</span></span>
         <span class="status" id="status-${id}">${STATUS_DOT}</span>
         <span class="intent" id="intent-${id}">${intent}</span>
       </span>

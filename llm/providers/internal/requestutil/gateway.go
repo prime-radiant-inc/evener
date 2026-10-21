@@ -21,7 +21,7 @@ type GatewayCapabilities struct {
 }
 
 // GatewayClientCompat is the per-model compatibility block some gateways
-// publish (lunaroute's shape). Only the Pi client's reasoning map is read.
+// publish (lunaroute's shape).
 type GatewayClientCompat struct {
 	Pi *GatewayPiCompat `json:"pi"`
 }
@@ -32,19 +32,45 @@ type GatewayPiCompat struct {
 	// gateway accepts. A null value decodes as the empty string and, like an
 	// absent key, is a level the model does not support.
 	ThinkingLevelMap map[string]string `json:"thinkingLevelMap"`
+	// ThinkingFormat is the reasoning dialect to spell for this model.
+	ThinkingFormat string `json:"thinkingFormat"`
+	// MaxTokensField is the output-limit spelling this model takes.
+	MaxTokensField string `json:"maxTokensField"`
 }
 
-// ApplyGatewayReasoning folds a row's own per-model reasoning facts
-// (lunaroute's shape) into caps: the capabilities.reasoning verdict, then the
-// client_compat effort ladder. Both readers share it so they cannot disagree
-// about the precedence — the gateway knows per model what a listing's
-// provider-wide parameters only infer, and a fact it does not state leaves what
-// the caller inferred in place.
+// ApplyGatewayFacts folds a row's own per-model facts (lunaroute's shape) into
+// caps: the reasoning verdict and effort ladder, then the wire-shaping dialect
+// and output-limit spelling the gateway states for that model. Both /models
+// readers share it so they cannot disagree about the precedence — the gateway
+// knows per model what a listing's provider-wide parameters only infer, and a
+// fact it does not state leaves what the caller inferred in place.
+func ApplyGatewayFacts(caps *registry.Caps, arch GatewayArchitecture, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
+	applyGatewayReasoning(caps, capsFacts, compat)
+	if pi := compat.Pi; pi != nil {
+		// A value outside the registry's vocabulary is dropped rather than
+		// carried: an unknown dialect writes no reasoning control at all, and
+		// an unknown output spelling reaches no field, so carrying one would
+		// silently switch that behavior off for the row.
+		if registry.ValidThinkingFormat(pi.ThinkingFormat) {
+			caps.ThinkingFormat = new(pi.ThinkingFormat)
+		}
+		if registry.ValidMaxTokensField(pi.MaxTokensField) {
+			caps.MaxTokensField = new(pi.MaxTokensField)
+		}
+	}
+	caps.InputModalities = gatewayInputModalities(arch, capsFacts)
+}
+
+// applyGatewayReasoning is ApplyGatewayFacts' reasoning half.
 //
-// A usable ladder is itself evidence the model tunes effort, so it raises a
-// verdict inferred elsewhere (a provider-wide parameter list, the catalog) to
-// true. An explicit capabilities verdict still wins: a gateway saying the model
-// does not reason is not overruled by a stale map beside it.
+// The two verdicts a gateway can state are checked in precedence order. An
+// explicit capabilities verdict on reasoning wins outright: a non-reasoning row
+// carries no ladder and no effort control, whatever a map or the effort field
+// beside it says. Next, a model the gateway says takes no effort parameter is
+// toggle-only — it reasons, but no level ever reaches the wire, so the ladder
+// is neither built nor kept. Only then is the map itself consulted, and a
+// usable ladder is evidence the model tunes effort: it raises a verdict
+// inferred elsewhere (a provider-wide parameter list, the catalog) to true.
 //
 // A row the gateway marks non-reasoning carries no ladder. Clearing it here,
 // rather than merely skipping the write, is what keeps the raw live row
@@ -53,15 +79,20 @@ type GatewayPiCompat struct {
 // before derivation would clear it. A published map with no usable level is the
 // gateway saying the same thing, so it too clears any inherited ladder rather
 // than letting the replay keep one the gateway marks unsupported.
-func ApplyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
-	ladder, published := GatewayEffortLadder(compat)
+func applyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, compat GatewayClientCompat) {
+	// An explicit capabilities verdict is the gateway's own knowledge, and a
+	// negative one ends the matter: nothing below may reopen it. A verdict the
+	// caller already inferred (a provider-wide parameter list, the catalog) is
+	// weaker, and a usable ladder below still raises it.
 	if capsFacts.Reasoning != nil {
 		caps.Reasoning = capsFacts.Reasoning
 		if !*capsFacts.Reasoning {
 			caps.EffortValues = nil
 			return
 		}
-	} else if len(ladder) > 0 {
+	}
+	ladder, published := gatewayEffortLadder(compat)
+	if len(ladder) > 0 {
 		caps.Reasoning = new(true)
 	}
 	if published {
@@ -69,7 +100,7 @@ func ApplyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, c
 	}
 }
 
-// GatewayEffortLadder returns the effort ladder a gateway's per-model
+// gatewayEffortLadder returns the effort ladder a gateway's per-model
 // client_compat states, ordered as evener displays one: an explicit off level
 // first when the model has one, then minimal → max. A null value, or no key at
 // all, is a level the model does not support; a value outside evener's
@@ -83,7 +114,7 @@ func ApplyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, c
 // map whose every level is null is the gateway stating that the model takes no
 // effort control: the ladder is empty and the caller must apply it as such, not
 // inherit around it.
-func GatewayEffortLadder(compat GatewayClientCompat) (ladder []string, published bool) {
+func gatewayEffortLadder(compat GatewayClientCompat) (ladder []string, published bool) {
 	if compat.Pi == nil || compat.Pi.ThinkingLevelMap == nil {
 		return nil, false
 	}
@@ -107,11 +138,11 @@ func GatewayEffortLadder(compat GatewayClientCompat) (ladder []string, published
 	return ladder, true
 }
 
-// GatewayInputModalities is the input modality list a /models row advertises:
+// gatewayInputModalities is the input modality list a /models row advertises:
 // architecture.input_modalities when that list carries any entry, else text
 // plus image for an advertised vision capability, else nil. The protocol
 // readers share it so they cannot disagree about the precedence.
-func GatewayInputModalities(arch GatewayArchitecture, caps GatewayCapabilities) []string {
+func gatewayInputModalities(arch GatewayArchitecture, caps GatewayCapabilities) []string {
 	if mods := DedupStrings(arch.InputModalities); len(mods) > 0 {
 		return mods
 	}

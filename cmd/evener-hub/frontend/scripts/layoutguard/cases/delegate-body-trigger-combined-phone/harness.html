@@ -30,7 +30,7 @@
             data-body-trigger-intent="true" data-intent-suppressed="true">
          [<button class="trigger intentOverlayTrigger"></button>]  (suppressed on a delegate)
          <span class="intentTriggerContent">
-           <span class="rowIcon">…</span>
+           <span class="rowIconSlot"><span class="rowIcon">…</span></span>
            <span class="status">…</span>
            <span class="intent">{statedIntent}</span>
          </span>
@@ -67,7 +67,7 @@ function rowHtml(id, intent, withDecorativeChevron) {
     <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true" data-body-trigger-intent="true"${suppressed ? ' data-intent-suppressed="true"' : ""}>
       ${suppressed ? "" : `<button type="button" class="trigger intentOverlayTrigger" id="trigger-${id}" aria-expanded="false" aria-label="${intent}"></button>`}
       <span class="intentTriggerContent" id="content-${id}">
-        <span class="rowIcon" id="icon-${id}" aria-hidden="true">${ICON_SVG}</span>
+        <span class="rowIconSlot" id="slot-${id}"><span class="rowIcon" id="icon-${id}" aria-hidden="true">${ICON_SVG}</span></span>
         <span class="status" id="status-${id}">${STATUS_DOT}</span>
         <span class="intent" id="intent-${id}">${intent}</span>
       </span>

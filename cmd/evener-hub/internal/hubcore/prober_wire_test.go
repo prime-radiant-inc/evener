@@ -127,9 +127,8 @@ func TestStatusProberRejectsAnAnswerForAnotherSession(t *testing.T) {
 	}
 }
 
-func (s wireProbeEnvelopeSource) ContextPressure() float64 { return 0 }
-func (s wireProbeEnvelopeSource) ContextMetrics() server.ContextMetrics {
-	return server.ContextMetrics{}
+func (s wireProbeEnvelopeSource) ContextStatus() (server.ContextMetrics, float64) {
+	return server.ContextMetrics{}, 0
 }
 func (s wireProbeEnvelopeSource) DetailedStatus() server.DetailedStatus { return s.detailed }
 func (s wireProbeEnvelopeSource) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {

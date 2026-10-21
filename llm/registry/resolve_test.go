@@ -1329,6 +1329,49 @@ func TestResolve_LiveInputModalitiesReachCaps(t *testing.T) {
 	}
 }
 
+// A gateway's per-model dialect and token spelling reach the resolved row
+// through the live layer, so an uncatalogued gateway model is spelled the way
+// its gateway accepts instead of falling back to the protocol default.
+func TestResolve_LiveWireFactsReachCaps(t *testing.T) {
+	r := fixtureLoad(t, nil, "")
+	r.ApplyLive("openrouter", []Model{{
+		ID:   "qwen/qwen3-coder",
+		Caps: Caps{ThinkingFormat: new("qwen"), MaxTokensField: new("max_tokens")},
+	}})
+	res := mustResolve(t, r, "openrouter/qwen/qwen3-coder")
+	if registry := res.Caps; registry.ThinkingFormat == nil || *registry.ThinkingFormat != "qwen" ||
+		registry.MaxTokensField == nil || *registry.MaxTokensField != "max_tokens" {
+		t.Fatalf("live wire facts must reach Caps: %+v", res.Caps)
+	}
+	if res.Provenance["ThinkingFormat"] != "live" || res.Provenance["MaxTokensField"] != "live" {
+		t.Fatalf("provenance = %+v, want the live layer", res.Provenance)
+	}
+}
+
+// A live row the gateway marks toggle-only must not inherit a curated effort
+// ladder. The ladder reaches the row through the catalog layer, and derivation
+// re-adds the effort control whenever a non-empty ladder sits beside controls
+// that lack it, so the live layer can only clear it with a non-nil empty list:
+// a nil slice means "inherit" to mergeCaps and the gateway's verdict is undone.
+func TestResolve_LiveToggleOnlyOverridesACuratedLadder(t *testing.T) {
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith(`
+[providers.openrouter.models."toggle/test-model"]
+reasoning = true
+effort_values = ["low", "high"]
+`)))
+	r.ApplyLive("openrouter", []Model{{
+		ID:   "toggle/test-model",
+		Caps: Caps{Reasoning: new(true), ReasoningControls: []string{"toggle"}, EffortValues: []string{}},
+	}})
+	res := mustResolve(t, r, "openrouter/toggle/test-model")
+	if res.Caps.EffortCapable() {
+		t.Fatalf("a toggle-only live row must not be effort-capable: controls=%v ladder=%v", res.Caps.ReasoningControls, res.Caps.EffortValues)
+	}
+	if len(res.Caps.EffortValues) != 0 {
+		t.Fatalf("EffortValues = %v, want the live row's empty ladder rather than the curated one", res.Caps.EffortValues)
+	}
+}
+
 var provRe = regexp.MustCompile(`^((snapshot|cache|overlay|config)/(provider|row|glob:.+)|live|alias|derived)$`)
 
 func TestResolve_ProvenanceNamesRealLayers(t *testing.T) {

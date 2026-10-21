@@ -38,8 +38,18 @@ approval, closing the browser leaves the invitation retrievable until expiry:
 an acknowledgement lost on the way back must not revoke a committed approval.
 The explicit cancel method still revokes the named invitation.
 
+Invitation expiry, cancellation, and Hub restart stop invitation retrieval;
+they do not revoke the shared Hub credential a device has already received.
+The direct credential QR also gives the phone that shared credential, without
+an invitation lifetime. For a lost phone or leaked credential, follow
+[shared-token rotation](evener-hub.md#rotate-a-leaked-token-or-revoke-a-lost-device).
+All clients sharing the token must reauthorize; there is no per-device
+revocation in this protocol.
+
 The fingerprint authenticates the operator's choice; it is not an encryption
-key. The encrypted response is bound to the selected X25519 key. HTTP over
+key. The encrypted credential-bootstrap envelope is bound to the selected
+X25519 key. It protects credential delivery, not subsequent AppWire RPC traffic.
+HTTP over
 Tailscale relies on the tailnet for transport authentication/encryption; a
 phone uses its installed Tailscale connection and Playdate uses its native
 control/DERP/WireGuard implementation. Tailscale enrollment remains its own
