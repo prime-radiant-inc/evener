@@ -68,6 +68,54 @@ export function tryAbortTransaction(transaction: IDBTransaction): boolean {
   }
 }
 
+export interface BoundedTransaction<T> {
+  transaction: IDBTransaction;
+  // Retire the connection a timed-out transaction leaves unusable: it may
+  // still hold the stalled request that consumed the deadline.
+  retire: () => void;
+  waitMs: number;
+  timeout: () => Error;
+  run: () => Promise<T>;
+}
+
+// Run one body against a transaction under the shared watchdog. A request or
+// completion event that never settles aborts the transaction, retires the
+// connection and rejects, so the caller keeps its own retry state instead of
+// waiting forever. The rollback the error path awaits shares the same deadline:
+// a stalled abort event must not keep the call pending past the watchdog.
+export async function runBoundedTransaction<T>(options: BoundedTransaction<T>): Promise<T> {
+  const completed = transactionCompletion(options.transaction);
+  void completed.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      // Best effort while the transaction can still abort: prove the rollback.
+      // Retiring first would close the database, and a finished transaction
+      // refuses abort().
+      tryAbortTransaction(options.transaction);
+      options.retire();
+      timedOut = true;
+      reject(options.timeout());
+    }, options.waitMs);
+  });
+  try {
+    // Promise.all rejects on either failure without waiting for the other
+    // input. A terminal abort therefore releases even a stalled body, while
+    // success requires both the result and the durable commit event.
+    const [result] = await Promise.race([Promise.all([options.run(), completed]), deadline]);
+    return result;
+  } catch (error) {
+    if (!timedOut) {
+      tryAbortTransaction(options.transaction);
+      await Promise.race([completed.catch(() => undefined), deadline]).catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // An adapter's own schema upgrade threw: a bug in the adapter, never storage
 // failing. The engine answers a throwing upgradeneeded handler by aborting the
 // versionchange transaction, and the open then fails with a bare AbortError

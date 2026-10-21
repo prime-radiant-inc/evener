@@ -35,8 +35,8 @@ import type {
   BrowserDraftRepository,
   CommittedAppendBacking,
 } from "./browserDraftRepository";
-import { type NamespaceRow, serializeSessionKey } from "./compositionRevision";
-import { IDBConnection, requestResult, transactionCompletion, tryAbortTransaction } from "./idbConnection";
+import { type NamespaceRow, readNamespaceRow, serializeSessionKey } from "./compositionRevision";
+import { IDBConnection, requestResult, runBoundedTransaction, tryAbortTransaction } from "./idbConnection";
 import {
   ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX,
   ANNOTATION_EVIDENCE_STORE,
@@ -188,7 +188,8 @@ function invokeObserver(listener: () => void): void {
 
 // One deletion pattern for every store swept by a namespace reset: a row
 // leaves when its namespace identity matches, deleted by the store's own key,
-// so a store added to the reset cannot grow a divergent loop.
+// so a store added to the reset cannot grow a divergent loop. Every request is
+// issued in row order; the one wait after the loop lets them run as a batch.
 async function deleteRowsWhere<Row>(
   transaction: IDBTransaction,
   storeName: string,
@@ -196,11 +197,25 @@ async function deleteRowsWhere<Row>(
   keyOf: (row: Row) => IDBValidKey,
 ): Promise<void> {
   const rows = await requestResult<Row[]>(transaction.objectStore(storeName).getAll());
+  const deletes: IDBRequest<undefined>[] = [];
   for (const row of rows) {
     if (rowBelongs(row)) {
-      await requestResult(transaction.objectStore(storeName).delete(keyOf(row)));
+      deletes.push(transaction.objectStore(storeName).delete(keyOf(row)));
     }
   }
+  await Promise.all(deletes.map((request) => requestResult(request)));
+}
+
+// Flip one pending operation row to its terminal receipt. The destination and
+// payload reference describe work the row no longer owns, so both leave with
+// the terminal state; the caller keeps its own row selection and state.
+function putTerminalOperation(
+  transaction: IDBTransaction,
+  row: Extract<AnnotationOperationRow, { state: "pending" }>,
+  state: "cancelled" | "unclaimed",
+): IDBRequest<IDBValidKey> {
+  const { destination: _destination, payloadKey: _payloadKey, ...terminal } = row;
+  return transaction.objectStore(ANNOTATION_OPERATIONS_STORE).put({ ...terminal, state });
 }
 
 const STORAGE_WAIT_MS = 10_000;
@@ -212,7 +227,7 @@ const ACCEPT_STORES = [
   ANNOTATION_OPERATIONS_STORE,
   ANNOTATION_EXPIRY_STORE,
 ] as const;
-const SAVE_STORES = [
+export const SAVE_STORES = [
   ANNOTATION_NAMESPACES_STORE,
   ANNOTATION_HEADS_STORE,
   ANNOTATION_EVIDENCE_STORE,
@@ -221,7 +236,17 @@ const SAVE_STORES = [
   ANNOTATION_SEQUENCES_STORE,
 ] as const;
 
-function evidenceMatches(content: DocFileContent, evidence: PreparedAnnotation["capture"]["evidence"]): boolean {
+// Reset sweeps every annotation store of one namespace: the save set plus the
+// expiry receipts it retires with them.
+export const RESET_STORES = [...SAVE_STORES, ANNOTATION_EXPIRY_STORE] as const;
+
+function evidenceMatches(
+  content: DocFileContent,
+  evidence: PreparedAnnotation["capture"]["evidence"],
+  // The capture is loop-invariant during a validation, so its serialized
+  // fingerprint is computed once by the caller.
+  serializedFingerprint: string,
+): boolean {
   if (
     evidence.wholeRevision !== undefined &&
     content.revision !== undefined &&
@@ -229,7 +254,7 @@ function evidenceMatches(content: DocFileContent, evidence: PreparedAnnotation["
   ) {
     return false;
   }
-  return JSON.stringify(evidence.fingerprint) === JSON.stringify(displayedFingerprint(content.text, content.truncated));
+  return serializedFingerprint === JSON.stringify(displayedFingerprint(content.text, content.truncated));
 }
 
 // Exact identity between two accepted observations. Unlike evidenceMatches, which
@@ -329,6 +354,10 @@ function epochIdentityOf(documentKey: string, namespaceIncarnation: string, epoc
 // inconclusive evidence alone is not a change. Shared by the local entry guard
 // and the durable validation so both keep one comparison policy.
 function contentChangedAgainst(observations: DocFileContent[], content: DocFileContent): boolean {
+  const incomingEvidence = {
+    wholeRevision: content.revision,
+    fingerprint: displayedFingerprint(content.text, content.truncated),
+  };
   return observations.some(
     (observation) =>
       compareDisplayedSources(
@@ -341,10 +370,7 @@ function contentChangedAgainst(observations: DocFileContent[], content: DocFileC
         },
         {
           source: content.text,
-          evidence: {
-            wholeRevision: content.revision,
-            fingerprint: displayedFingerprint(content.text, content.truncated),
-          },
+          evidence: incomingEvidence,
         },
       ).changed,
   );
@@ -361,39 +387,22 @@ function destinationNeverResolves(destination: PreparedAnnotation["destination"]
   return destination.kind !== "browser-origin";
 }
 
-// Read exactly one document+epoch's rows. With a key-range constructor (every
-// browser) the compound index bounds the scan; without one (jsdom with no fake
-// class installed) the read falls back to the pre-index full scan with the
-// same filter, so an environment without IDBKeyRange keeps working instead of
-// crashing.
-async function evidenceRowsForDocumentEpoch(
-  evidenceStore: IDBObjectStore,
+// Read exactly one document+epoch's rows from the index that carries both.
+// With a key-range constructor (every browser) the compound index bounds the
+// scan; without one (jsdom with no fake class installed) the read falls back
+// to the pre-index full scan with the same filter, so an environment without
+// IDBKeyRange keeps working instead of crashing.
+async function rowsForDocumentEpoch<Row extends { documentKey: string; epoch: string }>(
+  store: IDBObjectStore,
+  indexName: string,
   keyRange: typeof IDBKeyRange | undefined,
   documentKey: string,
   epoch: string,
-): Promise<AnnotationEvidenceRow[]> {
+): Promise<Row[]> {
   if (keyRange) {
-    return requestResult<AnnotationEvidenceRow[]>(
-      evidenceStore.index(ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX).getAll(keyRange.only([documentKey, epoch])),
-    );
+    return requestResult<Row[]>(store.index(indexName).getAll(keyRange.only([documentKey, epoch])));
   }
-  return (await requestResult<AnnotationEvidenceRow[]>(evidenceStore.getAll())).filter(
-    (row) => row.documentKey === documentKey && row.epoch === epoch,
-  );
-}
-
-async function payloadRowsForDocumentEpoch(
-  payloadStore: IDBObjectStore,
-  keyRange: typeof IDBKeyRange | undefined,
-  documentKey: string,
-  epoch: string,
-): Promise<AnnotationPayloadRow[]> {
-  if (keyRange) {
-    return requestResult<AnnotationPayloadRow[]>(
-      payloadStore.index(ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX).getAll(keyRange.only([documentKey, epoch])),
-    );
-  }
-  return (await requestResult<AnnotationPayloadRow[]>(payloadStore.getAll())).filter(
+  return (await requestResult<Row[]>(store.getAll())).filter(
     (row) => row.documentKey === documentKey && row.epoch === epoch,
   );
 }
@@ -431,10 +440,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // persistence; recovery edits commit through the mutation outbox, which the
   // drafts-repository subscription cannot observe, so the source's own
   // recovery-persisted notification is routed through the same storage-success
-  // boundary. The WeakMap dies with the source and dedupes per source without
+  // boundary. The WeakSet dies with the source and dedupes per source without
   // retaining one; the release set below holds only the unsubscribe closures so
-  // close() can reach them, since a WeakMap is not iterable.
-  readonly #recoveryNotifications = new WeakMap<ComposerSourceState, () => void>();
+  // close() can reach them, since a WeakSet is not iterable.
+  readonly #recoveryNotifications = new WeakSet<ComposerSourceState>();
   readonly #recoveryNotificationReleases = new Set<() => void>();
   // close() is terminal. A handoff awaiting a receipt, payload or preparation
   // read resumes outside the close call, so every asynchronous boundary checks
@@ -567,17 +576,8 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   #armRecoveryCommitNotification(source: ComposerSourceState): void {
     if (this.#recoveryNotifications.has(source)) return;
     const unsubscribe = source.subscribeRecoveryPersisted(() => this.#notifyStorageSuccess());
-    this.#recoveryNotifications.set(source, unsubscribe);
+    this.#recoveryNotifications.add(source);
     this.#recoveryNotificationReleases.add(unsubscribe);
-  }
-
-  // Test-only inspection of the adapter-local issued-ticket map: acceptance
-  // validates against the durable head, so a retained superseded ticket and
-  // a pruned one are observably identical to every production caller. The
-  // bound tests read this to prove the map cannot accumulate one ticket per
-  // abandoned read for the adapter's whole lifetime.
-  issuedReadTicketsForTests(): ReadonlyMap<string, { documentKey: string; readGeneration: number }> {
-    return this.#issuedReads;
   }
 
   async beginRead(key: DocumentKey): Promise<ReadTicket> {
@@ -586,9 +586,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const documentKey = annotationDocumentKey(key);
     let issuedGeneration = 0;
     const ticket = await this.#transaction(READ_STORES, "readwrite", async (transaction) => {
-      const namespaceRequest = requestResult<NamespaceRow | undefined>(
-        transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(annotationNamespaceKey(namespace)),
-      );
+      const namespaceRequest = readNamespaceRow(transaction, namespace);
       const headRequest = requestResult<AnnotationHeadRow | undefined>(
         transaction.objectStore(ANNOTATION_HEADS_STORE).get(documentKey),
       );
@@ -690,9 +688,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       // is settled here, and the fence below is a separate transaction so a fence
       // abort cannot roll back validation or reject the read.
       const validation = await this.#transaction(ACCEPT_STORES, "readwrite", async (transaction) => {
-        const namespaceRow = await requestResult<NamespaceRow | undefined>(
-          transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(annotationNamespaceKey(namespace)),
-        );
+        const namespaceRow = await readNamespaceRow(transaction, namespace);
         if (!namespaceRow || namespaceRow.incarnation !== ticket.namespaceIncarnation)
           return { kind: "stale" } as const;
         const head = await requestResult<AnnotationHeadRow | undefined>(
@@ -716,8 +712,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         const currentEpoch = head?.epoch;
         const retained = currentEpoch
           ? (
-              await evidenceRowsForDocumentEpoch(
+              await rowsForDocumentEpoch<AnnotationEvidenceRow>(
                 transaction.objectStore(ANNOTATION_EVIDENCE_STORE),
+                ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX,
                 this.#keyRange,
                 documentKey,
                 currentEpoch,
@@ -840,7 +837,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       finishValidation(true);
       await this.#options.beforeExpiryFence?.(ticket);
       try {
-        const fenced = await this.#fence(ticket.key, validation.namespaceIncarnation, validation.head.epoch, content);
+        const fenced = await this.#fence(
+          ticket.key,
+          namespace,
+          validation.namespaceIncarnation,
+          validation.head.epoch,
+          content,
+        );
         // The replacement epoch starts with its own evidence, never inheriting the
         // dead epoch's observations.
         this.#readStates.set(documentKey, {
@@ -904,15 +907,14 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // rewrite a newer epoch.
   async #fence(
     ticketKey: DocumentKey,
+    namespace: Extract<DocumentKey["namespace"], { kind: "browser" }>,
     namespaceIncarnation: string,
     expectedExpiredEpoch: string,
     content: DocFileContent,
   ): Promise<{ receipt: ExpiryReceipt; lease: AcceptedSourceLease }> {
     const documentKey = annotationDocumentKey(ticketKey);
     const fenced = await this.#transaction(ACCEPT_STORES, "readwrite", async (transaction) => {
-      const namespaceRow = await requestResult<NamespaceRow | undefined>(
-        transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(annotationNamespaceKey(ticketKey.namespace)),
-      );
+      const namespaceRow = await readNamespaceRow(transaction, namespace);
       if (!namespaceRow || namespaceRow.incarnation !== namespaceIncarnation) throw new SupersededFenceError();
       const currentHead = await requestResult<AnnotationHeadRow | undefined>(
         transaction.objectStore(ANNOTATION_HEADS_STORE).get(documentKey),
@@ -958,10 +960,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         ) {
           continue;
         }
-        const { destination: _destination, payloadKey: _payloadKey, ...terminal } = operation;
-        await requestResult(
-          transaction.objectStore(ANNOTATION_OPERATIONS_STORE).put({ ...terminal, state: "cancelled" }),
-        );
+        await requestResult(putTerminalOperation(transaction, operation, "cancelled"));
       }
       const expiryReceipt: ExpiryReceipt = {
         key: ticketKey,
@@ -1003,8 +1002,6 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const operationKey = annotationOperationKey(namespace, captured.operationId);
     const documentKey = annotationDocumentKey(captured.lease.key);
     const sessionKey = serializeSessionKey({ namespace, sessionRef: captured.lease.key.sessionRef });
-    let newlySaved = false;
-    let replayedSaved = false;
     const receipt = await this.#transaction(
       SAVE_STORES,
       "readwrite",
@@ -1031,16 +1028,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
           // could not. A genuinely duplicate save publishes one redundant wake;
           // readers re-list durable state, which costs a read and changes
           // nothing else.
-          replayedSaved = true;
           return {
             operationId: captured.operationId,
             epoch: existing.epoch,
             sessionSequence: existing.sessionSequence,
           } satisfies SaveReceipt;
         }
-        const namespaceRow = await requestResult<NamespaceRow | undefined>(
-          transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(annotationNamespaceKey(namespace)),
-        );
+        const namespaceRow = await readNamespaceRow(transaction, namespace);
         if (!namespaceRow || namespaceRow.incarnation !== captured.lease.namespaceIncarnation) {
           throw new Error("accepted lease incarnation is not current");
         }
@@ -1065,13 +1059,17 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         // comment despite its original evidence still being retained. Within an
         // epoch every retained observation is validated-comparable; a genuine
         // change fences into a new epoch, which the epoch check above rejects.
-        const epochEvidence = await evidenceRowsForDocumentEpoch(
+        const epochEvidence = await rowsForDocumentEpoch<AnnotationEvidenceRow>(
           transaction.objectStore(ANNOTATION_EVIDENCE_STORE),
+          ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX,
           this.#keyRange,
           documentKey,
           head.epoch,
         );
-        if (!epochEvidence.some((row) => evidenceMatches(row.content, captured.capture.evidence))) {
+        const capturedFingerprint = JSON.stringify(captured.capture.evidence.fingerprint);
+        if (
+          !epochEvidence.some((row) => evidenceMatches(row.content, captured.capture.evidence, capturedFingerprint))
+        ) {
           throw new Error("accepted source evidence does not match the durable evidence");
         }
         const sequence = await requestResult<AnnotationSequenceRow | undefined>(
@@ -1117,7 +1115,6 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
             .put({ documentKey: sessionKey, lastSequence: sessionSequence } satisfies AnnotationSequenceRow),
         );
         this.#options.beforeCommit?.("save");
-        newlySaved = true;
         return { operationId: captured.operationId, epoch: head.epoch, sessionSequence } satisfies SaveReceipt;
       },
       cancellation,
@@ -1125,7 +1122,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     this.#notifyStorageSuccess();
     // A newly persisted operation and a replay that confirms an existing one
     // both name a committed state readers may not have observed.
-    if (newlySaved || replayedSaved) this.#publishDocumentWake(documentKey);
+    this.#publishDocumentWake(documentKey);
     return receipt;
   }
 
@@ -1142,7 +1139,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       async (transaction) => {
         const [operations, payloads, expiries] = await Promise.all([
           requestResult<AnnotationOperationRow[]>(transaction.objectStore(ANNOTATION_OPERATIONS_STORE).getAll()),
-          requestResult<AnnotationPayloadRow[]>(transaction.objectStore(ANNOTATION_PAYLOADS_STORE).getAll()),
+          // The map is consulted only with this document's operation keys, so
+          // the compound index bounds the payload read to the document; arrays
+          // sort after strings in IDB key order, so the upper bound covers
+          // every epoch.
+          this.#keyRange
+            ? requestResult<AnnotationPayloadRow[]>(
+                transaction
+                  .objectStore(ANNOTATION_PAYLOADS_STORE)
+                  .index(ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX)
+                  .getAll(this.#keyRange.bound([documentKey], [documentKey, []])),
+              )
+            : requestResult<AnnotationPayloadRow[]>(transaction.objectStore(ANNOTATION_PAYLOADS_STORE).getAll()),
           requestResult<AnnotationExpiryRow[]>(transaction.objectStore(ANNOTATION_EXPIRY_STORE).getAll()),
         ]);
         const expiredKeys = new Set(expiries.map((row) => row.expiryKey));
@@ -1184,56 +1192,45 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const documentKey = annotationDocumentKey(receipt.key);
     const expiryKey = annotationExpiryKey(documentKey, receipt.expiredEpoch);
     let removed = false;
-    await this.#transaction(
-      [
-        ANNOTATION_NAMESPACES_STORE,
-        ANNOTATION_HEADS_STORE,
-        ANNOTATION_EVIDENCE_STORE,
-        ANNOTATION_PAYLOADS_STORE,
-        ANNOTATION_OPERATIONS_STORE,
-        ANNOTATION_EXPIRY_STORE,
-      ],
-      "readwrite",
-      async (transaction) => {
-        const namespaceRow = await requestResult<NamespaceRow | undefined>(
-          transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(annotationNamespaceKey(namespace)),
-        );
-        if (!namespaceRow || namespaceRow.incarnation !== receipt.namespaceIncarnation) return;
-        const expiryRow = await requestResult<AnnotationExpiryRow | undefined>(
-          transaction.objectStore(ANNOTATION_EXPIRY_STORE).get(expiryKey),
-        );
-        if (!expiryRow || expiryRow.receipt.expiredEpoch !== receipt.expiredEpoch) return;
-        if (expiryRow.receipt.phase === "deleted") return;
-        const [payloads, evidence] = await Promise.all([
-          payloadRowsForDocumentEpoch(
-            transaction.objectStore(ANNOTATION_PAYLOADS_STORE),
-            this.#keyRange,
-            documentKey,
-            receipt.expiredEpoch,
-          ),
-          evidenceRowsForDocumentEpoch(
-            transaction.objectStore(ANNOTATION_EVIDENCE_STORE),
-            this.#keyRange,
-            documentKey,
-            receipt.expiredEpoch,
-          ),
-        ]);
-        for (const payload of payloads) {
-          await requestResult(transaction.objectStore(ANNOTATION_PAYLOADS_STORE).delete(payload.payloadKey));
-        }
-        for (const row of evidence) {
-          await requestResult(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).delete(row.evidenceKey));
-        }
-        await requestResult(
-          transaction.objectStore(ANNOTATION_EXPIRY_STORE).put({
-            expiryKey,
-            receipt: { ...expiryRow.receipt, phase: "deleted" },
-          } satisfies AnnotationExpiryRow),
-        );
-        this.#options.beforeCommit?.("deleteExpiry");
-        removed = true;
-      },
-    );
+    await this.#transaction([...ACCEPT_STORES, ANNOTATION_PAYLOADS_STORE], "readwrite", async (transaction) => {
+      const namespaceRow = await readNamespaceRow(transaction, namespace);
+      if (!namespaceRow || namespaceRow.incarnation !== receipt.namespaceIncarnation) return;
+      const expiryRow = await requestResult<AnnotationExpiryRow | undefined>(
+        transaction.objectStore(ANNOTATION_EXPIRY_STORE).get(expiryKey),
+      );
+      if (!expiryRow || expiryRow.receipt.expiredEpoch !== receipt.expiredEpoch) return;
+      if (expiryRow.receipt.phase === "deleted") return;
+      const [payloads, evidence] = await Promise.all([
+        rowsForDocumentEpoch<AnnotationPayloadRow>(
+          transaction.objectStore(ANNOTATION_PAYLOADS_STORE),
+          ANNOTATION_PAYLOADS_DOCUMENT_EPOCH_INDEX,
+          this.#keyRange,
+          documentKey,
+          receipt.expiredEpoch,
+        ),
+        rowsForDocumentEpoch<AnnotationEvidenceRow>(
+          transaction.objectStore(ANNOTATION_EVIDENCE_STORE),
+          ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX,
+          this.#keyRange,
+          documentKey,
+          receipt.expiredEpoch,
+        ),
+      ]);
+      for (const payload of payloads) {
+        await requestResult(transaction.objectStore(ANNOTATION_PAYLOADS_STORE).delete(payload.payloadKey));
+      }
+      for (const row of evidence) {
+        await requestResult(transaction.objectStore(ANNOTATION_EVIDENCE_STORE).delete(row.evidenceKey));
+      }
+      await requestResult(
+        transaction.objectStore(ANNOTATION_EXPIRY_STORE).put({
+          expiryKey,
+          receipt: { ...expiryRow.receipt, phase: "deleted" },
+        } satisfies AnnotationExpiryRow),
+      );
+      this.#options.beforeCommit?.("deleteExpiry");
+      removed = true;
+    });
     if (removed) this.#publishDocumentWake(documentKey);
   }
 
@@ -1259,10 +1256,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         transaction.objectStore(ANNOTATION_OPERATIONS_STORE).get(operationKey),
       );
       if (row?.state !== "pending") return;
-      const { destination: _destination, payloadKey: _payloadKey, ...terminal } = row;
-      await requestResult(
-        transaction.objectStore(ANNOTATION_OPERATIONS_STORE).put({ ...terminal, state: "cancelled" }),
-      );
+      await requestResult(putTerminalOperation(transaction, row, "cancelled"));
     });
   }
 
@@ -1292,7 +1286,13 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const retainedFaults: unknown[] = [];
     for (const [identity, record] of [...this.#pendingExpiries]) {
       try {
-        await this.#fence(record.ticketKey, record.namespaceIncarnation, record.expiredEpoch, record.content);
+        await this.#fence(
+          record.ticketKey,
+          record.namespace,
+          record.namespaceIncarnation,
+          record.expiredEpoch,
+          record.content,
+        );
         this.#pendingExpiries.delete(identity);
       } catch (error) {
         if (error instanceof SupersededFenceError) {
@@ -1415,8 +1415,8 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       this.#connection,
       reason,
       () => this.#uncertainAppends.size > 0,
-      cancellation,
       () => this.#closed,
+      cancellation,
     );
   }
 
@@ -1479,69 +1479,55 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const newIncarnation = createSecureUUID();
     let result: { committed: boolean; incarnation: string };
     try {
-      result = await this.#transaction(
-        [
-          ANNOTATION_NAMESPACES_STORE,
+      result = await this.#transaction(RESET_STORES, "readwrite", async (transaction) => {
+        const namespaceRow = await readNamespaceRow(transaction, namespace);
+        if (!namespaceRow || namespaceRow.incarnation !== expectedIncarnation) {
+          return { committed: false, incarnation: namespaceRow?.incarnation ?? "" };
+        }
+        await deleteRowsWhere<AnnotationHeadRow>(
+          transaction,
           ANNOTATION_HEADS_STORE,
+          (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
+          (row) => row.documentKey,
+        );
+        await deleteRowsWhere<AnnotationEvidenceRow>(
+          transaction,
           ANNOTATION_EVIDENCE_STORE,
+          (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
+          (row) => row.evidenceKey,
+        );
+        await deleteRowsWhere<AnnotationPayloadRow>(
+          transaction,
           ANNOTATION_PAYLOADS_STORE,
+          (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
+          (row) => row.payloadKey,
+        );
+        await deleteRowsWhere<AnnotationOperationRow>(
+          transaction,
           ANNOTATION_OPERATIONS_STORE,
+          (row) => row.namespaceKey === namespaceKey,
+          (row) => row.operationKey,
+        );
+        await deleteRowsWhere<AnnotationSequenceRow>(
+          transaction,
           ANNOTATION_SEQUENCES_STORE,
+          (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
+          (row) => row.documentKey,
+        );
+        await deleteRowsWhere<AnnotationExpiryRow>(
+          transaction,
           ANNOTATION_EXPIRY_STORE,
-        ],
-        "readwrite",
-        async (transaction) => {
-          const namespaceRow = await requestResult<NamespaceRow | undefined>(
-            transaction.objectStore(ANNOTATION_NAMESPACES_STORE).get(namespaceKey),
-          );
-          if (!namespaceRow || namespaceRow.incarnation !== expectedIncarnation) {
-            return { committed: false, incarnation: namespaceRow?.incarnation ?? "" };
-          }
-          await deleteRowsWhere<AnnotationHeadRow>(
-            transaction,
-            ANNOTATION_HEADS_STORE,
-            (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
-            (row) => row.documentKey,
-          );
-          await deleteRowsWhere<AnnotationEvidenceRow>(
-            transaction,
-            ANNOTATION_EVIDENCE_STORE,
-            (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
-            (row) => row.evidenceKey,
-          );
-          await deleteRowsWhere<AnnotationPayloadRow>(
-            transaction,
-            ANNOTATION_PAYLOADS_STORE,
-            (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
-            (row) => row.payloadKey,
-          );
-          await deleteRowsWhere<AnnotationOperationRow>(
-            transaction,
-            ANNOTATION_OPERATIONS_STORE,
-            (row) => row.namespaceKey === namespaceKey,
-            (row) => row.operationKey,
-          );
-          await deleteRowsWhere<AnnotationSequenceRow>(
-            transaction,
-            ANNOTATION_SEQUENCES_STORE,
-            (row) => documentKeyNamespace(row.documentKey) === namespaceKey,
-            (row) => row.documentKey,
-          );
-          await deleteRowsWhere<AnnotationExpiryRow>(
-            transaction,
-            ANNOTATION_EXPIRY_STORE,
-            (row) => annotationNamespaceKey(row.receipt.key.namespace) === namespaceKey,
-            (row) => row.expiryKey,
-          );
-          await requestResult(
-            transaction
-              .objectStore(ANNOTATION_NAMESPACES_STORE)
-              .put({ namespaceKey, incarnation: newIncarnation } satisfies NamespaceRow),
-          );
-          this.#options.beforeCommit?.("reset");
-          return { committed: true, incarnation: newIncarnation };
-        },
-      );
+          (row) => annotationNamespaceKey(row.receipt.key.namespace) === namespaceKey,
+          (row) => row.expiryKey,
+        );
+        await requestResult(
+          transaction
+            .objectStore(ANNOTATION_NAMESPACES_STORE)
+            .put({ namespaceKey, incarnation: newIncarnation } satisfies NamespaceRow),
+        );
+        this.#options.beforeCommit?.("reset");
+        return { committed: true, incarnation: newIncarnation };
+      });
     } catch (error) {
       // The transaction settled by rolling back; the release is an observation
       // boundary outside it.
@@ -1590,7 +1576,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     // authoritative, and post-commit observer faults still cannot relabel it.
     let receipt: AnnotationOperationRow | undefined;
     try {
-      receipt = await this.#readOperation(operationKey);
+      receipt = await this.#readRow<AnnotationOperationRow>(ANNOTATION_OPERATIONS_STORE, operationKey);
     } catch {
       // The receipt is unobservable: any retained uncertain record for this
       // operation survives for the next pass.
@@ -1627,7 +1613,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     if (receipt.state === "unclaimed") return { state: "pending", reason: "owner-unavailable" };
     let payload: AnnotationPayloadRow | undefined;
     try {
-      payload = await this.#readPayload(receipt.payloadKey);
+      payload = await this.#readRow<AnnotationPayloadRow>(ANNOTATION_PAYLOADS_STORE, receipt.payloadKey);
     } catch {
       return { state: "pending", reason: "owner-unavailable" };
     }
@@ -1780,19 +1766,9 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     return "reconciled";
   }
 
-  async #readOperation(operationKey: string): Promise<AnnotationOperationRow | undefined> {
-    return this.#transaction([ANNOTATION_OPERATIONS_STORE], "readonly", (transaction) =>
-      requestResult<AnnotationOperationRow | undefined>(
-        transaction.objectStore(ANNOTATION_OPERATIONS_STORE).get(operationKey),
-      ),
-    );
-  }
-
-  async #readPayload(payloadKey: string): Promise<AnnotationPayloadRow | undefined> {
-    return this.#transaction([ANNOTATION_PAYLOADS_STORE], "readonly", (transaction) =>
-      requestResult<AnnotationPayloadRow | undefined>(
-        transaction.objectStore(ANNOTATION_PAYLOADS_STORE).get(payloadKey),
-      ),
+  async #readRow<Row>(storeName: string, key: string): Promise<Row | undefined> {
+    return this.#transaction([storeName], "readonly", (transaction) =>
+      requestResult<Row | undefined>(transaction.objectStore(storeName).get(key)),
     );
   }
 
@@ -1807,10 +1783,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
         transaction.objectStore(ANNOTATION_OPERATIONS_STORE).get(operationKey),
       );
       if (row?.state !== "pending") return;
-      const { destination: _destination, payloadKey: _payloadKey, ...terminal } = row;
-      await requestResult(
-        transaction.objectStore(ANNOTATION_OPERATIONS_STORE).put({ ...terminal, state: "unclaimed" }),
-      );
+      await requestResult(putTerminalOperation(transaction, row, "unclaimed"));
     });
   }
 
@@ -1853,44 +1826,21 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const release = cancellation?.onCancel(() => {
       tryAbortTransaction(transaction);
     });
-    const completed = transactionCompletion(transaction);
-    void completed.catch(() => undefined);
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let timedOut = false;
-    const deadline = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => {
-        // Best effort while the transaction can still abort: prove the
-        // rollback. Retiring first would close the database, and a finished
-        // transaction refuses abort().
-        tryAbortTransaction(transaction);
-        this.#connection.retire(database);
-        // Annotation writes reconcile on retry through their operation rows
-        // (the duplicate-operation identity check) and reads re-read durable
-        // state, so an unobserved outcome is honestly reported as a fault for
-        // the caller's own retry instead of leaving it pending forever - the
-        // same settle-the-caller call the drafts repository and session cache
-        // watchdogs make.
-        timedOut = true;
-        reject(new Error("Document annotation repository transaction timed out"));
-      }, STORAGE_WAIT_MS);
-    });
     try {
-      // Promise.all rejects on either failure without waiting for the other
-      // input. A terminal abort therefore releases even a stalled body, while
-      // success requires both the result and the durable commit event.
-      const [result] = await Promise.race([Promise.all([body(transaction), completed]), deadline]);
-      return result;
-    } catch (error) {
-      if (!timedOut) {
-        tryAbortTransaction(transaction);
-        // The rollback wait shares the same deadline the happy path honors:
-        // a stalled abort event must not keep the call pending past the
-        // watchdog.
-        await Promise.race([completed.catch(() => undefined), deadline]).catch(() => undefined);
-      }
-      throw error;
+      // Annotation writes reconcile on retry through their operation rows (the
+      // duplicate-operation identity check) and reads re-read durable state,
+      // so an unobserved outcome is honestly reported as a fault for the
+      // caller's own retry instead of leaving it pending forever - the same
+      // settle-the-caller call the drafts repository and session cache
+      // watchdogs make.
+      return await runBoundedTransaction({
+        transaction,
+        retire: () => this.#connection.retire(database),
+        waitMs: STORAGE_WAIT_MS,
+        timeout: () => new Error("Document annotation repository transaction timed out"),
+        run: () => body(transaction),
+      });
     } finally {
-      clearTimeout(timer);
       release?.();
     }
   }
@@ -1902,21 +1852,12 @@ export function createDocumentAnnotationRepository(
   return new BrowserDocumentAnnotationRepositoryImpl(options);
 }
 
-// Read one repository adapter's live issued-ticket map. Production acceptance
-// never distinguishes a pruned superseded ticket from a generation-missed one,
-// so only the bound tests use this.
-export function issuedReadTicketsForTests(
-  repository: BrowserDocumentAnnotationRepository,
-): ReadonlyMap<string, { documentKey: string; readGeneration: number }> {
-  return (repository as BrowserDocumentAnnotationRepositoryImpl).issuedReadTicketsForTests();
-}
-
 // Wrap one real retry pass with a completed, read-only receipt scan. The pass
 // runs to completion first; only IDB request/completion promises are awaited in
 // the outcome transaction, and a fulfilled pass is never itself treated as
 // recovery. Applied/cancelled receipts are not pending; open/read/completion
 // failures reject and keep the caller's retry-needed state.
-export async function retryBrowserAnnotationsWithOutcome(
+async function retryBrowserAnnotationsWithOutcome(
   repository: BrowserDocumentAnnotationRepository,
   connection: IDBConnection,
   reason: AnnotationRetryReason,
@@ -1924,60 +1865,35 @@ export async function retryBrowserAnnotationsWithOutcome(
   // unobserved: a receipt that answers applied never appears in the pending
   // scan below, but a faulted reconciliation read leaves the live composer
   // stale and must keep the runtime's shared retry intent alive.
-  hasRetainedReconciliation: () => boolean = () => false,
+  hasRetainedReconciliation: () => boolean,
+  isClosed: () => boolean,
   cancellation?: AnnotationRetryCancellation,
-  isClosed?: () => boolean,
 ): Promise<BrowserAnnotationRetryOutcome> {
   // close() is terminal: a pass that was already in flight must not reopen the
   // adapter for the scan. Refuse like any other storage fault so the caller
   // keeps its retry-needed state instead of reading through teardown.
-  if (isClosed?.() === true) throw new RepositoryClosedError();
+  if (isClosed()) throw new RepositoryClosedError();
   await repository.retryPending(reason, cancellation);
-  if (isClosed?.() === true) throw new RepositoryClosedError();
+  if (isClosed()) throw new RepositoryClosedError();
   const database = await connection.open();
-  if (isClosed?.() === true) {
+  if (isClosed()) {
     connection.close();
     throw new RepositoryClosedError();
   }
   const transaction = database.transaction(ANNOTATION_OPERATIONS_STORE, "readonly");
-  const completed = transactionCompletion(transaction);
-  void completed.catch(() => undefined);
   // This scan ends the runtime's shared retry pass, so a stalled request
   // would leave every later retry awaiting the same never-settling promise.
   // The same deadline the repository's transactions carry applies: abort
   // while the transaction can still abort, retire the connection, settle
   // the caller so its retry-needed state survives for the next pass.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let timedOut = false;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      tryAbortTransaction(transaction);
-      connection.retire(database);
-      timedOut = true;
-      reject(new Error("Document annotation outcome scan timed out"));
-    }, STORAGE_WAIT_MS);
+  const operations = await runBoundedTransaction({
+    transaction,
+    retire: () => connection.retire(database),
+    waitMs: STORAGE_WAIT_MS,
+    timeout: () => new Error("Document annotation outcome scan timed out"),
+    run: () => requestResult<AnnotationOperationRow[]>(transaction.objectStore(ANNOTATION_OPERATIONS_STORE).getAll()),
   });
-  try {
-    const [operations] = await Promise.race([
-      Promise.all([
-        requestResult<AnnotationOperationRow[]>(transaction.objectStore(ANNOTATION_OPERATIONS_STORE).getAll()),
-        completed,
-      ]),
-      deadline,
-    ]);
-    return {
-      pending: operations.some((operation) => operation.state === "pending") || hasRetainedReconciliation(),
-    };
-  } catch (error) {
-    if (!timedOut) {
-      tryAbortTransaction(transaction);
-      // The rollback wait shares the same deadline the happy path honors:
-      // a stalled abort event must not keep the shared retry pass pending
-      // past the watchdog.
-      await Promise.race([completed.catch(() => undefined), deadline]).catch(() => undefined);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
+  return {
+    pending: operations.some((operation) => operation.state === "pending") || hasRetainedReconciliation(),
+  };
 }
