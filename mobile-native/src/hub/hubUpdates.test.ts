@@ -22,7 +22,7 @@ const check = (over: Partial<UpdateCheckResponse> = {}): UpdateCheckResponse => 
 	onDiskCommit: "abc1234",
 	installAvailable: true,
 	restartPending: false,
-	started_at: FIRST_START,
+	startedAt: FIRST_START,
 	restartSupported: true,
 	...over,
 });
@@ -46,7 +46,7 @@ function hub() {
 			}
 			return check({
 				currentVersion: state.version,
-				started_at: state.startedAt,
+				startedAt: state.startedAt,
 				updateAvailable: !state.installed,
 				installAvailable: !state.installed,
 				restartPending: state.installed,
@@ -230,7 +230,7 @@ it("asks once when the hub comes back from a restart, and shows what that answer
 	await restarting;
 	await settle();
 	expect(h.calls).toEqual(["evener/update/check"]);
-	expect(hook.result.current.getState()).toMatchObject({ restarting: false, check: { started_at: SECOND_START } });
+	expect(hook.result.current.getState()).toMatchObject({ restarting: false, check: { startedAt: SECOND_START } });
 	hook.unmount();
 });
 

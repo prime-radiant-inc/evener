@@ -31,7 +31,7 @@ const UP_TO_DATE: UpdateCheckResponse = {
   onDiskCommit: "be70029",
   installAvailable: false,
   restartPending: false,
-  started_at: "2026-10-21T12:00:00Z",
+  startedAt: "2026-10-21T12:00:00Z",
   restartSupported: true,
 };
 
@@ -596,7 +596,7 @@ describe("restart", () => {
     fake.on("evener/update/check", () => ({
       ...UP_TO_DATE,
       updateAvailable: true,
-      started_at: "2026-10-21T12:00:00Z",
+      startedAt: "2026-10-21T12:00:00Z",
       restartSupported: true,
     }));
     fake.on("evener/hub/restart", () => ({

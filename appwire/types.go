@@ -3186,8 +3186,9 @@ type UpdateCheckResponse struct {
 	OnDiskError      string    `json:"onDiskError,omitempty"`
 	InstallAvailable bool      `json:"installAvailable"`
 	RestartPending   bool      `json:"restartPending"`
-	StartedAt        time.Time `json:"started_at"`
+	StartedAt        time.Time `json:"startedAt"`
 	RestartSupported bool      `json:"restartSupported"`
+	CheckError       string    `json:"checkError,omitempty"`
 }
 
 // UpdateApplyParams selects the channel to install. Empty means the running

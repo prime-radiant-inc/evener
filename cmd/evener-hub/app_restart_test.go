@@ -175,9 +175,9 @@ func TestHubRestartAbortsWhenTargetChangesDuringProbe(t *testing.T) {
 	previousPath := hubLaunchEntrypoint
 	hubLaunchEntrypoint = path
 	t.Cleanup(func() { hubLaunchEntrypoint = previousPath })
-	previousErr := hubLaunchEntrypointErr
-	hubLaunchEntrypointErr = nil
-	t.Cleanup(func() { hubLaunchEntrypointErr = previousErr })
+	previousErr := errHubLaunchEntrypoint
+	errHubLaunchEntrypoint = nil
+	t.Cleanup(func() { errHubLaunchEntrypoint = previousErr })
 
 	previousProbe := probeHubBinaryFn
 	probeHubBinaryFn = func(path string) (string, error) {
@@ -476,9 +476,9 @@ func TestHubRestartRPCIsRegistered(t *testing.T) {
 	previousSchedule := scheduleHubRestartOnly
 	scheduleHubRestartOnly = func(context.Context, restartPin, string, []string) {}
 	t.Cleanup(func() { scheduleHubRestartOnly = previousSchedule })
-	previousErr := hubLaunchEntrypointErr
-	hubLaunchEntrypointErr = nil
-	t.Cleanup(func() { hubLaunchEntrypointErr = previousErr })
+	previousErr := errHubLaunchEntrypoint
+	errHubLaunchEntrypoint = nil
+	t.Cleanup(func() { errHubLaunchEntrypoint = previousErr })
 
 	appServer := newHubAppServer(hubcore.WebConfig{
 		HubStateRoot: t.TempDir(),

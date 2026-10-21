@@ -34,7 +34,13 @@ func acquireInstallLockCtx(ctx context.Context, shareBinDir string) (release fun
 	if err := os.MkdirAll(shareBinDir, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir install lock parent: %w", err)
 	}
-	f, err := os.OpenFile(filepath.Join(shareBinDir, ".install.lock"), os.O_RDWR|os.O_CREATE, 0o644)
+	lockPath := filepath.Join(shareBinDir, ".install.lock")
+	f, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil && errors.Is(err, os.ErrPermission) {
+		// A hub running against a root-owned installation cannot create or
+		// write the lock file, but flock works on a read-only descriptor.
+		f, err = os.OpenFile(lockPath, os.O_RDONLY, 0)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open install lock: %w", err)
 	}

@@ -48,6 +48,7 @@ export function HubUpdates() {
   const installing = useHubUpdateStore((s) => s.installing);
   const installError = useHubUpdateStore((s) => s.installError);
   const applying = useHubUpdateStore((s) => s.applying);
+  const applyError = useHubUpdateStore((s) => s.applyError);
   const restarting = useHubUpdateStore((s) => s.restarting);
   const restartError = useHubUpdateStore((s) => s.restartError);
   const restartTimedOut = useHubUpdateStore((s) => s.restartTimedOut);
@@ -78,8 +79,11 @@ export function HubUpdates() {
 
   const running = check?.currentVersion ?? hub.commit;
   const onDisk = check?.onDiskCommit;
+  const channelError = check?.checkError ?? null;
   const restartSupported = check?.restartSupported === true;
   const installAvailable = check?.installAvailable ?? check?.updateAvailable ?? false;
+  const legacyApply =
+    check !== null && !restartSupported && (check.applicable ?? false) && (check.updateAvailable ?? false);
   const busy = checking || installing || applying || restarting;
 
   const updateState = restarting
@@ -90,26 +94,30 @@ export function HubUpdates() {
         ? "checking"
         : checkError !== null
           ? "check-failed"
-          : check === null
-            ? undefined
-            : check.updateAvailable
-              ? "update-available"
-              : "up-to-date";
+          : channelError !== null
+            ? "check-failed"
+            : check === null
+              ? undefined
+              : check.updateAvailable
+                ? "update-available"
+                : "up-to-date";
 
   const restartDialog = (
     <ConfirmDialog
       open={confirming}
-      title="Restart the hub?"
-      confirmLabel="Yes, restart"
-      busy={restarting}
+      title={legacyApply ? "Update and restart the hub?" : "Restart the hub?"}
+      confirmLabel={legacyApply ? "Yes, update and restart" : "Yes, restart"}
+      busy={legacyApply ? applying : restarting}
       onConfirm={() => {
         setConfirming(false);
-        void hubUpdateStore.getState().restart();
+        if (legacyApply) void hubUpdateStore.getState().apply();
+        else void hubUpdateStore.getState().restart();
       }}
       onCancel={() => setConfirming(false)}
     >
-      The hub restarts into {displayBuild(onDisk ?? running)} (running {displayBuild(running)}). Open panes reconnect;
-      running sessions keep going.
+      {legacyApply
+        ? "The hub installs the update and restarts. Open panes reconnect; running sessions keep going."
+        : `The hub restarts into ${displayBuild(onDisk ?? running)} (running ${displayBuild(running)}). Open panes reconnect; running sessions keep going.`}
     </ConfirmDialog>
   );
 
@@ -167,10 +175,14 @@ export function HubUpdates() {
             {!restarting && !restartTimedOut && !checking && checkError !== null && (
               <>Couldn't check for updates: {checkError}</>
             )}
+            {!restarting && !restartTimedOut && !checking && checkError === null && channelError !== null && (
+              <>Couldn't check for updates: {channelError}</>
+            )}
             {!restarting &&
               !restartTimedOut &&
               !checking &&
               checkError === null &&
+              channelError === null &&
               check !== null &&
               (check.updateAvailable
                 ? `Update available: ${check.channel} ${displayBuild(check.latestCommit ?? "")}, running ${displayBuild(check.currentVersion)}`
@@ -178,23 +190,32 @@ export function HubUpdates() {
           </InlineNotice>
           {installing && <Loader label="Installing update" />}
           {installError !== null && <InlineNotice tone="danger">Install failed: {installError}</InlineNotice>}
+          {applyError !== null && <InlineNotice tone="danger">Update failed: {applyError}</InlineNotice>}
           {restartError !== null && <InlineNotice tone="danger">Restart failed: {restartError}</InlineNotice>}
 
           <div className={CLASS.actions}>
             <Button size="sm" onClick={() => void hubUpdateStore.getState().runCheck()} disabled={busy}>
               Check for updates
             </Button>
-            <Button
-              size="sm"
-              onClick={() => void hubUpdateStore.getState().install()}
-              disabled={!installAvailable || busy}
-            >
-              Install update
-            </Button>
-            {restartSupported && (
+            {legacyApply ? (
               <Button size="sm" onClick={() => setConfirming(true)} disabled={busy}>
-                Restart hub
+                Update and restart
               </Button>
+            ) : (
+              <>
+                <Button
+                  size="sm"
+                  onClick={() => void hubUpdateStore.getState().install()}
+                  disabled={!installAvailable || busy}
+                >
+                  Install update
+                </Button>
+                {restartSupported && (
+                  <Button size="sm" onClick={() => setConfirming(true)} disabled={busy}>
+                    Restart hub
+                  </Button>
+                )}
+              </>
             )}
           </div>
         </>

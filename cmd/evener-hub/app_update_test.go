@@ -56,7 +56,7 @@ func setBuild(t *testing.T, sha, channel string) {
 	// The launch path and its install layout are process state; a test that
 	// ran runMain must not leave them behind for a check or restart test.
 	hubLaunchEntrypoint = ""
-	hubLaunchEntrypointErr = nil
+	errHubLaunchEntrypoint = nil
 	hubLaunchShareBinDir = ""
 	hubLaunchBinarySHA256 = ""
 	launchDigestMu.Lock()
@@ -225,14 +225,17 @@ func TestHubUpdateCheckHonoursRequestedChannel(t *testing.T) {
 	}
 }
 
-func TestHubUpdateCheckPropagatesError(t *testing.T) {
+func TestHubUpdateCheckReportsChannelError(t *testing.T) {
 	setBuild(t, "3b1c5f8", "release")
 	stubUpdateCheck(t, func(context.Context, selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
 		return selfupdate.CheckResult{}, errors.New("GET x: 403 Forbidden: API rate limit exceeded")
 	})
-	_, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
-	if err == nil || !strings.Contains(err.Error(), "rate limit") {
-		t.Fatalf("err = %v", err)
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if !strings.Contains(resp.CheckError, "rate limit") {
+		t.Fatalf("check error = %q, want the channel failure", resp.CheckError)
 	}
 }
 

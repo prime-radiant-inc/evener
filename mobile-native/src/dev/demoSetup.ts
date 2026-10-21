@@ -39,7 +39,7 @@ export function demoUpdateCheck(): MethodTypes["evener/update/check"]["result"] 
 		onDiskCommit: "demo",
 		installAvailable: false,
 		restartPending: false,
-		started_at: "2026-10-21T12:00:00Z",
+		startedAt: "2026-10-21T12:00:00Z",
 		restartSupported: true,
 	};
 }

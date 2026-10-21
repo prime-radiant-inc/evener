@@ -264,7 +264,7 @@ export function createHubUpdateController(
     // check.
     const previous: RestartBaseline = {
       version: check.currentVersion,
-      incarnation: responseIncarnation ?? capturedIncarnation ?? check.started_at ?? null,
+      incarnation: responseIncarnation ?? capturedIncarnation ?? check.startedAt ?? null,
     };
     await waitForRestart(previous);
   }

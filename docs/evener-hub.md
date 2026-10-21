@@ -417,6 +417,8 @@ Install and Restart are separate actions:
   only when the new incarnation appears, and fails on a refusal or timeout.
 - `evener/update/apply` remains for older installed clients; the Settings UI
   no longer calls it.
+- A hub that predates separate restart shows the original combined **Update and
+  restart** action instead.
 
 The install targets the prefix the running hub was launched from (derived
 from its own binary path, e.g. `/usr/local` for a system install), not

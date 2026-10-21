@@ -50,7 +50,7 @@ const UP_TO_DATE: UpdateCheckResponse = {
   onDiskCommit: "3b1c5f8",
   installAvailable: false,
   restartPending: false,
-  started_at: "2026-10-21T12:00:00Z",
+  startedAt: "2026-10-21T12:00:00Z",
   restartSupported: true,
 };
 
@@ -161,6 +161,24 @@ test("shows dirty build versions and never falls back to the product version", a
   expect(updates.textContent).not.toContain("0.1.0");
 });
 
+test("keeps Restart available when only the channel check fails", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/settings/overview", () => overview("snapshot"));
+  fake.on("evener/update/check", () => ({
+    ...UP_TO_DATE,
+    checkError: "rate limit exceeded",
+    updateAvailable: false,
+    installAvailable: false,
+    restartSupported: true,
+  }));
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+  await updateStateIs("check-failed");
+  expect(updateStatus().textContent).toContain("rate limit");
+  expect(screen.getByRole("button", { name: "Restart hub" })).toBeTruthy();
+});
+
 test("switching channel re-checks with the new channel", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
@@ -235,7 +253,7 @@ test("Restart confirms the target build and sends evener/hub/restart", async () 
   expect(screen.getByRole("button", { name: "Restart hub" })).toHaveProperty("disabled", true);
 });
 
-test("an older hub without restart support hides Restart and keeps the install fallback", async () => {
+test("an older hub without restart support falls back to the combined update action", async () => {
   const fake = connectFakeClient();
   fake.on("evener/settings/overview", () => overview("snapshot"));
   fake.on("evener/update/check", () => ({
@@ -243,13 +261,25 @@ test("an older hub without restart support hides Restart and keeps the install f
     installAvailable: undefined as unknown as boolean,
     restartSupported: undefined as unknown as boolean,
   }));
+  fake.on("evener/update/apply", () => new Promise(() => {}));
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
   render(<HubSection />);
   await updateStateIs("update-available");
 
   expect(screen.queryByRole("button", { name: "Restart hub" })).toBeNull();
-  expect(screen.getByRole("button", { name: "Install update" })).toHaveProperty("disabled", false);
+  expect(screen.queryByRole("button", { name: "Install update" })).toBeNull();
+  const combined = screen.getByRole("button", { name: "Update and restart" });
+  expect(combined).toHaveProperty("disabled", false);
+  await userEvent.click(combined);
+  await userEvent.click(await screen.findByRole("button", { name: "Yes, update and restart" }));
+  await waitFor(() =>
+    expect(fake.calls).toContainEqual({
+      method: "evener/update/apply",
+      params: { channel: "snapshot" },
+      opts: { timeoutMs: APPLY_TIMEOUT_MS },
+    }),
+  );
 });
 
 test("restarting and timed-out states render their messages", async () => {

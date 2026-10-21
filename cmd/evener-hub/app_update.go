@@ -131,13 +131,20 @@ func hubUpdateCheck(ctx context.Context, params appwire.UpdateCheckParams) (appw
 		CurrentSHA: buildinfo.GitSHA,
 	})
 	if err != nil {
-		return appwire.UpdateCheckResponse{}, err
+		// A GitHub outage must not hide the local restart state: the clients
+		// still need the on-disk build, the incarnation, and whether restart is
+		// supported. Report the channel failure beside those facts.
+		resp.CheckError = err.Error()
+		resp.Applicable = true
+		resp.UpdateAvailable = false
+		resp.InstallAvailable = false
+		return resp, nil //nolint:nilerr // the channel failure is reported in the response
 	}
 	resp.LatestTag = result.LatestTag
 	resp.LatestCommit = result.LatestCommit
 	resp.UpdateAvailable = result.UpdateAvailable
 	resp.Applicable = true
-	resp.InstallAvailable = result.UpdateAvailable && onDiskCommit != "" && !selfupdate.CommitIsCurrent(result.LatestCommit, commitToken(onDiskCommit))
+	resp.InstallAvailable = result.LatestCommit != "" && onDiskCommit != "" && !selfupdate.CommitIsCurrent(result.LatestCommit, commitToken(onDiskCommit))
 	return resp, nil
 }
 
@@ -150,8 +157,8 @@ func commitToken(version string) string {
 // probeLaunchBuild reads the on-disk build at the recorded launch path. The
 // probe is bounded by probeHubBinary's deadline.
 func probeLaunchBuild() (string, error) {
-	if hubLaunchEntrypointErr != nil {
-		return "", hubLaunchEntrypointErr
+	if errHubLaunchEntrypoint != nil {
+		return "", errHubLaunchEntrypoint
 	}
 	if hubLaunchEntrypoint == "" {
 		return "", errHubRestartLaunchPath
@@ -164,7 +171,7 @@ func probeLaunchBuild() (string, error) {
 
 // hubRestartUsable reports whether a restart could be attempted at all.
 func hubRestartUsable() bool {
-	return hubRestartSupported() && hubLaunchEntrypointErr == nil && hubLaunchEntrypoint != ""
+	return hubRestartSupported() && errHubLaunchEntrypoint == nil && hubLaunchEntrypoint != ""
 }
 
 // hubUpdateApply answers evener/update/apply: install the channel's build,

@@ -98,7 +98,7 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	var resp appwire.HubRestartResponse
 	requestErr := client.Request(ctx, appwire.MethodEvenerHubRestart, appwire.HubRestartParams{}, &resp)
@@ -113,11 +113,14 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	if requestErr == nil {
 		_, _ = fmt.Fprintf(stdout, "restarting hub into %s\n", resp.TargetVersion)
+		if !resp.Incarnation.IsZero() {
+			baseline = resp.Incarnation
+		}
 	}
 
 	if err := waitForNewIncarnation(ctx, addr, baseline); err != nil {
 		if requestErr != nil {
-			return fmt.Errorf("%w; %v", requestErr, err)
+			return fmt.Errorf("%w; %w", requestErr, err)
 		}
 		return err
 	}
@@ -130,16 +133,13 @@ func runHubRestart(args []string, stderr io.Writer, deps mainDeps) error {
 // exec'd. Server refusals and requests that never left are not ambiguous;
 // every other error is, because the client cannot prove the frame stayed put.
 func isAmbiguousRestartFailure(err error) bool {
-	var transport appwire.TransportFailureError
-	if errors.As(err, &transport) {
+	if _, ok := errors.AsType[appwire.TransportFailureError](err); ok {
 		return true
 	}
-	var notSent appwire.RequestNotSentError
-	if errors.As(err, &notSent) {
+	if _, ok := errors.AsType[appwire.RequestNotSentError](err); ok {
 		return false
 	}
-	var wire appwire.WireError
-	if errors.As(err, &wire) {
+	if _, ok := errors.AsType[appwire.WireError](err); ok {
 		return false
 	}
 	return true
@@ -158,12 +158,12 @@ func dialHubControl(ctx context.Context, addr, token string) (*appwire.Client, e
 	defer cancel()
 	ws, err := appwire.DialWebSocketWithHeaders(dialCtx, hubURL, attachDialClient, header)
 	if err != nil {
-		return nil, fmt.Errorf("%w %s: %v", errNoHubAt, addr, err)
+		return nil, fmt.Errorf("%w %s: %w", errNoHubAt, addr, err)
 	}
 	client := appwire.NewClient(ws)
 	client.Start(ctx)
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		client.Close()
+		_ = client.Close()
 		return nil, err
 	}
 	return client, nil

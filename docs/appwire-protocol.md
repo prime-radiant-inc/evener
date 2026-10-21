@@ -4668,8 +4668,9 @@ Underlying Go kind: `string` (no struct fields).
 | `onDiskError` | string | yes |  |
 | `installAvailable` | bool |  |  |
 | `restartPending` | bool |  |  |
-| `started_at` | time.Time |  |  |
+| `startedAt` | time.Time |  |  |
 | `restartSupported` | bool |  |  |
+| `checkError` | string | yes |  |
 
 
 ### `UpgradeParams`

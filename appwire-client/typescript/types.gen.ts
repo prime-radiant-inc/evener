@@ -4757,8 +4757,9 @@ export interface UpdateCheckResponse {
   onDiskError?: string;
   installAvailable: boolean;
   restartPending: boolean;
-  started_at: string;
+  startedAt: string;
   restartSupported: boolean;
+  checkError?: string;
 }
 
 export interface UpgradeParams {

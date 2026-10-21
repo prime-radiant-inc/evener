@@ -267,9 +267,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// Record the launch entrypoint once, before any request can resolve it
 	// against a changed PATH or working directory. A failure disables restart
 	// without preventing the hub from starting.
-	hubLaunchEntrypoint, hubLaunchEntrypointErr = resolveLaunchEntrypoint(hubProcessArgs(), hubExecutable)
-	if hubLaunchEntrypointErr != nil {
-		_, _ = fmt.Fprintf(stderr, "[hub] launch path: %v\n", hubLaunchEntrypointErr)
+	hubLaunchEntrypoint, errHubLaunchEntrypoint = resolveLaunchEntrypoint(hubProcessArgs(), hubExecutable)
+	if errHubLaunchEntrypoint != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] launch path: %v\n", errHubLaunchEntrypoint)
 	} else {
 		_, _, hubLaunchShareBinDir = hubInstallDirs()
 		if digest, err := launchBinaryDigest(hubLaunchEntrypoint); err == nil {

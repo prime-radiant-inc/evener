@@ -74,17 +74,19 @@ meaning:
 - `restartPending`: true when `onDiskCommit` differs from `currentVersion`, or
   when the launch binary's digest differs from the digest recorded at startup
   (a same-version rebuild).
-- `started_at`: the hub process incarnation, exactly the string `/api/health`
-  reports.
+- `startedAt`: the hub process incarnation, exactly the value `/api/health`
+  reports as `started_at`.
 - `restartSupported`: true only when the platform supports in-place exec and the
   startup launch path is usable.
+- `checkError`: a channel-lookup failure. The local fields stay populated, and
+  the clients keep Restart available instead of hiding it behind the failure.
 
 The server computes these before the dev-build early return, so dev builds get
 the on-disk build and restart state without a network request.
 
-An older hub omits the new fields. A new client then treats the on-disk commit
-as unknown, falls back to the existing `updateAvailable` for Install, sets
-`restartPending=false`, and hides Restart.
+An older hub omits the new fields. A new client treats the on-disk commit as
+unknown, sets `restartPending=false`, and offers the deprecated combined
+`evener/update/apply` action (install then restart) instead of the two steps.
 
 After install, run a fresh check. The probe sees the new on-disk build, so
 `installAvailable` is false and `restartPending` is true.

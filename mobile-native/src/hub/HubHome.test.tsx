@@ -63,7 +63,7 @@ const UP_TO_DATE: UpdateCheckResponse = {
 	onDiskCommit: "abc1234",
 	installAvailable: false,
 	restartPending: false,
-	started_at: FIRST_START,
+	startedAt: FIRST_START,
 	restartSupported: true,
 };
 const WAITING: UpdateCheckResponse = { ...UP_TO_DATE, updateAvailable: true, installAvailable: true };
@@ -79,9 +79,10 @@ function hub(check: UpdateCheckResponse | Error) {
 			calls.push(method);
 			if (method === "evener/upgrade") return {};
 			if (method === "evener/hub/restart") return { restarting: true };
+			if (method === "evener/update/apply") return { restarting: false };
 			if (check instanceof Error) throw check;
 			if (script.failChecks) throw new Error("the hub is still starting");
-			return script.startedAt === undefined ? check : { ...check, started_at: script.startedAt };
+			return script.startedAt === undefined ? check : { ...check, startedAt: script.startedAt };
 		}) as never,
 	};
 	return { client, calls, script };
@@ -401,6 +402,24 @@ it("hides Restart on a hub that does not report restart support", async () => {
 	expect(find("Restart hub")).toBeNull();
 });
 
+it("offers the combined update action on an older hub", async () => {
+	const { find, press, calls } = await mount({
+		check: {
+			...WAITING,
+			installAvailable: undefined as unknown as boolean,
+			restartSupported: undefined as unknown as boolean,
+		},
+	});
+	expect(find("Install update")).toBeNull();
+	expect(find("Restart hub")).toBeNull();
+	expect(find("Update and restart")).not.toBeNull();
+	press("Update and restart");
+	await act(async () => {
+		alertRequests[0]?.buttons?.find((button) => button.text === "Update")?.onPress?.();
+	});
+	expect(calls).toContain("evener/update/apply");
+});
+
 it("shows the on-disk build and its probe error", async () => {
 	const { tree } = await mount({ check: UP_TO_DATE });
 	expect(renderedText(tree)).toContain("On disk abc1234");
@@ -427,6 +446,14 @@ it("shows a failed check as a line, with nothing to press", async () => {
 	expect(offersButton(tree, /\bReconnect\b|\bRetry\b/)).toBe(false);
 	expect(updates.controller.getState().checkError).not.toBeNull();
 	expect(renderedText(tree)).toContain(updates.controller.getState().checkError ?? "");
+});
+
+it("keeps Restart available when only the channel check fails", async () => {
+	const { tree, find } = await mount({
+		check: { ...UP_TO_DATE, checkError: "rate limit exceeded", restartSupported: true },
+	});
+	expect(renderedText(tree)).toContain("rate limit");
+	expect(find("Restart hub")).not.toBeNull();
 });
 
 it("sends no update confirmed after the connection went away", async () => {

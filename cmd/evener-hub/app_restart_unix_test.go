@@ -23,9 +23,9 @@ func TestHubUpdateCheckRefusesNonRegularLaunchPath(t *testing.T) {
 	previousPath := hubLaunchEntrypoint
 	hubLaunchEntrypoint = path
 	t.Cleanup(func() { hubLaunchEntrypoint = previousPath })
-	previousErr := hubLaunchEntrypointErr
-	hubLaunchEntrypointErr = nil
-	t.Cleanup(func() { hubLaunchEntrypointErr = previousErr })
+	previousErr := errHubLaunchEntrypoint
+	errHubLaunchEntrypoint = nil
+	t.Cleanup(func() { errHubLaunchEntrypoint = previousErr })
 	previousSupported := hubRestartSupported
 	hubRestartSupported = func() bool { return true }
 	t.Cleanup(func() { hubRestartSupported = previousSupported })
@@ -55,9 +55,9 @@ func TestHubRestartRefusesNonRegularLaunchPath(t *testing.T) {
 	previousPath := hubLaunchEntrypoint
 	hubLaunchEntrypoint = path
 	t.Cleanup(func() { hubLaunchEntrypoint = previousPath })
-	previousErr := hubLaunchEntrypointErr
-	hubLaunchEntrypointErr = nil
-	t.Cleanup(func() { hubLaunchEntrypointErr = previousErr })
+	previousErr := errHubLaunchEntrypoint
+	errHubLaunchEntrypoint = nil
+	t.Cleanup(func() { errHubLaunchEntrypoint = previousErr })
 	previousSupported := hubRestartSupported
 	hubRestartSupported = func() bool { return true }
 	t.Cleanup(func() { hubRestartSupported = previousSupported })

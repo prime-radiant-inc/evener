@@ -21,7 +21,7 @@ import (
 // once at startup. Restart uses it instead of resolving argv[0] again, so a
 // changed PATH or working directory cannot redirect the exec.
 var hubLaunchEntrypoint string
-var hubLaunchEntrypointErr error
+var errHubLaunchEntrypoint error
 var hubLaunchShareBinDir string
 var hubLaunchBinarySHA256 string
 
@@ -62,8 +62,8 @@ func hubRestart(ctx context.Context, _ appwire.HubRestartParams) (appwire.HubRes
 	if !hubRestartSupported() {
 		return appwire.HubRestartResponse{}, errInPlaceRestartUnsupported
 	}
-	if hubLaunchEntrypointErr != nil {
-		return appwire.HubRestartResponse{}, hubLaunchEntrypointErr
+	if errHubLaunchEntrypoint != nil {
+		return appwire.HubRestartResponse{}, errHubLaunchEntrypoint
 	}
 	if hubLaunchEntrypoint == "" {
 		return appwire.HubRestartResponse{}, errHubRestartLaunchPath

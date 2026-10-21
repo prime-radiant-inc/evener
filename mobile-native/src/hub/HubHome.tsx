@@ -33,7 +33,9 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 	const connectionLine = useConnectionStatusText();
 	const line = hubStatusLine(ready, connectionLine, update.check);
 	const check = update.check;
+	const legacyUpdate = !!check && check.restartSupported !== true && !!check.applicable && !!check.updateAvailable;
 	const installWaiting =
+		!legacyUpdate &&
 		!!check?.applicable &&
 		(check.installAvailable ?? check.updateAvailable) &&
 		!update.restarting &&
@@ -58,7 +60,17 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 				{ text: "Restart", onPress: whenReady(canUseConnection, () => void updates.restart()) },
 			],
 		);
-	const updateProblem = update.installError ?? update.restartError ?? update.applyError ?? update.checkError;
+	const confirmLegacyUpdate = () =>
+		Alert.alert(
+			`Update ${hubName}?`,
+			`Install evener ${check?.latestTag ?? "the latest release"} on ${hubName}. The hub restarts, and the app reconnects on its own.`,
+			[
+				{ text: "Cancel", style: "cancel" },
+				{ text: "Update", onPress: whenReady(canUseConnection, () => void updates.apply()) },
+			],
+		);
+	const updateProblem =
+		update.installError ?? update.restartError ?? update.applyError ?? update.checkError ?? check?.checkError;
 	// The home reads the hosts and the providers each time it shows; only the
 	// Hosts pages poll, and the provider list follows the hub's own
 	// notifications while the home is up.
@@ -180,6 +192,15 @@ export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHo
 						tone="accent"
 						disabled={!ready || update.installing || update.restarting}
 						onPress={confirmInstall}
+					/>
+				) : null}
+				{legacyUpdate ? (
+					<Row
+						label={update.applying ? "Updating…" : "Update and restart"}
+						accessibilityLabel="Update and restart"
+						tone="accent"
+						disabled={!ready || update.applying}
+						onPress={confirmLegacyUpdate}
 					/>
 				) : null}
 				{restartAvailable ? (

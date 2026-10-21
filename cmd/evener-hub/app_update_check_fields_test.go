@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -29,9 +30,9 @@ func TestHubUpdateCheckReportsOnDiskBuild(t *testing.T) {
 	previousPath := hubLaunchEntrypoint
 	hubLaunchEntrypoint = writeProbeScript(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
 	t.Cleanup(func() { hubLaunchEntrypoint = previousPath })
-	previousErr := hubLaunchEntrypointErr
-	hubLaunchEntrypointErr = nil
-	t.Cleanup(func() { hubLaunchEntrypointErr = previousErr })
+	previousErr := errHubLaunchEntrypoint
+	errHubLaunchEntrypoint = nil
+	t.Cleanup(func() { errHubLaunchEntrypoint = previousErr })
 
 	started := time.Date(2026, 10, 21, 12, 0, 0, 42, time.UTC)
 	previousStarted := hubProcessStartedAt
@@ -83,6 +84,30 @@ func TestHubUpdateCheckMarksInstallAvailableWhenOnDiskIsOlder(t *testing.T) {
 	}
 	if !resp.RestartPending {
 		t.Fatal("restartPending = false although the running and on-disk builds differ")
+	}
+}
+
+func TestHubUpdateCheckInstallsSelectedChannelOverDifferentOnDisk(t *testing.T) {
+	setBuild(t, "abc1234", "release")
+	stubUpdateCheck(t, func(_ context.Context, opts selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{
+			Channel:         opts.Channel,
+			LatestTag:       "release",
+			LatestCommit:    "abc1234" + strings.Repeat("f", 33),
+			UpdateAvailable: false,
+		}, nil
+	})
+	setRestartProbe(t, "echo 'evener def5678 (2026-10-21T00:00:00Z)'")
+
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if resp.UpdateAvailable {
+		t.Fatal("updateAvailable = true although the running build is the channel's latest")
+	}
+	if !resp.InstallAvailable {
+		t.Fatal("installAvailable = false although the on-disk build differs from the channel")
 	}
 }
 
@@ -199,6 +224,34 @@ func TestHubUpdateCheckDetectsSameVersionRebuild(t *testing.T) {
 	}
 }
 
+func TestHubUpdateCheckKeepsLocalFieldsWhenChannelFails(t *testing.T) {
+	setBuild(t, "abc1234", "release")
+	stubUpdateCheck(t, func(context.Context, selfupdate.CheckOptions) (selfupdate.CheckResult, error) {
+		return selfupdate.CheckResult{}, errors.New("GET x: 403 Forbidden: API rate limit exceeded")
+	})
+	setRestartProbe(t, "echo 'evener abc1234 (2026-10-21T00:00:00Z)'")
+
+	resp, err := hubUpdateCheck(context.Background(), appwire.UpdateCheckParams{})
+	if err != nil {
+		t.Fatalf("hubUpdateCheck: %v", err)
+	}
+	if !strings.Contains(resp.CheckError, "rate limit") {
+		t.Fatalf("check error = %q, want the channel failure", resp.CheckError)
+	}
+	if resp.OnDiskCommit != "abc1234" {
+		t.Fatalf("on-disk commit = %q, want abc1234", resp.OnDiskCommit)
+	}
+	if resp.StartedAt.IsZero() {
+		t.Fatal("startedAt is zero after a channel failure")
+	}
+	if !resp.RestartSupported {
+		t.Fatal("restartSupported = false after a channel failure")
+	}
+	if resp.UpdateAvailable || resp.InstallAvailable {
+		t.Fatalf("updateAvailable=%v installAvailable=%v, want both false", resp.UpdateAvailable, resp.InstallAvailable)
+	}
+}
+
 func setRestartProbe(t *testing.T, body string) {
 	t.Helper()
 	previousSupported := hubRestartSupported
@@ -208,7 +261,7 @@ func setRestartProbe(t *testing.T, body string) {
 	previousPath := hubLaunchEntrypoint
 	hubLaunchEntrypoint = writeProbeScript(t, body)
 	t.Cleanup(func() { hubLaunchEntrypoint = previousPath })
-	previousErr := hubLaunchEntrypointErr
-	hubLaunchEntrypointErr = nil
-	t.Cleanup(func() { hubLaunchEntrypointErr = previousErr })
+	previousErr := errHubLaunchEntrypoint
+	errHubLaunchEntrypoint = nil
+	t.Cleanup(func() { errHubLaunchEntrypoint = previousErr })
 }

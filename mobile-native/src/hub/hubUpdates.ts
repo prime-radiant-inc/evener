@@ -55,7 +55,7 @@ export function createPhoneHubUpdates(
 			if (!client) throw new Error("The hub isn't connected.");
 			return client;
 		},
-		// The phone has no health fetch of its own; the check's started_at is
+		// The phone has no health fetch of its own; the check's startedAt is
 		// refreshed on every reconnect and is the baseline it uses.
 		currentIncarnation: async () => null,
 		awaitRestart: (previous) =>
@@ -82,7 +82,7 @@ export function createPhoneHubUpdates(
 						const check = controller.getState().check;
 						const sameProcess =
 							previous.incarnation !== null
-								? check?.started_at === previous.incarnation
+								? check?.startedAt === previous.incarnation
 								: check?.currentVersion === previous.version;
 						finish(check !== null && !sameProcess);
 					});
