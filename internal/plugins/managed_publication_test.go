@@ -364,6 +364,61 @@ func TestCopyTreeExactRestoresReadOnlyDirectoryModes(t *testing.T) {
 	}
 }
 
+// TestCopyTreeExactRefusesToOverwriteExistingEntry pins the mechanism that
+// makes a name collision on the destination fail instead of silently
+// replacing content. The source is left untouched on failure.
+func TestCopyTreeExactRefusesToOverwriteExistingEntry(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "source")
+	writeTestFile(t, filepath.Join(src, "root.txt"), "source bytes")
+	dst := filepath.Join(t.TempDir(), "copy")
+	if err := os.Mkdir(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dst, "root.txt"), "destination bytes")
+
+	err := copyTreeExact(src, dst)
+	if err == nil {
+		t.Fatal("copyTreeExact replaced an existing destination entry")
+	}
+	if got, readErr := os.ReadFile(filepath.Join(dst, "root.txt")); readErr != nil || string(got) != "destination bytes" {
+		t.Fatalf("destination entry = %q, %v", got, readErr)
+	}
+	if got, readErr := os.ReadFile(filepath.Join(src, "root.txt")); readErr != nil || string(got) != "source bytes" {
+		t.Fatalf("source entry = %q, %v", got, readErr)
+	}
+}
+
+// TestCopyTreeExactRefusesCaseCollidingDestination covers the case-insensitive
+// filesystem failure: two distinct source names that the destination equates.
+func TestCopyTreeExactRefusesCaseCollidingDestination(t *testing.T) {
+	parent := t.TempDir()
+	probe := filepath.Join(parent, "CaseProbe")
+	if err := os.WriteFile(probe, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(parent, "caseprobe")); err != nil {
+		t.Skip("destination filesystem is case-sensitive; case collision not representable")
+	}
+	src := filepath.Join(parent, "source")
+	writeTestFile(t, filepath.Join(src, "Feature"), "A")
+	dst := filepath.Join(parent, "copy")
+	if err := os.Mkdir(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(dst, "feature"), "B")
+
+	err := copyTreeExact(src, dst)
+	if err == nil {
+		t.Fatal("copyTreeExact collapsed a case-colliding destination entry")
+	}
+	if got, readErr := os.ReadFile(filepath.Join(dst, "feature")); readErr != nil || string(got) != "B" {
+		t.Fatalf("destination entry = %q, %v", got, readErr)
+	}
+	if got, readErr := os.ReadFile(filepath.Join(src, "Feature")); readErr != nil || string(got) != "A" {
+		t.Fatalf("source entry = %q, %v", got, readErr)
+	}
+}
+
 func TestPublishStagedCrossDeviceRestoresReadOnlyDirectoryModes(t *testing.T) {
 	parent := t.TempDir()
 	staging := filepath.Join(parent, "staging")

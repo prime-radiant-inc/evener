@@ -329,7 +329,16 @@ func copyTreeExact(src, dst string) error {
 			// Children are written before the intended mode is restored, so a
 			// populated read-only directory can still be filled.
 			mode := info.Mode().Perm()
-			if err := os.MkdirAll(target, mode|0o700); err != nil {
+			if rel == "." {
+				// The cross-device publication path pre-creates its temporary
+				// root, so the destination root may already exist.
+				if err := os.MkdirAll(target, mode|0o700); err != nil {
+					return err
+				}
+			} else if err := os.Mkdir(target, mode|0o700); err != nil {
+				// A directory below the root already existing is a name
+				// collision, not a no-op: a case-insensitive destination may
+				// have equated two distinct source names.
 				return err
 			}
 			directories = append(directories, directory{path: target, mode: mode})
@@ -341,7 +350,7 @@ func copyTreeExact(src, dst string) error {
 			}
 			return os.Symlink(link, target)
 		case info.Mode().IsRegular():
-			return copyRegularFile(path, target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+			return copyRegularFile(path, target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
 		default:
 			return fmt.Errorf("prepared content %s is not a regular file, directory, or symlink", relForDiagnostic(src, path))
 		}

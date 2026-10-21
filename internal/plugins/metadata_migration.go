@@ -151,6 +151,13 @@ func (m *Manager) reclaimPendingArchiveMarkers() []string {
 		if err != nil {
 			return err
 		}
+		// Markers are siblings of an archive destination, never inside archived
+		// metadata. An archived ref such as refs/heads/topic.evener-pending
+		// carries a commit id, not a source path, so do not descend into a .git
+		// subtree and mistake its contents for the journal.
+		if info.IsDir() && isGitName(info.Name()) {
+			return filepath.SkipDir
+		}
 		if info.IsDir() || !strings.HasSuffix(info.Name(), managedGitArchivePendingSuffix) {
 			return nil
 		}
