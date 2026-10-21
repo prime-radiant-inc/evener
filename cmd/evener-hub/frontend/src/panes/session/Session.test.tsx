@@ -71,6 +71,9 @@ import type { SessionPaneParams } from "./Session";
 import { settleActivityDiscovery } from "./testing/activityDiscovery";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { installControlledImageEncoding } from "./testing/imageEncoding";
+import { captureTranscriptView } from "./transcript/flow/transcriptViewRegistry";
+import { installTranscriptGeometry } from "./transcript/transcriptReadingGeometryTestUtils";
+import { retainedTranscriptReadView } from "./transcript/transcriptReadView";
 import { resetTranscriptPagingForTests } from "./transcript/useTranscript";
 import "./testing/editorGeometry";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
@@ -715,6 +718,10 @@ test("real same-URL readers preserve the exact owning reader through attention B
   const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
   if (!cascade) throw new Error("cascade record was not committed");
   const cascadeLifetime = conversationPaneLifetime(cascade);
+  const sessionReadView = retainedTranscriptReadView(originLifetime, "local:same", "session");
+  const cascadeReadView = retainedTranscriptReadView(cascadeLifetime, "local:same", "cascade");
+  expect(cascadeReadView).not.toBe(sessionReadView);
+  expect(cascadeReadView.id).not.toBe(sessionReadView.id);
   const sessionSource = originLifetime.composer;
   const cascadeSource = retainedConversationComposer(cascadeLifetime, "local:same");
   if (!sessionSource || !cascadeSource || sessionSource === cascadeSource)
@@ -814,6 +821,448 @@ test("real same-URL readers preserve the exact owning reader through attention B
     ],
   });
 });
+
+test.each(["primary", "secondary", "cascade leaf", "focus-only departure"] as const)(
+  "real Session preserves the %s reader's away position through attention history",
+  async (journey) => {
+    vi.mocked(ComposerModule.Composer).mockRestore();
+    onTestFinished(() => {
+      vi.restoreAllMocks();
+      stubSessionSlots();
+    });
+    const fake = connectFakeClient();
+    fake.on("thread/read", ({ ref }) => {
+      if (!ref) throw new Error("thread/read requires a ref");
+      return readResponse(ref, {
+        id: `thr_${ref}`,
+        sessionId: `session-${ref}`,
+        evener: {
+          ref,
+          capabilities: { ...CAPABILITIES, skillInput: true, commandInput: true },
+          queue: { revision: 0 },
+        },
+        turns: Array.from({ length: 5 }, (_, index) => ({
+          id: `${ref}-turn-${index}`,
+          status: "completed" as const,
+          itemsView: "full" as const,
+          items: [
+            {
+              id: `${ref}-entry-${index}`,
+              turnId: `${ref}-turn-${index}`,
+              type: "userMessage" as const,
+              text: `${ref} reading row ${index}`,
+              status: "completed" as const,
+            },
+          ],
+        })),
+      });
+    });
+    fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+      ...activitySummary(ref, scope),
+      context: cascadeContext(ref, ref === "local:leaf" ? ["local:owner"] : []),
+    }));
+
+    const primary = {
+      id: "reading-primary",
+      type: "session" as const,
+      params: { ref: "local:origin" },
+      slot: "main" as const,
+    };
+    const secondary = {
+      id: "reading-secondary",
+      type: "session" as const,
+      params: { ref: "local:origin" },
+      slot: "secondary" as const,
+    };
+    const peer = { id: "reading-peer", type: "session" as const, params: { ref: "local:peer" }, slot: "main" as const };
+    const x = { id: "reading-X", type: "session" as const, params: { ref: "local:X" }, slot: "secondary" as const };
+    const owner = {
+      id: "reading-owner",
+      type: "session" as const,
+      params: { ref: "local:owner" },
+      slot: "main" as const,
+    };
+    window.history.replaceState({}, "", journey === "cascade leaf" ? "/s/local%3Aowner" : "/s/local%3Aorigin");
+    if (journey === "secondary") workspaceStore.setState({ panes: [peer, secondary], focusedPaneId: secondary.id });
+    else if (journey === "focus-only departure")
+      workspaceStore.setState({ panes: [primary, x], focusedPaneId: primary.id });
+    else if (journey === "cascade leaf") workspaceStore.setState({ panes: [owner], focusedPaneId: owner.id });
+    else workspaceStore.setState({ panes: [primary], focusedPaneId: primary.id });
+    const originRef = journey === "cascade leaf" ? "local:leaf" : "local:origin";
+    const draftText = `Read at ${journey} /review /inspect`;
+    const structuredDraft = {
+      text: draftText,
+      skillNames: ["review"],
+      commandNames: ["inspect"],
+      mentions: [
+        { kind: "skill" as const, name: "review", offset: `Read at ${journey} `.length },
+        { kind: "command" as const, name: "inspect", offset: `Read at ${journey} /review `.length },
+      ],
+    };
+    writeComposerDraft(originRef, structuredDraft);
+
+    const geometry = { width: 760, viewportHeight: 400, rowHeights: Array.from({ length: 5 }, () => 600) };
+    const external = installTranscriptGeometry((element) => {
+      const id = element.closest<HTMLElement>("[data-reading-reader]")?.dataset.readingReader;
+      return id ? (geometryByReader.get(id) ?? geometry) : geometry;
+    });
+    const geometryByReader = new Map<string, typeof geometry>();
+    let cascadeId = "";
+
+    const mounts: string[] = [];
+    const unmounts: string[] = [];
+    function FocusedReader({ pane }: { pane: OpenPaneRecord }) {
+      useEffect(() => {
+        mounts.push(pane.id);
+        return () => {
+          unmounts.push(pane.id);
+        };
+      }, [pane.id]);
+      if (pane.type === "session")
+        return <Session params={pane.params as SessionPaneParams} paneId={pane.id} focused />;
+      if (pane.type === "sessionZoom")
+        return <Zoom paneId={pane.id} params={pane.params as SessionZoomParams} focused />;
+      return null;
+    }
+    function FocusedReaderHost() {
+      const workspace = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getState);
+      useEffect(() => {
+        const restore = () => restoreCurrentAttentionEntry();
+        window.addEventListener("popstate", restore);
+        return () => window.removeEventListener("popstate", restore);
+      }, []);
+      const pane = workspace.panes.find((candidate) => candidate.id === workspace.focusedPaneId);
+      if (!pane) return null;
+      return (
+        <div key={pane.id} data-reading-reader={pane.id}>
+          <FocusedReader pane={pane} />
+        </div>
+      );
+    }
+
+    const view = render(
+      <ClientProvider client={fake}>
+        <FocusedReaderHost />
+      </ClientProvider>,
+    );
+    try {
+      if (journey === "cascade leaf") {
+        await screen.findByRole("textbox", { name: "Message" });
+        await settleActivityDiscovery("local:owner");
+        act(() => {
+          cascadeId = enterAgentCascade(
+            activityDelegate({ ownerRef: "local:owner", childRef: "local:leaf", delegateId: "reading-leaf-edge" }),
+            owner.id,
+          );
+          workspaceStore.getState().focusPane(cascadeId);
+        });
+        await screen.findByTestId("cascade-column");
+        await settleActivityDiscovery("local:leaf");
+        const leafPane = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+        if (!leafPane) throw new Error("cascade leaf pane was not committed");
+        const leafView = retainedTranscriptReadView(conversationPaneLifetime(leafPane), "local:leaf", "cascade");
+        await waitFor(() => expect(leafView.readable).toBe(true));
+        await screen.findByRole("textbox", { name: "Message" });
+      }
+      const originPaneId = journey === "secondary" ? secondary.id : journey === "cascade leaf" ? cascadeId : primary.id;
+      const originPane = workspaceStore.getState().panes.find((pane) => pane.id === originPaneId);
+      if (!originPane) throw new Error(`missing ${journey} origin pane`);
+      const originLifetime = conversationPaneLifetime(originPane);
+      const originReadView = retainedTranscriptReadView(
+        originLifetime,
+        originRef,
+        originPane.type === "sessionZoom" ? "cascade" : "session",
+      );
+      const initialComposer = originLifetime.composer;
+      await screen.findByRole("textbox", { name: "Message" });
+      await settleActivityDiscovery(originRef);
+      await waitFor(() => expect(originReadView.readable).toBe(true));
+      if (!initialComposer) throw new Error("real Session has no retained Composer source");
+      act(() => {
+        initialComposer.updateText(structuredDraft.text);
+        initialComposer.updateSkillNames(structuredDraft.skillNames);
+        initialComposer.updateSelectionMeta(structuredDraft);
+        initialComposer.persistDraft(structuredDraft.text);
+      });
+      expect(initialComposer.getSnapshot()).toMatchObject(structuredDraft);
+      const portFor = async (paneId: string) => {
+        let portFound!: HTMLElement;
+        await waitFor(() => {
+          const port = view.container.querySelector<HTMLElement>(
+            `[data-reading-reader="${paneId}"] [data-testid="transcript-virtual-list"] > div`,
+          );
+          expect(port).not.toBeNull();
+          if (port) portFound = port;
+        });
+        return portFound;
+      };
+      const mountedCapture = async (viewId: string) => {
+        let captured!: NonNullable<ReturnType<typeof captureTranscriptView>>;
+        await waitFor(() => {
+          const current = captureTranscriptView(viewId);
+          expect(current).toBeDefined();
+          if (current) captured = current;
+        });
+        return captured;
+      };
+      const expectUnregistered = async (viewId: string) => {
+        await waitFor(() => expect(captureTranscriptView(viewId)).toBeUndefined());
+      };
+      const scrollReaderToAnchor = async (
+        paneId: string,
+        ref: string,
+        rowIndex: number,
+        scrollTop: number,
+        expectedOffset: number,
+      ) => {
+        geometryByReader.set(paneId, {
+          width: 760,
+          viewportHeight: 400,
+          rowHeights: Array.from({ length: 5 }, () => 600),
+        });
+        await act(async () => external.notify());
+        const readerPort = await portFor(paneId);
+        await waitFor(() => expect(readerPort.clientHeight).toBe(400));
+        await act(async () => {
+          fireEvent.wheel(readerPort, { deltaY: 700 });
+          readerPort.scrollTop = scrollTop;
+          fireEvent.scroll(readerPort);
+        });
+        const id = `${ref}-entry-${rowIndex}`;
+        const visibleAnchor = readerPort.querySelector<HTMLElement>(`[data-view-anchor-id="${id}"]`);
+        if (!visibleAnchor) throw new Error(`reader ${paneId} has no visible anchor ${id}`);
+        expect(visibleAnchor.getBoundingClientRect().top - readerPort.getBoundingClientRect().top).toBe(expectedOffset);
+        return { port: readerPort, anchorId: id, anchorOffset: expectedOffset, scrollTop };
+      };
+      const originGeometry = { width: 760, viewportHeight: 400, rowHeights: Array.from({ length: 5 }, () => 600) };
+      geometryByReader.set(originPaneId, originGeometry);
+      await act(async () => external.notify());
+      const port = await portFor(originPaneId);
+      await waitFor(() => expect(port.clientHeight).toBe(400));
+      await act(async () => {
+        fireEvent.wheel(port, { deltaY: 700 });
+        port.scrollTop = 750;
+        fireEvent.scroll(port);
+      });
+      const anchorId = `${originRef}-entry-1`;
+      const anchor = port.querySelector<HTMLElement>(`[data-view-anchor-id="${anchorId}"]`);
+      if (!anchor) throw new Error(`reading anchor ${anchorId} is not rendered`);
+      const initialAnchorOffset = anchor.getBoundingClientRect().top - port.getBoundingClientRect().top;
+      expect(initialAnchorOffset).toBe(-150);
+      const initialReadViewId = originReadView.id;
+      const initialRegistryCapture = await mountedCapture(initialReadViewId);
+      expect(initialRegistryCapture).toMatchObject({ anchorId, anchorOffset: -150 });
+      expect(initialComposer?.getSnapshot()).toMatchObject(structuredDraft);
+
+      const openAttention = (ref: string) => act(() => openAttentionSession(ref));
+      const awaitPopstate = async (direction: "back" | "forward") => {
+        const popped = new Promise<void>((resolve) =>
+          window.addEventListener("popstate", () => resolve(), { once: true }),
+        );
+        await act(async () => {
+          window.history[direction]();
+          await popped;
+        });
+      };
+      if (journey === "focus-only departure") {
+        openAttention("local:B");
+        await screen.findByRole("textbox", { name: "Message" });
+        expect(unmounts).toContain(originPaneId);
+        await expectUnregistered(initialReadViewId);
+        await waitFor(() => expect(originReadView.getCapture()).toMatchObject({ anchorId, anchorOffset: -150 }));
+        const bPaneId = workspaceStore.getState().focusedPaneId;
+        if (!bPaneId) throw new Error("attention B has no focused pane ID");
+        const bPane = workspaceStore.getState().panes.find((pane) => pane.id === bPaneId);
+        if (!bPane) throw new Error("attention B pane is missing");
+        const bLifetime = conversationPaneLifetime(bPane);
+        const bReadView = retainedTranscriptReadView(bLifetime, "local:B", "session");
+        const bAnchor = await scrollReaderToAnchor(bPaneId, "local:B", 2, 1300, -100);
+        const bRegistryCapture = await mountedCapture(bReadView.id);
+        expect(bRegistryCapture).toMatchObject({ anchorId: bAnchor.anchorId, anchorOffset: -100 });
+        act(() => workspaceStore.getState().focusPane(x.id));
+        await waitFor(() => expect(unmounts).toContain(bPaneId));
+        await expectUnregistered(bReadView.id);
+        expect(window.location.pathname).toBe("/s/local%3AB");
+        const xPane = workspaceStore.getState().panes.find((pane) => pane.id === x.id);
+        if (!xPane) throw new Error("focus-only departure removed existing secondary X");
+        writeComposerDraft("local:X", structuredDraft);
+        const xLifetime = conversationPaneLifetime(xPane);
+        const xReadView = retainedTranscriptReadView(xLifetime, "local:X", "session");
+        await settleActivityDiscovery("local:X");
+        await waitFor(() => expect(xReadView.readable).toBe(true));
+        const focusedXEditor = await screen.findByRole("textbox", { name: "Message" });
+        const xComposer = xLifetime.composer;
+        if (!xComposer) throw new Error("focused secondary X has no real Composer source");
+        act(() => {
+          xComposer.updateText(structuredDraft.text);
+          xComposer.updateSkillNames(structuredDraft.skillNames);
+          xComposer.updateSelectionMeta(structuredDraft);
+          xComposer.persistDraft(structuredDraft.text);
+        });
+        expect(xComposer.getSnapshot()).toMatchObject(structuredDraft);
+        geometryByReader.set(x.id, originGeometry);
+        await act(async () => external.notify());
+        const xPort = await portFor(x.id);
+        await act(async () => {
+          fireEvent.wheel(xPort, { deltaY: 700 });
+          xPort.scrollTop = 750;
+          fireEvent.scroll(xPort);
+        });
+        const xAnchor = xPort.querySelector<HTMLElement>('[data-view-anchor-id="local:X-entry-1"]');
+        if (!xAnchor) throw new Error("focused secondary X has no real transcript anchor");
+        expect(xAnchor.getBoundingClientRect().top - xPort.getBoundingClientRect().top).toBe(-150);
+        const xViewId = xReadView.id;
+        const xInitialCapture = await mountedCapture(xViewId);
+        const xSnapshot = xLifetime.composer?.getSnapshot();
+        openAttention("local:C");
+        await screen.findByRole("textbox", { name: "Message" });
+        const attentionCPaneId = workspaceStore.getState().focusedPaneId;
+        if (!attentionCPaneId) throw new Error("attention C has no focused pane ID");
+        expect(unmounts).toContain(x.id);
+        await expectUnregistered(xViewId);
+        const xCapture = xReadView.getCapture();
+        if (!xCapture) throw new Error("focus-only reader X did not capture its actual scroll position on departure");
+        await waitFor(() => expect(xReadView.getCapture()).toMatchObject(xCapture));
+        const cPane = workspaceStore.getState().panes.find((pane) => pane.id === attentionCPaneId);
+        if (!cPane) throw new Error("attention C pane is missing");
+        const cLifetime = conversationPaneLifetime(cPane);
+        const cReadView = retainedTranscriptReadView(cLifetime, "local:C", "session");
+        const cEditor = screen.getByRole("textbox", { name: "Message" });
+        const cDisplayedDraft = cEditor.textContent;
+        const cAnchor = await scrollReaderToAnchor(attentionCPaneId, "local:C", 3, 2000, -200);
+        const cRegistryCapture = await mountedCapture(cReadView.id);
+        expect(cRegistryCapture).toMatchObject({ anchorId: cAnchor.anchorId, anchorOffset: -200 });
+        await awaitPopstate("back");
+        await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(x.id));
+        await waitFor(() => expect(unmounts).toContain(attentionCPaneId));
+        const xRemountedCapture = await mountedCapture(xViewId);
+        expect(xRemountedCapture).toMatchObject(xInitialCapture);
+        const returnedXEditor = await screen.findByRole("textbox", { name: "Message" });
+        expect(document.activeElement).not.toBe(returnedXEditor);
+        const returnedXPort = await portFor(x.id);
+        const returnedXAnchor = returnedXPort.querySelector<HTMLElement>('[data-view-anchor-id="local:X-entry-1"]');
+        if (!returnedXAnchor) throw new Error("back did not render secondary X's captured anchor");
+        await waitFor(() =>
+          expect(returnedXAnchor.getBoundingClientRect().top - returnedXPort.getBoundingClientRect().top).toBe(-150),
+        );
+        expect(xReadView.id).toBe(xViewId);
+        expect(xReadView.getCapture()).toMatchObject(xCapture);
+        expect(xLifetime.composer?.getSnapshot()).toMatchObject({
+          text: xSnapshot?.text,
+          skillNames: xSnapshot?.skillNames,
+          commandNames: xSnapshot?.commandNames,
+          mentions: xSnapshot?.mentions,
+        });
+        expect(returnedXEditor.textContent).toBe(xSnapshot?.text);
+        expect(conversationPaneLifetime(xPane)).toBe(xLifetime);
+        expect(xSnapshot && xLifetime.composer?.getSnapshot()).toMatchObject({
+          text: xSnapshot?.text,
+          skillNames: xSnapshot?.skillNames,
+          commandNames: xSnapshot?.commandNames,
+          mentions: xSnapshot?.mentions,
+        });
+        expect(document.activeElement).not.toBe(returnedXEditor);
+        expect(unmounts).toContain(attentionCPaneId);
+        await awaitPopstate("forward");
+        await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(attentionCPaneId));
+        await waitFor(() => expect(mounts.filter((id) => id === attentionCPaneId).length).toBeGreaterThanOrEqual(2));
+        const returnedCEditor = await screen.findByRole("textbox", { name: "Message" });
+        expect(document.activeElement).not.toBe(returnedCEditor);
+        const returnedCPort = await portFor(attentionCPaneId);
+        const returnedCAnchor = returnedCPort.querySelector<HTMLElement>(`[data-view-anchor-id="${cAnchor.anchorId}"]`);
+        if (!returnedCAnchor) throw new Error("Forward did not remount C's captured transcript anchor");
+        await waitFor(() =>
+          expect(returnedCAnchor.getBoundingClientRect().top - returnedCPort.getBoundingClientRect().top).toBe(-200),
+        );
+        expect(returnedCPort.scrollTop).toBe(2000);
+        expect(await mountedCapture(cReadView.id)).toMatchObject(cRegistryCapture);
+        expect(conversationPaneLifetime(cPane)).toBe(cLifetime);
+        expect(returnedCEditor.textContent).toBe(cDisplayedDraft);
+        expect(cLifetime.composer?.getSnapshot()).toMatchObject({ text: cDisplayedDraft });
+        expect(conversationPaneLifetime(bPane)).toBe(bLifetime);
+        await expectUnregistered(xViewId);
+        expect(focusedXEditor).not.toBe(document.activeElement);
+        return;
+      }
+
+      openAttention("local:destination");
+      await screen.findByRole("textbox", { name: "Message" });
+      expect(unmounts).toContain(originPaneId);
+      await expectUnregistered(initialReadViewId);
+      await waitFor(() => expect(originReadView.getCapture()).toMatchObject({ anchorId, anchorOffset: -150 }));
+      const initialCapture = originReadView.getCapture();
+      if (!initialCapture) throw new Error("hiding the real reader did not capture its read view");
+      const destinationPaneId = workspaceStore.getState().focusedPaneId;
+      if (!destinationPaneId) throw new Error("attention destination has no focused pane ID");
+      const destinationPane = workspaceStore.getState().panes.find((pane) => pane.id === destinationPaneId);
+      if (!destinationPane) throw new Error("attention destination pane is missing");
+      const destinationLifetime = conversationPaneLifetime(destinationPane);
+      const destinationReadView = retainedTranscriptReadView(destinationLifetime, "local:destination", "session");
+      const destinationEditor = screen.getByRole("textbox", { name: "Message" });
+      const destinationDisplayedDraft = destinationEditor.textContent;
+      const destinationAnchor = await scrollReaderToAnchor(destinationPaneId, "local:destination", 3, 1900, -100);
+      const destinationRegistryCapture = await mountedCapture(destinationReadView.id);
+      expect(destinationRegistryCapture).toMatchObject({ anchorId: destinationAnchor.anchorId, anchorOffset: -100 });
+      await awaitPopstate("back");
+      await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(originPaneId));
+      await waitFor(() => expect(unmounts).toContain(destinationPaneId));
+      const remountedOriginCapture = await mountedCapture(initialReadViewId);
+      expect(remountedOriginCapture).toMatchObject(initialRegistryCapture);
+      const returnedEditor = await screen.findByRole("textbox", { name: "Message" });
+      expect(document.activeElement).not.toBe(returnedEditor);
+      const returnedPort = await portFor(originPaneId);
+      const returnedAnchor = returnedPort.querySelector<HTMLElement>(`[data-view-anchor-id="${anchorId}"]`);
+      if (!returnedAnchor) throw new Error("Back did not render the captured transcript anchor");
+      await waitFor(() =>
+        expect(returnedAnchor.getBoundingClientRect().top - returnedPort.getBoundingClientRect().top).toBe(-150),
+      );
+      expect(returnedPort.scrollTop).toBe(750);
+      expect(originReadView.id).toBe(initialReadViewId);
+      expect(originReadView.getCapture()).toMatchObject(initialCapture);
+      expect(conversationPaneLifetime(originPane)).toBe(originLifetime);
+      expect(originLifetime.composer).toBe(initialComposer);
+      expect(initialComposer?.getSnapshot()).toMatchObject(structuredDraft);
+      expect(document.activeElement).not.toBe(returnedEditor);
+      expect(mounts.filter((id) => id === originPaneId).length).toBeGreaterThanOrEqual(2);
+      if (journey === "secondary") {
+        expect(workspaceStore.getState().panes).toContain(peer);
+        expect(workspaceStore.getState().panes).toContain(secondary);
+        expect(secondary.slot).toBe("secondary");
+        expect(conversationPaneLifetime(peer).alive).toBe(true);
+      }
+      if (journey === "cascade leaf") {
+        expect(originPane.type).toBe("sessionZoom");
+        expect(originReadView.role).toBe("cascade");
+        expect(originReadView.paneId).toBe(cascadeId);
+        expect(originReadView.requestedRef).toBe("local:leaf");
+      }
+      await awaitPopstate("forward");
+      await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(destinationPaneId));
+      await waitFor(() => expect(mounts.filter((id) => id === destinationPaneId).length).toBeGreaterThanOrEqual(2));
+      const returnedDestinationEditor = await screen.findByRole("textbox", { name: "Message" });
+      expect(document.activeElement).not.toBe(returnedDestinationEditor);
+      const returnedDestinationPort = await portFor(destinationPaneId);
+      const returnedDestinationAnchor = returnedDestinationPort.querySelector<HTMLElement>(
+        `[data-view-anchor-id="${destinationAnchor.anchorId}"]`,
+      );
+      if (!returnedDestinationAnchor) throw new Error("Forward did not remount the destination transcript anchor");
+      await waitFor(() =>
+        expect(
+          returnedDestinationAnchor.getBoundingClientRect().top - returnedDestinationPort.getBoundingClientRect().top,
+        ).toBe(-100),
+      );
+      expect(returnedDestinationPort.scrollTop).toBe(1900);
+      expect(await mountedCapture(destinationReadView.id)).toMatchObject(destinationRegistryCapture);
+      expect(conversationPaneLifetime(destinationPane)).toBe(destinationLifetime);
+      expect(returnedDestinationEditor.textContent).toBe(destinationDisplayedDraft);
+      expect(destinationLifetime.composer?.getSnapshot()).toMatchObject({ text: destinationDisplayedDraft });
+      await expectUnregistered(initialReadViewId);
+    } finally {
+      view.unmount();
+      external.restore();
+    }
+  },
+);
 
 test("desktop session panes own separate location and activity footers", async ({ onTestFinished }) => {
   vi.mocked(StatusBarModule.StatusBar).mockRestore();

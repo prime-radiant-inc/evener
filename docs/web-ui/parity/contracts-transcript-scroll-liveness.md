@@ -25,6 +25,30 @@ from the renderer-side glyph/open-beside contracts already covered here); `test-
 
 ---
 
+## Attention history preservation
+
+- Next-needs-you browser entries retain the exact session pane or cascade-leaf
+  reader and its runtime read-view identity. Back/Forward remounts the real
+  reader and restores its away-reading anchor and offset; the secondary-pane
+  case also keeps the exact pane placement and independent pane records.
+- When focus moves to an existing secondary pane without a URL change, that
+  focused reader's own read-view is captured on its later attention departure
+  and restored by Back. A cascade leaf's read-view is distinct from another
+  reader of the same session, even when both readers show the same ref.
+- Existing attention-history lifecycle rules still invalidate runtime bindings
+  on reload or page-generation change and release parked readers only when no
+  surviving history entry owns them.
+
+The focused `Session.test.tsx` cases use real Session/Composer/Transcript/
+VirtualList consumers with controlled jsdom geometry. Each source begins at an
+anchor 150 px above the scroll port and `scrollTop` 750 px; each attention
+destination is independently scrolled to a distinct away anchor and offset.
+The tests observe source registry removal/remount, destination consumer
+unmount/remount, Back/Forward `popstate`, and independently rendered source and
+destination anchor geometry. They also check source structured draft text,
+skill/command mentions and that restoration does not focus the editor.
+Browser layout and keyboard behavior require separate browser verification.
+
 ## 1. Base event-replay contract
 
 - A cold event replay renders exactly one user message with its text and any inline data-URL image thumbnail. (test-renderer.js)
