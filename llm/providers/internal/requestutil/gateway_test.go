@@ -310,6 +310,33 @@ func TestApplyGatewayFacts_EmptyMapProvesNothing(t *testing.T) {
 	}
 }
 
+// TestApplyGatewayFacts_PositiveVerdictClearsInheritedRejection pins the
+// verdict's other direction. An alias target or curated layer can carry a
+// no-effort rejection; a gateway that states true knows better for this row, and
+// leaving the stale rejection would make derivation discard the ladder the
+// gateway just advertised.
+func TestApplyGatewayFacts_PositiveVerdictClearsInheritedRejection(t *testing.T) {
+	yes := true
+	caps := registry.Caps{
+		Reasoning:                  new(true),
+		ReasoningControls:          []string{"effort"},
+		EffortValues:               []string{"low", "high"},
+		EffortParameterUnsupported: new(true),
+	}
+	ApplyGatewayFacts(&caps, GatewayArchitecture{}, GatewayCapabilities{}, GatewayClientCompat{
+		Pi: &GatewayPiCompat{SupportsReasoningEffort: &yes, ThinkingLevelMap: map[string]string{"low": "low", "high": "high"}},
+	})
+	if registry.BoolValue(caps.EffortParameterUnsupported) {
+		t.Fatal("a positive gateway verdict must clear an inherited rejection")
+	}
+	if !slices.Equal(caps.EffortValues, []string{"low", "high"}) {
+		t.Fatalf("EffortValues = %#v, want the advertised ladder kept", caps.EffortValues)
+	}
+	if !caps.EffortCapable() {
+		t.Fatal("the row must stay effort-capable once the rejection is cleared")
+	}
+}
+
 func TestApplyGatewayFacts_Reasoning(t *testing.T) {
 	yes, no := true, false
 	levels := func(m map[string]string) GatewayClientCompat {

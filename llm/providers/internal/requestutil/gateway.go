@@ -94,13 +94,19 @@ func applyGatewayReasoning(caps *registry.Caps, capsFacts GatewayCapabilities, c
 			return
 		}
 	}
-	// A model the gateway says takes no effort parameter records that verdict
-	// and publishes an empty ladder, so the live layer replaces a curated one
-	// instead of inheriting it. The controls themselves are derivation's call:
-	// it removes the effort control while preserving a numeric budget, which a
-	// wholesale write here would destroy before derivation ever saw it.
+	// The gateway's verdict is recorded in both directions. A `true` must clear
+	// an inherited rejection as well as a `false` creating one: an alias target
+	// or a curated layer can supply either value, and letting a stale rejection
+	// survive would make derivation discard a ladder the gateway just advertised.
+	if pi := compat.Pi; pi != nil && pi.SupportsReasoningEffort != nil {
+		caps.EffortParameterUnsupported = new(!*pi.SupportsReasoningEffort)
+	}
+	// A model the gateway says takes no effort parameter publishes an empty
+	// ladder, so the live layer replaces a curated one instead of inheriting it.
+	// The controls themselves are derivation's call: it removes the effort
+	// control while preserving a numeric budget, which a wholesale write here
+	// would destroy before derivation ever saw it.
 	if pi := compat.Pi; pi != nil && pi.SupportsReasoningEffort != nil && !*pi.SupportsReasoningEffort {
-		caps.EffortParameterUnsupported = new(true)
 		caps.EffortValues = []string{}
 		// The map still proves the model reasons, even though its ladder is
 		// not published. Without this, a row whose verdict was inferred false
