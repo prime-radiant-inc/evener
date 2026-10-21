@@ -1227,3 +1227,70 @@ test("a dismissal that loses the append's commit race withholds the acknowledgme
   fixture.repository.close();
   fixture.drafts.close();
 });
+
+// The dismissal's durable flip is the event that unblocks a successor: B's
+// handoff refuses behind A only because A's row is still PENDING in the session
+// FIFO, and the flip removes that predecessor. The flip emitted nothing, so the
+// runtime kept its recorded need with no trigger to spend it and B stayed
+// pending until unrelated activity. A committed pending-to-cancelled transition
+// must signal storage success after its transaction settles.
+test("a committed dismissal flip starts the pass that completes a FIFO-blocked successor", async () => {
+  let fixture: AnnotationFixtureWithRuntime | undefined;
+  fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+    routeStorageSuccessIntoRuntime: true,
+    prepareAnnotation: currentPreparation(() => fixture),
+  });
+  // A is the fixture's own pending operation at sessionSequence 1; B is saved
+  // after it for the same destination, so B's append refuses behind A.
+  const operationB: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+  await fixture.runtime.save(operationB);
+  expect(await fixture.runtime.handoff(fixture.document, operationB.operationId)).toEqual({
+    state: "pending",
+    reason: "dirty-draft",
+  });
+
+  const passes = vi.spyOn(fixture.repository, "retryPendingWithOutcome");
+  fixture.runtime.retireAttempted(fixture.operation);
+
+  // No further external activity: the committed flip's own signal must start the
+  // pass that applies B.
+  await pollUntil(() => passes.mock.calls.length > 0, 50);
+  expect(passes).toHaveBeenCalledTimes(1);
+  await fixture.runtime.whenIdle();
+
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === operationB.operationId)?.handoff.state).toBe(
+    "already-applied",
+  );
+  expect(views.find((view) => view.operation.operationId === fixture.operation.operationId)).toBeUndefined();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
+// The flip removes A's row, so a subscribed reader's listing no longer shows it.
+// Without the wake, a reader keeps rendering the dismissed note until some
+// unrelated commit happens to refresh the same document. The committed flip must
+// publish the document wake after its transaction settles.
+test("a committed dismissal flip wakes subscribed readers", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+  });
+  const listener = vi.fn();
+  fixture.repository.subscribe(fixture.document, listener);
+  const before = await fixture.repository.listAnnotations(fixture.document);
+  expect(before.map((view) => view.operation.operationId)).toContain(fixture.operation.operationId);
+
+  await fixture.repository.dismissOperation(fixture.document, fixture.operation.operationId);
+
+  expect(listener).toHaveBeenCalledTimes(1);
+  const after = await fixture.repository.listAnnotations(fixture.document);
+  expect(after.find((view) => view.operation.operationId === fixture.operation.operationId)).toBeUndefined();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});

@@ -1442,12 +1442,10 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
   // namespace-qualified operation identity is flipped to the fence's terminal
   // cancelled receipt; an absent row (the save never committed), a terminal
   // receipt (applied, cancelled, unclaimed) and every other operation stay
-  // untouched, so a replay is an idempotent no-op. No wake is published here:
-  // a discard changes only the operation receipt. The reader's fault branch
-  // publishes its own state in the same flow, and a dismissal's consumer has
-  // already removed the note locally; the acceptance that follows on healed
-  // storage fences the epoch and wakes peers - the same shape settleUnclaimed
-  // keeps.
+  // untouched, so a replay is an idempotent no-op. A committed flip emits its
+  // own observation: the cancelled row leaves every listing, and a successor
+  // that refused behind it in the session FIFO becomes eligible again. A no-op
+  // changes neither and stays silent.
   async discardPendingOperation(key: DocumentKey, operationId: string): Promise<void> {
     await this.#discardPendingOperationState(key, operationId);
   }
@@ -1459,6 +1457,7 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     if (key.namespace.kind !== "browser") return "absent";
     const operationKey = annotationOperationKey(key.namespace, operationId);
     let outcome: DiscardOutcome = "absent";
+    let flippedDocumentKey: string | undefined;
     await this.#transaction([ANNOTATION_OPERATIONS_STORE], "readwrite", async (transaction) => {
       const row = await requestResult<AnnotationOperationRow | undefined>(
         transaction.objectStore(ANNOTATION_OPERATIONS_STORE).get(operationKey),
@@ -1474,7 +1473,18 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       this.#options.beforeCommit?.("discard");
       await requestResult(putTerminalOperation(transaction, row, "cancelled"));
       outcome = "flipped";
+      flippedDocumentKey = row.documentKey;
     });
+    // A committed pending-to-cancelled flip is the eligibility-restoring event
+    // for a successor that refused behind this row in the session FIFO, and it
+    // removes the row from every reader's listing. Emit both observations after
+    // the transaction settles, outside it, exactly as every other committed
+    // transition does. A no-op over an absent or already-terminal row changed
+    // nothing and emits nothing.
+    if (flippedDocumentKey !== undefined) {
+      this.#notifyStorageSuccess();
+      this.#publishDocumentWake(flippedDocumentKey);
+    }
     return outcome;
   }
 
