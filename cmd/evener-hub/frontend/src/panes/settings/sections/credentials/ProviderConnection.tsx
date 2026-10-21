@@ -865,6 +865,17 @@ function SelectedConnection({
     const token = ++operation.current;
     void refreshAndCheck(token, "oauth");
   }
+  // The OAuth child confirms authorization before its first listing read. That
+  // read is interruptible: a transport reconnect unmounts the child, so the
+  // parent records the acquired source and its automatic-recovery ownership
+  // here, before the read, rather than waiting for the child's success callback
+  // that the unmount would drop.
+  const oauthAuthorized = useCallback(() => {
+    setSaved(true);
+    setStoredAccess(true);
+    acquisitionSource.current = "oauth";
+    pendingRecovery.current = { expectedSource: "oauth" };
+  }, []);
   // DeviceCodeDialog's polling effect owns an in-flight refresh and depends
   // on this callback. Keep its identity stable while using current setup.
   const signedInRef = useRef(signedIn);
@@ -986,6 +997,7 @@ function SelectedConnection({
         verificationUrl={oauth.verificationUrl}
         intervalSeconds={oauth.intervalSeconds}
         onCancel={closeOAuth}
+        onAuthorized={oauthAuthorized}
         onSuccess={completeOAuth}
         onRestart={() => void signIn()}
       />
@@ -997,6 +1009,7 @@ function SelectedConnection({
         flowId={oauth.flowId}
         authUrl={oauth.authUrl}
         onCancel={closeOAuth}
+        onAuthorized={oauthAuthorized}
         onSuccess={completeOAuth}
       />
     );

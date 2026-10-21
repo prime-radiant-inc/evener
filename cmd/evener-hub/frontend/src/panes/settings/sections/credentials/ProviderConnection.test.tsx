@@ -339,6 +339,109 @@ test("redirect authorization survives its own delayed listing refresh and procee
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
+test("device authorization interrupted by reconnect still completes automatically", async () => {
+  const { user, client, connected } = setup();
+  await choose(user, "OpenAI Codex");
+  client.on("evener/auth/device/start", () => ({
+    provider: "openai-codex",
+    flowId: "device",
+    userCode: "CODE",
+    verificationUrl: "https://auth.example",
+    intervalSeconds: 1,
+  }));
+  client.on("evener/auth/device/poll", () => ({ provider: "openai-codex", state: "authorized" }));
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  vi.useFakeTimers();
+  await act(async () => {
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+  });
+  // Hold the child's first post-authorization read: the authorization has
+  // already been confirmed when this read is out.
+  const held = deferred<InstanceListResponse>();
+  client.on("evener/instance/list", () => held.promise);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+
+  // Transport reconnects to the SAME destination, without cancelling.
+  await act(async () => {
+    client.emitStateChange("reconnecting");
+  });
+  await act(async () => {
+    client.emitStateChange("ready");
+  });
+  await act(async () => {
+    held.resolve(savedList("openai-codex", { activeSource: "oauth", hasStoredOAuth: true }));
+    await held.promise;
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  vi.useRealTimers();
+
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("openai-codex"));
+  expect(client.calls.filter((call) => call.method === "evener/auth/device/start")).toHaveLength(1);
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+  expect(reasonShown("changed")).toBe(false);
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("redirect authorization interrupted by reconnect still completes automatically", async () => {
+  const { user, client, connected } = setup();
+  await choose(user, "OpenAI Codex");
+  client.on("evener/auth/device/start", () => ({
+    provider: "openai-codex",
+    fallback: true,
+    flowId: "redirect",
+    userCode: "",
+    verificationUrl: "",
+    intervalSeconds: 5,
+  }));
+  client.on("evener/auth/login/start", () => ({
+    provider: "openai-codex",
+    flowId: "redirect",
+    url: "https://auth.example/authorize",
+  }));
+  client.on("evener/auth/login/complete", () => ({
+    status: {
+      provider: "openai-codex",
+      supported: true,
+      signedIn: true,
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+    },
+  }));
+  client.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
+  vi.spyOn(window, "open").mockReturnValue(null);
+  await user.click(screen.getByRole("button", { name: "Sign in" }));
+  const held = deferred<InstanceListResponse>();
+  client.on("evener/instance/list", () => held.promise);
+  await enterText(user, screen.getByLabelText("Redirect URL"), "https://auth.example/callback?code=1");
+  await user.click(screen.getByRole("button", { name: "Finish" }));
+
+  vi.useFakeTimers();
+  await act(async () => {
+    client.emitStateChange("reconnecting");
+  });
+  await act(async () => {
+    client.emitStateChange("ready");
+  });
+  await act(async () => {
+    held.resolve(savedList("openai-codex", { activeSource: "oauth", hasStoredOAuth: true }));
+    await held.promise;
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+  vi.useRealTimers();
+
+  await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("openai-codex"));
+  expect(client.calls.filter((call) => call.method === "evener/auth/login/complete")).toHaveLength(1);
+  expect(client.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
+  expect(reasonShown("changed")).toBe(false);
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
 test("changing base in the full form continues with the actual created provider rather than old vendor help", async () => {
   const { user, client } = setup();
   await choose(user, "Azure");
@@ -1871,13 +1974,11 @@ test("the originating client's own auth-update echo does not invalidate its save
 });
 test("the store's own post-save refresh does not prevent exactly-once completion", async () => {
   // The store schedules its own listing refresh the moment the save succeeds
-  // (a 250ms debounce), while the flow sits in its result phase with Continue
-  // showing. That refresh is this client's own change - it must not read as
-  // "Connection or configuration changed" and yank the success away from the
-  // user. The fake-timer echo test above cannot observe this: its save runs
-  // under real timers, so the self-refresh is a timeout its fake clock never
-  // owns. Here the clock is fake before the save, so the refresh is a timer
-  // Testing Library's waitFor runs (through the stubbed `jest` global).
+  // (a 250ms debounce). The flow's awaited reconciliation consumes that queued
+  // self refresh into its own read, so the timer cannot land later as an
+  // unowned change that yanks the success away - and the flow completes
+  // exactly once. The clock is fake before the save, so a timer this flow
+  // failed to consume would fire inside the advance below.
   const { user, client, connected } = setup();
   scriptSave(client);
   await choose(user);
@@ -1890,12 +1991,11 @@ test("the store's own post-save refresh does not prevent exactly-once completion
   await waitFor(() => expect(connected).toHaveBeenCalledExactlyOnceWith("anthropic"));
   const listReads = () => client.calls.filter((c) => c.method === "evener/instance/list").length;
   const reads = listReads();
-  // The self-refresh has been issued and its answer has landed: the store
-  // raises `loading` as it issues the read and clears it once the answer lands.
-  await waitFor(() => {
-    expect(listReads()).toBe(reads + 1);
-    expect(credentialsStore.getState().loading).toBe(false);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(300);
   });
+  expect(listReads()).toBe(reads);
+  expect(credentialsStore.getState().loading).toBe(false);
   expect(connected).toHaveBeenCalledTimes(1);
   expect(reasonShown("changed")).toBe(false);
 });
