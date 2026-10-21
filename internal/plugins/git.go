@@ -90,27 +90,35 @@ func guardGitArg(name, val string) error {
 // that matches a tracked file or directory would leave the clone on its
 // default branch while the caller records the ref as checked out.
 func checkoutRevision(ctx context.Context, dir, target string) error {
-	// A branch other than the remote's default exists only as a
-	// remote-tracking ref in a fresh clone; git checkout creates the local
-	// branch from it. Name each namespace explicitly so a tag cannot stand in
-	// for a remote branch.
-	resolved := false
-	for _, rev := range []string{
-		"refs/heads/" + target,
-		"refs/tags/" + target,
-		"refs/remotes/origin/" + target,
-		target,
-	} {
-		if _, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}"); err == nil {
-			resolved = true
-			break
-		}
+	if target == "HEAD" {
+		_, err := gitRun(ctx, dir, "checkout", "--quiet", "HEAD")
+		return err
 	}
-	if !resolved {
+	// Name each namespace explicitly so a path cannot satisfy the lookup, and
+	// check out the resolved shape: a local branch stays attached, a remote
+	// branch gets a tracking branch without relying on checkout.guess, and a
+	// tag or commit detaches.
+	switch {
+	case refNamesCommit(ctx, dir, "refs/heads/"+target):
+		_, err := gitRun(ctx, dir, "checkout", "--quiet", target)
+		return err
+	case refNamesCommit(ctx, dir, "refs/tags/"+target):
+		_, err := gitRun(ctx, dir, "checkout", "--quiet", "--detach", "refs/tags/"+target)
+		return err
+	case refNamesCommit(ctx, dir, "refs/remotes/origin/"+target):
+		_, err := gitRun(ctx, dir, "checkout", "--quiet", "-b", target, "--track", "refs/remotes/origin/"+target)
+		return err
+	case refNamesCommit(ctx, dir, target):
+		_, err := gitRun(ctx, dir, "checkout", "--quiet", "--detach", target)
+		return err
+	default:
 		return fmt.Errorf("refusing to check out %q: it does not name a branch, tag, or commit", target)
 	}
-	_, err := gitRun(ctx, dir, "checkout", "--quiet", target)
-	return err
+}
+
+func refNamesCommit(ctx context.Context, dir, rev string) bool {
+	_, err := gitRun(ctx, dir, "rev-parse", "--verify", "--quiet", rev+"^{commit}")
+	return err == nil
 }
 
 // gitClone clones url into dir, then checks out ref and/or sha when set.

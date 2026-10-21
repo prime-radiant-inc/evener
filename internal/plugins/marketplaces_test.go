@@ -2697,6 +2697,41 @@ func TestAddMarketplace_RefMatchingATrackedPathAndAnOriginTagIsRejected(t *testi
 	}
 }
 
+// A branch and a tracked path can share a name. Checkout guessing must not
+// decide which one wins: the recorded ref selects the branch even when git is
+// configured not to guess a branch for an ambiguous name.
+func TestAddMarketplace_BranchAndPathShareAName(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "checkout.guess")
+	t.Setenv("GIT_CONFIG_VALUE_0", "false")
+
+	repo := makeMarketplaceRepo(t, "branchname")
+	if err := os.MkdirAll(filepath.Join(repo, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "docs", "marker"), []byte("tracked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, repo, "add", "docs")
+	gitIn(t, repo, "commit", "-qm", "track a path named like the branch")
+	gitIn(t, repo, "checkout", "--quiet", "-b", "docs")
+	advanceGitRepo(t, repo, "README.md", "on the docs branch")
+	docsTip := gitIn(t, repo, "rev-parse", "HEAD")
+	gitIn(t, repo, "checkout", "--quiet", "-")
+
+	m := NewManager(t.TempDir())
+	ref, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: repo, Ref: "docs"})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if got := gitIn(t, ref.InstallLocation, "rev-parse", "HEAD"); got != docsTip {
+		t.Fatalf("HEAD = %s, want the docs branch tip %s", got, docsTip)
+	}
+}
+
 // The plugin store's own directories are its to rewrite: a fetch clears
 // .staging, a swap deletes .old, the marketplaces dir holds every other
 // marketplace's clone, and the cache holds materialized plugins. A directory
