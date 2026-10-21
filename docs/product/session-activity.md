@@ -47,6 +47,10 @@ and so does an awaiting rest after a turn that ended on `needs_response`, on the
 web rail and the phone Board alike, since it waits on a person the same way.
 Warnings carrying a question or approval remain attention states. Own failure,
 restart-required and existing unavailable-session presentations remain unchanged.
+Background attention paused by a permanent provider failure is not live work
+while no fresh wake or paced retry is armed: the session keeps its own failure
+presentation until a new delegate event, a sent message, a model switch, or
+another re-engagement re-arms delivery.
 
 Question resolution returns to working presentation while children run. Once
 the last running child settles, each client resumes its normal parent-state and
