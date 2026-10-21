@@ -318,7 +318,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 	}
 
-	profile, err := buildInitialProfile(client, modelRef, cfg.outputSchema)
+	profile, err := buildInitialProfile(ctx, client, modelRef, cfg.outputSchema)
 	if err != nil {
 		return err
 	}

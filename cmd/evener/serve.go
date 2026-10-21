@@ -177,7 +177,7 @@ type serveDeps struct {
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, func() error, error)
 	attachAPILogger  func(*llm.Client, string, io.Writer, bool) (func(string) error, func() error, error)
-	buildProfile     func(*llm.Client, cmdutil.ModelRef, string) (*provider.Profile, error)
+	buildProfile     func(context.Context, *llm.Client, cmdutil.ModelRef, string) (*provider.Profile, error)
 	applyCheap       func(*provider.Profile, string, *llm.Client) (*provider.Profile, error)
 	newSession       func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
 	restoreSession   func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error)
@@ -635,7 +635,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return err
 		}
 	}
-	profile, err := deps.buildProfile(client, modelRef, *outputSchema)
+	profile, err := deps.buildProfile(ctx, client, modelRef, *outputSchema)
 	if err != nil {
 		return err
 	}
@@ -2102,8 +2102,8 @@ func printServeEnvVars(w io.Writer) {
 // same facts. outputSchemaJSON and EVENER_ALLOWED_DECISIONS are applied in
 // this app layer so callers see the same communicate-tool schema regardless of
 // model.
-func buildInitialProfile(client *llm.Client, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, error) {
-	raw, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
+func buildInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, error) {
+	raw, err := resolveInitialProfile(ctx, client, modelRef)
 	if err != nil {
 		return nil, err
 	}
@@ -2116,6 +2116,32 @@ func buildInitialProfile(client *llm.Client, modelRef cmdutil.ModelRef, outputSc
 	p := provider.WithCommunicateOutputSchema(raw, outputSchema)
 	allowedDecisions := cmdutil.ParseAllowedDecisions(envvars.EVENERAllowedDecisions.Getenv())
 	return provider.WithAllowedDecisions(p, allowedDecisions), nil
+}
+
+// initialCodexRosterTimeout bounds the one live listing a Codex reference may
+// need when its id is not in the bundled roster. It matches the per-instance
+// budget the hub's model picker and launch check use.
+const initialCodexRosterTimeout = 8 * time.Second
+
+// resolveInitialProfile resolves modelRef on the client's registry. The Codex
+// transport rejects an id absent from its roster instead of synthesizing a
+// row, and the bundled roster lags the models the backend serves. A session
+// restarted after selecting such a model (or a fresh launch with a model the
+// picker just listed) resolves before any listing exists in this process, so
+// the catalog-only gate would reject a model the provider itself advertises.
+// On exactly that rejection, consult the instance's live listing once and
+// resolve again; every other failure is returned unchanged.
+func resolveInitialProfile(ctx context.Context, client *llm.Client, modelRef cmdutil.ModelRef) (*provider.Profile, error) {
+	raw, err := cmdutil.ResolveProfile(client, modelRef.Qualified())
+	if err == nil || !errors.Is(err, registry.ErrCodexModelNotListed) {
+		return raw, err
+	}
+	listCtx, cancel := context.WithTimeout(ctx, initialCodexRosterTimeout)
+	defer cancel()
+	if _, listErr := client.Models(listCtx, modelRef.Provider); listErr != nil {
+		return nil, fmt.Errorf("%w; the provider's live model list could not be read: %v", err, listErr)
+	}
+	return cmdutil.ResolveProfile(client, modelRef.Qualified())
 }
 
 // errFastCheapProviderUnavailable identifies a --fast-cheap-model provider the
