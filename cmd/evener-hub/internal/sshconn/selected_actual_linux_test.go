@@ -137,7 +137,7 @@ func TestRemoteRestartActualDisposableHub(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	facts := Preflight{OS: "linux", UID: "0", LaunchCheckKnown: true, HubEndpointSchema: 1, Version: before.Running.Version}
-	if err := m.RestartForOperation(ctx, host, facts); err != nil {
+	if _, err := m.RestartForOperation(ctx, host, facts, nil); err != nil {
 		t.Fatal(err)
 	}
 	after, err := endpoint()

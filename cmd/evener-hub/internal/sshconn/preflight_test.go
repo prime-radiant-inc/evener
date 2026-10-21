@@ -497,6 +497,10 @@ func TestPreflightPresentFileIsNotFreshInstall(t *testing.T) {
 					}
 					return base(ctx, argv, in)
 				}}
+				bridgeFailure := errors.New("present junk binary cannot start a bridge")
+				fr.startFn = func(context.Context, []string, io.Writer) (Stdio, error) {
+					return nil, bridgeFailure
+				}
 				m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: func(context.Context, string, string, string) error {
 					t.Error("present file reached fresh-install build")
 					return errors.New("unexpected build")
@@ -505,11 +509,11 @@ func TestPreflightPresentFileIsNotFreshInstall(t *testing.T) {
 				if pf.ExecutableMissing || !errors.Is(err, ErrEndpointMigration) || !isTerminal(err) {
 					t.Fatalf("present mode %o: ExecutableMissing=%v err=%v", mode, pf.ExecutableMissing, err)
 				}
-				if _, err := m.Ensure(t.Context(), host.Name); !errors.Is(err, ErrEndpointMigration) {
-					t.Fatalf("Ensure err=%v", err)
+				if ch, err := m.Ensure(t.Context(), host.Name); ch != nil || !errors.Is(err, ErrEndpointMigration) || !errors.Is(err, bridgeFailure) {
+					t.Fatalf("Ensure channel=%v err=%v", ch, err)
 				}
-				if len(fr.recordedStarts()) != 0 {
-					t.Fatal("present file started a bridge")
+				if len(fr.recordedStarts()) != 1 {
+					t.Fatal("present file must get one read-only bridge attempt")
 				}
 				for _, argv := range fr.recordedRuns() {
 					remote := strings.Join(argv[12:], " ")

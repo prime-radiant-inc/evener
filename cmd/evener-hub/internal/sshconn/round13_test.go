@@ -10,31 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
-// TestRound13DirtyControllerDeployRefusalIsTerminal pins the round-thirteen
-// Medium that a dirty controller with a build source entered an infinite deploy
-// loop. `deployRequired` forces a deploy for a dirty "<sha>-dirty" version (a
-// dirty version is not an identity: another dirty checkout at the same commit
-// reports it too), but the production build path refuses to compile a dirty
-// controller's tree (verifyBuildRevision), and the installer fallback refuses
-// dirty before it can pin an artifact. `markDevDeployed` was therefore never
-// reached, the forced deploy stayed forced, and the refusal was returned as a
-// retryable ErrDeploy — so the supervisor cross-compiled forever while the host
-// was never attached.
-//
-// The fix keeps round twelve's property (a dirty version is never treated as an
-// identity match, so the deploy is still forced) and makes the refusal terminal
-// instead of ErrDeploy: the supervisor stops, the cause is reported, and no
-// build, restart, or attach is attempted. The test drives the decision and the
-// supervisor's own per-iteration path (reconnectOnce), not BuildBinary alone —
-// which is how the round-twelve test missed the loop. The build source here is a
-// BuildBinary that is not the controller's own executable (an embedder's own
-// compile of the controller's tree, or an operator's -deploy-binary); the
-// controller's own executable is deployable from a dirty controller and is
-// pinned by TestDirtyControllerDeploysItsOwnExecutable.
+// A required protocol upgrade cannot compile an unrepeatable dirty controller
+// tree. That source refusal is terminal, so reconnect does not retry forever.
+// The own-executable exception is covered by TestDirtyControllerDeploysItsOwnExecutable.
 func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	const dirty = "abc1234-dirty"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
@@ -61,7 +42,8 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
 	}, startFn: goodStartFn(t)}
-	modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "oldsha", "newsha")
+	requireProtocolUpgrade(t, fr)
+	modelLegacySelectedProcess(t, fr, host)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirty,
 		BuildBinary: func(_ context.Context, _, _, out string) error {
@@ -73,16 +55,15 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	testDeployRecorder(t, m)
 	testRestartRecorder(t, m)
 
-	// Round twelve's rule stands: the identical dirty version on both sides is not
-	// a match, so the deploy is still required.
-	if !m.deployRequired(host.Name, Preflight{
+	// An incompatible protocol still requires deployment, regardless of build labels.
+	if !m.deployRequired(Preflight{
 		Host:             host.Name,
 		LaunchCheckKnown: true,
-		Protocol:         appwire.ProtocolVersion,
+		Protocol:         "evener-appwire-v5",
 		Version:          dirty,
 		LaunchFlags:      []string{requiredLaunchFlag},
-	}, dirty) {
-		t.Fatal("a dirty controller stopped forcing the deploy, so it could attach to a host whose code equality cannot prove")
+	}) {
+		t.Fatal("an incompatible protocol did not require deployment")
 	}
 
 	_, err := m.Ensure(context.Background(), "alpha")
@@ -101,9 +82,7 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	if builds != 0 {
 		t.Fatalf("build attempts = %d, want 0 (a dirty controller has no deployable source build)", builds)
 	}
-	if got := len(fr.recordedStarts()); got != 0 {
-		t.Fatalf("bridge Start calls = %d, want 0 (never attach to a host the dirty version cannot verify)", got)
-	}
+	requireNoAttach(t, fr)
 	for _, argv := range fr.recordedRuns() {
 		if strings.Contains(strings.Join(argv, " "), "systemctl restart") {
 			t.Fatalf("the refused deploy still restarted the host: %v", argv)
@@ -208,4 +187,190 @@ func TestRound13BootstrapStartStillVerifiesAnUnverifiableBuild(t *testing.T) {
 	if got := len(fr.recordedStarts()); got != 1 {
 		t.Fatalf("bridge Start calls = %d, want 1 (the host attached after the start verified)", got)
 	}
+}
+
+// TestRound13RunningUserUnitBeatsAnInactiveSystemUnit pins the round-thirteen
+// Medium that the user listing was consulted only when the system listing named
+// no unit at all. A loaded-but-INACTIVE system unit is only a candidate: a
+// running user unit is the hub actually serving the host, and it was skipped
+// whenever any system unit existed. The user listing is now consulted whenever
+// no system unit is LIVE, and precedence stays live-before-dormant (a dormant
+// system unit still wins over a dormant user one).
+func TestRound13RunningUserUnitBeatsAnInactiveSystemUnit(t *testing.T) {
+	const sysDormant = "evener-hub.service loaded inactive dead Evener Hub\n"
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	cases := []struct {
+		name    string
+		userOut []byte
+		want    supervisorSet
+	}{
+		{
+			name:    "a running user unit is the hub",
+			userOut: []byte("evener-hub.service loaded active running Evener Hub\n"),
+			want:    supervisorSet{live: supervisor{supervisorSystemdUser, "evener-hub.service"}},
+		},
+		{
+			name:    "an inactive user unit leaves the system unit as the target",
+			userOut: []byte("evener-hub.service loaded inactive dead Evener Hub\n"),
+			want:    supervisorSet{dormant: supervisor{supervisorSystemd, "evener-hub.service"}},
+		},
+		{
+			name:    "no user unit leaves the system unit as the target",
+			userOut: nil,
+			want:    supervisorSet{dormant: supervisor{supervisorSystemd, "evener-hub.service"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+				joined := strings.Join(argv, " ")
+				switch {
+				case strings.Contains(joined, "systemctl --user"):
+					return tc.userOut, nil
+				case strings.Contains(joined, "list-units"):
+					return []byte(sysDormant), nil
+				default:
+					return nil, fmt.Errorf("unexpected remote command: %v", argv)
+				}
+			}}
+			m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+			got, err := m.detectSupervisor(context.Background(), host, Preflight{OS: "linux"})
+			if err != nil {
+				t.Fatalf("detectSupervisor: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("detectSupervisor = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+
+	// A live SYSTEM unit still settles the host without the user query, which is
+	// the round-eleven property: a headless user bus can never defeat it.
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "systemctl --user"):
+			t.Fatalf("the user listing was consulted although a system unit is live: %v", argv)
+			return nil, nil
+		case strings.Contains(joined, "list-units"):
+			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{})
+	got, err := m.detectSupervisor(context.Background(), host, Preflight{OS: "linux"})
+	if err != nil {
+		t.Fatalf("detectSupervisor: %v", err)
+	}
+	want := supervisorSet{live: supervisor{supervisorSystemd, "evener-hub.service"}}
+	if got != want {
+		t.Fatalf("detectSupervisor = %+v, want %+v", got, want)
+	}
+}
+
+// TestRound13WildcardOwnershipIsAddressFamilyAware pins the round-thirteen
+// Medium that the IPv6 wildcard listener (::) was read as owning IPv4 endpoints.
+// Whether an IPv6 wildcard also accepts IPv4-mapped traffic depends on the
+// socket's IPV6_V6ONLY setting, which neither lsof nor ss reports, so restart
+// logic must not treat it as the process serving an IPv4 endpoint. The IPv4
+// wildcard is the mirror case, and lsof's family-less "*" spelling keeps its
+// meaning because the tool does not say which family it is.
+func TestRound13WildcardOwnershipIsAddressFamilyAware(t *testing.T) {
+	cases := []struct {
+		local, configured string
+		want              bool
+	}{
+		{"0.0.0.0:9180", "127.0.0.1:9180", true},
+		{"0.0.0.0:9180", "[::1]:9180", false},
+		{"[::]:9180", "[::1]:9180", true},
+		{"[::]:9180", "127.0.0.1:9180", false},
+		{"*:9180", "127.0.0.1:9180", true},
+		{"*:9180", "[::1]:9180", true},
+		{"127.0.0.1:9180", "127.0.0.1:9180", true},
+		{"127.0.0.1:9180", "127.0.0.2:9180", false},
+		{"[::1]:9180", "[::1]:9180", true},
+		{"[::1]:9180", "127.0.0.1:9180", false},
+		{"127.0.0.1:9181", "127.0.0.1:9180", false},
+	}
+	for _, tc := range cases {
+		if got := listenerOwnsAddr(tc.local, tc.configured); got != tc.want {
+			t.Errorf("listenerOwnsAddr(%q, %q) = %v, want %v", tc.local, tc.configured, got, tc.want)
+		}
+	}
+}
+
+// TestRound13RestartBareRefusesAnIPv6WildcardListenerForAnIPv4Endpoint pins the
+// restart half of the same finding: a process bound only to the IPv6 wildcard is
+// not the hub this host's IPv4 endpoint is configured for, so the bare restart
+// must refuse it instead of killing whatever it is. The mirror case — an IPv6
+// wildcard listener for an IPv6-configured host — is still restarted.
+func TestRound13RestartBareRefusesAnIPv6WildcardListenerForAnIPv4Endpoint(t *testing.T) {
+	newRunner := func(killed *bool) *fakeRunner {
+		return &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+			joined := strings.Join(argv, " ")
+			switch {
+			case strings.Contains(joined, "id -un"):
+				return []byte("dev\n"), nil
+			case strings.Contains(joined, pidOwnerRemote("4242")):
+				return []byte("dev\n"), nil
+			case strings.Contains(joined, "lsof -ti :9180"):
+				if *killed {
+					return []byte(noListenerMarker + "\n"), nil
+				}
+				return []byte("4242\n"), nil
+			case strings.Contains(joined, "-ww -o "):
+				return []byte("/opt/evener/bin/evener hub -addr 127.0.0.1:9180\n"), nil
+			case strings.Contains(joined, "-F n"):
+				return []byte("n[::]:9180\n"), nil
+			case strings.Contains(joined, "lsof -p 4242 -a -d 1,2"):
+				return nil, errors.New("exit status 1")
+			case strings.Contains(joined, "kill -s 0 -- 4242"):
+				return []byte(pidGoneMarker + "\n"), nil
+			case strings.Contains(joined, "kill -- 4242"):
+				*killed = true
+				return nil, nil
+			case strings.Contains(joined, "nohup"):
+				return nil, nil
+			case strings.Contains(joined, "command -v evener"):
+				return []byte("/opt/evener/bin/evener\n"), nil
+			case strings.Contains(joined, "evener_resolve"):
+				return []byte("/opt/evener/bin/evener\n"), nil
+			default:
+				return nil, fmt.Errorf("unexpected remote command: %v", argv)
+			}
+		}}
+	}
+
+	t.Run("IPv4 endpoint refuses the IPv6 wildcard listener", func(t *testing.T) {
+		host := hostreg.Host{Name: "alpha", SSH: "alpha.example"} // default 127.0.0.1:9180
+		killed := false
+		m := newTestManager(t, testRegistry(t, host), newRunner(&killed), Options{
+			sleep: func(context.Context, time.Duration) error { return nil },
+		})
+
+		err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil)
+		if !errors.Is(err, ErrRestart) {
+			t.Fatalf("err = %v, want ErrRestart for an IPv6-wildcard listener on an IPv4 endpoint", err)
+		}
+		if killed {
+			t.Fatal("a listener that may not serve the IPv4 endpoint was killed")
+		}
+	})
+
+	t.Run("IPv6 endpoint accepts the IPv6 wildcard listener", func(t *testing.T) {
+		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", Addr: "[::]:9180"}
+		killed := false
+		m := newTestManager(t, testRegistry(t, host), newRunner(&killed), Options{
+			sleep: func(context.Context, time.Duration) error { return nil },
+		})
+
+		if err := m.restartBare(context.Background(), host, m.opts.controllerVersion(), snapshotPinGitSHA(), hubIdentity{}, nil); err != nil {
+			t.Fatalf("restartBare: %v (an IPv6 wildcard owns the IPv6 endpoint it was configured for)", err)
+		}
+		if !killed {
+			t.Fatal("the hub owning the configured IPv6 endpoint was not stopped")
+		}
+	})
 }

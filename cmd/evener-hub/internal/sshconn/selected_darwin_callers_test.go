@@ -69,7 +69,7 @@ func (f *darwinBootstrapFixture) runner(t *testing.T, host hostreg.Host) *fakeRu
 			return []byte("1000\n"), nil
 		case envProbeScript:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-		case "/opt/evener launch-check --json":
+		case "/opt/evener launch-check --json", "/opt/evener launch-check --protocol evener-appwire-v7 --json":
 			return []byte(strings.ReplaceAll(goodLaunchCheck, `"version":"dev"`, `"version":"release-selected"`)), nil
 		case "/opt/evener hub endpoint --json --config /srv/selected.toml":
 			return report(false), nil

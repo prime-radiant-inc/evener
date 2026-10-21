@@ -947,11 +947,14 @@ type NoticesListResponse struct {
 // does not report them; Roots is the machine's project roots, absent when it
 // has none.
 type ServerInfo struct {
-	Name    string   `json:"name"`
-	Version string   `json:"version"`
-	OS      string   `json:"os,omitempty"`
-	Arch    string   `json:"arch,omitempty"`
-	Roots   []string `json:"roots,omitempty"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
+	// BuildVersion identifies the running executable, independently of the
+	// server package version. Absence means the build is unknown.
+	BuildVersion string   `json:"buildVersion,omitempty"`
+	OS           string   `json:"os,omitempty"`
+	Arch         string   `json:"arch,omitempty"`
+	Roots        []string `json:"roots,omitempty"`
 }
 
 type FeatureSet struct {

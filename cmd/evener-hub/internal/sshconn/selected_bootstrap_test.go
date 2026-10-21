@@ -38,7 +38,7 @@ func TestEnsureSelectedBootstrapRecovery(t *testing.T) {
 							return []byte("1000\n"), nil
 						case envProbeScript:
 							return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-						case "/opt/evener/bin/evener launch-check --json":
+						case "/opt/evener/bin/evener launch-check --json", "/opt/evener/bin/evener launch-check --protocol evener-appwire-v7 --json":
 							return []byte(strings.ReplaceAll(goodLaunchCheck, `"version":"dev"`, `"version":"`+version+`"`)), nil
 						case "systemctl start evener-hub.service", "cd /home/dev || exit; unset HOME XDG_CONFIG_HOME XDG_STATE_HOME EVENER_HUB_LISTEN_ADDR; export HOME=/home/dev; nohup /opt/evener/bin/evener hub </dev/null >/dev/null 2>&1 &":
 							starts++
@@ -98,7 +98,7 @@ func TestEnsureSelectedBootstrapSnapshotPin(t *testing.T) {
 					return []byte("1000\n"), nil
 				case envProbeScript:
 					return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
-				case host.EvenerPath + " launch-check --json":
+				case host.EvenerPath + " launch-check --json", host.EvenerPath + " launch-check --protocol evener-appwire-v7 --json":
 					return []byte(strings.ReplaceAll(goodLaunchCheck, `"version":"dev"`, `"version":"newsha"`)), nil
 				case "systemctl start evener-hub.service":
 					return nil, nil
@@ -111,6 +111,9 @@ func TestEnsureSelectedBootstrapSnapshotPin(t *testing.T) {
 			f.sha = sha
 			m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha", sleep: func(context.Context, time.Duration) error { return nil }})
 			testRestartRecorder(t, m)
+			// The controller pin belongs to retained startup intent, not a fresh
+			// compatible installation's first start under main's Connect policy.
+			m.setPendingStart(host.Name, "systemctl start evener-hub.service", "newsha", "expectedsha", nil)
 			_, err := m.Ensure(t.Context(), host.Name)
 			if sha != "expectedsha" {
 				if !errors.Is(err, ErrRestart) || m.pendingRestart(host.Name).selected == nil || len(fr.recordedStarts()) != 0 {

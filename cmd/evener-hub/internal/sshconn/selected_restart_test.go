@@ -35,7 +35,7 @@ func TestRemoteRestartSelectedInstance(t *testing.T) {
 	commands = append(commands, next...)
 	fr, index := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "release-selected"})
-	if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); err != nil {
+	if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if *index != len(commands) || m.pendingRestart(host.Name).command != "" || len(fr.recordedStarts()) != 0 {
@@ -77,7 +77,7 @@ func TestRemoteRestartUnresponsiveService(t *testing.T) {
 	commands = append(commands, selectedSuccessorCommands(t)...)
 	fr, index := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "release-selected"})
-	if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); err != nil {
+	if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if *index != len(commands) || m.pendingRestart(host.Name).command != "" || len(fr.recordedStarts()) != 0 {
@@ -104,13 +104,13 @@ func TestRemoteRestartRecoversStoppedReplacement(t *testing.T) {
 			run := fr.runFn
 			fr.runFn = func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
 				out, err := run(ctx, argv, in)
-				if *index == failAt {
+				if *index == failAt && !strings.Contains(strings.Join(argv[12:], " "), " launch-check ") {
 					return out, errReplacementFixture
 				}
 				return out, err
 			}
 			m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "release-selected"})
-			if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); !errors.Is(err, errReplacementFixture) {
+			if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); !errors.Is(err, errReplacementFixture) {
 				t.Fatalf("first err=%v", err)
 			}
 			pending := m.pendingRestart(host.Name)
@@ -121,7 +121,7 @@ func TestRemoteRestartRecoversStoppedReplacement(t *testing.T) {
 			pending.selected.argv[0] = "/wrong/evener"
 			var err error
 			if direct {
-				err = m.RestartForOperation(t.Context(), host, selectedRestartFacts())
+				_, err = m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil)
 			} else {
 				err = m.recoverSelectedRestart(t.Context(), host, selectedRestartFacts(), m.pendingRestart(host.Name))
 			}

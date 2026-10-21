@@ -706,6 +706,30 @@ func TestRetirementAttentionArmRetryPending(t *testing.T) {
 	assertRetirementEvidenceEligible(t, c)
 }
 
+// Root attention paused by a permanent provider failure with no fresh wake
+// waits on the user, so it must not pin the session from retirement. A fresh
+// delegate wake puts it back on the autonomous list.
+func TestRetirementPausedRootAttentionIsNotABlocker(t *testing.T) {
+	t.Parallel()
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir(), MaxSubagentDepth: 1}))
+	defer root.Close()
+	c := retirementEvidenceController(t, root)
+	retirementIdleDelegate(t, root)
+	assertRetirementEvidenceEligible(t, c)
+
+	root.attentionMu.Lock()
+	root.rootAttentionWakeIDs["paused-root-attention"] = struct{}{}
+	root.rootAttentionPaused = true
+	root.rootAttentionWake = false
+	root.attentionMu.Unlock()
+	assertRetirementEvidenceEligible(t, c)
+
+	root.attentionMu.Lock()
+	root.rootAttentionWake = true
+	root.attentionMu.Unlock()
+	assertRetirementEvidenceBlocked(t, c, "notification")
+}
+
 // Sandbox teardown is terminal owner work: while Close reaps the session's
 // execution environment, a retirement claim would tear the same runtime down
 // under it. The closing session must block claims, and the settled (closed)

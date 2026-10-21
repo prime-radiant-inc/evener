@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/execsupport/shellquote"
 )
@@ -26,6 +27,9 @@ type selectedProcessFixture struct {
 	advisory                      bool
 	endpointAlias                 string
 	launchAddr                    string
+	observe                       func(*selectedProcessFixture)
+	reportedStart                 *time.Time
+	initialUnavailable            bool
 }
 
 func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after string) *selectedProcessFixture {
@@ -34,12 +38,15 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 	base := fr.runFn
 	fr.runFn = func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
 		remote := strings.Join(argv[12:], " ")
+		if f.observe != nil && (remote == f.exe+" hub endpoint --json" || (f.endpointAlias != "" && remote == f.endpointAlias)) {
+			f.observe(f)
+		}
 		pid := "4242"
 		ticks := "12500"
 		boot := "boot-one"
 		version := f.before
 		if f.mutated {
-			if remote == f.exe+" hub endpoint --json" {
+			if remote == f.exe+" hub endpoint --json" || (f.endpointAlias != "" && remote == f.endpointAlias) {
 				f.successorPolls++
 			}
 		}
@@ -62,17 +69,20 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 		report.HubStateRoot, report.Running.HubStateRoot = root, root
 		report.Running.PID, _ = strconv.Atoi(pid)
 		report.Running.Version, report.Running.BackendGitSHA = version, f.sha
+		if f.reportedStart != nil {
+			report.Running.StartedAt = *f.reportedStart
+		}
 		if f.launchAddr != "" {
 			report.Running.RequestedListenAddr, report.Running.ListenSource = f.launchAddr, "flag"
 		}
 		if f.stopped {
 			report.State, report.Running = "stopped", nil
 		}
-		if f.unavailable && f.mutated {
+		if f.initialUnavailable || (f.unavailable && f.mutated) {
 			report.State, report.Reason, report.Running = "unavailable", "unreachable", nil
 		}
 		switch remote {
-		case endpoint, contextEndpoint:
+		case endpoint, contextEndpoint, ownerContext("/home/dev", []string{"HOME=/home/dev"}) + "/proc/" + pid + "/exe hub endpoint --json":
 			f.endpointPolls++
 			return json.Marshal(report)
 		case selectedLockRemote(root):
@@ -113,12 +123,14 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 				return []byte("systemctl: not found\n"), errReplacementFixture
 			}
 			return nil, nil
-		case "systemctl show --property=Id,MainPID,User,ExecStart,WorkingDirectory -- evener-hub.service":
+		case "systemctl show --property=Id,MainPID,User,ExecStart,WorkingDirectory -- evener-hub.service", "systemctl --user show --property=Id,MainPID,User,ExecStart,WorkingDirectory -- evener-hub.service":
 			if f.stopped || f.dormant {
 				pid = "0"
 			}
 			return []byte("Id=evener-hub.service\nMainPID=" + pid + "\nUser=dev\nExecStart={ path=" + f.exe + " ; argv[]=" + f.exe + " hub ; ignore_errors=no ; }\nWorkingDirectory=/home/dev\n"), nil
 		case serviceDefinitionRemote(supervisor{kind: supervisorSystemd, label: "evener-hub.service"}):
+			return []byte("1234 567\n"), nil
+		case serviceDefinitionRemote(supervisor{kind: supervisorSystemdUser, label: "evener-hub.service"}):
 			return []byte("1234 567\n"), nil
 		case "/proc/" + pid + "/exe launch-check --json":
 			return []byte(goodLaunchCheck), nil
@@ -128,8 +140,14 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 			return []byte("/home/dev\n"), nil
 		case "systemctl show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- evener-hub.service":
 			return []byte("EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"), nil
+		case "systemctl --user show --property=EnvironmentFiles,PassEnvironment,UnsetEnvironment -- evener-hub.service":
+			return []byte("EnvironmentFiles=\nPassEnvironment=\nUnsetEnvironment=\n"), nil
 		case "values=$(systemctl show --property=Environment --value -- evener-hub.service) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:
 			return nil, nil
+		case "values=$(systemctl --user show --property=Environment --value -- evener-hub.service) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:
+			return nil, nil
+		case "values=$(systemctl --user show-environment) || exit; printf '%s\\n' \"$values\" | " + narrowEnvironmentFilter:
+			return []byte("HOME=/home/dev\x00"), nil
 		case "launchctl list":
 			if f.adhoc {
 				if f.unsafeLabel {
@@ -139,11 +157,18 @@ func modelSelectedProcess(t *testing.T, fr *fakeRunner, exe, before, after strin
 			}
 			return []byte(pid + "\t0\tcom.example.evener-hub\n"), nil
 		case launchdDefinitionRemote("1000", "com.example.evener-hub"):
+			if f.stopped {
+				pid = "0"
+			}
 			return []byte("pid = " + pid + "\nprogram = " + f.exe + "\nworking directory = /home/dev\narguments = {\n" + f.exe + "\nhub\n}\nHOME => /home/dev\n"), nil
 		case "ps -p " + pid + " -o lstart=":
 			return []byte("Fri Oct 16 10:00:" + ticks + " 2026\n"), nil
 		case "lsof -a -p " + pid + " -d cwd -Fn":
 			return []byte("p" + pid + "\nfcwd\nn/home/dev\n"), nil
+		case "stat -f '%d %i' " + shellquote.RemoteWord(f.exe):
+			return []byte("1234 567\n"), nil
+		case "lsof -a -p " + pid + " -d txt -F Di":
+			return []byte("p" + pid + "\nD0x4d2\ni567\n"), nil
 		case darwinEnvironmentRemote(pid):
 			return []byte("HOME=/home/dev\x00"), nil
 		}

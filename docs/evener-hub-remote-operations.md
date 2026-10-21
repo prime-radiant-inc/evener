@@ -83,7 +83,9 @@ Adjust the executable path to the installed build. `--addr` overrides the config
 
 A managed host needs SSH connectivity, the required tools, and repository/configuration paths on that host. Use host-scoped settings for provider connections and launch defaults. Check the selected host before saving a credential or trusting a repository launch file.
 
-**Attaching can install software.** By default, an Evener hub offers its own executable to a same-platform host and may replace the host's Evener build. It then verifies the running build before attachment. Do not treat “connect host” as a read-only operation.
+**Connect preserves a compatible running hub.** The controller verifies its live AppWire handshake and uses that same channel without replacing the binary or restarting the process. A different build label or unavailable cross-platform artifact does not prevent connection. Host details report the remote process's build, or unknown when the handshake omits build metadata.
+
+Connect still provisions a missing installation or upgrades a proven incompatible one. An explicit Connect can start a stopped compatible installation after proving no hub is listening; background reconnect cannot. Authentication, transport and malformed-handshake failures remain connection errors and do not authorize deployment. Explicit Deploy keeps its plan, confirmation and requested-build verification.
 
 Add a host through the hub's host settings, or merge a `[[hosts]]` entry into the controller's `hub.toml`. This complete TOML example names one SSH target and an advisory project root:
 
@@ -103,9 +105,17 @@ Replace these example values with paths and an account on the remote machine. Op
 | `--build-source /absolute/path/to/checkout` | Cross-compile from an Evener source tree on the controller |
 | `--no-deploy` | Disable push and installer deployment paths |
 
-`--no-deploy` wins over the other options; `--deploy-binary` wins over `--build-source`. A cross-platform host cannot run the controller's own executable, so the hub may use a published release/snapshot installer instead. Development, dirty, or unstamped builds cannot always be pinned to a published artifact. A protocol-compatible existing host can remain usable with deployment disabled; a host that needs provisioning cannot.
+`--no-deploy` wins over the other options; `--deploy-binary` wins over `--build-source`. When installation is required, a cross-platform host cannot run the controller's own executable, so the hub may use a published release/snapshot installer instead. Development, dirty, or unstamped builds cannot always be pinned to a published artifact. These source constraints do not apply to using an already-compatible installation. A host that needs provisioning still needs a suitable artifact and deployment permission.
 
-The [hub deployment reference](evener-hub.md#deploying-to-remote-hosts) retains the exact artifact, dirty-build, atomic replacement, identity, and retry rules. Review it before using an automatic deployment path. Do not repeatedly attach after an interrupted deployment until you have checked the remote health/build: the replacement may have completed even if your client lost the response.
+The [hub deployment reference](evener-hub.md#deploying-to-remote-hosts) retains the exact artifact, dirty-build, atomic replacement, identity, and retry rules. After an interrupted deployment, the connection manager reconciles the pending replacement against its captured requested build and predecessor process. A compatible handshake alone cannot settle that operation, and later disk changes cannot redefine its target. Inspect the operation's status when recovery remains unresolved; response loss does not prove the remote write failed.
+
+Automatic recovery retains the host-entry check that authorized the unfinished
+work. If that entry changes, it refuses further writes or restarts while keeping
+the pending work. Restore the entry and retry, or issue a fresh Restart to accept
+the changed entry after validation. Fresh Restart keeps the originally requested
+build and installation target; it does not silently retarget the work. Replaying
+the same operation ID or reconnecting cannot authorize the changed entry. A new
+confirmed Deploy can replace the unfinished request at its first authorized write.
 
 ## Restart and upgrade safely
 

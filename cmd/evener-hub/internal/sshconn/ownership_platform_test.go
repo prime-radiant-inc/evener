@@ -19,7 +19,7 @@ func TestRemoteRestartDarwinStoppedAdHocRejectsNewService(t *testing.T) {
 	m.setSelectedRestart(host, prior, selectedRelaunch(prior), "release-selected", "")
 	facts := selectedRestartFacts()
 	facts.OS, facts.UID = "darwin", "1000"
-	if err := m.RestartForOperation(t.Context(), host, facts); !errors.Is(err, errOwnerEvidence) {
+	if _, err := m.RestartForOperation(t.Context(), host, facts, nil); !errors.Is(err, errOwnerEvidence) {
 		t.Fatalf("changed stopped authority=%v", err)
 	}
 	if *index != len(commands) || m.pendingRestart(host.Name).selected == nil || len(fr.recordedStarts()) != 0 {
@@ -70,7 +70,7 @@ func TestRemoteRestartDarwinRetainedWitness(t *testing.T) {
 	if _, err := m.resolveOwnedEndpoint(t.Context(), host, facts); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.RestartForOperation(t.Context(), host, facts); err != nil {
+	if _, err := m.RestartForOperation(t.Context(), host, facts, nil); err != nil {
 		t.Fatal(err)
 	}
 	if *index != len(commands) || m.pendingRestart(host.Name).selected != nil || len(fr.recordedStarts()) != 0 {
@@ -134,7 +134,7 @@ func TestRemoteOwnerRejectsUnresolvedServiceAsAdhoc(t *testing.T) {
 	commands = append(commands[:10], ownerCommand{systemctlListUnits, ""}, ownerCommand{systemctlListUnitsUser, ""}, ownerCommand{"cat /proc/4242/cgroup", "0::/system.slice/evener-hub-selected.service\n"})
 	fr, _ := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
-	if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); !errors.Is(err, errOwnerEvidence) {
+	if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); !errors.Is(err, errOwnerEvidence) {
 		t.Fatal(err)
 	}
 	for _, run := range fr.recordedRuns() {
@@ -153,7 +153,7 @@ func TestRemoteOwnerDarwinRejectsMismatchedSelectedDefinition(t *testing.T) {
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
 	facts := selectedRestartFacts()
 	facts.OS, facts.UID = "darwin", "1000"
-	if err := m.RestartForOperation(t.Context(), host, facts); !errors.Is(err, errOwnerEvidence) {
+	if _, err := m.RestartForOperation(t.Context(), host, facts, nil); !errors.Is(err, errOwnerEvidence) {
 		t.Fatalf("mismatched definition=%v", err)
 	}
 	if *index != len(commands) || m.pendingRestart(host.Name).selected != nil {

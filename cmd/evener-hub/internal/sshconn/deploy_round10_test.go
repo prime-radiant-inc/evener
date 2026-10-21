@@ -47,7 +47,7 @@ func TestRound10PushVerifiesByteCount(t *testing.T) {
 		},
 	})
 
-	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}, nil); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
 	wantCheck := `[ "$v" = ` + strconv.Itoa(len(staged)) + " ]"

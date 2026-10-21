@@ -65,7 +65,7 @@ func TestEnsureSelectedDeployPreservesRunTarget(t *testing.T) {
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case "id -u":
 			return []byte("1000\n"), nil
-		case link + " launch-check --json", target + " launch-check --json":
+		case link + " launch-check --json", link + " launch-check --protocol evener-appwire-v7 --json", target + " launch-check --json", target + " launch-check --protocol evener-appwire-v7 --json":
 			version := "oldsha"
 			if launchCalls > 0 {
 				version = "newsha"
@@ -92,6 +92,7 @@ func TestEnsureSelectedDeployPreservesRunTarget(t *testing.T) {
 		}
 		return base(ctx, argv, in)
 	}
+	requireProtocolUpgrade(t, fr)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha", BuildBinary: func(_ context.Context, _, _, out string) error {
 		return os.WriteFile(out, []byte("new binary"), 0o755)
 	}})
@@ -105,7 +106,7 @@ func TestEnsureSelectedDeployPreservesRunTarget(t *testing.T) {
 		t.Fatalf("channel=%v pushes=%d pending=%+v", ch, pushes, m.pendingRestart(host.Name))
 	}
 	starts := fr.recordedStarts()
-	if len(starts) != 1 || strings.Join(starts[0][12:], " ") != link+" hub attach --stdio" {
+	if len(starts) != 2 || strings.Join(starts[1][12:], " ") != link+" hub attach --stdio" {
 		t.Fatalf("attach commands=%v", starts)
 	}
 }
@@ -123,6 +124,8 @@ func TestEnsureSelectedRestartReattaches(t *testing.T) {
 	fr, index := ownerRunner(t, commands)
 	fr.startFn = goodStartFn(t)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "release-selected"})
+	// A compatible hub is restarted only under an existing recorded intent.
+	m.setPendingRestart(host.Name, "systemctl restart evener-hub-selected.service", "release-selected", "", hubIdentity{}, nil)
 	var recorded, finished int
 	m.SetEnsureRestartHook(func(got hostreg.Host) (func(error), error) {
 		if got.ConfigPath != host.ConfigPath {
@@ -172,7 +175,7 @@ func TestEnsureSelectedStoppedReplacement(t *testing.T) {
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "release-selected"})
 	testRestartRecorder(t, m)
 	host, _ = m.reg.Get(host.Name)
-	if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); !errors.Is(err, errReplacementFixture) {
+	if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); !errors.Is(err, errReplacementFixture) {
 		t.Fatalf("first replacement=%v", err)
 	}
 	if _, err := m.Ensure(t.Context(), host.Name); err != nil {
@@ -197,6 +200,10 @@ func TestDeploySelectedOldImageBeforeFirstWrite(t *testing.T) {
 				commands = append(prefix, commands...)
 			}
 			fr, index := ownerRunner(t, commands)
+			if automatic {
+				fr.startFn = goodStartFn(t)
+				requireProtocolUpgrade(t, fr)
+			}
 			m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha", BuildBinary: func(context.Context, string, string, string) error {
 				t.Fatal("build before predecessor authorization")
 				return nil
@@ -206,9 +213,13 @@ func TestDeploySelectedOldImageBeforeFirstWrite(t *testing.T) {
 			if automatic {
 				_, err = m.Ensure(t.Context(), host.Name)
 			} else {
-				_, _, err = m.DeployForOperation(t.Context(), host, selectedRestartFacts())
+				_, _, err = m.DeployForOperation(t.Context(), host, selectedRestartFacts(), true, nil)
 			}
-			if !errors.Is(err, ErrEndpointMigration) || *index != len(commands) || len(fr.recordedStarts()) != 0 {
+			wantBridges := 0
+			if automatic {
+				wantBridges = 1
+			}
+			if !errors.Is(err, ErrEndpointMigration) || *index != len(commands) || len(fr.recordedStarts()) != wantBridges {
 				t.Fatalf("err=%v commands=%d/%d", err, *index, len(commands))
 			}
 		})

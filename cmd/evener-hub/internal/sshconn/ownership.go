@@ -55,10 +55,14 @@ func (o selectedOwner) clone() selectedOwner {
 // explicit config selectors are resolved in the owner's cwd and narrow environment.
 // No mutation, listener-port query, authentication or daemon launch occurs here.
 func (m *Manager) resolveOwnedEndpoint(ctx context.Context, host hostreg.Host, facts Preflight) (selectedOwner, error) {
+	return m.resolveOwnedEndpointUsing(ctx, host, facts, m.resolveHostEndpoint)
+}
+
+func (m *Manager) resolveOwnedEndpointUsing(ctx context.Context, host hostreg.Host, facts Preflight, read func(context.Context, hostreg.Host, Preflight) (hubendpoint.Report, error)) (selectedOwner, error) {
 	// Capture the same effective executable that revalidation and replay compare,
 	// including for Darwin and cold stopped services.
 	m.applyResolvedTarget(&host)
-	report, err := m.resolveHostEndpoint(ctx, host, facts)
+	report, err := read(ctx, host, facts)
 	if err != nil {
 		return selectedOwner{}, err
 	}
@@ -169,11 +173,15 @@ func (m *Manager) resolveLinuxOwner(ctx context.Context, host hostreg.Host, repo
 // Listener TOML edits are not frozen, but a root, registration, owner, launch or
 // generation change invalidates this live snapshot.
 func (m *Manager) revalidateOwnedEndpoint(ctx context.Context, host hostreg.Host, facts Preflight, prior selectedOwner) (selectedOwner, error) {
+	return m.revalidateOwnedEndpointUsing(ctx, host, facts, prior, m.resolveHostEndpoint)
+}
+
+func (m *Manager) revalidateOwnedEndpointUsing(ctx context.Context, host hostreg.Host, facts Preflight, prior selectedOwner, read func(context.Context, hostreg.Host, Preflight) (hubendpoint.Report, error)) (selectedOwner, error) {
 	m.applyResolvedTarget(&host)
 	if !host.Equal(prior.host) || host.Generation != prior.host.Generation || host.IncarnationID != prior.host.IncarnationID || host.PresenceEpoch != prior.host.PresenceEpoch {
 		return selectedOwner{}, fmt.Errorf("%w: host registration changed", errOwnerEvidence)
 	}
-	now, err := m.resolveOwnedEndpoint(ctx, host, facts)
+	now, err := m.resolveOwnedEndpointUsing(ctx, host, facts, read)
 	if err != nil {
 		return selectedOwner{}, err
 	}
@@ -310,7 +318,11 @@ func ownerContext(cwd string, env []string) string {
 // Reuse the remote resolver in the process's cwd and narrow relevant environment,
 // not the SSH login defaults. It rereads current TOML, including intentional edits.
 func (m *Manager) checkOwnerConfig(ctx context.Context, host hostreg.Host, argv []string, cwd string, env []string, selected hubendpoint.Report) error {
-	args := []string{argv[0], "hub", "endpoint", "--json"}
+	return m.checkOwnerConfigUsing(ctx, host, argv, cwd, env, selected, argv[0])
+}
+
+func (m *Manager) checkOwnerConfigUsing(ctx context.Context, host hostreg.Host, argv []string, cwd string, env []string, selected hubendpoint.Report, executable string, checks ...func(hubendpoint.Report) error) error {
+	args := []string{executable, "hub", "endpoint", "--json"}
 	if config, supplied := ownerConfigFlag(argv); supplied {
 		if path.IsAbs(config) && config != selected.ConfigPath {
 			// Retain the argv sanity check even if the process resolver reports
@@ -344,6 +356,11 @@ func (m *Manager) checkOwnerConfig(ctx context.Context, host hostreg.Host, argv 
 	}
 	if report.ConfigPath != selected.ConfigPath || report.HubStateRoot != selected.HubStateRoot {
 		return fmt.Errorf("%w: process config/root disagrees with selection", errOwnerSelectionMismatch)
+	}
+	for _, check := range checks {
+		if err := check(report); err != nil {
+			return err
+		}
 	}
 	return nil
 }

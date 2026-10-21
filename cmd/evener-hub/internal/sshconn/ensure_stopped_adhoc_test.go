@@ -61,7 +61,7 @@ func TestEnsureRetainedStoppedAdhocStart(t *testing.T) {
 				})
 			}
 			if mode == "no-pending" {
-				deploy, restart := m.ensureDecision(host.Name, facts, "dev", "", false, false)
+				deploy, restart := m.ensureDecision(host.Name, facts, false, false)
 				_, err := m.ensureOnce(t.Context(), host, false)
 				if deploy || restart || !errors.Is(err, attachBoundary) || launches != 0 || attaches != 1 || recorded != 0 || m.pendingRestart(host.Name).selected != nil {
 					t.Fatalf("unrequested background start: deploy=%t restart=%t launches=%d attaches=%d recorded=%d err=%v", deploy, restart, launches, attaches, recorded, err)
@@ -72,9 +72,9 @@ func TestEnsureRetainedStoppedAdhocStart(t *testing.T) {
 			// operations.go documents. Only that outer durable admission is omitted.
 			var err error
 			if mode == "recorded-bootstrap-command" {
-				err = m.bootstrapHub(t.Context(), host, facts, "dev")
+				err = m.bootstrapHub(t.Context(), host, facts, "dev", "")
 			} else {
-				err = m.RestartForOperation(t.Context(), host, facts)
+				_, err = m.RestartForOperation(t.Context(), host, facts, nil)
 			}
 			if !errors.Is(err, errReplacementFixture) || launches != 1 {
 				t.Fatalf("explicit first start: launches=%d err=%v", launches, err)
@@ -83,7 +83,7 @@ func TestEnsureRetainedStoppedAdhocStart(t *testing.T) {
 			if pending.selected == nil || (mode == "recorded-bootstrap-command" && pending.command == "") {
 				t.Fatalf("missing retained intent: %+v", pending)
 			}
-			deploy, restart := m.ensureDecision(host.Name, facts, "dev", "", false, false)
+			deploy, restart := m.ensureDecision(host.Name, facts, false, false)
 			if deploy || !restart {
 				t.Errorf("retained selection missed: command-present=%t deploy=%t restart=%t", pending.command != "", deploy, restart)
 			}

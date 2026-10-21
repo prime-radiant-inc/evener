@@ -85,7 +85,11 @@ func TestRemoteRestartIdentityResolvedTarget(t *testing.T) {
 					first := identityOwnerCommands(t, platform, stopped)
 					commands := first
 					commands = append(commands, identityOwnerCommands(t, platform, stopped)...)
-					commands = append(commands, identityRestartCommand(platform))
+					mutation := identityRestartCommand(platform)
+					if stopped && platform == "linux" {
+						mutation.command = "systemctl start evener-hub-selected.service"
+					}
+					commands = append(commands, mutation)
 					mutationAt := len(commands)
 					next := identitySuccessorCommands(t, platform, false, false)
 					if replay == "lost-response" {
@@ -97,10 +101,13 @@ func TestRemoteRestartIdentityResolvedTarget(t *testing.T) {
 						} else {
 							commands = append(commands, first[0], first[8], first[1], first[10], first[2], first[9], first[0])
 						}
-						commands = append(commands, identityRestartCommand(platform))
+						commands = append(commands, mutation)
 					}
 					if replay == "ready" || replay == "lost-response" || replay == "stopped-retry" {
 						commands = append(commands, next...)
+						if stopped {
+							commands = append(commands, next...)
+						}
 					}
 					fr, index := ownerRunner(t, commands)
 					ctx, cancel := context.WithCancel(t.Context())
@@ -108,7 +115,7 @@ func TestRemoteRestartIdentityResolvedTarget(t *testing.T) {
 					run := fr.runFn
 					fr.runFn = func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
 						out, err := run(ctx, argv, in)
-						if replay != "ready" && *index == mutationAt {
+						if replay != "ready" && *index == mutationAt && !strings.Contains(strings.Join(argv, " "), "launch-check") {
 							cancel() // The launch may complete after its SSH response is lost.
 							return out, context.Canceled
 						}
@@ -116,7 +123,7 @@ func TestRemoteRestartIdentityResolvedTarget(t *testing.T) {
 					}
 					m := newTestManager(t, testRegistry(t, host), fr, Options{})
 					m.setResolvedTarget(host.Name, "/opt/evener")
-					err := m.RestartForOperation(ctx, host, facts)
+					_, err := m.RestartForOperation(ctx, host, facts, nil)
 					if replay != "ready" {
 						if !errors.Is(err, context.Canceled) || m.pendingRestart(host.Name).selected == nil {
 							t.Fatalf("lost response: err=%v pending=%+v", err, m.pendingRestart(host.Name))
@@ -127,7 +134,7 @@ func TestRemoteRestartIdentityResolvedTarget(t *testing.T) {
 						case "changed-registration":
 							host.Generation++
 						}
-						err = m.RestartForOperation(t.Context(), host, facts)
+						_, err = m.RestartForOperation(t.Context(), host, facts, nil)
 					}
 					invalidated := strings.HasPrefix(replay, "changed-")
 					if invalidated && !errors.Is(err, errOwnerEvidence) || !invalidated && err != nil {
@@ -185,7 +192,7 @@ func TestRemoteRestartIdentitySameBirth(t *testing.T) {
 						return out, err
 					}
 					m := newTestManager(t, testRegistry(t, host), fr, Options{sleep: func(context.Context, time.Duration) error { return errReplacementFixture }})
-					err := m.RestartForOperation(ctx, host, facts)
+					_, err := m.RestartForOperation(ctx, host, facts, nil)
 					if recovery {
 						if !errors.Is(err, context.Canceled) || m.pendingRestart(host.Name).selected == nil {
 							t.Fatalf("lost response: err=%v pending=%+v", err, m.pendingRestart(host.Name))

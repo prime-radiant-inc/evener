@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
@@ -47,10 +48,14 @@ func ownerCommands(t *testing.T) (hostreg.Host, []ownerCommand) {
 func ownerRunner(t *testing.T, commands []ownerCommand) (*fakeRunner, *int) {
 	index := 0
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		got := strings.Join(argv[12:], " ")
+		got = strings.Replace(got, " launch-check --protocol "+appwire.ProtocolVersion+" --json", " launch-check --json", 1)
+		if got == "/opt/evener launch-check --json" && (index >= len(commands) || commands[index].command != got) {
+			return launchContract("release-selected"), nil
+		}
 		if index >= len(commands) {
 			t.Fatalf("unexpected extra command %v", argv)
 		}
-		got := strings.Join(argv[12:], " ")
 		want := commands[index]
 		switch want.command {
 		case "selected-lock", "other-lock":

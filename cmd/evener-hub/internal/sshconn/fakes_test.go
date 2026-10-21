@@ -2,6 +2,7 @@ package sshconn
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,7 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -19,11 +22,12 @@ import (
 // fakeRunner records every call and delegates to injected functions. Production
 // execRunner is deliberately excluded from the default unit tests.
 type fakeRunner struct {
-	mu      sync.Mutex
-	runs    [][]string
-	starts  [][]string
-	runFn   func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error)
-	startFn func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error)
+	mu               sync.Mutex
+	runs             [][]string
+	starts           [][]string
+	protocolRefusals int
+	runFn            func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error)
+	startFn          func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error)
 }
 
 func (f *fakeRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
@@ -56,6 +60,34 @@ func (f *fakeRunner) recordedStarts() [][]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([][]string(nil), f.starts...)
+}
+
+// requireProtocolUpgrade makes the remote process reject initialize until a
+// successful binary push or installer invocation. Deployment fixtures use this
+// positive live evidence rather than a difference in build labels.
+func requireProtocolUpgrade(t *testing.T, f *fakeRunner) {
+	t.Helper()
+	var installed atomic.Bool
+	run, start := f.runFn, f.startFn
+	f.runFn = func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		out, err := run(ctx, argv, stdin)
+		joined := strings.Join(argv, " ")
+		if err == nil && (strings.Contains(joined, `mv "$tmp"`) || strings.Contains(joined, "evener-install.XXXXXX")) {
+			installed.Store(true)
+		}
+		return out, err
+	}
+	f.startFn = func(ctx context.Context, argv []string, stderr io.Writer) (Stdio, error) {
+		if installed.Load() {
+			return start(ctx, argv, stderr)
+		}
+		f.mu.Lock()
+		f.protocolRefusals++
+		f.mu.Unlock()
+		b := newFakeBridge("evener-appwire-v5")
+		t.Cleanup(func() { _ = b.stdio.Kill() })
+		return b.stdio, nil
+	}
 }
 
 // fakeStdio is an in-memory Stdio. Stdout is fed by a fakeBridge server; Stdin
@@ -116,6 +148,14 @@ func newFakeBridge(initProtocol string) *fakeBridge {
 	}
 	go b.serve(inR, outW)
 	return b
+}
+
+func protocolMismatchBridge(mismatch bool) Stdio {
+	protocol := appwire.ProtocolVersion
+	if mismatch {
+		protocol = "evener-appwire-v4"
+	}
+	return newFakeBridge(protocol).stdio
 }
 
 // newSilentBridge models a hub whose AppWire handshake never answers: it drains
@@ -261,6 +301,11 @@ func deployRunner(t *testing.T, launch func(call int) ([]byte, error), health fu
 // and running it against facts the controller could never read would test
 // nothing.
 func deployRunnerFor(t *testing.T, goos, goarch string, launch func(call int) ([]byte, error), health func(call int) ([]byte, error)) *fakeRunner {
+	fr, _ := deployRunnerForFixture(t, goos, goarch, launch, health)
+	return fr
+}
+
+func deployRunnerForFixture(t *testing.T, goos, goarch string, launch func(call int) ([]byte, error), health func(call int) ([]byte, error)) (*fakeRunner, *selectedProcessFixture) {
 	t.Helper()
 	osName, ok := map[string]string{"linux": "Linux", "darwin": "Darwin"}[goos]
 	if !ok {
@@ -271,7 +316,7 @@ func deployRunnerFor(t *testing.T, goos, goarch string, launch func(call int) ([
 		t.Skipf("deployRunnerFor: preflight's mapArch cannot round-trip GOARCH %q, so no host facts for it exist and this test cannot run on this platform", goarch)
 	}
 	launchCalls, healthCalls := 0, 0
-	return &fakeRunner{
+	fr := &fakeRunner{
 		runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 			joined := strings.Join(argv, " ")
 			switch {
@@ -289,11 +334,13 @@ func deployRunnerFor(t *testing.T, goos, goarch string, launch func(call int) ([
 				return out, err
 			case strings.Contains(joined, "test -d /opt/evener/bin"):
 				return nil, nil
+			case strings.Contains(joined, "if test -x /opt/evener/bin/evener"):
+				return nil, nil // This fixture's installed executable is runnable.
 			case strings.Contains(joined, "evener_resolve"):
 				return []byte("/opt/evener/bin/evener\n"), nil
 			case strings.Contains(joined, "list-units"):
 				return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
-			case strings.Contains(joined, "systemctl restart"):
+			case strings.Contains(joined, "systemctl restart"), strings.Contains(joined, "systemctl start"):
 				return nil, nil
 			case strings.Contains(joined, "api/health"):
 				out, err := health(healthCalls)
@@ -310,4 +357,96 @@ func deployRunnerFor(t *testing.T, goos, goarch string, launch func(call int) ([
 		},
 		startFn: goodStartFn(t),
 	}
+	fixture := modelSelectedProcess(t, fr, "/opt/evener/bin/evener", "", "")
+	fixture.darwin = goos == "darwin"
+	initialStart := ""
+	fixture.observe = func(f *selectedProcessFixture) {
+		if health == nil {
+			f.stopped = true
+			return
+		}
+		out, err := health(healthCalls)
+		if f.mutated {
+			healthCalls++
+		}
+		if err != nil {
+			f.stopped = true
+			return
+		}
+		var state struct {
+			Version string `json:"version"`
+			SHA     string `json:"backend_git_sha"`
+			Started string `json:"started_at"`
+		}
+		if err := json.Unmarshal(out, &state); err != nil {
+			t.Fatalf("fixture health state: %v", err)
+		}
+		f.stopped = false
+		f.before, f.after, f.sha = state.Version, state.Version, state.SHA
+		if state.Started != "" {
+			if initialStart == "" {
+				initialStart = state.Started
+			}
+			f.mutated = state.Started != initialStart && state.Started != "0001-01-01T00:00:00Z"
+			started, err := time.Parse(time.RFC3339Nano, state.Started)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.reportedStart = &started
+		}
+	}
+	return fr, fixture
+}
+
+// registeredTestHost supplies the registry generation to fixtures written before
+// lifecycle recovery retained the full registration. Nonzero generations remain
+// untouched so stale-registration negative controls still exercise rejection.
+func registeredTestHost(t *testing.T, m *Manager, host hostreg.Host) hostreg.Host {
+	t.Helper()
+	if host.Generation != 0 {
+		return host
+	}
+	current, ok := m.reg.Get(host.Name)
+	if !ok || !current.Equal(host) {
+		t.Fatalf("fixture registration does not match %q", host.Name)
+	}
+	return current
+}
+
+// modelLegacySelectedProcess adds the selected lock/process/service evidence
+// omitted by fixtures written for the old health-only manager. The existing
+// fake still supplies the served build and all mutation effects.
+func modelLegacySelectedProcess(t *testing.T, fr *fakeRunner, host hostreg.Host) *selectedProcessFixture {
+	t.Helper()
+	base := fr.runFn
+	exe := host.EvenerPath
+	if exe == "" {
+		exe = "/opt/evener/bin/evener"
+	}
+	f := modelSelectedProcess(t, fr, exe, "", "")
+	if host.EvenerPath == "" {
+		f.endpointAlias = "evener hub endpoint --json"
+	}
+	f.observe = func(f *selectedProcessFixture) {
+		out, err := base(t.Context(), rawCommandArgv(Options{}, host, hubHealthRemote("127.0.0.1:9180")), nil)
+		if err != nil {
+			f.stopped = true
+			return
+		}
+		var health struct {
+			Version string    `json:"version"`
+			SHA     string    `json:"backend_git_sha"`
+			Started time.Time `json:"started_at"`
+		}
+		if json.Unmarshal(out, &health) != nil || health.Version == "" {
+			f.stopped = true
+			return
+		}
+		f.stopped = false
+		f.before, f.after, f.sha = health.Version, health.Version, health.SHA
+		if !health.Started.IsZero() {
+			f.reportedStart = &health.Started
+		}
+	}
+	return f
 }

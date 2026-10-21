@@ -214,12 +214,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	tPhaseStart = s.sclock().Now()
 
 	// Repair orphaned tool results through the shared locked helper (capture,
-	// repair, and publish are one critical section), then copy history once
-	// for both context management and message expansion.
+	// repair, and publish are one critical section). The paired history
+	// snapshots this request consumes live in the fold attempts and in the
+	// HistoryExpand phase below.
 	s.repairOrphanedToolResults(ctx, "before model request")
-	s.mu.Lock()
-	historyTurns := append([]schema.Turn{}, s.history...)
-	s.mu.Unlock()
+	var historyTurns []schema.Turn
 
 	// inFlightFrom is the N4 in-flight-turn boundary paired with the exact
 	// historyTurns this request expands. A winning fold sets both atomically
@@ -1416,6 +1415,17 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
 	attempt.Protocol = group.Protocol()
 	group.SettleResult(callCtx, nil)
+	for _, warning := range modelResp.Response.Warnings {
+		if warning.Code == llm.WarningCodeImageColorUnmanaged {
+			s.emit(events.EventWarning, events.WarningData{
+				Code:    warning.Code,
+				Source:  string(diagnostic.SourceProvider),
+				Message: warning.Message,
+				Title:   "Image recovered with reduced color fidelity",
+				Hint:    "The turn continued automatically. Exact colors may be inaccurate; the original attachment is unchanged.",
+			})
+		}
+	}
 	return withPreviews(modelResp), req, attempt, usedProfile, nil
 }
 

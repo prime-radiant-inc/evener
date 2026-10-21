@@ -40,6 +40,20 @@ func (m *Manager) resolveHostEndpoint(ctx context.Context, host hostreg.Host, fa
 	if err := endpointCapability(host, facts); err != nil {
 		return hubendpoint.Report{}, err
 	}
+	return m.readHostEndpoint(ctx, host, facts)
+}
+
+// readHostEndpoint reads actual remote evidence without inferring capability
+// from a launch-check. A proven incompatible live handshake or an already
+// recorded deployment repair may use this reader before the replacement's
+// contract is verified. Neither authority permits a later unchecked restart.
+func (m *Manager) readHostEndpoint(ctx context.Context, host hostreg.Host, facts Preflight) (hubendpoint.Report, error) {
+	if err := ctx.Err(); err != nil {
+		return hubendpoint.Report{}, err
+	}
+	if facts.ExecutableMissing {
+		return hubendpoint.Report{}, ErrExecutableMissing
+	}
 	args := []string{"hub", "endpoint", "--json"}
 	selector := strings.TrimSpace(host.ConfigPath)
 	if selector != "" {

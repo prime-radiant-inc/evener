@@ -18,6 +18,8 @@ func TestRemoteRestartDrainFailure(t *testing.T) {
 			killed, probes := 0, 0
 			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 				switch remote := strings.Join(argv[12:], " "); remote {
+				case "/opt/evener launch-check --protocol evener-appwire-v7 --json":
+					return launchContract("release-selected"), nil
 				case "lsof -p 4242 -a -d 1,2":
 					return nil, nil
 				case "kill -- 4242":
@@ -37,7 +39,7 @@ func TestRemoteRestartDrainFailure(t *testing.T) {
 			f := modelSelectedProcess(t, fr, host.EvenerPath, "dev", "release-selected")
 			f.adhoc = true
 			m := newTestManager(t, testRegistry(t, host), fr, Options{sleep: func(context.Context, time.Duration) error { return context.Canceled }})
-			err := m.RestartForOperation(t.Context(), host, selectedRestartFacts())
+			_, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil)
 			if err == nil || killed != 1 || probes != 1 || m.pendingRestart(host.Name).selected == nil || len(fr.recordedStarts()) != 0 {
 				t.Fatalf("drain err=%v kills=%d probes=%d pending=%+v", err, killed, probes, m.pendingRestart(host.Name))
 			}
@@ -134,7 +136,7 @@ func TestRemoteRestartPreservesBinding(t *testing.T) {
 			}
 			sleeps := 0
 			m := newTestManager(t, testRegistry(t, host), fr, Options{sleep: func(context.Context, time.Duration) error { sleeps++; return nil }})
-			if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); err != nil {
+			if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); err != nil {
 				t.Fatal(err)
 			}
 			if sleeps != 1 || *index != len(commands) || m.pendingRestart(host.Name).selected != nil || len(fr.recordedStarts()) != 0 {
@@ -172,7 +174,7 @@ func TestRemoteRestartRejectsUnselectedSuccessor(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			m := newTestManager(t, testRegistry(t, host), fr, Options{sleep: func(context.Context, time.Duration) error { cancel(); return context.Canceled }})
-			if err := m.RestartForOperation(ctx, host, selectedRestartFacts()); !errors.Is(err, context.Canceled) {
+			if _, err := m.RestartForOperation(ctx, host, selectedRestartFacts(), nil); !errors.Is(err, context.Canceled) {
 				t.Fatalf("restart=%v", err)
 			}
 			if *index != len(commands) || m.pendingRestart(host.Name).selected == nil || len(fr.recordedStarts()) != 0 {
@@ -207,19 +209,19 @@ func TestRemoteRestartStoppedReplayInvalidatesChangedSelection(t *testing.T) {
 			run := fr.runFn
 			fr.runFn = func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
 				out, err := run(ctx, argv, in)
-				if *index == failAt {
+				if *index == failAt && !strings.Contains(strings.Join(argv[12:], " "), " launch-check ") {
 					return out, errReplacementFixture
 				}
 				return out, err
 			}
 			m := newTestManager(t, testRegistry(t, host), fr, Options{})
-			if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); !errors.Is(err, errReplacementFixture) {
+			if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); !errors.Is(err, errReplacementFixture) {
 				t.Fatal(err)
 			}
 			if change == "registration" {
 				host.Generation++
 			}
-			if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); !errors.Is(err, errOwnerEvidence) {
+			if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); !errors.Is(err, errOwnerEvidence) {
 				t.Fatalf("changed selection=%v", err)
 			}
 			if *index != len(commands) || m.pendingRestart(host.Name).selected == nil || len(fr.recordedStarts()) != 0 {

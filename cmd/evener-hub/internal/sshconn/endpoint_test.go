@@ -178,9 +178,12 @@ func TestEndpointAttachmentDoesNotOverrideListener(t *testing.T) {
 
 func TestEndpointInstalledUnsupportedStopsEnsureBeforeMutation(t *testing.T) {
 	host := hostreg.Host{Name: "selected", SSH: "remote"}
-	fr := &fakeRunner{runFn: cannedRun(map[string][]byte{"launch-check": []byte(`{"protocol":"older-protocol","version":"old","launch_flags":["api-log"]}`)})}
+	fr := &fakeRunner{runFn: cannedRun(map[string][]byte{"launch-check": []byte(`{"protocol":"older-protocol","version":"old","launch_flags":["api-log"]}`)}), startFn: goodStartFn(t)}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{BuildBinary: writeStageBinary})
-	_, err := m.Ensure(t.Context(), host.Name)
+	if ch, err := m.Ensure(t.Context(), host.Name); err != nil || ch == nil {
+		t.Fatalf("read-only attach: channel=%v err=%v", ch, err)
+	}
+	_, err := m.resolveOwnedEndpoint(t.Context(), host, Preflight{LaunchCheckKnown: true})
 	if !errors.Is(err, ErrEndpointMigration) || !isTerminal(err) {
 		t.Fatalf("err=%v, terminal=%v", err, isTerminal(err))
 	}
@@ -190,8 +193,8 @@ func TestEndpointInstalledUnsupportedStopsEnsureBeforeMutation(t *testing.T) {
 			t.Fatalf("unsupported installation reached lifecycle: %v", argv)
 		}
 	}
-	if len(fr.recordedStarts()) != 0 {
-		t.Fatal("started attachment")
+	if len(fr.recordedStarts()) != 1 {
+		t.Fatal("read-only attachment was not attempted exactly once")
 	}
 }
 

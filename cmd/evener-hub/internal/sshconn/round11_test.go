@@ -77,7 +77,7 @@ func TestRound11InstallerFallbackStreamsTheEmbeddedScript(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "newsha"})
 
-	target, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+	target, err := m.deployInstaller(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}, nil)
 	if err != nil {
 		t.Fatalf("deployInstaller: %v", err)
 	}

@@ -57,7 +57,7 @@ func TestSelectedRestartRejectsHostileLockPID(t *testing.T) {
 				commands := []ownerCommand{base[0], {"selected-lock", prefix + pid + "\n"}, {systemctlListUnits, ""}, {systemctlListUnitsUser, ""}}
 				fr, index := ownerRunner(t, commands)
 				m := newTestManager(t, testRegistry(t, host), fr, Options{})
-				if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); !errors.Is(err, errOwnerEvidence) {
+				if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); !errors.Is(err, errOwnerEvidence) {
 					t.Fatalf("hostile selected lock=%v", err)
 				}
 				if *index != len(commands) || len(fr.recordedStarts()) != 0 || m.pendingRestart(host.Name).selected != nil {
@@ -83,7 +83,7 @@ func TestSelectedRestartRefusesUnsafeRecoveredArgv(t *testing.T) {
 			}
 			fr, index := ownerRunner(t, commands)
 			m := newTestManager(t, testRegistry(t, host), fr, Options{})
-			if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); !errors.Is(err, ErrRestart) {
+			if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); !errors.Is(err, ErrRestart) {
 				t.Fatalf("unsafe argv=%v", err)
 			}
 			// The ordered script ends at refusal: even a read-only lossy fallback for
@@ -102,7 +102,7 @@ func TestSelectedRestartRefusesProbedLoginUserMismatch(t *testing.T) {
 	commands = append(commands, ownerCommand{"id -un", "dev\n"}, ownerCommand{"ps -o user= -p 4242", "other\n"})
 	fr, index := ownerRunner(t, commands)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{})
-	if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); !errors.Is(err, ErrRestart) {
+	if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); !errors.Is(err, ErrRestart) {
 		t.Fatalf("probed owner mismatch=%v", err)
 	}
 	if *index != len(commands) || len(fr.recordedStarts()) != 0 || m.pendingRestart(host.Name).selected != nil {

@@ -72,7 +72,7 @@ func TestRemoteRestartGenerationCapability(t *testing.T) {
 	if _, err := m.resolveOwnedEndpoint(t.Context(), host, selectedRestartFacts()); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.RestartForOperation(t.Context(), host, selectedRestartFacts()); !errors.Is(err, ErrEndpointMigration) {
+	if _, err := m.RestartForOperation(t.Context(), host, selectedRestartFacts(), nil); !errors.Is(err, ErrEndpointMigration) {
 		t.Fatalf("reused old generation restart=%v", err)
 	}
 	if *index != len(commands) || m.pendingRestart(host.Name).selected != nil || len(fr.recordedStarts()) != 0 {
