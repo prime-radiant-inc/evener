@@ -54,6 +54,13 @@ Ensure, automatic deploy, explicit deploy and restart resolve the selected execu
 
 `[[hosts]].addr` and the internal `HubListenAddr` option are listener overrides only for an explicitly authorized fresh ad-hoc bootstrap. The per-host value wins. An existing selected service keeps its launch definition, and intentional restart uses current TOML unless retained flags or environment override it. Port zero may assign a new destination on each start. Failed starts and stopped replacements retain selected intent for revalidation and retry in the manager's memory, not as durable operation storage. An unrelated listener neither authorizes nor blocks the selected lifecycle by port alone.
 
+The [disposable SSH lifecycle check](evener-hub-remote-operations.md#disposable-ssh-lifecycle-check)
+covers default and explicit config selection, custom state roots, wildcard
+listeners and a forced port-zero successor-port change. It independently checks
+the selected process/socket and post-restart authenticated traffic while an
+unrelated default-port hub remains unchanged. This is actual Alpine SSH/ad-hoc
+Linux coverage, not systemd or launchd qualification.
+
 ## Worktree launchd deployment
 
 `scripts/ops/deploy-hub.sh [--label LABEL] [--config PATH] [--timeout N]` builds

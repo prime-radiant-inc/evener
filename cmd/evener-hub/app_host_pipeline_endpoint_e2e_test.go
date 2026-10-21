@@ -305,7 +305,7 @@ func installHostPipelineLockTrace(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Cleanup(func() {
 		matches, err := os.ReadFile(filepath.Join(dir, "matches"))
-		if err != nil || len(matches) == 0 {
+		if !t.Skipped() && (err != nil || len(matches) == 0) {
 			t.Errorf("selected-lock diagnostic wrapper was not exercised: %v", err)
 		}
 		t.Logf("selected-lock diagnostic wrapper: %d real SSH invocations captured", len(matches))
@@ -355,6 +355,16 @@ func hostPipelineLockDiagnostic(t *testing.T, host *hostSSH, selected hostPipeli
 		"printf 'selected lock descriptors:\\n'; lsof -nP -a -p " + strconv.Itoa(r.PID) + " -Fn " + shellquote.RemoteWord(r.Root+"/hub.lock")
 	out, err := host.run(script)
 	t.Logf("%s lock diagnosis: root=%s selectedPID=%d boot=%s birth=%s status=%v\n%s", phase, r.Root, r.PID, r.BootID, selected.birth, err, out)
+}
+
+func TestHostPipelineLockTracePreservesSkip(t *testing.T) {
+	if _, err := exec.LookPath("ssh"); err != nil {
+		t.Skip("ssh is not installed")
+	}
+	t.Run("setup-unavailable", func(t *testing.T) {
+		installHostPipelineLockTrace(t)
+		t.Skip("live build or container setup is unavailable")
+	})
 }
 
 // TestHostPipelineLockTrace executes the actual wrapper in /bin/sh. The command

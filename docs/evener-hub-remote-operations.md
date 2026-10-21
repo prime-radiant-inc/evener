@@ -150,6 +150,29 @@ Restarts revalidate selected intent and wait for a verified successor PID/birth,
 
 An explicit attach may start a stopped selected owner. Existing service definitions are preserved. Only a fresh ad-hoc start applies `[[hosts]].addr` (ahead of the internal `HubListenAddr` default) as listener intent. With neither override, current remote config/defaults apply. Failed first starts and stopped replacements retain selected intent for root, registration and service revalidation, rather than replaying stored shell text or guessing from another port. This retry state lives only in the manager process, separate from durable operation receipts. Recorder hooks, operation identities and the per-host gate still cover the lifecycle.
 
+### Disposable SSH lifecycle check
+
+The opt-in `TestHostDeployPipelineContainerE2E` runs real SSH add/attach, fresh
+installation, confirmed deployment and restart against a fresh Alpine container
+per row. It covers a bootstrap listener override, default-path config with a
+custom port, explicit config/custom state root, wildcard binding and port zero.
+It checks process/socket identity, authenticated AppWire marker readback,
+single-use confirmation, operation identities, unchanged config and installation,
+and survival of an unrelated default-port hub. An owned holder keeps the retired
+ephemeral port occupied, forcing the port-zero successor to use a new port.
+
+```sh
+env -u EVENER_SSH_E2E_HOST EVENER_SSH_E2E=1 EVENER_SSH_E2E_DEPLOY=1 EVENER_SSH_E2E_CONTAINER=1 \
+  go test ./cmd/evener-hub -run '^TestHostDeployPipelineContainerE2E$' -count=1 -timeout=160m -v
+```
+
+This writes only to disposable resources and needs a local Docker daemon and
+the test image/toolchain. Ordinary tests skip it. A Docker/tool/platform skip is
+missing live evidence, not a successful SSH journey. The container runs ad-hoc
+Linux hubs, not systemd or launchd. The separate script harness below uses command
+fixtures. Neither check establishes real supervisor behavior or guaranteed retry
+availability under concurrent lock churn.
+
 ## Worktree launchd deployment
 
 If Hub was submitted to launchd as its own job, `scripts/ops/deploy-hub.sh`
