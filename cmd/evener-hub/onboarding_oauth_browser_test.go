@@ -485,19 +485,20 @@ func testOnboardingOAuthAt(t *testing.T, scenario string, view onboardingView) {
 }
 
 // onboardingGuardCancel is the signal boundary the Go owner uses to stop the
-// browser driver. The driver disposes its detached Chrome on SIGTERM — the
-// handshake its runner documents and installs — so cancellation must deliver
-// that signal, not a different one the runner does not own.
+// browser driver. SIGTERM is the handshake the runner's own entry point
+// installs and the sibling browser test already uses; the shared browser
+// lifecycle also handles SIGINT, so this is consistency with the runner's
+// documented stop path, not a leak fix.
 func onboardingGuardCancel(process *os.Process) error {
 	return process.Signal(syscall.SIGTERM)
 }
 
-// TestOnboardingGuardCancellationStopsBrowser proves the cancellation boundary
-// above at the driver's own lifetime: a context cancellation sends the runner
-// the signal it owns, and the runner stops the Chrome it spawned detached
-// before it exits. This asserts the browser's process group is gone rather
-// than trusting the exit code alone.
-func TestOnboardingGuardCancellationStopsBrowser(t *testing.T) {
+// TestOnboardingEvidenceGuardCancellationStopsBrowser proves the cancellation
+// boundary above at the driver's own lifetime: a context cancellation sends the
+// runner the signal it owns, and the runner stops the Chrome it spawned
+// detached before it exits. This asserts the captured browser identity is gone
+// rather than trusting the exit code alone.
+func TestOnboardingEvidenceGuardCancellationStopsBrowser(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires Chrome")
 	}
@@ -529,20 +530,42 @@ func TestOnboardingGuardCancellationStopsBrowser(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start driver: %v", err)
 	}
-	groups := waitForOnboardingGuardBrowsers(cmd.Process.Pid, 30*time.Second)
-	if len(groups) == 0 {
+	browsers, err := waitForOnboardingGuardBrowsers(cmd.Process.Pid, 30*time.Second)
+	if err != nil {
+		cancel()
+		_ = cmd.Wait()
+		t.Fatalf("inspect driver browser: %v: %s", err, stderr.String())
+	}
+	if len(browsers) == 0 {
 		cancel()
 		_ = cmd.Wait()
 		t.Fatalf("driver never launched its detached browser: %s", stderr.String())
 	}
-	t.Logf("driver browsers running in process groups %v", groups)
+	t.Logf("driver browsers running: %v", browsers)
 	defer func() {
-		// Re-check before signaling: a group that already exited must not have
-		// its numeric id reused by an unrelated process.
-		for _, group := range liveOnboardingGuardBrowsers(groups) {
-			_ = syscall.Kill(-group, syscall.SIGKILL)
+		// The fallback may signal only an identity the current process table
+		// still shows as this run's browser. A snapshot that cannot be read
+		// authorizes no signal at all.
+		snapshot, err := onboardingGuardProcessSnapshot()
+		for _, browser := range onboardingGuardBrowsersToSignal(snapshot, err, browsers) {
+			_ = syscall.Kill(-browser.pgid, syscall.SIGKILL)
 		}
 	}()
+
+	// The captured identity must describe a live process now. Without this,
+	// "gone after cancellation" below could pass on an identity that never
+	// matched.
+	snapshot, err := onboardingGuardProcessSnapshot()
+	if err != nil {
+		cancel()
+		_ = cmd.Wait()
+		t.Fatalf("inspect running browser: %v", err)
+	}
+	if live := onboardingGuardBrowsersOwned(snapshot, browsers); len(live) != len(browsers) {
+		cancel()
+		_ = cmd.Wait()
+		t.Fatalf("captured browser %v is not owned by the live process table: %v", browsers, live)
+	}
 
 	// Deliver the configured context signal through the same CommandContext
 	// path the OAuth journey uses.
@@ -551,39 +574,66 @@ func TestOnboardingGuardCancellationStopsBrowser(t *testing.T) {
 		t.Fatalf("driver exited 0 after cancellation, want the signal's failure status")
 	}
 	deadline := time.Now().Add(10 * time.Second)
+	var (
+		alive   []onboardingGuardBrowser
+		lastErr error
+	)
 	for {
-		if alive := liveOnboardingGuardBrowsers(groups); len(alive) == 0 {
-			return
-		} else if time.Now().After(deadline) {
-			t.Fatalf("cancelled driver left browser process groups %v running: %s", alive, stderr.String())
+		snapshot, err := onboardingGuardProcessSnapshot()
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = nil
+			if alive = onboardingGuardBrowsersOwned(snapshot, browsers); len(alive) == 0 {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			if lastErr != nil {
+				t.Fatalf("process inspection failed; browser cleanup is inconclusive: %v", lastErr)
+			}
+			t.Fatalf("cancelled driver left browser %v running: %s", alive, stderr.String())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 }
 
-// waitForOnboardingGuardBrowsers polls until the runner has spawned its
-// detached Chrome, returning the browser process groups. The runner launches
-// Chrome as its own process group, so the group id survives reparenting.
-func waitForOnboardingGuardBrowsers(parent int, timeout time.Duration) []int {
-	deadline := time.Now().Add(timeout)
-	for {
-		if groups := onboardingGuardBrowserGroups(parent); len(groups) > 0 {
-			return groups
-		}
-		if time.Now().After(deadline) {
-			return nil
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
+// onboardingGuardBrowser is the captured identity of a detached Chrome the
+// driver launched: the pid and process group it ran as, plus the profile
+// argument that names this run. Numeric group existence alone is not
+// ownership, because a group can exit and its id be reused.
+type onboardingGuardBrowser struct {
+	pid     int
+	pgid    int
+	profile string
 }
 
-func onboardingGuardBrowserGroups(parent int) []int {
+func (b onboardingGuardBrowser) String() string {
+	return fmt.Sprintf("pid=%d pgid=%d profile=%s", b.pid, b.pgid, b.profile)
+}
+
+// onboardingGuardProcessSnapshot reads the process table columns the identity
+// checks need.
+func onboardingGuardProcessSnapshot() (string, error) {
 	out, err := exec.Command("ps", "-axo", "pid=,ppid=,pgid=,command=").Output()
-	if err != nil {
-		return nil
+	return string(out), err
+}
+
+func onboardingGuardProfileArg(command string) string {
+	const prefix = "--user-data-dir="
+	for _, field := range strings.Fields(command) {
+		if strings.HasPrefix(field, prefix) {
+			return strings.TrimPrefix(field, prefix)
+		}
 	}
-	var groups []int
-	for _, line := range strings.Split(string(out), "\n") {
+	return ""
+}
+
+// parseOnboardingGuardBrowsers returns the direct children of parent that are
+// Chrome launched for a skillguard profile, with their captured identity.
+func parseOnboardingGuardBrowsers(snapshot string, parent int) []onboardingGuardBrowser {
+	var browsers []onboardingGuardBrowser
+	for _, line := range strings.Split(snapshot, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 4 {
 			continue
@@ -592,45 +642,130 @@ func onboardingGuardBrowserGroups(parent int) []int {
 		if err != nil || ppid != parent {
 			continue
 		}
-		command := strings.Join(fields[3:], " ")
-		if !strings.Contains(command, "--user-data-dir=") || !strings.Contains(command, "skillguard-chrome-") {
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
 			continue
 		}
 		pgid, err := strconv.Atoi(fields[2])
 		if err != nil {
 			continue
 		}
-		groups = append(groups, pgid)
-	}
-	return groups
-}
-
-func liveOnboardingGuardBrowsers(groups []int) []int {
-	out, err := exec.Command("ps", "-axo", "pgid=,command=").Output()
-	if err != nil {
-		// Without process evidence, report the groups as live so the caller
-		// keeps its bounded wait and kill fallback rather than passing.
-		return groups
-	}
-	live := map[int]bool{}
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		profile := onboardingGuardProfileArg(strings.Join(fields[3:], " "))
+		if !strings.Contains(profile, "skillguard-chrome-") {
 			continue
 		}
-		pgid, err := strconv.Atoi(fields[0])
+		browsers = append(browsers, onboardingGuardBrowser{pid: pid, pgid: pgid, profile: profile})
+	}
+	return browsers
+}
+
+// onboardingGuardBrowserAlive reports whether the captured browser still owns
+// a process row: the same pid, the same process group, and the same profile
+// argument. A reused numeric id with another pid or argv is not ownership.
+func onboardingGuardBrowserAlive(snapshot string, browser onboardingGuardBrowser) bool {
+	for _, line := range strings.Split(snapshot, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
 		if err != nil {
 			continue
 		}
-		live[pgid] = true
-	}
-	var alive []int
-	for _, group := range groups {
-		if live[group] {
-			alive = append(alive, group)
+		pgid, err := strconv.Atoi(fields[2])
+		if err != nil {
+			continue
+		}
+		if pid != browser.pid || pgid != browser.pgid {
+			continue
+		}
+		if onboardingGuardProfileArg(strings.Join(fields[3:], " ")) == browser.profile {
+			return true
 		}
 	}
-	return alive
+	return false
+}
+
+func onboardingGuardBrowsersOwned(snapshot string, browsers []onboardingGuardBrowser) []onboardingGuardBrowser {
+	var owned []onboardingGuardBrowser
+	for _, browser := range browsers {
+		if onboardingGuardBrowserAlive(snapshot, browser) {
+			owned = append(owned, browser)
+		}
+	}
+	return owned
+}
+
+// onboardingGuardBrowsersToSignal returns the captured identities a
+// destructive fallback may signal. An unreadable process table is
+// inconclusive: it proves nothing about ownership, so it authorizes no signal.
+func onboardingGuardBrowsersToSignal(snapshot string, snapshotErr error, browsers []onboardingGuardBrowser) []onboardingGuardBrowser {
+	if snapshotErr != nil {
+		return nil
+	}
+	return onboardingGuardBrowsersOwned(snapshot, browsers)
+}
+
+func waitForOnboardingGuardBrowsers(parent int, timeout time.Duration) ([]onboardingGuardBrowser, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		snapshot, err := onboardingGuardProcessSnapshot()
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = nil
+			if browsers := parseOnboardingGuardBrowsers(snapshot, parent); len(browsers) > 0 {
+				return browsers, nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+// TestOnboardingEvidenceBrowserIdentityAcceptsOwnedProcess pins the positive
+// case: the exact captured pid, group and profile argument is this run's
+// browser.
+func TestOnboardingEvidenceBrowserIdentityAcceptsOwnedProcess(t *testing.T) {
+	snapshot := "123 1 456 /usr/bin/google-chrome --user-data-dir=/tmp/skillguard-chrome-owned\n"
+	browsers := parseOnboardingGuardBrowsers(snapshot, 1)
+	if len(browsers) != 1 {
+		t.Fatalf("captured browsers = %v, want one", browsers)
+	}
+	if !onboardingGuardBrowserAlive(snapshot, browsers[0]) {
+		t.Fatalf("captured browser %v not recognized in its own snapshot", browsers[0])
+	}
+	if got := onboardingGuardBrowsersToSignal(snapshot, nil, browsers); len(got) != 1 {
+		t.Fatalf("signalable browsers = %v, want the captured one", got)
+	}
+}
+
+// TestOnboardingEvidenceBrowserIdentityRejectsReusedGroup feeds a snapshot
+// where the captured group id now belongs to an unrelated pid and argv. It
+// must not count as ownership, whether checking liveness or authorizing a
+// fallback signal.
+func TestOnboardingEvidenceBrowserIdentityRejectsReusedGroup(t *testing.T) {
+	captured := onboardingGuardBrowser{pid: 123, pgid: 456, profile: "/tmp/skillguard-chrome-owned"}
+	reused := "999 1 456 /usr/bin/unrelated --flag\n"
+	if onboardingGuardBrowserAlive(reused, captured) {
+		t.Fatalf("reused group 456 with unrelated pid/argv counted as %v", captured)
+	}
+	if got := onboardingGuardBrowsersToSignal(reused, nil, []onboardingGuardBrowser{captured}); len(got) != 0 {
+		t.Fatalf("fallback would signal reused group: %v", got)
+	}
+}
+
+// TestOnboardingEvidenceBrowserIdentityRejectsInspectionError proves an
+// unreadable process table is inconclusive and authorizes no destructive
+// fallback.
+func TestOnboardingEvidenceBrowserIdentityRejectsInspectionError(t *testing.T) {
+	captured := onboardingGuardBrowser{pid: 123, pgid: 456, profile: "/tmp/skillguard-chrome-owned"}
+	if got := onboardingGuardBrowsersToSignal("", errors.New("ps unavailable"), []onboardingGuardBrowser{captured}); len(got) != 0 {
+		t.Fatalf("inspection error authorized a signal: %v", got)
+	}
 }
 
 func requiredStages(scenario string) []string {
