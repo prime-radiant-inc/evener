@@ -2437,47 +2437,8 @@ test("a rejected direct copy does not mark its own accepted failed turn", async 
     if (!first) throw new Error("the direct send never reached transport");
     const id = (first.params as { clientMutationId: string }).clientMutationId;
 
-    // C is observed as failed with its own mutation identity while the copy
-    // write is still held.
-    const model = threadsStore.getState().threads.get("ref_a");
-    if (!model) throw new Error("thread went away");
-    act(() => {
-      threadsStore.setState({
-        threads: new Map([
-          [
-            "ref_a",
-            {
-              ...model,
-              runningTurnId: undefined,
-              status: { type: "idle" as const },
-              turns: [
-                {
-                  id: "turn_c",
-                  status: "failed" as const,
-                  items: [
-                    {
-                      id: "item_c",
-                      turnId: "turn_c",
-                      type: "userMessage",
-                      text: "direct to failed c",
-                      clientMutationId: id,
-                    },
-                  ],
-                  error: { message: "boom c" },
-                },
-              ],
-            },
-          ],
-        ]),
-      });
-    });
-    storage.releaseCopy();
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    await flushPendingTurnsProjectionForTests();
-    await waitFor(() => expect(retryReflectionForTests("ref_a")).toBeUndefined());
-
+    // C is observed with its mutation identity, followed by a newer failed D,
+    // while the copy write is still held.
     fake.on("thread/read", () => {
       const response = readResponse("ref_a", {
         status: { type: "idle" },
@@ -2491,6 +2452,7 @@ test("a rejected direct copy does not mark its own accepted failed turn", async 
             ],
             error: { message: "boom c" },
           },
+          { id: "turn_d", status: "failed", itemsView: "full", items: [], error: { message: "boom d" } },
         ],
       });
       delete response.thread.evener.activeTurnId;
@@ -2500,10 +2462,17 @@ test("a rejected direct copy does not mark its own accepted failed turn", async 
       await threadsStore.getState().refreshThread("ref_a");
     });
     await flushPendingTurnsProjectionForTests();
+    expect(threadsStore.getState().threads.get("ref_a")?.turns.at(-1)?.id).toBe("turn_d");
+    storage.releaseCopy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await flushPendingTurnsProjectionForTests();
+    await waitFor(() => expect(retryReflectionForTests("ref_a")).toBeUndefined());
+
     expect(retryReflectionForTests("ref_a")).toBeUndefined();
-    expect(threadsStore.getState().threads.get("ref_a")?.turns.at(-1)?.id).toBe("turn_c");
     expect(threadsStore.getState().threads.get("ref_a")?.runningTurnId).toBeUndefined();
-    render(<TurnFailureEndCap error={{ message: "boom c" }} sessionRef="ref_a" turnId="turn_c" />);
+    render(<TurnFailureEndCap error={{ message: "boom d" }} sessionRef="ref_a" turnId="turn_d" />);
     await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(retryButton()?.disabled).toBe(false));
   } finally {

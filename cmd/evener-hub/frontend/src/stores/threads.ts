@@ -4001,6 +4001,17 @@ function markStaleRetryTail(ref: string, baseline: string | undefined, clientMut
   }
 }
 
+// The accepted turn can appear in the published turns or the held history;
+// either is observation, even when a newer failed turn is now the tail.
+function isAcceptedTurnObserved(ref: string, acceptedTurnId: string): boolean {
+  const model = threadsStore.getState().threads.get(ref);
+  if (model === undefined) return false;
+  return (
+    model.turns.some((turn) => turn.id === acceptedTurnId) ||
+    (model.history?.turns.some((turn) => turn.id === acceptedTurnId) ?? false)
+  );
+}
+
 // A direct fallback has no durable row for settleReceipt to observe, so the
 // send itself registers its baseline and opens the same observation marker
 // when the conversation still names the pre-send failed tail.
@@ -4061,8 +4072,9 @@ async function recordDirectAccepted(
         .catch(() => {
           // No durable copy: keep the page bridge on whatever failure is
           // current, so the accepted input cannot be retried as a second one.
-          // If the current tail IS the accepted turn, that turn is observed:
-          // marking it would wrongly close its own Retry.
+          // If the accepted turn is observed anywhere, it is not stale; a
+          // newer failed tail must keep its own Retry available.
+          if (acceptedTurnId !== undefined && isAcceptedTurnObserved(ref, acceptedTurnId)) return;
           const model = threadsStore.getState().threads.get(ref);
           const tail = latestTurnId(model);
           if (tail !== undefined && tail !== acceptedTurnId) markStaleRetryTail(ref, tail, clientMutationId);
