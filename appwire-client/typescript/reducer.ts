@@ -4330,8 +4330,19 @@ export function applyReadModel<M extends ThreadModel>(model: M, fresh: ThreadMod
     ...fields
   } = fresh;
   const { runningTurnId: _previous, ...base } = model;
+  // Same rule as applyReadResponse: a freshly hydrated model that carries no
+  // artifacts root must clear the previous one, or the spread keeps it and
+  // link actions stay aimed at a directory the snapshot no longer names.
+  const clearedArtifacts =
+    fresh.artifactsDir === undefined && model.artifactsDir !== undefined ? { artifactsDir: undefined } : {};
   let next = withDisplay(
-    { ...base, ...fields, ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}), olderCursor },
+    {
+      ...base,
+      ...fields,
+      ...clearedArtifacts,
+      ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),
+      olderCursor,
+    },
     history,
     freshOverlay ?? {},
   );

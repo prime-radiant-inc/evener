@@ -204,6 +204,7 @@ export default function DocPane({ params, paneId, focused }: PaneProps<DocParams
         <EmptyState
           title="File not available"
           hint="This report belonged to an earlier session and is not in this one."
+          reason="unavailable"
         />
       </PaneScaffold>
     );

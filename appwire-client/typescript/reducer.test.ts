@@ -9,6 +9,7 @@ import toolAndJobsFixture from "./fixtures/tool-and-jobs.jsonl?raw";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import {
   applyNotification,
+  applyReadModel,
   applyReadResponse,
   collectAuthoritativeMutationIds,
   decodeTranscriptItem,
@@ -9072,6 +9073,12 @@ test("notes/urls pushes for a different thread are ignored (same object returned
 // must clear the model's value, not keep the previous one. Fields merge over
 // the existing model, so an omitted key would leave file-link actions aimed at
 // a directory the hub no longer advertises.
+test("applyReadModel also clears a withdrawn artifactsDir", () => {
+  const withRoot = testHydrate({ evener: { artifactsDir: "/state/a/artifacts" } });
+  const withdrawn = applyReadModel(withRoot, testHydrate({ evener: {} }));
+  expect(withdrawn.artifactsDir).toBeUndefined();
+});
+
 test("hydrateThread clears artifactsDir when a snapshot omits it", () => {
   const withRoot = testHydrate({ evener: { artifactsDir: "/state/a/artifacts" } });
   expect(withRoot.artifactsDir).toBe("/state/a/artifacts");

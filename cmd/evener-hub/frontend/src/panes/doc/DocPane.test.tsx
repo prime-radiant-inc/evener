@@ -561,16 +561,12 @@ test("a restored artifacts document does not adopt a replacement session's same-
       <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />
     </PaneVisibilityContext>,
   );
-  // No read may be issued for the replacement session's report.md, and the
-  // pane must say the file is unavailable rather than sit on a skeleton: the
-  // snapshot has arrived and does not contain the recorded target.
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  });
+  // The pane must settle on the structural unavailable state rather than sit on
+  // a skeleton: the snapshot has arrived and does not contain the target. The
+  // assertion is the marker, not the copy.
+  await waitFor(() => expect(screen.getByTestId("empty-state").getAttribute("data-reason")).toBe("unavailable"));
   expect(requests.map((url) => url.searchParams.get("path"))).not.toContain(`${newDir}/report.md`);
   expect(screen.queryByText("replacement report body")).toBeNull();
-  expect(screen.getByText("File not available")).toBeTruthy();
-  expect(document.querySelector('[data-testid="skeleton"]')).toBeNull();
 });
 
 // Two same-named reports in different sessions are different documents. The
@@ -620,6 +616,6 @@ test("a restored artifacts document says unavailable when the snapshot advertise
       <DocPane params={pane.params as DocParams} paneId={pane.id} focused={false} />
     </PaneVisibilityContext>,
   );
-  await screen.findByText("File not available");
+  await waitFor(() => expect(screen.getByTestId("empty-state").getAttribute("data-reason")).toBe("unavailable"));
   expect(requests.map((url) => url.searchParams.get("path"))).not.toContain("/state/a/sessions/s1/artifacts/report.md");
 });

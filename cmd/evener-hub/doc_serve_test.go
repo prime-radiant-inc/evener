@@ -1026,3 +1026,23 @@ func TestDocFile_ArtifactsRefuseADeletionFencedSession(t *testing.T) {
 		t.Fatalf("SECURITY: a deletion-fenced session served its retained file")
 	}
 }
+
+// A path that belongs to the artifacts root but names no file there is a miss,
+// not a forbidden escape. Calling the cwd's refusal would tell a user their own
+// report is off limits when it is simply gone.
+func TestDocFile_MissingArtifactIsNotFoundNotEmptyForbidden(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, filepath.Join(dir, "never-written.md"))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("contained missing artifact = %d, want 404", rec.Code)
+	}
+	// A path outside both roots keeps its escape refusal.
+	rec = docRawRequest(t, web, session, "/etc/passwd")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("outside-both-roots path = %d, want 403", rec.Code)
+	}
+}

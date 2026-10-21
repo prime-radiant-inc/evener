@@ -80,8 +80,13 @@ func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request
 	// A deletion refusal is not one of those cases: it says this session's
 	// files must not be served, so it stands before anything is tried.
 	if absolute && !isTargetDeletedError(err) {
-		if root, resolved, ok := s.resolveArtifactsDocTarget(r.Context(), session, rel); ok {
+		if root, resolved, contained, ok := s.artifactsDocTarget(r.Context(), session, rel); ok {
 			return root, resolved, true
+		} else if contained {
+			// The path belongs to the artifacts root but names no readable
+			// file there. That is a miss, not the cwd's escape refusal.
+			http.NotFound(w, r)
+			return "", "", false
 		}
 	}
 	if err != nil {
@@ -104,25 +109,45 @@ func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request
 // directory, and letting a relative path fall through here would silently
 // retarget it. An unknown session, a missing root and a path outside it all
 // report not-served, so the caller answers them as any other miss.
+// artifactsDocTarget is resolveArtifactsDocTarget plus whether the path was
+// contained by the artifacts root but named no readable file there. Callers
+// use that to answer a contained miss with not-found instead of turning it
+// into the cwd's escape refusal, which would call a missing report forbidden.
 func (s *WebServer) resolveArtifactsDocTarget(ctx context.Context, session, rel string) (string, string, bool) {
+	root, abs, _, ok := s.artifactsDocTarget(ctx, session, rel)
+	return root, abs, ok
+}
+
+// artifactsDocTarget answers the containment question resolveArtifactsDocTarget
+// cannot: whether a refused path was inside the artifacts root.
+func (s *WebServer) artifactsDocTarget(ctx context.Context, session, rel string) (root, abs string, contained, ok bool) {
 	if !filepath.IsAbs(strings.TrimSpace(rel)) {
-		return "", "", false
+		return "", "", false, false
 	}
 	// A session fenced for deletion must not serve retained files through this
 	// root either. The cwd path gets this from sessionCWD's deletion check;
 	// artifacts resolve from the roster or the past index, which do not.
 	if err := deletionFenceError(s.cfg, appRefFromRouteID(session), canonicalRouteID(session), ""); err != nil {
-		return "", "", false
+		return "", "", false, false
 	}
-	root := sessionArtifactsRoot(ctx, s.cfg, session)
+	root = sessionArtifactsRoot(ctx, s.cfg, session)
 	if root == "" {
-		return "", "", false
+		return "", "", false, false
 	}
+	// A root that does not exist yet contains nothing, so every path is
+	// outside it. ResolveInRoot would otherwise fail while resolving the root
+	// itself, which is indistinguishable from a contained miss.
+	if _, err := os.Stat(root); err != nil {
+		return "", "", false, false
+	}
+	// ResolveInRoot rejects an escaping path with ErrPathEscapesRoot and every
+	// other failure (a missing file, an unreadable directory) with its own
+	// error, which is exactly the containment/existence split callers need.
 	abs, err := fspaths.ResolveInRoot(root, rel)
 	if err != nil {
-		return "", "", false
+		return root, "", !errors.Is(err, fspaths.ErrPathEscapesRoot), false
 	}
-	return root, abs, true
+	return root, abs, true, true
 }
 
 // sessionArtifactsRoot is the local session's retained artifacts directory, or
