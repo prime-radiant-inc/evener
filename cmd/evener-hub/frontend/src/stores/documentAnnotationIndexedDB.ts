@@ -1019,128 +1019,163 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
     const operationKey = annotationOperationKey(namespace, captured.operationId);
     const documentKey = annotationDocumentKey(captured.lease.key);
     const sessionKey = serializeSessionKey({ namespace, sessionRef: captured.lease.key.sessionRef });
-    const receipt = await this.#transaction(
-      SAVE_STORES,
-      "readwrite",
-      async (transaction) => {
-        const operations = transaction.objectStore(ANNOTATION_OPERATIONS_STORE);
-        const existing = await requestResult<AnnotationOperationRow | undefined>(operations.get(operationKey));
-        if (existing) {
-          // Every receipt state compares against the payload that still exists;
-          // an expired/reset payload is absent, so a terminal replay is returned
-          // unchanged rather than recreated.
-          // payloadKey equals the serialized operationKey, so an applied receipt
-          // (which retains no payloadKey) still finds its unexpired payload.
-          const priorPayload = await requestResult<AnnotationPayloadRow | undefined>(
-            transaction.objectStore(ANNOTATION_PAYLOADS_STORE).get(operationKey),
-          );
-          if (priorPayload && JSON.stringify(priorPayload.operation) !== JSON.stringify(captured)) {
-            throw new Error("duplicate operation id with a different payload");
+    let receipt: SaveReceipt;
+    try {
+      receipt = await this.#transaction(
+        SAVE_STORES,
+        "readwrite",
+        async (transaction) => {
+          const operations = transaction.objectStore(ANNOTATION_OPERATIONS_STORE);
+          const existing = await requestResult<AnnotationOperationRow | undefined>(operations.get(operationKey));
+          if (existing) {
+            // Every receipt state compares against the payload that still exists;
+            // an expired/reset payload is absent, so a terminal replay is returned
+            // unchanged rather than recreated.
+            // payloadKey equals the serialized operationKey, so an applied receipt
+            // (which retains no payloadKey) still finds its unexpired payload.
+            const priorPayload = await requestResult<AnnotationPayloadRow | undefined>(
+              transaction.objectStore(ANNOTATION_PAYLOADS_STORE).get(operationKey),
+            );
+            if (priorPayload && JSON.stringify(priorPayload.operation) !== JSON.stringify(captured)) {
+              throw new Error("duplicate operation id with a different payload");
+            }
+            // A durable row answers the replay even when its first attempt never
+            // observed the commit: a watchdog rejected after the transaction
+            // committed, so the wake below its rejection skipped was never
+            // published. The row is the only cross-adapter evidence of that
+            // commit, so the replay publishes the invalidation the lost attempt
+            // could not. A genuinely duplicate save publishes one redundant wake;
+            // readers re-list durable state, which costs a read and changes
+            // nothing else.
+            return {
+              operationId: captured.operationId,
+              epoch: existing.epoch,
+              sessionSequence: existing.sessionSequence,
+            } satisfies SaveReceipt;
           }
-          // A durable row answers the replay even when its first attempt never
-          // observed the commit: a watchdog rejected after the transaction
-          // committed, so the wake below its rejection skipped was never
-          // published. The row is the only cross-adapter evidence of that
-          // commit, so the replay publishes the invalidation the lost attempt
-          // could not. A genuinely duplicate save publishes one redundant wake;
-          // readers re-list durable state, which costs a read and changes
-          // nothing else.
-          return {
-            operationId: captured.operationId,
-            epoch: existing.epoch,
-            sessionSequence: existing.sessionSequence,
-          } satisfies SaveReceipt;
-        }
-        const namespaceRow = await readNamespaceRow(transaction, namespace);
-        if (!namespaceRow || namespaceRow.incarnation !== captured.lease.namespaceIncarnation) {
-          throw new Error("accepted lease incarnation is not current");
-        }
-        const head = await requestResult<AnnotationHeadRow | undefined>(
-          transaction.objectStore(ANNOTATION_HEADS_STORE).get(documentKey),
-        );
-        // The retained attempt validates against the current, unexpired
-        // epoch and its durable evidence, never against the exact head
-        // revision: a metadata-less reread advances the head revision within
-        // the epoch without establishing any source change, and holding a
-        // failed first save to the old revision would strand the comment
-        // permanently. A genuine source change fences into a new epoch, which
-        // the epoch equality here already rejects.
-        if (!head || head.namespaceIncarnation !== namespaceRow.incarnation || head.epoch !== captured.lease.epoch) {
-          throw new Error("accepted lease does not match the durable head");
-        }
-        // The capture validates against ANY observation the current, unexpired
-        // epoch retains — its own accepted observation included, not just the
-        // head's latest. A compatible reread with different prefix coverage
-        // becomes the head's latest observation without establishing a change,
-        // and holding the retry to that latest row alone would strand the
-        // comment despite its original evidence still being retained. Within an
-        // epoch every retained observation is validated-comparable; a genuine
-        // change fences into a new epoch, which the epoch check above rejects.
-        const epochEvidence = await rowsForDocumentEpoch<AnnotationEvidenceRow>(
-          transaction.objectStore(ANNOTATION_EVIDENCE_STORE),
-          ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX,
-          this.#keyRange,
-          documentKey,
-          head.epoch,
-        );
-        const capturedFingerprint = JSON.stringify(captured.capture.evidence.fingerprint);
-        if (
-          !epochEvidence.some((row) => evidenceMatches(row.content, captured.capture.evidence, capturedFingerprint))
-        ) {
-          throw new Error("accepted source evidence does not match the durable evidence");
-        }
-        const sequence = await requestResult<AnnotationSequenceRow | undefined>(
-          transaction.objectStore(ANNOTATION_SEQUENCES_STORE).get(sessionKey),
-        );
-        const sessionSequence = (sequence?.lastSequence ?? 0) + 1;
-        // The durable head and its evidence still validate an epoch whose
-        // expiry a changed read already confirmed but whose fence transaction
-        // failed: the in-memory suppression is the only record the epoch is
-        // dead. A save committed here would return a receipt the caller
-        // treats as success - clearing its note - while the pending expiry
-        // deletes the payload with the epoch. Reject before any write; the
-        // note survives for reselection.
-        if (this.#suppressedEpochs.get(epochIdentity(captured.lease))?.confirmed === true) {
-          throw new Error("accepted lease epoch is confirmed expired");
-        }
-        await requestResult(
-          transaction.objectStore(ANNOTATION_PAYLOADS_STORE).put({
-            payloadKey: operationKey,
+          const namespaceRow = await readNamespaceRow(transaction, namespace);
+          if (!namespaceRow || namespaceRow.incarnation !== captured.lease.namespaceIncarnation) {
+            throw new Error("accepted lease incarnation is not current");
+          }
+          const head = await requestResult<AnnotationHeadRow | undefined>(
+            transaction.objectStore(ANNOTATION_HEADS_STORE).get(documentKey),
+          );
+          // The retained attempt validates against the current, unexpired
+          // epoch and its durable evidence, never against the exact head
+          // revision: a metadata-less reread advances the head revision within
+          // the epoch without establishing any source change, and holding a
+          // failed first save to the old revision would strand the comment
+          // permanently. A genuine source change fences into a new epoch, which
+          // the epoch equality here already rejects.
+          if (!head || head.namespaceIncarnation !== namespaceRow.incarnation || head.epoch !== captured.lease.epoch) {
+            throw new Error("accepted lease does not match the durable head");
+          }
+          // The capture validates against ANY observation the current, unexpired
+          // epoch retains — its own accepted observation included, not just the
+          // head's latest. A compatible reread with different prefix coverage
+          // becomes the head's latest observation without establishing a change,
+          // and holding the retry to that latest row alone would strand the
+          // comment despite its original evidence still being retained. Within an
+          // epoch every retained observation is validated-comparable; a genuine
+          // change fences into a new epoch, which the epoch check above rejects.
+          const epochEvidence = await rowsForDocumentEpoch<AnnotationEvidenceRow>(
+            transaction.objectStore(ANNOTATION_EVIDENCE_STORE),
+            ANNOTATION_EVIDENCE_DOCUMENT_EPOCH_INDEX,
+            this.#keyRange,
             documentKey,
-            epoch: head.epoch,
-            operation: captured,
-          } satisfies AnnotationPayloadRow),
-        );
-        await requestResult(
-          operations.put({
-            operationKey,
-            namespaceKey: annotationNamespaceKey(namespace),
-            namespaceIncarnation: namespaceRow.incarnation,
-            documentKey,
-            sessionKey,
-            sessionSequence,
-            operationId: captured.operationId,
-            epoch: head.epoch,
-            state: "pending",
-            destination: captured.destination,
-            payloadKey: operationKey,
-          } satisfies AnnotationOperationRow),
-        );
-        await requestResult(
-          transaction
-            .objectStore(ANNOTATION_SEQUENCES_STORE)
-            .put({ documentKey: sessionKey, lastSequence: sessionSequence } satisfies AnnotationSequenceRow),
-        );
-        this.#options.beforeCommit?.("save");
-        return { operationId: captured.operationId, epoch: head.epoch, sessionSequence } satisfies SaveReceipt;
-      },
-      cancellation,
-    );
+            head.epoch,
+          );
+          const capturedFingerprint = JSON.stringify(captured.capture.evidence.fingerprint);
+          if (
+            !epochEvidence.some((row) => evidenceMatches(row.content, captured.capture.evidence, capturedFingerprint))
+          ) {
+            throw new Error("accepted source evidence does not match the durable evidence");
+          }
+          const sequence = await requestResult<AnnotationSequenceRow | undefined>(
+            transaction.objectStore(ANNOTATION_SEQUENCES_STORE).get(sessionKey),
+          );
+          const sessionSequence = (sequence?.lastSequence ?? 0) + 1;
+          // The durable head and its evidence still validate an epoch whose
+          // expiry a changed read already confirmed but whose fence transaction
+          // failed: the in-memory suppression is the only record the epoch is
+          // dead. A save committed here would return a receipt the caller
+          // treats as success - clearing its note - while the pending expiry
+          // deletes the payload with the epoch. Reject before any write; the
+          // note survives for reselection.
+          if (this.#suppressedEpochs.get(epochIdentity(captured.lease))?.confirmed === true) {
+            throw new Error("accepted lease epoch is confirmed expired");
+          }
+          await requestResult(
+            transaction.objectStore(ANNOTATION_PAYLOADS_STORE).put({
+              payloadKey: operationKey,
+              documentKey,
+              epoch: head.epoch,
+              operation: captured,
+            } satisfies AnnotationPayloadRow),
+          );
+          await requestResult(
+            operations.put({
+              operationKey,
+              namespaceKey: annotationNamespaceKey(namespace),
+              namespaceIncarnation: namespaceRow.incarnation,
+              documentKey,
+              sessionKey,
+              sessionSequence,
+              operationId: captured.operationId,
+              epoch: head.epoch,
+              state: "pending",
+              destination: captured.destination,
+              payloadKey: operationKey,
+            } satisfies AnnotationOperationRow),
+          );
+          await requestResult(
+            transaction
+              .objectStore(ANNOTATION_SEQUENCES_STORE)
+              .put({ documentKey: sessionKey, lastSequence: sessionSequence } satisfies AnnotationSequenceRow),
+          );
+          this.#options.beforeCommit?.("save");
+          return { operationId: captured.operationId, epoch: head.epoch, sessionSequence } satisfies SaveReceipt;
+        },
+        cancellation,
+      );
+    } catch (error) {
+      // The transaction may have committed before the rejection: a watchdog
+      // outlives a held completion event. A dismissed attempt still leaves no
+      // durable work for a later pass.
+      if (cancellation?.cancelled) {
+        await this.#discardCancelledSave(captured);
+        throw new SaveCancelledError();
+      }
+      throw error;
+    }
+    // Cancellation reaches the transaction only while it can still abort. One
+    // that passed that boundary commits anyway, so the success path must
+    // observe the token too: the row belongs to a dismissal the runtime
+    // already treats as handled.
+    if (cancellation?.cancelled) {
+      await this.#discardCancelledSave(captured);
+      throw new SaveCancelledError();
+    }
     this.#notifyStorageSuccess();
     // A newly persisted operation and a replay that confirms an existing one
     // both name a committed state readers may not have observed.
     this.#publishDocumentWake(documentKey);
     return receipt;
+  }
+
+  // A save the runtime dismissed can still commit: its cancellation reaches
+  // the transaction only while it can abort, and one past that boundary leaves
+  // its pending row durable. That row is exactly the work a later pass would
+  // hand off, so the dismissed attempt discards its own row before settling as
+  // the handled dismissal the runtime's catch already defines. Best effort: a
+  // discard that faults is a storage refusal like any other and must not
+  // relabel the dismissal as retryable work.
+  async #discardCancelledSave(operation: PreparedAnnotation): Promise<void> {
+    try {
+      await this.discardPendingOperation(operation.lease.key, operation.operationId);
+    } catch {
+      // The runtime's cancellation stays terminal for this attempt.
+    }
   }
 
   // Listing is durable-read only: no composer lookup, transport or mutation. It

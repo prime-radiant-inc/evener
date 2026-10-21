@@ -70,6 +70,42 @@ test("a storage success during an outstanding save starts the recovery pass its 
   fixture.drafts.close();
 });
 
+// Cancellation reaches a save transaction only while it can still abort. A
+// dismissal landing after the transaction passed that boundary cannot stop the
+// commit, and the runtime's success path never checked the token, so the
+// durable pending row survived and a later pass handed a user-dismissed note
+// off to the composer. The repository observes its own token after the
+// transaction settles and discards the row it committed.
+test("a save cancelled after its commit boundary leaves no pending operation", async () => {
+  const fixture = await openAnnotationFixture({
+    databaseName: "annotation-coordination",
+    origin: "https://coordination.example",
+    runtime: true,
+  });
+  const operation: PreparedAnnotation = { ...fixture.operation, operationId: "operation-2" };
+
+  // The save transaction commits, but its completion event is held: the
+  // cancellation lands inside the commit window, past the abort boundary.
+  const hold = holdNextWriteTransaction(SAVE_STORES);
+  const save = fixture.runtime.save(operation);
+  await hold.reached;
+  fixture.runtime.retireAttempted(operation);
+  hold.release();
+
+  // A cancelled attempt is the handled dismissal the catch path already
+  // defines, even though this attempt committed.
+  expect(await save).toBeNull();
+
+  // A later pass must not hand the dismissed note off.
+  await fixture.runtime.retryPending("storage-recovered");
+  await fixture.runtime.whenIdle();
+  const views = await fixture.repository.listAnnotations(fixture.document);
+  expect(views.find((view) => view.operation.operationId === operation.operationId)).toBeUndefined();
+
+  fixture.repository.close();
+  fixture.drafts.close();
+});
+
 // Every durable identity is namespace-qualified: the operation row's key is
 // [kind, origin, operationId]. The reconciliation sweep's handled set compared
 // bare operation IDs, so two namespaces that both minted "operation-1" made
@@ -95,7 +131,7 @@ test("a reconciled append does not skip a same-id pending operation in another n
   fixture = await openAnnotationFixture({
     databaseName: "annotation-coordination",
     origin: "https://coordination.example",
-    targetFor: (destination, key) =>
+    targetFor: (_destination, key) =>
       key.namespace.kind === "browser" && key.namespace.origin === secondOrigin
         ? secondSource
         : (fixture?.source ?? null),
@@ -180,8 +216,7 @@ test("an applied append publishes its drafts commit to the repository subscripti
 // other external trigger.
 test("a reconciliation's acknowledgment signals the runtime so a refused handoff recovers", async () => {
   const composer: { preparation: ComposerPreparation | null } = { preparation: null };
-  let fixture: AnnotationFixtureWithRuntime | undefined;
-  fixture = await openAnnotationFixture({
+  const fixture: AnnotationFixtureWithRuntime = await openAnnotationFixture({
     databaseName: "annotation-coordination",
     origin: "https://coordination.example",
     runtime: true,
