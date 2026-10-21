@@ -52,7 +52,10 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import ReadOnlyTranscript from "../transcript/testing/CommittedTranscript";
-import { resumeCascadeScope } from "../zoom/actions";
+import { enterAgentCascade, resumeCascadeScope } from "../zoom/actions";
+import { cascadeContext } from "../zoom/cascadeTestUtils";
+import type { SessionZoomParams } from "../zoom/intent";
+import Zoom from "../zoom/Zoom";
 import { ConversationBody, type ConversationSeat } from "./ConversationBody";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
@@ -63,6 +66,8 @@ import { requestComposerFocus } from "./composer/composerFocus";
 import { readDraft, writeComposerDraft, writeDraft } from "./composer/draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
+import { retainedConversationComposer } from "./composer/retainedComposer";
+import type { SessionPaneParams } from "./Session";
 import { settleActivityDiscovery } from "./testing/activityDiscovery";
 import { CommittedSession as Session } from "./testing/CommittedSession";
 import { installControlledImageEncoding } from "./testing/imageEncoding";
@@ -623,6 +628,190 @@ test("the real Session consumer retains its structured editor and pending images
     skillNames: destinationSnapshot?.skillNames,
     commandNames: destinationSnapshot?.commandNames,
     mentions: destinationSnapshot?.mentions,
+  });
+});
+
+test("real same-URL readers preserve the exact owning reader through attention Back and Forward", async ({
+  onTestFinished,
+}) => {
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+    stubSessionSlots();
+  });
+  const encoding = installControlledImageEncoding();
+  const fake = connectFakeClient();
+  fake.on("thread/read", ({ ref }) => {
+    if (!ref) throw new Error("thread/read requires a ref");
+    return readResponse(ref, { id: `thr_${ref}`, sessionId: `session-${ref}` });
+  });
+  fake.on("evener/thread/activity/read", ({ ref, scope }) => ({
+    ...activitySummary(ref, scope),
+    context: cascadeContext(ref, ref === "local:same" ? ["local:owner"] : []),
+  }));
+  const session = {
+    id: "same-url-session",
+    type: "session" as const,
+    params: { ref: "local:same" },
+    slot: "main" as const,
+  };
+  const owner = {
+    id: "same-url-owner",
+    type: "session" as const,
+    params: { ref: "local:owner" },
+    slot: "secondary" as const,
+  };
+  window.history.replaceState({}, "", "/s/local%3Asame");
+  workspaceStore.setState({ panes: [session, owner], focusedPaneId: session.id });
+  const mounts: string[] = [];
+  const unmounts: string[] = [];
+  function FocusedCommittedReader({ pane }: { pane: OpenPaneRecord }) {
+    useEffect(() => {
+      mounts.push(pane.id);
+      return () => {
+        unmounts.push(pane.id);
+      };
+    }, [pane.id]);
+    if (pane.type === "session") return <Session params={pane.params as SessionPaneParams} paneId={pane.id} focused />;
+    if (pane.type === "sessionZoom") return <Zoom paneId={pane.id} params={pane.params as SessionZoomParams} focused />;
+    return null;
+  }
+  function FocusedCommittedHost() {
+    const workspace = useSyncExternalStore(workspaceStore.subscribe, workspaceStore.getState);
+    useEffect(() => {
+      const restore = () => restoreCurrentAttentionEntry();
+      window.addEventListener("popstate", restore);
+      return () => window.removeEventListener("popstate", restore);
+    }, []);
+    const pane = workspace.panes.find((candidate) => candidate.id === workspace.focusedPaneId);
+    if (!pane) return null;
+    return <FocusedCommittedReader key={pane.id} pane={pane} />;
+  }
+  const view = render(
+    <ClientProvider client={fake}>
+      <FocusedCommittedHost />
+    </ClientProvider>,
+  );
+  const sessionEditorAtStart = await screen.findByRole("textbox", { name: "Message" });
+  expect(mounts.filter((id) => id === session.id)).toHaveLength(1);
+  const sessionDraft = { text: "Session reader draft" };
+  const cascadeDraft = { text: "Cascade reader draft" };
+  await userEvent.type(sessionEditorAtStart, sessionDraft.text);
+  await settleActivityDiscovery("local:same");
+  const originLifetime = conversationPaneLifetime(session);
+  const initialLength = window.history.length;
+  let cascadeId = "";
+  act(() => {
+    cascadeId = enterAgentCascade(
+      activityDelegate({ ownerRef: "local:owner", childRef: "local:same", delegateId: "same-url-editor-edge" }),
+      owner.id,
+    );
+    workspaceStore.getState().focusPane(cascadeId);
+  });
+  expect(workspaceStore.getState().panes.find((pane) => pane.id === cascadeId)?.type).toBe("sessionZoom");
+  await screen.findByTestId("cascade-column");
+  await settleActivityDiscovery("local:same");
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toBeTruthy());
+  const cascade = workspaceStore.getState().panes.find((pane) => pane.id === cascadeId);
+  if (!cascade) throw new Error("cascade record was not committed");
+  const cascadeLifetime = conversationPaneLifetime(cascade);
+  const sessionSource = originLifetime.composer;
+  const cascadeSource = retainedConversationComposer(cascadeLifetime, "local:same");
+  if (!sessionSource || !cascadeSource || sessionSource === cascadeSource)
+    throw new Error("same-URL readers lack distinct composer sources");
+  const cascadeEditorAtStart = screen.getByRole("textbox", { name: "Message" });
+  await userEvent.clear(cascadeEditorAtStart);
+  await userEvent.type(cascadeEditorAtStart, cascadeDraft.text);
+  const picker = view.container.querySelector('input[type="file"]');
+  if (!picker) throw new Error("cascade composer has no image picker");
+  fireEvent.change(picker, {
+    target: { files: [new File([new Uint8Array([11, 12, 13])], "cascade.png", { type: "image/png" })] },
+  });
+  expect(cascadeSource.attachments.getState().items).toMatchObject([{ name: "cascade.png", pending: true }]);
+  await act(async () => encoding.resolve(0));
+  await waitFor(() =>
+    expect(cascadeSource.attachments.getState().items[0]).toMatchObject({ data: "AQID", pending: false }),
+  );
+  act(() => openAttentionSession("local:same"));
+  const sessionEditorAtArrival = await screen.findByRole("textbox", { name: "Message" });
+  const sessionSourceTextAtArrival = sessionSource.getSnapshot().text;
+  const sessionEditorTextAtArrival = sessionEditorAtArrival.textContent ?? "";
+  expect(sessionSourceTextAtArrival).not.toBe("");
+  expect(sessionEditorTextAtArrival).not.toBe("");
+  const presented = workspaceStore.getState().panes.find((pane) => pane.id === workspaceStore.getState().focusedPaneId);
+  if (!presented || presented.id !== session.id)
+    throw new Error("same-URL attention opener did not present the session reader");
+  const presentedLifetime = conversationPaneLifetime(presented);
+  expect(window.location.pathname).toBe("/s/local%3Asame");
+  expect(window.history.length).toBe(initialLength + 1);
+  expect(presentedLifetime).toBe(originLifetime);
+  expect(unmounts).toContain(cascade.id);
+  expect(mounts).toContain(session.id);
+  expect(mounts.filter((id) => id === session.id)).toHaveLength(2);
+  expect(document.activeElement).not.toBe(screen.getByRole("textbox", { name: "Message" }));
+  const back = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.back();
+    await back;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(cascade.id));
+  const cascadeEditor = await screen.findByRole("textbox", { name: "Message" });
+  expect(window.location.pathname).toBe("/s/local%3Asame");
+  expect(conversationPaneLifetime(cascade)).toBe(cascadeLifetime);
+  expect(cascadeLifetime.composers.get("local:same")).toBe(cascadeSource);
+  const stagedCascadeText = `${cascadeDraft.text}[image 1]`;
+  expect(cascadeSource.getSnapshot().text).toBe(stagedCascadeText);
+  expect(cascadeEditor.textContent).toBe(stagedCascadeText);
+  expect(cascadeSource.attachments.getState().items).toMatchObject([
+    { name: "cascade.png", data: "AQID", pending: false },
+  ]);
+  expect(document.activeElement).not.toBe(cascadeEditor);
+  expect(mounts.filter((id) => id === cascade.id)).toHaveLength(2);
+  const forward = new Promise<void>((resolve) => window.addEventListener("popstate", () => resolve(), { once: true }));
+  await act(async () => {
+    window.history.forward();
+    await forward;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(session.id));
+  const sessionEditor = await screen.findByRole("textbox", { name: "Message" });
+  expect(conversationPaneLifetime(session)).toBe(originLifetime);
+  expect(originLifetime.composer).toBe(sessionSource);
+  expect(sessionSource.getSnapshot().text).toBe(sessionSourceTextAtArrival);
+  expect(sessionEditor.textContent).toBe(sessionEditorTextAtArrival);
+  expect(cascadeSource.getSnapshot().text).toBe(stagedCascadeText);
+  expect(cascadeSource.attachments.getState().items).toMatchObject([
+    { name: "cascade.png", data: "AQID", pending: false },
+  ]);
+  expect(mounts.filter((id) => id === session.id)).toHaveLength(3);
+  expect(vi.mocked(PngEncoding.reencodeToPng)).toHaveBeenCalledTimes(1);
+  expect(document.activeElement).not.toBe(sessionEditor);
+  const returnBack = new Promise<void>((resolve) =>
+    window.addEventListener("popstate", () => resolve(), { once: true }),
+  );
+  await act(async () => {
+    window.history.back();
+    await returnBack;
+  });
+  await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(cascade.id));
+  const returnedCascadeEditor = await screen.findByRole("textbox", { name: "Message" });
+  expect(conversationPaneLifetime(cascade)).toBe(cascadeLifetime);
+  expect(cascadeLifetime.composers.get("local:same")).toBe(cascadeSource);
+  expect(cascadeSource.getSnapshot().text).toBe(stagedCascadeText);
+  expect(returnedCascadeEditor.textContent).toBe(stagedCascadeText);
+  expect(cascadeSource.attachments.getState().items).toMatchObject([
+    { name: "cascade.png", data: "AQID", pending: false },
+  ]);
+  expect(document.activeElement).not.toBe(returnedCascadeEditor);
+  expect(mounts.filter((id) => id === cascade.id)).toHaveLength(3);
+  await userEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() => expect(fake.calls.find((call) => call.method === "turn/start")).toBeDefined());
+  const submitted = fake.calls.find((call) => call.method === "turn/start");
+  expect(submitted?.params).toMatchObject({
+    ref: "local:same",
+    input: [
+      { type: "text", text: expect.stringContaining("Cascade reader draft") },
+      { type: "image", mediaType: "image/png", data: "AQID", name: "cascade.png" },
+    ],
   });
 });
 

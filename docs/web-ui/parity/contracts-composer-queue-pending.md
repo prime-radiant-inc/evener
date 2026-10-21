@@ -24,9 +24,10 @@ except where a line says so itself.
   exact retained reader placement; it stores no composer contents. Back/Forward
   restores the same living pane lifetime, so structured selections, mentions,
   staged image bytes and pending image work remain owned by that reader.
-- Views of the same session use the latest shared structured draft on return,
-  rather than restoring older per-view text. Exact reader retention does not
-  create independent same-session drafts or separate persisted drafts.
+- Attention Back/Forward preserves the existing draft and attachment work of
+  the exact reader being restored. Do not add live cross-view draft
+  synchronization; keep ordinary draft/cache behavior unchanged and do not
+  promise permanently independent same-session drafts.
 - Mount autofocus is suppressed only for the reader owned by the current
   attention entry. Explicit editor focus, the composer-focus shortcut and
   ordinary session-opening autofocus keep their existing behavior.

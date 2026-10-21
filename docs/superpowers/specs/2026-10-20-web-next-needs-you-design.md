@@ -59,7 +59,7 @@ Use normal web history: each distinct Next or explicit list selection is one his
 
 Changing the active session must preserve the source's structured draft, staged images, in-flight attachment processing, retained transcript position, and independent panes. Back must restore the exact retained source reader and composer when they still exist. Text reconstructed from storage is not equivalent to preserved attachment bytes or source lifetime.
 
-When multiple views show the same session, attention Back/Forward uses the latest shared draft rather than restoring an older draft from that view. Exact reader retention does not create independent same-session drafts. Verify that attachment markers remain consistent with the available image bytes when switching views. This does not change ordinary navigation or promise separate persisted drafts per reader.
+Attention Back/Forward preserves the draft and staged attachment work owned by the exact existing reader being restored. Do not add live cross-view draft synchronization; keep ordinary draft/cache behavior unchanged, and do not promise permanently independent same-session drafts. This does not change ordinary navigation or promise separate persisted drafts per reader.
 
 For a secondary pane or cascade leaf, remember the exact originating reader and placement, not just the URL's top-level session. An already-open target is reused, not duplicated. The affordance must not unexpectedly create a new visible split or close unrelated panes merely to preserve history. Existing explicit Close remains an intentional disposal boundary; returning to a closed session uses normal fresh-open behavior. This change does not promise restoration of unsaved binary attachments across browser reload or process loss.
 
