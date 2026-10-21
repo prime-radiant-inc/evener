@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { navigate, paneToURL, urlToPane } from "./routing";
+import { navigate, openSessionRoute, paneToURL, urlToPane } from "./routing";
 
 beforeEach(() => {
   window.history.pushState({}, "", "/");
@@ -218,6 +218,17 @@ test("navigate is a no-op when already at the identical path and query", () => {
   window.removeEventListener("popstate", handler);
   expect(window.location.search).toBe("?dir=/tmp/project-a");
   expect(handler).not.toHaveBeenCalled();
+});
+
+test("ordinary session routes use navigation without an attention binding", () => {
+  window.history.replaceState({ unrelated: "preserved" }, "", "/");
+  const initialLength = history.length;
+  openSessionRoute("local:route-test");
+  expect(history.length).toBe(initialLength + 1);
+  expect(window.location.pathname).toBe("/s/local%3Aroute-test");
+  expect(history.state).toEqual({});
+  openSessionRoute("local:route-test");
+  expect(history.length).toBe(initialLength + 1);
 });
 
 // Evidence that the finding's literal symptom does not reproduce: the argument

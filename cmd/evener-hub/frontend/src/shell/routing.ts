@@ -151,6 +151,15 @@ function splitURL(target: string): { path: string; search: string; hash: string 
  * two modules importing each other. */
 export const HOST_QUERY_PARAM = "host";
 
+type RouteHistoryObserver = (previousState: unknown, nextState: unknown, previousURL: string, nextURL: string) => void;
+const routeHistoryObservers = new Set<RouteHistoryObserver>();
+
+/** Observe accepted app pushes without becoming a second navigation authority. */
+export function observeRouteHistory(observer: RouteHistoryObserver): () => void {
+  routeHistoryObservers.add(observer);
+  return () => routeHistoryObservers.delete(observer);
+}
+
 /** isSettingsPath answers whether a pathname names a settings route - the routes
  * urlToPane resolves as "settings", aliases included. The selected host belongs
  * to those routes and to no others: they are the only ones that may carry a host,
@@ -223,12 +232,20 @@ function withSettingsHost(target: string): string {
 // A settings target also carries the host the address bar already names (see
 // withSettingsHost) unless `carrySettingsHost: false` says the caller is
 // deliberately choosing a URL without it.
-export function navigate(pathname: string, options: { replace?: boolean; carrySettingsHost?: boolean } = {}): void {
+export function navigate(
+  pathname: string,
+  options: { replace?: boolean; carrySettingsHost?: boolean; attentionEntry?: { generation: string; id: string } } = {},
+): void {
   const target = options.carrySettingsHost === false ? pathname : withSettingsHost(pathname);
   const current = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-  if (current === target) return;
-  if (options.replace) window.history.replaceState({}, "", target);
-  else window.history.pushState({}, "", target);
+  if (current === target && !options.attentionEntry) return;
+  const priorState = window.history.state && typeof window.history.state === "object" ? window.history.state : {};
+  const state = options.attentionEntry ? { ...priorState, __evenerAttention: options.attentionEntry } : {};
+  if (options.replace) window.history.replaceState(state, "", target);
+  else window.history.pushState(state, "", target);
+  if (!options.replace) {
+    for (const observer of routeHistoryObservers) observer(priorState, state, current, target);
+  }
   // Mirror the settings selection onto the route the app just chose, before any
   // listener runs: an app-built navigation drops a remote selection it leaves
   // behind and adopts the one its target names, so no host-scoped pane ever
@@ -241,4 +258,10 @@ export function navigate(pathname: string, options: { replace?: boolean; carrySe
     settingsHostRouteSync(path, search);
   }
   window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+/** Ordinary live navigation stays on the normal route/history path. */
+export function openSessionRoute(ref: string): void {
+  const url = paneToURL("session", { ref });
+  if (url) navigate(url);
 }

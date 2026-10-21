@@ -132,7 +132,7 @@ export function presentAttentionTarget(targetRef: string): AttentionPlacementEnt
   return capture(substitute(matches[0] ?? targetRef, seat));
 }
 
-export function restoreAttentionPlacement(entry: AttentionPlacementEntry): boolean {
+export function attentionPlacementIsValid(entry: AttentionPlacementEntry): boolean {
   const state = workspaceStore.getState();
   const saved = entries.get(entry);
   const pane = entry.pane;
@@ -152,6 +152,15 @@ export function restoreAttentionPlacement(entry: AttentionPlacementEntry): boole
     )
       return false;
   } else if (reader !== null) return false;
+  return true;
+}
+
+export function restoreAttentionPlacement(entry: AttentionPlacementEntry): boolean {
+  if (!attentionPlacementIsValid(entry)) return false;
+  const state = workspaceStore.getState();
+  const pane = entry.pane;
+  const saved = entries.get(entry);
+  if (!saved) return false;
   if (pane.slot !== "parked") state.focusPane(pane.id);
   else substitute(pane, saved.seat);
   return true;
