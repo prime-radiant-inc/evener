@@ -7,6 +7,13 @@ or permission to bootstrap another owner. Evener does not move files or rotate
 credentials for you. A subsequent invocation with an admitted root needs no
 reset marker.
 
+Relative `hub_state_root` values, such as `"hub-state"`, resolve against the
+hub process's working directory, not the config file's directory. Startup and
+endpoint inspection use and publish that same absolute root, following existing
+symlinks without creating missing directories during inspection. Absolute values
+keep their existing meaning. Inspect a relative configuration from the service's
+working directory to select the same owner.
+
 ## Detection and lock limits
 
 Linux rejects recognized NFS, CIFS, SMB, SMB2, AFS, AFS_FS, CODA, CEPH and NCP

@@ -3,6 +3,8 @@ package hub
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/hubendpoint"
@@ -98,6 +100,48 @@ func resolveLoadedEndpointConfig(cfg Config, path string, flagValue EndpointInpu
 	if _, err := os.Stat(path); err == nil {
 		endpoint.ConfigExists = true
 	}
+	if cfg.HubStateRoot != "" && !filepath.IsAbs(cfg.HubStateRoot) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return cfg, EndpointConfig{}, err
+		}
+		// Do not clean before filesystem lookup: link/.. follows the link's
+		// physical parent, not the lexical parent of the configured spelling.
+		root, err := resolveRelativeHubStateRoot(cwd + string(os.PathSeparator) + cfg.HubStateRoot)
+		if err != nil {
+			return cfg, EndpointConfig{}, fmt.Errorf("resolve hub_state_root %q: %w", cfg.HubStateRoot, err)
+		}
+		cfg.HubStateRoot = root
+	}
 	cfg.Addr = endpoint.ListenAddr.String()
 	return cfg, endpoint, nil
+}
+
+// Resolve the existing prefix without creating anything. A fresh root can have
+// missing directory components, but a dangling symlink or unresolved .. cannot
+// be normalized into a different directory. Absolute configured roots bypass
+// this helper and keep their existing spelling and behavior.
+func resolveRelativeHubStateRoot(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil || !os.IsNotExist(err) {
+		return resolved, err
+	}
+	if _, linkErr := os.Lstat(path); !os.IsNotExist(linkErr) {
+		return "", err
+	}
+	trimmed := strings.TrimRight(path, string(os.PathSeparator))
+	i := strings.LastIndexByte(trimmed, os.PathSeparator)
+	name := trimmed[i+1:]
+	if i < 0 || name == "." || name == ".." {
+		return "", err
+	}
+	parent := trimmed[:i]
+	if parent == "" {
+		parent = string(os.PathSeparator)
+	}
+	resolved, err = resolveRelativeHubStateRoot(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolved, name), nil
 }
