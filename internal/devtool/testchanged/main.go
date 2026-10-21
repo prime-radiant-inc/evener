@@ -73,6 +73,9 @@ func run(root, base string, modules []string, race bool) int {
 	for _, f := range res.NoPackage {
 		fmt.Printf("test-changed: skipped %s: no Go package in its directory\n", f)
 	}
+	for _, f := range res.Removed {
+		fmt.Printf("test-changed: skipped %s: removed, and no surviving package imports it\n", f)
+	}
 	if len(res.Selected) == 0 {
 		if res.GoChanged > 0 {
 			fmt.Fprintf(os.Stderr, "test-changed: FAIL: %d Go file(s) changed but no runnable package was selected; refusing to report a passing run\n", res.GoChanged)

@@ -213,7 +213,7 @@ func (g *graph) addModule(module string, entries []pkgEntry) {
 // root module (".") matches everything no other module claims.
 func (g *graph) moduleFor(rel string) (string, bool) {
 	best := ""
-	for _, m := range g.moduleRoots {
+	for _, m := range g.allModules() {
 		if m == "." {
 			if best == "" {
 				best = m
@@ -227,6 +227,27 @@ func (g *graph) moduleFor(rel string) (string, bool) {
 		}
 	}
 	return best, best != ""
+}
+
+// allModules is every module this graph loaded: the GO_MODULES roots plus any
+// module pulled in only for its import edges. A graph built by hand in a test
+// carries only moduleRoots, so both sources are read.
+func (g *graph) allModules() []string {
+	seen := make(map[string]bool, len(g.moduleRoots)+len(g.moduleDirs))
+	out := make([]string, 0, len(g.moduleRoots)+len(g.moduleDirs))
+	for _, m := range g.moduleRoots {
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	for m := range g.moduleDirs {
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // moduleDir returns the absolute directory a module's tests run in.

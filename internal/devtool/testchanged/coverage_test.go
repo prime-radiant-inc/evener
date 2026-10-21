@@ -237,3 +237,52 @@ func TestSplitEmbedPatternsKeepsQuotedSpaces(t *testing.T) {
 		}
 	}
 }
+
+// Removing a package that nothing imports is a complete change, not a broken
+// one. Counting its files toward the loud-empty-selection guard made the gate
+// fail on a legitimate dead-code removal, so a path that is gone from the
+// worktree is recorded as removed and left out of that count.
+func TestDeletedUnimportedFileIsReportedNotFailed(t *testing.T) {
+	const (
+		moduleRoot = "."
+		modulePath = "example.com/mod"
+	)
+	root := t.TempDir()
+	g := &graph{
+		root:        root,
+		moduleRoots: []string{moduleRoot},
+		moduleDirs:  map[string]string{moduleRoot: root},
+		modulePaths: map[string]string{moduleRoot: modulePath},
+		runnable:    map[string]bool{moduleRoot: true},
+		pkgs:        map[string]*pkgInfo{},
+		byDir:       map[string]string{},
+		deps:        map[string]map[string]bool{},
+	}
+
+	res := selectPackages(g, []string{"dead/dead.go"}, []string{moduleRoot})
+
+	if len(res.Removed) != 1 || res.Removed[0] != "dead/dead.go" {
+		t.Errorf("Removed = %v, want [dead/dead.go]", res.Removed)
+	}
+	if res.GoChanged != 0 {
+		t.Errorf("GoChanged = %d, want 0 so the empty-selection guard does not fail the run", res.GoChanged)
+	}
+}
+
+// An embedded asset sitting directly in its package directory is compiled into
+// that package, so importers observe it exactly as they observe Go source. It
+// used to be treated as a test-only asset and never reached them, which skipped
+// the hub tests that compile those bytes in.
+func TestEmbeddedAssetInPackageDirReachesImporters(t *testing.T) {
+	g := loadTestGraph(t)
+	res := selectPackages(g, []string{"internal/remoteinstall/install.sh"}, testModules)
+
+	const owner = "primeradiant.com/evener/internal/remoteinstall"
+	if got := reasonForPath(res, owner); !strings.Contains(got, "embedded asset") {
+		t.Errorf("reason for %s = %q, want it to name the embedded asset", owner, got)
+	}
+	const importer = "primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
+	if reasonForPath(res, importer) == "" {
+		t.Errorf("%s imports the embedding package and must be selected", importer)
+	}
+}

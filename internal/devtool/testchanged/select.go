@@ -23,6 +23,7 @@ type selectionResult struct {
 	Selected  []selection
 	Outside   []string // changed files outside every module in GO_MODULES
 	NoPackage []string // changed files in a directory with no Go package
+	Removed   []string // deleted files that no surviving package can observe
 	GoChanged int
 }
 
@@ -61,16 +62,10 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 		rel = filepath.ToSlash(rel)
 		goFile := strings.HasSuffix(rel, ".go")
 		module, ok := g.moduleFor(rel)
-		// A module loaded only for its import edges is not a gate module: the
-		// change is real, but reporting it as skipped is the honest answer, and
-		// its importers under GO_MODULES are selected by the closure below.
-		if ok && !g.runnableModule(module) {
-			if goFile {
-				res.GoChanged++
-			}
-			res.Outside = append(res.Outside, rel+" (module "+module+" is not a gate module)")
-			continue
-		}
+		// A module loaded only for its import edges (fuzz) is attributed like any
+		// other: its packages are filtered out of the run when the selection is
+		// built, but its importers under GO_MODULES are exactly what a change
+		// there breaks, so they must come through the closure below.
 		if !ok {
 			if goFile {
 				res.GoChanged++
@@ -138,6 +133,14 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 					continue
 				}
 			}
+			// A file that no longer exists is a deletion, not a stray file in a
+			// package-less directory: removing a dead package with no surviving
+			// importers is a complete, correct change, so it is reported and
+			// does not fail the run.
+			if !pathExists(filepath.Join(g.root, filepath.FromSlash(rel))) {
+				res.Removed = append(res.Removed, rel)
+				continue
+			}
 			if goFile {
 				res.GoChanged++
 			}
@@ -152,6 +155,14 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 			continue
 		}
 		if !goFile {
+			// An asset in the package's own directory (embedded seatbelt
+			// profiles, an embedded installer) is compiled into the package, so
+			// importers observe it exactly as they observe Go source. Anything
+			// else in the directory is a test-only asset and stays local.
+			if embedsFile(dir, filepath.Join(g.root, filepath.FromSlash(rel))) {
+				propagating[ip] = joinReason(propagating[ip], "embedded asset "+rel)
+				continue
+			}
 			packageOnly[ip] = joinReason(packageOnly[ip], "changed file "+rel)
 			continue
 		}
