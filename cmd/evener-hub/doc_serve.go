@@ -62,7 +62,12 @@ func (s *WebServer) resolveLocalDocTarget(w http.ResponseWriter, r *http.Request
 	if err == nil {
 		return cwd, abs, true
 	}
-	if errors.Is(err, fspaths.ErrPathEscapesRoot) && filepath.IsAbs(strings.TrimSpace(rel)) {
+	// A retained artifact lives under the session's state directory, which
+	// outlives the working directory. That makes the artifacts root the answer
+	// both for a path outside cwd and for a cwd that no longer exists (worktree
+	// cleanup resolved it away), so it is tried before the cwd failure becomes
+	// a refusal. A relative path never reaches it.
+	if filepath.IsAbs(strings.TrimSpace(rel)) {
 		if root, abs, ok := s.resolveArtifactsDocTarget(r.Context(), session, rel); ok {
 			return root, abs, true
 		}
@@ -338,7 +343,11 @@ func sessionDocumentFromHub(ctx context.Context, cfg hubcore.WebConfig, sources 
 		return appwire.SessionDocumentResponse{}, err
 	}
 	doc, err := readSessionDocument(cwd, params.Path)
-	if errors.Is(err, fspaths.ErrPathEscapesRoot) {
+	// The same rule the HTTP routes carry: only an absolute path may name a
+	// file outside the working directory. A relative name keeps its one
+	// meaning, so an escaping symlink in cwd is refused rather than silently
+	// served from an unrelated artifacts file of the same name.
+	if errors.Is(err, fspaths.ErrPathEscapesRoot) && filepath.IsAbs(strings.TrimSpace(params.Path)) {
 		if root := sessionArtifactsRoot(ctx, cfg, session); root != "" {
 			// The artifacts attempt may fail for its own reason (no such file
 			// under that root). The refusal must still name the escape, so the

@@ -817,3 +817,103 @@ func TestDocFile_ArtifactsUnknownSession404(t *testing.T) {
 		t.Fatalf("unknown session should 404, got %d body=%q", rec.Code, rec.Body.String())
 	}
 }
+
+// A worktree cleanup removes the session's working directory. The retained
+// artifacts live under the session's state directory, which survives, so a
+// link an agent filed there must still open: the artifacts root is resolved on
+// its own absolute path, not as a fallback that needs a healthy cwd first.
+func TestDocFile_Raw_ServesSessionArtifactsAfterWorkingDirectoryRemoved(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	dir := artifactsDirOf(t, web, session)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("# Report\n\nretained evidence")
+	target := filepath.Join(dir, "report.md")
+	if err := os.WriteFile(target, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(cwd); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, target)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("artifacts file should be served after cwd removal, got %d body=%q", rec.Code, rec.Body.String())
+	}
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("body=%q, want %q", rec.Body.Bytes(), content)
+	}
+}
+
+// The AppWire read carries the same rule as the HTTP routes: a relative path
+// resolves against the working directory only. Without that guard a relative
+// name could land on a same-named file in artifacts, which is a different
+// document than the one the request named.
+func TestHubSessionDocumentRelativePathNeverResolvesAgainstArtifacts(t *testing.T) {
+	cwd := docTestRoot(t)
+	// This fixture owns its state dir, so the test can put a same-named file
+	// in artifacts and leave cwd without one.
+	const session = "02wMz5Txv1C3Hut0M8GCeE"
+	stateDir := t.TempDir()
+	proj := filepath.Join(stateDir, "projects", "project-doc-0000000000")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: session, UpdatedAt: time.Now(), OriginalPrompt: "doc session",
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: cwd},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := schema.SessionArtifactsDir(proj, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "report.md"), []byte("artifacts report"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// cwd holds a report.md that is a symlink leading out of the session. A
+	// request for the relative name "report.md" names that refusable target,
+	// not the unrelated file of the same name in artifacts.
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "elsewhere.md"), []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "elsewhere.md"), filepath.Join(cwd, "report.md")); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(stateDir, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: idx})
+	t.Cleanup(srv.Close)
+	if _, err := requestSessionDocument(t, srv, appwire.SessionDocumentParams{SessionID: session, Path: "report.md"}); err == nil {
+		t.Fatal("a relative path resolved against the artifacts root; want a refusal")
+	}
+	// The absolute path is the one that may reach it.
+	resp, err := requestSessionDocument(t, srv, appwire.SessionDocumentParams{SessionID: session, Path: filepath.Join(dir, "report.md")})
+	if err != nil || string(resp.Data) != "artifacts report" {
+		t.Fatalf("absolute artifacts path = %q, %v; want the retained report", resp.Data, err)
+	}
+}
+
+// Removing the working directory must not turn an ordinary relative read into
+// an error: the file is simply not there any more, which is the same 404 a
+// missing file always gets.
+func TestDocFile_RelativeReadAfterWorkingDirectoryRemovedIsNotFound(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("notes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(cwd); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, "notes.txt")
+	if rec.Code != http.StatusNotFound && rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("relative read after cwd removal = %d, want a not-found or unavailable refusal", rec.Code)
+	}
+}
