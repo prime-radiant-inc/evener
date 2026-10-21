@@ -1283,7 +1283,19 @@ class BrowserDocumentAnnotationRepositoryImpl implements BrowserDocumentAnnotati
       this.#options.beforeCommit?.("deleteExpiry");
       removed = true;
     });
-    if (removed) this.#publishDocumentWake(documentKey);
+    if (removed) {
+      // The expired epoch's payloads and evidence are gone, its replacement
+      // minted a fresh UUID epoch, and the fence that wrote this receipt
+      // already flipped the epoch's pending operations terminal. Every consult
+      // path keys on this exact document+incarnation+epoch identity - listing,
+      // save validation, handoff eligibility, durable validation and the
+      // revert-resurrection fence - so a released entry can never legitimately
+      // match a live epoch again: the identity names a deleted UUID, never a
+      // replacement. Release it so a long-lived adapter does not retain one
+      // inert entry per proven source change.
+      this.#suppressedEpochs.delete(epochIdentityOf(documentKey, receipt.namespaceIncarnation, receipt.expiredEpoch));
+      this.#publishDocumentWake(documentKey);
+    }
   }
 
   // Cancel exactly ONE durable pending operation outside any acceptance. The
