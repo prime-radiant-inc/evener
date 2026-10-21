@@ -3424,6 +3424,7 @@ export async function resendRecoveryMutation(
   const intent = {
     ...composerMutationIntent(targetRef, route, text, attachments, skillNames, commandNames, mentions),
     submissionBaselineTail: baselineTail,
+    retainAcceptedCopyUntilObserved: true as const,
   };
   // Registered around the write: the resent row is undelivered work, and a
   // fallback send must see it before the async refresh can.
@@ -4597,8 +4598,12 @@ async function enqueueMutationIntent(
   // the enqueue is in flight cannot become this submission's baseline.
   const baselineTail = latestTurnId(threadsStore.getState().threads.get(ref));
   const durableIntent: MutationIntent =
-    (intent.method === "turn/start" || intent.method === "turn/queue") && intent.submissionBaselineTail === undefined
-      ? { ...intent, submissionBaselineTail: baselineTail }
+    intent.method === "turn/start" || intent.method === "turn/queue"
+      ? {
+          ...intent,
+          submissionBaselineTail: intent.submissionBaselineTail ?? baselineTail,
+          retainAcceptedCopyUntilObserved: true,
+        }
       : intent;
   // The recovery fence, enforced at the one funnel every durable action
   // passes through: a fenced local session's durable intent could only park

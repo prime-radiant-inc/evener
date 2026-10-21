@@ -766,6 +766,7 @@ test("a persisted reflected turn keeps Retry closed across a reload until the tu
     attachments: [],
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "continue" }] },
     submissionBaselineTail: turn.id,
+    retainAcceptedCopyUntilObserved: true,
   });
   await storage.settleReceipt(seeded.clientMutationId, "reflected");
   const { fake } = await loadThread("ref_a", [turn], {}, storage);
@@ -835,6 +836,7 @@ test("a restored reflected turn settles when an authoritative read carries its m
     attachments: [],
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "continue" }] },
     submissionBaselineTail: turn.id,
+    retainAcceptedCopyUntilObserved: true,
   });
   await storage.settleReceipt(seeded.clientMutationId, "reflected");
   const { fake } = await loadThread("ref_a", [turn], {}, storage);
@@ -910,6 +912,7 @@ test("a same-tail authoritative read leaves a restored reflected turn closed", a
     attachments: [],
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "continue" }] },
     submissionBaselineTail: turn.id,
+    retainAcceptedCopyUntilObserved: true,
   });
   await storage.settleReceipt(seeded.clientMutationId, "reflected");
   const { fake } = await loadThread("ref_a", [turn], {}, storage);
@@ -1024,7 +1027,6 @@ test("overlapping direct sends keep the pre-persistence owner until the last set
 });
 
 test("an intervening failure cannot settle an unobserved reflected continuation", async () => {
-  const turnA = failedTurn();
   const turnB: TurnModel = {
     id: "turn_b",
     status: "failed",
@@ -1039,16 +1041,13 @@ test("an intervening failure cannot settle an unobserved reflected continuation"
   };
   vi.stubGlobal("indexedDB", new IDBFactory());
   const storage = new GatedEnqueueStorage();
-  const { fake } = await loadThread("ref_a", [turnA], {}, storage);
+  // An empty conversation: this send has no baseline tail at all.
+  const { fake } = await loadThread("ref_a", [], {}, storage);
   fake.on("turn/start", ({ clientMutationId }) => ({
     receipt: { clientMutationId, disposition: "applied", threadId: "thr_ref_a", projectionState: "reflected" },
     turn: { id: turnC.id, status: "inProgress", itemsView: "" },
   }));
   try {
-    render(<TurnFailureEndCap error={{ message: "boom" }} sessionRef="ref_a" turnId={turnA.id} />);
-    await flushPendingTurnsProjectionForTests();
-    await waitFor(() => expect(retryButton()?.disabled).toBe(false));
-
     let send!: Promise<void>;
     await act(async () => {
       send = threadsStore.getState().send("ref_a", "continue to c");
@@ -1067,7 +1066,7 @@ test("an intervening failure cannot settle an unobserved reflected continuation"
               ...held,
               runningTurnId: undefined,
               status: { type: "idle" as const },
-              turns: [turnA, turnB],
+              turns: [turnB],
             },
           ],
         ]),
@@ -1077,10 +1076,7 @@ test("an intervening failure cannot settle an unobserved reflected continuation"
     fake.on("thread/read", () =>
       readResponse("ref_a", {
         status: { type: "idle" },
-        turns: [
-          { id: turnA.id, status: "failed", itemsView: "full", items: [], error: { message: "boom" } },
-          { id: turnB.id, status: "failed", itemsView: "full", items: [], error: { message: "boom b" } },
-        ],
+        turns: [{ id: turnB.id, status: "failed", itemsView: "full", items: [], error: { message: "boom b" } }],
       }),
     );
     storage.release(0);
@@ -1102,7 +1098,7 @@ test("an intervening failure cannot settle an unobserved reflected continuation"
               ...afterReceipt,
               runningTurnId: undefined,
               status: { type: "idle" as const },
-              turns: [turnA, turnB],
+              turns: [turnB],
             },
           ],
         ]),

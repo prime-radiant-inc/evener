@@ -80,6 +80,13 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   // on rows written before the field existed, which keep the conservative
   // page-local rule.
   submissionBaselineTail?: string;
+  // This intent came from a real turn submission (composer send/queue or
+  // Retry), not a raw/test-seeded queue row. A reflected receipt keeps its
+  // accepted copy until an authoritative owner observes the turn, even when
+  // the press had no conversation tail (an empty conversation). Persisted on
+  // the outbox row and carried onto the accepted optimistic copy. Never part
+  // of the RPC payload.
+  retainAcceptedCopyUntilObserved?: true;
 }
 
 export interface MutationRecord<A extends MutationAttachmentRef = MutationAttachmentRef> extends MutationIntent<A> {
@@ -176,6 +183,7 @@ export function acceptedRecord<A extends MutationAttachmentRef = MutationAttachm
     attachments: source.attachments,
     optimisticDisplay: source.optimisticDisplay,
     submissionBaselineTail: source.submissionBaselineTail,
+    retainAcceptedCopyUntilObserved: source.retainAcceptedCopyUntilObserved,
     state: "accepted",
   };
 }
