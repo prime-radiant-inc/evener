@@ -40,6 +40,12 @@ type SessionConfig struct {
 	// Empty lets NewSession mint one. Not persisted.
 	SessionID string `json:"-"`
 
+	// StartupModelListing is a live listing the launcher already fetched for
+	// the session's model instance. NewSession reuses it instead of asking the
+	// provider again, so a transient empty second response cannot clear the
+	// rows the initial resolve applied. Not persisted.
+	StartupModelListing *StartupModelListing `json:"-"`
+
 	// LifetimeContext owns this session tree: `evener run` supplies its run
 	// context (SIGINT- and --timeout-derived) and `evener serve` its shutdown
 	// context, so cancelling either ends the tree's own context immediately

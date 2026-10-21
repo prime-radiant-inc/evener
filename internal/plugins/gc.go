@@ -133,6 +133,40 @@ func (m *Manager) Gc(ctx context.Context) ([]string, error) {
 		}
 	}
 
+	// Reclaim publication staging a killed fetch left behind. Best effort: the
+	// store lock Gc holds is the same one every updated publisher takes, so no
+	// publisher can be filling a container while this runs; only a finished or
+	// dead invocation's container can be old enough to match. A failure here
+	// leaves residue for a later sweep rather than failing the clone sweep.
+	m.reclaimPublicationStaging()
+
 	sort.Strings(removed)
 	return removed, nil
+}
+
+// reclaimPublicationStaging removes abandoned .staging- containers beneath
+// each publishing/<marketplace>/<plugin> directory.
+func (m *Manager) reclaimPublicationStaging() {
+	marketplaces, err := gcReadDir(filepath.Join(m.Root, publishingDirName))
+	if err != nil {
+		return
+	}
+	for _, marketplace := range marketplaces {
+		if !marketplace.IsDir() {
+			continue
+		}
+		plugins, err := gcReadDir(filepath.Join(m.Root, publishingDirName, marketplace.Name()))
+		if err != nil {
+			continue
+		}
+		for _, plugin := range plugins {
+			if !plugin.IsDir() {
+				continue
+			}
+			dir := filepath.Join(m.Root, publishingDirName, marketplace.Name(), plugin.Name())
+			for _, staging := range m.abandonedStagingWithPrefix(dir, publicationStagingPrefix) {
+				_ = gcRemoveAll(staging)
+			}
+		}
+	}
 }

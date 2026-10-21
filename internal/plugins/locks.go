@@ -90,6 +90,10 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 		release()
 		return nil, m.migrationFailedErr(err)
 	}
+	// Every updated writer passes here before its own write. The migration is
+	// idempotent, reads a store-level marker when already complete, and never
+	// fails the operation: an incomplete pass leaves the old scan in force.
+	m.ensureManagedContentMigrated(ctx)
 	return release, nil
 }
 
