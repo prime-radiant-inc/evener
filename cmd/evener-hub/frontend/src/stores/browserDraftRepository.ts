@@ -777,51 +777,63 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
     }
     if (inspected.length === 0) return { state: "committed" };
     const changed: BrowserDraftKey[] = [];
+    // A watchdog rejection can outlive this commit. The completion's own
+    // arrival proves the import landed, and by then a later scan imports the
+    // same refs no more, so its cleanup would never reach the legacy bytes
+    // this scan consumed. Cleaning up here is idempotent: it removes only
+    // entries whose bytes still match what this scan inspected.
+    const cleanupOnLateCommit = () => this.#cleanupInspected(inspected, changed);
     try {
-      await this.#writeAndPublish(TRANSFER_STORES, "transferSupportedDrafts", changed, async (transaction) => {
-        const incarnation = await this.#currentIncarnation(transaction, namespace);
-        const drafts = transaction.objectStore(COMPOSER_DRAFTS_STORE);
-        const transfers = transaction.objectStore(DRAFT_TRANSFERS_STORE);
-        for (const incoming of inspected) {
-          const current = await requestResult<SessionRow | undefined>(drafts.get(incoming.draftKey));
-          const markerV1Key = serializedTransferKey(namespace, incoming.legacyKeyV1);
-          const markerV2Key = serializedTransferKey(namespace, incoming.legacyKeyV2);
-          const [markerV1, markerV2] = await Promise.all([
-            requestResult<DraftTransferRow | undefined>(transfers.get(markerV1Key)),
-            requestResult<DraftTransferRow | undefined>(transfers.get(markerV2Key)),
-          ]);
-          // Initialization only: a durable row or a previously inspected outcome
-          // is never re-imported and never overwritten.
-          if (!current && markerV1 === undefined && markerV2 === undefined) {
-            const imported = newSessionRow(incoming.key, incoming.value, incarnation);
-            // The imported row keeps the legacy draft's own wall-clock stamp so
-            // later cross-session carries order by genuine edit order, not by
-            // this transfer's import order; an unstamped legacy draft stays
-            // unstamped and the carry's conservative rule orders it.
-            const legacyStamp = incoming.value.editedAt;
-            if (legacyStamp === undefined) delete imported.editedAt;
-            else imported.editedAt = legacyStamp;
-            await requestResult(drafts.add(imported));
-            changed.push(incoming.key);
+      await this.#writeAndPublish(
+        TRANSFER_STORES,
+        "transferSupportedDrafts",
+        changed,
+        async (transaction) => {
+          const incarnation = await this.#currentIncarnation(transaction, namespace);
+          const drafts = transaction.objectStore(COMPOSER_DRAFTS_STORE);
+          const transfers = transaction.objectStore(DRAFT_TRANSFERS_STORE);
+          for (const incoming of inspected) {
+            const current = await requestResult<SessionRow | undefined>(drafts.get(incoming.draftKey));
+            const markerV1Key = serializedTransferKey(namespace, incoming.legacyKeyV1);
+            const markerV2Key = serializedTransferKey(namespace, incoming.legacyKeyV2);
+            const [markerV1, markerV2] = await Promise.all([
+              requestResult<DraftTransferRow | undefined>(transfers.get(markerV1Key)),
+              requestResult<DraftTransferRow | undefined>(transfers.get(markerV2Key)),
+            ]);
+            // Initialization only: a durable row or a previously inspected outcome
+            // is never re-imported and never overwritten.
+            if (!current && markerV1 === undefined && markerV2 === undefined) {
+              const imported = newSessionRow(incoming.key, incoming.value, incarnation);
+              // The imported row keeps the legacy draft's own wall-clock stamp so
+              // later cross-session carries order by genuine edit order, not by
+              // this transfer's import order; an unstamped legacy draft stays
+              // unstamped and the carry's conservative rule orders it.
+              const legacyStamp = incoming.value.editedAt;
+              if (legacyStamp === undefined) delete imported.editedAt;
+              else imported.editedAt = legacyStamp;
+              await requestResult(drafts.add(imported));
+              changed.push(incoming.key);
+            }
+            await requestResult(
+              transfers.put({
+                serializedKey: markerV1Key,
+                namespaceKey: serializeNamespace(namespace),
+                legacyKey: incoming.legacyKeyV1,
+                inspectedBytes: incoming.legacyV1,
+              } satisfies DraftTransferRow),
+            );
+            await requestResult(
+              transfers.put({
+                serializedKey: markerV2Key,
+                namespaceKey: serializeNamespace(namespace),
+                legacyKey: incoming.legacyKeyV2,
+                inspectedBytes: incoming.structuredV2,
+              } satisfies DraftTransferRow),
+            );
           }
-          await requestResult(
-            transfers.put({
-              serializedKey: markerV1Key,
-              namespaceKey: serializeNamespace(namespace),
-              legacyKey: incoming.legacyKeyV1,
-              inspectedBytes: incoming.legacyV1,
-            } satisfies DraftTransferRow),
-          );
-          await requestResult(
-            transfers.put({
-              serializedKey: markerV2Key,
-              namespaceKey: serializeNamespace(namespace),
-              legacyKey: incoming.legacyKeyV2,
-              inspectedBytes: incoming.structuredV2,
-            } satisfies DraftTransferRow),
-          );
-        }
-      });
+        },
+        cleanupOnLateCommit,
+      );
     } catch {
       return { state: "pending" };
     }
@@ -896,12 +908,15 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
   // each key the moment its write is issued; this helper publishes those keys
   // exactly once when the transaction commits. A watchdog rejection can
   // outlive a commit, so the runner's late-completion seam publishes the same
-  // keys when that completion lands: a committed write is never silent.
+  // keys when that completion lands: a committed write is never silent. A
+  // caller whose post-commit consequences the rejection skipped passes them as
+  // onLateCommit, which runs only when that late completion proves the commit.
   async #writeAndPublish<T>(
     stores: readonly string[],
     operation: BrowserDraftOperation | undefined,
     changed: BrowserDraftKey[],
     body: (transaction: IDBTransaction) => Promise<T>,
+    onLateCommit?: () => void,
   ): Promise<T> {
     let published = false;
     const publish = () => {
@@ -909,7 +924,10 @@ class BrowserDraftRepositoryImpl implements BrowserDraftRepository {
       published = true;
       this.#publish(changed);
     };
-    const result = await this.#transaction(stores, "readwrite", operation, body, publish);
+    const result = await this.#transaction(stores, "readwrite", operation, body, () => {
+      publish();
+      onLateCommit?.();
+    });
     publish();
     return result;
   }
