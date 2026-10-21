@@ -18,15 +18,15 @@ var testModules = []string{".", "agent", "llm", "auth", "envvars", "invariant", 
 // reads the same real listing.
 var (
 	graphOnce   *graph
-	graphErr    error
+	errGraph    error
 	graphLoaded bool
 )
 
 func loadTestGraph(t *testing.T) *graph {
 	t.Helper()
 	if graphLoaded {
-		if graphErr != nil {
-			t.Fatalf("loadGraph: %v", graphErr)
+		if errGraph != nil {
+			t.Fatalf("loadGraph: %v", errGraph)
 		}
 		return graphOnce
 	}
@@ -34,10 +34,10 @@ func loadTestGraph(t *testing.T) *graph {
 	if err != nil {
 		t.Fatalf("locating repo root: %v", err)
 	}
-	graphOnce, graphErr = loadGraph(root, testModules)
+	graphOnce, errGraph = loadGraph(root, testModules)
 	graphLoaded = true
-	if graphErr != nil {
-		t.Fatalf("loadGraph: %v", graphErr)
+	if errGraph != nil {
+		t.Fatalf("loadGraph: %v", errGraph)
 	}
 	return graphOnce
 }

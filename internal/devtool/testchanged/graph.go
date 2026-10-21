@@ -2,13 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -98,12 +99,10 @@ func loadGraph(root string, moduleRoots []string) (*graph, error) {
 	results := make([]result, len(loadModules))
 	var wg sync.WaitGroup
 	for i, m := range loadModules {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			entries, err := listModule(g.moduleDirs[m])
 			results[i] = result{module: m, entries: entries, err: err}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -120,13 +119,13 @@ func loadGraph(root string, moduleRoots []string) (*graph, error) {
 // a package with a build error in the listing so one broken package cannot
 // erase the rest of the graph.
 func listModule(dir string) ([]pkgEntry, error) {
-	cmd := exec.Command("go", "list", "-e", "-deps", "-test", "-json", "./...")
+	cmd := command(context.Background(), "go", "list", "-e", "-deps", "-test", "-json", "./...")
 	cmd.Dir = dir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("go list in %s: %v: %s", dir, err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("go list in %s: %w: %s", dir, err, strings.TrimSpace(stderr.String()))
 	}
 	dec := json.NewDecoder(bytes.NewReader(out))
 	var entries []pkgEntry
@@ -314,12 +313,7 @@ func workspaceModules(root string, known []string) []string {
 }
 
 func containsModule(modules []string, m string) bool {
-	for _, known := range modules {
-		if known == m {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(modules, m)
 }
 
 // importedAnywhere reports whether any package in the graph depends on
@@ -418,7 +412,7 @@ func embedsFile(pkgDir, absFile string) bool {
 // optional quoting.
 func embedPatterns(src string) []string {
 	var patterns []string
-	for _, line := range strings.Split(src, "\n") {
+	for line := range strings.SplitSeq(src, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, "//go:embed ") && trimmed != "//go:embed" {
 			continue

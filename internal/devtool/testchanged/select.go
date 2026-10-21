@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -170,9 +171,7 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 	}
 
 	reasonFor := map[string]string{}
-	for ip, r := range testOnly {
-		reasonFor[ip] = r
-	}
+	maps.Copy(reasonFor, testOnly)
 	for ip, r := range packageOnly {
 		if _, ok := reasonFor[ip]; !ok {
 			reasonFor[ip] = r
@@ -188,9 +187,7 @@ func selectPackages(g *graph, changed []string, moduleRoots []string) selectionR
 	}
 	// The closure below only adds importers; every seed, including those the
 	// manifest expansion just added, takes its own reason here.
-	for ip, r := range propagating {
-		reasonFor[ip] = r
-	}
+	maps.Copy(reasonFor, propagating)
 	// `go list -deps` is transitive, so one membership test is the whole
 	// closure. testOnly seeds are deliberately absent from this loop.
 	seeds := make([]string, 0, len(propagating))

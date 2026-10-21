@@ -2,7 +2,7 @@ package main
 
 import (
 	"bytes"
-	"os/exec"
+	"context"
 	"strings"
 )
 
@@ -21,7 +21,7 @@ func changedFiles(root, base string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		for _, path := range strings.Split(out, "\x00") {
+		for path := range strings.SplitSeq(out, "\x00") {
 			if path == "" || seen[path] {
 				continue
 			}
@@ -48,7 +48,7 @@ func changedFiles(root, base string) ([]string, error) {
 }
 
 func gitOutput(root string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	cmd := command(context.Background(), "git", args...)
 	cmd.Dir = root
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

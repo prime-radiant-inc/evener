@@ -18,6 +18,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -100,7 +101,7 @@ func run(root, base string, modules []string, race bool) int {
 			args = append(args, packageArg(g, s))
 		}
 		fmt.Printf("test-changed: module %s: go %s (in %s)\n", m, strings.Join(args, " "), g.moduleDir(m))
-		cmd := command("go", args...)
+		cmd := command(context.Background(), "go", args...)
 		cmd.Dir = g.moduleDir(m)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
