@@ -214,6 +214,59 @@ func TestInstallWithoutGitRefusesUnverifiableAdministration(t *testing.T) {
 	}
 }
 
+func TestInstallRejectsGitMetadataSelectionWithGitTrace(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	for _, tc := range []struct {
+		name  string
+		trace bool
+	}{
+		{name: "without trace"},
+		{name: "with trace", trace: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			repo := filepath.Join(root, "repo")
+			makeGitRepo(t, repo, "README.md", "plugin")
+			addSourceMarker(t, repo)
+			marketRepo := filepath.Join(root, "market")
+			writeSourceCatalog(t, marketRepo, "widget",
+				`{"source":"directory","path":"`+filepath.Join(repo, ".git")+`"}`)
+			m := NewManager(t.TempDir())
+			ctx := context.Background()
+			if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: marketRepo}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.trace {
+				// Trace output goes to stderr; it must not change the verdict.
+				t.Setenv("GIT_TRACE", "1")
+			}
+			if _, err := m.Install(ctx, "widget", "acme"); err == nil {
+				t.Fatal("a source selecting Git metadata installed successfully")
+			}
+			if cacheContains(t, m.cacheDir(), sourceMetadataMarker) {
+				t.Fatal("source Git metadata was published into the content root")
+			}
+			walkErr := filepath.Walk(m.cacheDir(), func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return err
+				}
+				switch base := filepath.Base(path); {
+				case !info.IsDir() && (base == "config" || base == "HEAD" || base == "objects"):
+					t.Fatalf("source metadata file %q was published into the content root", path)
+				case info.IsDir() && base == "objects":
+					t.Fatalf("source metadata directory %q was published into the content root", path)
+				}
+				return nil
+			})
+			if walkErr != nil && !errors.Is(walkErr, fs.ErrNotExist) {
+				t.Fatalf("walking %s: %v", m.cacheDir(), walkErr)
+			}
+		})
+	}
+}
+
 func setAmbientRepositorySelection(t *testing.T, unrelated string) {
 	t.Helper()
 	for name, value := range map[string]string{

@@ -193,9 +193,12 @@ func selectedDirectoryIsGitAdministration(ctx context.Context, selected string) 
 	path := resolvedOrSelf(filepath.Clean(selected))
 	if gitAvailable() {
 		// Git's own structural verdict avoids treating an ordinary plugin tree
-		// that happens to contain HEAD/config/objects as administration.
-		if out, err := git(ctx, path, "rev-parse", "--is-inside-git-dir"); err == nil {
-			return strings.TrimSpace(out) == "true", nil
+		// that happens to contain HEAD/config/objects as administration. Only
+		// an exact "true" on stdout says yes; an error or anything else falls
+		// through to the structural check below.
+		if out, err := gitStdout(ctx, path, "rev-parse", "--is-inside-git-dir"); err == nil &&
+			strings.TrimSpace(out) == "true" {
+			return true, nil
 		}
 	}
 	// Without Git, recognize only an administrative-looking directory whose own
