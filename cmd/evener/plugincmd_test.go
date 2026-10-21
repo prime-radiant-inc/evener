@@ -662,6 +662,40 @@ func TestPluginGc_JSON(t *testing.T) {
 	}
 }
 
+func TestPluginGc_JSONPreservesPublishedRevisionAndRemovesClone(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := plugins.NewManager("")
+	revision := filepath.Join(m.Root, "cache", "acme", "widget", "historical")
+	clone := filepath.Join(m.Root, "marketplaces", "leftover")
+	for _, dir := range []string{revision, clone} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data := []byte("selected companion")
+	companion := filepath.Join(revision, "companion.bin")
+	if err := os.WriteFile(companion, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if err := runPlugin([]string{"gc", "--json"}, nil, &out, &errb); err != nil {
+		t.Fatalf("plugin gc --json: %v", err)
+	}
+	var removed []string
+	if err := json.Unmarshal(out.Bytes(), &removed); err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 1 || removed[0] != clone {
+		t.Fatalf("removed = %v, want clone %s only", removed, clone)
+	}
+	if got, err := os.ReadFile(companion); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("published companion after CLI GC = %q, %v", got, err)
+	}
+	if _, err := os.Stat(clone); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("clone remains after CLI GC: %v", err)
+	}
+}
+
 // Nothing may create the user config root before the legacy-data guard has
 // looked at it, and every plugin verb works under that root: first-run seeding
 // writes known_marketplaces.json into it, and the registry and store paths

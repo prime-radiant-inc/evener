@@ -175,6 +175,55 @@ func TestAttentionPausedMessageNamesTheQuotaResetInUTC(t *testing.T) {
 	}
 }
 
+// Paused root attention must read Failed, not Working, until a fresh wake.
+func TestPausedRootAttentionIsNotAutonomousWork(t *testing.T) {
+	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 429, "responses.create(stream) failed",
+		map[string]any{"error": map[string]any{"code": "insufficient_quota", "message": "You exceeded your current quota"}}, nil))
+	evs, mu, done := collectEvents(s)
+
+	armOneRootAttention(t, s, "dlg_quota", "delegate:dlg_quota/delivery/1")
+	if _, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification); err == nil {
+		t.Fatal("the exhausted-quota notification turn unexpectedly succeeded")
+	}
+	if wake, retryActive, pending := attentionRailState(s); wake || retryActive || pending != 1 {
+		t.Fatalf("after the permanent failure: wake=%t retry=%t pending=%d, want deferred attention (false, false, 1)", wake, retryActive, pending)
+	}
+	if got := s.RestingWireState(); got != appwire.ThreadStatusSystemError {
+		t.Fatalf("RestingWireState after the paused attention turn = %q, want %q", got, appwire.ThreadStatusSystemError)
+	}
+	if got := s.WireState(); got != appwire.ThreadStatusSystemError {
+		t.Fatalf("WireState after the paused attention turn = %q, want %q: paused attention cannot move the session without the user", got, appwire.ThreadStatusSystemError)
+	}
+
+	// A fresh delegate event is a new genuine wake, not the paused retry: it
+	// re-arms delivery and the session reads busy again until that attempt
+	// settles.
+	armOneRootAttention(t, s, "dlg_fresh", "delegate:dlg_fresh/delivery/1")
+	if wake, _, pending := attentionRailState(s); !wake || pending != 2 {
+		t.Fatalf("after a fresh delegate event: wake=%t pending=%d, want the wake re-armed with both IDs (true, 2)", wake, pending)
+	}
+	if got := s.WireState(); got != string(SessionProcessing) {
+		t.Fatalf("WireState after a fresh delegate event = %q, want %q: the fresh wake can deliver without the user", got, SessionProcessing)
+	}
+
+	s.Close()
+	waitForTestSignal(t, done, "event collector drain")
+	mu.Lock()
+	defer mu.Unlock()
+	var failedEnd *events.SessionEndData
+	for _, ev := range *evs {
+		if d, ok := ev.Data.(events.SessionEndData); ok && ev.Kind == events.EventSessionEnd && d.Reason == "turn_failed" {
+			failedEnd = &d
+		}
+	}
+	if failedEnd == nil {
+		t.Fatal("the paused attention turn emitted no turn_failed SESSION_END")
+	}
+	if failedEnd.State != appwire.ThreadStatusSystemError {
+		t.Fatalf("turn_failed SESSION_END State = %q, want %q: the client must see the failure, not Working", failedEnd.State, appwire.ThreadStatusSystemError)
+	}
+}
+
 // A model switch re-arms attention only when a permanent failure deferred
 // it. Attention waiting out a transient failure keeps its backoff: a switch
 // must not skip it.

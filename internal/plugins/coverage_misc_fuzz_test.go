@@ -237,13 +237,19 @@ func fuzzGCDoctorEdges(t *testing.T) {
 	if err := os.WriteFile(m.cacheDir(), []byte("not a directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Gc(context.Background()); err == nil {
-		t.Fatal("gc cache file succeeded")
+	// GC never scans published cache content, even an invalid cache root.
+	// Assert preservation of bytes, identity and mode, not just success.
+	cache := snapshotMigrationTree(t, m.cacheDir())
+	removed, err := m.Gc(context.Background())
+	if err != nil || len(removed) != 0 {
+		t.Fatalf("gc with cache file = %v, %v", removed, err)
 	}
+	assertMigrationTree(t, cache)
 	findings := m.doctorOrphanCacheDirs()
 	if len(findings) != 1 || findings[0].Level != LevelFail {
 		t.Fatalf("orphan findings = %#v", findings)
 	}
+	assertMigrationTree(t, cache)
 
 	fileRoot := filepath.Join(t.TempDir(), "store")
 	if err := os.WriteFile(fileRoot, []byte("x"), 0o600); err != nil {

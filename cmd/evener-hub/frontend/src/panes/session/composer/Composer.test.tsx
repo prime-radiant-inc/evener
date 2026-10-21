@@ -888,10 +888,8 @@ afterEach(() => {
 
 // --- narrow (phone-width) layout --------------------------------------------
 //
-// Jesse's 2026-09-28 design ruling on the #1339 phone-width verb wrap:
-// below the composer's phone-width boundary the control row holds Send
-// alone, with Stop and Steer riding in the session menu instead of wrapping
-// below the status row. The narrow gate reads a real ResizeObserver
+// The phone-width row holds the shared Stop/Send slot, with Steer in the
+// session menu instead of wrapping below the status row. The narrow gate reads a real ResizeObserver
 // (narrowComposer.ts), which jsdom does not ship, so the narrow side is
 // driven through a stub that reports ONLY for the composer root - the one
 // element whose subtree contains the input card. Every other ResizeObserver
@@ -989,7 +987,176 @@ function stopButton(): HTMLButtonElement {
   return screen.getByTestId("composer-stop") as HTMLButtonElement;
 }
 
+test.each([399, 400])("Stop replaces Send only for an empty draft at width %s", async (width) => {
+  installNarrowComposer(width);
+  const fake = await mountComposer("ref_a", { status: { type: "active" } });
+  const editor = textarea();
+  act(() => editor.focus());
+  expect(stopButton().disabled).toBe(false);
+  expect(screen.queryByTestId("composer-submit")).toBeNull();
+  act(() => replaceEditorText(editor, " \n "));
+  expect(screen.queryByTestId("composer-submit")).toBeNull();
+  expect(stopButton().disabled).toBe(false);
+  act(() => replaceEditorText(editor, "draft"));
+  const send = submitButton();
+  expect(send.disabled).toBe(false);
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  act(() => replaceEditorText(editor, ""));
+  expect(stopButton()).not.toBe(send);
+  expect(send.isConnected).toBe(false);
+  expect(document.activeElement).toBe(editor);
+  expect(screen.queryByTestId("composer-submit")).toBeNull();
+  act(() => foldStatusFrame(fake, "idle"));
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  expect(submitButton().disabled).toBe(true);
+});
+
+test.each([399, 400])("draft Stop remains reachable in the real menu at width %s", async (width) => {
+  installNarrowComposer(width);
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", { status: { type: "active" } });
+  act(() => replaceEditorText(textarea(), "keep this draft"));
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  expect(submitButton().disabled).toBe(false);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  const stop = screen.getByRole("menuitem", { name: "Stop" });
+  expect(stop.getAttribute("aria-disabled")).not.toBe("true");
+  expect(screen.queryByRole("menuitem", { name: "Steer" }) !== null).toBe(width === 399);
+  expect(screen.queryByTestId("composer-steer") !== null).toBe(width === 400);
+  fake.on("turn/interrupt", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thr_ref_a",
+      projectionState: "reflected",
+    },
+  }));
+  await user.click(stop);
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(1);
+  expect(textarea().textContent).toBe("keep this draft");
+});
+
+test.each([399, 400])("empty keyboard and form submission never interrupt at width %s", async (width) => {
+  installNarrowComposer(width);
+  const fake = await mountComposer("ref_a", { status: { type: "active" } });
+  act(() => prefsStore.setState({ enterToSend: true }));
+  expect(screen.queryByTestId("composer-submit")).toBeNull();
+  fireEvent.keyDown(textarea(), { key: "Enter" });
+  fireEvent.keyDown(textarea(), { key: "Enter", ctrlKey: true });
+  fireEvent.keyDown(textarea(), { key: "Enter", metaKey: true });
+  fireEvent.submit(screen.getByTestId("composer-form"));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => ["turn/interrupt", "turn/start", "turn/queue"].includes(call.method))).toEqual([]);
+});
+
 // --- basic surface ---------------------------------------------------------
+
+test.each([399, 400])("Send-to-Stop guards the inline button for exactly 500ms at width %s", async (width) => {
+  installNarrowComposer(width);
+  const fake = await mountComposer("ref_a", { status: { type: "active" } });
+  vi.useFakeTimers();
+  expect(stopButton().disabled).toBe(false);
+  act(() => replaceEditorText(textarea(), "draft"));
+  const send = submitButton();
+  act(() => replaceEditorText(textarea(), ""));
+  expect(stopButton()).not.toBe(send);
+  expect(stopButton().disabled).toBe(true);
+  fireEvent.click(stopButton());
+  expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
+  fireEvent.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Stop" }).getAttribute("aria-disabled")).not.toBe("true");
+  fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  act(() => vi.advanceTimersByTime(499));
+  expect(stopButton().disabled).toBe(true);
+  act(() => vi.advanceTimersByTime(1));
+  expect(stopButton().disabled).toBe(false);
+});
+
+test("a cancelled delay cannot shorten the next Send-to-Stop guard", async () => {
+  await mountComposer("ref_a", { status: { type: "active" } });
+  vi.useFakeTimers();
+  act(() => replaceEditorText(textarea(), "first"));
+  act(() => replaceEditorText(textarea(), ""));
+  expect(stopButton().disabled).toBe(true);
+  act(() => vi.advanceTimersByTime(400));
+  act(() => replaceEditorText(textarea(), "second"));
+  expect(submitButton().disabled).toBe(false);
+  act(() => replaceEditorText(textarea(), ""));
+  act(() => vi.advanceTimersByTime(100));
+  expect(stopButton().disabled).toBe(true);
+  act(() => vi.advanceTimersByTime(399));
+  expect(stopButton().disabled).toBe(true);
+  act(() => vi.advanceTimersByTime(1));
+  expect(stopButton().disabled).toBe(false);
+});
+
+test.each([399, 400])("a fast Send cannot become an accidental Stop at width %s", async (width) => {
+  installNarrowComposer(width);
+  const fake = await mountComposer("ref_a", { status: { type: "active" } });
+  for (const method of ["turn/queue", "turn/interrupt"] as const) {
+    fake.on(method, (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "reflected",
+      },
+    }));
+  }
+  act(() => replaceEditorText(textarea(), "send once"));
+  const send = submitButton();
+  act(() => send.focus());
+  // Keep IndexedDB's task scheduling real while controlling the activation clock.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  fireEvent.click(send);
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().textContent).toBe("");
+  expect(document.activeElement).toBe(textarea());
+  expect(send.isConnected).toBe(false);
+  expect(stopButton().disabled).toBe(true);
+  fireEvent.click(stopButton());
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(0);
+  act(() => vi.advanceTimersByTime(500));
+  expect(stopButton().disabled).toBe(false);
+  fireEvent.click(stopButton());
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(1);
+});
+
+test("session replacement and unmount cancel the old inline Stop delay", async () => {
+  const { fake, rerender, unmount } = await mountComposerWithHandle("ref_a", { status: { type: "active" } });
+  fake.on("thread/read", () => readResponse("ref_b", { status: { type: "active" } }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_b");
+  });
+  const source = createTestComposerSource("ref_b");
+  vi.useFakeTimers();
+  act(() => replaceEditorText(textarea(), "first"));
+  act(() => replaceEditorText(textarea(), ""));
+  expect(stopButton().disabled).toBe(true);
+  act(() => vi.advanceTimersByTime(400));
+  rerender(
+    <ClientProvider client={fake}>
+      <Toast />
+      <Composer ref="ref_b" source={source} focused={false} />
+    </ClientProvider>,
+  );
+  // This session opens on Stop, so it does not inherit the old guard.
+  expect(stopButton().disabled).toBe(false);
+  act(() => replaceEditorText(textarea(), "second"));
+  act(() => replaceEditorText(textarea(), ""));
+  act(() => vi.advanceTimersByTime(100));
+  expect(stopButton().disabled).toBe(true);
+  act(() => vi.advanceTimersByTime(400));
+  expect(stopButton().disabled).toBe(false);
+  act(() => replaceEditorText(textarea(), "third"));
+  act(() => replaceEditorText(textarea(), ""));
+  unmount();
+  act(() => vi.advanceTimersByTime(500));
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+});
 
 test("renders a textarea with an accessible name", async () => {
   await mountComposer("ref_a");
@@ -1608,6 +1775,7 @@ test("each control's spoken name is its bare verb - no chord glyphs in the name 
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   expect(screen.getByRole("button", { name: "Stop" })).toBe(stopButton());
+  act(() => replaceEditorText(textarea(), "draft"));
   expect(screen.getByRole("button", { name: "Send" })).toBe(submitButton());
   expect(screen.getByRole("button", { name: "Steer" })).toBe(steerButton());
   expect(screen.getByRole("button", { name: "Attach image" })).toBe(screen.getByTestId("composer-attach"));
@@ -1623,7 +1791,9 @@ test("no button renders a chord hint inside itself", async () => {
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
 
-  for (const control of [stopButton(), submitButton(), steerButton()]) {
+  const stop = stopButton();
+  act(() => replaceEditorText(textarea(), "draft"));
+  for (const control of [stop, submitButton(), steerButton()]) {
     expect(control.querySelector("kbd")).toBeNull();
     expect(control.textContent).not.toMatch(/↵/);
   }
@@ -1641,7 +1811,9 @@ test("every control in the composer's button row is the xs (24px) size", async (
   // IconButton overrides Button's own xs/sm/md with its square sizing (see
   // iconbutton.module.css), so the one icon control carries that module's squareXs.
   expect(screen.getByTestId("composer-attach").className.split(" ")).toContain(iconButtonStyles.squareXs);
-  for (const control of [stopButton(), steerButton(), submitButton()]) {
+  const stop = stopButton();
+  act(() => replaceEditorText(textarea(), "draft"));
+  for (const control of [stop, steerButton(), submitButton()]) {
     expect(control.className.split(" ")).toContain(buttonStyles.xs);
   }
 });
@@ -1671,19 +1843,20 @@ test("the attach control draws an SVG glyph, not a literal text character", asyn
 
 // --- the verb cluster's order and emphasis ---------------------------------
 //
-// Stop is pinned LEFTMOST so it never trades places with the verbs that come
-// and go: it is the one control here whose misfire cannot be undone. Send holds
-// the middle, Steer the right.
-test("the cluster order is Stop, Send, Steer left to right", async () => {
+// Stop and Send share the first slot; wide Steer stays to its right.
+test("Stop and Send alternate before Steer", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
   const card = screen.getByTestId("composer-input-card");
-  const order = [...card.querySelectorAll("button")]
-    .map((b) => b.getAttribute("data-testid"))
-    .filter((id) => id?.startsWith("composer-") && id !== "composer-attach");
-  expect(order).toEqual(["composer-stop", "composer-submit", "composer-steer"]);
+  const order = () =>
+    [...card.querySelectorAll("button")]
+      .map((b) => b.getAttribute("data-testid"))
+      .filter((id) => id?.startsWith("composer-") && id !== "composer-attach");
+  expect(order()).toEqual(["composer-stop", "composer-steer"]);
+  act(() => replaceEditorText(textarea(), "draft"));
+  expect(order()).toEqual(["composer-submit", "composer-steer"]);
 });
 
 // Jesse's own correction, honored exactly: both verbs stay, with distinct jobs.
@@ -1695,6 +1868,7 @@ test("while a turn runs, Steer is primary and Send is quiet", async () => {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
+  act(() => replaceEditorText(textarea(), "draft"));
   expect(steerButton().className.split(" ")).toContain(buttonStyles.primary);
   expect(submitButton().className.split(" ")).toContain(buttonStyles.quiet);
 });
@@ -1719,6 +1893,7 @@ test("Send keeps its label while a turn runs", async () => {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
+  act(() => replaceEditorText(textarea(), "draft"));
   expect(idleLabel).not.toBe("");
   expect(submitButton().textContent).toBe(idleLabel);
 });
@@ -2464,6 +2639,7 @@ test("with enterToSend on, Steer's tooltip drops its chord and Send's names bare
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
+  act(() => replaceEditorText(textarea(), "draft"));
   const tip = hoverForTooltip(steerButton());
   expect(tip.textContent).toBe(steerTooltipLabel({ recoveryFenced: false, enterToSend: true }));
 
@@ -2585,7 +2761,9 @@ test("stop and steer both render and both work during the window after status fl
 
   await user.type(textarea(), "hi");
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
-  expect(screen.queryByTestId("composer-stop")).not.toBeNull();
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  expect(screen.getByRole("menuitem", { name: "Stop" }).getAttribute("aria-disabled")).not.toBe("true");
+  await user.keyboard("{Escape}");
 
   await user.click(screen.getByTestId("composer-steer"));
   await flushPendingTurnsProjectionForTests();
@@ -2602,7 +2780,8 @@ test("stop and steer both render and both work during the window after status fl
       projectionState: "reflected",
     },
   }));
-  await user.click(screen.getByTestId("composer-stop"));
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Stop" }));
   await flushPendingTurnsProjectionForTests();
   expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true);
 });
@@ -2613,7 +2792,7 @@ test("stop and steer both render and both work during the window after status fl
 // rides on: the verbs a phone can't fit beside the status row answer from
 // the session menu instead of wrapping below it.
 
-test("a phone-width composer keeps Send in the row and moves Stop and Steer into the session menu", async () => {
+test("a phone-width draft keeps Send in the row and Stop and Steer in the session menu", async () => {
   installNarrowComposer(320);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
@@ -2660,7 +2839,7 @@ test("a phone-width composer keeps Send in the row and moves Stop and Steer into
   expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true);
 });
 
-test("a wide composer keeps the verbs in the row and the session menu carries none", async () => {
+test("a wide composer keeps draft Send and Steer inline and Stop in the menu", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "active" },
@@ -2668,11 +2847,12 @@ test("a wide composer keeps the verbs in the row and the session menu carries no
   });
 
   await user.type(textarea(), "hi");
-  expect(screen.getByTestId("composer-stop")).toBeTruthy();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  expect(submitButton().disabled).toBe(false);
   expect(screen.getByTestId("composer-steer")).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.queryByRole("menuitem", { name: "Stop" })).toBeNull();
+  expect(screen.getByRole("menuitem", { name: "Stop" }).getAttribute("aria-disabled")).not.toBe("true");
   expect(screen.queryByRole("menuitem", { name: "Steer" })).toBeNull();
 });
 
@@ -4936,6 +5116,78 @@ test.each<[string, (user: ReturnType<typeof userEvent.setup>) => Promise<void>]>
 });
 
 // --- interrupt ---------------------------------------------------------------
+
+test.each([399, 400])("pending interrupt still gates Stop after the inline delay at width %s", async (width) => {
+  installNarrowComposer(width);
+  const fake = await mountComposer("ref_a", { status: { type: "active" } });
+  fake.on("turn/interrupt", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thr_ref_a",
+      projectionState: "reflected",
+    },
+  }));
+  act(() => replaceEditorText(textarea(), "draft"));
+  const held = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  try {
+    fireEvent.click(screen.getByRole("button", { name: /session actions/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Stop" }));
+    await act(async () => held.reached);
+    expect(submitButton().disabled).toBe(true);
+    expect(textarea().textContent).toBe("draft");
+    vi.useFakeTimers();
+    act(() => replaceEditorText(textarea(), ""));
+    act(() => vi.advanceTimersByTime(500));
+    expect(stopButton().disabled).toBe(true);
+    fireEvent.click(stopButton());
+    fireEvent.click(screen.getByRole("button", { name: /session actions/i }));
+    const stop = screen.getByRole("menuitem", { name: "Stop" });
+    expect(stop.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(stop);
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    vi.useRealTimers();
+  } finally {
+    held.release();
+  }
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(1);
+  expect(stopButton().disabled).toBe(false);
+});
+
+test.each(["inline", "menu"] as const)("a rejected %s Stop preserves the draft and permits retry", async (location) => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", { status: { type: "active" } });
+  if (location === "menu") act(() => replaceEditorText(textarea(), "keep me"));
+  fake.on("turn/interrupt", (params) => {
+    throw notAcceptedError(params.clientMutationId);
+  });
+  const press = async () => {
+    if (location === "inline") await user.click(stopButton());
+    else {
+      await user.click(screen.getByRole("button", { name: /session actions/i }));
+      await user.click(screen.getByRole("menuitem", { name: "Stop" }));
+    }
+  };
+  await press();
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(1);
+  expect(textarea().textContent).toBe(location === "menu" ? "keep me" : "");
+  if (location === "menu") expect(submitButton().disabled).toBe(false);
+  else expect(stopButton().disabled).toBe(false);
+  fake.on("turn/interrupt", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thr_ref_a",
+      projectionState: "reflected",
+    },
+  }));
+  await press();
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toHaveLength(2);
+  expect(textarea().textContent).toBe(location === "menu" ? "keep me" : "");
+});
 
 test("clicking Stop calls turn/interrupt", async () => {
   const user = userEvent.setup();

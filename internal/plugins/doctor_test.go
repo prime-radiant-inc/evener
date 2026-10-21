@@ -96,7 +96,7 @@ func TestDoctor_OrphanEntryNotADirectory(t *testing.T) {
 	}
 }
 
-func TestDoctor_OrphanCacheDir(t *testing.T) {
+func TestDoctor_RetainedCacheRevision(t *testing.T) {
 	m := NewManager(t.TempDir())
 	orphan := m.pluginCacheDir("acme", "widget", "deadbeef")
 	writePlugin(t, orphan, "widget", nil)
@@ -108,12 +108,12 @@ func TestDoctor_OrphanCacheDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	f := findFinding(t, findings, orphan)
-	if f.Level != LevelWarn {
-		t.Errorf("orphan cache dir level = %s, want %s", f.Level, LevelWarn)
+	f := findCheck(t, findings, checkRetainedCacheRevision)
+	if f.Level != LevelOK || f.Category != catRegistry {
+		t.Errorf("retained cache finding = %+v, want OK/registry", f)
 	}
-	if !strings.Contains(f.Remediation, "gc") {
-		t.Errorf("remediation should point at gc: %q", f.Remediation)
+	if f.Remediation != "" {
+		t.Errorf("retained cache revision must not suggest deletion: %+v", f)
 	}
 }
 
@@ -132,17 +132,15 @@ func TestDoctor_OrphanCacheDir_NoneWhenReferenced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if hasCheck(findings, checkOrphanCacheDir) {
+	if hasCheck(findings, checkRetainedCacheRevision) {
 		t.Errorf("referenced cache dir flagged as orphan: %+v", findings)
 	}
 }
 
-// A materialize creates its sha directory before it records the registry
-// entry, and gc drops the entry before it removes the directory, so a walk
-// that runs between either pair calls a live install an orphan. Waiting for
-// the writer is only half of it: the registry the walk compares the cache
-// against has to be the one the writer left, not the one Doctor read on its
-// way in.
+// A materialize creates its revision directory before it records the registry
+// entry. A walk between those steps calls the new install retained. Waiting
+// for the writer is only half of it: the registry the walk compares against
+// must be the one the writer left, not the one Doctor read on its way in.
 func TestDoctor_OrphanCacheDir_ReadsTheRegistryAMaterializeLeftBehind(t *testing.T) {
 	m := NewManager(t.TempDir())
 	dir := m.pluginCacheDir("acme", "widget", "deadbeef")
@@ -168,8 +166,7 @@ func TestDoctor_OrphanCacheDir_ReadsTheRegistryAMaterializeLeftBehind(t *testing
 		reports <- report{findings, doctorErr}
 	}()
 
-	// Long enough that a walk which does not wait for the lock has already
-	// made its (wrong) report by the time the entry lands.
+	// The walk must wait until the writer has recorded its registry entry.
 	time.Sleep(200 * time.Millisecond)
 	saveErr := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
 		"widget@acme": {{InstallPath: dir, Version: "1.0.0", Enabled: true, Source: Source{Kind: SourceGitHub, Repo: "acme/widget"}}},
@@ -183,7 +180,7 @@ func TestDoctor_OrphanCacheDir_ReadsTheRegistryAMaterializeLeftBehind(t *testing
 	if got.err != nil {
 		t.Fatalf("Doctor: %v", got.err)
 	}
-	if hasCheck(got.findings, checkOrphanCacheDir) {
+	if hasCheck(got.findings, checkRetainedCacheRevision) {
 		t.Errorf("a materialize in flight was reported as an orphan: %+v", got.findings)
 	}
 }
@@ -210,7 +207,7 @@ func TestDoctor_OrphanCacheDir_ReportsAHeldStoreLockInsteadOfGuessing(t *testing
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if hasCheck(findings, checkOrphanCacheDir) {
+	if hasCheck(findings, checkRetainedCacheRevision) {
 		t.Errorf("orphan claimed while a writer holds the store lock: %+v", findings)
 	}
 	f := findCheck(t, findings, checkOrphanScanSkipped)
@@ -262,8 +259,8 @@ func TestDoctor_OrphanCacheDir_LeavesAStoreWithNoLockFileAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Doctor: %v", err)
 	}
-	if f := findFinding(t, findings, orphan); f.Level != LevelWarn {
-		t.Errorf("orphan cache dir level = %s, want %s", f.Level, LevelWarn)
+	if f := findCheck(t, findings, checkRetainedCacheRevision); f.Level != LevelOK || f.Category != catRegistry || f.Remediation != "" {
+		t.Errorf("retained cache finding = %+v, want OK/registry without remediation", f)
 	}
 	if _, statErr := os.Stat(m.lockPath()); !errors.Is(statErr, fs.ErrNotExist) {
 		t.Errorf("Doctor created the store lock %s (stat err = %v)", m.lockPath(), statErr)
@@ -962,5 +959,118 @@ func TestUpgrade_RelSourceInADirectoryMarketplaceIsANoOp(t *testing.T) {
 	}
 	if upgraded, err := m.UpdateAutoUpgrade(context.Background()); err != nil || len(upgraded) != 0 {
 		t.Fatalf("UpdateAutoUpgrade = %+v (%v), want a no-op", upgraded, err)
+	}
+}
+
+func TestDoctorRetainedNestedLegacyRevisions(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	trees := plantMigrationRevisions(t, m, "a/b", "widget")
+	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := m.Doctor()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var retained []DoctorFinding
+	for _, finding := range findings {
+		if finding.Check == checkRetainedCacheRevision {
+			if finding.Level != LevelOK || finding.Category != catRegistry || finding.Remediation != "" {
+				t.Fatalf("retained finding = %+v", finding)
+			}
+			retained = append(retained, finding)
+		}
+	}
+	if len(retained) != 2 {
+		t.Fatalf("retained revision count = %d, want 2 superseded siblings, findings: %+v", len(retained), retained)
+	}
+	paths := map[string]bool{}
+	for _, finding := range retained {
+		paths[finding.Path] = true
+	}
+	if !paths[trees[0].path] || !paths[trees[1].path] || paths[trees[2].path] {
+		t.Fatalf("retained paths = %v, want only superseded siblings", paths)
+	}
+	for _, tree := range trees {
+		assertMigrationTree(t, tree)
+	}
+}
+
+// A published root is a package with either supported manifest. Its own
+// bundled packages are resources, not separate retained cache revisions.
+func TestDoctorRetainedSupportedManifestFormats(t *testing.T) {
+	for _, layout := range []struct {
+		name        string
+		marketplace string
+	}{
+		{name: "ordinary", marketplace: "acme"},
+		{name: "nested", marketplace: filepath.Join("a", "b")},
+	} {
+		for _, format := range []struct {
+			name      string
+			manifest  string
+			companion string
+		}{
+			{name: "codex", manifest: ".codex-plugin", companion: ".claude-plugin"},
+			{name: "claude", manifest: ".claude-plugin", companion: ".codex-plugin"},
+		} {
+			t.Run(layout.name+"/"+format.name, func(t *testing.T) {
+				m := NewManager(t.TempDir())
+				m.Stderr = io.Discard
+				parent := filepath.Join(m.cacheDir(), layout.marketplace, "widget")
+				retained := filepath.Join(parent, "superseded")
+				selected := filepath.Join(parent, "current")
+				writeManifest := func(dir, flavor string) {
+					t.Helper()
+					manifestDir := filepath.Join(dir, flavor)
+					if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(manifestDir, "plugin.json"), []byte(`{"name":"widget","version":"1.0.0"}`), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				writeManifest(retained, format.manifest)
+				writeManifest(selected, format.manifest)
+				companion := filepath.Join(retained, "resources", "companion")
+				writeManifest(companion, format.companion)
+				wantPaths := map[string]bool{retained: true}
+				if format.name == "codex" {
+					codexOnly := filepath.Join(parent, "codex-only")
+					writeManifest(codexOnly, ".codex-plugin")
+					wantPaths[codexOnly] = true
+				}
+				if err := SaveRegistry(m.registryPath(), Registry{Plugins: map[string][]InstallEntry{
+					"widget@acme": {{InstallPath: selected, Version: "1.0.0", Enabled: true, Source: Source{Kind: SourceDirectory, Path: selected}}},
+				}}); err != nil {
+					t.Fatal(err)
+				}
+
+				findings, err := m.Doctor()
+				if err != nil {
+					t.Fatal(err)
+				}
+				var retainedFindings []DoctorFinding
+				for _, finding := range findings {
+					if finding.Check == checkRetainedCacheRevision {
+						retainedFindings = append(retainedFindings, finding)
+					}
+				}
+				if len(retainedFindings) != len(wantPaths) {
+					t.Fatalf("retained revisions = %+v, want paths %v", retainedFindings, wantPaths)
+				}
+				for _, got := range retainedFindings {
+					if !wantPaths[got.Path] || got.Level != LevelOK || got.Category != catRegistry ||
+						got.Check != checkRetainedCacheRevision || got.Remediation != "" {
+						t.Fatalf("retained finding = %+v, want paths %v with OK registry check and no remediation", got, wantPaths)
+					}
+					delete(wantPaths, got.Path)
+				}
+				if len(wantPaths) != 0 {
+					t.Fatalf("missing retained paths: %v", wantPaths)
+				}
+			})
+		}
 	}
 }

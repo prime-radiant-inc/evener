@@ -20,18 +20,20 @@ import (
 func (s *Session) retirementEvidence() ([]RetirementBlocker, error) {
 	blockers := s.retirementLocalBlockers()
 	blockers = append(blockers, s.retirementDelegateBlockers()...)
-	// Root attention cached behind a Stop's park is not work this process can
-	// do: it waits for the user's re-engagement, and both the attention
-	// (transcript fold) and the park (the durable queue/steering holds) are
-	// restored by the next resume. This is pendingRootDelegateAttention's rule,
-	// applied inside the one attentionMu section below rather than through it:
-	// an arm-retry callback moves IDs from delegateAttentionArmIDs to
-	// rootAttentionWakeIDs under attentionMu, and only a single section sees
+	// Root attention cached behind a Stop's park or a permanent provider
+	// failure's pause is not work this process can do: it waits for the user,
+	// and both the attention (transcript fold) and the park (the durable
+	// queue/steering holds) are restored by the next resume. A fresh delegate
+	// wake or a paced retry is still work. This is pendingRootDelegateAttention's
+	// rule, applied inside the one attentionMu section below rather than
+	// through it: an arm-retry callback moves IDs from delegateAttentionArmIDs
+	// to rootAttentionWakeIDs under attentionMu, and only a single section sees
 	// that handoff atomically. The park is read first, the lock order
 	// rootAttentionRailParked documents.
 	parked := s.rootAttentionRailParked()
 	s.attentionMu.Lock()
-	rootAttentionPending := len(s.rootAttentionWakeIDs) != 0 && !parked
+	deferred := s.rootAttentionPaused && !s.rootAttentionWake && !s.rootAttentionRetry.active
+	rootAttentionPending := len(s.rootAttentionWakeIDs) != 0 && !parked && !deferred
 	if rootAttentionPending || s.rootAttentionRetry.active || s.attentionCallbacks != 0 || len(s.delegateAttentionArmIDs) != 0 || s.delegateAttentionArmRetry.active {
 		blockers = append(blockers, RetirementBlocker{Category: "notification", SessionID: s.id})
 	}
