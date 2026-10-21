@@ -974,13 +974,7 @@ test("a complete latest read that omits a restored accepted copy settles it", as
       await threadsStore.getState().refreshThread("ref_a");
     });
     await flushPendingTurnsProjectionForTests();
-    const accepted = (await storage.listOptimistic("ref_a"))[0];
-    if (accepted) {
-      await act(async () => {
-        await reconcileMutationIdentitiesForTests([accepted.clientMutationId]);
-      });
-      await flushPendingTurnsProjectionForTests();
-    }
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
     const laterView = render(
       <TurnFailureEndCap error={{ message: "later" }} sessionRef="ref_a" turnId="later_failed" />,
     );
@@ -2400,13 +2394,7 @@ test("a winning reflection read that shows a newer failure retires the old Retry
       await threadsStore.getState().refreshThread("ref_a");
     });
     await flushPendingTurnsProjectionForTests();
-    const accepted = (await storage.listOptimistic("ref_a"))[0];
-    if (accepted) {
-      await act(async () => {
-        await reconcileMutationIdentitiesForTests([accepted.clientMutationId]);
-      });
-      await flushPendingTurnsProjectionForTests();
-    }
+    expect(await storage.listOptimistic("ref_a")).toHaveLength(0);
     const laterView = render(
       <TurnFailureEndCap error={{ message: "boom again" }} sessionRef="ref_a" turnId={later.id} />,
     );
